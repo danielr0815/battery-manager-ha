@@ -1,0 +1,12 @@
+{
+  "domain": "battery_manager",
+  "name": "Battery Manager",
+  "codeowners": ["@battery_manager"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/battery-manager/battery-manager-ha",
+  "integration_type": "device",
+  "iot_class": "calculated",
+  "requirements": [],
+  "version": "1.0.0"
+}
