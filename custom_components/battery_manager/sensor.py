@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -40,9 +40,10 @@ async def async_setup_entry(
     """Set up Battery Manager sensors from a config entry."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
+    # Create SOC Threshold first to make it the primary entity for the device card
     entities = [
-        BatteryManagerInverterStatus(coordinator, config_entry),
         BatteryManagerSOCThreshold(coordinator, config_entry),
+        BatteryManagerInverterStatus(coordinator, config_entry),
         BatteryManagerMinSOCForecast(coordinator, config_entry),
         BatteryManagerMaxSOCForecast(coordinator, config_entry),
     ]
@@ -144,6 +145,7 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:battery-charging"
+        self._attr_suggested_display_precision = 1  # Show 1 decimal place
 
     @property
     def native_value(self) -> Optional[float]:
@@ -184,6 +186,7 @@ class BatteryManagerMinSOCForecast(BatteryManagerEntityBase, SensorEntity):
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:battery-low"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC  # Mark as diagnostic
 
     @property
     def native_value(self) -> Optional[float]:
@@ -212,6 +215,7 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:battery-high"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC  # Mark as diagnostic
 
     @property
     def native_value(self) -> Optional[float]:
