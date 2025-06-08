@@ -43,7 +43,7 @@ class Inverter:
         """
         self._current_soc_percent = soc_percent
         
-        # Automatically disable inverter if SOC falls below minimum
+        # Automatically disable inverter if SOC reaches minimum threshold
         if soc_percent < self.min_soc_percent:
             self._enabled = False
     
@@ -53,7 +53,7 @@ class Inverter:
         Args:
             enabled: Whether to enable the inverter
         """
-        # Can only enable if SOC is above minimum
+        # Can only enable if SOC is above minimum threshold
         if enabled and self._current_soc_percent < self.min_soc_percent:
             self._enabled = False
         else:
@@ -62,7 +62,7 @@ class Inverter:
     @property
     def is_enabled(self) -> bool:
         """Check if the inverter is currently enabled."""
-        return self._enabled and self._current_soc_percent >= self.min_soc_percent
+        return self._enabled and self._current_soc_percent > self.min_soc_percent
     
     def provide_ac_from_dc(self, ac_energy_needed_wh: float) -> float:
         """Provide AC energy by converting from DC (battery).
@@ -146,7 +146,7 @@ class Inverter:
         Returns:
             True if SOC is above threshold, False otherwise
         """
-        return self._current_soc_percent >= threshold_soc_percent
+        return self._current_soc_percent > threshold_soc_percent
     
     def get_config(self) -> Dict[str, Any]:
         """Get current inverter configuration."""

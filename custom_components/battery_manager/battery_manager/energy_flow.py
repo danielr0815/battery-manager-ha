@@ -292,7 +292,7 @@ class EnergyFlowCalculator:
         """
         # If we have a threshold override, use it
         if self._simulation_threshold_override is not None:
-            return self.battery.current_soc_percent >= self._simulation_threshold_override
+            return self.battery.current_soc_percent > self._simulation_threshold_override
         
         # Otherwise use the standard inverter logic
         return self.inverter.is_enabled

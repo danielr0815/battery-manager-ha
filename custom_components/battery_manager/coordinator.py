@@ -57,6 +57,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         self._last_soc_update: Optional[datetime] = None
         self._last_forecast_update: Optional[datetime] = None
         
+        # Enhanced debugging data
+        self._last_calculation_inputs: Optional[Dict[str, Any]] = None
+        self._last_calculation_results: Optional[Dict[str, Any]] = None
+        self._value_change_count = 0
+        self._startup_values: Optional[Dict[str, Any]] = None
+        
         # Debouncing
         self._debounce_task: Optional[asyncio.Task] = None
         
@@ -80,6 +86,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
     async def _handle_entity_change(self, event) -> None:
         """Handle state change of tracked entities."""
+        entity_id = event.data.get("entity_id")
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        
+        # Enhanced debugging for entity changes
+        _LOGGER.debug(
+            "Entity change detected: %s from %s to %s",
+            entity_id,
+            old_state.state if old_state else "None",
+            new_state.state if new_state else "None"
+        )
+        
+        # Track changes that might cause calculation drift
+        if old_state and new_state and old_state.state != new_state.state:
+            try:
+                old_val = float(old_state.state) if old_state.state not in ("unknown", "unavailable") else None
+                new_val = float(new_state.state) if new_state.state not in ("unknown", "unavailable") else None
+                
+                if old_val is not None and new_val is not None:
+                    change_percent = abs((new_val - old_val) / old_val * 100) if old_val != 0 else 0
+                    if change_percent > 5:  # Log significant changes
+                        _LOGGER.info(
+                            "Significant input change in %s: %.2f → %.2f (%.1f%% change)",
+                            entity_id, old_val, new_val, change_percent
+                        )
+            except (ValueError, TypeError):
+                pass
+        
         if self._debounce_task:
             self._debounce_task.cancel()
         
@@ -98,6 +132,32 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             # Get current input data
             current_soc = await self._get_current_soc()
             daily_forecasts = await self._get_daily_forecasts()
+            
+            # Store current inputs for debugging
+            current_inputs = {
+                "soc_percent": current_soc,
+                "daily_forecasts_kwh": daily_forecasts,
+                "timestamp": dt_util.now(),
+            }
+            
+            # Check for input data changes that might cause drift
+            if self._last_calculation_inputs:
+                soc_changed = abs(current_inputs["soc_percent"] - self._last_calculation_inputs["soc_percent"]) > 0.1
+                forecasts_changed = any(
+                    abs(new - old) > 0.01 
+                    for new, old in zip(current_inputs["daily_forecasts_kwh"], self._last_calculation_inputs["daily_forecasts_kwh"])
+                )
+                
+                if soc_changed or forecasts_changed:
+                    _LOGGER.debug(
+                        "Input data changed - SOC: %.1f → %.1f, Forecasts: %s → %s",
+                        self._last_calculation_inputs["soc_percent"],
+                        current_inputs["soc_percent"],
+                        [f"{f:.1f}" for f in self._last_calculation_inputs["daily_forecasts_kwh"]],
+                        [f"{f:.1f}" for f in current_inputs["daily_forecasts_kwh"]]
+                    )
+            
+            self._last_calculation_inputs = current_inputs
             
             # Check data validity
             data_valid = self._check_data_validity()
@@ -123,10 +183,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             results["valid"] = True
             results["last_update"] = current_time
             
+            # Enhanced debugging for calculation results
+            self._track_calculation_results(results)
+            
             _LOGGER.debug(
-                "Battery Manager calculation completed: SOC=%s%%, Threshold=%s%%",
+                "Battery Manager calculation completed: SOC=%s%%, Threshold=%s%%, Min=%s%%, Max=%s%%",
                 current_soc,
-                results["soc_threshold_percent"]
+                results["soc_threshold_percent"],
+                results["min_soc_forecast_percent"],
+                results["max_soc_forecast_percent"]
             )
             
             return results
@@ -154,6 +219,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         try:
             soc_value = float(state.state)
             if 0 <= soc_value <= 100:
+                # Log significant SOC changes
+                if self._last_valid_soc is not None:
+                    soc_change = abs(soc_value - self._last_valid_soc)
+                    if soc_change > 1.0:  # Log changes > 1%
+                        _LOGGER.debug(
+                            "SOC changed significantly: %.1f%% → %.1f%% (Δ%.1f%%)",
+                            self._last_valid_soc, soc_value, soc_change
+                        )
+                
                 self._last_valid_soc = soc_value
                 self._last_soc_update = dt_util.now()
                 return soc_value
@@ -227,6 +301,86 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         
         return True
 
+    def _track_calculation_results(self, results: Dict[str, Any]) -> None:
+        """Track calculation results for debugging stability issues."""
+        current_results = {
+            "soc_threshold_percent": results.get("soc_threshold_percent"),
+            "min_soc_forecast_percent": results.get("min_soc_forecast_percent"),
+            "max_soc_forecast_percent": results.get("max_soc_forecast_percent"),
+            "inverter_enabled": results.get("inverter_enabled"),
+            "timestamp": dt_util.now(),
+        }
+        
+        # Store startup values for comparison
+        if self._startup_values is None:
+            self._startup_values = current_results.copy()
+            _LOGGER.info(
+                "Startup values recorded - Threshold: %.1f%%, Min: %.1f%%, Max: %.1f%%, Inverter: %s",
+                current_results["soc_threshold_percent"],
+                current_results["min_soc_forecast_percent"],
+                current_results["max_soc_forecast_percent"],
+                current_results["inverter_enabled"]
+            )
+        
+        # Check for implausible values (potential drift indicators)
+        if self._last_calculation_results:
+            threshold_change = abs(
+                current_results["soc_threshold_percent"] - self._last_calculation_results["soc_threshold_percent"]
+            ) if current_results["soc_threshold_percent"] is not None else 0
+            
+            min_change = abs(
+                current_results["min_soc_forecast_percent"] - self._last_calculation_results["min_soc_forecast_percent"]
+            ) if current_results["min_soc_forecast_percent"] is not None else 0
+            
+            max_change = abs(
+                current_results["max_soc_forecast_percent"] - self._last_calculation_results["max_soc_forecast_percent"]
+            ) if current_results["max_soc_forecast_percent"] is not None else 0
+            
+            # Log significant changes that might indicate drift
+            if threshold_change > 5.0:
+                _LOGGER.warning(
+                    "Large threshold change detected: %.1f%% → %.1f%% (Δ%.1f%%)",
+                    self._last_calculation_results["soc_threshold_percent"],
+                    current_results["soc_threshold_percent"],
+                    threshold_change
+                )
+            
+            if min_change > 10.0 or max_change > 10.0:
+                _LOGGER.warning(
+                    "Large forecast change detected - Min: %.1f%% → %.1f%% (Δ%.1f%%), Max: %.1f%% → %.1f%% (Δ%.1f%%)",
+                    self._last_calculation_results["min_soc_forecast_percent"],
+                    current_results["min_soc_forecast_percent"],
+                    min_change,
+                    self._last_calculation_results["max_soc_forecast_percent"],
+                    current_results["max_soc_forecast_percent"],
+                    max_change
+                )
+            
+            # Check for implausible values compared to startup
+            if (current_results["soc_threshold_percent"] and 
+                abs(current_results["soc_threshold_percent"] - self._startup_values["soc_threshold_percent"]) > 20):
+                _LOGGER.error(
+                    "Potentially implausible threshold detected: %.1f%% (startup was %.1f%%)",
+                    current_results["soc_threshold_percent"],
+                    self._startup_values["soc_threshold_percent"]
+                )
+        
+        self._last_calculation_results = current_results
+        self._value_change_count += 1
+        
+        # Periodic stability check
+        if self._value_change_count % 20 == 0:  # Every 20 updates
+            _LOGGER.info(
+                "Stability check (%d updates) - Current: T=%.1f%%, Min=%.1f%%, Max=%.1f%% | Startup: T=%.1f%%, Min=%.1f%%, Max=%.1f%%",
+                self._value_change_count,
+                current_results["soc_threshold_percent"],
+                current_results["min_soc_forecast_percent"],
+                current_results["max_soc_forecast_percent"],
+                self._startup_values["soc_threshold_percent"],
+                self._startup_values["min_soc_forecast_percent"],
+                self._startup_values["max_soc_forecast_percent"]
+            )
+
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """Update configuration and restart simulation."""
         self.config.update(new_config)
@@ -244,4 +398,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             "last_soc_update": self._last_soc_update,
             "last_forecast_update": self._last_forecast_update,
             "data_valid": self._check_data_validity(),
+            "last_calculation_inputs": self._last_calculation_inputs,
+            "last_calculation_results": self._last_calculation_results,
+            "startup_values": self._startup_values,
+            "value_change_count": self._value_change_count,
         }

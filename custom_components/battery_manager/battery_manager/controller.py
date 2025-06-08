@@ -91,7 +91,7 @@ class MaximumBasedController:
             "soc_threshold_percent": threshold_soc,
             "min_soc_forecast_percent": min_soc,
             "max_soc_forecast_percent": max_soc,
-            "inverter_enabled": current_soc_percent >= threshold_soc,
+            "inverter_enabled": current_soc_percent > threshold_soc,
             "forecast_hours": forecast_hours,
             "forecast_end_time": target_end,
             "grid_import_kwh": grid_flows["import_kwh"],

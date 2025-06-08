@@ -67,6 +67,10 @@ class BatteryManagerEntityBase(CoordinatorEntity):
         self._attr_unique_id = f"{config_entry.entry_id}_{entity_id_suffix}"
         self._attr_name = f"Battery Manager {name_suffix}"
         
+        # Enhanced debugging
+        self._last_state_value = None
+        self._state_change_count = 0
+        
         # Device info for grouping entities
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, config_entry.entry_id)},
@@ -84,6 +88,29 @@ class BatteryManagerEntityBase(CoordinatorEntity):
             and self.coordinator.data is not None
             and self.coordinator.data.get("valid", False)
         )
+
+    def _log_state_change(self, entity_type: str, new_value, old_value=None) -> None:
+        """Log significant state changes for debugging."""
+        if old_value is None:
+            old_value = self._last_state_value
+        
+        if old_value != new_value:
+            self._state_change_count += 1
+            
+            # Log significant changes
+            if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
+                if abs(new_value - old_value) > 1.0:  # Log changes > 1 unit
+                    _LOGGER.debug(
+                        "%s state changed: %s → %s (change #%d)",
+                        entity_type, old_value, new_value, self._state_change_count
+                    )
+            elif old_value != new_value:  # For boolean or other types
+                _LOGGER.debug(
+                    "%s state changed: %s → %s (change #%d)",
+                    entity_type, old_value, new_value, self._state_change_count
+                )
+        
+        self._last_state_value = new_value
 
 
 class BatteryManagerInverterStatus(BatteryManagerEntityBase, BinarySensorEntity):
@@ -108,7 +135,10 @@ class BatteryManagerInverterStatus(BatteryManagerEntityBase, BinarySensorEntity)
         """Return true if the inverter is enabled."""
         if not self.available:
             return None
-        return self.coordinator.data.get("inverter_enabled", False)
+        
+        new_state = self.coordinator.data.get("inverter_enabled", False)
+        self._log_state_change("Inverter Status", new_state)
+        return new_state
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -156,7 +186,10 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        return self.coordinator.data.get("soc_threshold_percent")
+        
+        new_value = self.coordinator.data.get("soc_threshold_percent")
+        self._log_state_change("SOC Threshold", new_value)
+        return new_value
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -199,7 +232,10 @@ class BatteryManagerMinSOCForecast(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        return self.coordinator.data.get("min_soc_forecast_percent")
+        
+        new_value = self.coordinator.data.get("min_soc_forecast_percent")
+        self._log_state_change("Min SOC Forecast", new_value)
+        return new_value
 
 
 class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
@@ -230,4 +266,7 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        return self.coordinator.data.get("max_soc_forecast_percent")
+        
+        new_value = self.coordinator.data.get("max_soc_forecast_percent")
+        self._log_state_change("Max SOC Forecast", new_value)
+        return new_value
