@@ -1,5 +1,10 @@
 # Battery Manager Home Assistant Integration
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/release/YOUR_USERNAME/battery-manager-ha.svg)](https://github.com/YOUR_USERNAME/battery-manager-ha/releases)
+[![License](https://img.shields.io/github/license/YOUR_USERNAME/battery-manager-ha.svg)](LICENSE)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1.0+-blue.svg)](https://www.home-assistant.io/)
+
 A comprehensive Home Assistant custom integration for battery energy storage optimization using photovoltaic (PV) forecasts and intelligent control algorithms.
 
 ## 🎯 Overview
@@ -32,7 +37,29 @@ The Battery Manager integration simulates and optimizes battery storage systems 
 
 ## 🔧 Installation
 
-### Method 1: Manual Installation
+### HACS (Recommended)
+
+1. **Add Custom Repository**:
+   - Open HACS in Home Assistant
+   - Click on **"Integrations"**
+   - Click the **three dots** in the top right corner
+   - Select **"Custom repositories"**
+   - Add URL: `https://github.com/YOUR_USERNAME/battery-manager-ha`
+   - Select category: **"Integration"**
+   - Click **"Add"**
+
+2. **Install the Integration**:
+   - Search for **"Battery Manager"** in HACS
+   - Click **"Download"**
+   - Restart Home Assistant
+
+3. **Add Integration**:
+   - Go to **Settings** → **Devices & Services**
+   - Click **"+ ADD INTEGRATION"**
+   - Search for **"Battery Manager"**
+   - Follow the configuration steps
+
+### Manual Installation
 1. Copy the `battery_manager` folder to your `custom_components` directory:
    ```
    custom_components/

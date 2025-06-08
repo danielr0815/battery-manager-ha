@@ -346,3 +346,18 @@ performance_*.json
 .local_dev/
 local_config/
 dev_secrets/
+
+# -------------------
+# HACS & GitHub Specific
+# -------------------
+
+# GitHub Actions artifacts
+.github/workflows/artifacts/
+
+# HACS development files
+.hacs/
+hacs_debug.log
+
+# Release preparation files
+release_notes_*.md
+version_*.txt
