@@ -35,6 +35,9 @@ class MaximumBasedController:
         # Results cache
         self._last_calculation_time = None
         self._last_results = None
+        
+        # Detailed hourly calculation data (for debugging)
+        self._last_hourly_details = []
     
     def calculate_soc_threshold(
         self, 
@@ -144,6 +147,9 @@ class MaximumBasedController:
         current_soc = initial_soc_percent
         current_time = start_time
         
+        # Clear previous hourly details
+        self._last_hourly_details = []
+
         for hour in range(hours):
             # Get hourly values - pass reference_time for consistent day offset calculation
             pv_production_wh = self.pv_system.calculate_hourly_production_wh(
@@ -157,12 +163,36 @@ class MaximumBasedController:
                 pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
             )
             
+            # Store detailed hourly data
+            hourly_detail = {
+                "hour": hour,
+                "datetime": current_time.isoformat(),
+                "initial_soc_percent": current_soc,
+                "final_soc_percent": new_soc,
+                "pv_production_wh": pv_production_wh,
+                "ac_consumption_wh": ac_consumption_wh,
+                "dc_consumption_wh": dc_consumption_wh,
+                "grid_import_wh": flows.get("grid_import_wh", 0.0),
+                "grid_export_wh": flows.get("grid_export_wh", 0.0),
+                "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
+                "battery_discharge_wh": flows.get("battery_discharge_wh", 0.0),
+                "charger_ac_to_dc_wh": flows.get("charger_ac_to_dc_wh", 0.0),
+                "charger_dc_from_ac_wh": flows.get("charger_dc_from_ac_wh", 0.0),
+                "charger_forced_wh": flows.get("charger_forced_wh", 0.0),
+                "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
+                "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
+                "inverter_enabled": flows.get("inverter_enabled", False),
+                "net_grid_wh": flows.get("grid_import_wh", 0.0) - flows.get("grid_export_wh", 0.0),
+                "net_battery_wh": flows.get("battery_charge_wh", 0.0) - flows.get("battery_discharge_wh", 0.0),
+            }
+            self._last_hourly_details.append(hourly_detail)
+            
             current_soc = new_soc
             soc_forecast.append(current_soc)
             
             # Move to next hour
             current_time += timedelta(hours=1)
-        
+
         return soc_forecast
     
     def _calculate_threshold_from_forecast(self, soc_forecast: List[float]) -> float:
@@ -193,10 +223,22 @@ class MaximumBasedController:
         # Find minimum SOC before target is reached
         min_soc_before_target = min(soc_forecast[:target_reached_index + 1])
         
-        # Calculate threshold: current_soc - (min_soc - min_battery_soc)
+        # Calculate total forced charger energy before target is reached
+        total_forced_charger_wh = 0.0
+        if self._last_hourly_details and target_reached_index is not None:
+            # Sum forced charger energy from start until target is reached
+            end_index = min(target_reached_index + 1, len(self._last_hourly_details))
+            for hour_detail in self._last_hourly_details[:end_index]:
+                total_forced_charger_wh += hour_detail.get("charger_forced_wh", 0.0)
+        
+        # Convert forced charger energy to SOC percentage
+        battery_capacity_wh = self.battery.capacity_wh
+        forced_charger_soc_percent = (total_forced_charger_wh / battery_capacity_wh) * 100.0
+        
+        # Calculate threshold: current_soc - (min_soc - min_battery_soc) + forced_charger_soc
         min_battery_soc = self.battery.min_soc_percent
         soc_margin = min_soc_before_target - min_battery_soc
-        threshold_soc = current_soc - soc_margin
+        threshold_soc = current_soc - soc_margin + forced_charger_soc_percent
         
         # Ensure threshold is within reasonable bounds
         threshold_soc = max(min_battery_soc, min(threshold_soc, 100.0))
@@ -258,6 +300,14 @@ class MaximumBasedController:
         """Get the results from the last calculation."""
         return self._last_results.copy() if self._last_results else None
     
+    def get_last_hourly_details(self) -> List[Dict[str, Any]]:
+        """Get detailed hourly calculation data from the last simulation.
+        
+        Returns:
+            List of hourly calculation data for debugging/analysis
+        """
+        return self._last_hourly_details.copy() if self._last_hourly_details else []
+    
     def update_config(self, config: Dict[str, Any]) -> None:
         """Update system configuration.
         
@@ -305,3 +355,7 @@ class MaximumBasedController:
         # Clear cache since configuration changed
         self._last_calculation_time = None
         self._last_results = None
+    
+    def get_hourly_detailed_results(self) -> List[Dict[str, Any]]:
+        """Get the detailed hourly results from the last calculation."""
+        return [result.copy() for result in self._last_hourly_details] if self._last_hourly_details else []
