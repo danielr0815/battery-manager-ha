@@ -25,7 +25,7 @@ Falls zutreffend, füge Screenshots hinzu um das Problem zu erklären.
 
 **System Information:**
  - Home Assistant Version: [z.B. 2024.6.0]
- - Battery Manager Version: [z.B. 1.0.0]
+ - Battery Manager Version: [z.B. 0.1.0]
  - Installation Method: [HACS / Manual]
  - Browser (falls relevant): [z.B. Chrome, Safari]
 

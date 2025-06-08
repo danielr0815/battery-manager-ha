@@ -325,7 +325,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 🏷️ Version History
 
-### v1.0.0 (Current)
+### v0.1.0 (Current)
 - Initial release
 - Complete battery management system
 - Home Assistant integration
