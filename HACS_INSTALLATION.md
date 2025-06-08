@@ -13,7 +13,7 @@
 2. Klicken Sie auf **"Integrationen"**
 3. Klicken Sie auf die **drei Punkte** in der oberen rechten Ecke
 4. Wählen Sie **"Benutzerdefinierte Repositories"**
-5. Fügen Sie diese URL hinzu: `https://github.com/YOUR_USERNAME/battery-manager-ha`
+5. Fügen Sie diese URL hinzu: `https://github.com/danielr0815/battery-manager-ha`
 6. Wählen Sie Kategorie: **"Integration"**
 7. Klicken Sie **"Hinzufügen"**
 
@@ -54,4 +54,4 @@ Für die Konfiguration benötigen Sie folgende Entitäten in Home Assistant:
 
 ### Support
 
-Bei Problemen erstellen Sie bitte ein Issue im [GitHub Repository](https://github.com/YOUR_USERNAME/battery-manager-ha/issues).
+Bei Problemen erstellen Sie bitte ein Issue im [GitHub Repository](https://github.com/danielr0815/battery-manager-ha/issues).

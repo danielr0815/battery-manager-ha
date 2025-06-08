@@ -54,7 +54,7 @@ Die Integration wird über die Home Assistant Benutzeroberfläche konfiguriert:
 
 ## Support & Community
 
-- **GitHub Issues**: [Probleme und Feature-Requests](https://github.com/YOUR_USERNAME/battery-manager-ha/issues)
+- **GitHub Issues**: [Probleme und Feature-Requests](https://github.com/danielr0815/battery-manager-ha/issues)
 - **Dokumentation**: Vollständige Dokumentation im Repository
 - **Community**: Aktive Entwicklung und Unterstützung
 
