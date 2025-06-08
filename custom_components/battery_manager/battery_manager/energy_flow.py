@@ -29,6 +29,8 @@ class EnergyFlowCalculator:
             "battery_discharge_wh": 0.0,
             "charger_ac_to_dc_wh": 0.0,
             "charger_dc_from_ac_wh": 0.0,
+            "charger_forced_wh": 0.0,
+            "charger_voluntary_wh": 0.0,
             "inverter_dc_to_ac_wh": 0.0,
         }
     
@@ -56,6 +58,8 @@ class EnergyFlowCalculator:
             "battery_discharge_wh": 0.0,
             "charger_ac_to_dc_wh": 0.0,
             "charger_dc_from_ac_wh": 0.0,
+            "charger_forced_wh": 0.0,
+            "charger_voluntary_wh": 0.0,
             "inverter_dc_to_ac_wh": 0.0,
             "charger_standby_wh": 0.0,
             "inverter_standby_wh": 0.0,
@@ -104,6 +108,8 @@ class EnergyFlowCalculator:
             "battery_discharge_wh": 0.0,
             "charger_ac_to_dc_wh": 0.0,
             "charger_dc_from_ac_wh": 0.0,
+            "charger_forced_wh": 0.0,
+            "charger_voluntary_wh": 0.0,
             "inverter_dc_to_ac_wh": 0.0,
             "charger_standby_wh": 0.0,
             "inverter_standby_wh": 0.0,
@@ -124,6 +130,7 @@ class EnergyFlowCalculator:
         if charger_input_wh > 0:
             dc_output_wh = self.charger.convert_ac_to_dc(charger_input_wh)
             flows["charger_ac_to_dc_wh"] = dc_output_wh
+            flows["charger_voluntary_wh"] = dc_output_wh  # This is voluntary (from PV surplus)
             flows["charger_standby_wh"] = self.charger.get_standby_consumption_wh(True)
             remaining_ac_wh -= charger_input_wh
             
@@ -162,6 +169,8 @@ class EnergyFlowCalculator:
             "battery_discharge_wh": 0.0,
             "charger_ac_to_dc_wh": 0.0,
             "charger_dc_from_ac_wh": 0.0,
+            "charger_forced_wh": 0.0,
+            "charger_voluntary_wh": 0.0,
             "inverter_dc_to_ac_wh": 0.0,
             "charger_standby_wh": 0.0,
             "inverter_standby_wh": 0.0,
@@ -198,17 +207,22 @@ class EnergyFlowCalculator:
         if remaining_dc_consumption_wh > 0:
             # Try to supply from battery first
             max_discharge_wh = self.battery.get_max_discharge_energy_wh()
-            battery_dc_wh = min(remaining_dc_consumption_wh, max_discharge_wh)
+            
+            # Calculate how much energy to request from battery to get the needed DC energy
+            # accounting for discharge efficiency
+            needed_battery_energy_wh = remaining_dc_consumption_wh / self.battery.discharge_efficiency
+            battery_dc_wh = min(needed_battery_energy_wh, max_discharge_wh)
             
             if battery_dc_wh > 0:
-                actual_discharge_wh = abs(self.battery.charge_discharge(-battery_dc_wh))
-                flows["battery_discharge_wh"] += actual_discharge_wh
-                remaining_dc_consumption_wh -= battery_dc_wh
+                delivered_energy_wh = abs(self.battery.charge_discharge(-battery_dc_wh))
+                flows["battery_discharge_wh"] += delivered_energy_wh
+                remaining_dc_consumption_wh -= delivered_energy_wh
             
             # Use charger for remaining DC consumption (DC emergency mode)
             if remaining_dc_consumption_wh > 0:
                 ac_needed_wh = self.charger.provide_dc_from_ac(remaining_dc_consumption_wh)
                 flows["charger_dc_from_ac_wh"] = remaining_dc_consumption_wh
+                flows["charger_forced_wh"] = remaining_dc_consumption_wh  # This is forced (for DC consumption)
                 flows["charger_standby_wh"] = self.charger.get_standby_consumption_wh(True)
                 flows["grid_import_wh"] += ac_needed_wh
         
