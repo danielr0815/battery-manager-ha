@@ -141,11 +141,15 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
             ENTITY_SOC_THRESHOLD,
             "SOC Threshold"
         )
+        # Override the name to make this the primary entity
+        self._attr_name = "Battery Manager"  # Main entity name without suffix
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_device_class = SensorDeviceClass.BATTERY
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:battery-charging"
         self._attr_suggested_display_precision = 1  # Show 1 decimal place
+        # Mark as primary entity for the device
+        self._attr_entity_registry_enabled_default = True
 
     @property
     def native_value(self) -> Optional[float]:
@@ -187,6 +191,8 @@ class BatteryManagerMinSOCForecast(BatteryManagerEntityBase, SensorEntity):
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:battery-low"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC  # Mark as diagnostic
+        self._attr_entity_registry_enabled_default = False  # Disable by default
+        self._attr_suggested_display_precision = 1  # Show 1 decimal place
 
     @property
     def native_value(self) -> Optional[float]:
@@ -216,6 +222,8 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
         self._attr_state_class = SensorStateClass.MEASUREMENT
         self._attr_icon = "mdi:battery-high"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC  # Mark as diagnostic
+        self._attr_entity_registry_enabled_default = False  # Disable by default
+        self._attr_suggested_display_precision = 1  # Show 1 decimal place
 
     @property
     def native_value(self) -> Optional[float]:
