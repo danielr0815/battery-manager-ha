@@ -1,6 +1,6 @@
 """Energy Flow Calculator for the Battery Manager system."""
 
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from .battery import Battery
 from .charger import Charger
 from .inverter import Inverter
@@ -20,6 +20,9 @@ class EnergyFlowCalculator:
         self.battery = battery
         self.charger = charger
         self.inverter = inverter
+        
+        # Override threshold for simulation purposes
+        self._simulation_threshold_override: Optional[float] = None
         
         # Track energy flows for reporting
         self.last_flows = {
@@ -86,7 +89,7 @@ class EnergyFlowCalculator:
         # Add final states
         flows.update({
             "final_soc_percent": self.battery.current_soc_percent,
-            "inverter_enabled": self.inverter.is_enabled,
+            "inverter_enabled": self._is_inverter_enabled_for_simulation(),
         })
         
         return flows
@@ -180,7 +183,7 @@ class EnergyFlowCalculator:
         remaining_dc_consumption_wh = dc_consumption_wh
         
         # Try to use inverter to supply AC deficit
-        if self.inverter.is_enabled and remaining_ac_deficit_wh > 0:
+        if self._is_inverter_enabled_for_simulation() and remaining_ac_deficit_wh > 0:
             max_inverter_output_wh = self.inverter.get_max_ac_output_wh()
             inverter_output_wh = min(remaining_ac_deficit_wh, max_inverter_output_wh)
             
@@ -268,3 +271,28 @@ class EnergyFlowCalculator:
     def get_last_flows(self) -> Dict[str, float]:
         """Get the energy flows from the last calculation."""
         return self.last_flows.copy()
+    
+    def set_simulation_threshold(self, threshold_soc_percent: Optional[float]) -> None:
+        """Set threshold override for simulation purposes.
+        
+        Args:
+            threshold_soc_percent: SOC threshold in percent, or None to use default logic
+        """
+        self._simulation_threshold_override = threshold_soc_percent
+    
+    def clear_simulation_threshold(self) -> None:
+        """Clear threshold override and return to default inverter logic."""
+        self._simulation_threshold_override = None
+    
+    def _is_inverter_enabled_for_simulation(self) -> bool:
+        """Check if inverter is enabled, considering simulation threshold override.
+        
+        Returns:
+            True if inverter should be enabled for simulation
+        """
+        # If we have a threshold override, use it
+        if self._simulation_threshold_override is not None:
+            return self.battery.current_soc_percent >= self._simulation_threshold_override
+        
+        # Otherwise use the standard inverter logic
+        return self.inverter.is_enabled

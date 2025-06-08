@@ -6,7 +6,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, Event
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -66,10 +67,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         """Set up listeners for input entity state changes."""
         entities_to_track = [self.soc_entity_id] + self.pv_forecast_entities
         
-        # Note: In a real HA environment, we would use:
-        # async_track_state_change_event(self.hass, entities_to_track, self._handle_entity_change)
-        # For now, we rely on the periodic update interval
-        _LOGGER.debug("Entity listeners configured for: %s", entities_to_track)
+        try:
+            # Set up state change tracking for immediate updates
+            async_track_state_change_event(
+                self.hass, 
+                entities_to_track, 
+                self._handle_entity_change
+            )
+            _LOGGER.debug("Entity listeners configured for: %s", entities_to_track)
+        except Exception as err:
+            _LOGGER.warning("Failed to set up entity listeners: %s. Will rely on periodic updates.", err)
 
     async def _handle_entity_change(self, event) -> None:
         """Handle state change of tracked entities."""

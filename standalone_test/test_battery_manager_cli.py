@@ -41,10 +41,10 @@ Examples:
   python test_battery_manager_cli.py --soc 45 --forecasts 15.5,18.2,12.8
 
   # Test with larger battery system
-  python test_battery_manager_cli.py --battery-capacity 20000 --battery-soc-min 15 --battery-soc-max 95
+  python test_battery_manager_cli.py --battery-capacity 10000 --battery-soc-min 10 --battery-soc-max 90
 
   # Test with high PV production scenario
-  python test_battery_manager_cli.py --soc 30 --forecasts 35.0,40.0,30.0 --pv-peak-power 12000
+  python test_battery_manager_cli.py --soc 30 --forecasts 35.0,40.0,30.0 --pv-peak-power 8000
 
   # Run all predefined test scenarios
   python test_battery_manager_cli.py --run-scenarios
@@ -70,36 +70,36 @@ Examples:
 
     # Battery configuration
     parser.add_argument(
-        "--battery-capacity", type=float, default=10000.0,
-        help="Battery capacity in Wh. Default: 10000.0"
+        "--battery-capacity", type=float, default=5000.0,
+        help="Battery capacity in Wh. Default: 5000.0"
     )
     parser.add_argument(
-        "--battery-soc-min", type=float, default=10.0,
-        help="Minimum SOC in percent. Default: 10.0"
+        "--battery-soc-min", type=float, default=5.0,
+        help="Minimum SOC in percent. Default: 5.0"
     )
     parser.add_argument(
-        "--battery-soc-max", type=float, default=90.0,
-        help="Maximum SOC in percent. Default: 90.0"
+        "--battery-soc-max", type=float, default=95.0,
+        help="Maximum SOC in percent. Default: 95.0"
     )
     parser.add_argument(
-        "--battery-charge-efficiency", type=float, default=0.95,
-        help="Battery charge efficiency (0-1). Default: 0.95"
+        "--battery-charge-efficiency", type=float, default=0.97,
+        help="Battery charge efficiency (0-1). Default: 0.97"
     )
     parser.add_argument(
-        "--battery-discharge-efficiency", type=float, default=0.95,
-        help="Battery discharge efficiency (0-1). Default: 0.95"
+        "--battery-discharge-efficiency", type=float, default=0.97,
+        help="Battery discharge efficiency (0-1). Default: 0.97"
     )
 
     # PV system configuration
     parser.add_argument(
-        "--pv-peak-power", type=float, default=8000.0,
-        help="PV peak power in W. Default: 8000.0"
+        "--pv-peak-power", type=float, default=3200.0,
+        help="PV peak power in W. Default: 3200.0"
     )
 
     # Consumer configuration
     parser.add_argument(
-        "--ac-base-load", type=float, default=300.0,
-        help="AC base load in W. Default: 300.0"
+        "--ac-base-load", type=float, default=50.0,
+        help="AC base load in W. Default: 50.0"
     )
     parser.add_argument(
         "--dc-base-load", type=float, default=50.0,
@@ -108,18 +108,18 @@ Examples:
 
     # Charger/Inverter configuration
     parser.add_argument(
-        "--charger-efficiency", type=float, default=0.93,
-        help="Charger efficiency (0-1). Default: 0.93"
+        "--charger-efficiency", type=float, default=0.92,
+        help="Charger efficiency (0-1). Default: 0.92"
     )
     parser.add_argument(
-        "--inverter-efficiency", type=float, default=0.93,
-        help="Inverter efficiency (0-1). Default: 0.93"
+        "--inverter-efficiency", type=float, default=0.95,
+        help="Inverter efficiency (0-1). Default: 0.95"
     )
 
     # Controller configuration
     parser.add_argument(
-        "--controller-max-threshold", type=float, default=80.0,
-        help="Controller maximum threshold in percent. Default: 80.0"
+        "--controller-max-threshold", type=float, default=85.0,
+        help="Controller maximum threshold in percent. Default: 85.0"
     )
 
     # Test options

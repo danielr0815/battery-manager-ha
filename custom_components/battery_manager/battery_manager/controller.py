@@ -62,6 +62,9 @@ class MaximumBasedController:
         self.battery.current_soc_percent = current_soc_percent
         self.inverter.update_soc(current_soc_percent)
         
+        # Clear any previous simulation threshold override
+        self.energy_flow.clear_simulation_threshold()
+        
         # Calculate forecast period (until 8 AM in 2 days)
         forecast_start = current_time.replace(minute=0, second=0, microsecond=0)
         target_end = self._get_forecast_end_time(current_time)
@@ -88,7 +91,7 @@ class MaximumBasedController:
             "soc_threshold_percent": threshold_soc,
             "min_soc_forecast_percent": min_soc,
             "max_soc_forecast_percent": max_soc,
-            "inverter_enabled": threshold_soc <= current_soc_percent,
+            "inverter_enabled": current_soc_percent >= threshold_soc,
             "forecast_hours": forecast_hours,
             "forecast_end_time": target_end,
             "grid_import_kwh": grid_flows["import_kwh"],
@@ -208,6 +211,7 @@ class MaximumBasedController:
             return self.target_soc_percent
         
         current_soc = self.battery.current_soc_percent
+        min_battery_soc = self.battery.min_soc_percent
         
         # Find the earliest time when SOC reaches target (85%)
         target_reached_index = None
@@ -220,8 +224,8 @@ class MaximumBasedController:
         if target_reached_index is None:
             return self.target_soc_percent
         
-        # Find minimum SOC before target is reached
-        min_soc_before_target = min(soc_forecast[:target_reached_index + 1])
+        # Find minimum SOC in the entire forecast period
+        min_soc_forecast = min(soc_forecast)
         
         # Calculate total forced charger energy before target is reached
         total_forced_charger_wh = 0.0
@@ -235,13 +239,28 @@ class MaximumBasedController:
         battery_capacity_wh = self.battery.capacity_wh
         forced_charger_soc_percent = (total_forced_charger_wh / battery_capacity_wh) * 100.0
         
-        # Calculate threshold: current_soc - (min_soc - min_battery_soc) + forced_charger_soc
-        min_battery_soc = self.battery.min_soc_percent
-        soc_margin = min_soc_before_target - min_battery_soc
-        threshold_soc = current_soc - soc_margin + forced_charger_soc_percent
+        # New optimized threshold strategy:
+        # Maximize battery discharge while ensuring we never go below the minimum forecasted SOC
+        # Formula: current_soc - (min_soc_forecast - min_battery_soc) + forced_charger_adjustment
         
-        # Ensure threshold is within reasonable bounds
-        threshold_soc = max(min_battery_soc, min(threshold_soc, 100.0))
+        # Calculate the safety margin from the forecast
+        forecast_safety_margin = min_soc_forecast - min_battery_soc
+        
+        # Calculate optimized threshold that allows maximum safe discharge
+        threshold_soc = current_soc - forecast_safety_margin + forced_charger_soc_percent
+        
+        # Get minimum inverter threshold from configuration
+        inverter_min_soc = self.inverter.min_soc_percent
+        
+        # Apply boundary constraints:
+        # 1. Never below battery minimum (5%)
+        # 2. Never below inverter minimum (configurable, default 20%)
+        # 3. Never above target SOC (85%)
+        # 4. Never above current SOC (can't discharge to higher level)
+        min_allowed_threshold = max(min_battery_soc, inverter_min_soc)
+        max_allowed_threshold = min(self.target_soc_percent, current_soc)
+        
+        threshold_soc = max(min_allowed_threshold, min(threshold_soc, max_allowed_threshold))
         
         return threshold_soc
     
