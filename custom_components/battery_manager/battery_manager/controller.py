@@ -114,6 +114,10 @@ class MaximumBasedController:
         # Set to 8 AM
         forecast_end = datetime.combine(target_date, datetime.min.time().replace(hour=8))
         
+        # Ensure timezone consistency with input
+        if current_time.tzinfo is not None:
+            forecast_end = forecast_end.replace(tzinfo=current_time.tzinfo)
+        
         return forecast_end
     
     def _simulate_soc_progression(
