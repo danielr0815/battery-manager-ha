@@ -58,6 +58,14 @@ class PVSystem:
         # Use reference_datetime for day calculations, or target_datetime if not provided
         if reference_datetime is None:
             reference_datetime = target_datetime
+        
+        # Ensure both datetimes are timezone-aware or both are naive
+        if target_datetime.tzinfo is None and reference_datetime.tzinfo is not None:
+            # Make target_datetime timezone-aware using reference timezone
+            target_datetime = target_datetime.replace(tzinfo=reference_datetime.tzinfo)
+        elif target_datetime.tzinfo is not None and reference_datetime.tzinfo is None:
+            # Make reference_datetime timezone-aware using target timezone
+            reference_datetime = reference_datetime.replace(tzinfo=target_datetime.tzinfo)
             
         # Determine which day offset we need based on reference time
         reference_start = reference_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
