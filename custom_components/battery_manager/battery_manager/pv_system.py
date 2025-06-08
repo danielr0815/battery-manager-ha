@@ -42,23 +42,28 @@ class PVSystem:
     def calculate_hourly_production_wh(
         self, 
         daily_forecasts: List[float], 
-        target_datetime: datetime
+        target_datetime: datetime,
+        reference_datetime: datetime = None
     ) -> float:
         """Calculate hourly PV production based on daily forecasts.
         
         Args:
             daily_forecasts: List of daily production forecasts in kWh [today, tomorrow, day_after]
             target_datetime: The datetime for which to calculate production
+            reference_datetime: Reference time for day offset calculation (defaults to target_datetime for consistency)
             
         Returns:
             Hourly production in Wh
         """
-        # Determine which day offset we need
-        now = datetime.now().replace(minute=0, second=0, microsecond=0)
-        today_start = now.replace(hour=0)
+        # Use reference_datetime for day calculations, or target_datetime if not provided
+        if reference_datetime is None:
+            reference_datetime = target_datetime
+            
+        # Determine which day offset we need based on reference time
+        reference_start = reference_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
         target_start = target_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
         
-        day_offset = (target_start - today_start).days
+        day_offset = (target_start - reference_start).days
         hour = target_datetime.hour
         
         return self._calculate_hourly_pv(daily_forecasts, day_offset, hour)
@@ -104,7 +109,8 @@ class PVSystem:
         self, 
         daily_forecasts: List[float], 
         start_datetime: datetime, 
-        hours: int
+        hours: int,
+        reference_datetime: datetime = None
     ) -> List[float]:
         """Get hourly production forecast for a specified time range.
         
@@ -112,6 +118,7 @@ class PVSystem:
             daily_forecasts: List of daily production forecasts in kWh
             start_datetime: Start datetime for the forecast
             hours: Number of hours to forecast
+            reference_datetime: Reference time for day offset calculation
             
         Returns:
             List of hourly production values in Wh
@@ -120,7 +127,9 @@ class PVSystem:
         current_datetime = start_datetime
         
         for _ in range(hours):
-            production_wh = self.calculate_hourly_production_wh(daily_forecasts, current_datetime)
+            production_wh = self.calculate_hourly_production_wh(
+                daily_forecasts, current_datetime, reference_datetime
+            )
             forecast.append(production_wh)
             current_datetime += timedelta(hours=1)
         

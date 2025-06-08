@@ -205,7 +205,8 @@ class BatteryManagerSimulator:
         self,
         daily_forecasts: List[float],
         start_time: datetime,
-        hours: int
+        hours: int,
+        reference_time: datetime = None
     ) -> Dict[str, List[float]]:
         """Get detailed hourly forecast for analysis.
         
@@ -213,12 +214,13 @@ class BatteryManagerSimulator:
             daily_forecasts: Daily PV forecasts in kWh
             start_time: Start time for forecast
             hours: Number of hours to forecast
+            reference_time: Reference time for day offset calculation
             
         Returns:
             Dictionary with hourly forecasts
         """
         pv_forecast = self.controller.pv_system.get_production_forecast(
-            daily_forecasts, start_time, hours
+            daily_forecasts, start_time, hours, reference_time
         )
         
         ac_forecast = self.controller.ac_consumer.get_consumption_forecast(

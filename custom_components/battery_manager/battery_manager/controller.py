@@ -66,7 +66,7 @@ class MaximumBasedController:
         
         # Run simulation
         soc_forecast = self._simulate_soc_progression(
-            forecast_start, forecast_hours, daily_forecasts, current_soc_percent
+            forecast_start, forecast_hours, daily_forecasts, current_soc_percent, current_time
         )
         
         # Calculate threshold based on the algorithm
@@ -78,7 +78,7 @@ class MaximumBasedController:
         
         # Calculate grid flows for the entire forecast period
         grid_flows = self._calculate_total_grid_flows(
-            forecast_start, forecast_hours, daily_forecasts, current_soc_percent
+            forecast_start, forecast_hours, daily_forecasts, current_soc_percent, current_time
         )
         
         results = {
@@ -121,7 +121,8 @@ class MaximumBasedController:
         start_time: datetime, 
         hours: int, 
         daily_forecasts: List[float],
-        initial_soc_percent: float
+        initial_soc_percent: float,
+        reference_time: datetime
     ) -> List[float]:
         """Simulate SOC progression over the forecast period.
         
@@ -130,6 +131,7 @@ class MaximumBasedController:
             hours: Number of hours to simulate
             daily_forecasts: Daily PV forecasts in kWh
             initial_soc_percent: Initial SOC for simulation
+            reference_time: Reference time for day offset calculations
             
         Returns:
             List of hourly SOC values
@@ -139,9 +141,9 @@ class MaximumBasedController:
         current_time = start_time
         
         for hour in range(hours):
-            # Get hourly values
+            # Get hourly values - pass reference_time for consistent day offset calculation
             pv_production_wh = self.pv_system.calculate_hourly_production_wh(
-                daily_forecasts, current_time
+                daily_forecasts, current_time, reference_time
             )
             ac_consumption_wh = self.ac_consumer.calculate_hourly_consumption_wh(current_time)
             dc_consumption_wh = self.dc_consumer.calculate_hourly_consumption_wh(current_time)
@@ -202,7 +204,8 @@ class MaximumBasedController:
         start_time: datetime, 
         hours: int, 
         daily_forecasts: List[float],
-        initial_soc_percent: float
+        initial_soc_percent: float,
+        reference_time: datetime
     ) -> Dict[str, float]:
         """Calculate total grid import/export for the forecast period.
         
@@ -211,6 +214,7 @@ class MaximumBasedController:
             hours: Number of hours to calculate
             daily_forecasts: Daily PV forecasts in kWh
             initial_soc_percent: Initial SOC for calculation
+            reference_time: Reference time for day offset calculations
             
         Returns:
             Dictionary with total import and export in kWh
@@ -222,9 +226,9 @@ class MaximumBasedController:
         current_time = start_time
         
         for hour in range(hours):
-            # Get hourly values
+            # Get hourly values - pass reference_time for consistent day offset calculation
             pv_production_wh = self.pv_system.calculate_hourly_production_wh(
-                daily_forecasts, current_time
+                daily_forecasts, current_time, reference_time
             )
             ac_consumption_wh = self.ac_consumer.calculate_hourly_consumption_wh(current_time)
             dc_consumption_wh = self.dc_consumer.calculate_hourly_consumption_wh(current_time)
