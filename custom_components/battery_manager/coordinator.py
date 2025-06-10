@@ -4,14 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import A            _LOGGER.debug(
-                "Battery Manager update completed - SOC: %.1f%%, Threshold: %.1f%%, Min: %.1f%%, Max: %.1f%%, Discharge: %.1f%%",
-                current_soc,
-                results["soc_threshold_percent"],
-                results["min_soc_forecast_percent"],
-                results["max_soc_forecast_percent"],
-                results["discharge_forecast_percent"]
-            ), List, Optional
+from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.helpers.event import async_track_state_change_event
