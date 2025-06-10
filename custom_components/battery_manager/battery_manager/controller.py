@@ -76,7 +76,9 @@ class MaximumBasedController:
         )
         
         # Calculate threshold based on the algorithm
-        threshold_soc = self._calculate_threshold_from_forecast(soc_forecast)
+        threshold_result = self._calculate_threshold_from_forecast(soc_forecast)
+        threshold_soc = threshold_result["threshold_soc"]
+        discharge_forecast_percent = threshold_result["discharge_forecast_percent"]
         
         # Find min and max SOC in forecast
         min_soc = min(soc_forecast) if soc_forecast else current_soc_percent
@@ -91,6 +93,7 @@ class MaximumBasedController:
             "soc_threshold_percent": threshold_soc,
             "min_soc_forecast_percent": min_soc,
             "max_soc_forecast_percent": max_soc,
+            "discharge_forecast_percent": discharge_forecast_percent,
             "inverter_enabled": current_soc_percent > threshold_soc,
             "forecast_hours": forecast_hours,
             "forecast_end_time": target_end,
@@ -198,7 +201,7 @@ class MaximumBasedController:
 
         return soc_forecast
     
-    def _calculate_threshold_from_forecast(self, soc_forecast: List[float]) -> float:
+    def _calculate_threshold_from_forecast(self, soc_forecast: List[float]) -> Dict[str, float]:
         """Calculate SOC threshold based on forecast algorithm.
         
         Args:
@@ -208,7 +211,10 @@ class MaximumBasedController:
             SOC threshold for inverter operation
         """
         if not soc_forecast:
-            return self.target_soc_percent
+            return {
+                "threshold_soc": self.target_soc_percent,
+                "discharge_forecast_percent": 0.0
+            }
         
         current_soc = self.battery.current_soc_percent
         min_battery_soc = self.battery.min_soc_percent
@@ -222,7 +228,10 @@ class MaximumBasedController:
         
         # If target is never reached, set threshold to target value
         if target_reached_index is None:
-            return self.target_soc_percent
+            return {
+                "threshold_soc": self.target_soc_percent,
+                "discharge_forecast_percent": 0.0
+            }
         
         # Find minimum SOC in the entire forecast period
         min_soc_forecast = min(soc_forecast)
@@ -249,6 +258,9 @@ class MaximumBasedController:
         # Calculate optimized threshold that allows maximum safe discharge
         threshold_soc = current_soc - forecast_safety_margin + forced_charger_soc_percent
         
+        # Calculate discharge forecast value (forecast_safety_margin - forced_charger_soc_percent)
+        discharge_forecast_percent = forecast_safety_margin - forced_charger_soc_percent
+        
         # Get minimum inverter threshold from configuration
         inverter_min_soc = self.inverter.min_soc_percent
         
@@ -262,7 +274,10 @@ class MaximumBasedController:
         
         threshold_soc = max(min_allowed_threshold, min(threshold_soc, max_allowed_threshold))
         
-        return threshold_soc
+        return {
+            "threshold_soc": threshold_soc,
+            "discharge_forecast_percent": discharge_forecast_percent
+        }
     
     def _calculate_total_grid_flows(
         self, 

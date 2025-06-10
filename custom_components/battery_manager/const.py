@@ -68,6 +68,7 @@ ENTITY_INVERTER_STATUS = "inverter_status"
 ENTITY_SOC_THRESHOLD = "soc_threshold" 
 ENTITY_MIN_SOC_FORECAST = "min_soc_forecast"
 ENTITY_MAX_SOC_FORECAST = "max_soc_forecast"
+ENTITY_DISCHARGE = "discharge"
 
 # Attributes
 ATTR_GRID_IMPORT_KWH = "grid_import_kwh"

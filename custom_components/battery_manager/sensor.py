@@ -21,6 +21,7 @@ from .const import (
     ENTITY_SOC_THRESHOLD,
     ENTITY_MIN_SOC_FORECAST,
     ENTITY_MAX_SOC_FORECAST,
+    ENTITY_DISCHARGE,
     ATTR_GRID_IMPORT_KWH,
     ATTR_GRID_EXPORT_KWH,
     ATTR_SIMULATION_END,
@@ -46,6 +47,7 @@ async def async_setup_entry(
         BatteryManagerInverterStatus(coordinator, config_entry),
         BatteryManagerMinSOCForecast(coordinator, config_entry),
         BatteryManagerMaxSOCForecast(coordinator, config_entry),
+        BatteryManagerDischarge(coordinator, config_entry),
     ]
 
     async_add_entities(entities)
@@ -269,4 +271,37 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
         
         new_value = self.coordinator.data.get("max_soc_forecast_percent")
         self._log_state_change("Max SOC Forecast", new_value)
+        return new_value
+
+
+class BatteryManagerDischarge(BatteryManagerEntityBase, SensorEntity):
+    """Sensor for discharge forecast percentage."""
+
+    def __init__(
+        self,
+        coordinator: BatteryManagerCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the discharge forecast sensor."""
+        super().__init__(
+            coordinator,
+            config_entry,
+            ENTITY_DISCHARGE,
+            "Discharge Forecast"
+        )
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:battery-minus"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC  # Mark as diagnostic
+        self._attr_entity_registry_enabled_default = False  # Disable by default
+        self._attr_suggested_display_precision = 1  # Show 1 decimal place
+
+    @property
+    def native_value(self) -> Optional[float]:
+        """Return the state of the sensor."""
+        if not self.available:
+            return None
+        
+        new_value = self.coordinator.data.get("discharge_forecast_percent")
+        self._log_state_change("Discharge Forecast", new_value)
         return new_value

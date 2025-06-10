@@ -4,7 +4,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import A            _LOGGER.debug(
+                "Battery Manager update completed - SOC: %.1f%%, Threshold: %.1f%%, Min: %.1f%%, Max: %.1f%%, Discharge: %.1f%%",
+                current_soc,
+                results["soc_threshold_percent"],
+                results["min_soc_forecast_percent"],
+                results["max_soc_forecast_percent"],
+                results["discharge_forecast_percent"]
+            ), List, Optional
 
 from homeassistant.core import HomeAssistant, Event
 from homeassistant.helpers.event import async_track_state_change_event
@@ -187,11 +194,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             self._track_calculation_results(results)
             
             _LOGGER.debug(
-                "Battery Manager calculation completed: SOC=%s%%, Threshold=%s%%, Min=%s%%, Max=%s%%",
+                "Battery Manager calculation completed: SOC=%s%%, Threshold=%s%%, Min=%s%%, Max=%s%%, Discharge=%s%%",
                 current_soc,
                 results["soc_threshold_percent"],
                 results["min_soc_forecast_percent"],
-                results["max_soc_forecast_percent"]
+                results["max_soc_forecast_percent"],
+                results["discharge_forecast_percent"]
             )
             
             return results
@@ -307,6 +315,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             "soc_threshold_percent": results.get("soc_threshold_percent"),
             "min_soc_forecast_percent": results.get("min_soc_forecast_percent"),
             "max_soc_forecast_percent": results.get("max_soc_forecast_percent"),
+            "discharge_forecast_percent": results.get("discharge_forecast_percent"),
             "inverter_enabled": results.get("inverter_enabled"),
             "timestamp": dt_util.now(),
         }
