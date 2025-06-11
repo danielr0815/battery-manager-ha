@@ -26,11 +26,12 @@ The Battery Manager integration simulates and optimizes battery storage systems 
 - **Standalone Testing**: Independent testing capability without Home Assistant
 
 ### Home Assistant Integration
-- **4 Sensor Entities**:
+- **5 Sensor Entities**:
   - `binary_sensor.battery_manager_inverter_status` - Inverter enable/disable state
   - `sensor.battery_manager_soc_threshold` - Calculated SOC threshold (%)
   - `sensor.battery_manager_min_soc_forecast` - Minimum forecasted SOC (%)
   - `sensor.battery_manager_max_soc_forecast` - Maximum forecasted SOC (%)
+  - `sensor.battery_manager_hours_to_max_soc` - Whole hours until max SOC is reached
 - **GUI Configuration**: Complete configuration via Home Assistant UI
 - **Automatic Updates**: Entity monitoring with debounced updates
 - **Device Grouping**: All entities grouped under single device

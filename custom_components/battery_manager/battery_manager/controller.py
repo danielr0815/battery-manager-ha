@@ -83,7 +83,15 @@ class MaximumBasedController:
         # Find min and max SOC in forecast
         min_soc = min(soc_forecast) if soc_forecast else current_soc_percent
         max_soc = max(soc_forecast) if soc_forecast else current_soc_percent
-        
+
+        # Calculate hours until max SOC is reached
+        if soc_forecast:
+            max_index = soc_forecast.index(max_soc)
+            # Number of whole hours from the forecast start until max is reached
+            hours_until_max = max_index + 1
+        else:
+            hours_until_max = 0
+
         # Calculate grid flows for the entire forecast period
         grid_flows = self._calculate_total_grid_flows(
             forecast_start, forecast_hours, daily_forecasts, current_soc_percent, current_time
@@ -97,6 +105,7 @@ class MaximumBasedController:
             "inverter_enabled": current_soc_percent > threshold_soc,
             "forecast_hours": forecast_hours,
             "forecast_end_time": target_end,
+            "hours_until_max_soc": hours_until_max,
             "grid_import_kwh": grid_flows["import_kwh"],
             "grid_export_kwh": grid_flows["export_kwh"],
             "soc_forecast": soc_forecast,  # For debugging

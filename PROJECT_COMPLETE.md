@@ -67,7 +67,7 @@ BatteryManagerIntegration
 - ✅ **Grid Import/Export**: Proper energy balance with grid interaction
 
 ### Home Assistant Features
-- ✅ **4 Required Entities**: Exactly as specified in requirements
+- ✅ **5 Required Entities**: Exactly as specified in requirements
 - ✅ **GUI Configuration**: Complete parameter setup via HA interface
 - ✅ **Real-time Updates**: 10-minute updates + entity change monitoring
 - ✅ **Device Grouping**: All entities under single Battery Manager device
@@ -185,6 +185,7 @@ battery-manager-ha/
 - [x] `sensor.battery_manager_soc_threshold`
 - [x] `sensor.battery_manager_min_soc_forecast`
 - [x] `sensor.battery_manager_max_soc_forecast`
+- [x] `sensor.battery_manager_hours_to_max_soc`
 
 ### ✅ Required Features
 - [x] Maximum-Based Controller algorithm
