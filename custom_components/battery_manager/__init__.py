@@ -1,22 +1,24 @@
 """Battery Manager integration for Home Assistant."""
+
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict
 import json
+import logging
 from pathlib import Path
-import voluptuous as vol
-from homeassistant.core import ServiceCall
-from homeassistant.components.persistent_notification import async_create as persistent_notification_create
+from typing import Any, Dict
 
+import voluptuous as vol
+from homeassistant.components.persistent_notification import (
+    async_create as persistent_notification_create,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS, CONF_AS_TABLE
-from .debug_utils import format_hourly_details_table
+from .const import CONF_AS_TABLE, DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS
 from .coordinator import BatteryManagerCoordinator
+from .debug_utils import format_hourly_details_table
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,15 +29,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery Manager from a config entry."""
     try:
         coordinator = BatteryManagerCoordinator(hass, entry.data)
-        
+
         # Fetch initial data
         await coordinator.async_config_entry_first_refresh()
-        
+
         # Store coordinator in hass data
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = coordinator
 
         if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
+
             async def export_service(call: ServiceCall) -> None:
                 """Handle export hourly details service call."""
                 await _async_export_hourly_details(hass, call)
@@ -44,23 +47,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 DOMAIN,
                 SERVICE_EXPORT_HOURLY_DETAILS,
                 export_service,
-                schema=vol.Schema({
-                    vol.Optional("entry_id"): str,
-                    vol.Optional("file_path"): str,
-                    vol.Optional("download", default=False): bool,
-                    vol.Optional(CONF_AS_TABLE, default=True): bool,
-                }),
+                schema=vol.Schema(
+                    {
+                        vol.Optional("entry_id"): str,
+                        vol.Optional("file_path"): str,
+                        vol.Optional("download", default=False): bool,
+                        vol.Optional(CONF_AS_TABLE, default=True): bool,
+                    }
+                ),
             )
-        
+
         # Set up platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        
+
         # Set up options update listener
         entry.async_on_unload(entry.add_update_listener(async_reload_entry))
-        
+
         _LOGGER.info("Battery Manager integration successfully set up")
         return True
-        
+
     except Exception as err:
         _LOGGER.error("Error setting up Battery Manager: %s", err)
         raise ConfigEntryNotReady from err
@@ -69,14 +74,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    
+
     if unload_ok:
         coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
-        
+
         # Cancel any pending debounce tasks
         if coordinator._debounce_task:
             coordinator._debounce_task.cancel()
-        
+
         # Remove from hass data
         hass.data[DOMAIN].pop(entry.entry_id)
 
@@ -85,9 +90,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.data.pop(DOMAIN)
             if hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
                 hass.services.async_remove(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS)
-        
+
         _LOGGER.info("Battery Manager integration successfully unloaded")
-    
+
     return unload_ok
 
 
@@ -150,7 +155,9 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
         path = Path(file_path)
         with path.open("w", encoding="utf-8") as f_handle:
             if as_table:
-                f_handle.write(format_hourly_details_table(details, include_color=False) + "\n")
+                f_handle.write(
+                    format_hourly_details_table(details, include_color=False) + "\n"
+                )
             else:
                 for item in details:
                     f_handle.write(json.dumps(item) + "\n")
@@ -164,7 +171,9 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
             if public_path != path:
                 public_path.write_bytes(path.read_bytes())
             url = f"/local/{public_path.name}"
-            message = f'Hourly details exported. <a href="{url}" download>Download file</a>'
+            message = (
+                f'Hourly details exported. <a href="{url}" download>Download file</a>'
+            )
         else:
             message = f"Hourly details exported to {file_path}"
 

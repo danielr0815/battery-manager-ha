@@ -1,4 +1,5 @@
 """Config flow for Battery Manager integration."""
+
 from __future__ import annotations
 
 import logging
@@ -12,12 +13,12 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
 from .const import (
-    DOMAIN,
-    DEFAULT_CONFIG,
-    CONF_SOC_ENTITY,
+    CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
-    CONF_PV_FORECAST_DAY_AFTER,
+    CONF_SOC_ENTITY,
+    DEFAULT_CONFIG,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,9 +42,13 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Validate entity selections
             entity_registry = async_get_entity_registry(self.hass)
-            
-            for entity_key in [CONF_SOC_ENTITY, CONF_PV_FORECAST_TODAY, 
-                             CONF_PV_FORECAST_TOMORROW, CONF_PV_FORECAST_DAY_AFTER]:
+
+            for entity_key in [
+                CONF_SOC_ENTITY,
+                CONF_PV_FORECAST_TODAY,
+                CONF_PV_FORECAST_TOMORROW,
+                CONF_PV_FORECAST_DAY_AFTER,
+            ]:
                 entity_id = user_input.get(entity_key)
                 if entity_id and entity_id not in entity_registry.entities:
                     errors[entity_key] = "entity_not_found"
@@ -55,23 +60,24 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Get available sensor entities
         sensor_entities = await self._get_sensor_entities()
 
-        data_schema = vol.Schema({
-            vol.Required(CONF_SOC_ENTITY): selector.EntitySelector(
-                selector.EntitySelectorConfig(
-                    domain="sensor",
-                    device_class="battery"
-                )
-            ),
-            vol.Required(CONF_PV_FORECAST_TODAY): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Required(CONF_PV_FORECAST_TOMORROW): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-            vol.Required(CONF_PV_FORECAST_DAY_AFTER): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="sensor")
-            ),
-        })
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_SOC_ENTITY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor", device_class="battery"
+                    )
+                ),
+                vol.Required(CONF_PV_FORECAST_TODAY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Required(CONF_PV_FORECAST_TOMORROW): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Required(CONF_PV_FORECAST_DAY_AFTER): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+            }
+        )
 
         return self.async_show_form(
             step_id="user",
@@ -82,7 +88,7 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "pv_today_description": "Entity with today's PV forecast in kWh",
                 "pv_tomorrow_description": "Entity with tomorrow's PV forecast in kWh",
                 "pv_day_after_description": "Entity with day after tomorrow's PV forecast in kWh",
-            }
+            },
         )
 
     async def async_step_battery_config(
@@ -101,28 +107,29 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_battery_config"
                 _LOGGER.error("Battery config validation error: %s", err)
 
-        data_schema = vol.Schema({
-            vol.Required(
-                "battery_capacity_wh", 
-                default=DEFAULT_CONFIG["battery_capacity_wh"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
-            vol.Required(
-                "battery_min_soc_percent", 
-                default=DEFAULT_CONFIG["battery_min_soc_percent"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            vol.Required(
-                "battery_max_soc_percent", 
-                default=DEFAULT_CONFIG["battery_max_soc_percent"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            vol.Required(
-                "battery_charge_efficiency", 
-                default=DEFAULT_CONFIG["battery_charge_efficiency"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-            vol.Required(
-                "battery_discharge_efficiency", 
-                default=DEFAULT_CONFIG["battery_discharge_efficiency"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-        })
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    "battery_capacity_wh", default=DEFAULT_CONFIG["battery_capacity_wh"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
+                vol.Required(
+                    "battery_min_soc_percent",
+                    default=DEFAULT_CONFIG["battery_min_soc_percent"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "battery_max_soc_percent",
+                    default=DEFAULT_CONFIG["battery_max_soc_percent"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "battery_charge_efficiency",
+                    default=DEFAULT_CONFIG["battery_charge_efficiency"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "battery_discharge_efficiency",
+                    default=DEFAULT_CONFIG["battery_discharge_efficiency"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+            }
+        )
 
         return self.async_show_form(
             step_id="battery_config",
@@ -145,28 +152,27 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_pv_config"
                 _LOGGER.error("PV config validation error: %s", err)
 
-        data_schema = vol.Schema({
-            vol.Required(
-                "pv_max_power_w", 
-                default=DEFAULT_CONFIG["pv_max_power_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100000)),
-            vol.Required(
-                "pv_morning_start_hour", 
-                default=DEFAULT_CONFIG["pv_morning_start_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            vol.Required(
-                "pv_morning_end_hour", 
-                default=DEFAULT_CONFIG["pv_morning_end_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            vol.Required(
-                "pv_afternoon_end_hour", 
-                default=DEFAULT_CONFIG["pv_afternoon_end_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            vol.Required(
-                "pv_morning_ratio", 
-                default=DEFAULT_CONFIG["pv_morning_ratio"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
-        })
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    "pv_max_power_w", default=DEFAULT_CONFIG["pv_max_power_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100000)),
+                vol.Required(
+                    "pv_morning_start_hour",
+                    default=DEFAULT_CONFIG["pv_morning_start_hour"],
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "pv_morning_end_hour", default=DEFAULT_CONFIG["pv_morning_end_hour"]
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "pv_afternoon_end_hour",
+                    default=DEFAULT_CONFIG["pv_afternoon_end_hour"],
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "pv_morning_ratio", default=DEFAULT_CONFIG["pv_morning_ratio"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+            }
+        )
 
         return self.async_show_form(
             step_id="pv_config",
@@ -189,40 +195,38 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_consumer_config"
                 _LOGGER.error("Consumer config validation error: %s", err)
 
-        data_schema = vol.Schema({
-            vol.Required(
-                "ac_base_load_w", 
-                default=DEFAULT_CONFIG["ac_base_load_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-            vol.Required(
-                "ac_variable_load_w", 
-                default=DEFAULT_CONFIG["ac_variable_load_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-            vol.Required(
-                "ac_variable_start_hour", 
-                default=DEFAULT_CONFIG["ac_variable_start_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            vol.Required(
-                "ac_variable_end_hour", 
-                default=DEFAULT_CONFIG["ac_variable_end_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            vol.Required(
-                "dc_base_load_w", 
-                default=DEFAULT_CONFIG["dc_base_load_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-            vol.Required(
-                "dc_variable_load_w", 
-                default=DEFAULT_CONFIG["dc_variable_load_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-            vol.Required(
-                "dc_variable_start_hour", 
-                default=DEFAULT_CONFIG["dc_variable_start_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            vol.Required(
-                "dc_variable_end_hour", 
-                default=DEFAULT_CONFIG["dc_variable_end_hour"]
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-        })
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    "ac_base_load_w", default=DEFAULT_CONFIG["ac_base_load_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "ac_variable_load_w", default=DEFAULT_CONFIG["ac_variable_load_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "ac_variable_start_hour",
+                    default=DEFAULT_CONFIG["ac_variable_start_hour"],
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "ac_variable_end_hour",
+                    default=DEFAULT_CONFIG["ac_variable_end_hour"],
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "dc_base_load_w", default=DEFAULT_CONFIG["dc_base_load_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "dc_variable_load_w", default=DEFAULT_CONFIG["dc_variable_load_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "dc_variable_start_hour",
+                    default=DEFAULT_CONFIG["dc_variable_start_hour"],
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "dc_variable_end_hour",
+                    default=DEFAULT_CONFIG["dc_variable_end_hour"],
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+            }
+        )
 
         return self.async_show_form(
             step_id="consumer_config",
@@ -245,36 +249,35 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_power_config"
                 _LOGGER.error("Power config validation error: %s", err)
 
-        data_schema = vol.Schema({
-            vol.Required(
-                "charger_max_power_w", 
-                default=DEFAULT_CONFIG["charger_max_power_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
-            vol.Required(
-                "charger_efficiency", 
-                default=DEFAULT_CONFIG["charger_efficiency"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-            vol.Required(
-                "charger_standby_power_w", 
-                default=DEFAULT_CONFIG["charger_standby_power_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-            vol.Required(
-                "inverter_max_power_w", 
-                default=DEFAULT_CONFIG["inverter_max_power_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
-            vol.Required(
-                "inverter_efficiency", 
-                default=DEFAULT_CONFIG["inverter_efficiency"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-            vol.Required(
-                "inverter_standby_power_w", 
-                default=DEFAULT_CONFIG["inverter_standby_power_w"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-            vol.Required(
-                "inverter_min_soc_percent", 
-                default=DEFAULT_CONFIG["inverter_min_soc_percent"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-        })
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    "charger_max_power_w", default=DEFAULT_CONFIG["charger_max_power_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
+                vol.Required(
+                    "charger_efficiency", default=DEFAULT_CONFIG["charger_efficiency"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "charger_standby_power_w",
+                    default=DEFAULT_CONFIG["charger_standby_power_w"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                vol.Required(
+                    "inverter_max_power_w",
+                    default=DEFAULT_CONFIG["inverter_max_power_w"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
+                vol.Required(
+                    "inverter_efficiency", default=DEFAULT_CONFIG["inverter_efficiency"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "inverter_standby_power_w",
+                    default=DEFAULT_CONFIG["inverter_standby_power_w"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                vol.Required(
+                    "inverter_min_soc_percent",
+                    default=DEFAULT_CONFIG["inverter_min_soc_percent"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            }
+        )
 
         return self.async_show_form(
             step_id="power_config",
@@ -295,12 +298,14 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data=self.config,
             )
 
-        data_schema = vol.Schema({
-            vol.Required(
-                "controller_target_soc_percent", 
-                default=DEFAULT_CONFIG["controller_target_soc_percent"]
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-        })
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    "controller_target_soc_percent",
+                    default=DEFAULT_CONFIG["controller_target_soc_percent"],
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            }
+        )
 
         return self.async_show_form(
             step_id="controller_config",
@@ -329,7 +334,7 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Validate battery configuration."""
         min_soc = config.get("battery_min_soc_percent", 0)
         max_soc = config.get("battery_max_soc_percent", 100)
-        
+
         if min_soc >= max_soc:
             raise ValueError("Min SOC must be less than max SOC")
 
@@ -338,7 +343,7 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         morning_start = config.get("pv_morning_start_hour", 0)
         morning_end = config.get("pv_morning_end_hour", 12)
         afternoon_end = config.get("pv_afternoon_end_hour", 18)
-        
+
         if morning_start >= morning_end:
             raise ValueError("Morning start must be before morning end")
         if morning_end >= afternoon_end:
@@ -350,7 +355,7 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         ac_end = config.get("ac_variable_end_hour", 23)
         dc_start = config.get("dc_variable_start_hour", 0)
         dc_end = config.get("dc_variable_end_hour", 23)
-        
+
         if ac_start >= ac_end:
             raise ValueError("AC variable start must be before end")
         if dc_start >= dc_end:
@@ -378,17 +383,19 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
 
         # Create options schema with current values
         current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
-        
-        options_schema = vol.Schema({
-            vol.Required(
-                "controller_target_soc_percent",
-                default=current_config.get("controller_target_soc_percent", 85.0)
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            vol.Required(
-                "battery_capacity_wh",
-                default=current_config.get("battery_capacity_wh", 5000.0)
-            ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
-        })
+
+        options_schema = vol.Schema(
+            {
+                vol.Required(
+                    "controller_target_soc_percent",
+                    default=current_config.get("controller_target_soc_percent", 85.0),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "battery_capacity_wh",
+                    default=current_config.get("battery_capacity_wh", 5000.0),
+                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
+            }
+        )
 
         return self.async_show_form(
             step_id="init",

@@ -96,5 +96,29 @@
         }
       }
     }
+  },
+  "services": {
+    "export_hourly_details": {
+      "name": "Export Hourly Details",
+      "description": "Save the last hourly simulation data to a text file",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "Config entry ID to export data for"
+        },
+        "file_path": {
+          "name": "File path",
+          "description": "Path of the output file"
+        },
+        "download": {
+          "name": "Download",
+          "description": "Store file in www and send notification"
+        },
+        "as_table": {
+          "name": "Format as table",
+          "description": "Export as ASCII table instead of JSON"
+        }
+      }
+    }
   }
 }

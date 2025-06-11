@@ -1,0 +1,18 @@
+export_hourly_details:
+  fields:
+    entry_id:
+      example: "1234567890abcdef"
+      selector:
+        text:
+    file_path:
+      example: "/config/battery_manager_export.txt"
+      selector:
+        text:
+    download:
+      default: false
+      selector:
+        boolean:
+    as_table:
+      default: true
+      selector:
+        boolean:
