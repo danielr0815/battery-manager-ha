@@ -80,3 +80,7 @@ ATTR_DATA_VALIDITY = "data_validity"
 
 # Services
 SERVICE_EXPORT_HOURLY_DETAILS = "export_hourly_details"
+
+# Service parameters
+# Output hourly details as ASCII table (set to False for JSON)
+CONF_AS_TABLE = "as_table"

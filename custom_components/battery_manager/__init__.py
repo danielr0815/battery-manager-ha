@@ -14,7 +14,8 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS
+from .const import DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS, CONF_AS_TABLE
+from .debug_utils import format_hourly_details_table
 from .coordinator import BatteryManagerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     vol.Optional("entry_id"): str,
                     vol.Optional("file_path"): str,
                     vol.Optional("download", default=False): bool,
+                    vol.Optional(CONF_AS_TABLE, default=True): bool,
                 }),
             )
         
@@ -113,6 +115,7 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
     entry_id = call.data.get("entry_id")
     file_path = call.data.get("file_path")
     download = call.data.get("download", False)
+    as_table = call.data.get(CONF_AS_TABLE, True)
 
     domain_data = hass.data.get(DOMAIN)
     if not domain_data:
@@ -146,8 +149,11 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
     try:
         path = Path(file_path)
         with path.open("w", encoding="utf-8") as f_handle:
-            for item in details:
-                f_handle.write(json.dumps(item) + "\n")
+            if as_table:
+                f_handle.write(format_hourly_details_table(details, include_color=False) + "\n")
+            else:
+                for item in details:
+                    f_handle.write(json.dumps(item) + "\n")
         _LOGGER.info("Exported hourly details to %s", file_path)
 
         message: str

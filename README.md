@@ -236,7 +236,9 @@ written to `<config>/battery_manager_hourly_<entry_id>.txt`.
 Provide `entry_id` if multiple integrations are configured and optional
 `file_path` to override the location.
 Set `download: true` to create the file under `<config>/www` and receive a
-persistent notification with a direct download link.
+persistent notification with a direct download link. The hourly details are
+written as an ASCII table by default. Set `as_table: false` to export raw JSON
+lines instead.
 
 ### Configuration Validation
 The system validates all configuration parameters and provides clear error messages for:
