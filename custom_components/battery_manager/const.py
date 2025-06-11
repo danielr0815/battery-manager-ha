@@ -77,3 +77,6 @@ ATTR_GRID_EXPORT_KWH = "grid_export_kwh"
 ATTR_SIMULATION_END = "simulation_end"
 ATTR_LAST_UPDATE = "last_update"
 ATTR_DATA_VALIDITY = "data_validity"
+
+# Services
+SERVICE_EXPORT_HOURLY_DETAILS = "export_hourly_details"
