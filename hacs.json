@@ -3,7 +3,9 @@
   "content_in_root": false,
   "render_readme": true,
   "homeassistant": "2024.1.0",
+  "hacs": "1.2.0",
   "zip_release": false,
+  "domain": "battery_manager",
   "country": ["DE", "AT", "CH"],
   "persistent_directory": "battery_manager_data"
 }
