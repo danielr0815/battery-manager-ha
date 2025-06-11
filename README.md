@@ -229,6 +229,15 @@ logger:
     custom_components.battery_manager: debug
 ```
 
+### Export Hourly Details
+Use the service `battery_manager.export_hourly_details` to save the last hourly
+simulation data to a text file. When called without parameters the file will be
+written to `<config>/battery_manager_hourly_<entry_id>.txt`.
+Provide `entry_id` if multiple integrations are configured and optional
+`file_path` to override the location.
+Set `download: true` to create the file under `<config>/www` and receive a
+persistent notification with a direct download link.
+
 ### Configuration Validation
 The system validates all configuration parameters and provides clear error messages for:
 - Invalid capacity values
