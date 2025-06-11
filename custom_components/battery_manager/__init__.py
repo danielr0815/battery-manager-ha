@@ -35,10 +35,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry.entry_id] = coordinator
 
         if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
+            async def export_service(call: ServiceCall) -> None:
+                """Handle export hourly details service call."""
+                await _async_export_hourly_details(hass, call)
+
             hass.services.async_register(
                 DOMAIN,
                 SERVICE_EXPORT_HOURLY_DETAILS,
-                lambda call: hass.async_create_task(_async_export_hourly_details(hass, call)),
+                export_service,
                 schema=vol.Schema({
                     vol.Optional("entry_id"): str,
                     vol.Optional("file_path"): str,
