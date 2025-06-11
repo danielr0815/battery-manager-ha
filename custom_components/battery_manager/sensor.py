@@ -22,6 +22,7 @@ from .const import (
     ENTITY_MIN_SOC_FORECAST,
     ENTITY_MAX_SOC_FORECAST,
     ENTITY_DISCHARGE,
+    ENTITY_HOURS_TO_MAX_SOC,
     ATTR_GRID_IMPORT_KWH,
     ATTR_GRID_EXPORT_KWH,
     ATTR_SIMULATION_END,
@@ -47,6 +48,7 @@ async def async_setup_entry(
         BatteryManagerInverterStatus(coordinator, config_entry),
         BatteryManagerMinSOCForecast(coordinator, config_entry),
         BatteryManagerMaxSOCForecast(coordinator, config_entry),
+        BatteryManagerHoursToMaxSOC(coordinator, config_entry),
         BatteryManagerDischarge(coordinator, config_entry),
     ]
 
@@ -271,6 +273,38 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
         
         new_value = self.coordinator.data.get("max_soc_forecast_percent")
         self._log_state_change("Max SOC Forecast", new_value)
+        return new_value
+
+
+class BatteryManagerHoursToMaxSOC(BatteryManagerEntityBase, SensorEntity):
+    """Sensor for hours until maximum SOC is reached."""
+
+    def __init__(
+        self,
+        coordinator: BatteryManagerCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the hours to max SOC sensor."""
+        super().__init__(
+            coordinator,
+            config_entry,
+            ENTITY_HOURS_TO_MAX_SOC,
+            "Hours to Max SOC",
+        )
+        self._attr_native_unit_of_measurement = "h"
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:clock-outline"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_entity_registry_enabled_default = False
+
+    @property
+    def native_value(self) -> Optional[float]:
+        """Return the state of the sensor."""
+        if not self.available:
+            return None
+
+        new_value = self.coordinator.data.get("hours_until_max_soc")
+        self._log_state_change("Hours to Max SOC", new_value)
         return new_value
 
 

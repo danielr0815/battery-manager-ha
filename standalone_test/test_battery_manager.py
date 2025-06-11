@@ -35,6 +35,7 @@ def test_basic_simulation():
     print(f"  SOC Threshold: {results['soc_threshold_percent']:.1f}%")
     print(f"  Min SOC Forecast: {results['min_soc_forecast_percent']:.1f}%")
     print(f"  Max SOC Forecast: {results['max_soc_forecast_percent']:.1f}%")
+    print(f"  Hours to Max SOC: {int(results['hours_until_max_soc'])}")
     print(f"  Inverter Enabled: {results['inverter_enabled']}")
     print(f"  Forecast Hours: {results['forecast_hours']}")
     print(f"  Grid Import: {results['grid_import_kwh']:.2f} kWh")

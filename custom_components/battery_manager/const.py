@@ -69,6 +69,7 @@ ENTITY_SOC_THRESHOLD = "soc_threshold"
 ENTITY_MIN_SOC_FORECAST = "min_soc_forecast"
 ENTITY_MAX_SOC_FORECAST = "max_soc_forecast"
 ENTITY_DISCHARGE = "discharge"
+ENTITY_HOURS_TO_MAX_SOC = "hours_to_max_soc"
 
 # Attributes
 ATTR_GRID_IMPORT_KWH = "grid_import_kwh"
