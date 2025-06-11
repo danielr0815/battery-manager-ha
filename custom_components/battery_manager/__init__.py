@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict
+import json
+from pathlib import Path
+import voluptuous as vol
+from homeassistant.core import ServiceCall
+from homeassistant.components.persistent_notification import async_create as persistent_notification_create
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN
+from .const import DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS
 from .coordinator import BatteryManagerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +33,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Store coordinator in hass data
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = coordinator
+
+        if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
+            hass.services.async_register(
+                DOMAIN,
+                SERVICE_EXPORT_HOURLY_DETAILS,
+                lambda call: hass.async_create_task(_async_export_hourly_details(hass, call)),
+                schema=vol.Schema({
+                    vol.Optional("entry_id"): str,
+                    vol.Optional("file_path"): str,
+                    vol.Optional("download", default=False): bool,
+                }),
+            )
         
         # Set up platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -56,10 +73,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         # Remove from hass data
         hass.data[DOMAIN].pop(entry.entry_id)
-        
+
         # Remove domain data if empty
         if not hass.data[DOMAIN]:
             hass.data.pop(DOMAIN)
+            if hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
+                hass.services.async_remove(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS)
         
         _LOGGER.info("Battery Manager integration successfully unloaded")
     
@@ -83,3 +102,66 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
 
     _LOGGER.error("Unknown configuration version %s", config_entry.version)
     return False
+
+
+async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Export last hourly details to a text file."""
+    entry_id = call.data.get("entry_id")
+    file_path = call.data.get("file_path")
+    download = call.data.get("download", False)
+
+    domain_data = hass.data.get(DOMAIN)
+    if not domain_data:
+        _LOGGER.error("No Battery Manager data available")
+        return
+
+    coordinator: BatteryManagerCoordinator | None = None
+
+    if entry_id:
+        coordinator = domain_data.get(entry_id)
+        if coordinator is None:
+            _LOGGER.error("Entry id %s not found", entry_id)
+            return
+    else:
+        if len(domain_data) == 1:
+            entry_id, coordinator = next(iter(domain_data.items()))
+        else:
+            _LOGGER.error("Multiple entries present; specify entry_id")
+            return
+
+    details = coordinator.simulator.controller.get_last_hourly_details()
+
+    if not file_path:
+        if download:
+            file_path = hass.config.path(
+                "www", f"battery_manager_hourly_{entry_id}.txt"
+            )
+        else:
+            file_path = hass.config.path(f"battery_manager_hourly_{entry_id}.txt")
+
+    try:
+        path = Path(file_path)
+        with path.open("w", encoding="utf-8") as f_handle:
+            for item in details:
+                f_handle.write(json.dumps(item) + "\n")
+        _LOGGER.info("Exported hourly details to %s", file_path)
+
+        message: str
+        if download:
+            public_dir = Path(hass.config.path("www"))
+            public_dir.mkdir(exist_ok=True)
+            public_path = public_dir / path.name
+            if public_path != path:
+                public_path.write_bytes(path.read_bytes())
+            url = f"/local/{public_path.name}"
+            message = f'Hourly details exported. <a href="{url}" download>Download file</a>'
+        else:
+            message = f"Hourly details exported to {file_path}"
+
+        persistent_notification_create(
+            hass,
+            message,
+            title="Battery Manager",
+        )
+    except Exception as err:  # pragma: no cover - file write errors
+        _LOGGER.error("Failed to export hourly details: %s", err)
