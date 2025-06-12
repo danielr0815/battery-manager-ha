@@ -1,33 +1,38 @@
 """Sensor platform for Battery Manager integration."""
+
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
-from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, EntityCategory
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    ATTR_DATA_VALIDITY,
+    ATTR_GRID_EXPORT_KWH,
+    ATTR_GRID_IMPORT_KWH,
+    ATTR_LAST_UPDATE,
+    ATTR_SIMULATION_END,
     DOMAIN,
-    INTEGRATION_NAME,
-    INTEGRATION_VERSION,
-    ENTITY_INVERTER_STATUS,
-    ENTITY_SOC_THRESHOLD,
-    ENTITY_MIN_SOC_FORECAST,
-    ENTITY_MAX_SOC_FORECAST,
     ENTITY_DISCHARGE,
     ENTITY_HOURS_TO_MAX_SOC,
-    ATTR_GRID_IMPORT_KWH,
-    ATTR_GRID_EXPORT_KWH,
-    ATTR_SIMULATION_END,
-    ATTR_LAST_UPDATE,
-    ATTR_DATA_VALIDITY,
+    ENTITY_INVERTER_STATUS,
+    ENTITY_MAX_SOC_FORECAST,
+    ENTITY_MIN_SOC_FORECAST,
+    ENTITY_SOC_THRESHOLD,
+    INTEGRATION_NAME,
+    INTEGRATION_VERSION,
 )
 from .coordinator import BatteryManagerCoordinator
 
@@ -70,11 +75,11 @@ class BatteryManagerEntityBase(CoordinatorEntity):
         self.config_entry = config_entry
         self._attr_unique_id = f"{config_entry.entry_id}_{entity_id_suffix}"
         self._attr_name = f"Battery Manager {name_suffix}"
-        
+
         # Enhanced debugging
         self._last_state_value = None
         self._state_change_count = 0
-        
+
         # Device info for grouping entities
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, config_entry.entry_id)},
@@ -97,23 +102,31 @@ class BatteryManagerEntityBase(CoordinatorEntity):
         """Log significant state changes for debugging."""
         if old_value is None:
             old_value = self._last_state_value
-        
+
         if old_value != new_value:
             self._state_change_count += 1
-            
+
             # Log significant changes
-            if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
+            if isinstance(new_value, (int, float)) and isinstance(
+                old_value, (int, float)
+            ):
                 if abs(new_value - old_value) > 1.0:  # Log changes > 1 unit
                     _LOGGER.debug(
                         "%s state changed: %s → %s (change #%d)",
-                        entity_type, old_value, new_value, self._state_change_count
+                        entity_type,
+                        old_value,
+                        new_value,
+                        self._state_change_count,
                     )
             elif old_value != new_value:  # For boolean or other types
                 _LOGGER.debug(
                     "%s state changed: %s → %s (change #%d)",
-                    entity_type, old_value, new_value, self._state_change_count
+                    entity_type,
+                    old_value,
+                    new_value,
+                    self._state_change_count,
                 )
-        
+
         self._last_state_value = new_value
 
 
@@ -127,10 +140,7 @@ class BatteryManagerInverterStatus(BatteryManagerEntityBase, BinarySensorEntity)
     ) -> None:
         """Initialize the inverter status sensor."""
         super().__init__(
-            coordinator,
-            config_entry,
-            ENTITY_INVERTER_STATUS,
-            "Inverter Status"
+            coordinator, config_entry, ENTITY_INVERTER_STATUS, "Inverter Status"
         )
         self._attr_icon = "mdi:power-plug"
 
@@ -139,7 +149,7 @@ class BatteryManagerInverterStatus(BatteryManagerEntityBase, BinarySensorEntity)
         """Return true if the inverter is enabled."""
         if not self.available:
             return None
-        
+
         new_state = self.coordinator.data.get("inverter_enabled", False)
         self._log_state_change("Inverter Status", new_state)
         return new_state
@@ -149,7 +159,7 @@ class BatteryManagerInverterStatus(BatteryManagerEntityBase, BinarySensorEntity)
         """Return extra state attributes."""
         if not self.available:
             return {}
-        
+
         data = self.coordinator.data
         return {
             ATTR_GRID_IMPORT_KWH: data.get("grid_import_kwh", 0.0),
@@ -170,10 +180,7 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
     ) -> None:
         """Initialize the SOC threshold sensor."""
         super().__init__(
-            coordinator,
-            config_entry,
-            ENTITY_SOC_THRESHOLD,
-            "SOC Threshold"
+            coordinator, config_entry, ENTITY_SOC_THRESHOLD, "SOC Threshold"
         )
         # Override the name to make this the primary entity
         self._attr_name = "Battery Manager"  # Main entity name without suffix
@@ -190,7 +197,7 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        
+
         new_value = self.coordinator.data.get("soc_threshold_percent")
         self._log_state_change("SOC Threshold", new_value)
         return new_value
@@ -200,7 +207,7 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
         """Return extra state attributes."""
         if not self.available:
             return {}
-        
+
         data = self.coordinator.data
         return {
             "forecast_hours": data.get("forecast_hours", 0),
@@ -218,10 +225,7 @@ class BatteryManagerMinSOCForecast(BatteryManagerEntityBase, SensorEntity):
     ) -> None:
         """Initialize the min SOC forecast sensor."""
         super().__init__(
-            coordinator,
-            config_entry,
-            ENTITY_MIN_SOC_FORECAST,
-            "Min SOC Forecast"
+            coordinator, config_entry, ENTITY_MIN_SOC_FORECAST, "Min SOC Forecast"
         )
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_device_class = SensorDeviceClass.BATTERY
@@ -236,7 +240,7 @@ class BatteryManagerMinSOCForecast(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        
+
         new_value = self.coordinator.data.get("min_soc_forecast_percent")
         self._log_state_change("Min SOC Forecast", new_value)
         return new_value
@@ -252,10 +256,7 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
     ) -> None:
         """Initialize the max SOC forecast sensor."""
         super().__init__(
-            coordinator,
-            config_entry,
-            ENTITY_MAX_SOC_FORECAST,
-            "Max SOC Forecast"
+            coordinator, config_entry, ENTITY_MAX_SOC_FORECAST, "Max SOC Forecast"
         )
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_device_class = SensorDeviceClass.BATTERY
@@ -270,7 +271,7 @@ class BatteryManagerMaxSOCForecast(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        
+
         new_value = self.coordinator.data.get("max_soc_forecast_percent")
         self._log_state_change("Max SOC Forecast", new_value)
         return new_value
@@ -318,10 +319,7 @@ class BatteryManagerDischarge(BatteryManagerEntityBase, SensorEntity):
     ) -> None:
         """Initialize the discharge forecast sensor."""
         super().__init__(
-            coordinator,
-            config_entry,
-            ENTITY_DISCHARGE,
-            "Discharge Forecast"
+            coordinator, config_entry, ENTITY_DISCHARGE, "Discharge Forecast"
         )
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -335,7 +333,7 @@ class BatteryManagerDischarge(BatteryManagerEntityBase, SensorEntity):
         """Return the state of the sensor."""
         if not self.available:
             return None
-        
+
         new_value = self.coordinator.data.get("discharge_forecast_percent")
         self._log_state_change("Discharge Forecast", new_value)
         return new_value

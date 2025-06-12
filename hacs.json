@@ -3,10 +3,8 @@
   "content_in_root": false,
   "render_readme": true,
   "homeassistant": "2024.1.0",
-  "domains": ["sensor", "binary_sensor"],
+  "hacs": "1.2.0",
   "zip_release": false,
-  "filename": false,
   "country": ["DE", "AT", "CH"],
-  "persistent_directory": "battery_manager_data",
-  "iot_class": "local_polling"
+  "persistent_directory": "battery_manager_data"
 }

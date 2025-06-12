@@ -1,8 +1,10 @@
 # Utility functions for debugging output.
-from typing import List, Dict
+from typing import Dict, List
 
 
-def format_hourly_details_table(hourly_details: List[Dict[str, any]], include_color: bool = False) -> str:
+def format_hourly_details_table(
+    hourly_details: List[Dict[str, any]], include_color: bool = False
+) -> str:
     """Return hourly details formatted as an ASCII table.
 
     Args:
