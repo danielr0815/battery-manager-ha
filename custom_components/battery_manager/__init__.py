@@ -28,7 +28,8 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery Manager from a config entry."""
     try:
-        coordinator = BatteryManagerCoordinator(hass, entry.data)
+        config = {**entry.data, **entry.options}
+        coordinator = BatteryManagerCoordinator(hass, config)
 
         # Fetch initial data
         await coordinator.async_config_entry_first_refresh()

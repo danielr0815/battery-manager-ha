@@ -373,7 +373,7 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
         self.config_entry = config_entry
-        self.options: Dict[str, Any] = {**config_entry.data}
+        self.options: Dict[str, Any] = {**config_entry.data, **config_entry.options}
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -387,7 +387,10 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required(
                     CONF_SOC_ENTITY,
-                    default=self.config_entry.data.get(CONF_SOC_ENTITY),
+                    default=self.config_entry.options.get(
+                        CONF_SOC_ENTITY,
+                        self.config_entry.data.get(CONF_SOC_ENTITY),
+                    ),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         domain="sensor",
@@ -396,19 +399,28 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Required(
                     CONF_PV_FORECAST_TODAY,
-                    default=self.config_entry.data.get(CONF_PV_FORECAST_TODAY),
+                    default=self.config_entry.options.get(
+                        CONF_PV_FORECAST_TODAY,
+                        self.config_entry.data.get(CONF_PV_FORECAST_TODAY),
+                    ),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor")
                 ),
                 vol.Required(
                     CONF_PV_FORECAST_TOMORROW,
-                    default=self.config_entry.data.get(CONF_PV_FORECAST_TOMORROW),
+                    default=self.config_entry.options.get(
+                        CONF_PV_FORECAST_TOMORROW,
+                        self.config_entry.data.get(CONF_PV_FORECAST_TOMORROW),
+                    ),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor")
                 ),
                 vol.Required(
                     CONF_PV_FORECAST_DAY_AFTER,
-                    default=self.config_entry.data.get(CONF_PV_FORECAST_DAY_AFTER),
+                    default=self.config_entry.options.get(
+                        CONF_PV_FORECAST_DAY_AFTER,
+                        self.config_entry.data.get(CONF_PV_FORECAST_DAY_AFTER),
+                    ),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor")
                 ),
@@ -421,7 +433,11 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Update battery parameters."""
-        current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
+        current_config = {
+            **DEFAULT_CONFIG,
+            **self.config_entry.data,
+            **self.config_entry.options,
+        }
 
         if user_input is not None:
             self.options.update(user_input)
@@ -458,7 +474,11 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Update PV system parameters."""
-        current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
+        current_config = {
+            **DEFAULT_CONFIG,
+            **self.config_entry.data,
+            **self.config_entry.options,
+        }
 
         if user_input is not None:
             self.options.update(user_input)
@@ -495,7 +515,11 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Update consumer load parameters."""
-        current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
+        current_config = {
+            **DEFAULT_CONFIG,
+            **self.config_entry.data,
+            **self.config_entry.options,
+        }
 
         if user_input is not None:
             self.options.update(user_input)
@@ -544,7 +568,11 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Update charger and inverter parameters."""
-        current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
+        current_config = {
+            **DEFAULT_CONFIG,
+            **self.config_entry.data,
+            **self.config_entry.options,
+        }
 
         if user_input is not None:
             self.options.update(user_input)
@@ -589,7 +617,11 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Update controller parameters."""
-        current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
+        current_config = {
+            **DEFAULT_CONFIG,
+            **self.config_entry.data,
+            **self.config_entry.options,
+        }
 
         if user_input is not None:
             self.options.update(user_input)
