@@ -381,23 +381,142 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        # Create options schema with current values
         current_config = {**DEFAULT_CONFIG, **self.config_entry.data}
 
         options_schema = vol.Schema(
             {
                 vol.Required(
-                    "controller_target_soc_percent",
-                    default=current_config.get("controller_target_soc_percent", 85.0),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                    CONF_SOC_ENTITY,
+                    default=self.config_entry.data.get(CONF_SOC_ENTITY),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        device_class="battery",
+                    )
+                ),
+                vol.Required(
+                    CONF_PV_FORECAST_TODAY,
+                    default=self.config_entry.data.get(CONF_PV_FORECAST_TODAY),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Required(
+                    CONF_PV_FORECAST_TOMORROW,
+                    default=self.config_entry.data.get(CONF_PV_FORECAST_TOMORROW),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Required(
+                    CONF_PV_FORECAST_DAY_AFTER,
+                    default=self.config_entry.data.get(CONF_PV_FORECAST_DAY_AFTER),
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
                 vol.Required(
                     "battery_capacity_wh",
-                    default=current_config.get("battery_capacity_wh", 5000.0),
+                    default=current_config.get("battery_capacity_wh"),
                 ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
+                vol.Required(
+                    "battery_min_soc_percent",
+                    default=current_config.get("battery_min_soc_percent"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "battery_max_soc_percent",
+                    default=current_config.get("battery_max_soc_percent"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "battery_charge_efficiency",
+                    default=current_config.get("battery_charge_efficiency"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "battery_discharge_efficiency",
+                    default=current_config.get("battery_discharge_efficiency"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "pv_max_power_w",
+                    default=current_config.get("pv_max_power_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100000)),
+                vol.Required(
+                    "pv_morning_start_hour",
+                    default=current_config.get("pv_morning_start_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "pv_morning_end_hour",
+                    default=current_config.get("pv_morning_end_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "pv_afternoon_end_hour",
+                    default=current_config.get("pv_afternoon_end_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "pv_morning_ratio",
+                    default=current_config.get("pv_morning_ratio"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                vol.Required(
+                    "ac_base_load_w",
+                    default=current_config.get("ac_base_load_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "ac_variable_load_w",
+                    default=current_config.get("ac_variable_load_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "ac_variable_start_hour",
+                    default=current_config.get("ac_variable_start_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "ac_variable_end_hour",
+                    default=current_config.get("ac_variable_end_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "dc_base_load_w",
+                    default=current_config.get("dc_base_load_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "dc_variable_load_w",
+                    default=current_config.get("dc_variable_load_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
+                    "dc_variable_start_hour",
+                    default=current_config.get("dc_variable_start_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "dc_variable_end_hour",
+                    default=current_config.get("dc_variable_end_hour"),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "charger_max_power_w",
+                    default=current_config.get("charger_max_power_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
+                vol.Required(
+                    "charger_efficiency",
+                    default=current_config.get("charger_efficiency"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "charger_standby_power_w",
+                    default=current_config.get("charger_standby_power_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                vol.Required(
+                    "inverter_max_power_w",
+                    default=current_config.get("inverter_max_power_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
+                vol.Required(
+                    "inverter_efficiency",
+                    default=current_config.get("inverter_efficiency"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
+                vol.Required(
+                    "inverter_standby_power_w",
+                    default=current_config.get("inverter_standby_power_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+                vol.Required(
+                    "inverter_min_soc_percent",
+                    default=current_config.get("inverter_min_soc_percent"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "controller_target_soc_percent",
+                    default=current_config.get("controller_target_soc_percent"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
             }
         )
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=options_schema,
-        )
+        return self.async_show_form(step_id="init", data_schema=options_schema)
