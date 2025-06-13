@@ -107,8 +107,16 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     reload_set.add(entry.entry_id)
 
     try:
-        await async_unload_entry(hass, entry)
-        await async_setup_entry(hass, entry)
+        # Update existing coordinator instead of reloading the entire entry
+        coordinator: BatteryManagerCoordinator = hass.data[DOMAIN].get(entry.entry_id)
+        if coordinator:
+            config = {**entry.data, **entry.options}
+            coordinator.update_config(config)
+            _LOGGER.info("Battery Manager configuration updated")
+        else:
+            # Fallback to full reload if coordinator doesn't exist
+            await async_unload_entry(hass, entry)
+            await async_setup_entry(hass, entry)
     finally:
         reload_set.discard(entry.entry_id)
 

@@ -66,9 +66,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
         # Debouncing
         self._debounce_task: Optional[asyncio.Task] = None
+        self._listeners_setup: bool = False
 
-        # Subscribe to entity state changes
-        self._setup_entity_listeners()
+        # Don't subscribe to entity state changes yet - wait for first refresh
 
     def _setup_entity_listeners(self) -> None:
         """Set up listeners for input entity state changes."""
@@ -88,6 +88,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
     async def _handle_entity_change(self, event) -> None:
         """Handle state change of tracked entities."""
+        # Skip handling during setup phase
+        if not self._listeners_setup:
+            return
+
         entity_id = event.data.get("entity_id")
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
@@ -221,6 +225,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
                 results["max_soc_forecast_percent"],
                 results["discharge_forecast_percent"],
             )
+
+            # Set up entity listeners after first successful update
+            if not self._listeners_setup:
+                self._setup_entity_listeners()
+                self._listeners_setup = True
 
             return results
 
@@ -444,8 +453,35 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """Update configuration and restart simulation."""
+        old_config = self.config.copy()
         self.config.update(new_config)
         self.simulator.update_config(self.config)
+
+        # Update entity IDs if they changed
+        entity_ids_changed = False
+        if CONF_SOC_ENTITY in new_config and new_config[CONF_SOC_ENTITY] != old_config.get(CONF_SOC_ENTITY):
+            self.soc_entity_id = new_config[CONF_SOC_ENTITY]
+            entity_ids_changed = True
+        
+        for conf_key, attr_name in [
+            (CONF_PV_FORECAST_TODAY, 0),
+            (CONF_PV_FORECAST_TOMORROW, 1),
+            (CONF_PV_FORECAST_DAY_AFTER, 2),
+        ]:
+            if conf_key in new_config and new_config[conf_key] != old_config.get(conf_key):
+                self.pv_forecast_entities[attr_name] = new_config[conf_key]
+                entity_ids_changed = True
+
+        # Re-setup listeners if entity IDs changed
+        if entity_ids_changed and self._listeners_setup:
+            self._setup_entity_listeners()
+
+        # Reset cached data when config changes
+        self._last_valid_soc = None
+        self._last_valid_forecasts = None
+        self._last_soc_update = None
+        self._last_forecast_update = None
+        self._startup_values = None
 
         # Trigger immediate update
         self.hass.async_create_task(self.async_request_refresh())
