@@ -459,16 +459,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
         # Update entity IDs if they changed
         entity_ids_changed = False
-        if CONF_SOC_ENTITY in new_config and new_config[CONF_SOC_ENTITY] != old_config.get(CONF_SOC_ENTITY):
+
+        # Check SOC entity
+        soc_entity_changed = CONF_SOC_ENTITY in new_config and new_config[
+            CONF_SOC_ENTITY
+        ] != old_config.get(CONF_SOC_ENTITY)
+        if soc_entity_changed:
             self.soc_entity_id = new_config[CONF_SOC_ENTITY]
             entity_ids_changed = True
-        
+
         for conf_key, attr_name in [
             (CONF_PV_FORECAST_TODAY, 0),
             (CONF_PV_FORECAST_TOMORROW, 1),
             (CONF_PV_FORECAST_DAY_AFTER, 2),
         ]:
-            if conf_key in new_config and new_config[conf_key] != old_config.get(conf_key):
+            if conf_key in new_config and new_config[conf_key] != old_config.get(
+                conf_key
+            ):
                 self.pv_forecast_entities[attr_name] = new_config[conf_key]
                 entity_ids_changed = True
 
