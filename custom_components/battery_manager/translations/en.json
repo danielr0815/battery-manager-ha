@@ -91,8 +91,66 @@
         "title": "Battery Manager Options",
         "description": "Update Battery Manager configuration",
         "data": {
-          "controller_target_soc_percent": "Target SOC Threshold (%)",
-          "battery_capacity_wh": "Battery Capacity (Wh)"
+          "soc_entity": "Battery SOC Entity",
+          "pv_forecast_today_entity": "PV Forecast Today Entity",
+          "pv_forecast_tomorrow_entity": "PV Forecast Tomorrow Entity",
+          "pv_forecast_day_after_entity": "PV Forecast Day After Entity"
+        }
+      },
+      "battery_config": {
+        "title": "Battery Configuration",
+        "description": "Update battery parameters",
+        "data": {
+          "battery_capacity_wh": "Battery Capacity (Wh)",
+          "battery_min_soc_percent": "Minimum SOC (%)",
+          "battery_max_soc_percent": "Maximum SOC (%)",
+          "battery_charge_efficiency": "Charge Efficiency",
+          "battery_discharge_efficiency": "Discharge Efficiency"
+        }
+      },
+      "pv_config": {
+        "title": "PV System Configuration",
+        "description": "Update PV system parameters",
+        "data": {
+          "pv_max_power_w": "Max PV Power (W)",
+          "pv_morning_start_hour": "Morning Start Hour",
+          "pv_morning_end_hour": "Morning End Hour",
+          "pv_afternoon_end_hour": "Afternoon End Hour",
+          "pv_morning_ratio": "Morning Production Ratio"
+        }
+      },
+      "consumer_config": {
+        "title": "Consumer Configuration",
+        "description": "Update AC and DC load parameters",
+        "data": {
+          "ac_base_load_w": "AC Base Load (W)",
+          "ac_variable_load_w": "AC Variable Load (W)",
+          "ac_variable_start_hour": "AC Variable Start Hour",
+          "ac_variable_end_hour": "AC Variable End Hour",
+          "dc_base_load_w": "DC Base Load (W)",
+          "dc_variable_load_w": "DC Variable Load (W)",
+          "dc_variable_start_hour": "DC Variable Start Hour",
+          "dc_variable_end_hour": "DC Variable End Hour"
+        }
+      },
+      "power_config": {
+        "title": "Power Equipment Configuration",
+        "description": "Update charger and inverter parameters",
+        "data": {
+          "charger_max_power_w": "Charger Max Power (W)",
+          "charger_efficiency": "Charger Efficiency",
+          "charger_standby_power_w": "Charger Standby Power (W)",
+          "inverter_max_power_w": "Inverter Max Power (W)",
+          "inverter_efficiency": "Inverter Efficiency",
+          "inverter_standby_power_w": "Inverter Standby Power (W)",
+          "inverter_min_soc_percent": "Inverter Min SOC (%)"
+        }
+      },
+      "controller_config": {
+        "title": "Controller Configuration",
+        "description": "Update controller parameters",
+        "data": {
+          "controller_target_soc_percent": "Target SOC Threshold (%)"
         }
       }
     }

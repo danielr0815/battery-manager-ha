@@ -28,7 +28,8 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery Manager from a config entry."""
     try:
-        coordinator = BatteryManagerCoordinator(hass, entry.data)
+        config = {**entry.data, **entry.options}
+        coordinator = BatteryManagerCoordinator(hass, config)
 
         # Fetch initial data
         await coordinator.async_config_entry_first_refresh()
@@ -98,8 +99,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    reload_set: set[str] = hass.data.setdefault(f"{DOMAIN}_reloading", set())
+
+    if entry.entry_id in reload_set:
+        return
+
+    reload_set.add(entry.entry_id)
+
+    try:
+        # Update existing coordinator instead of reloading the entire entry
+        coordinator: BatteryManagerCoordinator = hass.data[DOMAIN].get(entry.entry_id)
+        if coordinator:
+            config = {**entry.data, **entry.options}
+            coordinator.update_config(config)
+            _LOGGER.info("Battery Manager configuration updated")
+        else:
+            # Fallback to full reload if coordinator doesn't exist
+            await async_unload_entry(hass, entry)
+            await async_setup_entry(hass, entry)
+    finally:
+        reload_set.discard(entry.entry_id)
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
