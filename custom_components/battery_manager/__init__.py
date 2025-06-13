@@ -99,8 +99,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    reload_set: set[str] = hass.data.setdefault(f"{DOMAIN}_reloading", set())
+
+    if entry.entry_id in reload_set:
+        return
+
+    reload_set.add(entry.entry_id)
+
+    try:
+        await async_unload_entry(hass, entry)
+        await async_setup_entry(hass, entry)
+    finally:
+        reload_set.discard(entry.entry_id)
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
