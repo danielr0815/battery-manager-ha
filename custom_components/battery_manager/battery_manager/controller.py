@@ -97,8 +97,8 @@ class MaximumBasedController:
         threshold_soc = threshold_result["threshold_soc"]
         discharge_forecast_percent = threshold_result["discharge_forecast_percent"]
 
-        # Find min and max SOC in forecast
-        min_soc = min(soc_forecast) if soc_forecast else current_soc_percent
+        # Find min and max SOC in forecast - use same logic as threshold calculation
+        min_soc = self._get_relevant_min_soc(soc_forecast, current_soc_percent)
         max_soc = max(soc_forecast) if soc_forecast else current_soc_percent
 
         # Calculate hours until max SOC is reached
@@ -281,12 +281,25 @@ class MaximumBasedController:
         current_soc = self.battery.current_soc_percent
         min_battery_soc = self.battery.min_soc_percent
 
-        # Find the earliest time when SOC reaches target (85%)
+        # Find the relevant time when SOC reaches target (85%)
         target_reached_index = None
-        for i, soc in enumerate(soc_forecast):
-            if soc >= self.target_soc_percent:
-                target_reached_index = i
-                break
+        start_soc = soc_forecast[0] if soc_forecast else current_soc
+        
+        if start_soc >= self.target_soc_percent:
+            # Battery already at/above target - find NEXT time it reaches target after dropping below
+            below_target_seen = False
+            for i, soc in enumerate(soc_forecast):
+                if soc < self.target_soc_percent:
+                    below_target_seen = True
+                elif below_target_seen and soc >= self.target_soc_percent:
+                    target_reached_index = i
+                    break
+        else:
+            # Battery below target - find FIRST time it reaches target
+            for i, soc in enumerate(soc_forecast):
+                if soc >= self.target_soc_percent:
+                    target_reached_index = i
+                    break
 
         # If target is never reached, set threshold to target value
         if target_reached_index is None:
@@ -295,8 +308,15 @@ class MaximumBasedController:
                 "discharge_forecast_percent": 0.0,
             }
 
-        # Find minimum SOC in the entire forecast period
-        min_soc_forecast = min(soc_forecast)
+        # Find minimum SOC only until target is reached (or entire period if target never reached)
+        if target_reached_index is not None:
+            # Only consider SOC values until target is reached
+            relevant_soc_values = soc_forecast[:target_reached_index + 1]
+        else:
+            # Target never reached, consider entire forecast
+            relevant_soc_values = soc_forecast
+        
+        min_soc_forecast = min(relevant_soc_values)
 
         # Calculate total forced charger energy before target is reached
         total_forced_charger_wh = 0.0
@@ -577,3 +597,46 @@ class MaximumBasedController:
             current_soc = new_soc
 
         return hourly_details
+
+    def _get_relevant_min_soc(self, soc_forecast: List[float], current_soc_percent: float) -> float:
+        """Get minimum SOC considering only values until target is reached.
+        
+        Uses the same logic as _calculate_threshold_from_forecast to ensure consistency.
+        
+        Args:
+            soc_forecast: List of forecasted SOC values
+            current_soc_percent: Current SOC for fallback
+            
+        Returns:
+            Minimum SOC value considering target threshold logic
+        """
+        if not soc_forecast:
+            return current_soc_percent
+            
+        # Use same target reaching logic as threshold calculation
+        target_reached_index = None
+        start_soc = soc_forecast[0]
+        
+        if start_soc >= self.target_soc_percent:
+            # Battery already at/above target - find NEXT time it reaches target after dropping below
+            below_target_seen = False
+            for i, soc in enumerate(soc_forecast):
+                if soc < self.target_soc_percent:
+                    below_target_seen = True
+                elif below_target_seen and soc >= self.target_soc_percent:
+                    target_reached_index = i
+                    break
+        else:
+            # Battery below target - find FIRST time it reaches target
+            for i, soc in enumerate(soc_forecast):
+                if soc >= self.target_soc_percent:
+                    target_reached_index = i
+                    break
+        
+        # Get relevant SOC values using same logic
+        if target_reached_index is not None:
+            relevant_soc_values = soc_forecast[:target_reached_index + 1]
+        else:
+            relevant_soc_values = soc_forecast
+            
+        return min(relevant_soc_values)

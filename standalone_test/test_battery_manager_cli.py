@@ -402,7 +402,7 @@ def print_single_result(result: Dict[str, Any], verbose: bool = False) -> None:
         print(f"\n🔧 CONFIGURATION:")
         config = metadata['config']
         print(f"  Battery Capacity: {config['battery_capacity_wh']:.0f} Wh")
-        print(f"  Battery SOC Range: {config['battery_soc_min_percent']:.1f}% - {config['battery_soc_max_percent']:.1f}%")
+        print(f"  Battery SOC Range: {config['min_soc_percent']:.1f}% - {config['max_soc_percent']:.1f}%")
         print(f"  PV Peak Power: {config['pv_peak_power_w']:.0f} W")
         print(f"  AC Base Load: {config['ac_base_load_w']:.0f} W")
         print(f"  DC Base Load: {config['dc_base_load_w']:.0f} W")
