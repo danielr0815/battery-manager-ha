@@ -43,9 +43,12 @@ class Inverter:
         """
         self._current_soc_percent = soc_percent
 
-        # Automatically disable inverter if SOC reaches minimum threshold
+        # Automatically disable inverter if SOC falls below minimum threshold
         if soc_percent < self.min_soc_percent:
             self._enabled = False
+        # Re-enable inverter if SOC is at or above minimum threshold and was disabled due to low SOC
+        elif soc_percent >= self.min_soc_percent:
+            self._enabled = True
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable the inverter.
@@ -54,7 +57,7 @@ class Inverter:
             enabled: Whether to enable the inverter
         """
         # Can only enable if SOC is above minimum threshold
-        if enabled and self._current_soc_percent < self.min_soc_percent:
+        if enabled and self._current_soc_percent <= self.min_soc_percent:
             self._enabled = False
         else:
             self._enabled = enabled
@@ -62,6 +65,7 @@ class Inverter:
     @property
     def is_enabled(self) -> bool:
         """Check if the inverter is currently enabled."""
+        # Inverter is enabled if explicitly enabled AND SOC is above minimum threshold
         return self._enabled and self._current_soc_percent > self.min_soc_percent
 
     def provide_ac_from_dc(self, ac_energy_needed_wh: float) -> float:
@@ -71,7 +75,7 @@ class Inverter:
             ac_energy_needed_wh: Required AC energy in Wh
 
         Returns:
-            DC energy consumed from battery in Wh (including efficiency losses)
+            DC energy output needed (before battery efficiency losses) in Wh
         """
         if not self.is_enabled or ac_energy_needed_wh <= 0:
             return 0.0
@@ -79,10 +83,11 @@ class Inverter:
         # Limit by maximum power (assuming 1-hour operation)
         limited_ac_energy_wh = min(ac_energy_needed_wh, self.max_power_w)
 
-        # Calculate required DC energy (inverse of efficiency)
-        dc_energy_wh = limited_ac_energy_wh / self.efficiency
+        # Calculate required DC input for this AC output (inverse of efficiency)
+        dc_energy_needed_wh = limited_ac_energy_wh / self.efficiency
 
-        return dc_energy_wh
+        # Return the DC energy output that needs to be provided (before battery losses)
+        return dc_energy_needed_wh
 
     def get_standby_consumption_wh(self) -> float:
         """Get standby power consumption for the inverter.

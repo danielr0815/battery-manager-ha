@@ -170,20 +170,43 @@ def parse_current_time(time_str: str) -> datetime:
         sys.exit(1)
 
 
-def build_config(args: argparse.Namespace) -> Dict[str, Any]:
+def build_config(args: argparse.Namespace, daily_forecasts: List[float] = None) -> Dict[str, Any]:
     """Build configuration dictionary from arguments."""
+    # Auto-adjust PV peak power based on forecasts if using defaults
+    pv_peak_power = args.pv_peak_power
+    if daily_forecasts and args.pv_peak_power == 3200.0:  # Default value
+        max_forecast = max(daily_forecasts)
+        # Estimate peak power: Daily kWh / ~5 peak sun hours
+        estimated_peak_w = max_forecast / 5.0 * 1000
+        # Use a reasonable minimum of 1000W
+        pv_peak_power = max(1000.0, estimated_peak_w)
+        logger.info(f"Auto-adjusted PV peak power to {pv_peak_power:.0f}W based on forecasts")
+    
     return {
-        "battery_capacity_wh": args.battery_capacity,
-        "battery_soc_min_percent": args.battery_soc_min,
-        "battery_soc_max_percent": args.battery_soc_max,
-        "battery_charge_efficiency": args.battery_charge_efficiency,
-        "battery_discharge_efficiency": args.battery_discharge_efficiency,
-        "pv_peak_power_w": args.pv_peak_power,
+        # Battery configuration with correct parameter names
+        "capacity_wh": args.battery_capacity,
+        "min_soc_percent": args.battery_soc_min,
+        "max_soc_percent": args.battery_soc_max,
+        "charge_efficiency": args.battery_charge_efficiency,
+        "discharge_efficiency": args.battery_discharge_efficiency,
+        
+        # PV System configuration  
+        "max_power_w": pv_peak_power,
+        
+        # Consumer configuration
         "ac_base_load_w": args.ac_base_load,
         "dc_base_load_w": args.dc_base_load,
+        
+        # Component-specific efficiency parameters
         "charger_efficiency": args.charger_efficiency,
         "inverter_efficiency": args.inverter_efficiency,
+        
+        # Controller configuration
         "controller_max_threshold_percent": args.controller_max_threshold,
+        
+        # Also provide old-style names for backward compatibility
+        "battery_capacity_wh": args.battery_capacity,
+        "pv_peak_power_w": pv_peak_power,
     }
 
 
@@ -195,7 +218,7 @@ def run_single_test(args: argparse.Namespace) -> Dict[str, Any]:
     current_soc = args.soc
     daily_forecasts = parse_forecasts(args.forecasts)
     current_time = parse_current_time(args.current_time)
-    config = build_config(args)
+    config = build_config(args, daily_forecasts)
     
     # Validate inputs
     if not (0 <= current_soc <= 100):
@@ -309,14 +332,15 @@ def run_scenarios(args: argparse.Namespace) -> List[Dict[str, Any]]:
     
     scenarios = get_predefined_scenarios()
     results = []
-    base_config = build_config(args)
+    base_config = build_config(args)  # Default config without forecast adjustment
     current_time = parse_current_time(args.current_time)
     
     for i, scenario in enumerate(scenarios, 1):
         logger.info(f"Running scenario {i}/{len(scenarios)}: {scenario['name']}")
         
-        # Build scenario config
-        config = {**base_config, **scenario["config_overrides"]}
+        # Build scenario config with forecast-aware adjustments
+        scenario_config = build_config(args, scenario["forecasts"])
+        config = {**scenario_config, **scenario["config_overrides"]}
         
         # Run simulation
         simulator = BatteryManagerSimulator(config)

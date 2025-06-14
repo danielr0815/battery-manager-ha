@@ -22,13 +22,23 @@ class MaximumBasedController:
         """
         self.target_soc_percent = config.get("target_soc_percent", 85.0)
 
-        # Initialize system components
+        # Initialize system components with filtered configs
         self.battery = Battery(config)
         self.pv_system = PVSystem(config)
         self.ac_consumer = ACConsumer(config)
         self.dc_consumer = DCConsumer(config)
-        self.charger = Charger(config)
-        self.inverter = Inverter(config)
+        
+        # Create charger config with correct efficiency parameter
+        charger_config = dict(config)
+        if "charger_efficiency" in config:
+            charger_config["efficiency"] = config["charger_efficiency"]
+        self.charger = Charger(charger_config)
+        
+        # Create inverter config with correct efficiency parameter  
+        inverter_config = dict(config)
+        if "inverter_efficiency" in config:
+            inverter_config["efficiency"] = config["inverter_efficiency"]
+        self.inverter = Inverter(inverter_config)
 
         # Initialize energy flow calculator
         self.energy_flow = EnergyFlowCalculator(
@@ -65,13 +75,13 @@ class MaximumBasedController:
         self.battery.current_soc_percent = current_soc_percent
         self.inverter.update_soc(current_soc_percent)
 
-        # Clear any previous simulation threshold override
-        self.energy_flow.clear_simulation_threshold()
-
         # Calculate forecast period (until 8 AM in 2 days)
-        forecast_start = current_time.replace(minute=0, second=0, microsecond=0)
+        # Keep original time for accurate first-hour calculation
+        forecast_start = current_time
         target_end = self._get_forecast_end_time(current_time)
-        forecast_hours = int((target_end - forecast_start).total_seconds() / 3600)
+        # Calculate total forecast duration in hours (including partial first hour)
+        total_seconds = (target_end - forecast_start).total_seconds()
+        forecast_hours = int(total_seconds / 3600) + (1 if total_seconds % 3600 > 0 else 0)
 
         # Run simulation
         soc_forecast = self._simulate_soc_progression(
@@ -179,26 +189,43 @@ class MaximumBasedController:
         self._last_hourly_details = []
 
         for hour in range(hours):
+            # Calculate duration multiplier for partial hours
+            if hour == 0:
+                # First hour: calculate remaining minutes until end of hour
+                minutes_remaining = 60 - start_time.minute
+                duration_fraction = minutes_remaining / 60.0
+            else:
+                # Full hours after the first
+                duration_fraction = 1.0
+
             # Get hourly values - pass reference_time for consistent day offset calculation
-            pv_production_wh = self.pv_system.calculate_hourly_production_wh(
+            pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
                 daily_forecasts, current_time, reference_time
             )
-            ac_consumption_wh = self.ac_consumer.calculate_hourly_consumption_wh(
+            ac_consumption_wh_full = self.ac_consumer.calculate_hourly_consumption_wh(
                 current_time
             )
-            dc_consumption_wh = self.dc_consumer.calculate_hourly_consumption_wh(
+            dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
                 current_time
             )
 
-            # Simulate energy flow for this hour
+            # Scale energy values by duration fraction for partial hours
+            pv_production_wh = pv_production_wh_full * duration_fraction
+            ac_consumption_wh = ac_consumption_wh_full * duration_fraction
+            dc_consumption_wh = dc_consumption_wh_full * duration_fraction
+
+            # Simulate energy flow for this interval
             flows, new_soc = self.energy_flow.simulate_energy_flow(
                 pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
             )
 
-            # Store detailed hourly data
+            # Store detailed hourly data with duration_minutes for display
+            duration_minutes = int(duration_fraction * 60)
             hourly_detail = {
                 "hour": hour,
                 "datetime": current_time.isoformat(),
+                "duration_fraction": duration_fraction,
+                "duration_minutes": duration_minutes,
                 "initial_soc_percent": current_soc,
                 "final_soc_percent": new_soc,
                 "pv_production_wh": pv_production_wh,
@@ -224,8 +251,13 @@ class MaximumBasedController:
             current_soc = new_soc
             soc_forecast.append(current_soc)
 
-            # Move to next hour
-            current_time += timedelta(hours=1)
+            # Move to next hour, but keep consistent hourly boundaries
+            if hour == 0:
+                # After first partial hour, jump to the next full hour boundary
+                current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            else:
+                # Subsequent hours are full hours
+                current_time += timedelta(hours=1)
 
         return soc_forecast
 
@@ -342,18 +374,32 @@ class MaximumBasedController:
         current_time = start_time
 
         for hour in range(hours):
+            # Calculate duration multiplier for partial hours
+            if hour == 0:
+                # First hour: calculate remaining minutes until end of hour
+                minutes_remaining = 60 - start_time.minute
+                duration_fraction = minutes_remaining / 60.0
+            else:
+                # Full hours after the first
+                duration_fraction = 1.0
+
             # Get hourly values - pass reference_time for consistent day offset calculation
-            pv_production_wh = self.pv_system.calculate_hourly_production_wh(
+            pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
                 daily_forecasts, current_time, reference_time
             )
-            ac_consumption_wh = self.ac_consumer.calculate_hourly_consumption_wh(
+            ac_consumption_wh_full = self.ac_consumer.calculate_hourly_consumption_wh(
                 current_time
             )
-            dc_consumption_wh = self.dc_consumer.calculate_hourly_consumption_wh(
+            dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
                 current_time
             )
 
-            # Simulate energy flow for this hour
+            # Scale energy values by duration fraction for partial hours
+            pv_production_wh = pv_production_wh_full * duration_fraction
+            ac_consumption_wh = ac_consumption_wh_full * duration_fraction
+            dc_consumption_wh = dc_consumption_wh_full * duration_fraction
+
+            # Simulate energy flow for this interval
             flows, new_soc = self.energy_flow.simulate_energy_flow(
                 pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
             )
@@ -451,3 +497,83 @@ class MaximumBasedController:
             if self._last_hourly_details
             else []
         )
+
+    def _calculate_hourly_energy_balance(
+        self, daily_forecasts: List[float], current_time: datetime, hours: int, initial_soc: float
+    ) -> List[Dict[str, Any]]:
+        """Calculate hourly energy balance for the forecast period."""
+        hourly_details = []
+        current_soc = initial_soc
+
+        # Calculate remaining minutes in current hour for partial first interval
+        current_minute = current_time.minute
+        remaining_minutes_first_hour = 60 - current_minute
+
+        for hour in range(hours):
+            hour_start = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(
+                hours=hour
+            )
+
+            # Determine actual duration for this hour
+            if hour == 0:
+                # First hour is partial - only remaining minutes
+                duration_minutes = remaining_minutes_first_hour
+                duration_factor = duration_minutes / 60.0
+            else:
+                # All other hours are full 60-minute intervals
+                duration_minutes = 60
+                duration_factor = 1.0
+
+            # Get full-hour forecasts and scale by duration
+            pv_production_full_hour = self.pv_system.get_production_forecast(
+                daily_forecasts, hour_start, 1, current_time
+            )[0]
+
+            ac_consumption_full_hour = self.ac_consumer.get_consumption_forecast(
+                hour_start, 1
+            )[0]
+
+            dc_consumption_full_hour = self.dc_consumer.get_consumption_forecast(
+                hour_start, 1
+            )[0]
+
+            # Scale by actual duration
+            pv_production_wh = pv_production_full_hour * duration_factor
+            ac_consumption_wh = ac_consumption_full_hour * duration_factor
+            dc_consumption_wh = dc_consumption_full_hour * duration_factor
+
+            # Simulate energy flow for this interval
+            flows, new_soc = self.energy_flow.simulate_energy_flow(
+                pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
+            )
+
+            hourly_details.append(
+                {
+                    "hour": hour,
+                    "hour_start": hour_start,
+                    "duration_minutes": duration_minutes,
+                    "duration_factor": duration_factor,
+                    "pv_production_wh": pv_production_wh,
+                    "ac_consumption_wh": ac_consumption_wh,
+                    "dc_consumption_wh": dc_consumption_wh,
+                    "grid_import_wh": flows.get("grid_import_wh", 0.0),
+                    "grid_export_wh": flows.get("grid_export_wh", 0.0),
+                    "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
+                    "battery_discharge_wh": flows.get("battery_discharge_wh", 0.0),
+                    "charger_ac_to_dc_wh": flows.get("charger_ac_to_dc_wh", 0.0),
+                    "charger_dc_from_ac_wh": flows.get("charger_dc_from_ac_wh", 0.0),
+                    "charger_forced_wh": flows.get("charger_forced_wh", 0.0),
+                    "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
+                    "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
+                    "inverter_enabled": flows.get("inverter_enabled", False),
+                    "net_grid_wh": flows.get("grid_import_wh", 0.0)
+                    - flows.get("grid_export_wh", 0.0),
+                    "net_battery_wh": flows.get("battery_charge_wh", 0.0)
+                    - flows.get("battery_discharge_wh", 0.0),
+                }
+            )
+            
+            # Update SOC for next iteration
+            current_soc = new_soc
+
+        return hourly_details

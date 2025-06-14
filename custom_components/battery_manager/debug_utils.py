@@ -31,9 +31,9 @@ def format_hourly_details_table(
         RESET = BOLD = GREEN = RED = BLUE = YELLOW = CYAN = MAGENTA = ""
 
     lines = []
-    lines.append("=" * 160)
+    lines.append("=" * 150)
     lines.append("DETAILED HOURLY CALCULATION TABLE (Internal Algorithm Data)")
-    lines.append("=" * 160)
+    lines.append("=" * 150)
 
     header = (
         f"{BOLD}{CYAN}{'Hour':>4}{RESET} | "
@@ -42,7 +42,8 @@ def format_hourly_details_table(
         f"{BOLD}{YELLOW}{'PV_Wh':>6}{RESET} | "
         f"{BOLD}{MAGENTA}{'AC_Wh':>6}{RESET} | "
         f"{BOLD}{MAGENTA}{'DC_Wh':>6}{RESET} | "
-        f"{BOLD}{'Grid_Wh':>8}{RESET} | "
+        f"{BOLD}{'Import':>6}{RESET} | "
+        f"{BOLD}{'Export':>6}{RESET} | "
         f"{BOLD}{'Batt_Wh':>8}{RESET} | "
         f"{BOLD}{'Forced':>7}{RESET} | "
         f"{BOLD}{'Volunt':>7}{RESET} | "
@@ -50,31 +51,38 @@ def format_hourly_details_table(
         f"{BOLD}{'Final%':>6}{RESET}"
     )
     lines.append(header)
-    lines.append("-" * 160)
+    lines.append("-" * 150)
 
     for detail in hourly_details:
         hour = detail["hour"]
         time_str = detail["datetime"][11:16]
+        duration_fraction = detail.get("duration_fraction", 1.0)
         soc_initial = detail["initial_soc_percent"]
         soc_final = detail["final_soc_percent"]
         pv_wh = detail["pv_production_wh"]
         ac_wh = detail["ac_consumption_wh"]
         dc_wh = detail["dc_consumption_wh"]
-        net_grid = detail["net_grid_wh"]
+        grid_import = detail.get("grid_import_wh", 0.0)
+        grid_export = detail.get("grid_export_wh", 0.0)
         net_battery = detail["net_battery_wh"]
         charger_forced = detail.get("charger_forced_wh", 0.0)
         charger_voluntary = detail.get("charger_voluntary_wh", 0.0)
         inverter_ac = detail["inverter_dc_to_ac_wh"]
 
-        if net_grid > 0:
-            grid_color = RED
-            grid_str = f"+{net_grid:7.0f}"
-        elif net_grid < 0:
-            grid_color = GREEN
-            grid_str = f"{net_grid:8.0f}"
+        # Color coding for grid flows
+        if grid_import > 0:
+            import_color = RED
+            import_str = f"{grid_import:6.0f}"
         else:
-            grid_color = RESET
-            grid_str = f"{net_grid:8.0f}"
+            import_color = RESET
+            import_str = f"{grid_import:6.0f}"
+
+        if grid_export > 0:
+            export_color = GREEN
+            export_str = f"{grid_export:6.0f}"
+        else:
+            export_color = RESET
+            export_str = f"{grid_export:6.0f}"
 
         if net_battery > 0:
             batt_color = GREEN
@@ -101,7 +109,8 @@ def format_hourly_details_table(
             f"{YELLOW}{pv_wh:6.0f}{RESET} | "
             f"{MAGENTA}{ac_wh:6.0f}{RESET} | "
             f"{MAGENTA}{dc_wh:6.0f}{RESET} | "
-            f"{grid_color}{grid_str}{RESET} | "
+            f"{import_color}{import_str}{RESET} | "
+            f"{export_color}{export_str}{RESET} | "
             f"{batt_color}{batt_str}{RESET} | "
             f"{RED if charger_forced > 0 else RESET}{charger_forced:7.0f}{RESET} | "
             f"{GREEN if charger_voluntary > 0 else RESET}{charger_voluntary:7.0f}{RESET} | "
@@ -110,17 +119,18 @@ def format_hourly_details_table(
         )
         lines.append(row)
 
-    lines.append("-" * 160)
+    lines.append("-" * 150)
     lines.append(f"\n{BOLD}Legend:{RESET}")
     lines.append(f"  {GREEN}Green{RESET}: Positive energy flows (charging, export)")
     lines.append(f"  {RED}Red{RESET}: Negative energy flows (discharging, import)")
-    lines.append(f"  {YELLOW}Yellow{RESET}: PV production")
+    lines.append("  Yellow: PV production")
     lines.append(f"  {MAGENTA}Magenta{RESET}: Consumption")
     lines.append(f"  {BLUE}Blue{RESET}: SOC values")
-    lines.append("  Grid_Wh: Net grid flow (+import, -export)")
+    lines.append(f"  Import: {RED}Grid import{RESET} (+from grid)")
+    lines.append(f"  Export: {GREEN}Grid export{RESET} (+to grid)")
     lines.append("  Batt_Wh: Net battery flow (+charge, -discharge)")
     lines.append(f"  Forced: {RED}Forced{RESET} charger energy (DC deficit)")
     lines.append(f"  Volunt: {GREEN}Voluntary{RESET} charger energy (PV surplus)")
-    lines.append("=" * 160)
+    lines.append("=" * 150)
 
     return "\n".join(lines)
