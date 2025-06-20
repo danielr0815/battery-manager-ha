@@ -70,7 +70,8 @@
         "title": "Controller Configuration",
         "description": "Configure controller parameters",
         "data": {
-          "controller_target_soc_percent": "Target SOC Threshold (%)"
+          "controller_target_soc_percent": "Target SOC Threshold (%)",
+          "extra_load_w": "Extra Load (W)"
         }
       }
     },
@@ -150,7 +151,8 @@
         "title": "Controller Configuration",
         "description": "Update controller parameters",
         "data": {
-          "controller_target_soc_percent": "Target SOC Threshold (%)"
+          "controller_target_soc_percent": "Target SOC Threshold (%)",
+          "extra_load_w": "Extra Load (W)"
         }
       }
     }

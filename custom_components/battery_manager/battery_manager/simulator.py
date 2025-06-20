@@ -77,7 +77,12 @@ class BatteryManagerSimulator:
                     raise ValueError(f"{param} must be between 0 and 1, got {eff}")
 
         # Power validation
-        power_params = ["pv_peak_power_w", "ac_base_load_w", "dc_base_load_w"]
+        power_params = [
+            "pv_peak_power_w",
+            "ac_base_load_w",
+            "dc_base_load_w",
+            "extra_load_w",
+        ]
         for param in power_params:
             if param in config:
                 power = config[param]
@@ -118,6 +123,45 @@ class BatteryManagerSimulator:
         results = self.controller.calculate_soc_threshold(
             current_soc_percent, daily_forecasts, current_time
         )
+
+        # Second simulation with extra load
+        extra_load_w = self.config.get("extra_load_w", 400.0)
+        forecast_hours = results.get("forecast_hours", 0)
+        soc_forecast_extra = self.controller.simulate_soc_with_extra_load(
+            current_time,
+            forecast_hours,
+            daily_forecasts,
+            current_soc_percent,
+            current_time,
+            extra_load_w,
+        )
+
+        target_soc = self.controller.target_soc_percent
+        inverter_min = self.controller.inverter.min_soc_percent
+        extra_active = False
+        if soc_forecast_extra:
+            start_soc = soc_forecast_extra[0]
+            target_idx = None
+            if start_soc >= target_soc:
+                below = False
+                for i, soc in enumerate(soc_forecast_extra):
+                    if soc < target_soc:
+                        below = True
+                    elif below and soc >= target_soc:
+                        target_idx = i
+                        break
+            else:
+                for i, soc in enumerate(soc_forecast_extra):
+                    if soc >= target_soc:
+                        target_idx = i
+                        break
+            if target_idx is not None:
+                if min(soc_forecast_extra[: target_idx + 1]) >= inverter_min:
+                    extra_active = True
+
+        results["extra_load"] = extra_active
+        for detail in self.controller._last_hourly_details:
+            detail["extra_load"] = extra_active
 
         # Add metadata
         results.update(

@@ -28,6 +28,7 @@ from .const import (
     ENTITY_DISCHARGE,
     ENTITY_HOURS_TO_MAX_SOC,
     ENTITY_INVERTER_STATUS,
+    ENTITY_EXTRA_LOAD,
     ENTITY_MAX_SOC_FORECAST,
     ENTITY_MIN_SOC_FORECAST,
     ENTITY_SOC_THRESHOLD,
@@ -55,6 +56,7 @@ async def async_setup_entry(
         BatteryManagerMaxSOCForecast(coordinator, config_entry),
         BatteryManagerHoursToMaxSOC(coordinator, config_entry),
         BatteryManagerDischarge(coordinator, config_entry),
+        BatteryManagerExtraLoad(coordinator, config_entry),
     ]
 
     async_add_entities(entities)
@@ -337,3 +339,21 @@ class BatteryManagerDischarge(BatteryManagerEntityBase, SensorEntity):
         new_value = self.coordinator.data.get("discharge_forecast_percent")
         self._log_state_change("Discharge Forecast", new_value)
         return new_value
+
+
+class BatteryManagerExtraLoad(BatteryManagerEntityBase, BinarySensorEntity):
+    """Binary sensor indicating if extra load can be enabled."""
+
+    def __init__(self, coordinator: BatteryManagerCoordinator, config_entry: ConfigEntry) -> None:
+        super().__init__(coordinator, config_entry, ENTITY_EXTRA_LOAD, "Extra Load")
+        self._attr_icon = "mdi:flash"
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        """Return true if extra load should be active."""
+        if not self.available:
+            return None
+
+        new_state = self.coordinator.data.get("extra_load", False)
+        self._log_state_change("Extra Load", new_state)
+        return new_state

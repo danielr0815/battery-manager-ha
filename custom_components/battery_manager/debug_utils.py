@@ -31,10 +31,11 @@ def format_hourly_details_table(
         RESET = BOLD = GREEN = RED = BLUE = YELLOW = CYAN = MAGENTA = ""
 
     lines = []
-    lines.append("=" * 150)
+    lines.append("=" * 170)
     lines.append("DETAILED HOURLY CALCULATION TABLE (Internal Algorithm Data)")
-    lines.append("=" * 150)
+    lines.append("=" * 170)
 
+    has_extra = "extra_load" in hourly_details[0]
     header = (
         f"{BOLD}{CYAN}{'Hour':>4}{RESET} | "
         f"{BOLD}{CYAN}{'Time':>5}{RESET} | "
@@ -49,9 +50,10 @@ def format_hourly_details_table(
         f"{BOLD}{'Volunt':>7}{RESET} | "
         f"{BOLD}{'Inv_Wh':>7}{RESET} | "
         f"{BOLD}{'Final%':>6}{RESET}"
+        + (f" | {BOLD}{'Extra':>5}{RESET}" if has_extra else "")
     )
     lines.append(header)
-    lines.append("-" * 150)
+    lines.append("-" * 170)
 
     for detail in hourly_details:
         hour = detail["hour"]
@@ -116,10 +118,15 @@ def format_hourly_details_table(
             f"{GREEN if charger_voluntary > 0 else RESET}{charger_voluntary:7.0f}{RESET} | "
             f"{RESET}{inverter_ac:7.0f}{RESET} | "
             f"{soc_color}{soc_final:6.1f}{RESET}"
+            + (
+                f" | {GREEN if detail.get('extra_load') else RED}{'ON' if detail.get('extra_load') else 'OFF':>5}{RESET}"
+                if has_extra
+                else ""
+            )
         )
         lines.append(row)
 
-    lines.append("-" * 150)
+    lines.append("-" * 170)
     lines.append(f"\n{BOLD}Legend:{RESET}")
     lines.append(f"  {GREEN}Green{RESET}: Positive energy flows (charging, export)")
     lines.append(f"  {RED}Red{RESET}: Negative energy flows (discharging, import)")
@@ -131,6 +138,6 @@ def format_hourly_details_table(
     lines.append("  Batt_Wh: Net battery flow (+charge, -discharge)")
     lines.append(f"  Forced: {RED}Forced{RESET} charger energy (DC deficit)")
     lines.append(f"  Volunt: {GREEN}Voluntary{RESET} charger energy (PV surplus)")
-    lines.append("=" * 150)
+    lines.append("=" * 170)
 
     return "\n".join(lines)
