@@ -49,6 +49,8 @@ DEFAULT_CONFIG = {
     "inverter_min_soc_percent": 20.0,
     # Controller defaults
     "controller_target_soc_percent": 85.0,
+    # Extra load defaults
+    "extra_load_w": 400.0,
 }
 
 # Entity configuration keys
@@ -64,6 +66,7 @@ ENTITY_MIN_SOC_FORECAST = "min_soc_forecast"
 ENTITY_MAX_SOC_FORECAST = "max_soc_forecast"
 ENTITY_DISCHARGE = "discharge"
 ENTITY_HOURS_TO_MAX_SOC = "hours_to_max_soc"
+ENTITY_EXTRA_LOAD = "extra_load"
 
 # Attributes
 ATTR_GRID_IMPORT_KWH = "grid_import_kwh"

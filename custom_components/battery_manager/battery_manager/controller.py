@@ -168,6 +168,9 @@ class MaximumBasedController:
         daily_forecasts: List[float],
         initial_soc_percent: float,
         reference_time: datetime,
+        *,
+        extra_ac_load_w: float = 0.0,
+        store_details: bool = True,
     ) -> List[float]:
         """Simulate SOC progression over the forecast period.
 
@@ -185,8 +188,8 @@ class MaximumBasedController:
         current_soc = initial_soc_percent
         current_time = start_time
 
-        # Clear previous hourly details
-        self._last_hourly_details = []
+        if store_details:
+            self._last_hourly_details = []
 
         for hour in range(hours):
             # Calculate duration multiplier for partial hours
@@ -202,8 +205,9 @@ class MaximumBasedController:
             pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
                 daily_forecasts, current_time, reference_time
             )
-            ac_consumption_wh_full = self.ac_consumer.calculate_hourly_consumption_wh(
-                current_time
+            ac_consumption_wh_full = (
+                self.ac_consumer.calculate_hourly_consumption_wh(current_time)
+                + extra_ac_load_w
             )
             dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
                 current_time
@@ -219,34 +223,35 @@ class MaximumBasedController:
                 pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
             )
 
-            # Store detailed hourly data with duration_minutes for display
-            duration_minutes = int(duration_fraction * 60)
-            hourly_detail = {
-                "hour": hour,
-                "datetime": current_time.isoformat(),
-                "duration_fraction": duration_fraction,
-                "duration_minutes": duration_minutes,
-                "initial_soc_percent": current_soc,
-                "final_soc_percent": new_soc,
-                "pv_production_wh": pv_production_wh,
-                "ac_consumption_wh": ac_consumption_wh,
-                "dc_consumption_wh": dc_consumption_wh,
-                "grid_import_wh": flows.get("grid_import_wh", 0.0),
-                "grid_export_wh": flows.get("grid_export_wh", 0.0),
-                "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
-                "battery_discharge_wh": flows.get("battery_discharge_wh", 0.0),
-                "charger_ac_to_dc_wh": flows.get("charger_ac_to_dc_wh", 0.0),
-                "charger_dc_from_ac_wh": flows.get("charger_dc_from_ac_wh", 0.0),
-                "charger_forced_wh": flows.get("charger_forced_wh", 0.0),
-                "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
-                "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
-                "inverter_enabled": flows.get("inverter_enabled", False),
-                "net_grid_wh": flows.get("grid_import_wh", 0.0)
-                - flows.get("grid_export_wh", 0.0),
-                "net_battery_wh": flows.get("battery_charge_wh", 0.0)
-                - flows.get("battery_discharge_wh", 0.0),
-            }
-            self._last_hourly_details.append(hourly_detail)
+            if store_details:
+                # Store detailed hourly data with duration_minutes for display
+                duration_minutes = int(duration_fraction * 60)
+                hourly_detail = {
+                    "hour": hour,
+                    "datetime": current_time.isoformat(),
+                    "duration_fraction": duration_fraction,
+                    "duration_minutes": duration_minutes,
+                    "initial_soc_percent": current_soc,
+                    "final_soc_percent": new_soc,
+                    "pv_production_wh": pv_production_wh,
+                    "ac_consumption_wh": ac_consumption_wh,
+                    "dc_consumption_wh": dc_consumption_wh,
+                    "grid_import_wh": flows.get("grid_import_wh", 0.0),
+                    "grid_export_wh": flows.get("grid_export_wh", 0.0),
+                    "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
+                    "battery_discharge_wh": flows.get("battery_discharge_wh", 0.0),
+                    "charger_ac_to_dc_wh": flows.get("charger_ac_to_dc_wh", 0.0),
+                    "charger_dc_from_ac_wh": flows.get("charger_dc_from_ac_wh", 0.0),
+                    "charger_forced_wh": flows.get("charger_forced_wh", 0.0),
+                    "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
+                    "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
+                    "inverter_enabled": flows.get("inverter_enabled", False),
+                    "net_grid_wh": flows.get("grid_import_wh", 0.0)
+                    - flows.get("grid_export_wh", 0.0),
+                    "net_battery_wh": flows.get("battery_charge_wh", 0.0)
+                    - flows.get("battery_discharge_wh", 0.0),
+                }
+                self._last_hourly_details.append(hourly_detail)
 
             current_soc = new_soc
             soc_forecast.append(current_soc)
@@ -374,6 +379,8 @@ class MaximumBasedController:
         daily_forecasts: List[float],
         initial_soc_percent: float,
         reference_time: datetime,
+        *,
+        extra_ac_load_w: float = 0.0,
     ) -> Dict[str, float]:
         """Calculate total grid import/export for the forecast period.
 
@@ -407,8 +414,9 @@ class MaximumBasedController:
             pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
                 daily_forecasts, current_time, reference_time
             )
-            ac_consumption_wh_full = self.ac_consumer.calculate_hourly_consumption_wh(
-                current_time
+            ac_consumption_wh_full = (
+                self.ac_consumer.calculate_hourly_consumption_wh(current_time)
+                + extra_ac_load_w
             )
             dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
                 current_time
@@ -447,6 +455,27 @@ class MaximumBasedController:
             List of hourly calculation data for debugging/analysis
         """
         return self._last_hourly_details.copy() if self._last_hourly_details else []
+
+    def simulate_soc_with_extra_load(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        initial_soc_percent: float,
+        reference_time: datetime,
+        extra_ac_load_w: float,
+    ) -> List[float]:
+        """Public wrapper to simulate SOC progression with additional AC load."""
+
+        return self._simulate_soc_progression(
+            start_time,
+            hours,
+            daily_forecasts,
+            initial_soc_percent,
+            reference_time,
+            extra_ac_load_w=extra_ac_load_w,
+            store_details=False,
+        )
 
     def update_config(self, config: Dict[str, Any]) -> None:
         """Update system configuration.

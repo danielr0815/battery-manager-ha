@@ -304,6 +304,9 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "controller_target_soc_percent",
                     default=DEFAULT_CONFIG["controller_target_soc_percent"],
                 ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "extra_load_w", default=DEFAULT_CONFIG["extra_load_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
             }
         )
 
@@ -632,6 +635,9 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
                     "controller_target_soc_percent",
                     default=current_config.get("controller_target_soc_percent"),
                 ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                vol.Required(
+                    "extra_load_w", default=current_config.get("extra_load_w")
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
             }
         )
 
