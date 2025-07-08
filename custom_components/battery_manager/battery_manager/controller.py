@@ -312,13 +312,6 @@ class MaximumBasedController:
                     target_reached_index = i
                     break
 
-        # If target is never reached, set threshold to target value
-        if target_reached_index is None:
-            return {
-                "threshold_soc": self.target_soc_percent,
-                "discharge_forecast_percent": 0.0,
-            }
-
         # Find minimum SOC only until target is reached (or entire period if target never reached)
         if target_reached_index is not None:
             # Only consider SOC values until target is reached
@@ -329,13 +322,18 @@ class MaximumBasedController:
         
         min_soc_forecast = min(relevant_soc_values)
 
-        # Calculate total forced charger energy before target is reached
+        # Calculate total forced charger energy before target is reached (or entire period if never reached)
         total_forced_charger_wh = 0.0
-        if self._last_hourly_details and target_reached_index is not None:
-            # Sum forced charger energy from start until target is reached
-            end_index = min(target_reached_index + 1, len(self._last_hourly_details))
-            for hour_detail in self._last_hourly_details[:end_index]:
-                total_forced_charger_wh += hour_detail.get("charger_forced_wh", 0.0)
+        if self._last_hourly_details:
+            if target_reached_index is not None:
+                # Sum forced charger energy from start until target is reached
+                end_index = min(target_reached_index + 1, len(self._last_hourly_details))
+                for hour_detail in self._last_hourly_details[:end_index]:
+                    total_forced_charger_wh += hour_detail.get("charger_forced_wh", 0.0)
+            else:
+                # Target never reached, sum entire forecast period
+                for hour_detail in self._last_hourly_details:
+                    total_forced_charger_wh += hour_detail.get("charger_forced_wh", 0.0)
 
         # Convert forced charger energy to SOC percentage
         battery_capacity_wh = self.battery.capacity_wh
