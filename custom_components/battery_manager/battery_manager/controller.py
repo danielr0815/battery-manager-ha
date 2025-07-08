@@ -840,7 +840,8 @@ class MaximumBasedController:
         self.ac_consumer.set_additional_load_active(False)
         
         return {
-            "additional_load_active": any(additional_load_schedule),
+            "additional_load_active": additional_load_schedule[0] if additional_load_schedule else False,
+            "any_activation_planned": any(additional_load_schedule),
             "activation_start": start_time if any(additional_load_schedule) else None,
             "schedule": additional_load_schedule,
             "hourly_details": final_hourly_details,

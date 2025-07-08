@@ -105,6 +105,7 @@ class EnergyFlowCalculator:
         }
 
         remaining_ac_wh = ac_surplus_wh
+        remaining_dc_consumption_wh = dc_consumption_wh
 
         # Calculate actual DC needs
         max_battery_charge_wh = self.battery.get_max_charge_energy_wh()
@@ -135,6 +136,7 @@ class EnergyFlowCalculator:
 
                 # Supply DC consumption
                 dc_supplied_wh = min(remaining_dc_wh, dc_consumption_wh)
+                remaining_dc_consumption_wh -= dc_supplied_wh
                 remaining_dc_wh -= dc_supplied_wh
 
                 # Charge battery with remaining DC energy
@@ -158,6 +160,32 @@ class EnergyFlowCalculator:
                     
                     # Use for DC consumption (should fully cover it if charger is sized correctly)
                     dc_supplied_wh = min(dc_output_wh, dc_consumption_wh)
+                    remaining_dc_consumption_wh -= dc_supplied_wh
+
+        # Handle any remaining DC consumption from battery
+        if remaining_dc_consumption_wh > 0:
+            max_discharge_wh = self.battery.get_max_discharge_energy_wh()
+            required_battery_wh = remaining_dc_consumption_wh / self.battery.discharge_efficiency
+            
+            if required_battery_wh <= max_discharge_wh:
+                # Battery can supply all remaining DC consumption
+                self.battery.charge_discharge(-remaining_dc_consumption_wh)
+                flows["battery_discharge_wh"] = required_battery_wh
+            else:
+                # Battery cannot supply enough - use what's available
+                if max_discharge_wh > 0:
+                    available_dc_output = max_discharge_wh * self.battery.discharge_efficiency
+                    self.battery.charge_discharge(-available_dc_output)
+                    flows["battery_discharge_wh"] = max_discharge_wh
+                    remaining_dc_consumption_wh -= available_dc_output
+                    
+                    # Handle remaining DC consumption through forced charger operation
+                    if remaining_dc_consumption_wh > 0:
+                        ac_needed_wh = self.charger.provide_dc_from_ac(remaining_dc_consumption_wh)
+                        flows["charger_dc_from_ac_wh"] = remaining_dc_consumption_wh
+                        flows["charger_forced_wh"] = remaining_dc_consumption_wh
+                        flows["charger_standby_wh"] = self.charger.get_standby_consumption_wh(True)
+                        flows["grid_import_wh"] = ac_needed_wh
 
         # Export remaining AC surplus to grid
         if remaining_ac_wh > 0:
@@ -217,13 +245,13 @@ class EnergyFlowCalculator:
 
             if required_battery_wh <= max_discharge_wh:
                 # Battery can supply all needed energy
-                discharge_result = self.battery.charge_discharge(-total_dc_needed_wh)
+                self.battery.charge_discharge(-total_dc_needed_wh)
                 flows["battery_discharge_wh"] = required_battery_wh
             else:
                 # Battery cannot supply enough energy - use what's available
                 if max_discharge_wh > 0:
                     available_dc_output = max_discharge_wh * self.battery.discharge_efficiency
-                    discharge_result = self.battery.charge_discharge(-available_dc_output)
+                    self.battery.charge_discharge(-available_dc_output)
                     flows["battery_discharge_wh"] = max_discharge_wh
                     
                     # Adjust inverter output if not enough DC available
