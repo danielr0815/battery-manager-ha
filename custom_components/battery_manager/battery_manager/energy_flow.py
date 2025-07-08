@@ -267,20 +267,19 @@ class EnergyFlowCalculator:
             flows["grid_import_wh"] += remaining_ac_deficit_wh
 
         # Handle DC consumption that couldn't be supplied by battery
-        remaining_dc_wh = max(0, dc_consumption_wh - (total_dc_needed_wh - dc_consumption_wh))
-        if remaining_dc_wh > 0 and total_dc_needed_wh > dc_consumption_wh:
-            # Some DC was used for inverter, check if direct DC needs are still unmet
-            battery_dc_available = flows["battery_discharge_wh"] * self.battery.discharge_efficiency
-            dc_used_for_inverter = total_dc_needed_wh - dc_consumption_wh
-            remaining_dc_for_direct = max(0, dc_consumption_wh - max(0, battery_dc_available - dc_used_for_inverter))
-            
-            if remaining_dc_for_direct > 0:
-                # Use charger for remaining DC consumption (DC emergency mode)
-                ac_needed_wh = self.charger.provide_dc_from_ac(remaining_dc_for_direct)
-                flows["charger_dc_from_ac_wh"] = remaining_dc_for_direct
-                flows["charger_forced_wh"] = remaining_dc_for_direct
-                flows["charger_standby_wh"] = self.charger.get_standby_consumption_wh(True)
-                flows["grid_import_wh"] += ac_needed_wh
+        # Calculate how much DC was actually supplied by the battery
+        battery_dc_supplied = flows["battery_discharge_wh"] * self.battery.discharge_efficiency if flows["battery_discharge_wh"] > 0 else 0.0
+        
+        # Calculate remaining DC consumption that wasn't supplied by battery
+        remaining_dc_consumption = max(0, dc_consumption_wh - max(0, battery_dc_supplied - (dc_needed_for_ac_wh if 'dc_needed_for_ac_wh' in locals() else 0.0)))
+        
+        if remaining_dc_consumption > 0:
+            # Use charger for remaining DC consumption (DC emergency mode)
+            ac_needed_wh = self.charger.provide_dc_from_ac(remaining_dc_consumption)
+            flows["charger_dc_from_ac_wh"] = remaining_dc_consumption
+            flows["charger_forced_wh"] = remaining_dc_consumption
+            flows["charger_standby_wh"] = self.charger.get_standby_consumption_wh(True)
+            flows["grid_import_wh"] += ac_needed_wh
 
         return flows
 
