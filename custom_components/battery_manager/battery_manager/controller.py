@@ -38,6 +38,8 @@ class MaximumBasedController:
         inverter_config = dict(config)
         if "inverter_efficiency" in config:
             inverter_config["efficiency"] = config["inverter_efficiency"]
+        if "inverter_min_soc_percent" in config:
+            inverter_config["min_soc_percent"] = config["inverter_min_soc_percent"]
         self.inverter = Inverter(inverter_config)
 
         # Initialize energy flow calculator
@@ -83,14 +85,20 @@ class MaximumBasedController:
         total_seconds = (target_end - forecast_start).total_seconds()
         forecast_hours = int(total_seconds / 3600) + (1 if total_seconds % 3600 > 0 else 0)
 
-        # Run simulation
-        soc_forecast = self._simulate_soc_progression(
+        # Run simulation with additional load optimization
+        additional_load_result = self._calculate_additional_load_optimization(
             forecast_start,
             forecast_hours,
             daily_forecasts,
             current_soc_percent,
             current_time,
         )
+        
+        # Use optimized hourly details
+        self._last_hourly_details = additional_load_result["hourly_details"]
+        
+        # Extract SOC forecast from the hourly details
+        soc_forecast = [detail["final_soc_percent"] for detail in self._last_hourly_details]
 
         # Calculate threshold based on the algorithm
         threshold_result = self._calculate_threshold_from_forecast(soc_forecast)
@@ -130,6 +138,8 @@ class MaximumBasedController:
             "grid_import_kwh": grid_flows["import_kwh"],
             "grid_export_kwh": grid_flows["export_kwh"],
             "soc_forecast": soc_forecast,  # For debugging
+            "additional_load_active": additional_load_result["additional_load_active"],
+            "additional_load_schedule": additional_load_result["schedule"],
         }
 
         # Cache results
@@ -231,6 +241,7 @@ class MaximumBasedController:
                 "pv_production_wh": pv_production_wh,
                 "ac_consumption_wh": ac_consumption_wh,
                 "dc_consumption_wh": dc_consumption_wh,
+                "additional_load_active": False,  # Always false in base simulation
                 "grid_import_wh": flows.get("grid_import_wh", 0.0),
                 "grid_export_wh": flows.get("grid_export_wh", 0.0),
                 "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
@@ -640,3 +651,487 @@ class MaximumBasedController:
             relevant_soc_values = soc_forecast
             
         return min(relevant_soc_values)
+
+    def _calculate_additional_load_optimization(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        initial_soc_percent: float,
+        reference_time: datetime,
+    ) -> Dict[str, Any]:
+        """Calculate optimal additional load activation schedule using iterative hourly approach.
+
+        The algorithm works as follows:
+        1. For each hour, simulate WITHOUT additional load
+        2. If SOC would reach 85% without additional load AND min SOC (20%) is maintained:
+           a. Test simulation WITH additional load from this hour
+           b. If min SOC is still maintained with additional load, activate it
+           c. Continue with additional load active until deactivation condition
+        3. Deactivation: If >50% of additional load power comes from battery
+
+        Args:
+            start_time: Start time for simulation
+            hours: Number of hours to simulate
+            daily_forecasts: Daily PV forecasts in kWh
+            initial_soc_percent: Initial SOC for simulation
+            reference_time: Reference time for day offset calculations
+
+        Returns:
+            Dictionary containing additional load schedule and updated forecast
+        """
+        # Configuration - use config parameters instead of magic numbers
+        SOC_TARGET_THRESHOLD = self.target_soc_percent  # Use configured target SOC instead of hardcoded 85.0
+        MIN_INVERTER_THRESHOLD = self.inverter.min_soc_percent  # Use configured inverter minimum
+        BATTERY_CONTRIBUTION_THRESHOLD = 0.5  # 50%
+        
+        # Initialize
+        additional_load_schedule = [False] * hours
+        current_soc = initial_soc_percent
+        current_time = start_time
+        additional_load_active = False
+        
+        # Store hourly details for final result
+        final_hourly_details = []
+        
+        # Iterative hourly simulation
+        for hour in range(hours):
+            # Calculate duration fraction for first hour
+            if hour == 0:
+                minutes_remaining = 60 - start_time.minute
+                duration_fraction = minutes_remaining / 60.0
+            else:
+                duration_fraction = 1.0
+                
+            # Get energy values for this hour
+            pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
+                daily_forecasts, current_time, reference_time
+            )
+            dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
+                current_time
+            )
+            
+            # Scale by duration fraction
+            pv_production_wh = pv_production_wh_full * duration_fraction
+            dc_consumption_wh = dc_consumption_wh_full * duration_fraction
+            
+            # Decision logic for additional load
+            if not additional_load_active:
+                # Test WITHOUT additional load first
+                self.ac_consumer.set_additional_load_active(False)
+                ac_consumption_wh_without = (
+                    self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                )
+                
+                # Simulate this hour without additional load
+                flows_without, soc_without = self.energy_flow.simulate_energy_flow(
+                    pv_production_wh, ac_consumption_wh_without, dc_consumption_wh, current_soc
+                )
+                
+                # Check activation condition: Use only the comprehensive safety check
+                # The safety check verifies both conditions:
+                # 1. Target SOC would be reached even WITH additional load  
+                # 2. Minimum SOC would never be violated WITH additional load
+                safety_check_passed = self._verify_additional_load_safety(
+                    current_time, hours - hour, daily_forecasts, current_soc, reference_time
+                )
+                
+                if safety_check_passed:
+                    # Test WITH additional load to see if it's safe
+                    self.ac_consumer.set_additional_load_active(True)
+                    ac_consumption_wh_with = (
+                        self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                    )
+                    
+                    # Activate additional load
+                    additional_load_active = True
+                    additional_load_schedule[hour] = True
+                    
+                    # Use the simulation WITH additional load
+                    flows, new_soc = self.energy_flow.simulate_energy_flow(
+                        pv_production_wh, ac_consumption_wh_with, dc_consumption_wh, current_soc
+                    )
+                    ac_consumption_wh = ac_consumption_wh_with
+                else:
+                    # Keep additional load off
+                    flows, new_soc = flows_without, soc_without
+                    ac_consumption_wh = ac_consumption_wh_without
+                    
+            else:
+                # Additional load is already active - check deactivation condition
+                self.ac_consumer.set_additional_load_active(True)
+                ac_consumption_wh_with = (
+                    self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                )
+                
+                # Calculate how much additional load power comes from battery
+                additional_load_power = self.ac_consumer.additional_load_w * duration_fraction
+                available_pv_for_additional = max(0, pv_production_wh - dc_consumption_wh - 
+                                                 (ac_consumption_wh_with - additional_load_power))
+                battery_contribution = max(0, additional_load_power - available_pv_for_additional)
+                battery_contribution_ratio = battery_contribution / additional_load_power if additional_load_power > 0 else 0
+                
+                # Deactivation condition: >50% from battery AND SOC target has been reached
+                # Only deactivate if we have successfully reached the target SOC (85%)
+                battery_contribution_too_high = battery_contribution_ratio > BATTERY_CONTRIBUTION_THRESHOLD
+                soc_target_reached = current_soc >= SOC_TARGET_THRESHOLD
+                
+                if battery_contribution_too_high and soc_target_reached:
+                    # Deactivate additional load - too much battery drain
+                    additional_load_active = False
+                    additional_load_schedule[hour] = False
+                    
+                    # Debug output
+                    # if hour < 20:
+                    #     print(f"  Deactivating additional load: battery_contribution={battery_contribution_ratio:.1%} > {BATTERY_CONTRIBUTION_THRESHOLD:.1%}")
+                    
+                    # Recalculate without additional load
+                    self.ac_consumer.set_additional_load_active(False)
+                    ac_consumption_wh = (
+                        self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                    )
+                    flows, new_soc = self.energy_flow.simulate_energy_flow(
+                        pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
+                    )
+                else:
+                    # Keep additional load active - mostly powered by PV/grid
+                    additional_load_schedule[hour] = True
+                    flows, new_soc = self.energy_flow.simulate_energy_flow(
+                        pv_production_wh, ac_consumption_wh_with, dc_consumption_wh, current_soc
+                    )
+                    ac_consumption_wh = ac_consumption_wh_with
+            
+            # Store hourly detail
+            duration_minutes = int(duration_fraction * 60)
+            hourly_detail = {
+                "hour": hour,
+                "datetime": current_time.isoformat(),
+                "duration_fraction": duration_fraction,
+                "duration_minutes": duration_minutes,
+                "initial_soc_percent": current_soc,
+                "final_soc_percent": new_soc,
+                "pv_production_wh": pv_production_wh,
+                "ac_consumption_wh": ac_consumption_wh,
+                "dc_consumption_wh": dc_consumption_wh,
+                "additional_load_active": additional_load_schedule[hour],
+                "grid_import_wh": flows.get("grid_import_wh", 0.0),
+                "grid_export_wh": flows.get("grid_export_wh", 0.0),
+                "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
+                "battery_discharge_wh": flows.get("battery_discharge_wh", 0.0),
+                "charger_ac_to_dc_wh": flows.get("charger_ac_to_dc_wh", 0.0),
+                "charger_dc_from_ac_wh": flows.get("charger_dc_from_ac_wh", 0.0),
+                "charger_forced_wh": flows.get("charger_forced_wh", 0.0),
+                "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
+                "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
+                "inverter_enabled": flows.get("inverter_enabled", False),
+                "net_grid_wh": flows.get("grid_import_wh", 0.0) - flows.get("grid_export_wh", 0.0),
+                "net_battery_wh": flows.get("battery_charge_wh", 0.0) - flows.get("battery_discharge_wh", 0.0),
+            }
+            final_hourly_details.append(hourly_detail)
+            
+            # Update for next hour
+            current_soc = new_soc
+            if hour == 0:
+                current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            else:
+                current_time += timedelta(hours=1)
+        
+        # Reset AC consumer state
+        self.ac_consumer.set_additional_load_active(False)
+        
+        return {
+            "additional_load_active": any(additional_load_schedule),
+            "activation_start": start_time if any(additional_load_schedule) else None,
+            "schedule": additional_load_schedule,
+            "hourly_details": final_hourly_details,
+        }
+
+    def _verify_additional_load_safety(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        initial_soc_percent: float,
+        reference_time: datetime,
+    ) -> bool:
+        """Verify that activating additional load maintains minimum SOC until 85% target is reached.
+
+        Args:
+            start_time: Start time for verification
+            hours: Number of hours to verify
+            daily_forecasts: Daily PV forecasts in kWh
+            initial_soc_percent: Initial SOC for verification
+            reference_time: Reference time for day offset calculations
+
+        Returns:
+            True if additional load can be safely activated (SOC stays above 20% until 85% is reached)
+        """
+        MIN_INVERTER_THRESHOLD = self.inverter.min_soc_percent  # Use configured inverter minimum
+        SOC_TARGET_THRESHOLD = self.target_soc_percent  # Use configured target SOC
+        
+        # Save current state
+        original_state = self.ac_consumer.is_additional_load_active()
+        
+        try:
+            # Simulate with additional load active
+            self.ac_consumer.set_additional_load_active(True)
+            soc_forecast = self._simulate_soc_progression(
+                start_time, hours, daily_forecasts, initial_soc_percent, reference_time
+            )
+            
+            if not soc_forecast:
+                return False
+            
+            # Check SOC progression until target is reached or forecast ends
+            for soc in soc_forecast:
+                # Check if SOC goes below minimum threshold
+                if soc < MIN_INVERTER_THRESHOLD:
+                    return False
+                
+                # If we've reached the target SOC, safety check is complete
+                if soc >= SOC_TARGET_THRESHOLD:
+                    return True
+            
+            return True
+            
+        finally:
+            # Restore original state
+            self.ac_consumer.set_additional_load_active(original_state)
+
+    def _test_additional_load_activation(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        reference_time: datetime,
+    ) -> Dict[str, Any]:
+        """Test if additional load can be activated from start_time.
+
+        Args:
+            start_time: Start time for activation test
+            hours: Number of hours to test
+            daily_forecasts: Daily PV forecasts in kWh
+            reference_time: Reference time for day offset calculations
+
+        Returns:
+            Dictionary with test results
+        """
+        # Get current SOC at start_time (we already have this from main calculation)
+        initial_soc = self.battery.current_soc_percent
+        
+        # Activate additional load for testing
+        self.ac_consumer.set_additional_load_active(True)
+        
+        # Run simulation with additional load
+        test_forecast = self._simulate_soc_progression(
+            start_time, hours, daily_forecasts, initial_soc, reference_time
+        )
+        test_details = self._last_hourly_details.copy()
+        
+        # Reset additional load
+        self.ac_consumer.set_additional_load_active(False)
+        
+        # Check conditions:
+        # 1. Target SOC (85%) is reached within the forecast period
+        # 2. Minimum inverter threshold (20%) is never violated
+        target_reached = any(soc >= self.target_soc_percent for soc in test_forecast)
+        min_soc_ok = all(soc >= self.inverter.min_soc_percent for soc in test_forecast)
+        
+        if not (target_reached and min_soc_ok):
+            return {"can_activate": False, "active_hours": 0}
+        
+        # Find when to deactivate: when more than half of additional load power comes from battery
+        additional_load_wh = self.ac_consumer.additional_load_w
+        deactivation_hour = hours  # Default: active until end
+        
+        for hour_idx, detail in enumerate(test_details):
+            battery_discharge_wh = detail.get("battery_discharge_wh", 0.0)
+            duration_fraction = detail.get("duration_fraction", 1.0)
+            
+            # Calculate additional load energy for this hour
+            additional_load_energy_wh = additional_load_wh * duration_fraction
+            
+            # Check if more than half of additional load energy comes from battery
+            # This is a simplified check - in reality we'd need to determine what portion 
+            # of battery discharge is attributable to the additional load
+            if battery_discharge_wh > (additional_load_energy_wh / 2):
+                deactivation_hour = hour_idx
+                break
+        
+        return {
+            "can_activate": True,
+            "active_hours": deactivation_hour,
+        }
+
+    def _simulate_with_additional_load_schedule(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        initial_soc_percent: float,
+        reference_time: datetime,
+        schedule: List[bool],
+    ) -> List[Dict[str, Any]]:
+        """Simulate SOC progression with given additional load schedule.
+
+        Args:
+            start_time: Start time for simulation
+            hours: Number of hours to simulate
+            daily_forecasts: Daily PV forecasts in kWh
+            initial_soc_percent: Initial SOC for simulation
+            reference_time: Reference time for day offset calculations
+            schedule: List of booleans indicating when additional load is active
+
+        Returns:
+            List of hourly details with additional load status
+        """
+        soc_forecast = []
+        current_soc = initial_soc_percent
+        current_time = start_time
+        hourly_details = []
+
+        for hour in range(hours):
+            # Set additional load status for this hour
+            additional_load_active = schedule[hour] if hour < len(schedule) else False
+            self.ac_consumer.set_additional_load_active(additional_load_active)
+            
+            # Calculate duration multiplier for partial hours
+            if hour == 0:
+                minutes_remaining = 60 - start_time.minute
+                duration_fraction = minutes_remaining / 60.0
+            else:
+                duration_fraction = 1.0
+
+            # Get hourly values
+            pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
+                daily_forecasts, current_time, reference_time
+            )
+            ac_consumption_wh_full = self.ac_consumer.calculate_hourly_consumption_wh(
+                current_time
+            )
+            dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
+                current_time
+            )
+
+            # Scale energy values by duration fraction for partial hours
+            pv_production_wh = pv_production_wh_full * duration_fraction
+            ac_consumption_wh = ac_consumption_wh_full * duration_fraction
+            dc_consumption_wh = dc_consumption_wh_full * duration_fraction
+
+            # Simulate energy flow for this interval
+            flows, new_soc = self.energy_flow.simulate_energy_flow(
+                pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
+            )
+
+            # Store detailed hourly data including additional load status
+            duration_minutes = int(duration_fraction * 60)
+            hourly_detail = {
+                "hour": hour,
+                "datetime": current_time.isoformat(),
+                "duration_fraction": duration_fraction,
+                "duration_minutes": duration_minutes,
+                "initial_soc_percent": current_soc,
+                "final_soc_percent": new_soc,
+                "pv_production_wh": pv_production_wh,
+                "ac_consumption_wh": ac_consumption_wh,
+                "dc_consumption_wh": dc_consumption_wh,
+                "additional_load_active": additional_load_active,
+                "grid_import_wh": flows.get("grid_import_wh", 0.0),
+                "grid_export_wh": flows.get("grid_export_wh", 0.0),
+                "battery_charge_wh": flows.get("battery_charge_wh", 0.0),
+                "battery_discharge_wh": flows.get("battery_discharge_wh", 0.0),
+                "charger_ac_to_dc_wh": flows.get("charger_ac_to_dc_wh", 0.0),
+                "charger_dc_from_ac_wh": flows.get("charger_dc_from_ac_wh", 0.0),
+                "charger_forced_wh": flows.get("charger_forced_wh", 0.0),
+                "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
+                "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
+                "inverter_enabled": flows.get("inverter_enabled", False),
+                "net_grid_wh": flows.get("grid_import_wh", 0.0)
+                - flows.get("grid_export_wh", 0.0),
+                "net_battery_wh": flows.get("battery_charge_wh", 0.0)
+                - flows.get("battery_discharge_wh", 0.0),
+            }
+            hourly_details.append(hourly_detail)
+
+            current_soc = new_soc
+            soc_forecast.append(current_soc)
+
+            # Move to next hour
+            if hour == 0:
+                current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            else:
+                current_time += timedelta(hours=1)
+
+        # Reset additional load state
+        self.ac_consumer.set_additional_load_active(False)
+        return hourly_details
+
+    def _project_soc_without_additional_load(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        initial_soc_percent: float,
+        reference_time: datetime,
+    ) -> List[float]:
+        """Project SOC development without additional load for lookahead.
+
+        Args:
+            start_time: Start time for projection
+            hours: Number of hours to project
+            daily_forecasts: Daily PV forecasts in kWh
+            initial_soc_percent: Initial SOC for projection
+            reference_time: Reference time for day offset calculations
+
+        Returns:
+            List of projected SOC values
+        """
+        # Save current state
+        original_state = self.ac_consumer.is_additional_load_active()
+        
+        try:
+            # Ensure additional load is OFF for this projection
+            self.ac_consumer.set_additional_load_active(False)
+            soc_forecast = self._simulate_soc_progression(
+                start_time, hours, daily_forecasts, initial_soc_percent, reference_time
+            )
+            return soc_forecast
+            
+        finally:
+            # Restore original state
+            self.ac_consumer.set_additional_load_active(original_state)
+
+    def _project_soc_with_additional_load(
+        self,
+        start_time: datetime,
+        hours: int,
+        daily_forecasts: List[float],
+        initial_soc_percent: float,
+        reference_time: datetime,
+    ) -> List[float]:
+        """Project SOC development with additional load active for lookahead.
+
+        Args:
+            start_time: Start time for projection
+            hours: Number of hours to project
+            daily_forecasts: Daily PV forecasts in kWh
+            initial_soc_percent: Initial SOC for projection
+            reference_time: Reference time for day offset calculations
+
+        Returns:
+            List of projected SOC values with additional load active
+        """
+        # Save current state
+        original_state = self.ac_consumer.is_additional_load_active()
+        
+        try:
+            # Ensure additional load is ON for this projection
+            self.ac_consumer.set_additional_load_active(True)
+            soc_forecast = self._simulate_soc_progression(
+                start_time, hours, daily_forecasts, initial_soc_percent, reference_time
+            )
+            return soc_forecast
+            
+        finally:
+            # Restore original state
+            self.ac_consumer.set_additional_load_active(original_state)

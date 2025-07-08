@@ -25,6 +25,7 @@ from .const import (
     ATTR_LAST_UPDATE,
     ATTR_SIMULATION_END,
     DOMAIN,
+    ENTITY_ADDITIONAL_LOAD_STATUS,
     ENTITY_DISCHARGE,
     ENTITY_HOURS_TO_MAX_SOC,
     ENTITY_INVERTER_STATUS,
@@ -51,6 +52,7 @@ async def async_setup_entry(
     entities = [
         BatteryManagerSOCThreshold(coordinator, config_entry),
         BatteryManagerInverterStatus(coordinator, config_entry),
+        BatteryManagerAdditionalLoadStatus(coordinator, config_entry),
         BatteryManagerMinSOCForecast(coordinator, config_entry),
         BatteryManagerMaxSOCForecast(coordinator, config_entry),
         BatteryManagerHoursToMaxSOC(coordinator, config_entry),
@@ -337,3 +339,41 @@ class BatteryManagerDischarge(BatteryManagerEntityBase, SensorEntity):
         new_value = self.coordinator.data.get("discharge_forecast_percent")
         self._log_state_change("Discharge Forecast", new_value)
         return new_value
+
+
+class BatteryManagerAdditionalLoadStatus(BatteryManagerEntityBase, BinarySensorEntity):
+    """Binary sensor for additional load status."""
+
+    def __init__(
+        self,
+        coordinator: BatteryManagerCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the additional load status sensor."""
+        super().__init__(
+            coordinator, config_entry, ENTITY_ADDITIONAL_LOAD_STATUS, "Additional Load Status"
+        )
+        self._attr_icon = "mdi:power-socket"
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        """Return true if the additional load is active."""
+        if not self.available:
+            return None
+
+        new_state = self.coordinator.data.get("additional_load_active", False)
+        self._log_state_change("Additional Load Status", new_state)
+        return new_state
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return extra state attributes."""
+        if not self.available:
+            return {}
+
+        data = self.coordinator.data
+        return {
+            "additional_load_schedule": data.get("additional_load_schedule", []),
+            ATTR_LAST_UPDATE: data.get("last_update"),
+            ATTR_DATA_VALIDITY: data.get("valid", False),
+        }

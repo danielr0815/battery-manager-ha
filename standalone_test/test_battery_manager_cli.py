@@ -106,6 +106,10 @@ Examples:
         "--dc-base-load", type=float, default=50.0,
         help="DC base load in W. Default: 50.0"
     )
+    parser.add_argument(
+        "--ac-additional-load", type=float, default=400.0,
+        help="AC additional load in W for grid export prevention. Default: 400.0"
+    )
 
     # Charger/Inverter configuration
     parser.add_argument(
@@ -115,6 +119,10 @@ Examples:
     parser.add_argument(
         "--inverter-efficiency", type=float, default=0.95,
         help="Inverter efficiency (0-1). Default: 0.95"
+    )
+    parser.add_argument(
+        "--inverter-min-soc", type=float, default=20.0,
+        help="Inverter minimum SOC in percent. Default: 20.0"
     )
 
     # Controller configuration
@@ -196,10 +204,12 @@ def build_config(args: argparse.Namespace, daily_forecasts: List[float] = None) 
         # Consumer configuration
         "ac_base_load_w": args.ac_base_load,
         "dc_base_load_w": args.dc_base_load,
+        "ac_additional_load_w": args.ac_additional_load,
         
         # Component-specific efficiency parameters
         "charger_efficiency": args.charger_efficiency,
         "inverter_efficiency": args.inverter_efficiency,
+        "inverter_min_soc_percent": args.inverter_min_soc,
         
         # Controller configuration
         "controller_max_threshold_percent": args.controller_max_threshold,
@@ -385,6 +395,7 @@ def print_single_result(result: Dict[str, Any], verbose: bool = False) -> None:
     print(f"\n🎯 CALCULATION RESULTS:")
     print(f"  SOC Threshold: {result['soc_threshold_percent']:.1f}%")
     print(f"  Inverter Status: {'✅ ON' if result['inverter_enabled'] else '❌ OFF'}")
+    print(f"  Additional Load: {'✅ ACTIVE' if result.get('additional_load_active', False) else '❌ INACTIVE'}")
     print(f"  Forecast Hours: {result['forecast_hours']}")
     print(f"  Min SOC Forecast: {result['min_soc_forecast_percent']:.1f}%")
     print(f"  Max SOC Forecast: {result['max_soc_forecast_percent']:.1f}%")

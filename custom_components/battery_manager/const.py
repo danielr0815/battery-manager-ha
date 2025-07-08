@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "ac_variable_load_w": 75.0,
     "ac_variable_start_hour": 6,
     "ac_variable_end_hour": 20,
+    "ac_additional_load_w": 400.0,
     # DC consumer defaults
     "dc_base_load_w": 50.0,
     "dc_variable_load_w": 25.0,
@@ -64,6 +65,7 @@ ENTITY_MIN_SOC_FORECAST = "min_soc_forecast"
 ENTITY_MAX_SOC_FORECAST = "max_soc_forecast"
 ENTITY_DISCHARGE = "discharge"
 ENTITY_HOURS_TO_MAX_SOC = "hours_to_max_soc"
+ENTITY_ADDITIONAL_LOAD_STATUS = "additional_load_status"
 
 # Attributes
 ATTR_GRID_IMPORT_KWH = "grid_import_kwh"

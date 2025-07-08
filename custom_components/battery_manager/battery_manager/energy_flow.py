@@ -194,6 +194,7 @@ class EnergyFlowCalculator:
         remaining_ac_deficit_wh = ac_deficit_wh
         total_dc_needed_wh = dc_consumption_wh
         inverter_ac_output_wh = 0.0
+        dc_needed_for_ac_wh = 0.0  # Initialize this variable
 
         # Try to use inverter to supply AC deficit
         if self.inverter.is_enabled and remaining_ac_deficit_wh > 0:

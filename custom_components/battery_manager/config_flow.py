@@ -212,6 +212,9 @@ class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     default=DEFAULT_CONFIG["ac_variable_end_hour"],
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
                 vol.Required(
+                    "ac_additional_load_w", default=DEFAULT_CONFIG["ac_additional_load_w"]
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+                vol.Required(
                     "dc_base_load_w", default=DEFAULT_CONFIG["dc_base_load_w"]
                 ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
                 vol.Required(
@@ -542,6 +545,10 @@ class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
                     "ac_variable_end_hour",
                     default=current_config.get("ac_variable_end_hour"),
                 ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
+                vol.Required(
+                    "ac_additional_load_w",
+                    default=current_config.get("ac_additional_load_w"),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
                 vol.Required(
                     "dc_base_load_w",
                     default=current_config.get("dc_base_load_w"),

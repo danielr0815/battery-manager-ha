@@ -31,9 +31,9 @@ def format_hourly_details_table(
         RESET = BOLD = GREEN = RED = BLUE = YELLOW = CYAN = MAGENTA = ""
 
     lines = []
-    lines.append("=" * 150)
+    lines.append("=" * 170)
     lines.append("DETAILED HOURLY CALCULATION TABLE (Internal Algorithm Data)")
-    lines.append("=" * 150)
+    lines.append("=" * 170)
 
     header = (
         f"{BOLD}{CYAN}{'Hour':>4}{RESET} | "
@@ -48,10 +48,11 @@ def format_hourly_details_table(
         f"{BOLD}{'Forced':>7}{RESET} | "
         f"{BOLD}{'Volunt':>7}{RESET} | "
         f"{BOLD}{'Inv_Wh':>7}{RESET} | "
+        f"{BOLD}{'AddLoad':>7}{RESET} | "
         f"{BOLD}{'Final%':>6}{RESET}"
     )
     lines.append(header)
-    lines.append("-" * 150)
+    lines.append("-" * 170)
 
     for detail in hourly_details:
         hour = detail["hour"]
@@ -68,6 +69,7 @@ def format_hourly_details_table(
         charger_forced = detail.get("charger_forced_wh", 0.0)
         charger_voluntary = detail.get("charger_voluntary_wh", 0.0)
         inverter_ac = detail["inverter_dc_to_ac_wh"]
+        additional_load_active = detail.get("additional_load_active", False)
 
         # Color coding for grid flows
         if grid_import > 0:
@@ -115,11 +117,12 @@ def format_hourly_details_table(
             f"{RED if charger_forced > 0 else RESET}{charger_forced:7.0f}{RESET} | "
             f"{GREEN if charger_voluntary > 0 else RESET}{charger_voluntary:7.0f}{RESET} | "
             f"{RESET}{inverter_ac:7.0f}{RESET} | "
+            f"{GREEN if additional_load_active else RED}{'ON' if additional_load_active else 'OFF':>7}{RESET} | "
             f"{soc_color}{soc_final:6.1f}{RESET}"
         )
         lines.append(row)
 
-    lines.append("-" * 150)
+    lines.append("-" * 170)
     lines.append(f"\n{BOLD}Legend:{RESET}")
     lines.append(f"  {GREEN}Green{RESET}: Positive energy flows (charging, export)")
     lines.append(f"  {RED}Red{RESET}: Negative energy flows (discharging, import)")
@@ -131,6 +134,7 @@ def format_hourly_details_table(
     lines.append("  Batt_Wh: Net battery flow (+charge, -discharge)")
     lines.append(f"  Forced: {RED}Forced{RESET} charger energy (DC deficit)")
     lines.append(f"  Volunt: {GREEN}Voluntary{RESET} charger energy (PV surplus)")
-    lines.append("=" * 150)
+    lines.append(f"  AddLoad: {GREEN}Additional load{RESET} status (ON/OFF)")
+    lines.append("=" * 170)
 
     return "\n".join(lines)
