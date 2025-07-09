@@ -20,26 +20,32 @@ class MaximumBasedController:
         Args:
             config: Configuration dictionary containing all system parameters
         """
-        self.target_soc_percent = config.get("target_soc_percent", 85.0)
+        # Support config keys with component prefixes used by the HA integration
+        self.target_soc_percent = config.get(
+            "controller_target_soc_percent",
+            config.get("target_soc_percent", 85.0),
+        )
 
-        # Initialize system components with filtered configs
-        self.battery = Battery(config)
-        self.pv_system = PVSystem(config)
-        self.ac_consumer = ACConsumer(config)
-        self.dc_consumer = DCConsumer(config)
-        
-        # Create charger config with correct efficiency parameter
-        charger_config = dict(config)
+        battery_config = {k[8:]: v for k, v in config.items() if k.startswith("battery_")}
+        pv_config = {k[3:]: v for k, v in config.items() if k.startswith("pv_")}
+        ac_config = {k[3:]: v for k, v in config.items() if k.startswith("ac_")}
+        dc_config = {k[3:]: v for k, v in config.items() if k.startswith("dc_")}
+        charger_config = {k[8:]: v for k, v in config.items() if k.startswith("charger_")}
+        inverter_config = {k[9:]: v for k, v in config.items() if k.startswith("inverter_")}
+
         if "charger_efficiency" in config:
-            charger_config["efficiency"] = config["charger_efficiency"]
-        self.charger = Charger(charger_config)
-        
-        # Create inverter config with correct efficiency parameter  
-        inverter_config = dict(config)
+            charger_config.setdefault("efficiency", config["charger_efficiency"])
         if "inverter_efficiency" in config:
-            inverter_config["efficiency"] = config["inverter_efficiency"]
+            inverter_config.setdefault("efficiency", config["inverter_efficiency"])
         if "inverter_min_soc_percent" in config:
-            inverter_config["min_soc_percent"] = config["inverter_min_soc_percent"]
+            inverter_config.setdefault("min_soc_percent", config["inverter_min_soc_percent"])
+
+        # Initialize system components with the processed configs
+        self.battery = Battery(battery_config)
+        self.pv_system = PVSystem(pv_config)
+        self.ac_consumer = ACConsumer(ac_config)
+        self.dc_consumer = DCConsumer(dc_config)
+        self.charger = Charger(charger_config)
         self.inverter = Inverter(inverter_config)
 
         # Initialize energy flow calculator
@@ -464,7 +470,9 @@ class MaximumBasedController:
             config: New configuration parameters
         """
         # Update target SOC
-        if "target_soc_percent" in config:
+        if "controller_target_soc_percent" in config:
+            self.target_soc_percent = config["controller_target_soc_percent"]
+        elif "target_soc_percent" in config:
             self.target_soc_percent = config["target_soc_percent"]
 
         # Update component configurations
