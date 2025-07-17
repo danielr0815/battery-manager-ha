@@ -206,7 +206,7 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
 
         # Only return actual calculated values, no default fallbacks
         new_value = self.coordinator.data.get("soc_threshold_percent")
-        
+
         # If no valid calculation is available, return None to indicate unavailability
         if new_value is None:
             return None

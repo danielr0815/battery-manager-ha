@@ -170,7 +170,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         """Fetch data from entities and run simulation."""
         try:
             self._startup_attempts += 1
-            
+
             # Get current input data
             current_soc = await self._get_current_soc()
             daily_forecasts = await self._get_daily_forecasts()
@@ -241,7 +241,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
                     # Use historical data for calculation
                     current_soc = self._last_valid_soc
                     daily_forecasts = self._last_valid_forecasts
-                    
+
                     # Run simulation with historical data
                     current_time = dt_util.now()
                     results = self.simulator.run_simulation(
@@ -326,12 +326,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         """Complete startup phase and switch to normal update interval."""
         if self._startup_complete:
             return
-            
+
         self._startup_complete = True
-        
+
         # Switch to normal update interval
         self.update_interval = timedelta(seconds=UPDATE_INTERVAL_SECONDS)
-        
+
         _LOGGER.info(
             "Battery Manager startup completed after %d attempts, %d successful updates. "
             "Switching to normal update interval (%d seconds).",
@@ -431,7 +431,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         # During startup, be more lenient with data age requirements
         max_soc_age_hours = MAX_SOC_AGE_HOURS
         max_forecast_age_hours = MAX_PV_FORECAST_AGE_HOURS
-        
+
         if not self._startup_complete:
             # Allow older data during startup to prevent endless waiting
             max_soc_age_hours *= 2
@@ -445,9 +445,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         soc_age = now - self._last_soc_update
         if soc_age > timedelta(hours=max_soc_age_hours):
             _LOGGER.warning(
-                "SOC data too old: %.1f hours (max: %.1f hours)", 
+                "SOC data too old: %.1f hours (max: %.1f hours)",
                 soc_age.total_seconds() / 3600,
-                max_soc_age_hours
+                max_soc_age_hours,
             )
             return False
 
@@ -459,9 +459,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         forecast_age = now - self._last_forecast_update
         if forecast_age > timedelta(hours=max_forecast_age_hours):
             _LOGGER.warning(
-                "Forecast data too old: %.1f hours (max: %.1f hours)", 
+                "Forecast data too old: %.1f hours (max: %.1f hours)",
                 forecast_age.total_seconds() / 3600,
-                max_forecast_age_hours
+                max_forecast_age_hours,
             )
             return False
 
@@ -502,7 +502,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
                 return False
 
         # Need both SOC and forecast data
-        return self._last_soc_update is not None and self._last_forecast_update is not None
+        return (
+            self._last_soc_update is not None and self._last_forecast_update is not None
+        )
 
     def _track_calculation_results(self, results: Dict[str, Any]) -> None:
         """Track calculation results for debugging stability issues."""
