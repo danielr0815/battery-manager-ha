@@ -20,21 +20,23 @@ class MaximumBasedController:
         Args:
             config: Configuration dictionary containing all system parameters
         """
-        self.target_soc_percent = config.get("target_soc_percent", 85.0)
+        self.target_soc_percent = config.get(
+            "target_soc_percent", config.get("controller_target_soc_percent", 85.0)
+        )
 
         # Initialize system components with filtered configs
         self.battery = Battery(config)
         self.pv_system = PVSystem(config)
         self.ac_consumer = ACConsumer(config)
         self.dc_consumer = DCConsumer(config)
-        
+
         # Create charger config with correct efficiency parameter
         charger_config = dict(config)
         if "charger_efficiency" in config:
             charger_config["efficiency"] = config["charger_efficiency"]
         self.charger = Charger(charger_config)
-        
-        # Create inverter config with correct efficiency parameter  
+
+        # Create inverter config with correct efficiency parameter
         inverter_config = dict(config)
         if "inverter_efficiency" in config:
             inverter_config["efficiency"] = config["inverter_efficiency"]
@@ -53,6 +55,10 @@ class MaximumBasedController:
 
         # Detailed hourly calculation data (for debugging)
         self._last_hourly_details = []
+
+        # Apply initial configuration using the update logic
+        if config:
+            self.update_config(config)
 
     def calculate_soc_threshold(
         self,
@@ -83,7 +89,9 @@ class MaximumBasedController:
         target_end = self._get_forecast_end_time(current_time)
         # Calculate total forecast duration in hours (including partial first hour)
         total_seconds = (target_end - forecast_start).total_seconds()
-        forecast_hours = int(total_seconds / 3600) + (1 if total_seconds % 3600 > 0 else 0)
+        forecast_hours = int(total_seconds / 3600) + (
+            1 if total_seconds % 3600 > 0 else 0
+        )
 
         # Run simulation with additional load optimization
         additional_load_result = self._calculate_additional_load_optimization(
@@ -93,12 +101,14 @@ class MaximumBasedController:
             current_soc_percent,
             current_time,
         )
-        
+
         # Use optimized hourly details
         self._last_hourly_details = additional_load_result["hourly_details"]
-        
+
         # Extract SOC forecast from the hourly details
-        soc_forecast = [detail["final_soc_percent"] for detail in self._last_hourly_details]
+        soc_forecast = [
+            detail["final_soc_percent"] for detail in self._last_hourly_details
+        ]
 
         # Calculate threshold based on the algorithm
         threshold_result = self._calculate_threshold_from_forecast(soc_forecast)
@@ -265,7 +275,9 @@ class MaximumBasedController:
             # Move to next hour, but keep consistent hourly boundaries
             if hour == 0:
                 # After first partial hour, jump to the next full hour boundary
-                current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                current_time = current_time.replace(
+                    minute=0, second=0, microsecond=0
+                ) + timedelta(hours=1)
             else:
                 # Subsequent hours are full hours
                 current_time += timedelta(hours=1)
@@ -295,7 +307,7 @@ class MaximumBasedController:
         # Find the relevant time when SOC reaches target (85%)
         target_reached_index = None
         start_soc = soc_forecast[0] if soc_forecast else current_soc
-        
+
         if start_soc >= self.target_soc_percent:
             # Battery already at/above target - find NEXT time it reaches target after dropping below
             below_target_seen = False
@@ -315,11 +327,11 @@ class MaximumBasedController:
         # Find minimum SOC only until target is reached (or entire period if target never reached)
         if target_reached_index is not None:
             # Only consider SOC values until target is reached
-            relevant_soc_values = soc_forecast[:target_reached_index + 1]
+            relevant_soc_values = soc_forecast[: target_reached_index + 1]
         else:
             # Target never reached, consider entire forecast
             relevant_soc_values = soc_forecast
-        
+
         min_soc_forecast = min(relevant_soc_values)
 
         # Calculate total forced charger energy before target is reached (or entire period if never reached)
@@ -327,7 +339,9 @@ class MaximumBasedController:
         if self._last_hourly_details:
             if target_reached_index is not None:
                 # Sum forced charger energy from start until target is reached
-                end_index = min(target_reached_index + 1, len(self._last_hourly_details))
+                end_index = min(
+                    target_reached_index + 1, len(self._last_hourly_details)
+                )
                 for hour_detail in self._last_hourly_details[:end_index]:
                     total_forced_charger_wh += hour_detail.get("charger_forced_wh", 0.0)
             else:
@@ -464,7 +478,9 @@ class MaximumBasedController:
             config: New configuration parameters
         """
         # Update target SOC
-        if "target_soc_percent" in config:
+        if "controller_target_soc_percent" in config:
+            self.target_soc_percent = config["controller_target_soc_percent"]
+        elif "target_soc_percent" in config:
             self.target_soc_percent = config["target_soc_percent"]
 
         # Update component configurations
@@ -528,7 +544,11 @@ class MaximumBasedController:
         )
 
     def _calculate_hourly_energy_balance(
-        self, daily_forecasts: List[float], current_time: datetime, hours: int, initial_soc: float
+        self,
+        daily_forecasts: List[float],
+        current_time: datetime,
+        hours: int,
+        initial_soc: float,
     ) -> List[Dict[str, Any]]:
         """Calculate hourly energy balance for the forecast period."""
         hourly_details = []
@@ -539,9 +559,9 @@ class MaximumBasedController:
         remaining_minutes_first_hour = 60 - current_minute
 
         for hour in range(hours):
-            hour_start = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(
-                hours=hour
-            )
+            hour_start = current_time.replace(
+                minute=0, second=0, microsecond=0
+            ) + timedelta(hours=hour)
 
             # Determine actual duration for this hour
             if hour == 0:
@@ -601,31 +621,33 @@ class MaximumBasedController:
                     - flows.get("battery_discharge_wh", 0.0),
                 }
             )
-            
+
             # Update SOC for next iteration
             current_soc = new_soc
 
         return hourly_details
 
-    def _get_relevant_min_soc(self, soc_forecast: List[float], current_soc_percent: float) -> float:
+    def _get_relevant_min_soc(
+        self, soc_forecast: List[float], current_soc_percent: float
+    ) -> float:
         """Get minimum SOC considering only values until target is reached.
-        
+
         Uses the same logic as _calculate_threshold_from_forecast to ensure consistency.
-        
+
         Args:
             soc_forecast: List of forecasted SOC values
             current_soc_percent: Current SOC for fallback
-            
+
         Returns:
             Minimum SOC value considering target threshold logic
         """
         if not soc_forecast:
             return current_soc_percent
-            
+
         # Use same target reaching logic as threshold calculation
         target_reached_index = None
         start_soc = soc_forecast[0]
-        
+
         if start_soc >= self.target_soc_percent:
             # Battery already at/above target - find NEXT time it reaches target after dropping below
             below_target_seen = False
@@ -641,13 +663,13 @@ class MaximumBasedController:
                 if soc >= self.target_soc_percent:
                     target_reached_index = i
                     break
-        
+
         # Get relevant SOC values using same logic
         if target_reached_index is not None:
-            relevant_soc_values = soc_forecast[:target_reached_index + 1]
+            relevant_soc_values = soc_forecast[: target_reached_index + 1]
         else:
             relevant_soc_values = soc_forecast
-            
+
         return min(relevant_soc_values)
 
     def _calculate_additional_load_optimization(
@@ -679,19 +701,23 @@ class MaximumBasedController:
             Dictionary containing additional load schedule and updated forecast
         """
         # Configuration - use config parameters instead of magic numbers
-        SOC_TARGET_THRESHOLD = self.target_soc_percent  # Use configured target SOC instead of hardcoded 85.0
-        MIN_INVERTER_THRESHOLD = self.inverter.min_soc_percent  # Use configured inverter minimum
+        SOC_TARGET_THRESHOLD = (
+            self.target_soc_percent
+        )  # Use configured target SOC instead of hardcoded 85.0
+        MIN_INVERTER_THRESHOLD = (
+            self.inverter.min_soc_percent
+        )  # Use configured inverter minimum
         BATTERY_CONTRIBUTION_THRESHOLD = 0.5  # 50%
-        
+
         # Initialize
         additional_load_schedule = [False] * hours
         current_soc = initial_soc_percent
         current_time = start_time
         additional_load_active = False
-        
+
         # Store hourly details for final result
         final_hourly_details = []
-        
+
         # Iterative hourly simulation
         for hour in range(hours):
             # Calculate duration fraction for first hour
@@ -700,7 +726,7 @@ class MaximumBasedController:
                 duration_fraction = minutes_remaining / 60.0
             else:
                 duration_fraction = 1.0
-                
+
             # Get energy values for this hour
             pv_production_wh_full = self.pv_system.calculate_hourly_production_wh(
                 daily_forecasts, current_time, reference_time
@@ -708,97 +734,131 @@ class MaximumBasedController:
             dc_consumption_wh_full = self.dc_consumer.calculate_hourly_consumption_wh(
                 current_time
             )
-            
+
             # Scale by duration fraction
             pv_production_wh = pv_production_wh_full * duration_fraction
             dc_consumption_wh = dc_consumption_wh_full * duration_fraction
-            
+
             # Decision logic for additional load
             if not additional_load_active:
                 # Test WITHOUT additional load first
                 self.ac_consumer.set_additional_load_active(False)
                 ac_consumption_wh_without = (
-                    self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                    self.ac_consumer.calculate_hourly_consumption_wh(current_time)
+                    * duration_fraction
                 )
-                
+
                 # Simulate this hour without additional load
                 flows_without, soc_without = self.energy_flow.simulate_energy_flow(
-                    pv_production_wh, ac_consumption_wh_without, dc_consumption_wh, current_soc
+                    pv_production_wh,
+                    ac_consumption_wh_without,
+                    dc_consumption_wh,
+                    current_soc,
                 )
-                
+
                 # Check activation condition: Use only the comprehensive safety check
                 # The safety check verifies both conditions:
-                # 1. Target SOC would be reached even WITH additional load  
+                # 1. Target SOC would be reached even WITH additional load
                 # 2. Minimum SOC would never be violated WITH additional load
                 safety_check_passed = self._verify_additional_load_safety(
-                    current_time, hours - hour, daily_forecasts, current_soc, reference_time
+                    current_time,
+                    hours - hour,
+                    daily_forecasts,
+                    current_soc,
+                    reference_time,
                 )
-                
+
                 if safety_check_passed:
                     # Test WITH additional load to see if it's safe
                     self.ac_consumer.set_additional_load_active(True)
                     ac_consumption_wh_with = (
-                        self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                        self.ac_consumer.calculate_hourly_consumption_wh(current_time)
+                        * duration_fraction
                     )
-                    
+
                     # Activate additional load
                     additional_load_active = True
                     additional_load_schedule[hour] = True
-                    
+
                     # Use the simulation WITH additional load
                     flows, new_soc = self.energy_flow.simulate_energy_flow(
-                        pv_production_wh, ac_consumption_wh_with, dc_consumption_wh, current_soc
+                        pv_production_wh,
+                        ac_consumption_wh_with,
+                        dc_consumption_wh,
+                        current_soc,
                     )
                     ac_consumption_wh = ac_consumption_wh_with
                 else:
                     # Keep additional load off
                     flows, new_soc = flows_without, soc_without
                     ac_consumption_wh = ac_consumption_wh_without
-                    
+
             else:
                 # Additional load is already active - check deactivation condition
                 self.ac_consumer.set_additional_load_active(True)
                 ac_consumption_wh_with = (
-                    self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                    self.ac_consumer.calculate_hourly_consumption_wh(current_time)
+                    * duration_fraction
                 )
-                
+
                 # Calculate how much additional load power comes from battery
-                additional_load_power = self.ac_consumer.additional_load_w * duration_fraction
-                available_pv_for_additional = max(0, pv_production_wh - dc_consumption_wh - 
-                                                 (ac_consumption_wh_with - additional_load_power))
-                battery_contribution = max(0, additional_load_power - available_pv_for_additional)
-                battery_contribution_ratio = battery_contribution / additional_load_power if additional_load_power > 0 else 0
-                
+                additional_load_power = (
+                    self.ac_consumer.additional_load_w * duration_fraction
+                )
+                available_pv_for_additional = max(
+                    0,
+                    pv_production_wh
+                    - dc_consumption_wh
+                    - (ac_consumption_wh_with - additional_load_power),
+                )
+                battery_contribution = max(
+                    0, additional_load_power - available_pv_for_additional
+                )
+                battery_contribution_ratio = (
+                    battery_contribution / additional_load_power
+                    if additional_load_power > 0
+                    else 0
+                )
+
                 # Deactivation condition: >50% from battery AND SOC target has been reached
                 # Only deactivate if we have successfully reached the target SOC (85%)
-                battery_contribution_too_high = battery_contribution_ratio > BATTERY_CONTRIBUTION_THRESHOLD
+                battery_contribution_too_high = (
+                    battery_contribution_ratio > BATTERY_CONTRIBUTION_THRESHOLD
+                )
                 soc_target_reached = current_soc >= SOC_TARGET_THRESHOLD
-                
+
                 if battery_contribution_too_high and soc_target_reached:
                     # Deactivate additional load - too much battery drain
                     additional_load_active = False
                     additional_load_schedule[hour] = False
-                    
+
                     # Debug output
                     # if hour < 20:
                     #     print(f"  Deactivating additional load: battery_contribution={battery_contribution_ratio:.1%} > {BATTERY_CONTRIBUTION_THRESHOLD:.1%}")
-                    
+
                     # Recalculate without additional load
                     self.ac_consumer.set_additional_load_active(False)
                     ac_consumption_wh = (
-                        self.ac_consumer.calculate_hourly_consumption_wh(current_time) * duration_fraction
+                        self.ac_consumer.calculate_hourly_consumption_wh(current_time)
+                        * duration_fraction
                     )
                     flows, new_soc = self.energy_flow.simulate_energy_flow(
-                        pv_production_wh, ac_consumption_wh, dc_consumption_wh, current_soc
+                        pv_production_wh,
+                        ac_consumption_wh,
+                        dc_consumption_wh,
+                        current_soc,
                     )
                 else:
                     # Keep additional load active - mostly powered by PV/grid
                     additional_load_schedule[hour] = True
                     flows, new_soc = self.energy_flow.simulate_energy_flow(
-                        pv_production_wh, ac_consumption_wh_with, dc_consumption_wh, current_soc
+                        pv_production_wh,
+                        ac_consumption_wh_with,
+                        dc_consumption_wh,
+                        current_soc,
                     )
                     ac_consumption_wh = ac_consumption_wh_with
-            
+
             # Store hourly detail
             duration_minutes = int(duration_fraction * 60)
             hourly_detail = {
@@ -822,23 +882,29 @@ class MaximumBasedController:
                 "charger_voluntary_wh": flows.get("charger_voluntary_wh", 0.0),
                 "inverter_dc_to_ac_wh": flows.get("inverter_dc_to_ac_wh", 0.0),
                 "inverter_enabled": flows.get("inverter_enabled", False),
-                "net_grid_wh": flows.get("grid_import_wh", 0.0) - flows.get("grid_export_wh", 0.0),
-                "net_battery_wh": flows.get("battery_charge_wh", 0.0) - flows.get("battery_discharge_wh", 0.0),
+                "net_grid_wh": flows.get("grid_import_wh", 0.0)
+                - flows.get("grid_export_wh", 0.0),
+                "net_battery_wh": flows.get("battery_charge_wh", 0.0)
+                - flows.get("battery_discharge_wh", 0.0),
             }
             final_hourly_details.append(hourly_detail)
-            
+
             # Update for next hour
             current_soc = new_soc
             if hour == 0:
-                current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                current_time = current_time.replace(
+                    minute=0, second=0, microsecond=0
+                ) + timedelta(hours=1)
             else:
                 current_time += timedelta(hours=1)
-        
+
         # Reset AC consumer state
         self.ac_consumer.set_additional_load_active(False)
-        
+
         return {
-            "additional_load_active": additional_load_schedule[0] if additional_load_schedule else False,
+            "additional_load_active": (
+                additional_load_schedule[0] if additional_load_schedule else False
+            ),
             "any_activation_planned": any(additional_load_schedule),
             "activation_start": start_time if any(additional_load_schedule) else None,
             "schedule": additional_load_schedule,
@@ -865,34 +931,36 @@ class MaximumBasedController:
         Returns:
             True if additional load can be safely activated (SOC stays above 20% until 85% is reached)
         """
-        MIN_INVERTER_THRESHOLD = self.inverter.min_soc_percent  # Use configured inverter minimum
+        MIN_INVERTER_THRESHOLD = (
+            self.inverter.min_soc_percent
+        )  # Use configured inverter minimum
         SOC_TARGET_THRESHOLD = self.target_soc_percent  # Use configured target SOC
-        
+
         # Save current state
         original_state = self.ac_consumer.is_additional_load_active()
-        
+
         try:
             # Simulate with additional load active
             self.ac_consumer.set_additional_load_active(True)
             soc_forecast = self._simulate_soc_progression(
                 start_time, hours, daily_forecasts, initial_soc_percent, reference_time
             )
-            
+
             if not soc_forecast:
                 return False
-            
+
             # Check SOC progression until target is reached or forecast ends
             for soc in soc_forecast:
                 # Check if SOC goes below minimum threshold
                 if soc < MIN_INVERTER_THRESHOLD:
                     return False
-                
+
                 # If we've reached the target SOC, safety check is complete
                 if soc >= SOC_TARGET_THRESHOLD:
                     return True
-            
+
             return True
-            
+
         finally:
             # Restore original state
             self.ac_consumer.set_additional_load_active(original_state)
@@ -917,46 +985,46 @@ class MaximumBasedController:
         """
         # Get current SOC at start_time (we already have this from main calculation)
         initial_soc = self.battery.current_soc_percent
-        
+
         # Activate additional load for testing
         self.ac_consumer.set_additional_load_active(True)
-        
+
         # Run simulation with additional load
         test_forecast = self._simulate_soc_progression(
             start_time, hours, daily_forecasts, initial_soc, reference_time
         )
         test_details = self._last_hourly_details.copy()
-        
+
         # Reset additional load
         self.ac_consumer.set_additional_load_active(False)
-        
+
         # Check conditions:
         # 1. Target SOC (85%) is reached within the forecast period
         # 2. Minimum inverter threshold (20%) is never violated
         target_reached = any(soc >= self.target_soc_percent for soc in test_forecast)
         min_soc_ok = all(soc >= self.inverter.min_soc_percent for soc in test_forecast)
-        
+
         if not (target_reached and min_soc_ok):
             return {"can_activate": False, "active_hours": 0}
-        
+
         # Find when to deactivate: when more than half of additional load power comes from battery
         additional_load_wh = self.ac_consumer.additional_load_w
         deactivation_hour = hours  # Default: active until end
-        
+
         for hour_idx, detail in enumerate(test_details):
             battery_discharge_wh = detail.get("battery_discharge_wh", 0.0)
             duration_fraction = detail.get("duration_fraction", 1.0)
-            
+
             # Calculate additional load energy for this hour
             additional_load_energy_wh = additional_load_wh * duration_fraction
-            
+
             # Check if more than half of additional load energy comes from battery
-            # This is a simplified check - in reality we'd need to determine what portion 
+            # This is a simplified check - in reality we'd need to determine what portion
             # of battery discharge is attributable to the additional load
             if battery_discharge_wh > (additional_load_energy_wh / 2):
                 deactivation_hour = hour_idx
                 break
-        
+
         return {
             "can_activate": True,
             "active_hours": deactivation_hour,
@@ -993,7 +1061,7 @@ class MaximumBasedController:
             # Set additional load status for this hour
             additional_load_active = schedule[hour] if hour < len(schedule) else False
             self.ac_consumer.set_additional_load_active(additional_load_active)
-            
+
             # Calculate duration multiplier for partial hours
             if hour == 0:
                 minutes_remaining = 60 - start_time.minute
@@ -1057,7 +1125,9 @@ class MaximumBasedController:
 
             # Move to next hour
             if hour == 0:
-                current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                current_time = current_time.replace(
+                    minute=0, second=0, microsecond=0
+                ) + timedelta(hours=1)
             else:
                 current_time += timedelta(hours=1)
 
@@ -1087,7 +1157,7 @@ class MaximumBasedController:
         """
         # Save current state
         original_state = self.ac_consumer.is_additional_load_active()
-        
+
         try:
             # Ensure additional load is OFF for this projection
             self.ac_consumer.set_additional_load_active(False)
@@ -1095,7 +1165,7 @@ class MaximumBasedController:
                 start_time, hours, daily_forecasts, initial_soc_percent, reference_time
             )
             return soc_forecast
-            
+
         finally:
             # Restore original state
             self.ac_consumer.set_additional_load_active(original_state)
@@ -1122,7 +1192,7 @@ class MaximumBasedController:
         """
         # Save current state
         original_state = self.ac_consumer.is_additional_load_active()
-        
+
         try:
             # Ensure additional load is ON for this projection
             self.ac_consumer.set_additional_load_active(True)
@@ -1130,7 +1200,7 @@ class MaximumBasedController:
                 start_time, hours, daily_forecasts, initial_soc_percent, reference_time
             )
             return soc_forecast
-            
+
         finally:
             # Restore original state
             self.ac_consumer.set_additional_load_active(original_state)

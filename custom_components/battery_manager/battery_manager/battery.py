@@ -105,15 +105,17 @@ class Battery:
 
         elif requested_energy_wh < 0:
             # Discharging (requested_energy_wh is negative)
-            requested_output_wh = abs(requested_energy_wh)  # This is the desired output energy
-            
+            requested_output_wh = abs(
+                requested_energy_wh
+            )  # This is the desired output energy
+
             # Calculate how much energy needs to be taken from battery to deliver requested output
             required_battery_wh = requested_output_wh / self.discharge_efficiency
-            
+
             # Limit by maximum discharge capacity
             max_discharge_wh = self.get_max_discharge_energy_wh()
             actual_battery_wh = min(required_battery_wh, max_discharge_wh)
-            
+
             # Calculate actual delivered energy based on what can be taken from battery
             delivered_energy_wh = actual_battery_wh * self.discharge_efficiency
 
