@@ -221,13 +221,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             if not data_valid:
                 # Try to use historical data as fallback
                 historical_valid = self._check_historical_data_validity()
-                
-                if historical_valid and self._last_valid_soc is not None and self._last_valid_forecasts is not None:
+
+                if (
+                    historical_valid
+                    and self._last_valid_soc is not None
+                    and self._last_valid_forecasts is not None
+                ):
+                    soc_age_hours = (
+                        (dt_util.now() - self._last_soc_update).total_seconds() / 3600
+                        if self._last_soc_update
+                        else 0
+                    )
                     _LOGGER.info(
                         "Using historical data as fallback (attempt %d) - SOC: %.1f%% (%.1f hours old), Forecasts available",
                         self._startup_attempts,
                         self._last_valid_soc,
-                        (dt_util.now() - self._last_soc_update).total_seconds() / 3600 if self._last_soc_update else 0
+                        soc_age_hours,
                     )
                     # Use historical data for calculation
                     current_soc = self._last_valid_soc
@@ -261,7 +270,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
                     return results
                 else:
-                    _LOGGER.warning("Input data is too old or invalid (attempt %d)", self._startup_attempts)
+                    _LOGGER.warning(
+                        "Input data is too old or invalid (attempt %d)",
+                        self._startup_attempts,
+                    )
                     return {
                         "valid": False,
                         "soc_threshold_percent": None,
@@ -303,7 +315,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             return results
 
         except Exception as err:
-            _LOGGER.error("Error updating Battery Manager data (attempt %d): %s", self._startup_attempts, err)
+            _LOGGER.error(
+                "Error updating Battery Manager data (attempt %d): %s",
+                self._startup_attempts,
+                err,
+            )
             raise UpdateFailed(f"Error updating data: {err}") from err
 
     def _complete_startup(self) -> None:
@@ -459,18 +475,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         if self._last_soc_update is not None:
             soc_age = now - self._last_soc_update
             if soc_age <= timedelta(hours=MAX_HISTORICAL_SOC_AGE_HOURS):
-                _LOGGER.debug("Historical SOC data available (%.1f hours old)", soc_age.total_seconds() / 3600)
+                _LOGGER.debug(
+                    "Historical SOC data available (%.1f hours old)",
+                    soc_age.total_seconds() / 3600,
+                )
             else:
-                _LOGGER.warning("Historical SOC data too old: %.1f hours", soc_age.total_seconds() / 3600)
+                _LOGGER.warning(
+                    "Historical SOC data too old: %.1f hours",
+                    soc_age.total_seconds() / 3600,
+                )
                 return False
 
         # Check if we have any forecast data within extended historical range
         if self._last_forecast_update is not None:
             forecast_age = now - self._last_forecast_update
             if forecast_age <= timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS):
-                _LOGGER.debug("Historical forecast data available (%.1f hours old)", forecast_age.total_seconds() / 3600)
+                _LOGGER.debug(
+                    "Historical forecast data available (%.1f hours old)",
+                    forecast_age.total_seconds() / 3600,
+                )
             else:
-                _LOGGER.warning("Historical forecast data too old: %.1f hours", forecast_age.total_seconds() / 3600)
+                _LOGGER.warning(
+                    "Historical forecast data too old: %.1f hours",
+                    forecast_age.total_seconds() / 3600,
+                )
                 return False
 
         # Need both SOC and forecast data

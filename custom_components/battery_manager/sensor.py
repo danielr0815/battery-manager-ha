@@ -203,11 +203,11 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
 
         # Return value even if data is not fully valid during startup
         new_value = self.coordinator.data.get("soc_threshold_percent")
-        
+
         # Show a default value if no valid calculation is available yet
         if new_value is None and not self.coordinator.data.get("valid", False):
             new_value = 50.0  # Default threshold during startup
-            
+
         self._log_state_change("SOC Threshold", new_value)
         return new_value
 
