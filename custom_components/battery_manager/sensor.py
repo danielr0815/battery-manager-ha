@@ -351,7 +351,10 @@ class BatteryManagerAdditionalLoadStatus(BatteryManagerEntityBase, BinarySensorE
     ) -> None:
         """Initialize the additional load status sensor."""
         super().__init__(
-            coordinator, config_entry, ENTITY_ADDITIONAL_LOAD_STATUS, "Additional Load Status"
+            coordinator,
+            config_entry,
+            ENTITY_ADDITIONAL_LOAD_STATUS,
+            "Additional Load Status",
         )
         self._attr_icon = "mdi:power-socket"
 

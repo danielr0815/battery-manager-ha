@@ -112,22 +112,22 @@ class ACConsumer(BaseConsumer):
             "variable_end_hour": config.get("variable_end_hour", 20),
         }
         super().__init__(ac_config, "ac")
-        
+
         # Additional load for preventing grid export
         self.additional_load_w = config.get("additional_load_w", 400.0)
         self._additional_load_active = False
-        
+
     def set_additional_load_active(self, active: bool) -> None:
         """Set the state of the additional load.
-        
+
         Args:
             active: Whether the additional load should be active
         """
         self._additional_load_active = active
-        
+
     def is_additional_load_active(self) -> bool:
         """Get the current state of the additional load.
-        
+
         Returns:
             True if additional load is active
         """
@@ -141,23 +141,23 @@ class ACConsumer(BaseConsumer):
 
         Returns:
             Hourly consumption in Wh
-        """            
+        """
         hour = target_datetime.hour
-        
+
         # Base load is always present
         consumption_w = self.base_load_w
-        
+
         # Add variable load if within active hours
         if self.variable_start_hour <= hour < self.variable_end_hour:
             consumption_w += self.variable_load_w
-            
+
         # Add additional load if active (no time restrictions)
         if self._additional_load_active:
             consumption_w += self.additional_load_w
 
         # Convert to Wh (power for 1 hour)
         return consumption_w
-        
+
     def get_config(self) -> Dict[str, Any]:
         """Get current consumer configuration including additional load."""
         config = super().get_config()
