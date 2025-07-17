@@ -31,8 +31,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config = {**entry.data, **entry.options}
         coordinator = BatteryManagerCoordinator(hass, config)
 
-        # Fetch initial data
-        await coordinator.async_config_entry_first_refresh()
+        # Trigger first refresh without blocking setup
+        hass.async_create_task(coordinator.async_refresh())
 
         # Store coordinator in hass data
         hass.data.setdefault(DOMAIN, {})

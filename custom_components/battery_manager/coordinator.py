@@ -32,6 +32,18 @@ _LOGGER = logging.getLogger(__name__)
 class BatteryManagerCoordinator(DataUpdateCoordinator):
     """Coordinator for Battery Manager data updates."""
 
+    @staticmethod
+    def _map_legacy_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Map legacy configuration keys to current ones."""
+        mapped = dict(config)
+        if (
+            "target_soc_percent" in mapped
+            and "controller_target_soc_percent" not in mapped
+        ):
+            mapped["controller_target_soc_percent"] = mapped["target_soc_percent"]
+        mapped.pop("target_soc_percent", None)
+        return mapped
+
     def __init__(self, hass: HomeAssistant, config: Dict[str, Any]) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -41,7 +53,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
         )
 
-        self.config = {**DEFAULT_CONFIG, **config}
+        mapped_config = self._map_legacy_keys(config)
+        self.config = {**DEFAULT_CONFIG, **mapped_config}
         self.simulator = BatteryManagerSimulator(self.config)
 
         # Entity IDs for input data
@@ -453,6 +466,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """Update configuration and restart simulation."""
+        new_config = self._map_legacy_keys(new_config)
         old_config = self.config.copy()
         self.config.update(new_config)
         self.simulator.update_config(self.config)
