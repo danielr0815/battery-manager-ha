@@ -21,6 +21,9 @@ from .const import (
     DEBOUNCE_SECONDS,
     DEFAULT_CONFIG,
     DOMAIN,
+    INITIAL_UPDATE_INTERVAL_SECONDS,
+    MAX_HISTORICAL_FORECAST_AGE_HOURS,
+    MAX_HISTORICAL_SOC_AGE_HOURS,
     MAX_PV_FORECAST_AGE_HOURS,
     MAX_SOC_AGE_HOURS,
     UPDATE_INTERVAL_SECONDS,
@@ -46,11 +49,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, config: Dict[str, Any]) -> None:
         """Initialize the coordinator."""
+        # Start with faster updates during startup
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
+            update_interval=timedelta(seconds=INITIAL_UPDATE_INTERVAL_SECONDS),
         )
 
         mapped_config = self._map_legacy_keys(config)
@@ -77,11 +81,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         self._value_change_count = 0
         self._startup_values: Optional[Dict[str, Any]] = None
 
+        # Startup state management
+        self._startup_complete = False
+        self._successful_updates = 0
+        self._startup_attempts = 0
+
         # Debouncing
         self._debounce_task: Optional[asyncio.Task] = None
         self._listeners_setup: bool = False
 
-        # Don't subscribe to entity state changes yet - wait for first refresh
+        # Set up entity listeners immediately
+        self._setup_entity_listeners()
 
     def _setup_entity_listeners(self) -> None:
         """Set up listeners for input entity state changes."""
@@ -159,6 +169,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from entities and run simulation."""
         try:
+            self._startup_attempts += 1
+            
             # Get current input data
             current_soc = await self._get_current_soc()
             daily_forecasts = await self._get_daily_forecasts()
@@ -207,15 +219,58 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             data_valid = self._check_data_validity()
 
             if not data_valid:
-                _LOGGER.warning("Input data is too old or invalid")
-                return {
-                    "valid": False,
-                    "soc_threshold_percent": None,
-                    "min_soc_forecast_percent": None,
-                    "max_soc_forecast_percent": None,
-                    "inverter_enabled": False,
-                    "error": "Data too old or invalid",
-                }
+                # Try to use historical data as fallback
+                historical_valid = self._check_historical_data_validity()
+                
+                if historical_valid and self._last_valid_soc is not None and self._last_valid_forecasts is not None:
+                    _LOGGER.info(
+                        "Using historical data as fallback (attempt %d) - SOC: %.1f%% (%.1f hours old), Forecasts available",
+                        self._startup_attempts,
+                        self._last_valid_soc,
+                        (dt_util.now() - self._last_soc_update).total_seconds() / 3600 if self._last_soc_update else 0
+                    )
+                    # Use historical data for calculation
+                    current_soc = self._last_valid_soc
+                    daily_forecasts = self._last_valid_forecasts
+                    
+                    # Run simulation with historical data
+                    current_time = dt_util.now()
+                    results = self.simulator.run_simulation(
+                        current_soc, daily_forecasts, current_time
+                    )
+
+                    # Add validity flag and mark as using historical data
+                    results["valid"] = True
+                    results["using_historical_data"] = True
+                    results["last_update"] = current_time
+
+                    # Enhanced debugging for calculation results
+                    self._track_calculation_results(results)
+
+                    # Successful update - handle startup completion
+                    self._successful_updates += 1
+                    if not self._startup_complete and self._successful_updates >= 1:
+                        self._complete_startup()
+
+                    _LOGGER.debug(
+                        "Battery Manager calculation completed with historical data (attempt %d): SOC=%s%%, Threshold=%s%%",
+                        self._startup_attempts,
+                        current_soc,
+                        results["soc_threshold_percent"],
+                    )
+
+                    return results
+                else:
+                    _LOGGER.warning("Input data is too old or invalid (attempt %d)", self._startup_attempts)
+                    return {
+                        "valid": False,
+                        "soc_threshold_percent": None,
+                        "min_soc_forecast_percent": None,
+                        "max_soc_forecast_percent": None,
+                        "inverter_enabled": False,
+                        "error": "Data too old or invalid",
+                        "using_historical_data": False,
+                    }
 
             # Run simulation
             current_time = dt_util.now()
@@ -230,8 +285,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
             # Enhanced debugging for calculation results
             self._track_calculation_results(results)
 
+            # Successful update - handle startup completion
+            self._successful_updates += 1
+            if not self._startup_complete and self._successful_updates >= 1:
+                self._complete_startup()
+
             _LOGGER.debug(
-                "Battery Manager calculation completed: SOC=%s%%, Threshold=%s%%, Min=%s%%, Max=%s%%, Discharge=%s%%",
+                "Battery Manager calculation completed (attempt %d): SOC=%s%%, Threshold=%s%%, Min=%s%%, Max=%s%%, Discharge=%s%%",
+                self._startup_attempts,
                 current_soc,
                 results["soc_threshold_percent"],
                 results["min_soc_forecast_percent"],
@@ -239,16 +300,29 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
                 results["discharge_forecast_percent"],
             )
 
-            # Set up entity listeners after first successful update
-            if not self._listeners_setup:
-                self._setup_entity_listeners()
-                self._listeners_setup = True
-
             return results
 
         except Exception as err:
-            _LOGGER.error("Error updating Battery Manager data: %s", err)
+            _LOGGER.error("Error updating Battery Manager data (attempt %d): %s", self._startup_attempts, err)
             raise UpdateFailed(f"Error updating data: {err}") from err
+
+    def _complete_startup(self) -> None:
+        """Complete startup phase and switch to normal update interval."""
+        if self._startup_complete:
+            return
+            
+        self._startup_complete = True
+        
+        # Switch to normal update interval
+        self.update_interval = timedelta(seconds=UPDATE_INTERVAL_SECONDS)
+        
+        _LOGGER.info(
+            "Battery Manager startup completed after %d attempts, %d successful updates. "
+            "Switching to normal update interval (%d seconds).",
+            self._startup_attempts,
+            self._successful_updates,
+            UPDATE_INTERVAL_SECONDS,
+        )
 
     async def _get_current_soc(self) -> float:
         """Get current SOC from entity."""
@@ -338,29 +412,69 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         """Check if input data is still valid based on age."""
         now = dt_util.now()
 
+        # During startup, be more lenient with data age requirements
+        max_soc_age_hours = MAX_SOC_AGE_HOURS
+        max_forecast_age_hours = MAX_PV_FORECAST_AGE_HOURS
+        
+        if not self._startup_complete:
+            # Allow older data during startup to prevent endless waiting
+            max_soc_age_hours *= 2
+            max_forecast_age_hours *= 2
+
         # Check SOC age
         if self._last_soc_update is None:
+            _LOGGER.debug("No SOC data available yet")
             return False
 
         soc_age = now - self._last_soc_update
-        if soc_age > timedelta(hours=MAX_SOC_AGE_HOURS):
+        if soc_age > timedelta(hours=max_soc_age_hours):
             _LOGGER.warning(
-                "SOC data too old: %s hours", soc_age.total_seconds() / 3600
+                "SOC data too old: %.1f hours (max: %.1f hours)", 
+                soc_age.total_seconds() / 3600,
+                max_soc_age_hours
             )
             return False
 
         # Check forecast age
         if self._last_forecast_update is None:
+            _LOGGER.debug("No forecast data available yet")
             return False
 
         forecast_age = now - self._last_forecast_update
-        if forecast_age > timedelta(hours=MAX_PV_FORECAST_AGE_HOURS):
+        if forecast_age > timedelta(hours=max_forecast_age_hours):
             _LOGGER.warning(
-                "Forecast data too old: %s hours", forecast_age.total_seconds() / 3600
+                "Forecast data too old: %.1f hours (max: %.1f hours)", 
+                forecast_age.total_seconds() / 3600,
+                max_forecast_age_hours
             )
             return False
 
         return True
+
+    def _check_historical_data_validity(self) -> bool:
+        """Check if historical data can be used as emergency fallback."""
+        now = dt_util.now()
+
+        # Check if we have any SOC data within extended historical range
+        if self._last_soc_update is not None:
+            soc_age = now - self._last_soc_update
+            if soc_age <= timedelta(hours=MAX_HISTORICAL_SOC_AGE_HOURS):
+                _LOGGER.debug("Historical SOC data available (%.1f hours old)", soc_age.total_seconds() / 3600)
+            else:
+                _LOGGER.warning("Historical SOC data too old: %.1f hours", soc_age.total_seconds() / 3600)
+                return False
+
+        # Check if we have any forecast data within extended historical range
+        if self._last_forecast_update is not None:
+            forecast_age = now - self._last_forecast_update
+            if forecast_age <= timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS):
+                _LOGGER.debug("Historical forecast data available (%.1f hours old)", forecast_age.total_seconds() / 3600)
+            else:
+                _LOGGER.warning("Historical forecast data too old: %.1f hours", forecast_age.total_seconds() / 3600)
+                return False
+
+        # Need both SOC and forecast data
+        return self._last_soc_update is not None and self._last_forecast_update is not None
 
     def _track_calculation_results(self, results: Dict[str, Any]) -> None:
         """Track calculation results for debugging stability issues."""

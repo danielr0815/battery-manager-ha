@@ -94,10 +94,11 @@ class BatteryManagerEntityBase(CoordinatorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
+        # Make entities available as soon as coordinator has attempted an update
+        # This allows entities to show up even if initial data is invalid
         return (
             self.coordinator.last_update_success
             and self.coordinator.data is not None
-            and self.coordinator.data.get("valid", False)
         )
 
     def _log_state_change(self, entity_type: str, new_value, old_value=None) -> None:
@@ -200,7 +201,13 @@ class BatteryManagerSOCThreshold(BatteryManagerEntityBase, SensorEntity):
         if not self.available:
             return None
 
+        # Return value even if data is not fully valid during startup
         new_value = self.coordinator.data.get("soc_threshold_percent")
+        
+        # Show a default value if no valid calculation is available yet
+        if new_value is None and not self.coordinator.data.get("valid", False):
+            new_value = 50.0  # Default threshold during startup
+            
         self._log_state_change("SOC Threshold", new_value)
         return new_value
 
