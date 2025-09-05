@@ -471,41 +471,41 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         """Check if historical data can be used as emergency fallback."""
         now = dt_util.now()
 
-        # Check if we have any SOC data within extended historical range
-        if self._last_soc_update is not None:
-            soc_age = now - self._last_soc_update
-            if soc_age <= timedelta(hours=MAX_HISTORICAL_SOC_AGE_HOURS):
-                _LOGGER.debug(
-                    "Historical SOC data available (%.1f hours old)",
-                    soc_age.total_seconds() / 3600,
-                )
-            else:
-                _LOGGER.warning(
-                    "Historical SOC data too old: %.1f hours",
-                    soc_age.total_seconds() / 3600,
-                )
-                return False
+        # Early return if either data source is missing
+        if self._last_soc_update is None or self._last_forecast_update is None:
+            _LOGGER.warning("Missing historical SOC or forecast data.")
+            return False
 
-        # Check if we have any forecast data within extended historical range
-        if self._last_forecast_update is not None:
-            forecast_age = now - self._last_forecast_update
-            if forecast_age <= timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS):
-                _LOGGER.debug(
-                    "Historical forecast data available (%.1f hours old)",
-                    forecast_age.total_seconds() / 3600,
-                )
-            else:
-                _LOGGER.warning(
-                    "Historical forecast data too old: %.1f hours",
-                    forecast_age.total_seconds() / 3600,
-                )
-                return False
+        # Check SOC data age
+        soc_age = now - self._last_soc_update
+        if soc_age > timedelta(hours=MAX_HISTORICAL_SOC_AGE_HOURS):
+            _LOGGER.warning(
+                "Historical SOC data too old: %.1f hours",
+                soc_age.total_seconds() / 3600,
+            )
+            return False
+        else:
+            _LOGGER.debug(
+                "Historical SOC data available (%.1f hours old)",
+                soc_age.total_seconds() / 3600,
+            )
 
-        # Need both SOC and forecast data
-        return (
-            self._last_soc_update is not None and self._last_forecast_update is not None
-        )
+        # Check forecast data age
+        forecast_age = now - self._last_forecast_update
+        if forecast_age > timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS):
+            _LOGGER.warning(
+                "Historical forecast data too old: %.1f hours",
+                forecast_age.total_seconds() / 3600,
+            )
+            return False
+        else:
+            _LOGGER.debug(
+                "Historical forecast data available (%.1f hours old)",
+                forecast_age.total_seconds() / 3600,
+            )
 
+        # Both data sources are available and within age limits
+        return True
     def _track_calculation_results(self, results: Dict[str, Any]) -> None:
         """Track calculation results for debugging stability issues."""
         current_results = {
