@@ -90,7 +90,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
         self._debounce_task: Optional[asyncio.Task] = None
         self._listeners_setup: bool = False
 
-        # Set up entity listeners immediately
+        # Set up entity listeners during initialization
         self._setup_entity_listeners()
 
     def _setup_entity_listeners(self) -> None:
