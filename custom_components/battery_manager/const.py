@@ -7,12 +7,18 @@ INTEGRATION_NAME = "Battery Manager"
 INTEGRATION_VERSION = "0.1.0"
 
 # Update intervals
-UPDATE_INTERVAL_SECONDS = 600  # 10 minutes
+UPDATE_INTERVAL_SECONDS = 300  # 5 minutes (reduced from 10 minutes)
+INITIAL_UPDATE_INTERVAL_SECONDS = 30  # Fast updates during startup
 DEBOUNCE_SECONDS = 5  # Debounce input changes
 
 # Data validation
 MAX_PV_FORECAST_AGE_HOURS = 24
 MAX_SOC_AGE_HOURS = 1
+STARTUP_RETRY_ATTEMPTS = 5  # Maximum number of startup attempts before giving up
+
+# Extended data retention for better fallback support
+MAX_HISTORICAL_SOC_AGE_HOURS = 6  # Allow older SOC values in emergency fallback
+MAX_HISTORICAL_FORECAST_AGE_HOURS = 72  # Allow older forecasts in emergency fallback
 
 # Default configuration values
 DEFAULT_CONFIG = {
