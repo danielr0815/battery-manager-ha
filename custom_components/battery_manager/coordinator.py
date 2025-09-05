@@ -506,6 +506,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator):
 
         # Both data sources are available and within age limits
         return True
+
     def _track_calculation_results(self, results: Dict[str, Any]) -> None:
         """Track calculation results for debugging stability issues."""
         current_results = {
