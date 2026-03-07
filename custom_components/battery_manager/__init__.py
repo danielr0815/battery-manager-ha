@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -23,6 +24,45 @@ from .debug_utils import format_hourly_details_table
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+
+def _validate_file_path(file_path: str, base_dir: Path) -> Path:
+    """Validate and sanitize file path to prevent directory traversal attacks.
+
+    Args:
+        file_path: User-provided file path
+        base_dir: Base directory that the file must be within
+
+    Returns:
+        Validated Path object
+
+    Raises:
+        ValueError: If path is invalid or attempts directory traversal
+    """
+    try:
+        # Normalize the path to resolve any .. or symbolic links
+        resolved_path = Path(file_path).resolve()
+        resolved_base = base_dir.resolve()
+
+        # Ensure the resolved path is within the base directory
+        if not str(resolved_path).startswith(str(resolved_base)):
+            raise ValueError(
+                f"Path '{file_path}' is outside allowed directory '{base_dir}'"
+            )
+
+        # Additional validation: check for null bytes
+        if '\0' in file_path:
+            raise ValueError("Path contains null bytes")
+
+        # Validate filename doesn't contain dangerous characters
+        filename = resolved_path.name
+        if filename.startswith('.') or '/' in filename or '\\' in filename:
+            raise ValueError(f"Invalid filename: {filename}")
+
+        return resolved_path
+
+    except (OSError, RuntimeError) as err:
+        raise ValueError(f"Invalid path: {err}") from err
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -148,7 +188,13 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
 
     coordinator: BatteryManagerCoordinator | None = None
 
+    # Validate entry_id if provided
     if entry_id:
+        # Security: Validate entry_id is alphanumeric to prevent injection
+        if not entry_id.replace("-", "").replace("_", "").isalnum():
+            _LOGGER.error("Invalid entry_id format: %s", entry_id)
+            return
+
         coordinator = domain_data.get(entry_id)
         if coordinator is None:
             _LOGGER.error("Entry id %s not found", entry_id)
@@ -162,17 +208,27 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
 
     details = coordinator.simulator.controller.get_last_hourly_details()
 
+    # Determine base directory for file operations
+    base_dir = Path(hass.config.path())
+
+    # Generate default file path if not provided
     if not file_path:
         if download:
-            file_path = hass.config.path(
-                "www", f"battery_manager_hourly_{entry_id}.txt"
+            file_path = str(
+                base_dir / "www" / f"battery_manager_hourly_{entry_id}.txt"
             )
         else:
-            file_path = hass.config.path(f"battery_manager_hourly_{entry_id}.txt")
+            file_path = str(base_dir / f"battery_manager_hourly_{entry_id}.txt")
 
     try:
-        path = Path(file_path)
-        with path.open("w", encoding="utf-8") as f_handle:
+        # Security: Validate file path to prevent directory traversal
+        validated_path = _validate_file_path(file_path, base_dir)
+
+        # Ensure parent directory exists
+        validated_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write file with proper encoding
+        with validated_path.open("w", encoding="utf-8") as f_handle:
             if as_table:
                 f_handle.write(
                     format_hourly_details_table(details, include_color=False) + "\n"
@@ -180,26 +236,42 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
             else:
                 for item in details:
                     f_handle.write(json.dumps(item) + "\n")
-        _LOGGER.info("Exported hourly details to %s", file_path)
+
+        _LOGGER.info("Exported hourly details to %s", validated_path)
 
         message: str
         if download:
             public_dir = Path(hass.config.path("www"))
             public_dir.mkdir(exist_ok=True)
-            public_path = public_dir / path.name
-            if public_path != path:
-                public_path.write_bytes(path.read_bytes())
-            url = f"/local/{public_path.name}"
+            public_path = public_dir / validated_path.name
+            if public_path != validated_path:
+                # Validate the copy destination as well
+                validated_public_path = _validate_file_path(str(public_path), base_dir)
+                validated_public_path.write_bytes(validated_path.read_bytes())
+            url = f"/local/{validated_path.name}"
             message = (
                 f'Hourly details exported. <a href="{url}" download>Download file</a>'
             )
         else:
-            message = f"Hourly details exported to {file_path}"
+            message = f"Hourly details exported to {validated_path}"
 
         persistent_notification_create(
             hass,
             message,
             title="Battery Manager",
         )
+    except ValueError as err:
+        # Security validation failed
+        _LOGGER.error("File path validation failed: %s", err)
+        persistent_notification_create(
+            hass,
+            f"Export failed: {err}",
+            title="Battery Manager - Error",
+        )
     except Exception as err:  # pragma: no cover - file write errors
         _LOGGER.error("Failed to export hourly details: %s", err)
+        persistent_notification_create(
+            hass,
+            f"Export failed: {err}",
+            title="Battery Manager - Error",
+        )
