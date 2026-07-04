@@ -20,7 +20,7 @@
  * via Home Assistant CSS variables inside an <ha-card>.
  */
 
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.5.1";
 const CARD_TYPE = "battery-manager-forecast-card";
 const DOCS_URL = "https://github.com/danielr0815/battery-manager-ha";
 
@@ -313,7 +313,9 @@ class BatteryManagerForecastCard extends HTMLElement {
     const lanes = loads.filter((l) => (l.schedule || []).length > 0);
 
     const width = Math.max(this._width || this.clientWidth || 320, 280);
-    const margin = { top: 8, right: 10, bottom: 16, left: 32 };
+    // Generous right margin: the curve must not run into the card edge
+    // and the T* label needs room next to the plot.
+    const margin = { top: 8, right: 30, bottom: 16, left: 32 };
     const laneH = 8;
     const laneGap = 3;
     const lanesH = lanes.length ? lanes.length * (laneH + laneGap) + 4 : 0;

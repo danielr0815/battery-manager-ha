@@ -90,6 +90,11 @@ _MIN_SAMPLES = {
 # {(date_iso, hour): wh} per entity
 HourMap = dict[tuple[str, int], float]
 
+# Part of the cleaning fingerprint: bump when the D-C2 cleaning SEMANTICS
+# change, so cached days computed under the old rules are refetched.
+# v2: statistic gaps of power-feedback sensors count as 0 W.
+_CLEANING_RULES_VERSION = 2
+
 
 def _default_data() -> dict[str, Any]:
     return {
@@ -423,7 +428,11 @@ class ProfileLearner:
         would keep contaminated days in the window for weeks.
         """
         loads, appliances = self._subentries()
-        parts: list[Any] = [sorted(loads, key=str), sorted(appliances, key=str)]
+        parts: list[Any] = [
+            _CLEANING_RULES_VERSION,
+            sorted(loads, key=str),
+            sorted(appliances, key=str),
+        ]
         parts.extend(
             cfg.get(key)
             for key in (
@@ -652,13 +661,21 @@ class ProfileLearner:
         Appliances with a statistics-backed power sensor are subtracted the
         same way (D-C2 step 2); status-only appliances are handled via hour
         exclusion instead.
+
+        Gaps in a power-feedback statistic count as 0 W (operator decision
+        2026-07-04): these devices go unavailable exactly when they are off
+        (sleeping powerstation, idle appliance), so a missing hour means
+        "no consumption", not "unknown" — dropping it would starve the
+        weekend bins for weeks.
         """
         result: list[list[float | None]] = []
         for load in loads:
             if not load["in_house"]:
                 continue
             if load["power_entity"] in hour_maps:
-                result.append(_day_series(hour_maps[load["power_entity"]], day))
+                result.append(
+                    _day_series_zero_filled(hour_maps[load["power_entity"]], day)
+                )
             elif load["control_switch"]:
                 switch = load["control_switch"]
                 on_fr = fractions.get(switch, {})
@@ -678,7 +695,7 @@ class ProfileLearner:
         for appliance in appliances:
             entity_id = appliance["detection_entity"]
             if entity_id in hour_maps:
-                result.append(_day_series(hour_maps[entity_id], day))
+                result.append(_day_series_zero_filled(hour_maps[entity_id], day))
         return result
 
     def _subentries(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -865,6 +882,15 @@ def _rows_to_hour_map(
 
 def _day_series(hour_map: HourMap, day: str) -> list[float | None]:
     return [hour_map.get((day, hour)) for hour in range(24)]
+
+
+def _day_series_zero_filled(hour_map: HourMap, day: str) -> list[float]:
+    """Day series for subtraction sources: missing hours count as 0 W.
+
+    Used for power-feedback sensors of devices that report unavailable
+    while switched off — a statistics gap means "not consuming".
+    """
+    return [hour_map.get((day, hour), 0.0) for hour in range(24)]
 
 
 def _excluded_hours(

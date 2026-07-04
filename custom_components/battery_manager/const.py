@@ -3,7 +3,7 @@
 DOMAIN = "battery_manager"
 
 INTEGRATION_NAME = "Battery Manager"
-INTEGRATION_VERSION = "0.5.0"
+INTEGRATION_VERSION = "0.5.1"
 
 # Update behaviour
 UPDATE_INTERVAL_SECONDS = 300

@@ -14,7 +14,10 @@ from custom_components.battery_manager.const import (
     CONF_SOC_ENTITY,
     DOMAIN,
 )
-from custom_components.battery_manager.history_profile import ProfileLearner
+from custom_components.battery_manager.history_profile import (
+    ProfileLearner,
+    _day_series_zero_filled,
+)
 
 ENTRY_DATA = {
     CONF_SOC_ENTITY: "sensor.test_soc",
@@ -171,6 +174,15 @@ async def test_vacation_switch_toggles_learner(hass):
     )
     await hass.async_block_till_done()
     assert coordinator.learner.vacation_active is False
+
+
+def test_power_feedback_gaps_count_as_zero():
+    """Unavailable = off (operator decision): gaps subtract 0 W, hours stay."""
+    hour_map = {("2026-07-01", 12): 300.0}
+    series = _day_series_zero_filled(hour_map, "2026-07-01")
+    assert series[12] == 300.0
+    assert series[0] == 0.0
+    assert None not in series
 
 
 async def test_export_learned_profiles_service(hass):

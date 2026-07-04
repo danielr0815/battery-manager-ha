@@ -218,7 +218,11 @@ Pro historischer Stunde, Reihenfolge:
 
 1. **Überschusslasten mit `in_house_measurement = true`:**
    - mit `power_entity`: Stunden-`mean` der LTS subtrahieren (genaueste
-     Quelle);
+     Quelle). **Statistik-Lücken zählen als 0 W** (Betreiber-Entscheid
+     2026-07-04): Geräte wie Powerstations melden `unavailable`, genau
+     wenn sie aus sind — eine fehlende Stunde heißt „kein Verbrauch",
+     nicht „unbekannt"; Verwerfen würde die Wochenend-Bins wochenlang
+     aushungern. Gleiches gilt für Appliance-Leistungssensoren.
    - ohne `power_entity`: `nominal_power_w × Einschaltanteil(h)` aus der
      `control_switch_entity`-Historie subtrahieren
      (`state_changes_during_period(…, no_attributes=True)`, ein Aufruf je

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-04
+
+### Added
+- Service **`battery_manager.export_learned_profiles`**: learned W bins
+  and sample counts per (path, day type, hour) as ASCII tables, or the
+  raw JSON snapshot with `as_table: false`.
+- The `consumption_profile` attribute on the SOC forecast sensor now
+  carries the learned bins themselves (for dashboard cards/templates).
+- `export_hourly_details` gains a **Prof** column (`L/S` per AC/DC path):
+  learned series vs. static fallback per hour.
+
+### Changed
+- **Statistic gaps of power-feedback sensors count as 0 W** while
+  learning (operator decision): powerstations/appliances report
+  `unavailable` exactly when they are off, so a missing hour means "no
+  consumption" — previously those hours were dropped and starved the
+  weekend bins. Cached learning days from the old rule are refetched
+  automatically (cleaning-rules version in the fingerprint).
+- Learning cache is invalidated when the cleaning configuration changes
+  (`in_house_measurement`, power/switch entities, appliances, support
+  switches) — with an immediate catch-up run and the rate limit
+  suspended for the rebuild.
+
+### Fixed
+- Options flow failed to open with a bare "400: Bad Request": unit-less
+  number selectors passed `unit_of_measurement: None`, which the
+  selector config validation rejects (latent since v0.2, first hit by
+  the options flow). Flow smoke tests added.
+- Forecast card: wider right margin so the curve no longer runs into
+  the card edge and the T* label has room.
+
 ## [0.5.0] - 2026-07-04
 
 ### Added
