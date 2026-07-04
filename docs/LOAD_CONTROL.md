@@ -108,13 +108,14 @@ Planungsleistung verwendet. Der Energiefortschritt der Ladung wird ohnehin
 
 ### 6.2 Icon
 
-- Integrations-Icons kommen in HA ausschließlich aus dem zentralen
-  [home-assistant/brands](https://github.com/home-assistant/brands)-Repo
-  (`custom_integrations/battery_manager/icon.png` 256×256 + `icon@2x.png`
-  512×512). Ich erzeuge die Icon-Dateien (Batterie-+Sonne-Motiv) und lege
-  sie unter `assets/brands/` ins Repo; die Einreichung des brands-PRs
-  erfolgt nach Freigabe des Betreibers (öffentlicher PR unter seinem
-  GitHub-Konto oder von mir vorbereitet zum Selbst-Einreichen).
+- **Lokal ausgeliefert** (kein brands-PR nötig): Seit HA 2026.3 dürfen
+  Custom Integrations ihre Marken-Bilder direkt mitliefern. Die Dateien
+  liegen unter `custom_components/battery_manager/brand/`
+  (`icon.png` 256×256, `icon@2x.png` 512×512, dazu `logo.png`/`logo@2x.png`).
+  HA serviert sie über die lokale Brands-Proxy-API
+  (`/api/brands/integration/battery_manager/icon.png`); lokale Bilder haben
+  Vorrang vor dem CDN, keine manifest-Konfiguration nötig. Motiv:
+  Batterie mit Blitz + Sonne.
 
 ## 7. Betreiber-Entscheidungen (2026-07-04)
 
@@ -130,6 +131,7 @@ Planungsleistung verwendet. Der Energiefortschritt der Ladung wird ohnehin
 - **F-L3: Ja** — die Integration übernimmt die Ladeschaltung; die bisherige
   Automation „F2400 Intelligente Ladesteuerung" wird vom Betreiber
   deaktiviert.
-- **F-L4:** Icon-Dateien werden im Repo vorbereitet
-  (`assets/brands/battery_manager/`), der brands-PR wird vom Betreiber
-  selbst eingereicht.
+- **F-L4 (revidiert 2026-07-04):** Der Betreiber möchte das Icon **nicht**
+  offiziell einreichen. Genutzt wird stattdessen der lokale
+  brand/-Mechanismus (HA ≥ 2026.3, siehe §6.2) — Icon liegt in
+  `custom_components/battery_manager/brand/`, kein PR nötig.

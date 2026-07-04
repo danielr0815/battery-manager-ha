@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SOC is treated as "needs charging" (self-healing on first wake).
 - `sensor.…_soc_forecast`: forecasted SOC curve over the whole horizon as a
   `forecast` attribute for chart cards (ApexCharts example in README).
-- Brand icon assets under `assets/brands/` for a home-assistant/brands PR.
+- Brand icon shipped locally under `custom_components/battery_manager/brand/`
+  (HA 2026.3+ local brands proxy — no home-assistant/brands PR needed).
 - `charging_active` attribute on load recommendation entities.
 
 ## [0.2.0] - 2026-07-04
