@@ -9,6 +9,12 @@
           "pv_forecast_today_entity": "PV-Prognose heute (kWh)",
           "pv_forecast_tomorrow_entity": "PV-Prognose morgen (kWh)",
           "pv_forecast_day_after_entity": "PV-Prognose übermorgen (kWh)"
+        },
+        "data_description": {
+          "soc_entity": "Aktueller Ladezustand der Batterie in Prozent (0–100). Grundlage aller Berechnungen — sollte sich regelmäßig aktualisieren.",
+          "pv_forecast_today_entity": "Erwartete PV-Energie für heute in kWh, z. B. von Solcast oder Forecast.Solar.",
+          "pv_forecast_tomorrow_entity": "Erwartete PV-Energie für morgen in kWh.",
+          "pv_forecast_day_after_entity": "Erwartete PV-Energie für übermorgen in kWh — verlängert den Planungshorizont auf bis zu 3 Tage."
         }
       },
       "battery": {
@@ -19,6 +25,13 @@
           "battery_max_soc_percent": "Maximaler SOC (%)",
           "battery_charge_efficiency": "Lade-Wirkungsgrad (0-1)",
           "battery_discharge_efficiency": "Entlade-Wirkungsgrad (0-1)"
+        },
+        "data_description": {
+          "battery_capacity_wh": "Gesamtkapazität der Batterie in Wattstunden (z. B. 5000 für 5 kWh).",
+          "battery_min_soc_percent": "Harte Untergrenze: Unter diesen Ladezustand wird die Batterie nie geplant entladen (Schutz vor Tiefentladung).",
+          "battery_max_soc_percent": "Obergrenze für das Laden: Darüber nimmt die Batterie keinen Überschuss mehr auf (schont die Zellen).",
+          "battery_charge_efficiency": "Anteil der Ladeenergie, der wirklich in der Batterie ankommt (0,97 = 3 % Ladeverluste).",
+          "battery_discharge_efficiency": "Anteil der gespeicherten Energie, der beim Entladen nutzbar ist (0,97 = 3 % Entladeverluste)."
         }
       },
       "pv": {
@@ -29,6 +42,13 @@
           "pv_morning_end_hour": "Ende Vormittagsfenster (Stunde)",
           "pv_afternoon_end_hour": "Produktionsende (Stunde)",
           "pv_morning_ratio": "Vormittagsanteil der Tagesenergie (0-1)"
+        },
+        "data_description": {
+          "pv_max_power_w": "Maximale Leistung der PV-Anlage — kappt die aus der Tagesprognose berechneten Stundenwerte nach oben.",
+          "pv_morning_start_hour": "Stunde, ab der die Anlage nennenswert produziert (7 = ab 07:00 Uhr).",
+          "pv_morning_end_hour": "Ende des ertragreichen Vormittagsfensters — bis hierhin fällt der unten eingestellte Vormittagsanteil an.",
+          "pv_afternoon_end_hour": "Stunde, zu der die Produktion endet (18 = bis 18:00 Uhr).",
+          "pv_morning_ratio": "Anteil der Tagesenergie im Vormittagsfenster (0,8 = 80 % vormittags, 20 % nachmittags). Je nach Ausrichtung der Module anpassen."
         }
       },
       "consumers": {
@@ -42,6 +62,16 @@
           "dc_variable_load_w": "DC-Zusatzlast tagsüber (W)",
           "dc_variable_start_hour": "DC-Zusatzlast ab (Stunde)",
           "dc_variable_end_hour": "DC-Zusatzlast bis (Stunde)"
+        },
+        "data_description": {
+          "ac_base_load_w": "Dauerhafter AC-Verbrauch des Haushalts rund um die Uhr (Kühlschrank, Router, Standby …).",
+          "ac_variable_load_w": "Zusätzlicher AC-Verbrauch, der nur im unten eingestellten Zeitfenster anfällt (Tagesaktivität).",
+          "ac_variable_start_hour": "Beginn des Zeitfensters, in dem die AC-Zusatzlast anfällt.",
+          "ac_variable_end_hour": "Ende des Zeitfensters, in dem die AC-Zusatzlast anfällt.",
+          "dc_base_load_w": "Dauerhafter Verbrauch an der DC-Schiene (24 V), direkt aus der Batterie versorgt.",
+          "dc_variable_load_w": "Zusätzlicher DC-Verbrauch, der nur im unten eingestellten Zeitfenster anfällt.",
+          "dc_variable_start_hour": "Beginn des Zeitfensters, in dem die DC-Zusatzlast anfällt.",
+          "dc_variable_end_hour": "Ende des Zeitfensters, in dem die DC-Zusatzlast anfällt."
         }
       },
       "power": {
@@ -54,6 +84,15 @@
           "inverter_efficiency": "Wechselrichter-Wirkungsgrad (0-1)",
           "inverter_standby_power_w": "Wechselrichter Standby (W)",
           "inverter_min_soc_percent": "Wechselrichter Mindest-SOC (%)"
+        },
+        "data_description": {
+          "charger_max_power_w": "Maximale AC-Aufnahmeleistung des Batterie-Ladegeräts — begrenzt, wie schnell Überschuss eingespeichert werden kann.",
+          "charger_efficiency": "Wirkungsgrad der AC→DC-Wandlung des Ladegeräts (0,92 = 8 % Verlust).",
+          "charger_standby_power_w": "Eigenverbrauch des Ladegeräts, solange es aktiv ist.",
+          "inverter_max_power_w": "Maximale AC-Abgabeleistung des Entlade-Wechselrichters.",
+          "inverter_efficiency": "Wirkungsgrad der DC→AC-Wandlung des Wechselrichters (0,95 = 5 % Verlust).",
+          "inverter_standby_power_w": "Eigenverbrauch des Wechselrichters, solange er eingeschaltet ist.",
+          "inverter_min_soc_percent": "Unter diesem Ladezustand schaltet der Wechselrichter hart ab — das Haus läuft dann aus dem Netz."
         }
       },
       "control": {
@@ -69,6 +108,17 @@
           "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
           "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
           "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)"
+        },
+        "data_description": {
+          "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
+          "hysteresis_percent": "Totband um die SOC-Schwelle: Die Wechselrichter-Empfehlung wechselt erst, wenn der SOC die Schwelle um diesen Wert über- oder unterschreitet — verhindert Flattern.",
+          "threshold_inertia_percent": "Eine neue Schwelle wird erst übernommen, wenn sie sich um mindestens diesen Betrag von der bisherigen unterscheidet — verhindert Springen zwischen gleichwertigen Plänen.",
+          "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade).",
+          "support_dc48_switch_entity": "Optional: Schalter des Netzteils, das im Notfall mit fester Leistung die 48-V-Batterieschiene stützt. Wird von der Integration direkt geschaltet.",
+          "support_dc48_power_w": "Feste Einspeiseleistung des 48-V-Stütznetzteils, mit der die Simulation rechnet.",
+          "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Wird direkt geschaltet.",
+          "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
+          "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten."
         }
       }
     },
@@ -110,6 +160,21 @@
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
             "input_off_policy": "Ladeeingang bei Ladeende"
+          },
+          "data_description": {
+            "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
+            "power_w": "Typische Leistungsaufnahme, mit der die Last eingeplant wird. Bei Speicher-Lasten die (ggf. gedrosselte) Ladeleistung, z. B. 300 W.",
+            "battery_tolerance_percent": "Wie viel der Lastenergie pro Stunde aus der Hausbatterie kommen darf (überbrückt z. B. Wolkenlücken). 0 = nur echter Überschuss. Zusätzlicher Netzbezug wird unabhängig davon nie verursacht.",
+            "min_runtime_min": "Mindest-Ein- bzw. Ausschaltdauer der realen Schaltung — schont Gerät und Relais.",
+            "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
+            "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
+            "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
+            "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
+            "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
+            "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
+            "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
+            "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
+            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird."
           }
         },
         "reconfigure": {
@@ -128,6 +193,21 @@
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
             "input_off_policy": "Ladeeingang bei Ladeende"
+          },
+          "data_description": {
+            "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
+            "power_w": "Typische Leistungsaufnahme, mit der die Last eingeplant wird. Bei Speicher-Lasten die (ggf. gedrosselte) Ladeleistung, z. B. 300 W.",
+            "battery_tolerance_percent": "Wie viel der Lastenergie pro Stunde aus der Hausbatterie kommen darf (überbrückt z. B. Wolkenlücken). 0 = nur echter Überschuss. Zusätzlicher Netzbezug wird unabhängig davon nie verursacht.",
+            "min_runtime_min": "Mindest-Ein- bzw. Ausschaltdauer der realen Schaltung — schont Gerät und Relais.",
+            "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
+            "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
+            "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
+            "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
+            "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
+            "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
+            "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
+            "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
+            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird."
           }
         }
       }
@@ -150,6 +230,14 @@
             "run_energy_wh": "Energie pro Lauf (Wh)",
             "run_duration_h": "Laufdauer (h)",
             "opportunistic_start": "Startfenster-Entität anlegen"
+          },
+          "data_description": {
+            "name": "Anzeigename des Geräts.",
+            "detection_entity": "Entität, an der ein laufendes Programm erkennbar ist: entweder ein Leistungssensor (W) oder ein Status-Sensor (z. B. „running“/„In Betrieb“).",
+            "power_threshold_w": "Nur bei Leistungssensoren relevant: Ab dieser Leistung gilt das Gerät als laufend.",
+            "run_energy_wh": "Energieverbrauch eines typischen Programms — wird bei erkanntem Lauf als Restverbrauch in die Prognose eingerechnet.",
+            "run_duration_h": "Dauer eines typischen Programms in Stunden (z. B. 3,5).",
+            "opportunistic_start": "Erzeugt eine zusätzliche Entität, die anzeigt, wenn ein kompletter Lauf ab jetzt ohne Netzbezug möglich wäre — praktisch als Startsignal."
           }
         },
         "reconfigure": {
@@ -161,6 +249,14 @@
             "run_energy_wh": "Energie pro Lauf (Wh)",
             "run_duration_h": "Laufdauer (h)",
             "opportunistic_start": "Startfenster-Entität anlegen"
+          },
+          "data_description": {
+            "name": "Anzeigename des Geräts.",
+            "detection_entity": "Entität, an der ein laufendes Programm erkennbar ist: entweder ein Leistungssensor (W) oder ein Status-Sensor (z. B. „running“/„In Betrieb“).",
+            "power_threshold_w": "Nur bei Leistungssensoren relevant: Ab dieser Leistung gilt das Gerät als laufend.",
+            "run_energy_wh": "Energieverbrauch eines typischen Programms — wird bei erkanntem Lauf als Restverbrauch in die Prognose eingerechnet.",
+            "run_duration_h": "Dauer eines typischen Programms in Stunden (z. B. 3,5).",
+            "opportunistic_start": "Erzeugt eine zusätzliche Entität, die anzeigt, wenn ein kompletter Lauf ab jetzt ohne Netzbezug möglich wäre — praktisch als Startsignal."
           }
         }
       }
@@ -183,6 +279,17 @@
           "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
           "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
           "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)"
+        },
+        "data_description": {
+          "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
+          "hysteresis_percent": "Totband um die SOC-Schwelle: Die Wechselrichter-Empfehlung wechselt erst, wenn der SOC die Schwelle um diesen Wert über- oder unterschreitet — verhindert Flattern.",
+          "threshold_inertia_percent": "Eine neue Schwelle wird erst übernommen, wenn sie sich um mindestens diesen Betrag von der bisherigen unterscheidet — verhindert Springen zwischen gleichwertigen Plänen.",
+          "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade).",
+          "support_dc48_switch_entity": "Optional: Schalter des Netzteils, das im Notfall mit fester Leistung die 48-V-Batterieschiene stützt. Wird von der Integration direkt geschaltet. Feld leeren = Funktion deaktivieren.",
+          "support_dc48_power_w": "Feste Einspeiseleistung des 48-V-Stütznetzteils, mit der die Simulation rechnet.",
+          "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Feld leeren = Funktion deaktivieren.",
+          "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
+          "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten."
         }
       }
     }

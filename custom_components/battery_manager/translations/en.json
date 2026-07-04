@@ -9,6 +9,12 @@
           "pv_forecast_today_entity": "PV forecast today (kWh)",
           "pv_forecast_tomorrow_entity": "PV forecast tomorrow (kWh)",
           "pv_forecast_day_after_entity": "PV forecast day after tomorrow (kWh)"
+        },
+        "data_description": {
+          "soc_entity": "Current battery state of charge in percent (0–100). Basis of all calculations — should update regularly.",
+          "pv_forecast_today_entity": "Expected PV energy for today in kWh, e.g. from Solcast or Forecast.Solar.",
+          "pv_forecast_tomorrow_entity": "Expected PV energy for tomorrow in kWh.",
+          "pv_forecast_day_after_entity": "Expected PV energy for the day after tomorrow in kWh — extends the planning horizon to up to 3 days."
         }
       },
       "battery": {
@@ -19,6 +25,13 @@
           "battery_max_soc_percent": "Maximum SOC (%)",
           "battery_charge_efficiency": "Charge efficiency (0-1)",
           "battery_discharge_efficiency": "Discharge efficiency (0-1)"
+        },
+        "data_description": {
+          "battery_capacity_wh": "Total battery capacity in watt-hours (e.g. 5000 for 5 kWh).",
+          "battery_min_soc_percent": "Hard lower limit: planning never discharges the battery below this state of charge (deep-discharge protection).",
+          "battery_max_soc_percent": "Upper charging limit: above this value the battery absorbs no more surplus (protects the cells).",
+          "battery_charge_efficiency": "Share of charging energy that actually ends up in the battery (0.97 = 3 % charging losses).",
+          "battery_discharge_efficiency": "Share of stored energy that is usable when discharging (0.97 = 3 % discharging losses)."
         }
       },
       "pv": {
@@ -29,6 +42,13 @@
           "pv_morning_end_hour": "Morning window end hour",
           "pv_afternoon_end_hour": "Production end hour",
           "pv_morning_ratio": "Morning share of daily energy (0-1)"
+        },
+        "data_description": {
+          "pv_max_power_w": "Maximum PV system power — caps the hourly values derived from the daily forecast.",
+          "pv_morning_start_hour": "Hour from which the system produces noticeably (7 = from 07:00).",
+          "pv_morning_end_hour": "End of the high-yield morning window — the morning share configured below falls into this window.",
+          "pv_afternoon_end_hour": "Hour at which production ends (18 = until 18:00).",
+          "pv_morning_ratio": "Share of the daily energy produced in the morning window (0.8 = 80 % mornings, 20 % afternoons). Adjust to your panel orientation."
         }
       },
       "consumers": {
@@ -42,6 +62,16 @@
           "dc_variable_load_w": "DC variable load (W)",
           "dc_variable_start_hour": "DC variable start hour",
           "dc_variable_end_hour": "DC variable end hour"
+        },
+        "data_description": {
+          "ac_base_load_w": "Permanent round-the-clock AC consumption of the household (fridge, router, standby …).",
+          "ac_variable_load_w": "Additional AC consumption occurring only within the time window configured below (daytime activity).",
+          "ac_variable_start_hour": "Start of the window in which the additional AC load occurs.",
+          "ac_variable_end_hour": "End of the window in which the additional AC load occurs.",
+          "dc_base_load_w": "Permanent consumption on the DC rail (24 V), supplied directly from the battery.",
+          "dc_variable_load_w": "Additional DC consumption occurring only within the time window configured below.",
+          "dc_variable_start_hour": "Start of the window in which the additional DC load occurs.",
+          "dc_variable_end_hour": "End of the window in which the additional DC load occurs."
         }
       },
       "power": {
@@ -54,6 +84,15 @@
           "inverter_efficiency": "Inverter efficiency (0-1)",
           "inverter_standby_power_w": "Inverter standby power (W)",
           "inverter_min_soc_percent": "Inverter minimum SOC (%)"
+        },
+        "data_description": {
+          "charger_max_power_w": "Maximum AC input power of the battery charger — limits how fast surplus can be stored.",
+          "charger_efficiency": "AC→DC conversion efficiency of the charger (0.92 = 8 % loss).",
+          "charger_standby_power_w": "Charger self-consumption while active.",
+          "inverter_max_power_w": "Maximum AC output power of the discharge inverter.",
+          "inverter_efficiency": "DC→AC conversion efficiency of the inverter (0.95 = 5 % loss).",
+          "inverter_standby_power_w": "Inverter self-consumption while switched on.",
+          "inverter_min_soc_percent": "Below this state of charge the inverter shuts off hard — the house then runs from the grid."
         }
       },
       "control": {
@@ -69,6 +108,17 @@
           "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
           "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
           "support_switch_delay_s": "Changeover delay (s, make-before-break)"
+        },
+        "data_description": {
+          "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
+          "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
+          "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
+          "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
+          "support_dc48_switch_entity": "Optional: switch of the PSU that feeds the 48 V battery bus with fixed power in an emergency. Switched directly by the integration.",
+          "support_dc48_power_w": "Fixed feed-in power of the 48 V support PSU used by the simulation.",
+          "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
+          "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
+          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover."
         }
       }
     },
@@ -110,6 +160,21 @@
             "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
             "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
             "input_off_policy": "Input plug at end of charge"
+          },
+          "data_description": {
+            "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
+            "power_w": "Typical power draw used for planning. For storage loads use the (possibly throttled) charging power, e.g. 300 W.",
+            "battery_tolerance_percent": "How much of the load's hourly energy may come from the home battery (bridges e.g. cloud gaps). 0 = genuine surplus only. Additional grid import is never caused regardless.",
+            "min_runtime_min": "Minimum on/off dwell time of the real switching — protects the device and relays.",
+            "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
+            "capacity_wh": "Storage size of the load (only relevant if energy limited), e.g. 2000 for a 2 kWh powerstation.",
+            "target_soc_percent": "The load is charged up to this state of charge; above it, it counts as full and is no longer scheduled.",
+            "soc_entity": "State-of-charge sensor of the load. If the device sleeps (sensor unavailable), planning continues with the last known value.",
+            "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
+            "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
+            "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
+            "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
+            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough."
           }
         },
         "reconfigure": {
@@ -128,6 +193,21 @@
             "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
             "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
             "input_off_policy": "Input plug at end of charge"
+          },
+          "data_description": {
+            "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
+            "power_w": "Typical power draw used for planning. For storage loads use the (possibly throttled) charging power, e.g. 300 W.",
+            "battery_tolerance_percent": "How much of the load's hourly energy may come from the home battery (bridges e.g. cloud gaps). 0 = genuine surplus only. Additional grid import is never caused regardless.",
+            "min_runtime_min": "Minimum on/off dwell time of the real switching — protects the device and relays.",
+            "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
+            "capacity_wh": "Storage size of the load (only relevant if energy limited), e.g. 2000 for a 2 kWh powerstation.",
+            "target_soc_percent": "The load is charged up to this state of charge; above it, it counts as full and is no longer scheduled.",
+            "soc_entity": "State-of-charge sensor of the load. If the device sleeps (sensor unavailable), planning continues with the last known value.",
+            "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
+            "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
+            "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
+            "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
+            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough."
           }
         }
       }
@@ -150,6 +230,14 @@
             "run_energy_wh": "Energy per run (Wh)",
             "run_duration_h": "Run duration (h)",
             "opportunistic_start": "Create start-window advisor entity"
+          },
+          "data_description": {
+            "name": "Display name of the appliance.",
+            "detection_entity": "Entity that indicates a running program: either a power sensor (W) or a state sensor (e.g. \"running\").",
+            "power_threshold_w": "Only relevant for power sensors: above this power the appliance counts as running.",
+            "run_energy_wh": "Energy consumption of a typical program — added to the forecast as remaining consumption when a run is detected.",
+            "run_duration_h": "Duration of a typical program in hours (e.g. 3.5).",
+            "opportunistic_start": "Creates an additional entity that indicates when a complete run could start right now without any grid import — useful as a start signal."
           }
         },
         "reconfigure": {
@@ -161,6 +249,14 @@
             "run_energy_wh": "Energy per run (Wh)",
             "run_duration_h": "Run duration (h)",
             "opportunistic_start": "Create start-window advisor entity"
+          },
+          "data_description": {
+            "name": "Display name of the appliance.",
+            "detection_entity": "Entity that indicates a running program: either a power sensor (W) or a state sensor (e.g. \"running\").",
+            "power_threshold_w": "Only relevant for power sensors: above this power the appliance counts as running.",
+            "run_energy_wh": "Energy consumption of a typical program — added to the forecast as remaining consumption when a run is detected.",
+            "run_duration_h": "Duration of a typical program in hours (e.g. 3.5).",
+            "opportunistic_start": "Creates an additional entity that indicates when a complete run could start right now without any grid import — useful as a start signal."
           }
         }
       }
@@ -183,6 +279,17 @@
           "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
           "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
           "support_switch_delay_s": "Changeover delay (s, make-before-break)"
+        },
+        "data_description": {
+          "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
+          "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
+          "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
+          "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
+          "support_dc48_switch_entity": "Optional: switch of the PSU that feeds the 48 V battery bus with fixed power in an emergency. Switched directly by the integration. Clear the field to disable.",
+          "support_dc48_power_w": "Fixed feed-in power of the 48 V support PSU used by the simulation.",
+          "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Clear the field to disable.",
+          "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
+          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover."
         }
       }
     }
