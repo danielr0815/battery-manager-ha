@@ -91,6 +91,21 @@ def test_clean_applies_plausibility_clamp():
     assert cleaned[0] == 3000.0
 
 
+def test_clean_negative_subtraction_adds_energy():
+    """Support-path corrections add energy as negative subtractions
+    (D-C2 step 3: 48 V PSU injection / 24 V rail shifted back to DC)."""
+    load = _flat_day(50.0)
+    injection = _flat_day(-60.0)
+    cleaned, negatives = clean_day(load, [injection], set(), 3000.0, 10.0)
+    assert cleaned[0] == 110.0
+    assert negatives == 0
+    # None in the correction series still drops the hour (uncovered switch)
+    partial = _flat_day(-60.0)
+    partial[4] = None
+    cleaned, _ = clean_day(load, [partial], set(), 3000.0, 10.0)
+    assert cleaned[4] is None
+
+
 # ----------------------------------------------------------------------
 # aggregate_bins (D-C3)
 # ----------------------------------------------------------------------

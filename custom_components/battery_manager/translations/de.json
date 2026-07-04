@@ -119,7 +119,8 @@
           "support_dc48_power_w": "Leistung 48-V-Stütznetzteil (W)",
           "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
           "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
-          "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)"
+          "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)",
+          "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)"
         },
         "data_description": {
           "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -130,7 +131,8 @@
           "support_dc48_power_w": "Feste Einspeiseleistung des 48-V-Stütznetzteils, mit der die Simulation rechnet.",
           "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Wird direkt geschaltet.",
           "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
-          "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten."
+          "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
+          "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft)."
         }
       }
     },
@@ -312,7 +314,8 @@
           "dc_balance_in_entities": "DC-Bilanz: Zufluss-Zähler (optional)",
           "dc_balance_out_entities": "DC-Bilanz: Abfluss-Zähler (optional)",
           "learning_window_days": "Lernfenster (Tage)",
-          "learning_max_age_days": "Max. Profilalter (Tage)"
+          "learning_max_age_days": "Max. Profilalter (Tage)",
+          "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)"
         },
         "data_description": {
           "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -339,7 +342,8 @@
           "dc_balance_in_entities": "Alternative ohne direkten DC-Lastsensor: Zufluss-Zähler des DC-Verbrauchsknotens.",
           "dc_balance_out_entities": "Abfluss-Zähler des DC-Verbrauchsknotens (Energie, die nicht verbraucht wird).",
           "learning_window_days": "Rollierendes Fenster, aus dem die Stundenprofile gelernt werden. Größere Werte = stabiler, aber träger bei Verhaltensänderungen.",
-          "learning_max_age_days": "Ist der letzte erfolgreiche Lernlauf älter, fällt die Prognose komplett auf das statische Profil zurück (Fail-safe)."
+          "learning_max_age_days": "Ist der letzte erfolgreiche Lernlauf älter, fällt die Prognose komplett auf das statische Profil zurück (Fail-safe).",
+          "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft)."
         }
       }
     }

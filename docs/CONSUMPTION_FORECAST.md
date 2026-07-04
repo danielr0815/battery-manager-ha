@@ -238,21 +238,36 @@ Pro historischer Stunde, Reihenfolge:
      Ausschluss dagegen die Mittags-Bins leeren, daher dort Subtraktion).
      Lauferkennung in der Historie: gleiche Regeln wie live
      (`APPLIANCE_RUNNING_STATES` bzw. `power_threshold_w`).
-3. **Stützpfade:** Stunden mit aktivem Stützpfad werden für **beide**
-   Pfade ausgeschlossen (Netz-Einspeisung verbraucherseitig bzw. Last am
-   Messpunkt vorbei — topologieunabhängig sicher; Eskalationsfälle sind
-   selten, der Datenverlust minimal). Ausschluss-Signal je konfigurierter
-   Entität: `support_dc48_switch_entity` / `support_dc24_switch_entity`
-   **AN**; `dcdc_switch_entity` dagegen **AUS** (DC/DC an = Normalbetrieb;
-   aus = 24-V-Schiene läuft am Messpunkt vorbei — wörtlich „an =
-   ausschließen" würde fast jede Stunde verwerfen). Der Status-only-
-   Appliance-Ausschluss aus Schritt 2 gilt nur für den **AC**-Pfad. Sind
-   keine Stützpfade konfiguriert, entfällt dieser Schritt.
+3. **Stützpfade — Korrektur statt Ausschluss** (Rev. 3, Betreiber-Hinweis:
+   im Winter laufen die Netzteile ggf. **monatelang** — ein Ausschluss
+   würde das Lernen komplett aushungern). Aktive Stützpfade
+   **verschieben** Leistung zwischen den Pfaden; die Bereinigung schiebt
+   sie rechnerisch zurück, sodass die Profile den unbeeinflussten Bedarf
+   abbilden (genau die Semantik, die der Simulationskern erwartet — er
+   modelliert die Stützpfade selbst):
+   - **48-V-Netzteil AN:** zieht `support_dc48_power_w` (Konfig, z. B.
+     60 W) aus dem Hausnetz und speist sie verbraucherseitig in den
+     48-V-Bus → **AC − P·Einschaltanteil, DC + P·Einschaltanteil**
+     (Wandlerverluste vernachlässigt, wie im Kern).
+   - **24-V-Netzteil speist die Schiene** (Netzteil AN **und** DC/DC AUS):
+     die komplette 24-V-Last wandert von der DC- in die AC-Messung.
+     Exakte Rückverschiebung über den optionalen **Leistungssensor des
+     Netzteils** (`support_dc24_power_entity`): **AC − P24(h),
+     DC + P24(h)** (Statistik-Lücken = 0 W, das Netzteil ist dann aus).
+     **Ohne diesen Sensor ist die Verschiebung unbekannt → nur dann wird
+     die Stunde (beide Pfade) ausgeschlossen.** Für Winterbetrieb ist der
+     Sensor daher dringend empfohlen (Repair-Issue, wenn er konfiguriert
+     ist, aber keine Statistik hat).
+   - **Tote Schiene** (DC/DC AUS ohne Netzteil): anomaler Zustand →
+     Stunde ausgeschlossen (selten).
+   Der Status-only-Appliance-Ausschluss aus Schritt 2 gilt nur für den
+   **AC**-Pfad. Sind keine Stützpfade konfiguriert, entfällt dieser
+   Schritt.
    **Coverage-Regel:** Stunden vor dem ersten aufgezeichneten Zustand
    einer benötigten Schalter-/Status-Entität sind UNBEKANNT, nicht „aus":
-   Subtraktions-Quellen liefern dort keinen Wert (Stunde wird verworfen),
-   Ausschluss-Entitäten schließen die Stunde konservativ aus. Tage
-   außerhalb der Recorder-Retention bleiben damit ungelernt, statt
+   Subtraktions-/Korrektur-Quellen liefern dort keinen Wert (Stunde wird
+   verworfen), Ausschluss-Prüfungen schließen die Stunde konservativ aus.
+   Tage außerhalb der Recorder-Retention bleiben damit ungelernt, statt
    unbereinigt gelernt zu werden.
 4. **Klemmen & Diagnose:** Residuum auf [0, Klemme] begrenzen; **negative
    Residuen zählen** (Indikator „Messpunkt enthält gesteuerte Lasten nicht /

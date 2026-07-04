@@ -3,7 +3,7 @@
 DOMAIN = "battery_manager"
 
 INTEGRATION_NAME = "Battery Manager"
-INTEGRATION_VERSION = "0.5.1"
+INTEGRATION_VERSION = "0.5.2"
 
 # Update behaviour
 UPDATE_INTERVAL_SECONDS = 300
@@ -52,6 +52,11 @@ LEARNED_STORE_KEY = "learned_profiles"  # f"{DOMAIN}.{key}.{entry_id}"
 CONF_SUPPORT_DC48_SWITCH = "support_dc48_switch_entity"
 CONF_SUPPORT_DC48_POWER_W = "support_dc48_power_w"
 CONF_SUPPORT_DC24_SWITCH = "support_dc24_switch_entity"
+# Optional power sensor of the 24 V grid PSU: makes the DC->AC load shift
+# during PSU operation exactly correctable while learning consumption
+# profiles (docs/CONSUMPTION_FORECAST.md D-C2 step 3). Without it, hours
+# with a PSU-fed 24 V rail cannot be learned.
+CONF_SUPPORT_DC24_POWER_ENTITY = "support_dc24_power_entity"
 CONF_DCDC_SWITCH = "dcdc_switch_entity"
 CONF_SUPPORT_SWITCH_DELAY_S = "support_switch_delay_s"
 

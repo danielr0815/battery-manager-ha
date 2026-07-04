@@ -48,7 +48,9 @@ from .const import (
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
     DEFAULT_CONFIG,
     DOMAIN,
@@ -93,7 +95,8 @@ HourMap = dict[tuple[str, int], float]
 # Part of the cleaning fingerprint: bump when the D-C2 cleaning SEMANTICS
 # change, so cached days computed under the old rules are refetched.
 # v2: statistic gaps of power-feedback sensors count as 0 W.
-_CLEANING_RULES_VERSION = 2
+# v3: support paths corrected arithmetically instead of excluded.
+_CLEANING_RULES_VERSION = 3
 
 
 def _default_data() -> dict[str, Any]:
@@ -437,7 +440,9 @@ class ProfileLearner:
             cfg.get(key)
             for key in (
                 CONF_SUPPORT_DC48_SWITCH,
+                CONF_SUPPORT_DC48_POWER_W,
                 CONF_SUPPORT_DC24_SWITCH,
+                CONF_SUPPORT_DC24_POWER_ENTITY,
                 CONF_DCDC_SWITCH,
             )
         )
@@ -492,6 +497,8 @@ class ProfileLearner:
                 stat_ids.add(load["power_entity"])
         for appliance in appliances:
             stat_ids.add(appliance["detection_entity"])
+        if cfg.get(CONF_SUPPORT_DC24_POWER_ENTITY):
+            stat_ids.add(cfg[CONF_SUPPORT_DC24_POWER_ENTITY])
 
         recorder = get_instance(self.hass)
         metadata = await recorder.async_add_executor_job(
@@ -573,18 +580,17 @@ class ProfileLearner:
                 "vacation": vacation,
             }
 
-        # --- Exclusion hours ---
-        # Support paths (incl. the inverted DC/DC signal) distort both
-        # measurement paths; status-only appliances only the AC path.
-        support_entities = [
-            cfg[key]
-            for key in (
-                CONF_SUPPORT_DC48_SWITCH,
-                CONF_SUPPORT_DC24_SWITCH,
-                CONF_DCDC_SWITCH,
-            )
-            if cfg.get(key)
-        ]
+        # --- Support-path corrections & exclusions (D-C2 step 3) ---
+        # Active support paths SHIFT power between the paths instead of
+        # invalidating them (winter can run on grid PSUs for months):
+        #   48 V PSU: draws its configured power from the house AC net and
+        #     injects it into the battery bus -> AC minus, DC plus.
+        #   24 V PSU (DC/DC off): the whole 24 V rail moves from the DC to
+        #     the AC measurement -> shifted back exactly via the PSU's
+        #     power sensor; without that sensor the hour stays unlearnable.
+        # Only unresolvable states (unmeasured PSU feed, dead rail,
+        # uncovered switch history) still exclude the hour.
+        p24_map = hour_maps.get(cfg.get(CONF_SUPPORT_DC24_POWER_ENTITY) or "")
         status_appliances = [
             appliance["detection_entity"]
             for appliance in appliances
@@ -596,8 +602,12 @@ class ProfileLearner:
             day_value = self.data["daily_hours"].setdefault(
                 day, {"ac": None, "dc": None}
             )
-            support_excluded = _excluded_hours(
-                day, support_entities, fractions, coverage_start, tz
+            psu48_draw = self._psu48_series(day, cfg, fractions, coverage_start, tz)
+            p24_series = (
+                _day_series_zero_filled(p24_map, day) if p24_map is not None else None
+            )
+            support_excluded = self._unresolvable_support_hours(
+                day, cfg, fractions, coverage_start, tz, p24_series is not None
             )
             appliance_excluded = _excluded_hours(
                 day, status_appliances, fractions, coverage_start, tz
@@ -606,13 +616,23 @@ class ProfileLearner:
                 if day not in missing[path]:
                     continue
                 load_series = self._load_series(day, sources[path], hour_maps)
-                subtract = []
+                subtract: list[list[float | None]] = []
                 excluded = support_excluded
                 if path == "ac":
                     subtract = self._subtractions(
                         day, loads, appliances, hour_maps, fractions, coverage_start, tz
                     )
+                    if psu48_draw is not None:
+                        subtract.append(psu48_draw)
+                    if p24_series is not None:
+                        subtract.append(p24_series)
                     excluded = support_excluded | appliance_excluded
+                else:
+                    # DC additions = negative subtractions (clean_day sums).
+                    if psu48_draw is not None:
+                        subtract.append([None if v is None else -v for v in psu48_draw])
+                    if p24_series is not None:
+                        subtract.append([-v for v in p24_series])
                 cleaned, day_negatives = clean_day(
                     load_series,
                     subtract,
@@ -626,6 +646,78 @@ class ProfileLearner:
         self.data["diagnostics"]["negative_residuals"] = (
             int(self.data["diagnostics"].get("negative_residuals", 0)) + negatives
         )
+
+    def _psu48_series(
+        self,
+        day: str,
+        cfg: dict[str, Any],
+        fractions: dict[str, dict[tuple[str, int], float]],
+        coverage_start: dict[str, datetime | None],
+        tz: tzinfo,
+    ) -> list[float | None] | None:
+        """48 V PSU energy per hour: configured power x switch on-fraction.
+
+        Subtracted from the AC measurement (PSU draw) and added to the DC
+        measurement (injection into the battery bus) — the same fixed-power
+        approximation the simulation core uses (conversion losses
+        neglected). None = switch history not covered -> hour dropped.
+        """
+        switch = cfg.get(CONF_SUPPORT_DC48_SWITCH)
+        if not switch:
+            return None
+        on_fr = fractions.get(switch, {})
+        covered_from = coverage_start.get(switch)
+        power = float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0))
+        return [
+            (
+                power * on_fr.get((day, hour), 0.0)
+                if _hour_covered(covered_from, day, hour, tz)
+                else None
+            )
+            for hour in range(24)
+        ]
+
+    def _unresolvable_support_hours(
+        self,
+        day: str,
+        cfg: dict[str, Any],
+        fractions: dict[str, dict[tuple[str, int], float]],
+        coverage_start: dict[str, datetime | None],
+        tz: tzinfo,
+        p24_measured: bool,
+    ) -> set[int]:
+        """Hours where the 24 V rail state cannot be resolved (D-C2 step 3).
+
+        Unlearnable on both paths: PSU-fed rail without a PSU power sensor
+        (the DC->AC shift is unknown), a dead rail (DC/DC off without PSU),
+        or uncovered switch history. With a measured PSU the corrections
+        handle everything and nothing is excluded here.
+        """
+        dc24_switch = cfg.get(CONF_SUPPORT_DC24_SWITCH)
+        dcdc_switch = cfg.get(CONF_DCDC_SWITCH)
+        if not dc24_switch and not dcdc_switch:
+            return set()
+        f24 = fractions.get(dc24_switch or "", {})
+        f_off = fractions.get(dcdc_switch or "", {})
+        excluded: set[int] = set()
+        for hour in range(24):
+            for entity in (dc24_switch, dcdc_switch):
+                if entity and not _hour_covered(
+                    coverage_start.get(entity), day, hour, tz
+                ):
+                    excluded.add(hour)
+                    break
+            if hour in excluded:
+                continue
+            off = f_off.get((day, hour), 0.0) if dcdc_switch else 0.0
+            on24 = f24.get((day, hour), 0.0) if dc24_switch else 0.0
+            if dcdc_switch and off > on24 + 1e-9:
+                excluded.add(hour)  # rail (partly) dead: abnormal state
+                continue
+            psu_feeding = min(on24, off) if dcdc_switch else on24
+            if psu_feeding > 0.0 and not p24_measured:
+                excluded.add(hour)  # unmeasured DC->AC shift
+        return excluded
 
     def _load_series(
         self,
@@ -778,7 +870,10 @@ class ProfileLearner:
         Covers the measurement sources AND the power-feedback sensors of
         in-house loads: a power_entity without statistics would otherwise
         silently drop every hour of the AC learning (subtraction unknown).
+        The 24 V PSU power sensor counts too — without its statistics every
+        PSU-fed hour is unlearnable (D-C2 step 3).
         """
+        psu24 = self._raw_config().get(CONF_SUPPORT_DC24_POWER_ENTITY)
         missing = sorted(
             {
                 entity_id
@@ -794,6 +889,7 @@ class ProfileLearner:
                 and load["power_entity"]
                 and load["power_entity"] not in meta_by_id
             }
+            | ({psu24} if psu24 and psu24 not in meta_by_id else set())
         )
         self.data["diagnostics"]["missing_statistics"] = missing
         issue_id = f"learning_no_statistics_{self.entry.entry_id}"

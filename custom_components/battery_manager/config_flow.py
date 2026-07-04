@@ -50,6 +50,7 @@ from .const import (
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
@@ -395,6 +396,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                         default=_d(d, CONF_SUPPORT_DC48_POWER_W),
                     ): _number(0, 1000, 5, "W"),
                     vol.Optional(CONF_SUPPORT_DC24_SWITCH): _entity("switch"),
+                    vol.Optional(CONF_SUPPORT_DC24_POWER_ENTITY): _entity("sensor"),
                     vol.Optional(CONF_DCDC_SWITCH): _entity("switch"),
                     vol.Required(
                         CONF_SUPPORT_SWITCH_DELAY_S,
@@ -420,7 +422,11 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 # Cleared selector fields are absent from user_input. Store an
                 # explicit None/[] so the options override the value still
                 # present in entry.data (raw_config merges data + options).
-                for key in _SUPPORT_SWITCH_KEYS + _LEARNING_SINGLE_KEYS:
+                for key in (
+                    *_SUPPORT_SWITCH_KEYS,
+                    CONF_SUPPORT_DC24_POWER_ENTITY,
+                    *_LEARNING_SINGLE_KEYS,
+                ):
                     user_input.setdefault(key, None)
                 for key in _LEARNING_MULTI_KEYS:
                     user_input.setdefault(key, [])
@@ -461,6 +467,14 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             schema[
                 vol.Optional(key, description={"suggested_value": current.get(key)})
             ] = _entity("switch")
+        schema[
+            vol.Optional(
+                CONF_SUPPORT_DC24_POWER_ENTITY,
+                description={
+                    "suggested_value": current.get(CONF_SUPPORT_DC24_POWER_ENTITY)
+                },
+            )
+        ] = _entity("sensor")
 
         # Fallback profile + learned-consumption sources (CONSUMPTION_FORECAST)
         schema.update(_profile_schema_fields(current))

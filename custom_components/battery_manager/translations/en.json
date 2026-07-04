@@ -119,7 +119,8 @@
           "support_dc48_power_w": "48 V support PSU power (W)",
           "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
           "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
-          "support_switch_delay_s": "Changeover delay (s, make-before-break)"
+          "support_switch_delay_s": "Changeover delay (s, make-before-break)",
+          "support_dc24_power_entity": "24 V PSU power sensor (optional)"
         },
         "data_description": {
           "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -130,7 +131,8 @@
           "support_dc48_power_w": "Fixed feed-in power of the 48 V support PSU used by the simulation.",
           "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
           "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
-          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover."
+          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
+          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
         }
       }
     },
@@ -312,7 +314,8 @@
           "dc_balance_in_entities": "DC balance: inflow counters (optional)",
           "dc_balance_out_entities": "DC balance: outflow counters (optional)",
           "learning_window_days": "Learning window (days)",
-          "learning_max_age_days": "Max. profile age (days)"
+          "learning_max_age_days": "Max. profile age (days)",
+          "support_dc24_power_entity": "24 V PSU power sensor (optional)"
         },
         "data_description": {
           "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -339,7 +342,8 @@
           "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
           "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
           "learning_window_days": "Rolling window the hourly profiles are learned from. Larger = more stable but slower to follow behaviour changes.",
-          "learning_max_age_days": "If the last successful learning run is older, forecasting falls back entirely to the static profile (fail-safe)."
+          "learning_max_age_days": "If the last successful learning run is older, forecasting falls back entirely to the static profile (fail-safe).",
+          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
         }
       }
     }

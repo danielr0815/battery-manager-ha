@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-04
+
+### Changed
+- **Support paths correct the learning arithmetically instead of
+  excluding hours** — in winter the grid PSUs can run for months and the
+  old exclusion would have starved the learning completely:
+  - 48 V PSU on: configured power × on-time is subtracted from the AC
+    measurement (house-net draw) and added to the DC measurement
+    (battery-bus injection) — same approximation as the simulation core.
+  - 24 V PSU feeding the rail (DC/DC off): the DC→AC load shift is
+    reversed exactly via the new optional **24 V PSU power sensor**
+    (`support_dc24_power_entity`, base + options flow). Without that
+    sensor only those hours remain unlearnable (recommendation: add a
+    metering plug for winter operation); a repair issue is raised if the
+    sensor is configured but has no statistics.
+  - A dead rail (DC/DC off without PSU) still excludes the hour.
+  Cached days from the old rule are refetched automatically.
+
 ## [0.5.1] - 2026-07-04
 
 ### Added
