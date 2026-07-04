@@ -336,7 +336,7 @@ error.log
 
 # Temporary configuration files
 temp_config_*
-test_config_*
+/test_config_*
 
 # Output from validation scripts
 validation_*.json
