@@ -177,8 +177,9 @@ tts/
 deps/
 
 # Home Assistant custom component development
+# (anchored to repo root: a nested core/ package must not be ignored)
 .homeassistant/
-core/
+/core/
 .storage/
 
 # -------------------

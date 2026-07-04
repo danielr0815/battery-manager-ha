@@ -1,648 +1,516 @@
-"""Config flow for Battery Manager integration."""
+"""Config flow for the Battery Manager integration (v2, with subentries)."""
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 import voluptuous as vol
-from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    ConfigSubentryFlow,
+    OptionsFlow,
+    SubentryFlowResult,
+)
+from homeassistant.core import callback
 from homeassistant.helpers import selector
-from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
 from .const import (
+    CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_APPLIANCE_NAME,
+    CONF_APPLIANCE_OPPORTUNISTIC,
+    CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_APPLIANCE_RUN_DURATION_H,
+    CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_DCDC_SWITCH,
+    CONF_LOAD_AVAILABILITY_ENTITY,
+    CONF_LOAD_BATTERY_TOLERANCE,
+    CONF_LOAD_CAPACITY_WH,
+    CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_MIN_RUNTIME_MIN,
+    CONF_LOAD_NAME,
+    CONF_LOAD_POWER_ENTITY,
+    CONF_LOAD_POWER_W,
+    CONF_LOAD_SOC_ENTITY,
+    CONF_LOAD_TARGET_SOC,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_POWER_W,
+    CONF_SUPPORT_DC48_SWITCH,
+    CONF_SUPPORT_SWITCH_DELAY_S,
+    DEFAULT_APPLIANCE_CONFIG,
     DEFAULT_CONFIG,
+    DEFAULT_LOAD_CONFIG,
     DOMAIN,
+    SUBENTRY_TYPE_APPLIANCE,
+    SUBENTRY_TYPE_LOAD,
 )
 
-_LOGGER = logging.getLogger(__name__)
+
+def _number(minimum: float, maximum: float, step: float = 1.0, unit: str | None = None):
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=minimum,
+            max=maximum,
+            step=step,
+            mode=selector.NumberSelectorMode.BOX,
+            unit_of_measurement=unit,
+        )
+    )
 
 
-class BatteryManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Battery Manager."""
+def _entity(domain: str | list[str] | None = None):
+    config = selector.EntitySelectorConfig()
+    if domain:
+        config["domain"] = domain
+    return selector.EntitySelector(config)
 
-    VERSION = 1
+
+def _d(config: dict[str, Any], key: str) -> Any:
+    return config.get(key, DEFAULT_CONFIG.get(key))
+
+
+_SUPPORT_SWITCH_KEYS = (
+    CONF_SUPPORT_DC48_SWITCH,
+    CONF_SUPPORT_DC24_SWITCH,
+    CONF_DCDC_SWITCH,
+)
+
+
+def _validate_support_entities(data: dict[str, Any]) -> str | None:
+    """The three support switches must point to distinct entities.
+
+    A shared entity would make the make-before-break sequence switch the
+    rail's only supply off (review finding, docs/ALGORITHM.md D-A9).
+    """
+    chosen = [data.get(key) for key in _SUPPORT_SWITCH_KEYS if data.get(key)]
+    if len(chosen) != len(set(chosen)):
+        return "support_entities_not_distinct"
+    return None
+
+
+class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Multi-step base configuration."""
+
+    VERSION = 2
 
     def __init__(self) -> None:
-        """Initialize config flow."""
-        self.config: Dict[str, Any] = {}
-
-    async def async_step_user(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Handle the initial step."""
-        errors: Dict[str, str] = {}
-
-        if user_input is not None:
-            # Validate entity selections
-            entity_registry = async_get_entity_registry(self.hass)
-
-            for entity_key in [
-                CONF_SOC_ENTITY,
-                CONF_PV_FORECAST_TODAY,
-                CONF_PV_FORECAST_TOMORROW,
-                CONF_PV_FORECAST_DAY_AFTER,
-            ]:
-                entity_id = user_input.get(entity_key)
-                if entity_id and entity_id not in entity_registry.entities:
-                    errors[entity_key] = "entity_not_found"
-
-            if not errors:
-                self.config.update(user_input)
-                return await self.async_step_battery_config()
-
-        # Get available sensor entities
-        sensor_entities = await self._get_sensor_entities()
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_SOC_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor", device_class="battery"
-                    )
-                ),
-                vol.Required(CONF_PV_FORECAST_TODAY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
-                vol.Required(CONF_PV_FORECAST_TOMORROW): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
-                vol.Required(CONF_PV_FORECAST_DAY_AFTER): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=data_schema,
-            errors=errors,
-            description_placeholders={
-                "soc_description": "Entity that provides current battery SOC in %",
-                "pv_today_description": "Entity with today's PV forecast in kWh",
-                "pv_tomorrow_description": "Entity with tomorrow's PV forecast in kWh",
-                "pv_day_after_description": "Entity with day after tomorrow's PV forecast in kWh",
-            },
-        )
-
-    async def async_step_battery_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Configure battery parameters."""
-        errors: Dict[str, str] = {}
-
-        if user_input is not None:
-            # Validate battery configuration
-            try:
-                self._validate_battery_config(user_input)
-                self.config.update(user_input)
-                return await self.async_step_pv_config()
-            except ValueError as err:
-                errors["base"] = "invalid_battery_config"
-                _LOGGER.error("Battery config validation error: %s", err)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "battery_capacity_wh", default=DEFAULT_CONFIG["battery_capacity_wh"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
-                vol.Required(
-                    "battery_min_soc_percent",
-                    default=DEFAULT_CONFIG["battery_min_soc_percent"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-                vol.Required(
-                    "battery_max_soc_percent",
-                    default=DEFAULT_CONFIG["battery_max_soc_percent"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-                vol.Required(
-                    "battery_charge_efficiency",
-                    default=DEFAULT_CONFIG["battery_charge_efficiency"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-                vol.Required(
-                    "battery_discharge_efficiency",
-                    default=DEFAULT_CONFIG["battery_discharge_efficiency"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="battery_config",
-            data_schema=data_schema,
-            errors=errors,
-        )
-
-    async def async_step_pv_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Configure PV system parameters."""
-        errors: Dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                self._validate_pv_config(user_input)
-                self.config.update(user_input)
-                return await self.async_step_consumer_config()
-            except ValueError as err:
-                errors["base"] = "invalid_pv_config"
-                _LOGGER.error("PV config validation error: %s", err)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "pv_max_power_w", default=DEFAULT_CONFIG["pv_max_power_w"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100000)),
-                vol.Required(
-                    "pv_morning_start_hour",
-                    default=DEFAULT_CONFIG["pv_morning_start_hour"],
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "pv_morning_end_hour", default=DEFAULT_CONFIG["pv_morning_end_hour"]
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "pv_afternoon_end_hour",
-                    default=DEFAULT_CONFIG["pv_afternoon_end_hour"],
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "pv_morning_ratio", default=DEFAULT_CONFIG["pv_morning_ratio"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="pv_config",
-            data_schema=data_schema,
-            errors=errors,
-        )
-
-    async def async_step_consumer_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Configure consumer parameters."""
-        errors: Dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                self._validate_consumer_config(user_input)
-                self.config.update(user_input)
-                return await self.async_step_power_config()
-            except ValueError as err:
-                errors["base"] = "invalid_consumer_config"
-                _LOGGER.error("Consumer config validation error: %s", err)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "ac_base_load_w", default=DEFAULT_CONFIG["ac_base_load_w"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "ac_variable_load_w", default=DEFAULT_CONFIG["ac_variable_load_w"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "ac_variable_start_hour",
-                    default=DEFAULT_CONFIG["ac_variable_start_hour"],
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "ac_variable_end_hour",
-                    default=DEFAULT_CONFIG["ac_variable_end_hour"],
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "ac_additional_load_w",
-                    default=DEFAULT_CONFIG["ac_additional_load_w"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "dc_base_load_w", default=DEFAULT_CONFIG["dc_base_load_w"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "dc_variable_load_w", default=DEFAULT_CONFIG["dc_variable_load_w"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "dc_variable_start_hour",
-                    default=DEFAULT_CONFIG["dc_variable_start_hour"],
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "dc_variable_end_hour",
-                    default=DEFAULT_CONFIG["dc_variable_end_hour"],
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="consumer_config",
-            data_schema=data_schema,
-            errors=errors,
-        )
-
-    async def async_step_power_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Configure power equipment parameters."""
-        errors: Dict[str, str] = {}
-
-        if user_input is not None:
-            try:
-                self._validate_power_config(user_input)
-                self.config.update(user_input)
-                return await self.async_step_controller_config()
-            except ValueError as err:
-                errors["base"] = "invalid_power_config"
-                _LOGGER.error("Power config validation error: %s", err)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "charger_max_power_w", default=DEFAULT_CONFIG["charger_max_power_w"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
-                vol.Required(
-                    "charger_efficiency", default=DEFAULT_CONFIG["charger_efficiency"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-                vol.Required(
-                    "charger_standby_power_w",
-                    default=DEFAULT_CONFIG["charger_standby_power_w"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-                vol.Required(
-                    "inverter_max_power_w",
-                    default=DEFAULT_CONFIG["inverter_max_power_w"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
-                vol.Required(
-                    "inverter_efficiency", default=DEFAULT_CONFIG["inverter_efficiency"]
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-                vol.Required(
-                    "inverter_standby_power_w",
-                    default=DEFAULT_CONFIG["inverter_standby_power_w"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-                vol.Required(
-                    "inverter_min_soc_percent",
-                    default=DEFAULT_CONFIG["inverter_min_soc_percent"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="power_config",
-            data_schema=data_schema,
-            errors=errors,
-        )
-
-    async def async_step_controller_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Configure controller parameters."""
-        errors: Dict[str, str] = {}
-
-        if user_input is not None:
-            self.config.update(user_input)
-            return self.async_create_entry(
-                title="Battery Manager",
-                data=self.config,
-            )
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "controller_target_soc_percent",
-                    default=DEFAULT_CONFIG["controller_target_soc_percent"],
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            }
-        )
-
-        return self.async_show_form(
-            step_id="controller_config",
-            data_schema=data_schema,
-            errors=errors,
-        )
+        self._data: dict[str, Any] = {}
 
     @staticmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> BatteryManagerOptionsFlow:
-        """Create options flow."""
-        return BatteryManagerOptionsFlow(config_entry)
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return BatteryManagerOptionsFlow()
 
-    async def _get_sensor_entities(self) -> list[str]:
-        """Get available sensor entities."""
-        entity_registry = async_get_entity_registry(self.hass)
-        return [
-            entity.entity_id
-            for entity in entity_registry.entities.values()
-            if entity.domain == "sensor"
-        ]
-
-    def _validate_battery_config(self, config: Dict[str, Any]) -> None:
-        """Validate battery configuration."""
-        min_soc = config.get("battery_min_soc_percent", 0)
-        max_soc = config.get("battery_max_soc_percent", 100)
-
-        if min_soc >= max_soc:
-            raise ValueError("Min SOC must be less than max SOC")
-
-    def _validate_pv_config(self, config: Dict[str, Any]) -> None:
-        """Validate PV configuration."""
-        morning_start = config.get("pv_morning_start_hour", 0)
-        morning_end = config.get("pv_morning_end_hour", 12)
-        afternoon_end = config.get("pv_afternoon_end_hour", 18)
-
-        if morning_start >= morning_end:
-            raise ValueError("Morning start must be before morning end")
-        if morning_end >= afternoon_end:
-            raise ValueError("Morning end must be before afternoon end")
-
-    def _validate_consumer_config(self, config: Dict[str, Any]) -> None:
-        """Validate consumer configuration."""
-        ac_start = config.get("ac_variable_start_hour", 0)
-        ac_end = config.get("ac_variable_end_hour", 23)
-        dc_start = config.get("dc_variable_start_hour", 0)
-        dc_end = config.get("dc_variable_end_hour", 23)
-
-        if ac_start >= ac_end:
-            raise ValueError("AC variable start must be before end")
-        if dc_start >= dc_end:
-            raise ValueError("DC variable start must be before end")
-
-    def _validate_power_config(self, config: Dict[str, Any]) -> None:
-        """Validate power equipment configuration."""
-        # Basic validation - more complex validation in components
-        pass
-
-
-class BatteryManagerOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for Battery Manager."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.options: Dict[str, Any] = {**config_entry.data, **config_entry.options}
-
-    async def async_step_init(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Update entity selections."""
-        if user_input is not None:
-            self.options.update(user_input)
-            return await self.async_step_battery_config()
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_SOC_ENTITY,
-                    default=self.config_entry.options.get(
-                        CONF_SOC_ENTITY,
-                        self.config_entry.data.get(CONF_SOC_ENTITY),
-                    ),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor",
-                        device_class="battery",
-                    )
-                ),
-                vol.Required(
-                    CONF_PV_FORECAST_TODAY,
-                    default=self.config_entry.options.get(
-                        CONF_PV_FORECAST_TODAY,
-                        self.config_entry.data.get(CONF_PV_FORECAST_TODAY),
-                    ),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
-                vol.Required(
-                    CONF_PV_FORECAST_TOMORROW,
-                    default=self.config_entry.options.get(
-                        CONF_PV_FORECAST_TOMORROW,
-                        self.config_entry.data.get(CONF_PV_FORECAST_TOMORROW),
-                    ),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
-                vol.Required(
-                    CONF_PV_FORECAST_DAY_AFTER,
-                    default=self.config_entry.options.get(
-                        CONF_PV_FORECAST_DAY_AFTER,
-                        self.config_entry.data.get(CONF_PV_FORECAST_DAY_AFTER),
-                    ),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
-            }
-        )
-
-        return self.async_show_form(step_id="init", data_schema=data_schema)
-
-    async def async_step_battery_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Update battery parameters."""
-        current_config = {
-            **DEFAULT_CONFIG,
-            **self.config_entry.data,
-            **self.config_entry.options,
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        return {
+            SUBENTRY_TYPE_LOAD: SurplusLoadSubentryFlow,
+            SUBENTRY_TYPE_APPLIANCE: ApplianceSubentryFlow,
         }
 
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Input entities."""
         if user_input is not None:
-            self.options.update(user_input)
-            return await self.async_step_pv_config()
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "battery_capacity_wh",
-                    default=current_config.get("battery_capacity_wh"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=1000000)),
-                vol.Required(
-                    "battery_min_soc_percent",
-                    default=current_config.get("battery_min_soc_percent"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-                vol.Required(
-                    "battery_max_soc_percent",
-                    default=current_config.get("battery_max_soc_percent"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-                vol.Required(
-                    "battery_charge_efficiency",
-                    default=current_config.get("battery_charge_efficiency"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-                vol.Required(
-                    "battery_discharge_efficiency",
-                    default=current_config.get("battery_discharge_efficiency"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-            }
-        )
-
-        return self.async_show_form(step_id="battery_config", data_schema=data_schema)
-
-    async def async_step_pv_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Update PV system parameters."""
-        current_config = {
-            **DEFAULT_CONFIG,
-            **self.config_entry.data,
-            **self.config_entry.options,
-        }
-
-        if user_input is not None:
-            self.options.update(user_input)
-            return await self.async_step_consumer_config()
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "pv_max_power_w",
-                    default=current_config.get("pv_max_power_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100000)),
-                vol.Required(
-                    "pv_morning_start_hour",
-                    default=current_config.get("pv_morning_start_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "pv_morning_end_hour",
-                    default=current_config.get("pv_morning_end_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "pv_afternoon_end_hour",
-                    default=current_config.get("pv_afternoon_end_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "pv_morning_ratio",
-                    default=current_config.get("pv_morning_ratio"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
-            }
-        )
-
-        return self.async_show_form(step_id="pv_config", data_schema=data_schema)
-
-    async def async_step_consumer_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Update consumer load parameters."""
-        current_config = {
-            **DEFAULT_CONFIG,
-            **self.config_entry.data,
-            **self.config_entry.options,
-        }
-
-        if user_input is not None:
-            self.options.update(user_input)
-            return await self.async_step_power_config()
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "ac_base_load_w",
-                    default=current_config.get("ac_base_load_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "ac_variable_load_w",
-                    default=current_config.get("ac_variable_load_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "ac_variable_start_hour",
-                    default=current_config.get("ac_variable_start_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "ac_variable_end_hour",
-                    default=current_config.get("ac_variable_end_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "ac_additional_load_w",
-                    default=current_config.get("ac_additional_load_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "dc_base_load_w",
-                    default=current_config.get("dc_base_load_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "dc_variable_load_w",
-                    default=current_config.get("dc_variable_load_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
-                vol.Required(
-                    "dc_variable_start_hour",
-                    default=current_config.get("dc_variable_start_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                vol.Required(
-                    "dc_variable_end_hour",
-                    default=current_config.get("dc_variable_end_hour"),
-                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-            }
-        )
-
-        return self.async_show_form(step_id="consumer_config", data_schema=data_schema)
-
-    async def async_step_power_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Update charger and inverter parameters."""
-        current_config = {
-            **DEFAULT_CONFIG,
-            **self.config_entry.data,
-            **self.config_entry.options,
-        }
-
-        if user_input is not None:
-            self.options.update(user_input)
-            return await self.async_step_controller_config()
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "charger_max_power_w",
-                    default=current_config.get("charger_max_power_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
-                vol.Required(
-                    "charger_efficiency",
-                    default=current_config.get("charger_efficiency"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-                vol.Required(
-                    "charger_standby_power_w",
-                    default=current_config.get("charger_standby_power_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-                vol.Required(
-                    "inverter_max_power_w",
-                    default=current_config.get("inverter_max_power_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=100, max=50000)),
-                vol.Required(
-                    "inverter_efficiency",
-                    default=current_config.get("inverter_efficiency"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0)),
-                vol.Required(
-                    "inverter_standby_power_w",
-                    default=current_config.get("inverter_standby_power_w"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
-                vol.Required(
-                    "inverter_min_soc_percent",
-                    default=current_config.get("inverter_min_soc_percent"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            }
-        )
-
-        return self.async_show_form(step_id="power_config", data_schema=data_schema)
-
-    async def async_step_controller_config(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Update controller parameters."""
-        current_config = {
-            **DEFAULT_CONFIG,
-            **self.config_entry.data,
-            **self.config_entry.options,
-        }
-
-        if user_input is not None:
-            self.options.update(user_input)
-            return self.async_create_entry(title="", data=self.options)
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(
-                    "controller_target_soc_percent",
-                    default=current_config.get("controller_target_soc_percent"),
-                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-            }
-        )
+            self._data.update(user_input)
+            return await self.async_step_battery()
 
         return self.async_show_form(
-            step_id="controller_config", data_schema=data_schema
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_SOC_ENTITY): _entity("sensor"),
+                    vol.Required(CONF_PV_FORECAST_TODAY): _entity("sensor"),
+                    vol.Required(CONF_PV_FORECAST_TOMORROW): _entity("sensor"),
+                    vol.Required(CONF_PV_FORECAST_DAY_AFTER): _entity("sensor"),
+                }
+            ),
+        )
+
+    async def async_step_battery(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            if (
+                user_input["battery_min_soc_percent"]
+                >= user_input["battery_max_soc_percent"]
+            ):
+                return self.async_show_form(
+                    step_id="battery",
+                    data_schema=self._battery_schema(),
+                    errors={"base": "min_soc_above_max"},
+                )
+            self._data.update(user_input)
+            return await self.async_step_pv()
+        return self.async_show_form(
+            step_id="battery", data_schema=self._battery_schema()
+        )
+
+    def _battery_schema(self) -> vol.Schema:
+        d = self._data
+        return vol.Schema(
+            {
+                vol.Required(
+                    "battery_capacity_wh", default=_d(d, "battery_capacity_wh")
+                ): _number(100, 1_000_000, 100, "Wh"),
+                vol.Required(
+                    "battery_min_soc_percent", default=_d(d, "battery_min_soc_percent")
+                ): _number(0, 100, 1, "%"),
+                vol.Required(
+                    "battery_max_soc_percent", default=_d(d, "battery_max_soc_percent")
+                ): _number(0, 100, 1, "%"),
+                vol.Required(
+                    "battery_charge_efficiency",
+                    default=_d(d, "battery_charge_efficiency"),
+                ): _number(0.1, 1.0, 0.01),
+                vol.Required(
+                    "battery_discharge_efficiency",
+                    default=_d(d, "battery_discharge_efficiency"),
+                ): _number(0.1, 1.0, 0.01),
+            }
+        )
+
+    async def async_step_pv(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_consumers()
+        d = self._data
+        return self.async_show_form(
+            step_id="pv",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "pv_max_power_w", default=_d(d, "pv_max_power_w")
+                    ): _number(0, 100_000, 50, "W"),
+                    vol.Required(
+                        "pv_morning_start_hour", default=_d(d, "pv_morning_start_hour")
+                    ): _number(0, 23),
+                    vol.Required(
+                        "pv_morning_end_hour", default=_d(d, "pv_morning_end_hour")
+                    ): _number(0, 23),
+                    vol.Required(
+                        "pv_afternoon_end_hour", default=_d(d, "pv_afternoon_end_hour")
+                    ): _number(0, 23),
+                    vol.Required(
+                        "pv_morning_ratio", default=_d(d, "pv_morning_ratio")
+                    ): _number(0.0, 1.0, 0.05),
+                }
+            ),
+        )
+
+    async def async_step_consumers(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_power()
+        d = self._data
+        return self.async_show_form(
+            step_id="consumers",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "ac_base_load_w", default=_d(d, "ac_base_load_w")
+                    ): _number(0, 10_000, 5, "W"),
+                    vol.Required(
+                        "ac_variable_load_w", default=_d(d, "ac_variable_load_w")
+                    ): _number(0, 10_000, 5, "W"),
+                    vol.Required(
+                        "ac_variable_start_hour",
+                        default=_d(d, "ac_variable_start_hour"),
+                    ): _number(0, 23),
+                    vol.Required(
+                        "ac_variable_end_hour", default=_d(d, "ac_variable_end_hour")
+                    ): _number(0, 23),
+                    vol.Required(
+                        "dc_base_load_w", default=_d(d, "dc_base_load_w")
+                    ): _number(0, 10_000, 5, "W"),
+                    vol.Required(
+                        "dc_variable_load_w", default=_d(d, "dc_variable_load_w")
+                    ): _number(0, 10_000, 5, "W"),
+                    vol.Required(
+                        "dc_variable_start_hour",
+                        default=_d(d, "dc_variable_start_hour"),
+                    ): _number(0, 23),
+                    vol.Required(
+                        "dc_variable_end_hour", default=_d(d, "dc_variable_end_hour")
+                    ): _number(0, 23),
+                }
+            ),
+        )
+
+    async def async_step_power(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self.async_step_control()
+        d = self._data
+        return self.async_show_form(
+            step_id="power",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "charger_max_power_w", default=_d(d, "charger_max_power_w")
+                    ): _number(0, 50_000, 50, "W"),
+                    vol.Required(
+                        "charger_efficiency", default=_d(d, "charger_efficiency")
+                    ): _number(0.1, 1.0, 0.01),
+                    vol.Required(
+                        "charger_standby_power_w",
+                        default=_d(d, "charger_standby_power_w"),
+                    ): _number(0, 500, 1, "W"),
+                    vol.Required(
+                        "inverter_max_power_w", default=_d(d, "inverter_max_power_w")
+                    ): _number(0, 50_000, 50, "W"),
+                    vol.Required(
+                        "inverter_efficiency", default=_d(d, "inverter_efficiency")
+                    ): _number(0.1, 1.0, 0.01),
+                    vol.Required(
+                        "inverter_standby_power_w",
+                        default=_d(d, "inverter_standby_power_w"),
+                    ): _number(0, 500, 1, "W"),
+                    vol.Required(
+                        "inverter_min_soc_percent",
+                        default=_d(d, "inverter_min_soc_percent"),
+                    ): _number(0, 100, 1, "%"),
+                }
+            ),
+        )
+
+    async def async_step_control(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = _validate_support_entities(user_input)
+            if error is None:
+                self._data.update(user_input)
+                return self.async_create_entry(
+                    title="Battery Manager", data=self._data
+                )
+            errors["base"] = error
+        d = self._data
+        return self.async_show_form(
+            step_id="control",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "soc_buffer_percent", default=_d(d, "soc_buffer_percent")
+                    ): _number(0, 30, 1, "%"),
+                    vol.Required(
+                        "hysteresis_percent", default=_d(d, "hysteresis_percent")
+                    ): _number(0, 10, 0.5, "%"),
+                    vol.Required(
+                        "threshold_inertia_percent",
+                        default=_d(d, "threshold_inertia_percent"),
+                    ): _number(0, 10, 0.5, "%"),
+                    vol.Required(
+                        "min_switch_interval_s", default=_d(d, "min_switch_interval_s")
+                    ): _number(0, 3600, 10, "s"),
+                    vol.Optional(CONF_SUPPORT_DC48_SWITCH): _entity("switch"),
+                    vol.Required(
+                        CONF_SUPPORT_DC48_POWER_W,
+                        default=_d(d, CONF_SUPPORT_DC48_POWER_W),
+                    ): _number(0, 1000, 5, "W"),
+                    vol.Optional(CONF_SUPPORT_DC24_SWITCH): _entity("switch"),
+                    vol.Optional(CONF_DCDC_SWITCH): _entity("switch"),
+                    vol.Required(
+                        CONF_SUPPORT_SWITCH_DELAY_S,
+                        default=_d(d, CONF_SUPPORT_SWITCH_DELAY_S),
+                    ): _number(1, 30, 1, "s"),
+                }
+            ),
+        )
+
+
+class BatteryManagerOptionsFlow(OptionsFlow):
+    """Adjust planner tuning and support paths after setup."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = _validate_support_entities(user_input)
+            if error is None:
+                # Cleared selector fields are absent from user_input. Store an
+                # explicit None so the options override the value still present
+                # in entry.data (raw_config merges data + options).
+                for key in _SUPPORT_SWITCH_KEYS:
+                    user_input.setdefault(key, None)
+                return self.async_create_entry(title="", data=user_input)
+            errors["base"] = error
+
+        current = {**self.config_entry.data, **self.config_entry.options}
+        schema: dict[Any, Any] = {
+            vol.Required(
+                "soc_buffer_percent", default=_d(current, "soc_buffer_percent")
+            ): _number(0, 30, 1, "%"),
+            vol.Required(
+                "hysteresis_percent", default=_d(current, "hysteresis_percent")
+            ): _number(0, 10, 0.5, "%"),
+            vol.Required(
+                "threshold_inertia_percent",
+                default=_d(current, "threshold_inertia_percent"),
+            ): _number(0, 10, 0.5, "%"),
+            vol.Required(
+                "min_switch_interval_s", default=_d(current, "min_switch_interval_s")
+            ): _number(0, 3600, 10, "s"),
+            vol.Required(
+                CONF_SUPPORT_DC48_POWER_W,
+                default=_d(current, CONF_SUPPORT_DC48_POWER_W),
+            ): _number(0, 1000, 5, "W"),
+            vol.Required(
+                CONF_SUPPORT_SWITCH_DELAY_S,
+                default=_d(current, CONF_SUPPORT_SWITCH_DELAY_S),
+            ): _number(1, 30, 1, "s"),
+        }
+        for key in _SUPPORT_SWITCH_KEYS:
+            # suggested_value (not default) keeps the field clearable in the UI.
+            schema[
+                vol.Optional(key, description={"suggested_value": current.get(key)})
+            ] = _entity("switch")
+
+        return self.async_show_form(
+            step_id="init", data_schema=vol.Schema(schema), errors=errors
+        )
+
+
+class SurplusLoadSubentryFlow(ConfigSubentryFlow):
+    """Add or reconfigure a surplus load (Fossibot, dehumidifier, ...)."""
+
+    def _schema(self, data: dict[str, Any]) -> vol.Schema:
+        def dv(key):
+            return data.get(key, DEFAULT_LOAD_CONFIG.get(key))
+
+        schema: dict[Any, Any] = {
+            vol.Required(CONF_LOAD_NAME, default=data.get(CONF_LOAD_NAME, "")): str,
+            vol.Required(CONF_LOAD_POWER_W, default=dv(CONF_LOAD_POWER_W)): _number(
+                1, 10_000, 10, "W"
+            ),
+            vol.Required(
+                CONF_LOAD_BATTERY_TOLERANCE, default=dv(CONF_LOAD_BATTERY_TOLERANCE)
+            ): _number(0, 50, 1, "%"),
+            vol.Required(
+                CONF_LOAD_MIN_RUNTIME_MIN, default=dv(CONF_LOAD_MIN_RUNTIME_MIN)
+            ): _number(0, 240, 5, "min"),
+            vol.Required(
+                CONF_LOAD_ENERGY_LIMITED, default=dv(CONF_LOAD_ENERGY_LIMITED)
+            ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_LOAD_CAPACITY_WH, default=dv(CONF_LOAD_CAPACITY_WH)
+            ): _number(0, 100_000, 100, "Wh"),
+            vol.Required(
+                CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
+            ): _number(0, 100, 1, "%"),
+        }
+        for key, domain in (
+            (CONF_LOAD_SOC_ENTITY, "sensor"),
+            (CONF_LOAD_POWER_ENTITY, "sensor"),
+            (CONF_LOAD_AVAILABILITY_ENTITY, None),
+        ):
+            # suggested_value (not default) keeps the field clearable in the UI.
+            schema[
+                vol.Optional(key, description={"suggested_value": data.get(key)})
+            ] = _entity(domain)
+        return vol.Schema(schema)
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        if user_input is not None:
+            title = user_input.pop(CONF_LOAD_NAME)
+            return self.async_create_entry(title=title, data=user_input)
+        return self.async_show_form(step_id="user", data_schema=self._schema({}))
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        subentry = self._get_reconfigure_subentry()
+        if user_input is not None:
+            title = user_input.pop(CONF_LOAD_NAME)
+            return self.async_update_and_abort(
+                self._get_entry(), subentry, title=title, data=user_input
+            )
+        data = {**subentry.data, CONF_LOAD_NAME: subentry.title}
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=self._schema(data)
+        )
+
+
+class ApplianceSubentryFlow(ConfigSubentryFlow):
+    """Add or reconfigure a household appliance (washer, dishwasher)."""
+
+    def _schema(self, data: dict[str, Any]) -> vol.Schema:
+        def dv(key):
+            return data.get(key, DEFAULT_APPLIANCE_CONFIG.get(key))
+
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_APPLIANCE_NAME, default=data.get(CONF_APPLIANCE_NAME, "")
+            ): str,
+        }
+        schema[
+            vol.Required(
+                CONF_APPLIANCE_DETECTION_ENTITY,
+                description={
+                    "suggested_value": data.get(CONF_APPLIANCE_DETECTION_ENTITY)
+                },
+            )
+        ] = _entity()
+        schema.update(
+            {
+                vol.Required(
+                    CONF_APPLIANCE_POWER_THRESHOLD_W,
+                    default=dv(CONF_APPLIANCE_POWER_THRESHOLD_W),
+                ): _number(1, 3000, 1, "W"),
+                vol.Required(
+                    CONF_APPLIANCE_RUN_ENERGY_WH,
+                    default=dv(CONF_APPLIANCE_RUN_ENERGY_WH),
+                ): _number(10, 10_000, 10, "Wh"),
+                vol.Required(
+                    CONF_APPLIANCE_RUN_DURATION_H,
+                    default=dv(CONF_APPLIANCE_RUN_DURATION_H),
+                ): _number(0.25, 12, 0.25, "h"),
+                vol.Required(
+                    CONF_APPLIANCE_OPPORTUNISTIC,
+                    default=dv(CONF_APPLIANCE_OPPORTUNISTIC),
+                ): selector.BooleanSelector(),
+            }
+        )
+        return vol.Schema(schema)
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        if user_input is not None:
+            title = user_input.pop(CONF_APPLIANCE_NAME)
+            return self.async_create_entry(title=title, data=user_input)
+        return self.async_show_form(step_id="user", data_schema=self._schema({}))
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        subentry = self._get_reconfigure_subentry()
+        if user_input is not None:
+            title = user_input.pop(CONF_APPLIANCE_NAME)
+            return self.async_update_and_abort(
+                self._get_entry(), subentry, title=title, data=user_input
+            )
+        data = {**subentry.data, CONF_APPLIANCE_NAME: subentry.title}
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=self._schema(data)
         )

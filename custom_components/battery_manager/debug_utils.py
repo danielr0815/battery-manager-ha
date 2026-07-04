@@ -1,140 +1,63 @@
-# Utility functions for debugging output.
-from typing import Dict, List
+"""Utility functions for debugging output."""
+
+from __future__ import annotations
+
+from typing import Any
+
+_COLUMNS = (
+    ("hour", "Std", "{:d}"),
+    ("datetime", "Zeit", "{}"),
+    ("duration_minutes", "Min", "{:d}"),
+    ("initial_soc_percent", "SOC in %", "{:.1f}"),
+    ("final_soc_percent", "SOC out %", "{:.1f}"),
+    ("pv_production_wh", "PV Wh", "{:.0f}"),
+    ("ac_consumption_wh", "AC Wh", "{:.0f}"),
+    ("dc_consumption_wh", "DC Wh", "{:.0f}"),
+    ("surplus_load_wh", "Zusatz Wh", "{:.0f}"),
+    ("grid_import_wh", "Import Wh", "{:.0f}"),
+    ("grid_export_wh", "Export Wh", "{:.0f}"),
+    ("battery_charge_wh", "Laden Wh", "{:.0f}"),
+    ("battery_discharge_wh", "Entladen Wh", "{:.0f}"),
+    ("inverter_enabled", "WR", "{}"),
+    ("support_dc24", "24V", "{}"),
+    ("support_dc48", "48V", "{}"),
+)
 
 
-def format_hourly_details_table(
-    hourly_details: List[Dict[str, any]], include_color: bool = False
-) -> str:
-    """Return hourly details formatted as an ASCII table.
-
-    Args:
-        hourly_details: List of hourly details dictionaries.
-        include_color: Include ANSI color codes.
-
-    Returns:
-        String containing the formatted table.
-    """
+def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
+    """Return hourly plan details formatted as an ASCII table."""
     if not hourly_details:
         return "\nNo hourly details available"
 
-    # ANSI color codes
-    if include_color:
-        RESET = "\033[0m"
-        BOLD = "\033[1m"
-        GREEN = "\033[92m"
-        RED = "\033[91m"
-        BLUE = "\033[94m"
-        YELLOW = "\033[93m"
-        CYAN = "\033[96m"
-        MAGENTA = "\033[95m"
-    else:
-        RESET = BOLD = GREEN = RED = BLUE = YELLOW = CYAN = MAGENTA = ""
-
-    lines = []
-    lines.append("=" * 170)
-    lines.append("DETAILED HOURLY CALCULATION TABLE (Internal Algorithm Data)")
-    lines.append("=" * 170)
-
-    header = (
-        f"{BOLD}{CYAN}{'Hour':>4}{RESET} | "
-        f"{BOLD}{CYAN}{'Time':>5}{RESET} | "
-        f"{BOLD}{BLUE}{'SOC%':>4}{RESET} | "
-        f"{BOLD}{YELLOW}{'PV_Wh':>6}{RESET} | "
-        f"{BOLD}{MAGENTA}{'AC_Wh':>6}{RESET} | "
-        f"{BOLD}{MAGENTA}{'DC_Wh':>6}{RESET} | "
-        f"{BOLD}{'Import':>6}{RESET} | "
-        f"{BOLD}{'Export':>6}{RESET} | "
-        f"{BOLD}{'Batt_Wh':>8}{RESET} | "
-        f"{BOLD}{'Forced':>7}{RESET} | "
-        f"{BOLD}{'Volunt':>7}{RESET} | "
-        f"{BOLD}{'Inv_Wh':>7}{RESET} | "
-        f"{BOLD}{'AddLoad':>7}{RESET} | "
-        f"{BOLD}{'Final%':>6}{RESET}"
-    )
-    lines.append(header)
-    lines.append("-" * 170)
-
+    rows: list[list[str]] = []
     for detail in hourly_details:
-        hour = detail["hour"]
-        time_str = detail["datetime"][11:16]
-        duration_fraction = detail.get("duration_fraction", 1.0)
-        soc_initial = detail["initial_soc_percent"]
-        soc_final = detail["final_soc_percent"]
-        pv_wh = detail["pv_production_wh"]
-        ac_wh = detail["ac_consumption_wh"]
-        dc_wh = detail["dc_consumption_wh"]
-        grid_import = detail.get("grid_import_wh", 0.0)
-        grid_export = detail.get("grid_export_wh", 0.0)
-        net_battery = detail["net_battery_wh"]
-        charger_forced = detail.get("charger_forced_wh", 0.0)
-        charger_voluntary = detail.get("charger_voluntary_wh", 0.0)
-        inverter_ac = detail["inverter_dc_to_ac_wh"]
-        additional_load_active = detail.get("additional_load_active", False)
+        row = []
+        for key, _header, fmt in _COLUMNS:
+            value = detail.get(key, "")
+            if key == "datetime" and isinstance(value, str):
+                value = value[5:16].replace("T", " ")  # MM-DD HH:MM
+            elif isinstance(value, bool):
+                value = "on" if value else "-"
+            try:
+                row.append(fmt.format(value))
+            except (ValueError, TypeError):
+                row.append(str(value))
+        rows.append(row)
 
-        # Color coding for grid flows
-        if grid_import > 0:
-            import_color = RED
-            import_str = f"{grid_import:6.0f}"
-        else:
-            import_color = RESET
-            import_str = f"{grid_import:6.0f}"
-
-        if grid_export > 0:
-            export_color = GREEN
-            export_str = f"{grid_export:6.0f}"
-        else:
-            export_color = RESET
-            export_str = f"{grid_export:6.0f}"
-
-        if net_battery > 0:
-            batt_color = GREEN
-            batt_str = f"+{net_battery:7.0f}"
-        elif net_battery < 0:
-            batt_color = RED
-            batt_str = f"{net_battery:8.0f}"
-        else:
-            batt_color = RESET
-            batt_str = f"{net_battery:8.0f}"
-
-        soc_change = soc_final - soc_initial
-        if soc_change > 0:
-            soc_color = GREEN
-        elif soc_change < 0:
-            soc_color = RED
-        else:
-            soc_color = BLUE
-
-        row = (
-            f"{CYAN}{hour:4d}{RESET} | "
-            f"{CYAN}{time_str:>5}{RESET} | "
-            f"{BLUE}{soc_initial:4.1f}{RESET} | "
-            f"{YELLOW}{pv_wh:6.0f}{RESET} | "
-            f"{MAGENTA}{ac_wh:6.0f}{RESET} | "
-            f"{MAGENTA}{dc_wh:6.0f}{RESET} | "
-            f"{import_color}{import_str}{RESET} | "
-            f"{export_color}{export_str}{RESET} | "
-            f"{batt_color}{batt_str}{RESET} | "
-            f"{RED if charger_forced > 0 else RESET}{charger_forced:7.0f}{RESET} | "
-            f"{GREEN if charger_voluntary > 0 else RESET}{charger_voluntary:7.0f}{RESET} | "
-            f"{RESET}{inverter_ac:7.0f}{RESET} | "
-            f"{GREEN if additional_load_active else RED}{'ON' if additional_load_active else 'OFF':>7}{RESET} | "
-            f"{soc_color}{soc_final:6.1f}{RESET}"
+    headers = [header for _key, header, _fmt in _COLUMNS]
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in rows))
+        for i in range(len(headers))
+    ]
+    sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+    lines = [sep]
+    lines.append(
+        "|" + "|".join(f" {headers[i]:>{widths[i]}} " for i in range(len(headers))) + "|"
+    )
+    lines.append(sep)
+    for row in rows:
+        lines.append(
+            "|" + "|".join(f" {row[i]:>{widths[i]}} " for i in range(len(row))) + "|"
         )
-        lines.append(row)
-
-    lines.append("-" * 170)
-    lines.append(f"\n{BOLD}Legend:{RESET}")
-    lines.append(f"  {GREEN}Green{RESET}: Positive energy flows (charging, export)")
-    lines.append(f"  {RED}Red{RESET}: Negative energy flows (discharging, import)")
-    lines.append("  Yellow: PV production")
-    lines.append(f"  {MAGENTA}Magenta{RESET}: Consumption")
-    lines.append(f"  {BLUE}Blue{RESET}: SOC values")
-    lines.append(f"  Import: {RED}Grid import{RESET} (+from grid)")
-    lines.append(f"  Export: {GREEN}Grid export{RESET} (+to grid)")
-    lines.append("  Batt_Wh: Net battery flow (+charge, -discharge)")
-    lines.append(f"  Forced: {RED}Forced{RESET} charger energy (DC deficit)")
-    lines.append(f"  Volunt: {GREEN}Voluntary{RESET} charger energy (PV surplus)")
-    lines.append(f"  AddLoad: {GREEN}Additional load{RESET} status (ON/OFF)")
-    lines.append("=" * 170)
-
+    lines.append(sep)
     return "\n".join(lines)

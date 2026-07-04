@@ -1,0 +1,197 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Eingangs-Entitäten",
+        "description": "Wähle die Sensoren für Batterie-SOC und PV-Prognosen.",
+        "data": {
+          "soc_entity": "Batterie-SOC-Sensor (%)",
+          "pv_forecast_today_entity": "PV-Prognose heute (kWh)",
+          "pv_forecast_tomorrow_entity": "PV-Prognose morgen (kWh)",
+          "pv_forecast_day_after_entity": "PV-Prognose übermorgen (kWh)"
+        }
+      },
+      "battery": {
+        "title": "Batterie",
+        "data": {
+          "battery_capacity_wh": "Kapazität (Wh)",
+          "battery_min_soc_percent": "Minimaler SOC (%)",
+          "battery_max_soc_percent": "Maximaler SOC (%)",
+          "battery_charge_efficiency": "Lade-Wirkungsgrad (0-1)",
+          "battery_discharge_efficiency": "Entlade-Wirkungsgrad (0-1)"
+        }
+      },
+      "pv": {
+        "title": "PV-Anlage",
+        "data": {
+          "pv_max_power_w": "Spitzenleistung (W)",
+          "pv_morning_start_hour": "Produktionsbeginn (Stunde)",
+          "pv_morning_end_hour": "Ende Vormittagsfenster (Stunde)",
+          "pv_afternoon_end_hour": "Produktionsende (Stunde)",
+          "pv_morning_ratio": "Vormittagsanteil der Tagesenergie (0-1)"
+        }
+      },
+      "consumers": {
+        "title": "Grundlasten",
+        "data": {
+          "ac_base_load_w": "AC-Grundlast (W)",
+          "ac_variable_load_w": "AC-Zusatzlast tagsüber (W)",
+          "ac_variable_start_hour": "AC-Zusatzlast ab (Stunde)",
+          "ac_variable_end_hour": "AC-Zusatzlast bis (Stunde)",
+          "dc_base_load_w": "DC-Grundlast (W)",
+          "dc_variable_load_w": "DC-Zusatzlast tagsüber (W)",
+          "dc_variable_start_hour": "DC-Zusatzlast ab (Stunde)",
+          "dc_variable_end_hour": "DC-Zusatzlast bis (Stunde)"
+        }
+      },
+      "power": {
+        "title": "Ladegerät & Wechselrichter",
+        "data": {
+          "charger_max_power_w": "Ladegerät max. Leistung (W)",
+          "charger_efficiency": "Ladegerät-Wirkungsgrad (0-1)",
+          "charger_standby_power_w": "Ladegerät Standby (W)",
+          "inverter_max_power_w": "Wechselrichter max. Leistung (W)",
+          "inverter_efficiency": "Wechselrichter-Wirkungsgrad (0-1)",
+          "inverter_standby_power_w": "Wechselrichter Standby (W)",
+          "inverter_min_soc_percent": "Wechselrichter Mindest-SOC (%)"
+        }
+      },
+      "control": {
+        "title": "Planer & Notfall-Stützung",
+        "description": "Feineinstellung des Planers und optionale Netz-Stützpfade, die die Integration direkt schaltet.",
+        "data": {
+          "soc_buffer_percent": "SOC-Sicherheitspuffer (%)",
+          "hysteresis_percent": "Wechselrichter-Hysterese (%)",
+          "threshold_inertia_percent": "Schwellen-Trägheit (%)",
+          "min_switch_interval_s": "Mindest-Schaltabstand (s)",
+          "support_dc48_switch_entity": "Schalter 48-V-Stütznetzteil",
+          "support_dc48_power_w": "Leistung 48-V-Stütznetzteil (W)",
+          "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
+          "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
+          "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)"
+        }
+      }
+    },
+    "error": {
+      "min_soc_above_max": "Der minimale SOC muss unter dem maximalen SOC liegen.",
+      "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden."
+    },
+    "abort": {
+      "already_configured": "Dieses System ist bereits konfiguriert."
+    }
+  },
+  "config_subentries": {
+    "surplus_load": {
+      "title": "Überschusslast",
+      "entry_type": "Überschusslast",
+      "initiate_flow": {
+        "user": "Überschusslast hinzufügen",
+        "reconfigure": "Überschusslast anpassen"
+      },
+      "step": {
+        "user": {
+          "title": "Überschusslast",
+          "description": "Eine schaltbare Last, die PV-Überschuss verwerten soll (Powerstation, Entfeuchter, ...). Die Priorität folgt der Reihenfolge des Anlegens.",
+          "data": {
+            "name": "Name",
+            "power_w": "Nennleistung (W)",
+            "battery_tolerance_percent": "Erlaubter Batterieanteil (%)",
+            "min_runtime_min": "Mindestlaufzeit (min)",
+            "energy_limited": "Energiebegrenzt (Speicher, der voll wird)",
+            "capacity_wh": "Speicherkapazität (Wh)",
+            "target_soc_percent": "Ziel-SOC (%)",
+            "soc_entity": "SOC-Sensor (optional)",
+            "power_entity": "Leistungs-Feedback-Sensor (optional)",
+            "availability_entity": "Verfügbarkeits-Entität (optional)"
+          }
+        },
+        "reconfigure": {
+          "title": "Überschusslast",
+          "data": {
+            "name": "Name",
+            "power_w": "Nennleistung (W)",
+            "battery_tolerance_percent": "Erlaubter Batterieanteil (%)",
+            "min_runtime_min": "Mindestlaufzeit (min)",
+            "energy_limited": "Energiebegrenzt (Speicher, der voll wird)",
+            "capacity_wh": "Speicherkapazität (Wh)",
+            "target_soc_percent": "Ziel-SOC (%)",
+            "soc_entity": "SOC-Sensor (optional)",
+            "power_entity": "Leistungs-Feedback-Sensor (optional)",
+            "availability_entity": "Verfügbarkeits-Entität (optional)"
+          }
+        }
+      }
+    },
+    "appliance": {
+      "title": "Haushaltsgerät",
+      "entry_type": "Haushaltsgerät",
+      "initiate_flow": {
+        "user": "Haushaltsgerät hinzufügen",
+        "reconfigure": "Haushaltsgerät anpassen"
+      },
+      "step": {
+        "user": {
+          "title": "Haushaltsgerät",
+          "description": "Waschmaschine/Geschirrspüler: Ein erkannter Lauf rechnet den Restverbrauch in die Prognose ein; optional wird eine Startfenster-Entität angelegt.",
+          "data": {
+            "name": "Name",
+            "detection_entity": "Erkennungs-Entität (Leistungssensor oder Status)",
+            "power_threshold_w": "Leistungsschwelle „läuft“ (W)",
+            "run_energy_wh": "Energie pro Lauf (Wh)",
+            "run_duration_h": "Laufdauer (h)",
+            "opportunistic_start": "Startfenster-Entität anlegen"
+          }
+        },
+        "reconfigure": {
+          "title": "Haushaltsgerät",
+          "data": {
+            "name": "Name",
+            "detection_entity": "Erkennungs-Entität (Leistungssensor oder Status)",
+            "power_threshold_w": "Leistungsschwelle „läuft“ (W)",
+            "run_energy_wh": "Energie pro Lauf (Wh)",
+            "run_duration_h": "Laufdauer (h)",
+            "opportunistic_start": "Startfenster-Entität anlegen"
+          }
+        }
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden."
+    },
+    "step": {
+      "init": {
+        "title": "Planer-Feineinstellung",
+        "data": {
+          "soc_buffer_percent": "SOC-Sicherheitspuffer (%)",
+          "hysteresis_percent": "Wechselrichter-Hysterese (%)",
+          "threshold_inertia_percent": "Schwellen-Trägheit (%)",
+          "min_switch_interval_s": "Mindest-Schaltabstand (s)",
+          "support_dc48_switch_entity": "Schalter 48-V-Stütznetzteil",
+          "support_dc48_power_w": "Leistung 48-V-Stütznetzteil (W)",
+          "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
+          "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
+          "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "soc_threshold": { "name": "SOC-Schwelle" },
+      "min_soc_forecast": { "name": "Minimale SOC-Prognose" },
+      "max_soc_forecast": { "name": "Maximale SOC-Prognose" },
+      "hours_to_max_soc": { "name": "Stunden bis Maximal-SOC" },
+      "grid_import_forecast": { "name": "Netzbezugs-Prognose" },
+      "lost_surplus": { "name": "Verlorener Überschuss (Prognose)" }
+    },
+    "binary_sensor": {
+      "inverter_status": { "name": "Wechselrichter-Empfehlung" },
+      "surplus_load": { "name": "{name} Empfehlung" },
+      "appliance_window": { "name": "{name} Startfenster" },
+      "support_dc24": { "name": "24-V-Netzstützung" },
+      "support_dc48": { "name": "48-V-Netzstützung" }
+    }
+  }
+}

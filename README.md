@@ -3,351 +3,139 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/release/danielr0815/battery-manager-ha.svg)](https://github.com/danielr0815/battery-manager-ha/releases)
 [![License](https://img.shields.io/github/license/danielr0815/battery-manager-ha.svg)](LICENSE)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1.0+-blue.svg)](https://www.home-assistant.io/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.3.0+-blue.svg)](https://www.home-assistant.io/)
 
-A comprehensive Home Assistant custom integration for battery energy storage optimization using photovoltaic (PV) forecasts and intelligent control algorithms.
+Simulation-based battery energy optimization for AC-coupled PV systems without
+feed-in remuneration: the integration plans hourly energy flows over the full
+forecast horizon and derives switching recommendations that minimize grid
+import **and** wasted (exported) surplus.
 
-## 🎯 Overview
+> **v0.2.0 is a complete algorithm rewrite** (breaking change — the
+> integration must be configured once anew). Design documents live in
+> [docs/](docs/): [REQUIREMENTS.md](docs/REQUIREMENTS.md),
+> [STRATEGY.md](docs/STRATEGY.md), [ALGORITHM.md](docs/ALGORITHM.md).
 
-The Battery Manager integration simulates and optimizes battery storage systems with the following components:
-- **Battery**: SOC management with charge/discharge efficiency modeling
-- **PV System**: Solar power generation with hourly distribution from daily forecasts
-- **AC/DC Consumers**: Time-based load profiles for household consumption
-- **Charger/Inverter**: AC↔DC conversion with efficiency losses
-- **Maximum-Based Controller**: Optimal inverter operation threshold calculation
+## How it works
 
-## 📊 Features
+Modelled topology (PV is AC-coupled; the battery charges through an AC→DC
+charger and discharges through a DC→AC inverter; DC loads hang off the
+battery):
 
-### Core Functionality
-- **Intelligent SOC Threshold Calculation**: Determines optimal battery discharge threshold based on current SOC and PV forecasts
-- **Energy Flow Simulation**: Models complex energy flows between grid, PV, battery, and loads
-- **Real-time Optimization**: Updates calculations every 10 minutes or when input data changes
-- **Robust Error Handling**: Comprehensive validation and graceful degradation
-- **Standalone Testing**: Independent testing capability without Home Assistant
-
-### Home Assistant Integration
-- **5 Sensor Entities**:
-  - `binary_sensor.battery_manager_inverter_status` - Inverter enable/disable state
-  - `sensor.battery_manager_soc_threshold` - Calculated SOC threshold (%)
-  - `sensor.battery_manager_min_soc_forecast` - Minimum forecasted SOC (%)
-  - `sensor.battery_manager_max_soc_forecast` - Maximum forecasted SOC (%)
-  - `sensor.battery_manager_hours_to_max_soc` - Whole hours until max SOC is reached
-- **GUI Configuration**: Complete configuration via Home Assistant UI
-- **Automatic Updates**: Entity monitoring with debounced updates
-- **Device Grouping**: All entities grouped under single device
-
-## 🔧 Installation
-
-### HACS (Recommended)
-
-1. **Add Custom Repository**:
-   - Open HACS in Home Assistant
-   - Click on **"Integrations"**
-   - Click the **three dots** in the top right corner
-   - Select **"Custom repositories"**
-   - Add URL: `https://github.com/danielr0815/battery-manager-ha`
-   - Select category: **"Integration"**
-   - Click **"Add"**
-
-2. **Install the Integration**:
-   - Search for **"Battery Manager"** in HACS
-   - Click **"Download"**
-   - Restart Home Assistant
-
-3. **Add Integration**:
-   - Go to **Settings** → **Devices & Services**
-   - Click **"+ ADD INTEGRATION"**
-   - Search for **"Battery Manager"**
-   - Follow the configuration steps
-
-### Manual Installation
-1. Copy the `battery_manager` folder to your `custom_components` directory:
-   ```
-   custom_components/
-   └── battery_manager/
-       ├── __init__.py
-       ├── config_flow.py
-       ├── const.py
-       ├── coordinator.py
-       ├── manifest.json
-       ├── sensor.py
-       ├── battery_manager/
-       │   ├── __init__.py
-       │   ├── battery.py
-       │   ├── charger.py
-       │   ├── consumers.py
-       │   ├── controller.py
-       │   ├── energy_flow.py
-       │   ├── inverter.py
-       │   ├── pv_system.py
-       │   └── simulator.py
-       └── translations/
-           └── en.json
-   ```
-
-2. Restart Home Assistant
-
-3. Go to **Configuration** → **Integrations** → **Add Integration**
-
-4. Search for "Battery Manager" and follow the configuration steps
-
-### Method 2: HACS (Not yet available)
-This integration is not yet available in HACS but may be added in the future.
-
-## ⚙️ Configuration
-
-### Required Input Entities
-- **SOC Entity**: Sensor providing current battery State of Charge (0-100%)
-- **PV Forecast Entities**: Three sensors providing daily PV energy forecasts in kWh:
-  - Today's forecast
-  - Tomorrow's forecast  
-  - Day after tomorrow's forecast
-
-### System Parameters
-
-#### Battery Configuration
-- **Capacity**: Total battery capacity in Wh (default: 10000 Wh)
-- **SOC Limits**: Minimum and maximum SOC percentages (default: 10%-90%)
-- **Efficiencies**: Charge and discharge efficiency factors (default: 95%)
-
-#### PV System Configuration
-- **Peak Power**: Maximum PV system power in W (default: 8000 W)
-
-#### Load Configuration
-- **AC Base Load**: Continuous AC consumption in W (default: 300 W)
-- **DC Base Load**: Continuous DC consumption in W (default: 50 W)
-
-#### Component Efficiencies
-- **Charger Efficiency**: AC→DC conversion efficiency (default: 93%)
-- **Inverter Efficiency**: DC→AC conversion efficiency (default: 93%)
-
-#### Controller Settings
-- **Maximum Threshold**: Upper limit for SOC threshold in % (default: 80%)
-
-## 🧮 Algorithm Details
-
-### Maximum-Based Controller
-The system uses a Maximum-Based Controller algorithm that:
-
-1. **Forecasts Energy Flows**: Simulates hourly energy production, consumption, and battery interactions
-2. **Calculates SOC Range**: Determines minimum and maximum SOC over the forecast period
-3. **Optimizes Threshold**: Sets inverter activation threshold to maximize self-consumption while maintaining battery reserves
-4. **Validates Results**: Ensures thresholds are within acceptable bounds
-
-### PV Production Modeling
-- **Hourly Distribution**: Converts daily forecasts to hourly production using realistic solar curves
-- **Seasonal Adjustment**: Accounts for daylight hours and sun angle variations
-- **Peak Power Limiting**: Respects inverter and panel capacity limits
-
-### Energy Flow Priorities
-1. **PV to DC Load**: Direct DC consumption has highest priority
-2. **PV to AC Load**: AC consumption via inverter
-3. **PV to Battery**: Charging when excess production available
-4. **PV to Grid**: Export when battery full and loads satisfied
-5. **Battery to Loads**: Discharge when SOC above threshold
-6. **Grid to Loads**: Import when insufficient local generation
-
-## 📈 Usage Examples
-
-### Basic Setup
-```yaml
-# Example configuration.yaml entries
-sensor:
-  - platform: template
-    sensors:
-      battery_soc:
-        friendly_name: "Battery SOC"
-        value_template: "{{ states('sensor.battery_state_of_charge') }}"
-        unit_of_measurement: "%"
-      
-      pv_forecast_today:
-        friendly_name: "PV Forecast Today"
-        value_template: "{{ states('sensor.solcast_forecast_today') }}"
-        unit_of_measurement: "kWh"
+```
+PV ────────────────┐
+                   ├── AC loads (house)          Grid
+Grid ──────────────┤
+                   │
+             Charger (AC→DC)              Inverter (DC→AC, switchable)
+                   │                               │
+                   └────────── Battery ────────────┘
+                                  │
+                            DC loads (24 V rail)
 ```
 
-### CLI Testing
+Every ~5 minutes (and on input changes, debounced) the planner runs:
+
+1. **Threshold search** — for every candidate SOC threshold the full horizon
+   is simulated with the *actual* policy `inverter on ⇔ SOC > threshold`; the
+   candidate with the lowest cost (grid import − terminal battery value +
+   small export penalty) wins. "Make room before a sunny day, hold reserve
+   before a cloudy one" emerges from the cost function on its own.
+2. **Surplus allocation** — hours in which energy would be exported are
+   assigned to configured surplus loads (powerstations, dehumidifier, …),
+   in parallel when the surplus suffices, by priority when it does not.
+   Every assignment is re-simulated over the *whole* horizon: a surplus load
+   may never cause additional grid import and never violate the SOC buffer.
+3. **Appliance handling** — a detected washer/dishwasher run adds its
+   remaining consumption to the forecast; an optional advisor entity signals
+   when a full run could start right now without any grid import.
+4. **Emergency support** — if the battery would still fall through its
+   minimum, the integration itself switches the configured grid PSUs
+   (24 V DC/DC replacement, 48 V support PSU) as last-resort protection.
+
+## Entities
+
+| Entity | Meaning |
+|---|---|
+| `binary_sensor.…_inverter_recommendation` | Recommended state for the real discharge inverter (hysteresis + minimum switch interval applied) |
+| `sensor.…_soc_threshold` | Optimal SOC threshold (%) from the search |
+| `sensor.…_min/max_soc_forecast` | SOC range over the horizon |
+| `sensor.…_hours_to_max_soc` | Hours until the maximum SOC is reached |
+| `sensor.…_grid_import_forecast` | Expected grid import over the horizon (kWh) |
+| `sensor.…_lost_surplus` | Surplus that will still be exported/wasted (kWh) |
+| `binary_sensor.<load>_recommendation` | Per surplus load: switch it on now (attributes: planned hours/energy) |
+| `binary_sensor.<appliance>_start_window` | Per appliance: a full run fits into the surplus right now |
+| `binary_sensor.…_24v/48v_grid_support` | State of the emergency support paths (switched directly by the integration) |
+
+## Installation
+
+### HACS (custom repository)
+
+1. HACS → Integrations → ⋮ → *Custom repositories* →
+   `https://github.com/danielr0815/battery-manager-ha` (category *Integration*)
+2. Download **Battery Manager**, restart Home Assistant.
+3. Settings → Devices & Services → *Add Integration* → **Battery Manager**.
+
+### Manual
+
+Copy `custom_components/battery_manager/` into your `config/custom_components/`
+directory and restart Home Assistant.
+
+## Configuration
+
+The base config flow asks for:
+
+- **Input entities**: battery SOC sensor (%), three daily PV forecast sensors
+  (kWh: today / tomorrow / day after tomorrow, e.g. from Solcast or
+  Forecast.Solar).
+- **System parameters**: battery (capacity, SOC limits, efficiencies), PV
+  hourly distribution, AC/DC base load profiles, charger/inverter limits.
+- **Planner tuning**: SOC safety buffer (default 5 %), hysteresis (±1 %),
+  threshold inertia (2 %), minimum switch interval (60 s).
+- **Emergency support** (optional): switch entities for the 48 V support PSU
+  (fixed power, default 60 W) and the 24 V PSU replacing the DC/DC converter.
+
+**Surplus loads** and **appliances** are added as sub-entries on the
+integration card (*Add surplus load* / *Add appliance*):
+
+- Surplus load: nominal power, allowed battery share (default 15 %),
+  energy-limited flag with capacity + target SOC (powerstations), optional
+  SOC / power-feedback / availability entities. Priority = creation order;
+  loads run in parallel when the surplus suffices.
+- Appliance: detection entity (power sensor or state), energy + duration per
+  run, optional start-window advisor entity.
+
+Automations then switch the real devices based on the recommendation
+entities. Only the emergency support PSUs are switched by the integration
+itself.
+
+## Development & testing
+
 ```bash
-# Run basic test
-python test_battery_manager_cli.py --soc 60 --forecasts 25.0,30.0,20.0
+python -m venv .venv
+.venv/bin/pip install homeassistant pytest pytest-homeassistant-custom-component ruff
 
-# Run with custom battery
-python test_battery_manager_cli.py --battery-capacity 20000 --battery-soc-min 15
+# Core suite (pure Python, runs anywhere incl. Windows):
+python -m pytest tests/core -p no:homeassistant
 
-# Run all scenarios
-python test_battery_manager_cli.py --run-scenarios
+# Full suite incl. Home Assistant layer (Linux/WSL/CI):
+python -m pytest tests
 
-# Verbose output with JSON export
-python test_battery_manager_cli.py --verbose --output-json results.json
+ruff check custom_components tests
 ```
 
-## 🧪 Testing
+The simulation core (`custom_components/battery_manager/core/`) is free of
+Home Assistant imports and side effects: frozen dataclasses in, frozen
+dataclasses out. All planner behaviour is covered by scenario tests in
+`tests/core/` — including a regression test for the historic bug where the
+additional load was activated at night on the promise of tomorrow's sun.
 
-### Standalone Testing
-The system includes comprehensive standalone testing capabilities:
+### Debug export
 
-#### Basic Test Script
-```bash
-cd standalone_test
-python test_battery_manager.py
-```
+Service `battery_manager.export_hourly_details` writes the hourly plan of the
+last run as an ASCII table (or JSON lines with `as_table: false`) to
+`<config>/battery_manager_hourly_<entry_id>.txt`; `download: true` places it
+under `/local/` with a notification link.
 
-#### CLI Test Script
-```bash
-cd standalone_test
-python test_battery_manager_cli.py --help
-```
+## License
 
-#### Error Handling Tests
-```bash
-cd standalone_test
-python test_error_handling.py
-```
-
-### Test Scenarios
-The system includes predefined test scenarios:
-- **Basic Operation**: Normal conditions with moderate SOC and forecasts
-- **Low SOC Critical**: Emergency charging scenarios
-- **High PV Production**: Excellent weather conditions
-- **Edge Cases**: Boundary conditions and extreme values
-- **Configuration Validation**: Invalid parameter handling
-
-## 🔍 Monitoring & Debugging
-
-### Entity States
-Monitor the integration through Home Assistant:
-- Check entity states in **Developer Tools** → **States**
-- View entity history in **History** panel
-- Use **Logbook** to track state changes
-
-### Debug Information
-Enable debug logging in `configuration.yaml`:
-```yaml
-logger:
-  default: info
-  logs:
-    custom_components.battery_manager: debug
-```
-
-### Export Hourly Details
-Use the service `battery_manager.export_hourly_details` to save the last hourly
-simulation data to a text file. When called without parameters the file will be
-written to `<config>/battery_manager_hourly_<entry_id>.txt`.
-Provide `entry_id` if multiple integrations are configured and optional
-`file_path` to override the location.
-Set `download: true` to create the file under `<config>/www` and receive a
-persistent notification with a direct download link. The hourly details are
-written as an ASCII table by default. Set `as_table: false` to export raw JSON
-lines instead.
-
-### Configuration Validation
-The system validates all configuration parameters and provides clear error messages for:
-- Invalid capacity values
-- Efficiency values outside 0-1 range
-- SOC limits outside 0-100% range
-- Negative power values
-- Inconsistent min/max SOC settings
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-#### Entities Not Updating
-- Check that input entities exist and have valid states
-- Verify entity IDs in integration configuration
-- Check logs for coordinator errors
-
-#### Invalid SOC Values
-- Ensure SOC entity provides values between 0-100
-- Check for "unknown" or "unavailable" states
-- Verify entity state format (numeric)
-
-#### Forecast Data Issues
-- Confirm forecast entities provide numeric values in kWh
-- Check for negative forecast values (automatically clamped to 0)
-- Verify forecast data freshness (max age: 24 hours)
-
-#### Configuration Errors
-- Review configuration parameters for valid ranges
-- Check efficiency values are between 0-1
-- Verify capacity and power values are positive
-
-### Error Recovery
-The system implements robust error recovery:
-- **Graceful Degradation**: Uses last valid data when entities unavailable
-- **Data Validation**: Clamps invalid values to acceptable ranges  
-- **Age Checking**: Warns when data becomes stale
-- **Automatic Retry**: Attempts recovery on next update cycle
-
-## 📚 Technical Architecture
-
-### Component Structure
-```
-Battery Manager
-├── BatteryManagerSimulator (Main orchestrator)
-├── MaximumBasedController (Algorithm implementation)
-├── EnergyFlowCalculator (Energy balance calculations)
-├── Battery (SOC and energy management)
-├── PVSystem (Solar production modeling)
-├── Consumers (AC/DC load modeling)
-├── Charger (AC→DC conversion)
-└── Inverter (DC→AC conversion with SOC control)
-```
-
-### Home Assistant Integration
-```
-Integration
-├── ConfigFlow (GUI configuration)
-├── DataUpdateCoordinator (Entity monitoring & updates)
-├── BinarySensor (Inverter status)
-└── Sensors (SOC values)
-```
-
-### Data Flow
-1. **Input Collection**: Coordinator reads SOC and forecast entities
-2. **Validation**: Input data validated and cleaned
-3. **Simulation**: Controller runs energy flow simulation
-4. **Optimization**: SOC threshold calculated using Maximum-Based algorithm
-5. **Entity Updates**: Results published to Home Assistant entities
-6. **Monitoring**: Continuous monitoring for entity changes
-
-## 🤝 Contributing
-
-### Development Setup
-1. Clone the repository
-2. Install dependencies (none required - pure Python)
-3. Run tests to verify functionality
-4. Make changes and test thoroughly
-
-### Code Quality
-- Follow Python PEP 8 style guidelines
-- Add comprehensive docstrings
-- Include unit tests for new features
-- Validate with error handling tests
-
-### Testing Guidelines
-- Test all configuration combinations
-- Verify edge cases and error conditions
-- Ensure backward compatibility
-- Test integration with Home Assistant
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🏷️ Version History
-
-### v0.1.0 (Current)
-- Initial release
-- Complete battery management system
-- Home Assistant integration
-- Comprehensive testing suite
-- CLI testing tools
-- Full documentation
-
-## 🙏 Acknowledgments
-
-- Home Assistant community for integration patterns
-- Contributors to solar forecasting APIs
-- Battery management research community
-- Open source energy management projects
+MIT — see [LICENSE](LICENSE).

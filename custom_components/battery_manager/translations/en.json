@@ -2,181 +2,196 @@
   "config": {
     "step": {
       "user": {
-        "title": "Battery Manager Setup",
-        "description": "Configure input entities for Battery Manager",
+        "title": "Input entities",
+        "description": "Select the sensors providing battery SOC and PV forecasts.",
         "data": {
-          "soc_entity": "Battery SOC Entity",
-          "pv_forecast_today_entity": "PV Forecast Today Entity",
-          "pv_forecast_tomorrow_entity": "PV Forecast Tomorrow Entity", 
-          "pv_forecast_day_after_entity": "PV Forecast Day After Entity"
-        },
-        "data_description": {
-          "soc_entity": "Entity that provides current battery SOC in %",
-          "pv_forecast_today_entity": "Entity with today's PV forecast in kWh",
-          "pv_forecast_tomorrow_entity": "Entity with tomorrow's PV forecast in kWh",
-          "pv_forecast_day_after_entity": "Entity with day after tomorrow's PV forecast in kWh"
+          "soc_entity": "Battery SOC sensor (%)",
+          "pv_forecast_today_entity": "PV forecast today (kWh)",
+          "pv_forecast_tomorrow_entity": "PV forecast tomorrow (kWh)",
+          "pv_forecast_day_after_entity": "PV forecast day after tomorrow (kWh)"
         }
       },
-      "battery_config": {
-        "title": "Battery Configuration",
-        "description": "Configure battery parameters",
+      "battery": {
+        "title": "Battery",
         "data": {
-          "battery_capacity_wh": "Battery Capacity (Wh)",
+          "battery_capacity_wh": "Capacity (Wh)",
           "battery_min_soc_percent": "Minimum SOC (%)",
           "battery_max_soc_percent": "Maximum SOC (%)",
-          "battery_charge_efficiency": "Charge Efficiency",
-          "battery_discharge_efficiency": "Discharge Efficiency"
+          "battery_charge_efficiency": "Charge efficiency (0-1)",
+          "battery_discharge_efficiency": "Discharge efficiency (0-1)"
         }
       },
-      "pv_config": {
-        "title": "PV System Configuration", 
-        "description": "Configure PV system parameters",
+      "pv": {
+        "title": "PV system",
         "data": {
-          "pv_max_power_w": "Max PV Power (W)",
-          "pv_morning_start_hour": "Morning Start Hour",
-          "pv_morning_end_hour": "Morning End Hour",
-          "pv_afternoon_end_hour": "Afternoon End Hour",
-          "pv_morning_ratio": "Morning Production Ratio"
+          "pv_max_power_w": "Peak power (W)",
+          "pv_morning_start_hour": "Production start hour",
+          "pv_morning_end_hour": "Morning window end hour",
+          "pv_afternoon_end_hour": "Production end hour",
+          "pv_morning_ratio": "Morning share of daily energy (0-1)"
         }
       },
-      "consumer_config": {
-        "title": "Consumer Configuration",
-        "description": "Configure AC and DC load parameters",
+      "consumers": {
+        "title": "Base loads",
         "data": {
-          "ac_base_load_w": "AC Base Load (W)",
-          "ac_variable_load_w": "AC Variable Load (W)",
-          "ac_variable_start_hour": "AC Variable Start Hour",
-          "ac_variable_end_hour": "AC Variable End Hour",
-          "dc_base_load_w": "DC Base Load (W)",
-          "dc_variable_load_w": "DC Variable Load (W)",
-          "dc_variable_start_hour": "DC Variable Start Hour",
-          "dc_variable_end_hour": "DC Variable End Hour"
+          "ac_base_load_w": "AC base load (W)",
+          "ac_variable_load_w": "AC variable load (W)",
+          "ac_variable_start_hour": "AC variable start hour",
+          "ac_variable_end_hour": "AC variable end hour",
+          "dc_base_load_w": "DC base load (W)",
+          "dc_variable_load_w": "DC variable load (W)",
+          "dc_variable_start_hour": "DC variable start hour",
+          "dc_variable_end_hour": "DC variable end hour"
         }
       },
-      "power_config": {
-        "title": "Power Equipment Configuration",
-        "description": "Configure charger and inverter parameters",
+      "power": {
+        "title": "Charger & inverter",
         "data": {
-          "charger_max_power_w": "Charger Max Power (W)",
-          "charger_efficiency": "Charger Efficiency",
-          "charger_standby_power_w": "Charger Standby Power (W)",
-          "inverter_max_power_w": "Inverter Max Power (W)",
-          "inverter_efficiency": "Inverter Efficiency",
-          "inverter_standby_power_w": "Inverter Standby Power (W)",
-          "inverter_min_soc_percent": "Inverter Min SOC (%)"
+          "charger_max_power_w": "Charger max power (W)",
+          "charger_efficiency": "Charger efficiency (0-1)",
+          "charger_standby_power_w": "Charger standby power (W)",
+          "inverter_max_power_w": "Inverter max power (W)",
+          "inverter_efficiency": "Inverter efficiency (0-1)",
+          "inverter_standby_power_w": "Inverter standby power (W)",
+          "inverter_min_soc_percent": "Inverter minimum SOC (%)"
         }
       },
-      "controller_config": {
-        "title": "Controller Configuration",
-        "description": "Configure controller parameters",
+      "control": {
+        "title": "Planner & emergency support",
+        "description": "Planner tuning and optional grid support paths that the integration switches directly.",
         "data": {
-          "controller_target_soc_percent": "Target SOC Threshold (%)"
+          "soc_buffer_percent": "SOC safety buffer (%)",
+          "hysteresis_percent": "Inverter hysteresis (%)",
+          "threshold_inertia_percent": "Threshold inertia (%)",
+          "min_switch_interval_s": "Minimum switch interval (s)",
+          "support_dc48_switch_entity": "48 V support PSU switch",
+          "support_dc48_power_w": "48 V support PSU power (W)",
+          "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
+          "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
+          "support_switch_delay_s": "Changeover delay (s, make-before-break)"
         }
       }
     },
     "error": {
-      "entity_not_found": "Entity not found",
-      "invalid_battery_config": "Invalid battery configuration",
-      "invalid_pv_config": "Invalid PV configuration", 
-      "invalid_consumer_config": "Invalid consumer configuration",
-      "invalid_power_config": "Invalid power equipment configuration"
+      "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
+      "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities."
     },
     "abort": {
-      "already_configured": "Battery Manager is already configured"
+      "already_configured": "This system is already configured."
+    }
+  },
+  "config_subentries": {
+    "surplus_load": {
+      "title": "Surplus load",
+      "entry_type": "Surplus load",
+      "initiate_flow": {
+        "user": "Add surplus load",
+        "reconfigure": "Reconfigure surplus load"
+      },
+      "step": {
+        "user": {
+          "title": "Surplus load",
+          "description": "A switchable load that should consume PV surplus (powerstation, dehumidifier, ...). Priority follows the order of creation.",
+          "data": {
+            "name": "Name",
+            "power_w": "Nominal power (W)",
+            "battery_tolerance_percent": "Allowed battery share (%)",
+            "min_runtime_min": "Minimum runtime (min)",
+            "energy_limited": "Energy limited (storage that becomes full)",
+            "capacity_wh": "Storage capacity (Wh)",
+            "target_soc_percent": "Target SOC (%)",
+            "soc_entity": "SOC sensor (optional)",
+            "power_entity": "Power feedback sensor (optional)",
+            "availability_entity": "Availability entity (optional)"
+          }
+        },
+        "reconfigure": {
+          "title": "Surplus load",
+          "data": {
+            "name": "Name",
+            "power_w": "Nominal power (W)",
+            "battery_tolerance_percent": "Allowed battery share (%)",
+            "min_runtime_min": "Minimum runtime (min)",
+            "energy_limited": "Energy limited (storage that becomes full)",
+            "capacity_wh": "Storage capacity (Wh)",
+            "target_soc_percent": "Target SOC (%)",
+            "soc_entity": "SOC sensor (optional)",
+            "power_entity": "Power feedback sensor (optional)",
+            "availability_entity": "Availability entity (optional)"
+          }
+        }
+      }
+    },
+    "appliance": {
+      "title": "Appliance",
+      "entry_type": "Appliance",
+      "initiate_flow": {
+        "user": "Add appliance",
+        "reconfigure": "Reconfigure appliance"
+      },
+      "step": {
+        "user": {
+          "title": "Appliance",
+          "description": "Washer/dishwasher: a detected run adds its remaining consumption to the forecast; optionally a start-window advisor entity is created.",
+          "data": {
+            "name": "Name",
+            "detection_entity": "Detection entity (power sensor or state)",
+            "power_threshold_w": "Running power threshold (W)",
+            "run_energy_wh": "Energy per run (Wh)",
+            "run_duration_h": "Run duration (h)",
+            "opportunistic_start": "Create start-window advisor entity"
+          }
+        },
+        "reconfigure": {
+          "title": "Appliance",
+          "data": {
+            "name": "Name",
+            "detection_entity": "Detection entity (power sensor or state)",
+            "power_threshold_w": "Running power threshold (W)",
+            "run_energy_wh": "Energy per run (Wh)",
+            "run_duration_h": "Run duration (h)",
+            "opportunistic_start": "Create start-window advisor entity"
+          }
+        }
+      }
     }
   },
   "options": {
+    "error": {
+      "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities."
+    },
     "step": {
       "init": {
-        "title": "Battery Manager Options",
-        "description": "Update Battery Manager configuration",
+        "title": "Planner tuning",
         "data": {
-          "soc_entity": "Battery SOC Entity",
-          "pv_forecast_today_entity": "PV Forecast Today Entity",
-          "pv_forecast_tomorrow_entity": "PV Forecast Tomorrow Entity",
-          "pv_forecast_day_after_entity": "PV Forecast Day After Entity"
-        }
-      },
-      "battery_config": {
-        "title": "Battery Configuration",
-        "description": "Update battery parameters",
-        "data": {
-          "battery_capacity_wh": "Battery Capacity (Wh)",
-          "battery_min_soc_percent": "Minimum SOC (%)",
-          "battery_max_soc_percent": "Maximum SOC (%)",
-          "battery_charge_efficiency": "Charge Efficiency",
-          "battery_discharge_efficiency": "Discharge Efficiency"
-        }
-      },
-      "pv_config": {
-        "title": "PV System Configuration",
-        "description": "Update PV system parameters",
-        "data": {
-          "pv_max_power_w": "Max PV Power (W)",
-          "pv_morning_start_hour": "Morning Start Hour",
-          "pv_morning_end_hour": "Morning End Hour",
-          "pv_afternoon_end_hour": "Afternoon End Hour",
-          "pv_morning_ratio": "Morning Production Ratio"
-        }
-      },
-      "consumer_config": {
-        "title": "Consumer Configuration",
-        "description": "Update AC and DC load parameters",
-        "data": {
-          "ac_base_load_w": "AC Base Load (W)",
-          "ac_variable_load_w": "AC Variable Load (W)",
-          "ac_variable_start_hour": "AC Variable Start Hour",
-          "ac_variable_end_hour": "AC Variable End Hour",
-          "dc_base_load_w": "DC Base Load (W)",
-          "dc_variable_load_w": "DC Variable Load (W)",
-          "dc_variable_start_hour": "DC Variable Start Hour",
-          "dc_variable_end_hour": "DC Variable End Hour"
-        }
-      },
-      "power_config": {
-        "title": "Power Equipment Configuration",
-        "description": "Update charger and inverter parameters",
-        "data": {
-          "charger_max_power_w": "Charger Max Power (W)",
-          "charger_efficiency": "Charger Efficiency",
-          "charger_standby_power_w": "Charger Standby Power (W)",
-          "inverter_max_power_w": "Inverter Max Power (W)",
-          "inverter_efficiency": "Inverter Efficiency",
-          "inverter_standby_power_w": "Inverter Standby Power (W)",
-          "inverter_min_soc_percent": "Inverter Min SOC (%)"
-        }
-      },
-      "controller_config": {
-        "title": "Controller Configuration",
-        "description": "Update controller parameters",
-        "data": {
-          "controller_target_soc_percent": "Target SOC Threshold (%)"
+          "soc_buffer_percent": "SOC safety buffer (%)",
+          "hysteresis_percent": "Inverter hysteresis (%)",
+          "threshold_inertia_percent": "Threshold inertia (%)",
+          "min_switch_interval_s": "Minimum switch interval (s)",
+          "support_dc48_switch_entity": "48 V support PSU switch",
+          "support_dc48_power_w": "48 V support PSU power (W)",
+          "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
+          "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
+          "support_switch_delay_s": "Changeover delay (s, make-before-break)"
         }
       }
     }
   },
-  "services": {
-    "export_hourly_details": {
-      "name": "Export Hourly Details",
-      "description": "Save the last hourly simulation data to a text file",
-      "fields": {
-        "entry_id": {
-          "name": "Entry ID",
-          "description": "Config entry ID to export data for"
-        },
-        "file_path": {
-          "name": "File path",
-          "description": "Path of the output file"
-        },
-        "download": {
-          "name": "Download",
-          "description": "Store file in www and send notification"
-        },
-        "as_table": {
-          "name": "Format as table",
-          "description": "Export as ASCII table instead of JSON"
-        }
-      }
+  "entity": {
+    "sensor": {
+      "soc_threshold": { "name": "SOC threshold" },
+      "min_soc_forecast": { "name": "Minimum SOC forecast" },
+      "max_soc_forecast": { "name": "Maximum SOC forecast" },
+      "hours_to_max_soc": { "name": "Hours to maximum SOC" },
+      "grid_import_forecast": { "name": "Grid import forecast" },
+      "lost_surplus": { "name": "Lost surplus forecast" }
+    },
+    "binary_sensor": {
+      "inverter_status": { "name": "Inverter recommendation" },
+      "surplus_load": { "name": "{name} recommendation" },
+      "appliance_window": { "name": "{name} start window" },
+      "support_dc24": { "name": "24 V grid support" },
+      "support_dc48": { "name": "48 V grid support" }
     }
   }
 }
