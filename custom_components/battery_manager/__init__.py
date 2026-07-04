@@ -7,13 +7,19 @@ import logging
 from pathlib import Path
 
 import voluptuous as vol
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.components.persistent_notification import (
     async_create as persistent_notification_create,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
+from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .const import CONF_AS_TABLE, DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS, STORAGE_VERSION
 from .coordinator import BatteryManagerCoordinator
@@ -22,6 +28,12 @@ from .debug_utils import format_hourly_details_table
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+
+# Config-entry-only integration; async_setup exists solely for the card.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+CARD_FILENAME = "battery-manager-forecast-card.js"
+CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
 
 # Config keys removed in v2 (see docs/REQUIREMENTS.md, breaking change accepted)
 _REMOVED_KEYS = {
@@ -49,6 +61,83 @@ def _validate_file_path(file_path: str, base_dir: Path) -> Path:
         return resolved_path
     except (OSError, RuntimeError) as err:
         raise ValueError(f"Invalid path: {err}") from err
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Serve the bundled Lovelace card and register it as a resource.
+
+    The card ships inside the integration (frontend/), so users get the SOC
+    forecast chart without installing anything from HACS frontend. The card
+    is optional sugar: any failure here must never break the planner setup.
+    """
+    try:
+        await _async_setup_card(hass)
+    except Exception:
+        _LOGGER.warning(
+            "Could not register the bundled dashboard card", exc_info=True
+        )
+    return True
+
+
+async def _async_setup_card(hass: HomeAssistant) -> None:
+    """Register the static path and schedule the resource registration."""
+    integration = await async_get_integration(hass, DOMAIN)
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                CARD_URL,
+                str(Path(__file__).parent / "frontend" / CARD_FILENAME),
+                True,
+            )
+        ]
+    )
+    # The versioned URL busts browser and companion-app caches on updates.
+    versioned_url = f"{CARD_URL}?v={integration.version}"
+
+    async def _on_started(_event: Event | None = None) -> None:
+        try:
+            await _async_register_card_resource(hass, versioned_url)
+        except Exception:
+            _LOGGER.warning(
+                "Could not register the dashboard card resource", exc_info=True
+            )
+
+    if hass.is_running:
+        await _on_started()
+    else:
+        # Wait for full startup so the resource collection exists and is
+        # safe to modify.
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
+
+
+async def _async_register_card_resource(
+    hass: HomeAssistant, versioned_url: str
+) -> None:
+    """Add or update the card module in the Lovelace resource registry."""
+    lovelace = hass.data.get("lovelace")
+    resources = getattr(lovelace, "resources", None)
+    if not isinstance(resources, ResourceStorageCollection):
+        # Dashboard resources managed via YAML (or no lovelace at all):
+        # no storage collection to write to — load the module globally.
+        if "frontend" in hass.config.components:
+            add_extra_js_url(hass, versioned_url)
+        return
+    # Creating an item on a not-yet-loaded collection would wipe the
+    # user's resource list (home-assistant/core#165767) — load first.
+    if not resources.loaded:
+        await resources.async_load()
+        resources.loaded = True
+    for item in resources.async_items():
+        url = item.get("url", "")
+        if url.split("?")[0] == CARD_URL:
+            if url != versioned_url:
+                await resources.async_update_item(
+                    item["id"], {"url": versioned_url}
+                )
+                _LOGGER.info("Updated card resource to %s", versioned_url)
+            return
+    await resources.async_create_item({"res_type": "module", "url": versioned_url})
+    _LOGGER.info("Registered card resource %s", versioned_url)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

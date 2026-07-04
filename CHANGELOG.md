@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-04
+
+### Added
+- Bundled Lovelace card **Battery Manager Forecast**
+  (`custom:battery-manager-forecast-card`): planned SOC curve, inverter
+  threshold T*, reserve/limit zones, "now" marker, per-load surplus schedule
+  lanes with legend, hover readout. Ships inside the integration and
+  registers itself as a dashboard resource — no HACS frontend download.
+  Appears in the card picker under *Community* and is suggested
+  automatically when picking the SOC forecast sensor (HA 2026.6+
+  entity-first picker). YAML resource mode falls back to a global module.
+- `sensor.…_soc_forecast` now carries the full plan context as attributes
+  (`soc_threshold_percent`, SOC limits and buffer, `grid_import_kwh`,
+  `lost_surplus_kwh`, per-load `schedule` blocks) so chart cards can render
+  the whole plan from one entity.
+
+### Fixed
+- Stale `INTEGRATION_VERSION` constant (was still 0.2.0).
+
 ## [0.3.0] - 2026-07-04
 
 ### Added

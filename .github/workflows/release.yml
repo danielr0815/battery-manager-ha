@@ -29,16 +29,18 @@ jobs:
       - name: Checkout
         uses: "actions/checkout@v4"
         
-      - name: Update manifest version
+      - name: Update version strings
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" custom_components/battery_manager/manifest.json
-          
+          sed -i "s/^INTEGRATION_VERSION = \".*\"/INTEGRATION_VERSION = \"$VERSION\"/" custom_components/battery_manager/const.py
+          sed -i "s/^const CARD_VERSION = \".*\";/const CARD_VERSION = \"$VERSION\";/" custom_components/battery_manager/frontend/battery-manager-forecast-card.js
+
       - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add custom_components/battery_manager/manifest.json
+          git add custom_components/battery_manager/manifest.json custom_components/battery_manager/const.py custom_components/battery_manager/frontend/battery-manager-forecast-card.js
           git diff --staged --quiet || git commit -m "Update version to ${GITHUB_REF#refs/tags/v}"
           
       - name: Push changes

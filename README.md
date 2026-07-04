@@ -62,6 +62,7 @@ Every ~5 minutes (and on input changes, debounced) the planner runs:
 | `sensor.…_hours_to_max_soc` | Hours until the maximum SOC is reached |
 | `sensor.…_grid_import_forecast` | Expected grid import over the horizon (kWh) |
 | `sensor.…_lost_surplus` | Surplus that will still be exported/wasted (kWh) |
+| `sensor.…_soc_forecast` | Planned SOC curve (state: SOC in one hour; attributes: full plan for the bundled dashboard card) |
 | `binary_sensor.<load>_recommendation` | Per surplus load: switch it on now (attributes: planned hours/energy) |
 | `binary_sensor.<appliance>_start_window` | Per appliance: a full run fits into the surplus right now |
 | `binary_sensor.…_24v/48v_grid_support` | State of the emergency support paths (switched directly by the integration) |
@@ -108,6 +109,62 @@ Automations then switch the real devices based on the recommendation
 entities. Only the emergency support PSUs are switched by the integration
 itself.
 
+## Dashboard card (bundled)
+
+The integration ships its own Lovelace card — no extra HACS frontend
+download. It renders the planned SOC trajectory, the inverter threshold T*,
+the reserve zone and the per-load surplus schedule, all from
+`sensor.…_soc_forecast`.
+
+The card registers itself automatically. To add it:
+
+- **Easiest (HA 2026.6+):** edit a dashboard → *Add card* → pick the
+  `…SOC forecast` sensor — **Battery Manager Forecast** appears as a
+  suggestion with a live preview.
+- Or search the card picker for *Battery Manager Forecast* (listed under
+  *Community*).
+- Or via YAML:
+
+  ```yaml
+  type: custom:battery-manager-forecast-card
+  entity: sensor.battery_manager_soc_forecast
+  # optional:
+  # title: SOC-Prognose
+  # hours: 48        # horizon shown (6–96)
+  ```
+
+If your dashboard **resources** are managed in YAML mode, the card module is
+loaded globally instead; no manual resource entry is needed. After an
+integration update, reload the browser page (or reset the frontend cache in
+the companion app) if the card looks stale.
+
+<details>
+<summary>Alternative: ApexCharts card</summary>
+
+The `forecast` attribute also works with the
+[ApexCharts card](https://github.com/RomRider/apexcharts-card):
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 48h
+span:
+  start: minute
+header:
+  show: true
+  title: SOC-Prognose
+yaxis:
+  - min: 0
+    max: 100
+series:
+  - entity: sensor.battery_manager_soc_forecast
+    name: SOC
+    stroke_width: 2
+    data_generator: |
+      return entity.attributes.forecast.map(p => [new Date(p.t).getTime(), p.soc]);
+```
+
+</details>
+
 ## Development & testing
 
 ```bash
@@ -128,30 +185,6 @@ Home Assistant imports and side effects: frozen dataclasses in, frozen
 dataclasses out. All planner behaviour is covered by scenario tests in
 `tests/core/` — including a regression test for the historic bug where the
 additional load was activated at night on the promise of tomorrow's sun.
-
-### SOC forecast chart
-
-`sensor.…_soc_forecast` exposes the planned SOC curve as a `forecast`
-attribute. With the [ApexCharts card](https://github.com/RomRider/apexcharts-card):
-
-```yaml
-type: custom:apexcharts-card
-graph_span: 48h
-span:
-  start: minute
-header:
-  show: true
-  title: SOC-Prognose
-yaxis:
-  - min: 0
-    max: 100
-series:
-  - entity: sensor.battery_manager_soc_forecast
-    name: SOC
-    stroke_width: 2
-    data_generator: |
-      return entity.attributes.forecast.map(p => [new Date(p.t).getTime(), p.soc]);
-```
 
 ### Charging-path control (powerstations)
 

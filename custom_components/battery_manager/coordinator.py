@@ -478,6 +478,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
                 "charging_active": self._load_charging_active.get(load_plan.load_id),
+                "schedule": [
+                    {
+                        "start": slot.start.isoformat(),
+                        "end": (
+                            slot.start + timedelta(hours=slot.duration)
+                        ).isoformat(),
+                    }
+                    for slot, on in zip(
+                        inputs.slots, load_plan.schedule, strict=True
+                    )
+                    if on
+                ],
             }
 
         naive_now = now.replace(tzinfo=None)
@@ -527,6 +539,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "lost_surplus_kwh": round(result.lost_surplus_kwh, 3),
             "load_plans": load_plans,
             "soc_forecast": soc_forecast,
+            # Static planning context for the bundled forecast card
+            "plan_params": {
+                "battery_min_soc_percent": config.battery.soc_min_percent,
+                "battery_max_soc_percent": config.battery.soc_max_percent,
+                "inverter_min_soc_percent": config.control.inverter_min_soc_percent,
+                "soc_buffer_percent": config.control.soc_buffer_percent,
+            },
             "appliance_windows": dict(result.appliance_windows),
             "support_dc24": self._support_state["dc24"],
             "support_dc48": self._support_state["dc48"],

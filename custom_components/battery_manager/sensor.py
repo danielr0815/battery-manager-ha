@@ -124,11 +124,15 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
     """Forecasted SOC curve: state = SOC in one hour, attribute = full curve.
 
     The `forecast` attribute contains [{t, soc}, ...] over the whole planning
-    horizon (final trajectory incl. scheduled loads) for chart cards such as
-    ApexCharts (see README for a ready-made card config).
+    horizon (final trajectory incl. scheduled loads). The remaining attributes
+    carry the full plan context (threshold, SOC limits, per-load schedules)
+    so the bundled forecast card can render everything from this one entity;
+    third-party cards such as ApexCharts work too (see README).
     """
 
     # No state_class: forecast values must not feed long-term statistics.
+    # The bulky per-hour attributes are also kept out of the recorder.
+    _unrecorded_attributes = frozenset({"forecast", "loads"})
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:chart-timeline-variant"
     _attr_translation_key = "soc_forecast"
@@ -149,4 +153,20 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
-        return {"forecast": data.get("soc_forecast") or []}
+        loads = [
+            {
+                "name": plan.get("name"),
+                "active": plan.get("active"),
+                "planned_energy_kwh": plan.get("planned_energy_kwh"),
+                "schedule": plan.get("schedule") or [],
+            }
+            for plan in (data.get("load_plans") or {}).values()
+        ]
+        return {
+            "forecast": data.get("soc_forecast") or [],
+            "soc_threshold_percent": data.get("soc_threshold_percent"),
+            "grid_import_kwh": data.get("grid_import_kwh"),
+            "lost_surplus_kwh": data.get("lost_surplus_kwh"),
+            "loads": loads,
+            **(data.get("plan_params") or {}),
+        }
