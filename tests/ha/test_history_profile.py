@@ -108,6 +108,28 @@ async def test_run_learning_failure_keeps_old_profile(hass, monkeypatch):
     assert learner.profiles_for_planning() is not None
 
 
+async def test_cleaning_config_change_invalidates_cached_days(hass, monkeypatch):
+    """Changed cleaning inputs must drop cached daily_hours (fingerprint)."""
+    entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house_load"})
+    learner = ProfileLearner(hass, entry)
+    _prime(learner, {"ac": ["sensor.house_load"], "dc": []})
+    learner.data["cleaning_fingerprint"] = "outdated"
+    learner.data["daily_hours"] = {"2026-07-01": {"ac": [100.0] * 24, "dc": None}}
+    hass.config.components.add("recorder")
+
+    fetched: dict = {}
+
+    async def _fake_fetch(self, cfg, sources, days, missing):
+        fetched["days"] = days
+
+    monkeypatch.setattr(ProfileLearner, "_fetch_days", _fake_fetch)
+    await learner.async_run_learning()
+
+    # The cached (contaminated) day was dropped and the full window refetched.
+    assert len(fetched["days"]) >= 42
+    assert learner.data["cleaning_fingerprint"] != "outdated"
+
+
 async def test_run_learning_skips_without_recorder(hass):
     """No recorder integration -> warning + unchanged state, no crash."""
     entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house_load"})

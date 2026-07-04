@@ -96,6 +96,7 @@ def _default_data() -> dict[str, Any]:
         "version": LEARNED_STORE_VERSION,
         "computed_at": None,
         "window_days": None,
+        "cleaning_fingerprint": None,
         "source_entities": {"ac": [], "dc": []},
         "vacation_mode_active": False,
         "day_log": {},  # date -> {"daytype": ..., "vacation": bool}
@@ -156,11 +157,16 @@ class ProfileLearner:
             )
         computed = self._computed_at()
         stale = computed is None or dt_util.now() - computed > timedelta(hours=24)
+        cfg = self._raw_config()
         window_changed = self.data.get("window_days") != int(
-            self._raw_config()[CONF_LEARNING_WINDOW_DAYS]
+            cfg[CONF_LEARNING_WINDOW_DAYS]
         )
+        cleaning_changed = self.data.get(
+            "cleaning_fingerprint"
+        ) != self._cleaning_fingerprint(cfg)
         if self._binding_changed() or (
-            self._learning_configured() and (stale or window_changed)
+            self._learning_configured()
+            and (stale or window_changed or cleaning_changed)
         ):
             self._start_run()
 
@@ -304,6 +310,7 @@ class ProfileLearner:
         ]
 
         self._apply_source_binding(sources)
+        cleaning_changed = self._apply_cleaning_fingerprint(cfg)
 
         daily_hours: dict[str, dict[str, Any]] = self.data["daily_hours"]
         missing: dict[str, list[str]] = {
@@ -351,7 +358,10 @@ class ProfileLearner:
                 per_day,
                 day_types,
                 _MIN_SAMPLES,
-                self.data["profiles"].get(path),
+                # Fresh start after a cleaning change: the old bins were
+                # computed under different rules and must not damp the
+                # corrected values via the rate limit.
+                None if cleaning_changed else self.data["profiles"].get(path),
                 LEARNING_RATE_LIMIT,
                 _CLAMPS[path],
             )
@@ -388,6 +398,44 @@ class ProfileLearner:
                 self.data["profiles"][path] = None
                 self.data["samples"][path] = None
         self.data["source_entities"] = {path: sources[path]["all"] for path in _PATHS}
+
+    def _cleaning_fingerprint(self, cfg: dict[str, Any]) -> str:
+        """Everything the D-C2 cleaning depends on, as a comparable string.
+
+        Cached daily_hours were cleaned with the configuration of their
+        fetch time; if any cleaning input changes (in_house flags, power/
+        switch entities, nominal powers, appliances, support switches), the
+        cache is invalid and must be refetched — otherwise a reconfiguration
+        would keep contaminated days in the window for weeks.
+        """
+        loads, appliances = self._subentries()
+        parts: list[Any] = [sorted(loads, key=str), sorted(appliances, key=str)]
+        parts.extend(
+            cfg.get(key)
+            for key in (
+                CONF_SUPPORT_DC48_SWITCH,
+                CONF_SUPPORT_DC24_SWITCH,
+                CONF_DCDC_SWITCH,
+            )
+        )
+        return repr(parts)
+
+    def _apply_cleaning_fingerprint(self, cfg: dict[str, Any]) -> bool:
+        """Drop cached days when the cleaning config changed.
+
+        The old profile stays in place until the refetch succeeds (a failing
+        run must not lose it, D-C6); the caller disables the rate limit for
+        the rebuild so stale bins cannot damp the correction.
+        """
+        fingerprint = self._cleaning_fingerprint(cfg)
+        if self.data.get("cleaning_fingerprint") == fingerprint:
+            return False
+        if self.data.get("daily_hours"):
+            _LOGGER.info("Cleaning configuration changed; relearning the full window")
+        self.data["daily_hours"] = {}
+        self.data["day_log"] = {}
+        self.data["cleaning_fingerprint"] = fingerprint
+        return True
 
     # ------------------------------------------------------------------
     # History fetching & cleaning (D-C1/D-C2)

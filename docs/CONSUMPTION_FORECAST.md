@@ -198,6 +198,13 @@ Stundenmittel), Änderungs-Rate-Limit ±20 %/Nacht, Median als Aggregat
   Fenster **vergrößert** (Options-Änderung oder Stufe-2-Migration auf 120 d),
   stößt der nächste Nachtlauf einen **Delta-Backfill** der fehlenden Tage an;
   die `daily_hours`-Retention folgt dem konfigurierten Maximum.
+- **Cache-Invalidierung:** Die Tages-Zwischenergebnisse wurden mit der
+  Bereinigungs-Konfiguration ihres Abrufzeitpunkts gerechnet. Ändert sich
+  ein Bereinigungs-Input (`in_house_measurement`, power-/Schalter-Entitäten,
+  Nennleistungen, Geräte, Stützpfad-Schalter), wird ein
+  **Bereinigungs-Fingerprint** im Store ungültig → kompletter Refetch des
+  Fensters beim nächsten (sofort angestoßenen) Lauf, statt kontaminierte
+  Tage wochenlang mitzuschleppen.
 
 ### D-C2: Bereinigung (Pflichtbestandteil, nicht optional)
 
