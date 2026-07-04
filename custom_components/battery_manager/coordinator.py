@@ -10,6 +10,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -24,7 +25,10 @@ from .const import (
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
+    CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_INPUT_OFF_POLICY,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
@@ -42,9 +46,13 @@ from .const import (
     DEFAULT_CONFIG,
     DOMAIN,
     INITIAL_UPDATE_INTERVAL_SECONDS,
+    INPUT_OFF_POLICY_ALWAYS,
+    INPUT_OFF_POLICY_AUTO,
+    INPUT_OFF_POLICY_KEEP,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
     STARTUP_RETRY_ATTEMPTS,
+    STORAGE_VERSION,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
     UPDATE_INTERVAL_SECONDS,
@@ -103,6 +111,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._appliance_started: dict[str, datetime] = {}
         self._load_power_ema: dict[str, float] = {}
 
+        # Charging-path control (docs/LOAD_CONTROL.md): SOC cache survives
+        # sleeping devices and restarts; plug ownership implements the
+        # configurable input-off policy.
+        self._store: Store = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
+        )
+        self._load_soc_cache: dict[str, float] = {}
+        self._load_plug_owned: dict[str, bool] = {}
+        self._last_load_switch: dict[str, datetime] = {}
+        self._load_charging_active: dict[str, bool] = {}
+        self._load_switch_task: asyncio.Task | None = None
+
         self._startup_complete = False
         self._successful_updates = 0
 
@@ -110,6 +130,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._listeners_setup: bool = False
         self._unsub_state_listener = None
         self._setup_entity_listeners()
+
+    # ------------------------------------------------------------------
+    # Persistent state (SOC cache, plug ownership)
+    # ------------------------------------------------------------------
+
+    async def async_load_persistent_state(self) -> None:
+        """Restore the load-SOC cache and plug ownership after a restart."""
+        data = await self._store.async_load()
+        if data:
+            # Cache entries are keyed by subentry AND carry the source entity
+            # id so a reconfigured load never reuses another device's SOC.
+            self._load_soc_cache = {
+                k: v
+                for k, v in data.get("load_soc", {}).items()
+                if isinstance(v, dict) and "soc" in v
+            }
+            self._load_plug_owned = {
+                k: bool(v) for k, v in data.get("plug_owned", {}).items()
+            }
+
+    def _save_persistent_state(self) -> None:
+        self._store.async_delay_save(
+            lambda: {
+                "load_soc": self._load_soc_cache,
+                "plug_owned": self._load_plug_owned,
+            },
+            10,
+        )
 
     # ------------------------------------------------------------------
     # Configuration assembly
@@ -296,11 +344,32 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             soc = None
             if data.get(CONF_LOAD_SOC_ENTITY):
-                soc = self._read_float(data[CONF_LOAD_SOC_ENTITY])
-                if soc is None and data.get(CONF_LOAD_ENERGY_LIMITED):
-                    # Energy-limited load without readable SOC: treat as unavailable
-                    # rather than overcharging a possibly full storage.
-                    available = False
+                soc_entity = data[CONF_LOAD_SOC_ENTITY]
+                raw_soc = self._read_float(soc_entity)
+                if raw_soc is not None and 0.0 <= raw_soc <= 100.0:
+                    cached = self._load_soc_cache.get(subentry_id)
+                    if (
+                        cached is None
+                        or cached.get("soc") != raw_soc
+                        or cached.get("entity_id") != soc_entity
+                    ):
+                        self._load_soc_cache[subentry_id] = {
+                            "entity_id": soc_entity,
+                            "soc": raw_soc,
+                        }
+                        self._save_persistent_state()
+                    soc = raw_soc
+                else:
+                    # Sleeping device (e.g. powerstation with its input off):
+                    # keep planning with the last known SOC — but only if it
+                    # came from the SAME entity (reconfigured loads must not
+                    # reuse another device's SOC). If none is known, soc stays
+                    # None and the core assumes an empty storage —
+                    # self-healing once the device wakes while charging
+                    # (docs/LOAD_CONTROL.md §4).
+                    cached = self._load_soc_cache.get(subentry_id)
+                    if cached is not None and cached.get("entity_id") == soc_entity:
+                        soc = cached["soc"]
             measured = None
             if data.get(CONF_LOAD_POWER_ENTITY):
                 raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
@@ -391,6 +460,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
         await self._apply_support_switching(result, config, now)
+        await self._apply_load_switching(result, now)
 
         self._successful_updates += 1
         if not self._startup_complete and (
@@ -407,7 +477,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "active": load_plan.active_now,
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
+                "charging_active": self._load_charging_active.get(load_plan.load_id),
             }
+
+        naive_now = now.replace(tzinfo=None)
+        soc_forecast = [{"t": naive_now.isoformat(), "soc": round(soc, 1)}]
+        for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
+            soc_forecast.append(
+                {
+                    "t": (slot.start + timedelta(hours=slot.duration)).isoformat(),
+                    "soc": round(flow.soc_end_percent, 1),
+                }
+            )
 
         hourly_details = [
             {
@@ -445,6 +526,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "grid_export_kwh": round(result.grid_export_kwh, 3),
             "lost_surplus_kwh": round(result.lost_surplus_kwh, 3),
             "load_plans": load_plans,
+            "soc_forecast": soc_forecast,
             "appliance_windows": dict(result.appliance_windows),
             "support_dc24": self._support_state["dc24"],
             "support_dc48": self._support_state["dc48"],
@@ -527,11 +609,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _switch_entity(self, entity_id: str, turn_on: bool) -> bool:
         service = "turn_on" if turn_on else "turn_off"
         try:
+            # homeassistant.* works across domains (switch, input_boolean, ...)
             await self.hass.services.async_call(
-                "switch", service, {"entity_id": entity_id}, blocking=True
+                "homeassistant", service, {"entity_id": entity_id}, blocking=True
             )
         except Exception as err:
-            _LOGGER.error("switch.%s failed for %s: %s", service, entity_id, err)
+            _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
             return False
         return True
 
@@ -640,6 +723,111 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.data:
             self.data["support_dc24"] = self._support_state["dc24"]
             self.data["support_dc48"] = self._support_state["dc48"]
+            self.async_update_listeners()
+
+    # ------------------------------------------------------------------
+    # Direct charging-path control per load (docs/LOAD_CONTROL.md §3)
+    # ------------------------------------------------------------------
+
+    def _charging_is_active(self, data: dict[str, Any]) -> bool:
+        """Charging is active iff the input plug is on AND (if configured)
+        the charge-enable gate is on. A plug that is on for passthrough
+        purposes with the gate off does NOT count as charging."""
+        if not self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]):
+            return False
+        enable = data.get(CONF_LOAD_CHARGE_ENABLE)
+        return self._entity_is_on(enable) if enable else True
+
+    async def _apply_load_switching(self, result, now: datetime) -> None:
+        """Evaluate controlled loads and start switching where needed."""
+        if self._load_switch_task is not None and not self._load_switch_task.done():
+            return
+
+        desired_by_id = {lp.load_id: lp.active_now for lp in result.load_plans}
+        actions: list[tuple[str, dict[str, Any], bool, bool]] = []
+        for subentry_id, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+                continue
+            data = subentry.data
+            if not data.get(CONF_LOAD_CONTROL_SWITCH):
+                continue
+            current = self._charging_is_active(data)
+            self._load_charging_active[subentry_id] = current
+            desired = desired_by_id.get(subentry_id, False)
+            if desired == current:
+                continue
+            # Min runtime acts as an on/off dwell time for the real device.
+            dwell = timedelta(minutes=int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)))
+            last = self._last_load_switch.get(subentry_id)
+            if last is not None and now - last < dwell:
+                continue
+            self._last_load_switch[subentry_id] = now
+            plug_was_on = self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH])
+            actions.append((subentry_id, dict(data), desired, plug_was_on))
+
+        if actions:
+            self._load_switch_task = self.entry.async_create_background_task(
+                self.hass,
+                self._execute_load_switching(actions),
+                name="battery_manager_load_switching",
+            )
+
+    async def _execute_load_switching(
+        self, actions: list[tuple[str, dict[str, Any], bool, bool]]
+    ) -> None:
+        async with self._switch_lock:
+            for subentry_id, data, activate, plug_was_on in actions:
+                plug = data[CONF_LOAD_CONTROL_SWITCH]
+                enable = data.get(CONF_LOAD_CHARGE_ENABLE)
+                if activate:
+                    if enable and not await self._switch_entity(enable, True):
+                        continue
+                    if not plug_was_on:
+                        if not await self._switch_entity(plug, True):
+                            continue
+                        # We switched the plug on for charging: ownership
+                        # allows the 'auto' policy to switch it off again.
+                        self._load_plug_owned[subentry_id] = True
+                    self._load_charging_active[subentry_id] = True
+                    _LOGGER.info("Charging started for load %s", subentry_id)
+                else:
+                    policy = data.get(
+                        CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO
+                    )
+                    if not enable and policy == INPUT_OFF_POLICY_KEEP:
+                        # Misconfiguration (blocked by the flow, but be safe):
+                        # nothing can stop the charging in this combination.
+                        _LOGGER.warning(
+                            "Load %s: policy 'keep_on' without a charge-enable"
+                            " entity cannot stop charging",
+                            subentry_id,
+                        )
+                        continue
+                    if enable:
+                        await self._switch_entity(enable, False)
+                    owned = self._load_plug_owned.get(subentry_id, False)
+                    turn_plug_off = policy == INPUT_OFF_POLICY_ALWAYS or (
+                        policy == INPUT_OFF_POLICY_AUTO and owned
+                    )
+                    if not enable and policy != INPUT_OFF_POLICY_KEEP:
+                        # Without a charge-enable gate, stopping charging is
+                        # only possible by switching the input off.
+                        turn_plug_off = True
+                    if turn_plug_off:
+                        await self._switch_entity(plug, False)
+                    self._load_plug_owned[subentry_id] = False
+                    self._load_charging_active[subentry_id] = False
+                    _LOGGER.info(
+                        "Charging stopped for load %s (input %s)",
+                        subentry_id,
+                        "off" if turn_plug_off else "stays on",
+                    )
+        self._save_persistent_state()
+        if self.data:
+            plans = self.data.get("load_plans") or {}
+            for load_id, active in self._load_charging_active.items():
+                if load_id in plans:
+                    plans[load_id]["charging_active"] = active
             self.async_update_listeners()
 
     # ------------------------------------------------------------------

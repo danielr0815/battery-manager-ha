@@ -43,10 +43,7 @@ def build_slots(
     )
 
     while slot_start <= horizon_end:
-        if index == 0:
-            duration = (60 - slot_start.minute) / 60.0 or 1.0
-        else:
-            duration = 1.0
+        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
 
         hour_of_day = slot_start.hour
         day_offset = (slot_start.date() - now.date()).days

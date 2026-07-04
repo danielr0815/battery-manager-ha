@@ -9,7 +9,6 @@ from .model import (
     LoadPlan,
     PlanInputs,
     PlanResult,
-    SurplusLoad,
     SurplusLoadState,
     SystemConfig,
     Trajectory,

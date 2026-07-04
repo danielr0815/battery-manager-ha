@@ -27,7 +27,10 @@ from .const import (
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
+    CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_INPUT_OFF_POLICY,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_NAME,
     CONF_LOAD_POWER_ENTITY,
@@ -46,6 +49,8 @@ from .const import (
     DEFAULT_CONFIG,
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
+    INPUT_OFF_POLICIES,
+    INPUT_OFF_POLICY_KEEP,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
 )
@@ -79,6 +84,18 @@ _SUPPORT_SWITCH_KEYS = (
     CONF_SUPPORT_DC24_SWITCH,
     CONF_DCDC_SWITCH,
 )
+
+
+def _validate_load_control(data: dict[str, Any]) -> str | None:
+    """Reject charging-path combinations that cannot work (LOAD_CONTROL.md §7)."""
+    if data.get(
+        CONF_LOAD_INPUT_OFF_POLICY
+    ) == INPUT_OFF_POLICY_KEEP and not data.get(CONF_LOAD_CHARGE_ENABLE):
+        return "keep_on_requires_enable"
+    control = data.get(CONF_LOAD_CONTROL_SWITCH)
+    if control and control == data.get(CONF_LOAD_CHARGE_ENABLE):
+        return "control_entities_not_distinct"
+    return None
 
 
 def _validate_support_entities(data: dict[str, Any]) -> str | None:
@@ -421,33 +438,56 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             (CONF_LOAD_SOC_ENTITY, "sensor"),
             (CONF_LOAD_POWER_ENTITY, "sensor"),
             (CONF_LOAD_AVAILABILITY_ENTITY, None),
+            (CONF_LOAD_CONTROL_SWITCH, "switch"),
+            (CONF_LOAD_CHARGE_ENABLE, ["input_boolean", "switch"]),
         ):
             # suggested_value (not default) keeps the field clearable in the UI.
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
+        schema[
+            vol.Required(
+                CONF_LOAD_INPUT_OFF_POLICY, default=dv(CONF_LOAD_INPUT_OFF_POLICY)
+            )
+        ] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=INPUT_OFF_POLICIES,
+                translation_key="input_off_policy",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        )
         return vol.Schema(schema)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            title = user_input.pop(CONF_LOAD_NAME)
-            return self.async_create_entry(title=title, data=user_input)
-        return self.async_show_form(step_id="user", data_schema=self._schema({}))
+            error = _validate_load_control(user_input)
+            if error is None:
+                title = user_input.pop(CONF_LOAD_NAME)
+                return self.async_create_entry(title=title, data=user_input)
+            errors["base"] = error
+        return self.async_show_form(
+            step_id="user", data_schema=self._schema(user_input or {}), errors=errors
+        )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         subentry = self._get_reconfigure_subentry()
+        errors: dict[str, str] = {}
         if user_input is not None:
-            title = user_input.pop(CONF_LOAD_NAME)
-            return self.async_update_and_abort(
-                self._get_entry(), subentry, title=title, data=user_input
-            )
-        data = {**subentry.data, CONF_LOAD_NAME: subentry.title}
+            error = _validate_load_control(user_input)
+            if error is None:
+                title = user_input.pop(CONF_LOAD_NAME)
+                return self.async_update_and_abort(
+                    self._get_entry(), subentry, title=title, data=user_input
+                )
+            errors["base"] = error
+        data = user_input or {**subentry.data, CONF_LOAD_NAME: subentry.title}
         return self.async_show_form(
-            step_id="reconfigure", data_schema=self._schema(data)
+            step_id="reconfigure", data_schema=self._schema(data), errors=errors
         )
 
 

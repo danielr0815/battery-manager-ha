@@ -49,7 +49,10 @@ def test_appliance_run_adds_to_ac_load():
     )
     with_run = build_slots(config, now, 50.0, [0.0], appliance_runs=(run,))
     without = build_slots(config, now, 50.0, [0.0])
-    delta = sum(w.ac_wh - b.ac_wh for w, b in zip(with_run.slots, without.slots))
+    delta = sum(
+        w.ac_wh - b.ac_wh
+        for w, b in zip(with_run.slots, without.slots, strict=True)
+    )
     assert abs(delta - 1000.0) < 1.0
 
 

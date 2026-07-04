@@ -13,8 +13,9 @@ from homeassistant.components.persistent_notification import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers.storage import Store
 
-from .const import CONF_AS_TABLE, DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS
+from .const import CONF_AS_TABLE, DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS, STORAGE_VERSION
 from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table
 
@@ -56,7 +57,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    # First refresh; failure is tolerated (fast retry interval during startup).
+    # Restore SOC cache / plug ownership, then first refresh; a refresh
+    # failure is tolerated (fast retry interval during startup).
+    await coordinator.async_load_persistent_state()
     await coordinator.async_refresh()
 
     if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
@@ -102,6 +105,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the entry when config or subentries change."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clean up the per-entry storage (SOC cache, plug ownership)."""
+    await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

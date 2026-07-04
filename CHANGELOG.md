@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-04
+
+### Added
+- Direct charging-path control per surplus load (docs/LOAD_CONTROL.md):
+  optional input-plug switch and charge-enable entity; the integration
+  switches charging itself. Configurable end-of-charge policy for the input
+  plug (auto/ownership, always off, keep on) — passthrough-powered output
+  loads keep working.
+- Last-known SOC caching for sleeping powerstations (sensors unavailable
+  while the input is off), persisted across Home Assistant restarts; unknown
+  SOC is treated as "needs charging" (self-healing on first wake).
+- `sensor.…_soc_forecast`: forecasted SOC curve over the whole horizon as a
+  `forecast` attribute for chart cards (ApexCharts example in README).
+- Brand icon assets under `assets/brands/` for a home-assistant/brands PR.
+- `charging_active` attribute on load recommendation entities.
+
 ## [0.2.0] - 2026-07-04
 
 **Breaking change:** complete algorithm and configuration rewrite. Existing

@@ -129,6 +129,38 @@ dataclasses out. All planner behaviour is covered by scenario tests in
 `tests/core/` — including a regression test for the historic bug where the
 additional load was activated at night on the promise of tomorrow's sun.
 
+### SOC forecast chart
+
+`sensor.…_soc_forecast` exposes the planned SOC curve as a `forecast`
+attribute. With the [ApexCharts card](https://github.com/RomRider/apexcharts-card):
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 48h
+span:
+  start: minute
+header:
+  show: true
+  title: SOC-Prognose
+yaxis:
+  - min: 0
+    max: 100
+series:
+  - entity: sensor.battery_manager_soc_forecast
+    name: SOC
+    stroke_width: 2
+    data_generator: |
+      return entity.attributes.forecast.map(p => [new Date(p.t).getTime(), p.soc]);
+```
+
+### Charging-path control (powerstations)
+
+A surplus load can optionally reference an input-plug switch and a
+charge-enable entity; the integration then switches charging directly
+(make-before-break with your passthrough-powered output loads, see
+[docs/LOAD_CONTROL.md](docs/LOAD_CONTROL.md)). The last known SOC of a
+sleeping powerstation is cached and survives restarts.
+
 ### Debug export
 
 Service `battery_manager.export_hourly_details` writes the hourly plan of the

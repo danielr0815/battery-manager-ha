@@ -161,6 +161,16 @@ def test_unavailable_load_is_never_scheduled():
     assert result.load_plans[0].planned_energy_wh == 0.0
 
 
+def test_unknown_soc_means_full_charging_need():
+    """No SOC ever read (sleeping powerstation, empty cache): the load is
+    treated as needing a full charge — self-healing once it wakes (F-L2)."""
+    config = SystemConfig(loads=(FOSSIBOT_1,))
+    now = datetime(2026, 7, 4, 11, 0)
+    states = (SurplusLoadState(load_id="fossibot_1", soc_percent=None),)
+    result, _ = make_plan(config, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
+    assert result.load_plans[0].planned_energy_wh > 0
+
+
 def test_measured_feedback_power_overrides_nominal():
     config = SystemConfig(loads=(FOSSIBOT_1,))
     now = datetime(2026, 7, 4, 11, 0)
@@ -180,6 +190,7 @@ def test_measured_feedback_power_overrides_nominal():
             for s, active in zip(
                 build_slots(config, now, 93.0, [12.0, 12.0, 12.0]).slots,
                 result.load_plans[0].schedule,
+                strict=True,
             )
             if active
         )

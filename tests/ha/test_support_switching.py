@@ -35,7 +35,11 @@ ENTRY_DATA = {
 
 
 def _register_switch_services(hass, call_log, *, dead_entities=()):
-    """Switch services that update states like real devices (unless 'dead')."""
+    """Mock the cross-domain services that update states like real devices.
+
+    The coordinator switches via `homeassistant.turn_on/turn_off` so that
+    input_boolean entities work as well as switches.
+    """
 
     async def turn_on(call):
         entity_id = call.data["entity_id"]
@@ -49,8 +53,8 @@ def _register_switch_services(hass, call_log, *, dead_entities=()):
         if entity_id not in dead_entities:
             hass.states.async_set(entity_id, "off")
 
-    hass.services.async_register("switch", "turn_on", turn_on)
-    hass.services.async_register("switch", "turn_off", turn_off)
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
 
 
 async def _setup(hass, call_log, *, dead_entities=()):

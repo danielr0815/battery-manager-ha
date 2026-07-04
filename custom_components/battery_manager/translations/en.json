@@ -84,6 +84,10 @@
     "surplus_load": {
       "title": "Surplus load",
       "entry_type": "Surplus load",
+      "error": {
+        "keep_on_requires_enable": "The 'keep on' policy requires a charge-enable entity — otherwise charging could never be stopped.",
+        "control_entities_not_distinct": "Charging input switch and charge-enable entity must be different."
+      },
       "initiate_flow": {
         "user": "Add surplus load",
         "reconfigure": "Reconfigure surplus load"
@@ -102,7 +106,10 @@
             "target_soc_percent": "Target SOC (%)",
             "soc_entity": "SOC sensor (optional)",
             "power_entity": "Power feedback sensor (optional)",
-            "availability_entity": "Availability entity (optional)"
+            "availability_entity": "Availability entity (optional)",
+            "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
+            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
+            "input_off_policy": "Input plug at end of charge"
           }
         },
         "reconfigure": {
@@ -117,7 +124,10 @@
             "target_soc_percent": "Target SOC (%)",
             "soc_entity": "SOC sensor (optional)",
             "power_entity": "Power feedback sensor (optional)",
-            "availability_entity": "Availability entity (optional)"
+            "availability_entity": "Availability entity (optional)",
+            "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
+            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
+            "input_off_policy": "Input plug at end of charge"
           }
         }
       }
@@ -177,9 +187,19 @@
       }
     }
   },
+  "selector": {
+    "input_off_policy": {
+      "options": {
+        "auto": "Automatic (off only if the integration switched it on)",
+        "always_off": "Always switch off",
+        "keep_on": "Keep on (toggle charge-enable only)"
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "soc_threshold": { "name": "SOC threshold" },
+      "soc_forecast": { "name": "SOC forecast" },
       "min_soc_forecast": { "name": "Minimum SOC forecast" },
       "max_soc_forecast": { "name": "Maximum SOC forecast" },
       "hours_to_max_soc": { "name": "Hours to maximum SOC" },

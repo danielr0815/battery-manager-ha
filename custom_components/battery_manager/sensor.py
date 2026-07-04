@@ -19,6 +19,7 @@ from .const import (
     ENTITY_LOST_SURPLUS,
     ENTITY_MAX_SOC_FORECAST,
     ENTITY_MIN_SOC_FORECAST,
+    ENTITY_SOC_FORECAST_CURVE,
     ENTITY_SOC_THRESHOLD,
 )
 from .coordinator import BatteryManagerCoordinator
@@ -77,10 +78,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up Battery Manager sensors."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
+    entities: list[SensorEntity] = [
         BatteryManagerSensor(coordinator, description)
         for description in SENSOR_DESCRIPTIONS
-    )
+    ]
+    entities.append(BatteryManagerSocForecastSensor(coordinator))
+    async_add_entities(entities)
 
 
 class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
@@ -115,3 +118,35 @@ class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
         if self._data_key == "grid_import_kwh":
             attrs[ATTR_GRID_EXPORT_KWH] = data.get("grid_export_kwh")
         return attrs
+
+
+class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
+    """Forecasted SOC curve: state = SOC in one hour, attribute = full curve.
+
+    The `forecast` attribute contains [{t, soc}, ...] over the whole planning
+    horizon (final trajectory incl. scheduled loads) for chart cards such as
+    ApexCharts (see README for a ready-made card config).
+    """
+
+    # No state_class: forecast values must not feed long-term statistics.
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:chart-timeline-variant"
+    _attr_translation_key = "soc_forecast"
+
+    def __init__(self, coordinator: BatteryManagerCoordinator) -> None:
+        super().__init__(coordinator, ENTITY_SOC_FORECAST_CURVE)
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        curve = data.get("soc_forecast") or []
+        if len(curve) > 1:
+            return curve[1]["soc"]
+        if curve:
+            return curve[0]["soc"]
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {"forecast": data.get("soc_forecast") or []}

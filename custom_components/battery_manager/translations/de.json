@@ -84,6 +84,10 @@
     "surplus_load": {
       "title": "Überschusslast",
       "entry_type": "Überschusslast",
+      "error": {
+        "keep_on_requires_enable": "Die Politik „Anlassen“ erfordert eine Lade-Freigabe-Entität — sonst könnte das Laden nie gestoppt werden.",
+        "control_entities_not_distinct": "Ladeeingang-Schalter und Lade-Freigabe müssen unterschiedliche Entitäten sein."
+      },
       "initiate_flow": {
         "user": "Überschusslast hinzufügen",
         "reconfigure": "Überschusslast anpassen"
@@ -102,7 +106,10 @@
             "target_soc_percent": "Ziel-SOC (%)",
             "soc_entity": "SOC-Sensor (optional)",
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
-            "availability_entity": "Verfügbarkeits-Entität (optional)"
+            "availability_entity": "Verfügbarkeits-Entität (optional)",
+            "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
+            "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
+            "input_off_policy": "Ladeeingang bei Ladeende"
           }
         },
         "reconfigure": {
@@ -117,7 +124,10 @@
             "target_soc_percent": "Ziel-SOC (%)",
             "soc_entity": "SOC-Sensor (optional)",
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
-            "availability_entity": "Verfügbarkeits-Entität (optional)"
+            "availability_entity": "Verfügbarkeits-Entität (optional)",
+            "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
+            "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
+            "input_off_policy": "Ladeeingang bei Ladeende"
           }
         }
       }
@@ -177,9 +187,19 @@
       }
     }
   },
+  "selector": {
+    "input_off_policy": {
+      "options": {
+        "auto": "Automatisch (nur aus, wenn die Integration ihn eingeschaltet hat)",
+        "always_off": "Immer ausschalten",
+        "keep_on": "Anlassen (nur Lade-Freigabe schalten)"
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "soc_threshold": { "name": "SOC-Schwelle" },
+      "soc_forecast": { "name": "SOC-Prognoseverlauf" },
       "min_soc_forecast": { "name": "Minimale SOC-Prognose" },
       "max_soc_forecast": { "name": "Maximale SOC-Prognose" },
       "hours_to_max_soc": { "name": "Stunden bis Maximal-SOC" },

@@ -42,6 +42,22 @@ CONF_LOAD_TARGET_SOC = "target_soc_percent"
 CONF_LOAD_SOC_ENTITY = "soc_entity"
 CONF_LOAD_POWER_ENTITY = "power_entity"
 CONF_LOAD_AVAILABILITY_ENTITY = "availability_entity"
+CONF_LOAD_CONTROL_SWITCH = "control_switch_entity"
+CONF_LOAD_CHARGE_ENABLE = "charge_enable_entity"
+CONF_LOAD_INPUT_OFF_POLICY = "input_off_policy"
+
+# End-of-charge policies for the load's input plug (docs/LOAD_CONTROL.md §3)
+INPUT_OFF_POLICY_AUTO = "auto"
+INPUT_OFF_POLICY_ALWAYS = "always_off"
+INPUT_OFF_POLICY_KEEP = "keep_on"
+INPUT_OFF_POLICIES = [
+    INPUT_OFF_POLICY_AUTO,
+    INPUT_OFF_POLICY_ALWAYS,
+    INPUT_OFF_POLICY_KEEP,
+]
+
+# Persistent state (SOC cache, plug ownership) survives HA restarts
+STORAGE_VERSION = 1
 
 # --- Appliance subentry keys ---
 SUBENTRY_TYPE_APPLIANCE = "appliance"
@@ -105,6 +121,7 @@ DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_ENERGY_LIMITED: False,
     CONF_LOAD_CAPACITY_WH: 2000.0,
     CONF_LOAD_TARGET_SOC: 100.0,
+    CONF_LOAD_INPUT_OFF_POLICY: INPUT_OFF_POLICY_AUTO,
 }
 
 DEFAULT_APPLIANCE_CONFIG = {
@@ -122,6 +139,7 @@ ENTITY_MAX_SOC_FORECAST = "max_soc_forecast"
 ENTITY_HOURS_TO_MAX_SOC = "hours_to_max_soc"
 ENTITY_GRID_IMPORT_FORECAST = "grid_import_forecast"
 ENTITY_LOST_SURPLUS = "lost_surplus"
+ENTITY_SOC_FORECAST_CURVE = "soc_forecast"
 ENTITY_SUPPORT_DC24 = "support_dc24"
 ENTITY_SUPPORT_DC48 = "support_dc48"
 
