@@ -1,6 +1,10 @@
 # Spezifikation: Gelernte Verbrauchsprognose aus Messdaten (v0.5)
 
-> Status: **Stufe 1 implementiert (v0.5.0, 2026-07-04); Stufe 2/3 offen**
+> Status: **Stufe 1 (v0.5.0) + Stufe 2 (v0.6.0) implementiert, 2026-07-04; Stufe 3 offen**
+> Abweichungen der Umsetzung: Store v2 verwirft v1-Daten (frischer Backfill
+> statt Migration — Quelldaten sind jederzeit neu abrufbar);
+> `negative_residuals` zählt pro Lauf, nicht kumulativ; Bias-Schwelle des
+> Wächters 15 % der mittleren Last über 14 Tage (hartkodiert).
 > Rev. 2: verallgemeinert (nicht auf ein konkretes Setup zugeschnitten) und
 > 19 Befunde eines adversarialen Reviews eingearbeitet.
 > Setzt **P4** um (REQUIREMENTS.md §4.4, „Lastprofile aus HA-Historie lernen"),

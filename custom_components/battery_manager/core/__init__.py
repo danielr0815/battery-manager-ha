@@ -10,12 +10,14 @@ from .load_profile import (
     DAY_TYPE_WEEKDAY,
     DAY_TYPE_WEEKEND,
     DAY_TYPES,
+    QUANTILE_KEYS,
     aggregate_bins,
     balance_day,
     clean_day,
     day_type,
     on_fractions,
     profile_value,
+    weighted_quantile,
 )
 from .model import (
     Appliance,
@@ -42,6 +44,7 @@ __all__ = [
     "DAY_TYPE_ABSENCE",
     "DAY_TYPE_WEEKDAY",
     "DAY_TYPE_WEEKEND",
+    "QUANTILE_KEYS",
     "Appliance",
     "ApplianceRun",
     "BatteryParams",
@@ -66,4 +69,5 @@ __all__ = [
     "profile_value",
     "simulate",
     "slot_starts",
+    "weighted_quantile",
 ]

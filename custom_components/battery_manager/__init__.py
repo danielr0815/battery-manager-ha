@@ -23,9 +23,10 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_AS_TABLE,
+    CONF_LEARNING_WINDOW_DAYS,
     DOMAIN,
     LEARNED_STORE_KEY,
-    LEARNED_STORE_VERSION,
+    LEARNED_STORE_MAJOR,
     SERVICE_EXPORT_HOURLY_DETAILS,
     SERVICE_EXPORT_LEARNED_PROFILES,
     STORAGE_VERSION,
@@ -227,7 +228,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
     await Store(
         hass,
-        LEARNED_STORE_VERSION,
+        LEARNED_STORE_MAJOR,
         f"{DOMAIN}.{LEARNED_STORE_KEY}.{entry.entry_id}",
     ).async_remove()
 
@@ -243,6 +244,17 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry, data=data, options=options, version=2
         )
         _LOGGER.info("Migrated Battery Manager entry to version 2")
+    if entry.version == 2 and entry.minor_version < 2:
+        # Stufe 2 (D-C7): the learning-window default widened from 42 to
+        # 120 days. vol.Required auto-persisted the old default into the
+        # options, so only the exact old default is raised — deliberate
+        # operator choices stay untouched.
+        options = dict(entry.options)
+        for container in (options,):
+            if container.get(CONF_LEARNING_WINDOW_DAYS) == 42:
+                container[CONF_LEARNING_WINDOW_DAYS] = 120
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
+        _LOGGER.info("Migrated Battery Manager entry to version 2.2")
     return True
 
 

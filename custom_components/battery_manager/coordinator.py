@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -21,6 +22,8 @@ from .const import (
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_BUFFER_MAX_PERCENT,
+    CONF_BUFFER_MIN_PERCENT,
     CONF_DCDC_SWITCH,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
@@ -71,7 +74,6 @@ from .core import (
     SurplusLoadState,
     SystemConfig,
     build_slots,
-    day_type,
     plan,
     profile_value,
     slot_starts,
@@ -281,6 +283,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             control=ControlParams(
                 inverter_min_soc_percent=float(cfg["inverter_min_soc_percent"]),
                 soc_buffer_percent=float(cfg["soc_buffer_percent"]),
+                # The escalation trigger always keeps the FIXED value, even
+                # when the planning buffer is set dynamically (D-C8).
+                support_buffer_percent=float(cfg["soc_buffer_percent"]),
                 hysteresis_percent=float(cfg["hysteresis_percent"]),
                 threshold_inertia_percent=float(cfg["threshold_inertia_percent"]),
                 min_switch_interval_s=int(cfg["min_switch_interval_s"]),
@@ -458,6 +463,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> tuple[
         tuple[float | None, ...] | None,
         tuple[float | None, ...] | None,
+        dict[str, list[float]],
+        bool,
         dict[str, Any],
     ]:
         """Build per-slot consumption overrides from the learned profiles.
@@ -468,6 +475,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raster. In vacation mode an invalid absence bin falls back to the
         static base load WITHOUT the variable share (D-C4) — deliberately
         not None, which would re-add variable_w via the core fallback.
+        Also returns the P80−P50 band per slot (dynamic buffer, D-C8) and
+        whether any quantiles are active.
         """
         vacation = self.learner.vacation_active
         profiles = self.learner.profiles_for_planning() or {}
@@ -478,6 +487,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         naive_now = now.replace(tzinfo=None)
         utc_now = dt_util.as_utc(now)
         series: dict[str, list[float | None]] = {"ac": [], "dc": []}
+        # P80−P50 per slot in W: the uncertainty band feeding the dynamic
+        # SOC buffer (D-C8); 0 where no quantiles exist for the slot.
+        band: dict[str, list[float]] = {"ac": [], "dc": []}
         static_profiles = {"ac": config.ac_profile, "dc": config.dc_profile}
         delta_sum = {"ac": 0.0, "dc": 0.0}
         delta_count = {"ac": 0, "dc": 0}
@@ -485,9 +497,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Absolute-time mapping: the naive slot delta is the intended
             # elapsed time; adding it in UTC yields the true local hour.
             local = dt_util.as_local(utc_now + (start - naive_now))
-            dt_key = DAY_TYPE_ABSENCE if vacation else day_type(local.date(), False)
+            dt_key = (
+                DAY_TYPE_ABSENCE
+                if vacation
+                else self.learner.planning_daytype(local.date())
+            )
             for path in ("ac", "dc"):
-                value = profile_value(profiles.get(path), dt_key, local.hour)
+                value = profile_value(profiles.get(path), dt_key, local.hour, "p50")
+                p80 = profile_value(profiles.get(path), dt_key, local.hour, "p80")
+                band[path].append(
+                    max(0.0, p80 - value)
+                    if value is not None and p80 is not None
+                    else 0.0
+                )
                 if value is not None:
                     # Diagnostic: learned vs. static for the same hour (D-C6)
                     delta_sum[path] += value - static_profiles[path].power_w(local.hour)
@@ -516,7 +538,46 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else None
             )
             overrides.append(tuple(values) if filled else None)
-        return overrides[0], overrides[1], diag
+        quantiles_active = any(delta_count[path] for path in ("ac", "dc"))
+        return overrides[0], overrides[1], band, quantiles_active, diag
+
+    def _dynamic_buffer(
+        self,
+        config: SystemConfig,
+        slots,
+        band: dict[str, list[float]],
+    ) -> tuple[float, dict[str, Any]]:
+        """Dynamic SOC buffer from the P80−P50 band (D-C8, active immediately).
+
+        Critical window: now until the first slot with forecast PV surplus
+        (none -> whole horizon). AC uncertainty converts through discharge
+        AND inverter efficiency, DC only through discharge efficiency.
+        Statically filled slots contribute 0 (their band is 0).
+        """
+        eta_dis = config.battery.eta_discharge
+        eta_inv = config.inverter.eta
+        uncertainty_wh = 0.0
+        window_hours = 0
+        for i, slot in enumerate(slots):
+            if slot.pv_wh > slot.ac_wh + slot.dc_wh:
+                break
+            window_hours += 1
+            ac_band = band["ac"][i] if i < len(band["ac"]) else 0.0
+            dc_band = band["dc"][i] if i < len(band["dc"]) else 0.0
+            uncertainty_wh += ac_band * slot.duration / (eta_dis * eta_inv)
+            uncertainty_wh += dc_band * slot.duration / eta_dis
+        raw = uncertainty_wh / config.battery.capacity_wh * 100.0
+        low = float(self.raw_config[CONF_BUFFER_MIN_PERCENT])
+        # Defensive: the options flow validates min < max, but an inverted
+        # pair from old/hand-edited options must not pin the buffer silently.
+        high = max(low, float(self.raw_config[CONF_BUFFER_MAX_PERCENT]))
+        buffer_percent = round(min(max(raw, low), high), 1)
+        return buffer_percent, {
+            "soc_buffer_source": "dynamic",
+            "soc_buffer_effective": buffer_percent,
+            "buffer_uncertainty_wh": round(uncertainty_wh, 0),
+            "buffer_window_hours": window_hours,
+        }
 
     # ------------------------------------------------------------------
     # Update cycle
@@ -535,8 +596,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         config = self.build_system_config()
         load_states = self._get_load_states()
         appliance_runs = self._get_appliance_runs(now)
-        ac_series, dc_series, profile_diag = self._learned_series(
-            now, config, len(forecasts)
+        ac_series, dc_series, band, quantiles_active, profile_diag = (
+            self._learned_series(now, config, len(forecasts))
         )
 
         inputs = build_slots(
@@ -549,6 +610,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ac_load_w=ac_series,
             dc_load_w=dc_series,
         )
+        # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
+        # soon as any learned quantiles exist; the escalation trigger keeps
+        # the fixed support_buffer_percent set in build_system_config.
+        if quantiles_active:
+            buffer_percent, buffer_diag = self._dynamic_buffer(
+                config, inputs.slots, band
+            )
+            config = replace(
+                config,
+                control=replace(config.control, soc_buffer_percent=buffer_percent),
+            )
+        else:
+            buffer_diag = {
+                "soc_buffer_source": "fixed",
+                "soc_buffer_effective": config.control.soc_buffer_percent,
+            }
+        profile_diag.update(buffer_diag)
         result = await self.hass.async_add_executor_job(plan, config, inputs)
 
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)

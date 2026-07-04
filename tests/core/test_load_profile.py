@@ -13,6 +13,7 @@ from core.load_profile import (
     day_type,
     on_fractions,
     profile_value,
+    weighted_quantile,
 )
 
 MIN_SAMPLES = {DAY_TYPE_WEEKDAY: 3, DAY_TYPE_WEEKEND: 3, DAY_TYPE_ABSENCE: 2}
@@ -120,9 +121,10 @@ def test_aggregate_median_per_daytype_and_min_samples():
     }
     day_types = {d: day_type(date.fromisoformat(d), False) for d in daily}
     bins, samples = aggregate_bins(daily, day_types, MIN_SAMPLES, None, 0.2, 3000.0)
-    assert bins[DAY_TYPE_WEEKDAY][10] == 200.0  # median of 100/200/300
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][10] == 200.0  # median of 100/200/300
+    assert bins[DAY_TYPE_WEEKDAY]["p80"][10] >= 200.0
     assert samples[DAY_TYPE_WEEKDAY][10] == 3
-    assert bins[DAY_TYPE_WEEKEND][10] is None  # 1 < min_samples
+    assert bins[DAY_TYPE_WEEKEND]["p50"][10] is None  # 1 < min_samples
     assert samples[DAY_TYPE_WEEKEND][10] == 1
 
 
@@ -137,8 +139,8 @@ def test_aggregate_ignores_none_hours():
     day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
     bins, samples = aggregate_bins(daily, day_types, MIN_SAMPLES, None, 0.2, 3000.0)
     assert samples[DAY_TYPE_WEEKDAY][8] == 2
-    assert bins[DAY_TYPE_WEEKDAY][8] is None  # 2 < 3
-    assert bins[DAY_TYPE_WEEKDAY][9] == 200.0
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][8] is None  # 2 < 3
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][9] == 200.0
 
 
 def test_aggregate_rate_limit_damps_change():
@@ -148,10 +150,10 @@ def test_aggregate_rate_limit_damps_change():
         "2026-07-01": _flat_day(1000.0),
     }
     day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
-    previous = {DAY_TYPE_WEEKDAY: [100.0] * 24}
+    previous = {DAY_TYPE_WEEKDAY: {"p50": [100.0] * 24, "p80": [100.0] * 24}}
     bins, _ = aggregate_bins(daily, day_types, MIN_SAMPLES, previous, 0.2, 3000.0)
     # 100 W before, raw median 1000 W -> limited to +20 %
-    assert bins[DAY_TYPE_WEEKDAY][0] == 120.0
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][0] == 120.0
 
 
 def test_aggregate_zero_bin_recovers():
@@ -162,13 +164,13 @@ def test_aggregate_zero_bin_recovers():
         "2026-07-01": _flat_day(40.0),
     }
     day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
-    previous = {DAY_TYPE_WEEKDAY: [0.0] * 24}
+    previous = {DAY_TYPE_WEEKDAY: {"p50": [0.0] * 24, "p80": [0.0] * 24}}
     bins, _ = aggregate_bins(daily, day_types, MIN_SAMPLES, previous, 0.2, 3000.0)
     # Minimum absolute step (10 W) instead of 0 * 1.2 = 0.
-    assert bins[DAY_TYPE_WEEKDAY][0] == 10.0
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][0] == 10.0
     # And it keeps growing on subsequent runs.
     bins2, _ = aggregate_bins(daily, day_types, MIN_SAMPLES, bins, 0.2, 3000.0)
-    assert bins2[DAY_TYPE_WEEKDAY][0] == 20.0
+    assert bins2[DAY_TYPE_WEEKDAY]["p50"][0] == 20.0
 
 
 def test_aggregate_absence_uses_lower_min_samples():
@@ -178,12 +180,14 @@ def test_aggregate_absence_uses_lower_min_samples():
     }
     day_types = {d: DAY_TYPE_ABSENCE for d in daily}
     bins, _ = aggregate_bins(daily, day_types, MIN_SAMPLES, None, 0.2, 3000.0)
-    assert bins[DAY_TYPE_ABSENCE][0] == 50.0
+    assert bins[DAY_TYPE_ABSENCE]["p50"][0] in (40.0, 50.0)  # lower weighted median
+    assert bins[DAY_TYPE_ABSENCE]["p80"][0] == 60.0
 
 
 def test_profile_value_bounds():
-    bins = {DAY_TYPE_WEEKDAY: [100.0] * 24}
+    bins = {DAY_TYPE_WEEKDAY: {"p50": [100.0] * 24, "p80": [130.0] * 24}}
     assert profile_value(bins, DAY_TYPE_WEEKDAY, 5) == 100.0
+    assert profile_value(bins, DAY_TYPE_WEEKDAY, 5, "p80") == 130.0
     assert profile_value(bins, DAY_TYPE_WEEKEND, 5) is None
     assert profile_value(bins, DAY_TYPE_WEEKDAY, 24) is None
     assert profile_value(None, DAY_TYPE_WEEKDAY, 5) is None
@@ -255,3 +259,37 @@ def test_on_fractions_dst_days_use_wall_clock_hours():
         assert all(v <= 1.0 for v in fr.values())
         day_total = sum(v for (d, _), v in fr.items() if d == day)
         assert abs(day_total - 24.0) < 1e-6
+
+
+# ----------------------------------------------------------------------
+# weighted quantiles (D-C7)
+# ----------------------------------------------------------------------
+
+
+def test_weighted_quantile_equal_weights_is_median():
+    values = [10.0, 20.0, 30.0, 40.0]
+    weights = [1.0] * 4
+    assert weighted_quantile(values, weights, 0.5) == 20.0
+    assert weighted_quantile(values, weights, 0.8) == 40.0
+
+
+def test_weighted_quantile_recency_shifts_result():
+    """A heavily weighted recent day dominates old ones (season/drift)."""
+    values = [10.0, 100.0]
+    assert weighted_quantile(values, [1.0, 0.1], 0.5) == 10.0
+    assert weighted_quantile(values, [0.1, 1.0], 0.5) == 100.0
+
+
+def test_aggregate_weights_follow_recent_days():
+    daily = {
+        "2026-06-29": _flat_day(100.0),
+        "2026-06-30": _flat_day(100.0),
+        "2026-07-01": _flat_day(300.0),
+    }
+    day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
+    heavy_recent = {"2026-06-29": 0.1, "2026-06-30": 0.1, "2026-07-01": 1.0}
+    bins, _ = aggregate_bins(
+        daily, day_types, MIN_SAMPLES, None, 0.2, 3000.0, weights=heavy_recent
+    )
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][0] == 300.0
+    assert bins[DAY_TYPE_WEEKDAY]["p80"][0] >= bins[DAY_TYPE_WEEKDAY]["p50"][0]

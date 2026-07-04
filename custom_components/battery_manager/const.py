@@ -3,7 +3,7 @@
 DOMAIN = "battery_manager"
 
 INTEGRATION_NAME = "Battery Manager"
-INTEGRATION_VERSION = "0.5.2"
+INTEGRATION_VERSION = "0.6.0"
 
 # Update behaviour
 UPDATE_INTERVAL_SECONDS = 300
@@ -35,6 +35,11 @@ CONF_DC_BALANCE_IN = "dc_balance_in_entities"
 CONF_DC_BALANCE_OUT = "dc_balance_out_entities"
 CONF_LEARNING_WINDOW_DAYS = "learning_window_days"
 CONF_LEARNING_MAX_AGE_DAYS = "learning_max_age_days"
+# Stufe 2 (D-C7/D-C8): recency weighting, dynamic-buffer clamps, holidays
+CONF_PROFILE_HALF_LIFE_DAYS = "profile_half_life_days"
+CONF_BUFFER_MIN_PERCENT = "buffer_min_percent"
+CONF_BUFFER_MAX_PERCENT = "buffer_max_percent"
+CONF_WORKDAY_ENTITY = "workday_entity"
 
 # Hardcoded learning constants (documented in the spec, §4.1)
 LEARNING_RUN_HOUR = 3  # local time of the nightly learning run
@@ -45,7 +50,18 @@ LEARNING_CLAMP_AC_W = 3000.0  # plausibility clamp per hourly mean
 LEARNING_CLAMP_DC_W = 1000.0
 LEARNING_NEGATIVE_RESIDUAL_WH = 10.0  # below -x Wh counts as suspicious
 LEARNING_VACATION_MIN_HOURS = 12.0  # vacation-mode share tagging a day
-LEARNED_STORE_VERSION = 1
+LEARNING_HOLIDAY_MIN_HOURS = 12.0  # workday-sensor "off" share tagging a day
+LEARNING_BIAS_ALERT_DAYS = 14  # one-sided P50 bias for this long -> repair
+LEARNING_BIAS_ALERT_SHARE = 0.15  # ... when |bias| exceeds this load share
+VALIDATION_HISTORY_DAYS = 30  # kept watchdog entries per path
+# Store ENVELOPE major version — pinned at 1 forever: bumping the Store
+# major would make HA's default _async_migrate_func raise on old files and
+# crash the whole entry setup after an update. Schema changes are handled
+# solely via the INNER data["version"] field below (mismatch = discard +
+# fresh backfill; the source data is always re-fetchable).
+LEARNED_STORE_MAJOR = 1
+# v2: bins carry {p50, p80} quantiles (Stufe 2).
+LEARNED_STORE_VERSION = 2
 LEARNED_STORE_KEY = "learned_profiles"  # f"{DOMAIN}.{key}.{entry_id}"
 
 # --- Support paths (docs/ALGORITHM.md D-A9) ---
@@ -139,8 +155,13 @@ DEFAULT_CONFIG = {
     "inverter_standby_power_w": 15.0,
     "inverter_min_soc_percent": 20.0,
     # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
-    CONF_LEARNING_WINDOW_DAYS: 42,
+    # Stufe 2: recency weighting replaces the hard window edge, so the
+    # window widens to 120 d (old days fade via the half-life instead).
+    CONF_LEARNING_WINDOW_DAYS: 120,
     CONF_LEARNING_MAX_AGE_DAYS: 14,
+    CONF_PROFILE_HALF_LIFE_DAYS: 30,
+    CONF_BUFFER_MIN_PERCENT: 3.0,
+    CONF_BUFFER_MAX_PERCENT: 15.0,
     # Planner tuning (docs/ALGORITHM.md D-A1..D-A4)
     "soc_buffer_percent": 5.0,
     "hysteresis_percent": 1.0,

@@ -103,12 +103,20 @@ def format_learned_profiles_table(snapshot: dict[str, Any]) -> str:
 
     headers = ["Std"]
     for _key, label in _DAY_TYPE_HEADERS:
-        headers.extend([f"{label} W", "n"])
+        headers.extend([f"{label} P50", "P80", "n"])
 
+    validation = snapshot.get("validation") or {}
     for path in ("ac", "dc"):
         bins = profiles.get(path)
         lines.append("")
         lines.append(f"[{path.upper()}-Pfad]")
+        entries = validation.get(path) or []
+        if entries:
+            last = entries[-1]
+            lines.append(
+                f"Wächter zuletzt ({last.get('day')}): "
+                f"Bias {last.get('bias_w')} W, MAE {last.get('mae_w')} W"
+            )
         if not bins:
             lines.append("(kein gelerntes Profil — statisches Profil aktiv)")
             continue
@@ -117,11 +125,17 @@ def format_learned_profiles_table(snapshot: dict[str, Any]) -> str:
         for hour in range(24):
             row = [str(hour)]
             for key, _label in _DAY_TYPE_HEADERS:
-                values = bins.get(key) or []
+                by_quantile = bins.get(key) or {}
                 counts = path_samples.get(key) or []
-                value = values[hour] if hour < len(values) else None
+                for q_key in ("p50", "p80"):
+                    values = (
+                        by_quantile.get(q_key)
+                        if isinstance(by_quantile, dict)
+                        else None
+                    ) or []
+                    value = values[hour] if hour < len(values) else None
+                    row.append(f"{value:.0f}" if value is not None else "-")
                 count = counts[hour] if hour < len(counts) else 0
-                row.append(f"{value:.0f}" if value is not None else "-")
                 row.append(str(count))
             rows.append(row)
         lines.append(_ascii_table(headers, rows))

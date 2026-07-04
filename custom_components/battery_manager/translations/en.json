@@ -67,7 +67,8 @@
           "ac_balance_out_entities": "AC balance: outflow counters (optional)",
           "dc_load_entity": "DC load sensor for learned profile (optional)",
           "dc_balance_in_entities": "DC balance: inflow counters (optional)",
-          "dc_balance_out_entities": "DC balance: outflow counters (optional)"
+          "dc_balance_out_entities": "DC balance: outflow counters (optional)",
+          "workday_entity": "Workday sensor (optional, holidays)"
         },
         "data_description": {
           "ac_base_load_w": "Permanent round-the-clock AC consumption of the household (fridge, router, standby …).",
@@ -83,7 +84,8 @@
           "ac_balance_out_entities": "Counters for energy leaving the node unconsumed (e.g. grid export, battery charging from the house bus).",
           "dc_load_entity": "Sensor for the DC consumer load (e.g. shunt). Enables learning of the DC profile; without it the DC profile stays static.",
           "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
-          "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed)."
+          "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
+          "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date."
         }
       },
       "power": {
@@ -139,7 +141,8 @@
     "error": {
       "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
-      "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity."
+      "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
+      "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum."
     },
     "abort": {
       "already_configured": "This system is already configured."
@@ -284,7 +287,8 @@
   "options": {
     "error": {
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
-      "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity."
+      "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
+      "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum."
     },
     "step": {
       "init": {
@@ -315,7 +319,11 @@
           "dc_balance_out_entities": "DC balance: outflow counters (optional)",
           "learning_window_days": "Learning window (days)",
           "learning_max_age_days": "Max. profile age (days)",
-          "support_dc24_power_entity": "24 V PSU power sensor (optional)"
+          "support_dc24_power_entity": "24 V PSU power sensor (optional)",
+          "profile_half_life_days": "Recency half-life (days)",
+          "buffer_min_percent": "Dynamic SOC buffer: minimum (%)",
+          "buffer_max_percent": "Dynamic SOC buffer: maximum (%)",
+          "workday_entity": "Workday sensor (optional, holidays)"
         },
         "data_description": {
           "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -343,7 +351,11 @@
           "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
           "learning_window_days": "Rolling window the hourly profiles are learned from. Larger = more stable but slower to follow behaviour changes.",
           "learning_max_age_days": "If the last successful learning run is older, forecasting falls back entirely to the static profile (fail-safe).",
-          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
+          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
+          "profile_half_life_days": "Weighting of learning days: a day of this age still counts half. Replaces an explicit season model — smaller values follow behaviour changes faster, larger ones smooth more.",
+          "buffer_min_percent": "Lower clamp of the dynamic safety buffer derived from the forecast uncertainty (P80−P50).",
+          "buffer_max_percent": "Upper clamp of the dynamic safety buffer — limits how much reserve the uncertainty may request.",
+          "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date."
         }
       }
     }
@@ -408,6 +420,10 @@
     "learning_no_statistics": {
       "title": "Consumption learning: long-term statistics missing",
       "description": "The following measurement entities have no long-term statistics (missing state_class or excluded from the recorder): {entity_ids}. The affected path keeps using the static load profile."
+    },
+    "learning_bias": {
+      "title": "Consumption learning: systematic bias",
+      "description": "The learned P50 consumption forecast has deviated one-sidedly from the measured load for more than two weeks. Check the measuring point, the loads' in-house flags and the cleaning sensors (diagnostics: consumption_profile on the SOC forecast sensor, service export_learned_profiles)."
     }
   }
 }

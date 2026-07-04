@@ -233,7 +233,9 @@ def support_escalation(
         return tuple(dc24), tuple(dc48), trajectory
 
     battery = config.battery
-    buffer_floor = battery.soc_min_percent + config.control.soc_buffer_percent
+    # Deliberately the FIXED buffer (D-C8): a dynamically widened planning
+    # buffer must not make the grid PSUs switch earlier/more often.
+    buffer_floor = battery.soc_min_percent + config.control.support_buffer_percent
     recovery = buffer_floor + 1.0
 
     # Stage 1: 24 V PSU replaces the DC/DC while SOC sits below the buffer floor.
@@ -303,7 +305,9 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         grid_import_kwh=traj.total_import_wh / 1000.0,
         grid_export_kwh=traj.total_export_wh / 1000.0,
         lost_surplus_kwh=traj.total_export_wh / 1000.0,
-        min_soc_percent=traj.min_soc_percent if traj.flows else inputs.start_soc_percent,
+        min_soc_percent=traj.min_soc_percent
+        if traj.flows
+        else inputs.start_soc_percent,
         max_soc_percent=max_soc,
         hours_to_max_soc=hours_to_max,
     )

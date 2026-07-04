@@ -48,17 +48,23 @@ from .const import (
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_PROFILE_HALF_LIFE_DAYS,
     CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
+    CONF_WORKDAY_ENTITY,
     DEFAULT_CONFIG,
     DOMAIN,
     ENTITY_VACATION_MODE,
     LEARNED_STORE_KEY,
+    LEARNED_STORE_MAJOR,
     LEARNED_STORE_VERSION,
+    LEARNING_BIAS_ALERT_DAYS,
+    LEARNING_BIAS_ALERT_SHARE,
     LEARNING_CLAMP_AC_W,
     LEARNING_CLAMP_DC_W,
+    LEARNING_HOLIDAY_MIN_HOURS,
     LEARNING_MIN_SAMPLES,
     LEARNING_MIN_SAMPLES_ABSENCE,
     LEARNING_NEGATIVE_RESIDUAL_WH,
@@ -67,6 +73,7 @@ from .const import (
     LEARNING_VACATION_MIN_HOURS,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
+    VALIDATION_HISTORY_DAYS,
 )
 from .core import (
     DAY_TYPE_ABSENCE,
@@ -77,6 +84,7 @@ from .core import (
     clean_day,
     day_type,
     on_fractions,
+    profile_value,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,6 +119,10 @@ def _default_data() -> dict[str, Any]:
         "daily_hours": {},  # date -> {"ac": [24 x Wh|None]|None, "dc": ...}
         "profiles": {"ac": None, "dc": None},
         "samples": {"ac": None, "dc": None},
+        # Daily watchdog entries (D-C9): [{day, bias_w, mae_w, hours}]
+        "validation": {"ac": [], "dc": []},
+        # Planning-side day types for the horizon (workday.check_date cache)
+        "future_daytypes": {},
         "diagnostics": {
             "negative_residuals": 0,
             "coverage": {"ac": 0.0, "dc": 0.0},
@@ -127,7 +139,7 @@ class ProfileLearner:
         self.entry = entry
         self._store: Store = Store(
             hass,
-            LEARNED_STORE_VERSION,
+            LEARNED_STORE_MAJOR,
             f"{DOMAIN}.{LEARNED_STORE_KEY}.{entry.entry_id}",
         )
         self.data: dict[str, Any] = _default_data()
@@ -250,6 +262,11 @@ class ProfileLearner:
         # The learned bins themselves (W per day type and hour): visible in
         # the developer tools and usable by dashboard cards/templates.
         diag["profiles"] = self.data.get("profiles")
+        # Latest watchdog entry per path (full history in the export).
+        diag["validation"] = {
+            path: (entries[-1] if entries else None)
+            for path, entries in (self.data.get("validation") or {}).items()
+        }
         return diag
 
     def export_snapshot(self) -> dict[str, Any]:
@@ -260,6 +277,7 @@ class ProfileLearner:
             "profiles": self.data.get("profiles"),
             "samples": self.data.get("samples"),
             "diagnostics": self.data.get("diagnostics"),
+            "validation": self.data.get("validation"),
             "day_log": self.data.get("day_log"),
         }
 
@@ -345,6 +363,9 @@ class ProfileLearner:
             for path in _PATHS
         }
         all_missing = sorted(set(missing["ac"]) | set(missing["dc"]))
+        # Per-run metric (not accumulated forever): suspicious residuals of
+        # the days fetched in THIS run.
+        self.data["diagnostics"]["negative_residuals"] = 0
         if all_missing:
             await self._fetch_days(cfg, sources, all_missing, missing)
 
@@ -364,6 +385,17 @@ class ProfileLearner:
             day: entry.get("daytype", DAY_TYPE_WEEKDAY)
             for day, entry in self.data["day_log"].items()
         }
+        # Watchdog (D-C9) BEFORE the update: yesterday's actuals against the
+        # profile that actually forecast them (the previous night's bins).
+        self._validate_yesterday(today, day_types)
+
+        # Recency weighting (D-C7): the drift/season model.
+        half_life = max(1.0, float(cfg[CONF_PROFILE_HALF_LIFE_DAYS]))
+        weights = {
+            day: 0.5 ** ((today - date.fromisoformat(day)).days / half_life)
+            for day in self.data["daily_hours"]
+        }
+
         coverage: dict[str, float] = {}
         for path in _PATHS:
             if not sources[path]["active"]:
@@ -386,6 +418,7 @@ class ProfileLearner:
                 None if cleaning_changed else self.data["profiles"].get(path),
                 LEARNING_RATE_LIMIT,
                 _CLAMPS[path],
+                weights=weights,
             )
             self.data["profiles"][path] = bins
             self.data["samples"][path] = samples
@@ -399,15 +432,128 @@ class ProfileLearner:
                 round(valid_hours / (len(wanted_days) * 24), 3) if wanted_days else 0.0
             )
 
+        await self._update_future_daytypes(cfg, today)
         self.data["diagnostics"]["coverage"] = coverage
         self.data["computed_at"] = dt_util.now().isoformat()
         self.data["window_days"] = window_days
+        # Only now (successful run) does the fingerprint become current.
+        self.data["cleaning_fingerprint"] = self._cleaning_fingerprint(cfg)
         self._save()
         _LOGGER.info(
             "Consumption profiles updated (coverage ac=%.0f%% dc=%.0f%%)",
             coverage.get("ac", 0.0) * 100,
             coverage.get("dc", 0.0) * 100,
         )
+
+    def _validate_yesterday(self, today: date, day_types: dict[str, str]) -> None:
+        """Daily watchdog (D-C9): P50 forecast vs. cleaned actuals.
+
+        Runs BEFORE the profile update, so yesterday is judged by the bins
+        that actually forecast it. A one-sided bias over
+        LEARNING_BIAS_ALERT_DAYS days beyond LEARNING_BIAS_ALERT_SHARE of
+        the mean load raises a repair issue instead of learning on silently
+        (measuring-point / cleaning errors surface here).
+        """
+        yesterday = (today - timedelta(days=1)).isoformat()
+        actuals = self.data["daily_hours"].get(yesterday) or {}
+        dt_key = day_types.get(yesterday, DAY_TYPE_WEEKDAY)
+        alert = False
+        for path in _PATHS:
+            series = actuals.get(path)
+            bins = (self.data.get("profiles") or {}).get(path)
+            if not series or not bins:
+                continue
+            pairs = [
+                (profile_value(bins, dt_key, hour, "p50"), series[hour])
+                for hour in range(24)
+                if hour < len(series)
+            ]
+            pairs = [(p, a) for p, a in pairs if p is not None and a is not None]
+            if not pairs:
+                continue
+            bias = sum(p - a for p, a in pairs) / len(pairs)
+            mae = sum(abs(p - a) for p, a in pairs) / len(pairs)
+            history_list = self.data["validation"].setdefault(path, [])
+            if not any(entry["day"] == yesterday for entry in history_list):
+                history_list.append(
+                    {
+                        "day": yesterday,
+                        "bias_w": round(bias, 1),
+                        "mae_w": round(mae, 1),
+                        "hours": len(pairs),
+                    }
+                )
+                del history_list[:-VALIDATION_HISTORY_DAYS]
+            alert = alert or self._bias_alert(path, series)
+        issue_id = f"learning_bias_{self.entry.entry_id}"
+        if alert:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="learning_bias",
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    def _bias_alert(self, path: str, latest_series: list) -> bool:
+        entries = (self.data.get("validation") or {}).get(path) or []
+        if len(entries) < LEARNING_BIAS_ALERT_DAYS:
+            return False
+        recent = entries[-LEARNING_BIAS_ALERT_DAYS:]
+        values = [float(entry["bias_w"]) for entry in recent]
+        mean_load = sum(v for v in latest_series if v is not None) / max(
+            1, sum(1 for v in latest_series if v is not None)
+        )
+        threshold = LEARNING_BIAS_ALERT_SHARE * max(mean_load, 1.0)
+        return all(v > threshold for v in values) or all(v < -threshold for v in values)
+
+    async def _update_future_daytypes(self, cfg: dict[str, Any], today: date) -> None:
+        """Holiday-aware day types for the horizon (§5.3).
+
+        The workday sensor only shows ONE day, so upcoming days are asked
+        via the workday.check_date action once per run and cached; on any
+        failure the plain calendar rule applies (fail-safe).
+        """
+        workday_entity = cfg.get(CONF_WORKDAY_ENTITY)
+        future: dict[str, str] = {}
+        if workday_entity:
+            for offset in range(4):
+                day = today + timedelta(days=offset)
+                try:
+                    response = await self.hass.services.async_call(
+                        "workday",
+                        "check_date",
+                        {
+                            "entity_id": workday_entity,
+                            "check_date": day.isoformat(),
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                except Exception:  # noqa: BLE001 - calendar rule as fallback
+                    _LOGGER.warning(
+                        "workday.check_date failed; using the calendar rule"
+                    )
+                    future = {}
+                    break
+                workday_flag = _extract_bool(response)
+                if workday_flag is None:
+                    future = {}
+                    break
+                future[day.isoformat()] = (
+                    DAY_TYPE_WEEKDAY if workday_flag else DAY_TYPE_WEEKEND
+                )
+        self.data["future_daytypes"] = future
+
+    def planning_daytype(self, day: date) -> str:
+        """Day type for a horizon day: workday cache, else calendar."""
+        cached = (self.data.get("future_daytypes") or {}).get(day.isoformat())
+        if cached in (DAY_TYPE_WEEKDAY, DAY_TYPE_WEEKEND):
+            return cached
+        return day_type(day, False)
 
     def _apply_source_binding(self, sources: dict[str, dict[str, Any]]) -> None:
         """Reset a path's learned state when its source entities changed."""
@@ -462,7 +608,9 @@ class ProfileLearner:
             _LOGGER.info("Cleaning configuration changed; relearning the full window")
         self.data["daily_hours"] = {}
         self.data["day_log"] = {}
-        self.data["cleaning_fingerprint"] = fingerprint
+        # The new fingerprint is committed by _run_learning only AFTER a
+        # successful refetch: a failed rebuild must re-trigger the fresh
+        # start (incl. the rate-limit bypass) on the next run.
         return True
 
     # ------------------------------------------------------------------
@@ -556,6 +704,10 @@ class ProfileLearner:
         vacation_entity = self._vacation_entity_id()
         if vacation_entity:
             switch_specs.append((vacation_entity, _is_on))
+        workday_entity = cfg.get(CONF_WORKDAY_ENTITY)
+        if workday_entity:
+            # Workday sensor: on = workday; its OFF share tags holidays.
+            switch_specs.append((workday_entity, _is_off))
 
         # Coverage rule (D-C2): hours before an entity's first recorded
         # state are UNKNOWN, not "off" — they must never be cleaned with 0.
@@ -568,15 +720,23 @@ class ProfileLearner:
             fractions[entity_id] = on_fractions(changes, start_local, end_local)
             coverage_start[entity_id] = first_known
 
-        # --- Day tagging (D-C4) ---
+        # --- Day tagging (D-C4, holidays §5.3) ---
         vacation_fr = fractions.get(vacation_entity or "", {})
+        holiday_fr = fractions.get(workday_entity or "", {})
         for day in days:
             vacation_hours = sum(
                 vacation_fr.get((day, hour), 0.0) for hour in range(24)
             )
             vacation = vacation_hours >= LEARNING_VACATION_MIN_HOURS
+            daytype = day_type(date.fromisoformat(day), vacation)
+            if not vacation and daytype == DAY_TYPE_WEEKDAY and workday_entity:
+                holiday_hours = sum(
+                    holiday_fr.get((day, hour), 0.0) for hour in range(24)
+                )
+                if holiday_hours >= LEARNING_HOLIDAY_MIN_HOURS:
+                    daytype = DAY_TYPE_WEEKEND  # holiday counts as weekend
             self.data["day_log"][day] = {
-                "daytype": day_type(date.fromisoformat(day), vacation),
+                "daytype": daytype,
                 "vacation": vacation,
             }
 
@@ -923,6 +1083,18 @@ def _is_on(state: str) -> bool:
 def _is_off(state: str) -> bool:
     # Explicit "off" only: unknown/unavailable must not read as "off".
     return state == "off"
+
+
+def _extract_bool(response: Any) -> bool | None:
+    """First boolean in a service response (workday.check_date)."""
+    if isinstance(response, bool):
+        return response
+    if isinstance(response, dict):
+        for value in response.values():
+            found = _extract_bool(value)
+            if found is not None:
+                return found
+    return None
 
 
 def _hour_covered(

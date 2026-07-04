@@ -27,9 +27,9 @@ ENTRY_DATA = {
 }
 
 AC_BINS = {
-    "weekday": [100.0] * 24,
-    "weekend": [80.0] * 24,
-    "absence": [None] * 24,
+    "weekday": {"p50": [100.0] * 24, "p80": [120.0] * 24},
+    "weekend": {"p50": [80.0] * 24, "p80": [95.0] * 24},
+    "absence": {"p50": [None] * 24, "p80": [None] * 24},
 }
 
 
@@ -57,7 +57,7 @@ async def test_profiles_for_planning_fresh_and_bound(hass):
 
     profiles = learner.profiles_for_planning()
     assert profiles is not None
-    assert profiles["ac"]["weekday"][0] == 100.0
+    assert profiles["ac"]["weekday"]["p50"][0] == 100.0
 
 
 async def test_profiles_for_planning_stale_returns_none(hass):
@@ -176,6 +176,30 @@ async def test_vacation_switch_toggles_learner(hass):
     assert coordinator.learner.vacation_active is False
 
 
+async def test_v1_store_file_does_not_crash_setup(hass, hass_storage):
+    """Regression: bumping the Store MAJOR version made HA's default
+    migration raise NotImplementedError and killed the whole entry setup.
+    The envelope stays at major 1; the inner version field discards v1."""
+    entry = _entry(hass)
+    hass_storage[f"battery_manager.learned_profiles.{entry.entry_id}"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"battery_manager.learned_profiles.{entry.entry_id}",
+        "data": {"version": 1, "profiles": {"ac": {"weekday": [1] * 24}}},
+    }
+    hass.states.async_set("sensor.test_soc", "55", {"unit_of_measurement": "%"})
+    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(pv, "10.0", {"unit_of_measurement": "kWh"})
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    # v1 payload discarded -> fresh defaults (inner version 2, no profiles)
+    assert coordinator.learner.data["version"] == 2
+    assert coordinator.learner.data["profiles"] == {"ac": None, "dc": None}
+
+
 def test_power_feedback_gaps_count_as_zero():
     """Unavailable = off (operator decision): gaps subtract 0 W, hours stay."""
     hour_map = {("2026-07-01", 12): 300.0}
@@ -213,7 +237,7 @@ async def test_export_learned_profiles_service(hass):
         blocking=True,
     )
     content = await hass.async_add_executor_job(target.read_text)
-    assert "Werktag W" in content
+    assert "Werktag P50" in content
     assert "[AC-Pfad]" in content
     assert "100" in content  # learned weekday value
     assert "statisches Profil aktiv" in content  # DC has no learned profile
@@ -232,7 +256,9 @@ async def test_vacation_mode_uses_base_load_without_absence_bins(hass):
     coordinator.learner.data["vacation_mode_active"] = True
     config = coordinator.build_system_config()
 
-    ac_series, dc_series, diag = coordinator._learned_series(dt_util.now(), config, 3)
+    ac_series, dc_series, _band, _active, diag = coordinator._learned_series(
+        dt_util.now(), config, 3
+    )
     assert diag["ac_source"] == "vacation_base"
     # base_w only — never base_w + variable_w (D-C4).
     assert set(ac_series) == {50.0}

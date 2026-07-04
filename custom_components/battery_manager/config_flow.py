@@ -26,6 +26,8 @@ from .const import (
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_BUFFER_MAX_PERCENT,
+    CONF_BUFFER_MIN_PERCENT,
     CONF_DC_BALANCE_IN,
     CONF_DC_BALANCE_OUT,
     CONF_DC_LOAD_ENTITY,
@@ -46,6 +48,7 @@ from .const import (
     CONF_LOAD_POWER_W,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
+    CONF_PROFILE_HALF_LIFE_DAYS,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
@@ -55,6 +58,7 @@ from .const import (
     CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
+    CONF_WORKDAY_ENTITY,
     DEFAULT_APPLIANCE_CONFIG,
     DEFAULT_CONFIG,
     DEFAULT_LOAD_CONFIG,
@@ -131,6 +135,15 @@ def _validate_learning_sources(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _validate_buffer_clamps(data: dict[str, Any]) -> str | None:
+    """min >= max would silently pin the dynamic buffer to the max (D-C8)."""
+    low = data.get(CONF_BUFFER_MIN_PERCENT)
+    high = data.get(CONF_BUFFER_MAX_PERCENT)
+    if low is not None and high is not None and float(low) >= float(high):
+        return "buffer_min_above_max"
+    return None
+
+
 def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """Static fallback-profile fields (shared: consumers step + options)."""
     hours = {
@@ -159,6 +172,12 @@ def _learning_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
         schema[
             vol.Optional(key, description={"suggested_value": current.get(key) or []})
         ] = _entity("sensor", multiple=True)
+    schema[
+        vol.Optional(
+            CONF_WORKDAY_ENTITY,
+            description={"suggested_value": current.get(CONF_WORKDAY_ENTITY)},
+        )
+    ] = _entity("binary_sensor")
     return schema
 
 
@@ -190,6 +209,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Multi-step base configuration."""
 
     VERSION = 2
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -415,9 +435,11 @@ class BatteryManagerOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            error = _validate_support_entities(
-                user_input
-            ) or _validate_learning_sources(user_input)
+            error = (
+                _validate_support_entities(user_input)
+                or _validate_learning_sources(user_input)
+                or _validate_buffer_clamps(user_input)
+            )
             if error is None:
                 # Cleared selector fields are absent from user_input. Store an
                 # explicit None/[] so the options override the value still
@@ -426,6 +448,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     *_SUPPORT_SWITCH_KEYS,
                     CONF_SUPPORT_DC24_POWER_ENTITY,
                     *_LEARNING_SINGLE_KEYS,
+                    CONF_WORKDAY_ENTITY,
                 ):
                     user_input.setdefault(key, None)
                 for key in _LEARNING_MULTI_KEYS:
@@ -491,6 +514,24 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 default=_d(current, CONF_LEARNING_MAX_AGE_DAYS),
             )
         ] = _number(3, 60, 1, "d")
+        schema[
+            vol.Required(
+                CONF_PROFILE_HALF_LIFE_DAYS,
+                default=_d(current, CONF_PROFILE_HALF_LIFE_DAYS),
+            )
+        ] = _number(7, 120, 1, "d")
+        schema[
+            vol.Required(
+                CONF_BUFFER_MIN_PERCENT,
+                default=_d(current, CONF_BUFFER_MIN_PERCENT),
+            )
+        ] = _number(0, 10, 0.5, "%")
+        schema[
+            vol.Required(
+                CONF_BUFFER_MAX_PERCENT,
+                default=_d(current, CONF_BUFFER_MAX_PERCENT),
+            )
+        ] = _number(5, 30, 0.5, "%")
 
         return self.async_show_form(
             step_id="init", data_schema=vol.Schema(schema), errors=errors

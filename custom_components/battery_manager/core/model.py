@@ -131,10 +131,19 @@ class SupportParams:
 
 @dataclass(frozen=True)
 class ControlParams:
-    """Planner tuning (decisions D-A1..D-A4 in docs/ALGORITHM.md)."""
+    """Planner tuning (decisions D-A1..D-A4 in docs/ALGORITHM.md).
+
+    `soc_buffer_percent` is the PLANNING buffer (threshold search floor,
+    load-allocation floor, appliance advisor) — it may be set dynamically
+    per run from the learned forecast uncertainty (D-C8).
+    `support_buffer_percent` stays at the FIXED configured value: it only
+    triggers the grid-PSU escalation (D-A9), which must not fire earlier
+    just because the forecast band is wide at night.
+    """
 
     inverter_min_soc_percent: float = 20.0
     soc_buffer_percent: float = 5.0
+    support_buffer_percent: float = 5.0
     hysteresis_percent: float = 1.0
     threshold_inertia_percent: float = 2.0
     export_tiebreak: float = 0.05

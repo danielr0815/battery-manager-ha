@@ -31,6 +31,12 @@ Samples = dict
 # from freezing bins at (or near) 0 W forever.
 _RATE_LIMIT_MIN_STEP_W = 10.0
 
+# Learned quantiles per bin (D-C7): P50 = plan-truthful forecast, P80 =
+# upper band for the dynamic SOC buffer. Deliberately no P90 (unstable at
+# n_eff ~ 20-80).
+QUANTILES = {"p50": 0.5, "p80": 0.8}
+QUANTILE_KEYS = tuple(QUANTILES)
+
 
 def day_type(day: date, vacation: bool) -> str:
     """Day-type key for learning and forecasting (D-C3/D-C4)."""
@@ -93,6 +99,27 @@ def clean_day(
     return cleaned, negatives
 
 
+def weighted_quantile(
+    values: list[float], weights: list[float], quantile: float
+) -> float:
+    """Weighted empirical quantile (D-C7).
+
+    Smallest value whose cumulative weight reaches `quantile` x total
+    weight. With equal weights and q=0.5 this is the (lower) median.
+    """
+    pairs = sorted(zip(values, weights, strict=True))
+    total = sum(w for _v, w in pairs)
+    if total <= 0:
+        return float(median(values))
+    threshold = quantile * total
+    cumulative = 0.0
+    for value, weight in pairs:
+        cumulative += weight
+        if cumulative >= threshold - 1e-12:
+            return float(value)
+    return float(pairs[-1][0])
+
+
 def aggregate_bins(
     daily_hours: dict[str, DaySeries],
     day_types: dict[str, str],
@@ -100,55 +127,74 @@ def aggregate_bins(
     previous: Bins | None,
     rate_limit: float,
     clamp_w: float,
+    weights: dict[str, float] | None = None,
 ) -> tuple[Bins, Samples]:
-    """Median per (day type, local hour) over the learning window (D-C3).
+    """Weighted P50/P80 per (day type, local hour) over the window (D-C3/D-C7).
 
-    - Bins with fewer than `min_samples[day type]` values stay None
+    - `weights` (per ISO day, e.g. recency 0.5^(age/half_life)) turn the
+      quantiles into the drift/season model; missing/None = equal weights
+      (plain median behaviour of Stufe 1).
+    - Bins with fewer than `min_samples[day type]` RAW values stay None
       (slot-wise fallback to the static profile, D-C6).
-    - The change per bin and run is limited to ±`rate_limit` relative to
-      the previous value (damping against residual feedback, D-C2), with an
-      absolute minimum step so a bin at 0 W is no fixed point of the
-      multiplicative clamp and can grow out again.
+    - The change per bin, quantile and run is limited to ±`rate_limit`
+      relative to the previous value (damping against residual feedback,
+      D-C2), with an absolute minimum step so a bin at 0 W is no fixed
+      point of the multiplicative clamp. P80 >= P50 is enforced last.
     """
-    collected: dict[str, list[list[float]]] = {
+    collected: dict[str, list[list[tuple[float, float]]]] = {
         dt: [[] for _ in range(24)] for dt in DAY_TYPES
     }
     for day, series in daily_hours.items():
         dt_key = day_types.get(day, DAY_TYPE_WEEKDAY)
         if dt_key not in collected:
             continue
+        weight = (weights or {}).get(day, 1.0)
         for hour in range(24):
             value = series[hour] if hour < len(series) else None
             if value is not None:
-                collected[dt_key][hour].append(min(max(value, 0.0), clamp_w))
+                collected[dt_key][hour].append((min(max(value, 0.0), clamp_w), weight))
 
-    bins: Bins = {dt: [None] * 24 for dt in DAY_TYPES}
+    bins: Bins = {dt: {q: [None] * 24 for q in QUANTILE_KEYS} for dt in DAY_TYPES}
     samples: Samples = {dt: [0] * 24 for dt in DAY_TYPES}
     for dt_key in DAY_TYPES:
         needed = min_samples.get(dt_key, 10)
+        prev_bins = (previous or {}).get(dt_key) or {}
         for hour in range(24):
-            values = collected[dt_key][hour]
-            samples[dt_key][hour] = len(values)
-            if len(values) < needed:
+            pairs = collected[dt_key][hour]
+            samples[dt_key][hour] = len(pairs)
+            if len(pairs) < needed:
                 continue
-            new = float(median(values))
-            prev = None
-            if previous:
-                prev_list = previous.get(dt_key) or []
-                if hour < len(prev_list):
-                    prev = prev_list[hour]
-            if prev is not None:
-                step = max(prev * rate_limit, _RATE_LIMIT_MIN_STEP_W)
-                new = min(max(new, prev - step), prev + step)
-            bins[dt_key][hour] = round(max(new, 0.0), 1)
+            values = [v for v, _w in pairs]
+            value_weights = [w for _v, w in pairs]
+            results: dict[str, float] = {}
+            for q_key, q in QUANTILES.items():
+                new = weighted_quantile(values, value_weights, q)
+                prev_list = (
+                    prev_bins.get(q_key) if isinstance(prev_bins, dict) else None
+                ) or []
+                prev = prev_list[hour] if hour < len(prev_list) else None
+                if prev is not None:
+                    step = max(prev * rate_limit, _RATE_LIMIT_MIN_STEP_W)
+                    new = min(max(new, prev - step), prev + step)
+                results[q_key] = round(max(new, 0.0), 1)
+            # Rate limiting may cross the quantiles: restore the order.
+            if results["p80"] < results["p50"]:
+                results["p80"] = results["p50"]
+            for q_key, value in results.items():
+                bins[dt_key][q_key][hour] = value
     return bins, samples
 
 
-def profile_value(bins: Bins | None, dt_key: str, hour: int) -> float | None:
+def profile_value(
+    bins: Bins | None, dt_key: str, hour: int, quantile: str = "p50"
+) -> float | None:
     """Bin lookup with bounds checking; None = invalid bin."""
     if not bins:
         return None
-    values = bins.get(dt_key) or []
+    by_quantile = bins.get(dt_key)
+    if not isinstance(by_quantile, dict):
+        return None
+    values = by_quantile.get(quantile) or []
     if 0 <= hour < len(values):
         return values[hour]
     return None

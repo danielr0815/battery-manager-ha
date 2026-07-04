@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-04
+
+### Added — Stufe 2 (docs/CONSUMPTION_FORECAST.md §5)
+- **Weighted P50/P80 quantile profiles** (D-C7): the nightly aggregation
+  now computes recency-weighted quantiles (half-life
+  `profile_half_life_days`, default 30 d) instead of a plain median —
+  the weighting doubles as the drift/season model, so the learning
+  window default widens to 120 days. Learned store v2 (bins carry
+  `{p50, p80}`); v1 stores are rebuilt from a fresh backfill.
+- **Dynamic SOC buffer** (D-C8, active immediately per operator
+  decision): the planning buffer is derived each run from the P80−P50
+  uncertainty band over the critical window (now → first forecast PV
+  surplus), clamped by `buffer_min_percent`/`buffer_max_percent`
+  (3/15 %). The grid-PSU escalation trigger keeps the FIXED configured
+  buffer via the new core parameter `support_buffer_percent` — a wide
+  night band must not make the PSUs switch earlier. Effective value and
+  window are exposed in the `consumption_profile` diagnostics and used
+  by the forecast card's reserve zone.
+- **Daily forecast watchdog** (D-C9): every learning run scores
+  yesterday's P50 forecast against the cleaned actuals (bias + MAE per
+  path, 30-day history in the export; latest entry in the
+  diagnostics). A one-sided bias > 15 % of the mean load for 14 days
+  raises a repair issue instead of learning on silently.
+- **Holidays** (§5.3): optional `workday_entity` (Workday integration);
+  holidays are learned and planned as weekends. Horizon days are
+  resolved via the `workday.check_date` action (cached nightly),
+  falling back to the plain calendar rule.
+
+### Changed
+- `negative_residuals` now counts per learning run instead of
+  accumulating forever.
+- `export_learned_profiles` shows P50 and P80 columns plus the latest
+  watchdog entry per path.
+
 ## [0.5.2] - 2026-07-04
 
 ### Changed
