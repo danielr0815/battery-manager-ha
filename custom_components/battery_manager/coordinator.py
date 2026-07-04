@@ -58,6 +58,7 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .core import (
+    DAY_TYPE_ABSENCE,
     Appliance,
     ApplianceRun,
     BatteryParams,
@@ -70,8 +71,12 @@ from .core import (
     SurplusLoadState,
     SystemConfig,
     build_slots,
+    day_type,
     plan,
+    profile_value,
+    slot_starts,
 )
+from .history_profile import ProfileLearner
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,14 +119,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Charging-path control (docs/LOAD_CONTROL.md): SOC cache survives
         # sleeping devices and restarts; plug ownership implements the
         # configurable input-off policy.
-        self._store: Store = Store(
-            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
-        )
+        self._store: Store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self._load_soc_cache: dict[str, float] = {}
         self._load_plug_owned: dict[str, bool] = {}
         self._last_load_switch: dict[str, datetime] = {}
         self._load_charging_active: dict[str, bool] = {}
         self._load_switch_task: asyncio.Task | None = None
+
+        # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
+        self.learner = ProfileLearner(hass, entry)
 
         self._startup_complete = False
         self._successful_updates = 0
@@ -137,6 +143,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_load_persistent_state(self) -> None:
         """Restore the load-SOC cache and plug ownership after a restart."""
+        await self.learner.async_load()
         data = await self._store.async_load()
         if data:
             # Cache entries are keyed by subentry AND carry the source entity
@@ -419,7 +426,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     runs.append(
                         ApplianceRun(
                             appliance_id=subentry_id,
-                            remaining_energy_wh=float(data[CONF_APPLIANCE_RUN_ENERGY_WH])
+                            remaining_energy_wh=float(
+                                data[CONF_APPLIANCE_RUN_ENERGY_WH]
+                            )
                             * remaining_h
                             / duration,
                             remaining_hours=remaining_h,
@@ -428,6 +437,79 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 self._appliance_started.pop(subentry_id, None)
         return tuple(runs)
+
+    # ------------------------------------------------------------------
+    # Learned consumption series (docs/CONSUMPTION_FORECAST.md D-C5)
+    # ------------------------------------------------------------------
+
+    def async_setup_learning(self) -> None:
+        """Start the nightly learning job (plus an initial catch-up run)."""
+        self.learner.async_schedule()
+
+    def _learned_series(
+        self, now: datetime, config: SystemConfig, num_days: int
+    ) -> tuple[
+        tuple[float | None, ...] | None,
+        tuple[float | None, ...] | None,
+        dict[str, Any],
+    ]:
+        """Build per-slot consumption overrides from the learned profiles.
+
+        Bin lookup uses the tz-aware local slot start via absolute elapsed
+        time (D-C5): across a DST change the skipped hour is skipped and
+        the repeated hour reuses its bin, while the core keeps its naive
+        raster. In vacation mode an invalid absence bin falls back to the
+        static base load WITHOUT the variable share (D-C4) — deliberately
+        not None, which would re-add variable_w via the core fallback.
+        """
+        vacation = self.learner.vacation_active
+        profiles = self.learner.profiles_for_planning() or {}
+        diag: dict[str, Any] = {
+            "vacation_mode": vacation,
+            **self.learner.diagnostics(),
+        }
+        naive_now = now.replace(tzinfo=None)
+        utc_now = dt_util.as_utc(now)
+        series: dict[str, list[float | None]] = {"ac": [], "dc": []}
+        static_profiles = {"ac": config.ac_profile, "dc": config.dc_profile}
+        delta_sum = {"ac": 0.0, "dc": 0.0}
+        delta_count = {"ac": 0, "dc": 0}
+        for start in slot_starts(naive_now, num_days):
+            # Absolute-time mapping: the naive slot delta is the intended
+            # elapsed time; adding it in UTC yields the true local hour.
+            local = dt_util.as_local(utc_now + (start - naive_now))
+            dt_key = DAY_TYPE_ABSENCE if vacation else day_type(local.date(), False)
+            for path in ("ac", "dc"):
+                value = profile_value(profiles.get(path), dt_key, local.hour)
+                if value is not None:
+                    # Diagnostic: learned vs. static for the same hour (D-C6)
+                    delta_sum[path] += value - static_profiles[path].power_w(local.hour)
+                    delta_count[path] += 1
+                if value is None and vacation:
+                    value = float(self.raw_config[f"{path}_base_load_w"])
+                series[path].append(value)
+
+        overrides: list[tuple[float | None, ...] | None] = []
+        for path in ("ac", "dc"):
+            values = series[path]
+            filled = sum(1 for v in values if v is not None)
+            if delta_count[path]:
+                source = "learned"
+            elif filled:
+                source = "vacation_base"
+            else:
+                source = "static"
+            diag[f"{path}_source"] = source
+            diag[f"{path}_slot_coverage"] = (
+                round(filled / len(values), 2) if values else 0.0
+            )
+            diag[f"{path}_mean_delta_w"] = (
+                round(delta_sum[path] / delta_count[path], 1)
+                if delta_count[path]
+                else None
+            )
+            overrides.append(tuple(values) if filled else None)
+        return overrides[0], overrides[1], diag
 
     # ------------------------------------------------------------------
     # Update cycle
@@ -446,6 +528,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         config = self.build_system_config()
         load_states = self._get_load_states()
         appliance_runs = self._get_appliance_runs(now)
+        ac_series, dc_series, profile_diag = self._learned_series(
+            now, config, len(forecasts)
+        )
 
         inputs = build_slots(
             config,
@@ -454,6 +539,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             forecasts,
             appliance_runs=appliance_runs,
             load_states=load_states,
+            ac_load_w=ac_series,
+            dc_load_w=dc_series,
         )
         result = await self.hass.async_add_executor_job(plan, config, inputs)
 
@@ -485,9 +572,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             slot.start + timedelta(hours=slot.duration)
                         ).isoformat(),
                     }
-                    for slot, on in zip(
-                        inputs.slots, load_plan.schedule, strict=True
-                    )
+                    for slot, on in zip(inputs.slots, load_plan.schedule, strict=True)
                     if on
                 ],
             }
@@ -549,6 +634,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "appliance_windows": dict(result.appliance_windows),
             "support_dc24": self._support_state["dc24"],
             "support_dc48": self._support_state["dc48"],
+            "consumption_profile": profile_diag,
             "hourly_details": hourly_details,
         }
 
@@ -810,9 +896,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._load_charging_active[subentry_id] = True
                     _LOGGER.info("Charging started for load %s", subentry_id)
                 else:
-                    policy = data.get(
-                        CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO
-                    )
+                    policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
                     if not enable and policy == INPUT_OFF_POLICY_KEEP:
                         # Misconfiguration (blocked by the flow, but be safe):
                         # nothing can stop the charging in this combination.
@@ -878,6 +962,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def cleanup(self) -> None:
         """Release entity listeners and cancel pending debounce work."""
+        self.learner.async_unschedule()
         if self._unsub_state_listener is not None:
             self._unsub_state_listener()
             self._unsub_state_listener = None

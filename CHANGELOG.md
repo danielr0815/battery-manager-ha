@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-04
+
+### Added
+- **Learned consumption profiles** (docs/CONSUMPTION_FORECAST.md, Stufe 1):
+  a nightly job learns hourly AC/DC baseline profiles
+  (weekday/weekend/absence × 24 h, robust medians) from the recorder's
+  long-term statistics and feeds them into the planner as per-slot series;
+  the static two-step profile remains the slot-wise fallback.
+  - Measurement sources per path: a direct load sensor
+    (`ac_load_entity`/`dc_load_entity`) **or** a generic counter balance
+    (inflow/outflow entity lists) — topology-independent, all entities
+    configurable.
+  - Mandatory cleaning of self-controlled consumption: surplus loads are
+    subtracted via their power-feedback statistics (or nominal power ×
+    switch-history on-time); status-only appliance hours and active
+    support-path hours are excluded; negative residuals are counted as a
+    misconfiguration diagnostic.
+  - New per-load flag *Included in house-load measurement*
+    (`in_house_measurement`) for loads fed outside the measured node
+    (e.g. via a feed-in setpoint).
+  - New **Vacation mode** switch: forecasts use the learned absence
+    profile (or the base load until enough absence days are learned);
+    vacation days are tagged for learning via the switch's history.
+  - Diagnostics on the SOC forecast sensor (`consumption_profile`
+    attribute: source per path, slot coverage, sample counts, negative
+    residuals) and a repair issue when a measurement entity has no
+    long-term statistics.
+- Static fallback-profile fields and the new learning options are now
+  editable in the **options flow** (previously only settable during setup).
+- Core: `series.slot_starts()` as the single source of truth for the slot
+  grid; `build_slots()` accepts optional per-slot consumption series.
+
 ## [0.4.0] - 2026-07-04
 
 ### Added

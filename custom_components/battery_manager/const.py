@@ -3,7 +3,7 @@
 DOMAIN = "battery_manager"
 
 INTEGRATION_NAME = "Battery Manager"
-INTEGRATION_VERSION = "0.4.0"
+INTEGRATION_VERSION = "0.5.0"
 
 # Update behaviour
 UPDATE_INTERVAL_SECONDS = 300
@@ -22,6 +22,31 @@ CONF_SOC_ENTITY = "soc_entity"
 CONF_PV_FORECAST_TODAY = "pv_forecast_today_entity"
 CONF_PV_FORECAST_TOMORROW = "pv_forecast_tomorrow_entity"
 CONF_PV_FORECAST_DAY_AFTER = "pv_forecast_day_after_entity"
+
+# --- Learned consumption profiles (docs/CONSUMPTION_FORECAST.md) ---
+# Measurement sources per path: a direct load sensor OR a generic counter
+# balance (inflow/outflow entity lists, D-C1). All optional; learning is
+# active per path as soon as a source is configured.
+CONF_AC_LOAD_ENTITY = "ac_load_entity"
+CONF_AC_BALANCE_IN = "ac_balance_in_entities"
+CONF_AC_BALANCE_OUT = "ac_balance_out_entities"
+CONF_DC_LOAD_ENTITY = "dc_load_entity"
+CONF_DC_BALANCE_IN = "dc_balance_in_entities"
+CONF_DC_BALANCE_OUT = "dc_balance_out_entities"
+CONF_LEARNING_WINDOW_DAYS = "learning_window_days"
+CONF_LEARNING_MAX_AGE_DAYS = "learning_max_age_days"
+
+# Hardcoded learning constants (documented in the spec, §4.1)
+LEARNING_RUN_HOUR = 3  # local time of the nightly learning run
+LEARNING_MIN_SAMPLES = 10  # per bin; absence bins need fewer
+LEARNING_MIN_SAMPLES_ABSENCE = 5
+LEARNING_RATE_LIMIT = 0.2  # max relative bin change per nightly run
+LEARNING_CLAMP_AC_W = 3000.0  # plausibility clamp per hourly mean
+LEARNING_CLAMP_DC_W = 1000.0
+LEARNING_NEGATIVE_RESIDUAL_WH = 10.0  # below -x Wh counts as suspicious
+LEARNING_VACATION_MIN_HOURS = 12.0  # vacation-mode share tagging a day
+LEARNED_STORE_VERSION = 1
+LEARNED_STORE_KEY = "learned_profiles"  # f"{DOMAIN}.{key}.{entry_id}"
 
 # --- Support paths (docs/ALGORITHM.md D-A9) ---
 CONF_SUPPORT_DC48_SWITCH = "support_dc48_switch_entity"
@@ -45,6 +70,10 @@ CONF_LOAD_AVAILABILITY_ENTITY = "availability_entity"
 CONF_LOAD_CONTROL_SWITCH = "control_switch_entity"
 CONF_LOAD_CHARGE_ENABLE = "charge_enable_entity"
 CONF_LOAD_INPUT_OFF_POLICY = "input_off_policy"
+# Load is included in the consumption measurement point (§2.3): True means
+# the learner subtracts it from the measured load; False (load fed outside
+# the measured node, e.g. via a feed-in setpoint) means no subtraction.
+CONF_LOAD_IN_HOUSE = "in_house_measurement"
 
 # End-of-charge policies for the load's input plug (docs/LOAD_CONTROL.md §3)
 INPUT_OFF_POLICY_AUTO = "auto"
@@ -104,6 +133,9 @@ DEFAULT_CONFIG = {
     "inverter_efficiency": 0.95,
     "inverter_standby_power_w": 15.0,
     "inverter_min_soc_percent": 20.0,
+    # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
+    CONF_LEARNING_WINDOW_DAYS: 42,
+    CONF_LEARNING_MAX_AGE_DAYS: 14,
     # Planner tuning (docs/ALGORITHM.md D-A1..D-A4)
     "soc_buffer_percent": 5.0,
     "hysteresis_percent": 1.0,
@@ -122,6 +154,7 @@ DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_CAPACITY_WH: 2000.0,
     CONF_LOAD_TARGET_SOC: 100.0,
     CONF_LOAD_INPUT_OFF_POLICY: INPUT_OFF_POLICY_AUTO,
+    CONF_LOAD_IN_HOUSE: True,
 }
 
 DEFAULT_APPLIANCE_CONFIG = {
@@ -142,6 +175,7 @@ ENTITY_LOST_SURPLUS = "lost_surplus"
 ENTITY_SOC_FORECAST_CURVE = "soc_forecast"
 ENTITY_SUPPORT_DC24 = "support_dc24"
 ENTITY_SUPPORT_DC48 = "support_dc48"
+ENTITY_VACATION_MODE = "vacation_mode"
 
 # --- Attributes ---
 ATTR_GRID_IMPORT_KWH = "grid_import_kwh"

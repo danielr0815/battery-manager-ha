@@ -61,7 +61,13 @@
           "dc_base_load_w": "DC-Grundlast (W)",
           "dc_variable_load_w": "DC-Zusatzlast tagsüber (W)",
           "dc_variable_start_hour": "DC-Zusatzlast ab (Stunde)",
-          "dc_variable_end_hour": "DC-Zusatzlast bis (Stunde)"
+          "dc_variable_end_hour": "DC-Zusatzlast bis (Stunde)",
+          "ac_load_entity": "AC-Lastsensor für gelerntes Profil (optional)",
+          "ac_balance_in_entities": "AC-Bilanz: Zufluss-Zähler (optional)",
+          "ac_balance_out_entities": "AC-Bilanz: Abfluss-Zähler (optional)",
+          "dc_load_entity": "DC-Lastsensor für gelerntes Profil (optional)",
+          "dc_balance_in_entities": "DC-Bilanz: Zufluss-Zähler (optional)",
+          "dc_balance_out_entities": "DC-Bilanz: Abfluss-Zähler (optional)"
         },
         "data_description": {
           "ac_base_load_w": "Dauerhafter AC-Verbrauch des Haushalts rund um die Uhr (Kühlschrank, Router, Standby …).",
@@ -71,7 +77,13 @@
           "dc_base_load_w": "Dauerhafter Verbrauch an der DC-Schiene (24 V), direkt aus der Batterie versorgt.",
           "dc_variable_load_w": "Zusätzlicher DC-Verbrauch, der nur im unten eingestellten Zeitfenster anfällt.",
           "dc_variable_start_hour": "Beginn des Zeitfensters, in dem die DC-Zusatzlast anfällt.",
-          "dc_variable_end_hour": "Ende des Zeitfensters, in dem die DC-Zusatzlast anfällt."
+          "dc_variable_end_hour": "Ende des Zeitfensters, in dem die DC-Zusatzlast anfällt.",
+          "ac_load_entity": "Sensor, der die AC-Verbraucherlast direkt misst (W-Sensor oder kWh-Zähler). Aktiviert das nächtliche Lernen des AC-Stundenprofils aus der Langzeitstatistik; hat Vorrang vor der Zählerbilanz. Wichtig: nicht den Netzimport und keinen Punkt wählen, der das eigene Batterieladen enthält.",
+          "ac_balance_in_entities": "Alternative ohne direkten Lastsensor: Zähler für Energie, die in den AC-Verbrauchsknoten hineinfließt (z. B. Netzimport, Wechselrichter-Abgabe, PV-Durchleitung). Hauslast = Zuflüsse − Abflüsse.",
+          "ac_balance_out_entities": "Zähler für Energie, die den Knoten wieder verlässt, ohne verbraucht zu werden (z. B. Netzexport, Batterieladen aus dem Hausnetz).",
+          "dc_load_entity": "Sensor für die DC-Verbraucherlast (z. B. Shunt). Aktiviert das Lernen des DC-Profils; ohne Angabe bleibt das DC-Profil statisch.",
+          "dc_balance_in_entities": "Alternative ohne direkten DC-Lastsensor: Zufluss-Zähler des DC-Verbrauchsknotens.",
+          "dc_balance_out_entities": "Abfluss-Zähler des DC-Verbrauchsknotens (Energie, die nicht verbraucht wird)."
         }
       },
       "power": {
@@ -124,7 +136,8 @@
     },
     "error": {
       "min_soc_above_max": "Der minimale SOC muss unter dem maximalen SOC liegen.",
-      "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden."
+      "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
+      "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität."
     },
     "abort": {
       "already_configured": "Dieses System ist bereits konfiguriert."
@@ -159,7 +172,8 @@
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
-            "input_off_policy": "Ladeeingang bei Ladeende"
+            "input_off_policy": "Ladeeingang bei Ladeende",
+            "in_house_measurement": "In Hauslast-Messung enthalten"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -174,7 +188,8 @@
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
             "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
-            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird."
+            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird.",
+            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen."
           }
         },
         "reconfigure": {
@@ -192,7 +207,8 @@
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
-            "input_off_policy": "Ladeeingang bei Ladeende"
+            "input_off_policy": "Ladeeingang bei Ladeende",
+            "in_house_measurement": "In Hauslast-Messung enthalten"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -207,7 +223,8 @@
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
             "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
-            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird."
+            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird.",
+            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen."
           }
         }
       }
@@ -264,7 +281,8 @@
   },
   "options": {
     "error": {
-      "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden."
+      "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
+      "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität."
     },
     "step": {
       "init": {
@@ -278,7 +296,23 @@
           "support_dc48_power_w": "Leistung 48-V-Stütznetzteil (W)",
           "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
           "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
-          "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)"
+          "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)",
+          "ac_base_load_w": "AC-Grundlast (W)",
+          "ac_variable_load_w": "AC-Zusatzlast tagsüber (W)",
+          "ac_variable_start_hour": "AC-Zusatzlast ab (Stunde)",
+          "ac_variable_end_hour": "AC-Zusatzlast bis (Stunde)",
+          "dc_base_load_w": "DC-Grundlast (W)",
+          "dc_variable_load_w": "DC-Zusatzlast tagsüber (W)",
+          "dc_variable_start_hour": "DC-Zusatzlast ab (Stunde)",
+          "dc_variable_end_hour": "DC-Zusatzlast bis (Stunde)",
+          "ac_load_entity": "AC-Lastsensor für gelerntes Profil (optional)",
+          "ac_balance_in_entities": "AC-Bilanz: Zufluss-Zähler (optional)",
+          "ac_balance_out_entities": "AC-Bilanz: Abfluss-Zähler (optional)",
+          "dc_load_entity": "DC-Lastsensor für gelerntes Profil (optional)",
+          "dc_balance_in_entities": "DC-Bilanz: Zufluss-Zähler (optional)",
+          "dc_balance_out_entities": "DC-Bilanz: Abfluss-Zähler (optional)",
+          "learning_window_days": "Lernfenster (Tage)",
+          "learning_max_age_days": "Max. Profilalter (Tage)"
         },
         "data_description": {
           "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -289,7 +323,23 @@
           "support_dc48_power_w": "Feste Einspeiseleistung des 48-V-Stütznetzteils, mit der die Simulation rechnet.",
           "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Feld leeren = Funktion deaktivieren.",
           "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
-          "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten."
+          "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
+          "ac_base_load_w": "Dauerhafter AC-Verbrauch des Haushalts rund um die Uhr (Kühlschrank, Router, Standby …).",
+          "ac_variable_load_w": "Zusätzlicher AC-Verbrauch, der nur im unten eingestellten Zeitfenster anfällt (Tagesaktivität).",
+          "ac_variable_start_hour": "Beginn des Zeitfensters, in dem die AC-Zusatzlast anfällt.",
+          "ac_variable_end_hour": "Ende des Zeitfensters, in dem die AC-Zusatzlast anfällt.",
+          "dc_base_load_w": "Dauerhafter Verbrauch an der DC-Schiene (24 V), direkt aus der Batterie versorgt.",
+          "dc_variable_load_w": "Zusätzlicher DC-Verbrauch, der nur im unten eingestellten Zeitfenster anfällt.",
+          "dc_variable_start_hour": "Beginn des Zeitfensters, in dem die DC-Zusatzlast anfällt.",
+          "dc_variable_end_hour": "Ende des Zeitfensters, in dem die DC-Zusatzlast anfällt.",
+          "ac_load_entity": "Sensor, der die AC-Verbraucherlast direkt misst (W-Sensor oder kWh-Zähler). Aktiviert das nächtliche Lernen des AC-Stundenprofils aus der Langzeitstatistik; hat Vorrang vor der Zählerbilanz. Wichtig: nicht den Netzimport und keinen Punkt wählen, der das eigene Batterieladen enthält.",
+          "ac_balance_in_entities": "Alternative ohne direkten Lastsensor: Zähler für Energie, die in den AC-Verbrauchsknoten hineinfließt (z. B. Netzimport, Wechselrichter-Abgabe, PV-Durchleitung). Hauslast = Zuflüsse − Abflüsse.",
+          "ac_balance_out_entities": "Zähler für Energie, die den Knoten wieder verlässt, ohne verbraucht zu werden (z. B. Netzexport, Batterieladen aus dem Hausnetz).",
+          "dc_load_entity": "Sensor für die DC-Verbraucherlast (z. B. Shunt). Aktiviert das Lernen des DC-Profils; ohne Angabe bleibt das DC-Profil statisch.",
+          "dc_balance_in_entities": "Alternative ohne direkten DC-Lastsensor: Zufluss-Zähler des DC-Verbrauchsknotens.",
+          "dc_balance_out_entities": "Abfluss-Zähler des DC-Verbrauchsknotens (Energie, die nicht verbraucht wird).",
+          "learning_window_days": "Rollierendes Fenster, aus dem die Stundenprofile gelernt werden. Größere Werte = stabiler, aber träger bei Verhaltensänderungen.",
+          "learning_max_age_days": "Ist der letzte erfolgreiche Lernlauf älter, fällt die Prognose komplett auf das statische Profil zurück (Fail-safe)."
         }
       }
     }
@@ -305,20 +355,55 @@
   },
   "entity": {
     "sensor": {
-      "soc_threshold": { "name": "SOC-Schwelle" },
-      "soc_forecast": { "name": "SOC-Prognoseverlauf" },
-      "min_soc_forecast": { "name": "Minimale SOC-Prognose" },
-      "max_soc_forecast": { "name": "Maximale SOC-Prognose" },
-      "hours_to_max_soc": { "name": "Stunden bis Maximal-SOC" },
-      "grid_import_forecast": { "name": "Netzbezugs-Prognose" },
-      "lost_surplus": { "name": "Verlorener Überschuss (Prognose)" }
+      "soc_threshold": {
+        "name": "SOC-Schwelle"
+      },
+      "soc_forecast": {
+        "name": "SOC-Prognoseverlauf"
+      },
+      "min_soc_forecast": {
+        "name": "Minimale SOC-Prognose"
+      },
+      "max_soc_forecast": {
+        "name": "Maximale SOC-Prognose"
+      },
+      "hours_to_max_soc": {
+        "name": "Stunden bis Maximal-SOC"
+      },
+      "grid_import_forecast": {
+        "name": "Netzbezugs-Prognose"
+      },
+      "lost_surplus": {
+        "name": "Verlorener Überschuss (Prognose)"
+      }
     },
     "binary_sensor": {
-      "inverter_status": { "name": "Wechselrichter-Empfehlung" },
-      "surplus_load": { "name": "{name} Empfehlung" },
-      "appliance_window": { "name": "{name} Startfenster" },
-      "support_dc24": { "name": "24-V-Netzstützung" },
-      "support_dc48": { "name": "48-V-Netzstützung" }
+      "inverter_status": {
+        "name": "Wechselrichter-Empfehlung"
+      },
+      "surplus_load": {
+        "name": "{name} Empfehlung"
+      },
+      "appliance_window": {
+        "name": "{name} Startfenster"
+      },
+      "support_dc24": {
+        "name": "24-V-Netzstützung"
+      },
+      "support_dc48": {
+        "name": "48-V-Netzstützung"
+      }
+    },
+    "switch": {
+      "vacation_mode": {
+        "name": "Urlaubsmodus"
+      }
+    }
+  },
+  "issues": {
+    "learning_no_statistics": {
+      "title": "Verbrauchslernen: Langzeitstatistik fehlt",
+      "description": "Für folgende Mess-Entitäten existiert keine Langzeitstatistik (fehlende state_class oder Recorder-Ausschluss): {entity_ids}. Der betroffene Pfad nutzt weiterhin das statische Lastprofil."
     }
   }
 }

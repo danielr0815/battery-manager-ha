@@ -61,7 +61,13 @@
           "dc_base_load_w": "DC base load (W)",
           "dc_variable_load_w": "DC variable load (W)",
           "dc_variable_start_hour": "DC variable start hour",
-          "dc_variable_end_hour": "DC variable end hour"
+          "dc_variable_end_hour": "DC variable end hour",
+          "ac_load_entity": "AC load sensor for learned profile (optional)",
+          "ac_balance_in_entities": "AC balance: inflow counters (optional)",
+          "ac_balance_out_entities": "AC balance: outflow counters (optional)",
+          "dc_load_entity": "DC load sensor for learned profile (optional)",
+          "dc_balance_in_entities": "DC balance: inflow counters (optional)",
+          "dc_balance_out_entities": "DC balance: outflow counters (optional)"
         },
         "data_description": {
           "ac_base_load_w": "Permanent round-the-clock AC consumption of the household (fridge, router, standby …).",
@@ -71,7 +77,13 @@
           "dc_base_load_w": "Permanent consumption on the DC rail (24 V), supplied directly from the battery.",
           "dc_variable_load_w": "Additional DC consumption occurring only within the time window configured below.",
           "dc_variable_start_hour": "Start of the window in which the additional DC load occurs.",
-          "dc_variable_end_hour": "End of the window in which the additional DC load occurs."
+          "dc_variable_end_hour": "End of the window in which the additional DC load occurs.",
+          "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
+          "ac_balance_in_entities": "Alternative without a direct load sensor: counters for energy flowing into the AC consumption node (e.g. grid import, inverter output, PV passthrough). House load = inflows − outflows.",
+          "ac_balance_out_entities": "Counters for energy leaving the node unconsumed (e.g. grid export, battery charging from the house bus).",
+          "dc_load_entity": "Sensor for the DC consumer load (e.g. shunt). Enables learning of the DC profile; without it the DC profile stays static.",
+          "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
+          "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed)."
         }
       },
       "power": {
@@ -124,7 +136,8 @@
     },
     "error": {
       "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
-      "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities."
+      "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
+      "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity."
     },
     "abort": {
       "already_configured": "This system is already configured."
@@ -159,7 +172,8 @@
             "availability_entity": "Availability entity (optional)",
             "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
             "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
-            "input_off_policy": "Input plug at end of charge"
+            "input_off_policy": "Input plug at end of charge",
+            "in_house_measurement": "Included in house-load measurement"
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
@@ -174,7 +188,8 @@
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
             "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
             "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
-            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough."
+            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough.",
+            "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice."
           }
         },
         "reconfigure": {
@@ -192,7 +207,8 @@
             "availability_entity": "Availability entity (optional)",
             "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
             "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
-            "input_off_policy": "Input plug at end of charge"
+            "input_off_policy": "Input plug at end of charge",
+            "in_house_measurement": "Included in house-load measurement"
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
@@ -207,7 +223,8 @@
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
             "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
             "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
-            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough."
+            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough.",
+            "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice."
           }
         }
       }
@@ -264,7 +281,8 @@
   },
   "options": {
     "error": {
-      "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities."
+      "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
+      "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity."
     },
     "step": {
       "init": {
@@ -278,7 +296,23 @@
           "support_dc48_power_w": "48 V support PSU power (W)",
           "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
           "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
-          "support_switch_delay_s": "Changeover delay (s, make-before-break)"
+          "support_switch_delay_s": "Changeover delay (s, make-before-break)",
+          "ac_base_load_w": "AC base load (W)",
+          "ac_variable_load_w": "AC variable load (W)",
+          "ac_variable_start_hour": "AC variable start hour",
+          "ac_variable_end_hour": "AC variable end hour",
+          "dc_base_load_w": "DC base load (W)",
+          "dc_variable_load_w": "DC variable load (W)",
+          "dc_variable_start_hour": "DC variable start hour",
+          "dc_variable_end_hour": "DC variable end hour",
+          "ac_load_entity": "AC load sensor for learned profile (optional)",
+          "ac_balance_in_entities": "AC balance: inflow counters (optional)",
+          "ac_balance_out_entities": "AC balance: outflow counters (optional)",
+          "dc_load_entity": "DC load sensor for learned profile (optional)",
+          "dc_balance_in_entities": "DC balance: inflow counters (optional)",
+          "dc_balance_out_entities": "DC balance: outflow counters (optional)",
+          "learning_window_days": "Learning window (days)",
+          "learning_max_age_days": "Max. profile age (days)"
         },
         "data_description": {
           "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -289,7 +323,23 @@
           "support_dc48_power_w": "Fixed feed-in power of the 48 V support PSU used by the simulation.",
           "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Clear the field to disable.",
           "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
-          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover."
+          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
+          "ac_base_load_w": "Permanent round-the-clock AC consumption of the household (fridge, router, standby …).",
+          "ac_variable_load_w": "Additional AC consumption occurring only within the time window configured below (daytime activity).",
+          "ac_variable_start_hour": "Start of the window in which the additional AC load occurs.",
+          "ac_variable_end_hour": "End of the window in which the additional AC load occurs.",
+          "dc_base_load_w": "Permanent consumption on the DC rail (24 V), supplied directly from the battery.",
+          "dc_variable_load_w": "Additional DC consumption occurring only within the time window configured below.",
+          "dc_variable_start_hour": "Start of the window in which the additional DC load occurs.",
+          "dc_variable_end_hour": "End of the window in which the additional DC load occurs.",
+          "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
+          "ac_balance_in_entities": "Alternative without a direct load sensor: counters for energy flowing into the AC consumption node (e.g. grid import, inverter output, PV passthrough). House load = inflows − outflows.",
+          "ac_balance_out_entities": "Counters for energy leaving the node unconsumed (e.g. grid export, battery charging from the house bus).",
+          "dc_load_entity": "Sensor for the DC consumer load (e.g. shunt). Enables learning of the DC profile; without it the DC profile stays static.",
+          "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
+          "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
+          "learning_window_days": "Rolling window the hourly profiles are learned from. Larger = more stable but slower to follow behaviour changes.",
+          "learning_max_age_days": "If the last successful learning run is older, forecasting falls back entirely to the static profile (fail-safe)."
         }
       }
     }
@@ -305,20 +355,55 @@
   },
   "entity": {
     "sensor": {
-      "soc_threshold": { "name": "SOC threshold" },
-      "soc_forecast": { "name": "SOC forecast" },
-      "min_soc_forecast": { "name": "Minimum SOC forecast" },
-      "max_soc_forecast": { "name": "Maximum SOC forecast" },
-      "hours_to_max_soc": { "name": "Hours to maximum SOC" },
-      "grid_import_forecast": { "name": "Grid import forecast" },
-      "lost_surplus": { "name": "Lost surplus forecast" }
+      "soc_threshold": {
+        "name": "SOC threshold"
+      },
+      "soc_forecast": {
+        "name": "SOC forecast"
+      },
+      "min_soc_forecast": {
+        "name": "Minimum SOC forecast"
+      },
+      "max_soc_forecast": {
+        "name": "Maximum SOC forecast"
+      },
+      "hours_to_max_soc": {
+        "name": "Hours to maximum SOC"
+      },
+      "grid_import_forecast": {
+        "name": "Grid import forecast"
+      },
+      "lost_surplus": {
+        "name": "Lost surplus forecast"
+      }
     },
     "binary_sensor": {
-      "inverter_status": { "name": "Inverter recommendation" },
-      "surplus_load": { "name": "{name} recommendation" },
-      "appliance_window": { "name": "{name} start window" },
-      "support_dc24": { "name": "24 V grid support" },
-      "support_dc48": { "name": "48 V grid support" }
+      "inverter_status": {
+        "name": "Inverter recommendation"
+      },
+      "surplus_load": {
+        "name": "{name} recommendation"
+      },
+      "appliance_window": {
+        "name": "{name} start window"
+      },
+      "support_dc24": {
+        "name": "24 V grid support"
+      },
+      "support_dc48": {
+        "name": "48 V grid support"
+      }
+    },
+    "switch": {
+      "vacation_mode": {
+        "name": "Vacation mode"
+      }
+    }
+  },
+  "issues": {
+    "learning_no_statistics": {
+      "title": "Consumption learning: long-term statistics missing",
+      "description": "The following measurement entities have no long-term statistics (missing state_class or excluded from the recorder): {entity_ids}. The affected path keeps using the static load profile."
     }
   }
 }

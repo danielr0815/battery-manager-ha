@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from core.model import ApplianceRun, SystemConfig
-from core.series import build_slots, insert_appliance_run
+from core.series import build_slots, insert_appliance_run, slot_starts
 
 
 def test_horizon_runs_until_midnight_of_last_forecast_day():
@@ -50,8 +50,7 @@ def test_appliance_run_adds_to_ac_load():
     with_run = build_slots(config, now, 50.0, [0.0], appliance_runs=(run,))
     without = build_slots(config, now, 50.0, [0.0])
     delta = sum(
-        w.ac_wh - b.ac_wh
-        for w, b in zip(with_run.slots, without.slots, strict=True)
+        w.ac_wh - b.ac_wh for w, b in zip(with_run.slots, without.slots, strict=True)
     )
     assert abs(delta - 1000.0) < 1.0
 
@@ -64,3 +63,51 @@ def test_insert_appliance_run_is_non_destructive():
     assert sum(s.ac_wh for s in modified.slots) > sum(s.ac_wh for s in inputs.slots)
     # original untouched
     assert inputs.slots[0].ac_wh == build_slots(config, now, 50.0, [5.0]).slots[0].ac_wh
+
+
+def test_slot_starts_matches_build_slots():
+    """slot_starts is the single source of truth for the slot grid (D-C5)."""
+    config = SystemConfig()
+    for now in (
+        datetime(2026, 7, 3, 21, 30),
+        datetime(2026, 7, 4, 0, 0),
+        datetime(2026, 7, 4, 23, 59),
+    ):
+        inputs = build_slots(config, now, 50.0, [5.0, 5.0, 5.0])
+        starts = slot_starts(now, 3)
+        assert len(starts) == len(inputs.slots)
+        assert all(
+            s.start == start for s, start in zip(inputs.slots, starts, strict=True)
+        )
+
+
+def test_slot_starts_empty_without_forecast_days():
+    assert slot_starts(datetime(2026, 7, 4, 12, 0), 0) == ()
+
+
+def test_learned_series_overrides_static_profile():
+    """A series value replaces the static profile Watt for that slot only."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 12, 30)  # partial first slot (0.5 h)
+    n = len(slot_starts(now, 1))
+    series = tuple([200.0] + [None] * (n - 1))
+    inputs = build_slots(config, now, 50.0, [0.0], ac_load_w=series)
+    baseline = build_slots(config, now, 50.0, [0.0])
+    # Slot 0: 200 W x 0.5 h; remaining slots fall back to the static profile.
+    assert abs(inputs.slots[0].ac_wh - 100.0) < 1e-9
+    for got, expected in zip(inputs.slots[1:], baseline.slots[1:], strict=True):
+        assert got.ac_wh == expected.ac_wh
+    # DC untouched
+    for got, expected in zip(inputs.slots, baseline.slots, strict=True):
+        assert got.dc_wh == expected.dc_wh
+
+
+def test_learned_series_shorter_than_horizon_falls_back():
+    """Values beyond the series length count as None (contract D-C5)."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    inputs = build_slots(config, now, 50.0, [0.0], ac_load_w=(300.0,))
+    baseline = build_slots(config, now, 50.0, [0.0])
+    assert abs(inputs.slots[0].ac_wh - 300.0) < 1e-9
+    for got, expected in zip(inputs.slots[1:], baseline.slots[1:], strict=True):
+        assert got.ac_wh == expected.ac_wh

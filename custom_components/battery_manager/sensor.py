@@ -132,7 +132,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
 
     # No state_class: forecast values must not feed long-term statistics.
     # The bulky per-hour attributes are also kept out of the recorder.
-    _unrecorded_attributes = frozenset({"forecast", "loads"})
+    _unrecorded_attributes = frozenset({"forecast", "loads", "consumption_profile"})
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:chart-timeline-variant"
     _attr_translation_key = "soc_forecast"
@@ -168,5 +168,6 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "grid_import_kwh": data.get("grid_import_kwh"),
             "lost_surplus_kwh": data.get("lost_surplus_kwh"),
             "loads": loads,
+            "consumption_profile": data.get("consumption_profile") or {},
             **(data.get("plan_params") or {}),
         }

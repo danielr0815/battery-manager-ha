@@ -17,19 +17,28 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AC_BALANCE_IN,
+    CONF_AC_BALANCE_OUT,
+    CONF_AC_LOAD_ENTITY,
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_NAME,
     CONF_APPLIANCE_OPPORTUNISTIC,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_DC_BALANCE_IN,
+    CONF_DC_BALANCE_OUT,
+    CONF_DC_LOAD_ENTITY,
     CONF_DCDC_SWITCH,
+    CONF_LEARNING_MAX_AGE_DAYS,
+    CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_OFF_POLICY,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_NAME,
@@ -68,8 +77,8 @@ def _number(minimum: float, maximum: float, step: float = 1.0, unit: str | None 
     )
 
 
-def _entity(domain: str | list[str] | None = None):
-    config = selector.EntitySelectorConfig()
+def _entity(domain: str | list[str] | None = None, multiple: bool = False):
+    config = selector.EntitySelectorConfig(multiple=multiple)
     if domain:
         config["domain"] = domain
     return selector.EntitySelector(config)
@@ -85,12 +94,76 @@ _SUPPORT_SWITCH_KEYS = (
     CONF_DCDC_SWITCH,
 )
 
+# Learned-consumption measurement sources (docs/CONSUMPTION_FORECAST.md §4.1)
+_LEARNING_SINGLE_KEYS = (CONF_AC_LOAD_ENTITY, CONF_DC_LOAD_ENTITY)
+_LEARNING_MULTI_KEYS = (
+    CONF_AC_BALANCE_IN,
+    CONF_AC_BALANCE_OUT,
+    CONF_DC_BALANCE_IN,
+    CONF_DC_BALANCE_OUT,
+)
+
+# The eight static profile values stay the fallback profile (D-C6) and are
+# editable in the options flow as well.
+_PROFILE_KEYS = (
+    "ac_base_load_w",
+    "ac_variable_load_w",
+    "ac_variable_start_hour",
+    "ac_variable_end_hour",
+    "dc_base_load_w",
+    "dc_variable_load_w",
+    "dc_variable_start_hour",
+    "dc_variable_end_hour",
+)
+
+
+def _validate_learning_sources(data: dict[str, Any]) -> str | None:
+    """A counter balance needs at least one inflow entity (D-C1)."""
+    for in_key, out_key in (
+        (CONF_AC_BALANCE_IN, CONF_AC_BALANCE_OUT),
+        (CONF_DC_BALANCE_IN, CONF_DC_BALANCE_OUT),
+    ):
+        if data.get(out_key) and not data.get(in_key):
+            return "balance_out_without_in"
+    return None
+
+
+def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """Static fallback-profile fields (shared: consumers step + options)."""
+    hours = {
+        "ac_variable_start_hour",
+        "ac_variable_end_hour",
+        "dc_variable_start_hour",
+        "dc_variable_end_hour",
+    }
+    return {
+        vol.Required(key, default=_d(current, key)): (
+            _number(0, 23) if key in hours else _number(0, 10_000, 5, "W")
+        )
+        for key in _PROFILE_KEYS
+    }
+
+
+def _learning_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """Measurement-source fields (shared: consumers step + options)."""
+    schema: dict[Any, Any] = {}
+    for key in _LEARNING_SINGLE_KEYS:
+        # suggested_value (not default) keeps the field clearable in the UI.
+        schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = (
+            _entity("sensor")
+        )
+    for key in _LEARNING_MULTI_KEYS:
+        schema[
+            vol.Optional(key, description={"suggested_value": current.get(key) or []})
+        ] = _entity("sensor", multiple=True)
+    return schema
+
 
 def _validate_load_control(data: dict[str, Any]) -> str | None:
     """Reject charging-path combinations that cannot work (LOAD_CONTROL.md §7)."""
-    if data.get(
-        CONF_LOAD_INPUT_OFF_POLICY
-    ) == INPUT_OFF_POLICY_KEEP and not data.get(CONF_LOAD_CHARGE_ENABLE):
+    if data.get(CONF_LOAD_INPUT_OFF_POLICY) == INPUT_OFF_POLICY_KEEP and not data.get(
+        CONF_LOAD_CHARGE_ENABLE
+    ):
         return "keep_on_requires_enable"
     control = data.get(CONF_LOAD_CONTROL_SWITCH)
     if control and control == data.get(CONF_LOAD_CHARGE_ENABLE):
@@ -229,41 +302,20 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_consumers(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_power()
-        d = self._data
+            error = _validate_learning_sources(user_input)
+            if error is None:
+                self._data.update(user_input)
+                return await self.async_step_power()
+            errors["base"] = error
+        # On a validation error, re-render with the just-entered values.
+        d = {**self._data, **(user_input or {})}
         return self.async_show_form(
             step_id="consumers",
+            errors=errors,
             data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        "ac_base_load_w", default=_d(d, "ac_base_load_w")
-                    ): _number(0, 10_000, 5, "W"),
-                    vol.Required(
-                        "ac_variable_load_w", default=_d(d, "ac_variable_load_w")
-                    ): _number(0, 10_000, 5, "W"),
-                    vol.Required(
-                        "ac_variable_start_hour",
-                        default=_d(d, "ac_variable_start_hour"),
-                    ): _number(0, 23),
-                    vol.Required(
-                        "ac_variable_end_hour", default=_d(d, "ac_variable_end_hour")
-                    ): _number(0, 23),
-                    vol.Required(
-                        "dc_base_load_w", default=_d(d, "dc_base_load_w")
-                    ): _number(0, 10_000, 5, "W"),
-                    vol.Required(
-                        "dc_variable_load_w", default=_d(d, "dc_variable_load_w")
-                    ): _number(0, 10_000, 5, "W"),
-                    vol.Required(
-                        "dc_variable_start_hour",
-                        default=_d(d, "dc_variable_start_hour"),
-                    ): _number(0, 23),
-                    vol.Required(
-                        "dc_variable_end_hour", default=_d(d, "dc_variable_end_hour")
-                    ): _number(0, 23),
-                }
+                {**_profile_schema_fields(d), **_learning_schema_fields(d)}
             ),
         )
 
@@ -314,9 +366,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             error = _validate_support_entities(user_input)
             if error is None:
                 self._data.update(user_input)
-                return self.async_create_entry(
-                    title="Battery Manager", data=self._data
-                )
+                return self.async_create_entry(title="Battery Manager", data=self._data)
             errors["base"] = error
         d = self._data
         return self.async_show_form(
@@ -361,17 +411,26 @@ class BatteryManagerOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            error = _validate_support_entities(user_input)
+            error = _validate_support_entities(
+                user_input
+            ) or _validate_learning_sources(user_input)
             if error is None:
                 # Cleared selector fields are absent from user_input. Store an
-                # explicit None so the options override the value still present
-                # in entry.data (raw_config merges data + options).
-                for key in _SUPPORT_SWITCH_KEYS:
+                # explicit None/[] so the options override the value still
+                # present in entry.data (raw_config merges data + options).
+                for key in _SUPPORT_SWITCH_KEYS + _LEARNING_SINGLE_KEYS:
                     user_input.setdefault(key, None)
+                for key in _LEARNING_MULTI_KEYS:
+                    user_input.setdefault(key, [])
                 return self.async_create_entry(title="", data=user_input)
             errors["base"] = error
 
-        current = {**self.config_entry.data, **self.config_entry.options}
+        # On a validation error, re-render with the just-entered values.
+        current = {
+            **self.config_entry.data,
+            **self.config_entry.options,
+            **(user_input or {}),
+        }
         schema: dict[Any, Any] = {
             vol.Required(
                 "soc_buffer_percent", default=_d(current, "soc_buffer_percent")
@@ -401,6 +460,22 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 vol.Optional(key, description={"suggested_value": current.get(key)})
             ] = _entity("switch")
 
+        # Fallback profile + learned-consumption sources (CONSUMPTION_FORECAST)
+        schema.update(_profile_schema_fields(current))
+        schema.update(_learning_schema_fields(current))
+        schema[
+            vol.Required(
+                CONF_LEARNING_WINDOW_DAYS,
+                default=_d(current, CONF_LEARNING_WINDOW_DAYS),
+            )
+        ] = _number(14, 120, 1, "d")
+        schema[
+            vol.Required(
+                CONF_LEARNING_MAX_AGE_DAYS,
+                default=_d(current, CONF_LEARNING_MAX_AGE_DAYS),
+            )
+        ] = _number(3, 60, 1, "d")
+
         return self.async_show_form(
             step_id="init", data_schema=vol.Schema(schema), errors=errors
         )
@@ -426,6 +501,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             ): _number(0, 240, 5, "min"),
             vol.Required(
                 CONF_LOAD_ENERGY_LIMITED, default=dv(CONF_LOAD_ENERGY_LIMITED)
+            ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_LOAD_IN_HOUSE, default=dv(CONF_LOAD_IN_HOUSE)
             ): selector.BooleanSelector(),
             vol.Required(
                 CONF_LOAD_CAPACITY_WH, default=dv(CONF_LOAD_CAPACITY_WH)

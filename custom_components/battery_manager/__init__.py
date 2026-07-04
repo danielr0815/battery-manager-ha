@@ -21,13 +21,24 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
-from .const import CONF_AS_TABLE, DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS, STORAGE_VERSION
+from .const import (
+    CONF_AS_TABLE,
+    DOMAIN,
+    LEARNED_STORE_KEY,
+    LEARNED_STORE_VERSION,
+    SERVICE_EXPORT_HOURLY_DETAILS,
+    STORAGE_VERSION,
+)
 from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.SWITCH,
+]
 
 # Config-entry-only integration; async_setup exists solely for the card.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -73,9 +84,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     try:
         await _async_setup_card(hass)
     except Exception:
-        _LOGGER.warning(
-            "Could not register the bundled dashboard card", exc_info=True
-        )
+        _LOGGER.warning("Could not register the bundled dashboard card", exc_info=True)
     return True
 
 
@@ -131,9 +140,7 @@ async def _async_register_card_resource(
         url = item.get("url", "")
         if url.split("?")[0] == CARD_URL:
             if url != versioned_url:
-                await resources.async_update_item(
-                    item["id"], {"url": versioned_url}
-                )
+                await resources.async_update_item(item["id"], {"url": versioned_url})
                 _LOGGER.info("Updated card resource to %s", versioned_url)
             return
     await resources.async_create_item({"res_type": "module", "url": versioned_url})
@@ -171,6 +178,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # After the platforms: the learner looks up the vacation switch entity.
+    coordinator.async_setup_learning()
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True
 
@@ -197,8 +206,13 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Clean up the per-entry storage (SOC cache, plug ownership)."""
+    """Clean up the per-entry storage (SOC cache, learned profiles)."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    await Store(
+        hass,
+        LEARNED_STORE_VERSION,
+        f"{DOMAIN}.{LEARNED_STORE_KEY}.{entry.entry_id}",
+    ).async_remove()
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

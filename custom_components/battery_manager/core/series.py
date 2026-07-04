@@ -21,6 +21,41 @@ def pv_hour_share(pv, hour_of_day: int) -> float:
     return 0.0
 
 
+def slot_starts(now: datetime, num_days: int) -> tuple[datetime, ...]:
+    """Enumerate the slot start times of a planning horizon.
+
+    Single source of truth for the slot grid (partial first hour, then a
+    fixed hourly raster until midnight after the last forecast day). Used by
+    build_slots AND by callers that construct per-slot input series, so both
+    sides can never disagree on slot count or indexing (D-C5).
+    """
+    if num_days <= 0:
+        return ()
+    horizon_end = (now + timedelta(days=num_days - 1)).replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
+    starts: list[datetime] = []
+    slot_start = now
+    index = 0
+    while slot_start <= horizon_end:
+        starts.append(slot_start)
+        if index == 0:
+            slot_start = slot_start.replace(
+                minute=0, second=0, microsecond=0
+            ) + timedelta(hours=1)
+        else:
+            slot_start += timedelta(hours=1)
+        index += 1
+    return tuple(starts)
+
+
+def _series_value(series: tuple[float | None, ...] | None, index: int) -> float | None:
+    """Per-slot override lookup: values beyond the series length are None."""
+    if series is None or index >= len(series):
+        return None
+    return series[index]
+
+
 def build_slots(
     config: SystemConfig,
     now: datetime,
@@ -28,21 +63,22 @@ def build_slots(
     daily_forecasts_kwh: list[float],
     appliance_runs: tuple[ApplianceRun, ...] = (),
     load_states: tuple[SurplusLoadState, ...] = (),
+    ac_load_w: tuple[float | None, ...] | None = None,
+    dc_load_w: tuple[float | None, ...] | None = None,
 ) -> PlanInputs:
-    """Assemble PlanInputs from daily forecasts and static profiles.
+    """Assemble PlanInputs from daily forecasts and load profiles.
 
     The horizon runs from `now` (partial first hour) until midnight after the
     last forecast day (docs/ALGORITHM.md D-A6).
+
+    `ac_load_w` / `dc_load_w` are optional learned-consumption series
+    (docs/CONSUMPTION_FORECAST.md D-C5): mean Watt per slot, addressed by
+    slot index. A None value (or a series shorter than the horizon) falls
+    back to the static profile for that slot only.
     """
     slots: list[HourSlot] = []
-    slot_start = now
-    index = 0
 
-    horizon_end = (now + timedelta(days=len(daily_forecasts_kwh) - 1)).replace(
-        hour=23, minute=59, second=59, microsecond=0
-    )
-
-    while slot_start <= horizon_end:
+    for index, slot_start in enumerate(slot_starts(now, len(daily_forecasts_kwh))):
         duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
 
         hour_of_day = slot_start.hour
@@ -57,8 +93,18 @@ def build_slots(
             daily_kwh * 1000.0 * pv_hour_share(config.pv, hour_of_day),
             config.pv.peak_power_w,
         )
-        ac_w = config.ac_profile.power_w(hour_of_day)
-        dc_w = config.dc_profile.power_w(hour_of_day)
+        ac_override = _series_value(ac_load_w, index)
+        dc_override = _series_value(dc_load_w, index)
+        ac_w = (
+            ac_override
+            if ac_override is not None
+            else config.ac_profile.power_w(hour_of_day)
+        )
+        dc_w = (
+            dc_override
+            if dc_override is not None
+            else config.dc_profile.power_w(hour_of_day)
+        )
 
         slots.append(
             HourSlot(
@@ -71,14 +117,6 @@ def build_slots(
                 dc_wh=dc_w * duration,
             )
         )
-
-        if index == 0:
-            slot_start = slot_start.replace(
-                minute=0, second=0, microsecond=0
-            ) + timedelta(hours=1)
-        else:
-            slot_start += timedelta(hours=1)
-        index += 1
 
     slots = _apply_appliance_runs(slots, appliance_runs)
 

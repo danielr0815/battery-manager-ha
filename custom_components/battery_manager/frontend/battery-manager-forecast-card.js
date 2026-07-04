@@ -20,7 +20,7 @@
  * via Home Assistant CSS variables inside an <ha-card>.
  */
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.5.0";
 const CARD_TYPE = "battery-manager-forecast-card";
 const DOCS_URL = "https://github.com/danielr0815/battery-manager-ha";
 
