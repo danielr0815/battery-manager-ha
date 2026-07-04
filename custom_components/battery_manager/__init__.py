@@ -27,10 +27,11 @@ from .const import (
     LEARNED_STORE_KEY,
     LEARNED_STORE_VERSION,
     SERVICE_EXPORT_HOURLY_DETAILS,
+    SERVICE_EXPORT_LEARNED_PROFILES,
     STORAGE_VERSION,
 )
 from .coordinator import BatteryManagerCoordinator
-from .debug_utils import format_hourly_details_table
+from .debug_utils import format_hourly_details_table, format_learned_profiles_table
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -158,6 +159,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_load_persistent_state()
     await coordinator.async_refresh()
 
+    export_schema = vol.Schema(
+        {
+            vol.Optional("entry_id"): str,
+            vol.Optional("file_path"): str,
+            vol.Optional("download", default=False): bool,
+            vol.Optional(CONF_AS_TABLE, default=True): bool,
+        }
+    )
     if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
 
         async def export_service(call: ServiceCall) -> None:
@@ -167,14 +176,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             DOMAIN,
             SERVICE_EXPORT_HOURLY_DETAILS,
             export_service,
-            schema=vol.Schema(
-                {
-                    vol.Optional("entry_id"): str,
-                    vol.Optional("file_path"): str,
-                    vol.Optional("download", default=False): bool,
-                    vol.Optional(CONF_AS_TABLE, default=True): bool,
-                }
-            ),
+            schema=export_schema,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_LEARNED_PROFILES):
+
+        async def export_profiles_service(call: ServiceCall) -> None:
+            await _async_export_learned_profiles(hass, call)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_EXPORT_LEARNED_PROFILES,
+            export_profiles_service,
+            schema=export_schema,
         )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -194,8 +207,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
         if not hass.data[DOMAIN]:
             hass.data.pop(DOMAIN)
-            if hass.services.has_service(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS):
-                hass.services.async_remove(DOMAIN, SERVICE_EXPORT_HOURLY_DETAILS)
+            for service in (
+                SERVICE_EXPORT_HOURLY_DETAILS,
+                SERVICE_EXPORT_LEARNED_PROFILES,
+            ):
+                if hass.services.has_service(DOMAIN, service):
+                    hass.services.async_remove(DOMAIN, service)
 
     return unload_ok
 
@@ -229,28 +246,29 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -> None:
-    """Write the last plan's hourly details to a file."""
+def _export_coordinator(
+    hass: HomeAssistant, call: ServiceCall
+) -> tuple[str, BatteryManagerCoordinator] | None:
+    """Resolve the target coordinator for an export service call."""
     domain_data: dict[str, BatteryManagerCoordinator] = hass.data.get(DOMAIN, {})
     if not domain_data:
         _LOGGER.error("No Battery Manager instances available for export")
-        return
-
+        return None
     entry_id = call.data.get("entry_id") or next(iter(domain_data))
     coordinator = domain_data.get(entry_id)
     if coordinator is None:
         _LOGGER.error("Unknown entry_id for export: %s", entry_id)
-        return
+        return None
+    return entry_id, coordinator
 
-    details = coordinator.get_last_hourly_details()
-    if not details:
-        _LOGGER.warning("No hourly details available yet")
-        return
 
+async def _async_write_export(
+    hass: HomeAssistant, call: ServiceCall, content: str, default_name: str
+) -> None:
+    """Validate the target path, write the export, notify on download."""
     config_dir = Path(hass.config.config_dir)
     download = call.data.get("download", False)
     base_dir = config_dir / "www" if download else config_dir
-    default_name = f"battery_manager_hourly_{entry_id}.txt"
     file_path = call.data.get("file_path") or str(base_dir / default_name)
 
     try:
@@ -259,11 +277,6 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
         _LOGGER.error("Refusing to export: %s", err)
         return
 
-    if call.data.get(CONF_AS_TABLE, True):
-        content = format_hourly_details_table(details)
-    else:
-        content = "\n".join(json.dumps(row) for row in details)
-
     def _write() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -271,13 +284,53 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
     try:
         await hass.async_add_executor_job(_write)
     except OSError as err:  # pragma: no cover
-        _LOGGER.error("Failed to write hourly details: %s", err)
+        _LOGGER.error("Failed to write export: %s", err)
         return
 
-    _LOGGER.info("Hourly details exported to %s", target)
+    _LOGGER.info("Export written to %s", target)
     if download:
         persistent_notification_create(
             hass,
             f"[Download {target.name}](/local/{target.name})",
             title="Battery Manager Export",
         )
+
+
+async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Write the last plan's hourly details to a file."""
+    resolved = _export_coordinator(hass, call)
+    if resolved is None:
+        return
+    entry_id, coordinator = resolved
+
+    details = coordinator.get_last_hourly_details()
+    if not details:
+        _LOGGER.warning("No hourly details available yet")
+        return
+
+    if call.data.get(CONF_AS_TABLE, True):
+        content = format_hourly_details_table(details)
+    else:
+        content = "\n".join(json.dumps(row) for row in details)
+    await _async_write_export(
+        hass, call, content, f"battery_manager_hourly_{entry_id}.txt"
+    )
+
+
+async def _async_export_learned_profiles(
+    hass: HomeAssistant, call: ServiceCall
+) -> None:
+    """Write the learned consumption profiles to a file (CONSUMPTION_FORECAST)."""
+    resolved = _export_coordinator(hass, call)
+    if resolved is None:
+        return
+    entry_id, coordinator = resolved
+
+    snapshot = coordinator.learner.export_snapshot()
+    if call.data.get(CONF_AS_TABLE, True):
+        content = format_learned_profiles_table(snapshot)
+    else:
+        content = json.dumps(snapshot, indent=2, ensure_ascii=False)
+    await _async_write_export(
+        hass, call, content, f"battery_manager_profiles_{entry_id}.txt"
+    )

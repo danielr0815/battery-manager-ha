@@ -188,4 +188,5 @@ ATTR_THRESHOLD = "soc_threshold_percent"
 
 # --- Services ---
 SERVICE_EXPORT_HOURLY_DETAILS = "export_hourly_details"
+SERVICE_EXPORT_LEARNED_PROFILES = "export_learned_profiles"
 CONF_AS_TABLE = "as_table"

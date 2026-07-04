@@ -83,6 +83,13 @@ _LOGGER = logging.getLogger(__name__)
 _POWER_EMA_ALPHA = 0.3
 
 
+def _series_source(series: tuple[float | None, ...] | None, index: int) -> str:
+    """Per-slot consumption source: L = learned series, S = static profile."""
+    if series is not None and index < len(series) and series[index] is not None:
+        return "L"
+    return "S"
+
+
 class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Reads inputs, runs the core planner, applies hysteresis and switching."""
 
@@ -605,6 +612,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "inverter_enabled": flow.inverter_on,
                 "support_dc24": flow.support_dc24,
                 "support_dc48": flow.support_dc48,
+                "profile_sources": (
+                    f"{_series_source(ac_series, slot.index)}"
+                    f"/{_series_source(dc_series, slot.index)}"
+                ),
             }
             for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True)
         ]

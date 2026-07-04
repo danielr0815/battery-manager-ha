@@ -239,7 +239,21 @@ class ProfileLearner:
         diag = dict(self.data.get("diagnostics") or {})
         diag["computed_at"] = self.data.get("computed_at")
         diag["samples"] = self.data.get("samples")
+        # The learned bins themselves (W per day type and hour): visible in
+        # the developer tools and usable by dashboard cards/templates.
+        diag["profiles"] = self.data.get("profiles")
         return diag
+
+    def export_snapshot(self) -> dict[str, Any]:
+        """Learned state for the export service (docs/CONSUMPTION_FORECAST.md)."""
+        return {
+            "computed_at": self.data.get("computed_at"),
+            "window_days": self.data.get("window_days"),
+            "profiles": self.data.get("profiles"),
+            "samples": self.data.get("samples"),
+            "diagnostics": self.data.get("diagnostics"),
+            "day_log": self.data.get("day_log"),
+        }
 
     # ------------------------------------------------------------------
     # Source configuration

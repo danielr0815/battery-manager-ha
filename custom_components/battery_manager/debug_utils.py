@@ -21,6 +21,8 @@ _COLUMNS = (
     ("inverter_enabled", "WR", "{}"),
     ("support_dc24", "24V", "{}"),
     ("support_dc48", "48V", "{}"),
+    # AC/DC consumption source: L = learned series, S = static profile
+    ("profile_sources", "Prof", "{}"),
 )
 
 
@@ -45,6 +47,10 @@ def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
         rows.append(row)
 
     headers = [header for _key, header, _fmt in _COLUMNS]
+    return _ascii_table(headers, rows)
+
+
+def _ascii_table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [
         max(len(headers[i]), *(len(row[i]) for row in rows))
         for i in range(len(headers))
@@ -52,7 +58,9 @@ def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
     sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
     lines = [sep]
     lines.append(
-        "|" + "|".join(f" {headers[i]:>{widths[i]}} " for i in range(len(headers))) + "|"
+        "|"
+        + "|".join(f" {headers[i]:>{widths[i]}} " for i in range(len(headers)))
+        + "|"
     )
     lines.append(sep)
     for row in rows:
@@ -60,4 +68,61 @@ def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
             "|" + "|".join(f" {row[i]:>{widths[i]}} " for i in range(len(row))) + "|"
         )
     lines.append(sep)
+    return "\n".join(lines)
+
+
+_DAY_TYPE_HEADERS = (
+    ("weekday", "Werktag"),
+    ("weekend", "Wochenende"),
+    ("absence", "Abwesend"),
+)
+
+
+def format_learned_profiles_table(snapshot: dict[str, Any]) -> str:
+    """Render the learned consumption profiles as ASCII tables.
+
+    `snapshot` is the learner's export: {profiles, samples, diagnostics,
+    computed_at, window_days}. Per path one table with the learned W value
+    and the sample count per (day type, hour); '-' = bin invalid (static
+    fallback, docs/CONSUMPTION_FORECAST.md D-C6).
+    """
+    profiles = snapshot.get("profiles") or {}
+    samples = snapshot.get("samples") or {}
+    diagnostics = snapshot.get("diagnostics") or {}
+    lines = [
+        "Gelernte Verbrauchsprofile (docs/CONSUMPTION_FORECAST.md)",
+        f"Stand: {snapshot.get('computed_at') or '-'}"
+        f" | Lernfenster: {snapshot.get('window_days') or '-'} Tage"
+        f" | Abdeckung: {diagnostics.get('coverage')}"
+        f" | negative Residuen: {diagnostics.get('negative_residuals')}",
+    ]
+    if diagnostics.get("missing_statistics"):
+        lines.append(
+            "Ohne Langzeitstatistik: " + ", ".join(diagnostics["missing_statistics"])
+        )
+
+    headers = ["Std"]
+    for _key, label in _DAY_TYPE_HEADERS:
+        headers.extend([f"{label} W", "n"])
+
+    for path in ("ac", "dc"):
+        bins = profiles.get(path)
+        lines.append("")
+        lines.append(f"[{path.upper()}-Pfad]")
+        if not bins:
+            lines.append("(kein gelerntes Profil — statisches Profil aktiv)")
+            continue
+        path_samples = samples.get(path) or {}
+        rows = []
+        for hour in range(24):
+            row = [str(hour)]
+            for key, _label in _DAY_TYPE_HEADERS:
+                values = bins.get(key) or []
+                counts = path_samples.get(key) or []
+                value = values[hour] if hour < len(values) else None
+                count = counts[hour] if hour < len(counts) else 0
+                row.append(f"{value:.0f}" if value is not None else "-")
+                row.append(str(count))
+            rows.append(row)
+        lines.append(_ascii_table(headers, rows))
     return "\n".join(lines)

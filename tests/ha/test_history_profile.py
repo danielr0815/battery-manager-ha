@@ -173,6 +173,40 @@ async def test_vacation_switch_toggles_learner(hass):
     assert coordinator.learner.vacation_active is False
 
 
+async def test_export_learned_profiles_service(hass):
+    """The export service writes a readable table of the learned bins."""
+    from pathlib import Path
+
+    entry = _entry(hass)
+    hass.states.async_set("sensor.test_soc", "55", {"unit_of_measurement": "%"})
+    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(pv, "10.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.learner.data["profiles"] = {"ac": AC_BINS, "dc": None}
+    coordinator.learner.data["samples"] = {
+        "ac": {"weekday": [12] * 24, "weekend": [5] * 24, "absence": [0] * 24},
+        "dc": None,
+    }
+    coordinator.learner.data["computed_at"] = dt_util.now().isoformat()
+    coordinator.learner.data["window_days"] = 42
+
+    target = Path(hass.config.config_dir) / "bm_profiles_test.txt"
+    await hass.services.async_call(
+        DOMAIN,
+        "export_learned_profiles",
+        {"file_path": str(target)},
+        blocking=True,
+    )
+    content = await hass.async_add_executor_job(target.read_text)
+    assert "Werktag W" in content
+    assert "[AC-Pfad]" in content
+    assert "100" in content  # learned weekday value
+    assert "statisches Profil aktiv" in content  # DC has no learned profile
+
+
 async def test_vacation_mode_uses_base_load_without_absence_bins(hass):
     """Vacation + empty absence bins -> base_w series, not the full profile."""
     entry = _entry(hass)
