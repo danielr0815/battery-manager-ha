@@ -66,15 +66,17 @@ from .const import (
 
 
 def _number(minimum: float, maximum: float, step: float = 1.0, unit: str | None = None):
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=minimum,
-            max=maximum,
-            step=step,
-            mode=selector.NumberSelectorMode.BOX,
-            unit_of_measurement=unit,
-        )
+    config = selector.NumberSelectorConfig(
+        min=minimum,
+        max=maximum,
+        step=step,
+        mode=selector.NumberSelectorMode.BOX,
     )
+    if unit is not None:
+        # unit_of_measurement=None fails the selector's config validation
+        # (vol.Invalid surfaces as a bare "400: Bad Request" on flow load).
+        config["unit_of_measurement"] = unit
+    return selector.NumberSelector(config)
 
 
 def _entity(domain: str | list[str] | None = None, multiple: bool = False):
