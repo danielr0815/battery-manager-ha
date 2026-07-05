@@ -34,8 +34,8 @@ kennt **eine** ungeteilte DC-Lastreihe (`slot.dc_wh`) als Batterielast über
 | Fehler | Wirkung |
 |---|---|
 | 24-V-PSU verschiebt die GESAMTE DC-Last ins Netz (1:1) | native 48-V-Lasten wandern fälschlich mit; kein η, kein Cap |
-| 48-V-PSU speist pauschal 60 W, ohne Spannungs-Gate | Winter-Prognose kreditiert Energie, die real nie fließt |
-| `grid_import += psu_wh` IMMER (auch bei voller Batterie) | Überberechnung des Imports |
+| ~~48-V-PSU speist pauschal 60 W, ohne Spannungs-Gate~~ (gefixt v0.7.2) | Winter-Prognose kreditiert Energie, die real nie fließt |
+| ~~`grid_import += psu_wh` IMMER (auch bei voller Batterie)~~ (gefixt v0.7.6) | Überberechnung des Imports |
 | Lernen (Rev. 3) nimmt „Schalter an == 60 W geliefert" an | über-korrigiert AC und DC in Gate-zu-Stunden |
 
 **Live-Befund (2026-07-05):** Bei ~41 % SOC und −38 A Last lag
@@ -201,9 +201,11 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
 | 0 ✓ | v0.6.5 | F-N2 committet (erledigt) | 24-h-Soak der Override-Logik |
 | 1 | v0.7.0 | Kern: Dataclasses, HourFlows, Kombinations-Gleichungen, Gate verdrahtet aber default-offen; Golden-Snapshots bit-exakt | `export_hourly_details` vorher/nachher identisch |
 | 2 | v0.7.1 | Config-Flow + Verdrahtung + Diagnose-Spalten | reale Typenschild-Werte eintragen (Gate offen lassen), Plan-Deltas plausibilisieren |
-| 3 | v0.7.2 | R1-Gate scharf + Kalibrier-Diagnose | PSU manuell bei hohem SOC an ⇒ Prognose kreditiert KEINE 60 W; Abend-Entladung gegen Victron-Spannungsgraph |
-| 4 | v0.7.3 | R3-Schalter + Modus-Konsolidierung (ein Eintrittspunkt) + korrekte PSU-Direktverrechnung (eigene Golden-Diffs) | Schalter toggeln, Modussensoren, Schiene nie quellenlos, Neustart mitten im Manuell-Modus |
-| 5 | v0.7.4 | R2-Spannungsregler (Log-only-Flag) | 48 h Log-only gegen Victron-Historie, dann scharf über einen Abend-/Morgenzyklus |
+| 3 ✓ | v0.7.2 | R1-Gate scharf + Kalibrier-Diagnose | PSU manuell bei hohem SOC an ⇒ Prognose kreditiert KEINE 60 W; Abend-Entladung gegen Victron-Spannungsgraph |
+| 4 ✓ | v0.7.3 | R3-Schalter + Modus-Konsolidierung (ein Eintrittspunkt) | Schalter toggeln, Modussensoren, Schiene nie quellenlos, Neustart mitten im Manuell-Modus |
+| 4b ✓ | v0.7.4/5 | Config-Dialoge in einklappbare Abschnitte gruppiert (UX, keine Verhaltensänderung) | Dialoge in der Oberfläche prüfen |
+| 4c ✓ | v0.7.6 | **48-V-Direktverrechnung scharf** (eigene Golden-Diffs): PSU deckt Buslast direkt, Rest lädt Batterie, Abrechnung = geliefert/η, Cap. Nur `forced_dc48` ändert sich, kostenneutral (Import unverändert, SOC-Kurve physikalischer) | Winter-Abend: `psu48_delivered_wh` in hourly_details ~0 bei voller Batterie, SOC schonender |
+| 5 | v0.7.7 | R2-Spannungsregler (Log-only-Flag) | 48 h Log-only gegen Victron-Historie, dann scharf über einen Abend-/Morgenzyklus |
 | 6 | v0.7.5 | Lernen Rev. 4 (LTS-Min/Max-Gating) | Relearn-Lauf, Profil-Export-Vergleich, 14-d-Watchdog |
 | 7 | v0.7.6 | Karten-Stützungs-Spur + Doku-Abschluss | Dashboard-Check |
 

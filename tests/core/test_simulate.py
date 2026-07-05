@@ -245,3 +245,53 @@ def test_rail_node_energy_conserved_per_slot():
             assert abs(served + flow.unserved_dc_wh - rail) < 1e-3
             if not grid:
                 assert abs(flow.dcdc_loss_wh - (flow.dcdc_input_wh - served)) < 1e-3
+
+
+# ---------------------------------------------------------------------------
+# 48 V PSU direct-offset billing (docs/DC_TOPOLOGY.md §4). The PSU is a 48 V
+# source: it covers concurrent bus load directly (no battery round-trip),
+# charges only the remainder, and the grid pays for what is actually
+# delivered (/eta), so a full battery or a closed gate bills ~0.
+# ---------------------------------------------------------------------------
+
+
+def test_psu48_offsets_bus_load_without_battery_roundtrip():
+    """A concurrent 48 V bus load is covered by the PSU directly — it is not
+    drained from and re-charged into the battery."""
+    config = _dc_config(
+        SupportParams(configured=True, dc48_power_w=100.0), dc_base_w=60.0
+    )
+    flow = _first_flow(config, soc=80.0, dc48=True)
+    # 60 Wh bus load covered directly; the battery is not discharged for it.
+    assert abs(flow.battery_discharge_wh) < _EPS
+    # Remainder 40 Wh charges the battery (x eta_charge); delivered = 100.
+    assert abs(flow.battery_charge_wh - 40.0 * config.battery.eta_charge) < 1e-3
+    assert abs(flow.psu48_delivered_wh - 100.0) < 1e-3
+
+
+def test_psu48_no_overbilling_when_battery_full():
+    """Battery at the ceiling, no bus load: the PSU delivers nothing, so the
+    grid is not billed (the old flat model billed the full rating)."""
+    config = _dc_config(
+        SupportParams(configured=True, dc48_power_w=60.0), dc_base_w=0.0
+    )
+    flow = _first_flow(config, soc=95.0, dc48=True)  # 95 % == soc_max
+    assert abs(flow.psu48_delivered_wh) < _EPS
+    assert abs(flow.grid_import_wh) < _EPS
+
+
+def test_psu48_efficiency_and_power_cap():
+    """Delivery is capped at V x I, and the grid pays delivered / eta."""
+    config = _dc_config(
+        SupportParams(
+            configured=True,
+            dc48_power_w=100.0,
+            psu48_max_power_w=57.0,
+            psu48_eta=0.9,
+        ),
+        dc_base_w=0.0,
+    )
+    flow = _first_flow(config, soc=30.0, dc48=True)
+    # Capped at 57 W; all of it charges the battery (no bus load).
+    assert abs(flow.psu48_delivered_wh - 57.0) < 1e-3
+    assert abs(flow.grid_import_wh - 57.0 / 0.9) < 1e-2

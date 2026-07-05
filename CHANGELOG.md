@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-07-05
+
+### Changed — F-N3: 48 V PSU direct-offset billing (docs/DC_TOPOLOGY.md §4)
+- **The 48 V support PSU is now modelled as a 48 V source, not a
+  battery charger.** It covers concurrent 48 V bus load directly (no
+  battery round-trip), only the remainder charges the battery (via the
+  charge efficiency), and the grid is billed for the energy actually
+  delivered divided by the PSU efficiency (capped at V × I). This fixes
+  three physical errors of the old flat model: over-billing (a full
+  battery or closed gate no longer bills the full rating), the
+  charge-then-discharge round-trip loss, and the missing efficiency/cap.
+  Deliberate behaviour change (golden regenerated): only the
+  `forced_dc48` scenario shifts, and cost-neutrally — grid import/export
+  unchanged, the SOC trajectory just more physical (min SOC higher, no
+  artificial over-storage). No scenario imports more than before.
+  Adversarially reviewed (physics/energy-conservation, neutrality/
+  escalation, integration) with no findings. Full suite 145 tests green.
+- Known follow-up: the consumption-learning correction still assumes
+  "48 V PSU on == full rating delivered"; it will be made gate/
+  direct-offset aware in the learning phase (Rev. 4).
+
 ## [0.7.5] - 2026-07-05
 
 ### Changed

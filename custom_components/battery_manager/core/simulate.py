@@ -36,24 +36,6 @@ def step_hour(
     inverter_on = soc_percent > threshold_percent
     support = config.support
 
-    # --- 48 V support PSU: fixed DC power onto the battery bus, from grid ---
-    # Voltage gate (R1): the PSU only delivers while the bus voltage is below
-    # its output — modelled via an SOC proxy. gate_soc None = always open
-    # (neutral: identical to the pre-F-N3 "on == delivering" behaviour).
-    gate_soc = support.gate_soc_percent
-    gate_open = (
-        dc48_support
-        and support.configured
-        and (gate_soc is None or soc_percent < gate_soc)
-    )
-    psu48_delivered_wh = 0.0
-    if gate_open:
-        psu48_delivered_wh = support.dc48_power_w * slot.duration
-        absorbed = min(psu48_delivered_wh, max(0.0, ceil_wh - energy))
-        energy += absorbed
-        battery_charge += absorbed
-        grid_import += psu48_delivered_wh  # conversion losses neglected (phase 1)
-
     # --- DC load split across the two buses (F-N3, docs/DC_TOPOLOGY.md) ---
     # `dc24_share` of the DC load sits on the 24 V rail; the rest is native
     # 48 V bus load. Neutral default share=1.0 => whole load on the rail.
@@ -89,10 +71,42 @@ def step_hour(
         dcdc_loss_wh = bus_draw24_wh - served
         unserved_dc_wh = rail_wh - served
 
-    # Native 48 V load + the DC/DC's bus draw both drain the battery (or,
-    # when the store is empty, force the charger). Identical to the legacy
-    # DC-load path under neutral defaults (share 1, eta 1, uncapped).
+    # Total consumption on the 48 V bus this slot: native 48 V load + the
+    # energy the DC/DC draws to feed the 24 V rail.
     bus_load = native48_wh + bus_draw24_wh
+
+    # --- 48 V support PSU (F-N3 direct-offset model, docs/DC_TOPOLOGY.md §4) ---
+    # The PSU is a 48 V source: it first covers concurrent bus load DIRECTLY
+    # (no battery round-trip), then the remainder charges the battery through
+    # the charge efficiency. Grid billing follows the energy actually
+    # DELIVERED (a closed gate or a full battery bills ~0), divided by the
+    # PSU efficiency. Voltage gate (R1): an SOC proxy for the PSU's
+    # output-voltage threshold; gate_soc None = always open.
+    gate_soc = support.gate_soc_percent
+    gate_open = (
+        dc48_support
+        and support.configured
+        and (gate_soc is None or soc_percent < gate_soc)
+    )
+    psu48_delivered_wh = 0.0
+    if gate_open:
+        potential = support.dc48_power_w * slot.duration
+        if support.psu48_max_power_w is not None:
+            potential = min(potential, support.psu48_max_power_w * slot.duration)
+        # (a) offset concurrent bus load 1:1 on the 48 V bus (no battery).
+        direct = min(potential, bus_load)
+        bus_load -= direct
+        # (b) the remainder charges the battery (bus -> stored via eta_charge).
+        remainder = potential - direct
+        absorbed = min(remainder * battery.eta_charge, max(0.0, ceil_wh - energy))
+        energy += absorbed
+        battery_charge += absorbed
+        psu48_delivered_wh = direct + absorbed / battery.eta_charge
+        grid_import += psu48_delivered_wh / support.psu48_eta
+
+    # --- Remaining 48 V bus load drains the battery (or, when the store is
+    # empty, forces the charger). Identical to the legacy DC-load path under
+    # neutral defaults with no active 48 V PSU. ---
     if bus_load > _EPS:
         needed_from_store = bus_load / battery.eta_discharge
         available = max(0.0, energy - floor_wh)
