@@ -174,8 +174,8 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
 | `battery_voltage_entity` | — (Feature-Gate) | `sensor.victron_battery_voltage` | 2 |
 | `battery_cells_series` | 16 | **15** (Pylontech US5000) | 3 |
 | `psu48_output_voltage_v` / `psu48_max_current_a` / `psu48_eta` | 49,56 / — / 1,0 | 49,56 / **1,15** / 0,89 | 2 |
-| `psu24_output_voltage_v` / `psu24_max_current_a` / `psu24_eta` | — / — / 1,0 | **offen (Restfrage B)** | 2 |
-| `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1,0 / — | 24 / **0,93** / **20** | 2 |
+| `psu24_output_voltage_v` / `psu24_max_current_a` / `psu24_eta` | — / — / 1,0 | **24,05** / **25** / 0,89 | 2 |
+| `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1,0 / — | **24 (bestätigen!)** / **0,93** / **20** | 2 |
 | `psu48_off_voltage_v` (Regler-AUS) / `psu48_on_voltage_v` (EIN) | 49,8 / 49,56 | 49,8 / 49,56 | 5 |
 | `gate_soc_percent` | 100 (= offen) | kalibriert (Phase 3) | 3 |
 | `dc24_share_percent` | 100 | Schätzwert | 2 |
@@ -252,25 +252,29 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
     Plateau-Ruhespannung. Spannungs-Entität: `victron_battery_voltage`
     (BMS) bevorzugt.
 
-**Restfragen (blockieren nur Phase 4/5):**
+**Restfragen — alle entschieden (2026-07-05):**
 
-- **A — Regler-AUS vs. Benutzer-AUS (aus 5 + 6):** Im geregelten
-  48-V-Modus schaltet der REGLER das PSU oberhalb 49,8 V ab und unter
-  49,56 V wieder ein — ein „aus" darf dann NICHT als „Benutzer beendet
-  Manuell-Modus" gelten. Vorschlag: Der **R3-Schalter** „48 V manuell" ist
-  die alleinige Modus-Wahrheit; ein externes physisches EIN startet den
-  Modus und setzt den Schalter mit; den Modus beendet man durch Ausschalten
-  des R3-Schalters, nicht durch physisches PSU-Aus. Die reine
+- **A — Regler-AUS vs. Benutzer-AUS: OK (bestätigt).** Im geregelten
+  48-V-Modus ist der **R3-Schalter „48 V manuell" die alleinige
+  Modus-Wahrheit**; ein externes physisches EIN startet den Modus und
+  setzt den Schalter mit; beendet wird nur über den R3-Schalter. Ein vom
+  Regler verursachtes PSU-AUS beendet den Modus nicht. Die reine
   F-N2-hands-off-Logik (externes AUS = Modus-Ende) bleibt nur für die
-  24-V-PSU. OK so?
-- **B — 24-V-Stütznetzteil:** Antwort (8) impliziert ein netzgespeistes
-  24-V-Netzteil parallel zum DC/DC. Dessen **Ausgangsspannung und
-  max. Strom** fehlen noch (für den Spannungsvergleich aus 8 und den Cap).
-  Existiert es, und mit welchen Werten?
-- **C — Q7 (neu erklärt):** siehe Gesprächsantwort — Verhalten, wenn die
-  24-V-Last die Quellen-Caps übersteigt (Vorschlag: nur warnen).
-- **D — Q10 (neu erklärt):** siehe Gesprächsantwort — 48-h-Trockenlauf des
-  Reglers vor scharfem Schalten (ja/nein).
+  24-V-PSU.
+- **B — 24-V-Stütznetzteil: Spannung 24,05 V, max. Strom 25 A** →
+  `psu24_output_voltage_v = 24.05`, `psu24_max_current_a = 25`
+  (Cap ≈ 601 W). ⚠️ **Präzisierung nötig:** liegt sehr nah an der
+  DC/DC-Ausgangsspannung (Default 24,0 V). Nach Betreiber-Regel 8 („höhere
+  Spannung liefert") gewinnt bei beiden aktiv das PSU nur um 0,05 V — die
+  reale/eingestellte **DC/DC-Ausgangsspannung** sollte in Phase 2 gemessen
+  bzw. bestätigt werden, da sie den Sieger im Parallelfall bestimmt.
+- **C — Schienen-Überlast: nur warnen** (Default übernommen): übersteigt
+  die 24-V-Last den Cap der aktiven Quelle, wird `unserved_dc_wh` als
+  Warnung geführt, kein Mangel durchgerechnet (praktisch unerreichbar bei
+  480/601 W Caps).
+- **D — 48-h-Log-only-Shakedown: ja** (Default übernommen): der Regler
+  läuft in Phase 5 zunächst 48 h nur protokollierend, bevor er scharf
+  schaltet.
 
 ## 12. Hauptrisiken
 
