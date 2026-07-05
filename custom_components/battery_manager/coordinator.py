@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -75,6 +76,7 @@ from .const import (
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
     INPUT_OFF_POLICY_KEEP,
+    LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
     POWER_WARNING_DWELL_MIN,
@@ -718,6 +720,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_learn_ok.get(subentry_id, False)
         )
 
+    def _load_soc_cache_stale(self, cached: dict[str, Any]) -> bool:
+        """A cached load SOC older than LOAD_SOC_CACHE_MAX_AGE_HOURS is no longer
+        trustworthy. A legacy entry without a timestamp is trusted once (it is
+        re-stamped on the next real reading)."""
+        ts = cached.get("ts")
+        if ts is None:
+            return False
+        parsed = dt_util.parse_datetime(ts)
+        if parsed is None:
+            return False
+        return dt_util.now() - parsed > timedelta(hours=LOAD_SOC_CACHE_MAX_AGE_HOURS)
+
     def _get_load_states(self) -> tuple[SurplusLoadState, ...]:
         states = []
         for subentry_id, subentry in self.entry.subentries.items():
@@ -738,27 +752,37 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raw_soc = self._read_float(soc_entity)
                 if raw_soc is not None and 0.0 <= raw_soc <= 100.0:
                     cached = self._load_soc_cache.get(subentry_id)
-                    if (
+                    changed = (
                         cached is None
                         or cached.get("soc") != raw_soc
                         or cached.get("entity_id") != soc_entity
-                    ):
-                        self._load_soc_cache[subentry_id] = {
-                            "entity_id": soc_entity,
-                            "soc": raw_soc,
-                        }
+                    )
+                    # Always refresh the freshness timestamp on a real reading
+                    # (an awake device reporting a stable SOC must not age out);
+                    # only persist when the value/entity actually changes.
+                    self._load_soc_cache[subentry_id] = {
+                        "entity_id": soc_entity,
+                        "soc": raw_soc,
+                        "ts": dt_util.now().isoformat(),
+                    }
+                    if changed:
                         self._save_persistent_state()
                     soc = raw_soc
                 else:
                     # Sleeping device (e.g. powerstation with its input off):
                     # keep planning with the last known SOC — but only if it
                     # came from the SAME entity (reconfigured loads must not
-                    # reuse another device's SOC). If none is known, soc stays
-                    # None and the core assumes an empty storage —
-                    # self-healing once the device wakes while charging
-                    # (docs/LOAD_CONTROL.md §4).
+                    # reuse another device's SOC) and it is not too old (a
+                    # device asleep for LOAD_SOC_CACHE_MAX_AGE_HOURS reverts to
+                    # "empty"). If none is usable, soc stays None and the core
+                    # assumes an empty storage — self-healing once the device
+                    # wakes while charging (docs/LOAD_CONTROL.md §4).
                     cached = self._load_soc_cache.get(subentry_id)
-                    if cached is not None and cached.get("entity_id") == soc_entity:
+                    if (
+                        cached is not None
+                        and cached.get("entity_id") == soc_entity
+                        and not self._load_soc_cache_stale(cached)
+                    ):
                         soc = cached["soc"]
             measured = None
             if data.get(CONF_LOAD_POWER_ENTITY):
@@ -1269,19 +1293,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._support_state[key] = True
                     changed = True
                     continue
-                if (
-                    self._support_pending_off[key]
-                    and cmd is not None
-                    and not cmd[0]
-                    and dt_util.now() - cmd[1] < grace
-                ):
-                    # We commanded THIS PSU off recently and have NOT yet seen
-                    # it reach 'off': a lagging 'on' is our own actuation
-                    # catching up, not an external override. Stay in auto and
-                    # wait (review finding: an operator OFF otherwise bounced
-                    # back to forced-on; also covers the auto-OFF path). An
-                    # operator ON *after* the device was seen off clears the
-                    # flag below, so re-enabling at the wall still works.
+                if self._support_pending_off[key] and cmd is not None and not cmd[0]:
+                    # We commanded THIS PSU off and have NOT yet seen it reach
+                    # 'off': a lagging 'on' is our own actuation catching up,
+                    # not an external override. This escape is UN-TIMED
+                    # (mirroring the ON-side _support_pending_confirm): a device
+                    # slower than min_switch_interval_s that emits no state event
+                    # must not be misread as a manual override (review #10). The
+                    # flag is cleared only when the device is observed off (below)
+                    # or a new command is issued — an operator ON *after* the
+                    # device was seen off then still enters manual.
                     continue
                 if self._support_adopt_once:
                     # Pre-0.6.5 store without an ownership record: an ON
@@ -1597,6 +1618,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def support_manual(self, key: str) -> bool:
         """Public accessor for a PSU's manual-override state (R3 switch)."""
         return self._support_manual.get(key, False)
+
+    def support_active(self, key: str) -> bool:
+        """Public accessor for a support PSU's current on/off state.
+
+        Reflects the persisted BM support state, known independently of a plan —
+        so the support entities stay available (and in sync with the always-
+        available manual switch) even while an update is failing (review #15)."""
+        return self._support_state.get(key, False)
 
     async def async_set_support_manual(self, key: str, on: bool) -> None:
         """Operator manual override for a support PSU (F-N2/R3, F-N3 §7).
@@ -1924,20 +1953,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             last = self._last_load_switch.get(subentry_id)
             if last is not None and now - last < dwell:
                 continue
-            self._last_load_switch[subentry_id] = now
+            # The dwell timestamp is stamped only on a CONFIRMED switch inside
+            # the executor — not here — so a failed actuation does not consume
+            # the min-runtime window and block an immediate retry (review #11).
             plug_was_on = self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH])
             actions.append((subentry_id, dict(data), desired, plug_was_on))
 
         if actions:
             self._load_switch_task = self.entry.async_create_background_task(
                 self.hass,
-                self._execute_load_switching(actions),
+                self._execute_load_switching(actions, now),
                 name="battery_manager_load_switching",
             )
 
     async def _execute_load_switching(
-        self, actions: list[tuple[str, dict[str, Any], bool, bool]]
+        self,
+        actions: list[tuple[str, dict[str, Any], bool, bool]],
+        now: datetime | None = None,
     ) -> None:
+        if now is None:
+            now = dt_util.now()
         async with self._switch_lock:
             for subentry_id, data, activate, plug_was_on in actions:
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
@@ -1954,6 +1989,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # allows the 'auto' policy to switch it off again.
                         self._load_plug_owned[subentry_id] = True
                     self._load_charging_active[subentry_id] = True
+                    self._last_load_switch[subentry_id] = now
                     _LOGGER.info("Charging started for load %s", label)
                 else:
                     policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
@@ -1966,8 +2002,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             label,
                         )
                         continue
-                    if enable:
-                        await self._switch_entity(enable, False)
+                    if enable and not await self._switch_entity(enable, False):
+                        # Charge-enable did not confirm off: charging is not
+                        # actually stopped — keep state and retry next cycle.
+                        continue
                     owned = self._load_plug_owned.get(subentry_id, False)
                     turn_plug_off = policy == INPUT_OFF_POLICY_ALWAYS or (
                         policy == INPUT_OFF_POLICY_AUTO and owned
@@ -1976,10 +2014,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # Without a charge-enable gate, stopping charging is
                         # only possible by switching the input off.
                         turn_plug_off = True
-                    if turn_plug_off:
-                        await self._switch_entity(plug, False)
+                    if turn_plug_off and not await self._switch_entity(plug, False):
+                        # Turn-off failed: keep ownership so the plug is never
+                        # recorded as not-ours while physically ON. Without a
+                        # charge-enable gate charging is still active, so the
+                        # next cycle re-attempts the off; with a gate the gate
+                        # already stopped charging and the next charge cycle's
+                        # stop cleans the plug up (review #3).
+                        continue
                     self._load_plug_owned[subentry_id] = False
                     self._load_charging_active[subentry_id] = False
+                    self._last_load_switch[subentry_id] = now
                     _LOGGER.info(
                         "Charging stopped for load %s (input %s)",
                         label,
@@ -2019,6 +2064,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _debounced_update(self) -> None:
         await asyncio.sleep(DEBOUNCE_SECONDS)
         await self.async_request_refresh()
+
+    async def async_cancel_actuation_tasks(self) -> None:
+        """Cancel and await any in-flight background actuation task.
+
+        Called on unload BEFORE async_flush_persistent_state so that no detached
+        switch/controller task can take the switch lock and mutate the persisted
+        support-mode / caused-off state AFTER the flush has captured the payload
+        (the flush awaits an executor write, yielding the loop; review #7).
+        Cancelling mid-sequence is safe: a make-before-break leaves at worst both
+        sources on (never sourceless) and the reload re-reads and heals.
+        """
+        tasks = [
+            self._switch_task,
+            self._dc48_ctrl_task,
+            self._load_switch_task,
+            self._dcdc_restore_task,
+        ]
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        for task in tasks:
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
     def cleanup(self) -> None:
         """Release entity listeners and cancel pending debounce work."""

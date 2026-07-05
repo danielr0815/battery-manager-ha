@@ -8,15 +8,20 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
     CONF_AC_LOAD_ENTITY,
+    CONF_BATTERY_VOLTAGE_ENTITY,
+    CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    CONF_SUPPORT_DC48_POWER_W,
+    CONF_SUPPORT_DC48_SWITCH,
     DOMAIN,
 )
 from custom_components.battery_manager.history_profile import (
     ProfileLearner,
     _day_series_zero_filled,
+    _rows_to_hour_map,
 )
 
 ENTRY_DATA = {
@@ -48,6 +53,58 @@ def _prime(learner, source_entities, computed_at=None):
     learner.data["profiles"] = {"ac": AC_BINS, "dc": None}
     learner.data["source_entities"] = source_entities
     learner.data["computed_at"] = (computed_at or dt_util.now()).isoformat()
+
+
+async def test_psu48_series_is_gate_aware(hass):
+    """Review #8: the learner must not attribute the 48 V PSU's full nameplate
+    during hours whose mean battery voltage is at/above the PSU output (the real
+    PSU self-gates there and delivers ~0)."""
+    from datetime import datetime
+
+    entry = _entry(
+        hass,
+        **{
+            CONF_SUPPORT_DC48_SWITCH: "switch.psu48",
+            CONF_SUPPORT_DC48_POWER_W: 60.0,
+            CONF_PSU48_OUTPUT_VOLTAGE_V: 49.56,
+            CONF_BATTERY_VOLTAGE_ENTITY: "sensor.batt_v",
+        },
+    )
+    learner = ProfileLearner(hass, entry)
+    cfg = {
+        CONF_SUPPORT_DC48_SWITCH: "switch.psu48",
+        CONF_SUPPORT_DC48_POWER_W: 60.0,
+        CONF_PSU48_OUTPUT_VOLTAGE_V: 49.56,
+    }
+    day = "2026-01-15"
+    fractions = {"switch.psu48": {(day, h): 1.0 for h in range(24)}}  # on all day
+    coverage_start = {"switch.psu48": datetime(2026, 1, 1, tzinfo=dt_util.UTC)}
+    tz = dt_util.get_default_time_zone()
+    voltage_means = {(day, 10): 49.0, (day, 14): 50.0}  # hour10 open, hour14 gated
+
+    series = learner._psu48_series(
+        day, cfg, fractions, coverage_start, tz, voltage_means
+    )
+    assert series[10] == 60.0  # gate open (V < 49.56) -> full attribution
+    assert series[14] == 0.0  # gate closed (V >= 49.56) -> nothing attributed
+    assert series[3] == 60.0  # no voltage sample -> flat fallback
+
+
+async def test_dst_fallback_sums_power_hour(hass):
+    """Review #14: on the autumn DST fall-back two real clock hours fold into one
+    local slot; a power sensor's Wh must be SUMMED, not averaged."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    utc = ZoneInfo("UTC")
+    # 2025-10-26: 00:00Z (CEST) and 01:00Z (CET) both map to local hour 2.
+    rows = [
+        {"start": datetime(2025, 10, 26, 0, 0, tzinfo=utc), "mean": 100.0},
+        {"start": datetime(2025, 10, 26, 1, 0, tzinfo=utc), "mean": 200.0},
+    ]
+    hmap = _rows_to_hour_map(rows, meta=None)  # power sensor (no has_sum)
+    assert hmap[("2025-10-26", 2)] == 300.0  # summed, not averaged (=150)
 
 
 async def test_profiles_for_planning_fresh_and_bound(hass):

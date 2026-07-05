@@ -9,8 +9,16 @@ from core.model import (
     SurplusLoadState,
     SystemConfig,
 )
-from core.optimize import plan, search_threshold
-from core.series import build_slots
+from core.optimize import (
+    _degrades_min_soc,
+    allocate_loads,
+    appliance_windows,
+    plan,
+    search_threshold,
+    support_escalation,
+)
+from core.series import build_slots, insert_appliance_run
+from core.simulate import simulate
 
 FOSSIBOT_1 = SurplusLoad(
     load_id="fossibot_1",
@@ -222,6 +230,63 @@ def test_appliance_window_closed_at_night_with_low_battery():
     now = datetime(2026, 7, 3, 22, 0)
     result, _ = make_plan(config, now, 25.0, [0.0, 2.0, 2.0])
     assert result.appliance_windows["washer"] is False
+
+
+def test_appliance_window_evaluated_under_support_policy():
+    """Review #2: the appliance advisor must simulate the hypothetical run under
+    the SAME support-PSU schedules as the planned trajectory it compares against
+    — otherwise it evaluates the run with the PSUs off and gives false window
+    advisories whenever support is active."""
+    washer = Appliance(
+        appliance_id="washer",
+        name="W",
+        run_energy_wh=2000.0,
+        run_duration_h=2.0,
+        opportunistic_start=True,
+    )
+    config = SystemConfig(
+        appliances=(washer,),
+        support=SupportParams(configured=True, dc48_forced_on=True, dc48_power_w=600.0),
+    )
+    now = datetime(2026, 7, 4, 12, 0)
+    inputs = build_slots(config, now, 95.0, [1.0, 0.0])
+    threshold, base = search_threshold(config, inputs)
+    _, extra_ac, traj = allocate_loads(config, inputs, threshold, base)
+    dc24, dc48, traj = support_escalation(config, inputs, threshold, extra_ac, traj)
+
+    win = appliance_windows(
+        config,
+        inputs,
+        threshold,
+        extra_ac,
+        traj,
+        dc24_schedule=dc24,
+        dc48_schedule=dc48,
+    )
+
+    # The fixed advisor must equal a judgment recomputed under the SAME support
+    # schedules as the baseline.
+    test_inputs = insert_appliance_run(
+        inputs, washer.run_energy_wh, washer.run_duration_h
+    )
+    run_traj = simulate(
+        config,
+        test_inputs,
+        threshold,
+        extra_ac_wh=extra_ac,
+        dc24_schedule=dc24,
+        dc48_schedule=dc48,
+    )
+    buffer_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
+    expected = run_traj.total_import_wh <= traj.total_import_wh + 1e-9 and (
+        not _degrades_min_soc(run_traj, traj, buffer_floor)
+    )
+    assert win["washer"] == expected
+
+    # And prove the schedules materially change the run simulation (so the
+    # PSU-off evaluation really was a different, wrong baseline).
+    buggy_run = simulate(config, test_inputs, threshold, extra_ac_wh=extra_ac)
+    assert abs(buggy_run.total_import_wh - run_traj.total_import_wh) > 1e-6
 
 
 def test_support_escalates_when_battery_would_fall_through():

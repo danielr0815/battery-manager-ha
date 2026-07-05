@@ -54,7 +54,16 @@ class LoadProfile:
 
     def power_w(self, hour_of_day: int) -> float:
         power = self.base_w
-        if self.variable_start_hour <= hour_of_day < self.variable_end_hour:
+        start, end = self.variable_start_hour, self.variable_end_hour
+        if start < end:
+            in_window = start <= hour_of_day < end
+        elif start > end:
+            # Night-spanning window (e.g. 20 -> 6): wrap around midnight so the
+            # variable load is applied to the intended hours instead of none.
+            in_window = hour_of_day >= start or hour_of_day < end
+        else:
+            in_window = False  # start == end: empty window
+        if in_window:
             power += self.variable_w
         return power
 

@@ -286,8 +286,17 @@ def appliance_windows(
     threshold: float,
     extra_ac: tuple[float, ...],
     planned_trajectory: Trajectory,
+    dc24_schedule: tuple[bool, ...] | None = None,
+    dc48_schedule: tuple[bool, ...] | None = None,
 ) -> dict[str, bool]:
-    """Advisor (G3): could a full appliance run start now without extra import?"""
+    """Advisor (G3): could a full appliance run start now without extra import?
+
+    The hypothetical run is evaluated under the SAME support-PSU schedules as
+    the planned trajectory it is compared against — otherwise the advisor
+    simulates the run with the PSUs off (their default) while the baseline had
+    them on, and gives false window advisories whenever support is active
+    (e.g. winter operation with a forced 48 V PSU).
+    """
     windows: dict[str, bool] = {}
     buffer_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
     for appliance in config.appliances:
@@ -296,7 +305,14 @@ def appliance_windows(
         test_inputs = insert_appliance_run(
             inputs, appliance.run_energy_wh, appliance.run_duration_h
         )
-        traj = simulate(config, test_inputs, threshold, extra_ac_wh=extra_ac)
+        traj = simulate(
+            config,
+            test_inputs,
+            threshold,
+            extra_ac_wh=extra_ac,
+            dc24_schedule=dc24_schedule,
+            dc48_schedule=dc48_schedule,
+        )
         windows[appliance.appliance_id] = (
             traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
             and not _degrades_min_soc(traj, planned_trajectory, buffer_floor)
@@ -392,7 +408,15 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     threshold, base_traj = search_threshold(config, inputs)
     load_plans, extra_ac, traj = allocate_loads(config, inputs, threshold, base_traj)
     dc24, dc48, traj = support_escalation(config, inputs, threshold, extra_ac, traj)
-    windows = appliance_windows(config, inputs, threshold, extra_ac, traj)
+    windows = appliance_windows(
+        config,
+        inputs,
+        threshold,
+        extra_ac,
+        traj,
+        dc24_schedule=dc24,
+        dc48_schedule=dc48,
+    )
 
     if traj.flows:
         max_soc = traj.max_soc_percent

@@ -38,6 +38,7 @@ from .const import (
     CONF_AC_LOAD_ENTITY,
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_DC_BALANCE_IN,
     CONF_DC_BALANCE_OUT,
     CONF_DC_LOAD_ENTITY,
@@ -49,6 +50,7 @@ from .const import (
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_PROFILE_HALF_LIFE_DAYS,
+    CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_POWER_W,
@@ -647,6 +649,12 @@ class ProfileLearner:
             stat_ids.add(appliance["detection_entity"])
         if cfg.get(CONF_SUPPORT_DC24_POWER_ENTITY):
             stat_ids.add(cfg[CONF_SUPPORT_DC24_POWER_ENTITY])
+        # Battery voltage is fetched (when configured) as the 48 V gate proxy:
+        # the PSU self-gates above its output voltage, so its energy must not be
+        # attributed during high-voltage hours (review #8).
+        voltage_entity = cfg.get(CONF_BATTERY_VOLTAGE_ENTITY)
+        if voltage_entity:
+            stat_ids.add(voltage_entity)
 
         recorder = get_instance(self.hass)
         metadata = await recorder.async_add_executor_job(
@@ -673,6 +681,12 @@ class ProfileLearner:
             entity_id: _rows_to_hour_map(rows, meta_by_id.get(entity_id))
             for entity_id, rows in stats.items()
         }
+        # True hourly mean of the battery voltage (gauge — not summed on DST).
+        voltage_means = (
+            _rows_to_mean_map(stats.get(voltage_entity, []))
+            if voltage_entity in available
+            else {}
+        )
 
         # --- Switch/state histories (on-fractions) ---
         switch_specs: list[tuple[str, Callable[[str], bool]]] = []
@@ -762,7 +776,9 @@ class ProfileLearner:
             day_value = self.data["daily_hours"].setdefault(
                 day, {"ac": None, "dc": None}
             )
-            psu48_draw = self._psu48_series(day, cfg, fractions, coverage_start, tz)
+            psu48_draw = self._psu48_series(
+                day, cfg, fractions, coverage_start, tz, voltage_means
+            )
             p24_series = (
                 _day_series_zero_filled(p24_map, day) if p24_map is not None else None
             )
@@ -814,13 +830,17 @@ class ProfileLearner:
         fractions: dict[str, dict[tuple[str, int], float]],
         coverage_start: dict[str, datetime | None],
         tz: tzinfo,
+        voltage_means: dict[tuple[str, int], float] | None = None,
     ) -> list[float | None] | None:
         """48 V PSU energy per hour: configured power x switch on-fraction.
 
         Subtracted from the AC measurement (PSU draw) and added to the DC
-        measurement (injection into the battery bus) — the same fixed-power
-        approximation the simulation core uses (conversion losses
-        neglected). None = switch history not covered -> hour dropped.
+        measurement (injection into the battery bus). Gate-aware: the real PSU
+        self-gates above its output voltage, so hours whose mean battery voltage
+        is at/above ``psu48_output_voltage_v`` deliver ~0 despite the switch
+        reading ON — attributing full nameplate there would over-correct the
+        learned AC/DC split (review #8). Without a voltage proxy the flat
+        approximation is kept. None = switch history not covered -> hour dropped.
         """
         switch = cfg.get(CONF_SUPPORT_DC48_SWITCH)
         if not switch:
@@ -828,14 +848,18 @@ class ProfileLearner:
         on_fr = fractions.get(switch, {})
         covered_from = coverage_start.get(switch)
         power = float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0))
-        return [
-            (
-                power * on_fr.get((day, hour), 0.0)
-                if _hour_covered(covered_from, day, hour, tz)
-                else None
-            )
-            for hour in range(24)
-        ]
+        threshold_v = float(cfg.get(CONF_PSU48_OUTPUT_VOLTAGE_V, 49.56))
+        vmeans = voltage_means or {}
+
+        def _hour(hour: int) -> float | None:
+            if not _hour_covered(covered_from, day, hour, tz):
+                return None
+            v = vmeans.get((day, hour))
+            if v is not None and v >= threshold_v:
+                return 0.0  # gate closed: PSU delivered ~0 this hour
+            return power * on_fr.get((day, hour), 0.0)
+
+        return [_hour(hour) for hour in range(24)]
 
     def _unresolvable_support_hours(
         self,
@@ -1123,12 +1147,16 @@ def _rows_to_hour_map(
 
     Energy counters (has_sum) use the hourly `change` (kWh -> Wh); power
     sensors use the hourly `mean` (W over one hour = Wh numerically).
-    On DST fall-back days two UTC hours map to the same local hour: energy
-    is summed, power is averaged.
+    Each row is one Wh contribution for its real clock hour (energy: hourly
+    `change`; power: hourly `mean`, W over one hour = Wh). On the autumn DST
+    fall-back day two distinct UTC hours map to the same LOCAL hour, which the
+    planner models as a single slot: both real hours' energy must be SUMMED so
+    the folded local hour is not undercounted (power was previously averaged,
+    halving that one hour). Normal days have exactly one row per local hour, so
+    summing is identical to averaging there (review #14).
     """
     use_change = bool(meta and meta.get("has_sum"))
     sums: dict[tuple[str, int], float] = {}
-    counts: dict[tuple[str, int], int] = {}
     for row in rows:
         raw = row.get("change") if use_change else row.get("mean")
         if raw is None:
@@ -1142,9 +1170,31 @@ def _rows_to_hour_map(
         )
         key = (local.date().isoformat(), local.hour)
         sums[key] = sums.get(key, 0.0) + wh
+    return dict(sums)
+
+
+def _rows_to_mean_map(rows: list[dict[str, Any]]) -> dict[tuple[str, int], float]:
+    """Map LTS mean rows to the true hourly MEAN per local (date, hour).
+
+    For gauge sensors (e.g. battery voltage) — unlike _rows_to_hour_map which
+    treats a power mean as Wh and sums — a DST-folded local hour is averaged,
+    since a voltage is not additive.
+    """
+    sums: dict[tuple[str, int], float] = {}
+    counts: dict[tuple[str, int], int] = {}
+    for row in rows:
+        raw = row.get("mean")
+        if raw is None:
+            continue
+        start = row.get("start")
+        local = dt_util.as_local(
+            dt_util.utc_from_timestamp(start)
+            if isinstance(start, (int, float))
+            else start
+        )
+        key = (local.date().isoformat(), local.hour)
+        sums[key] = sums.get(key, 0.0) + float(raw)
         counts[key] = counts.get(key, 0) + 1
-    if use_change:
-        return dict(sums)
     return {key: sums[key] / counts[key] for key in sums}
 
 

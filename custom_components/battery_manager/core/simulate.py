@@ -26,6 +26,10 @@ def step_hour(
     energy = battery.energy_wh(soc_percent)
     floor_wh = battery.energy_wh(battery.soc_min_percent)
     ceil_wh = battery.energy_wh(battery.soc_max_percent)
+    # Defensive: a hand-edited min > max SOC would give a negative headroom
+    # band and mis-plan; keep ceil >= floor so the SOC math stays monotonic
+    # (the config flow also validates this — cross-field validation sweep).
+    ceil_wh = max(floor_wh, ceil_wh)
 
     grid_import = 0.0
     grid_export = 0.0
@@ -35,6 +39,18 @@ def step_hour(
 
     inverter_on = soc_percent > threshold_percent
     support = config.support
+
+    # --- AC balance computed early ---
+    # Needed before the 48 V gate: during a NET-CHARGING slot the charger/PV
+    # lifts the 48 V bus above the PSU's output voltage, so the real Meanwell
+    # self-gates OFF and delivers nothing (docs/DC_TOPOLOGY.md §4, Jury-Gap #1).
+    # It is also the single balance against which the residual DC bus load is
+    # settled, so a same-slot PV surplus covers it instead of a phantom import.
+    ac_total = slot.ac_wh + extra_ac_wh
+    if inverter_on:
+        ac_total += config.inverter.standby_power_w * slot.duration
+    balance = slot.pv_wh - ac_total
+    net_charging = balance > _EPS
 
     # --- DC load split across the two buses (F-N3, docs/DC_TOPOLOGY.md) ---
     # `dc24_share` of the DC load sits on the 24 V rail; the rest is native
@@ -87,6 +103,7 @@ def step_hour(
         dc48_support
         and support.configured
         and (gate_soc is None or soc_percent < gate_soc)
+        and not net_charging
     )
     psu48_delivered_wh = 0.0
     if gate_open:
@@ -98,15 +115,23 @@ def step_hour(
         bus_load -= direct
         # (b) the remainder charges the battery (bus -> stored via eta_charge).
         remainder = potential - direct
-        absorbed = min(remainder * battery.eta_charge, max(0.0, ceil_wh - energy))
+        headroom = max(0.0, ceil_wh - energy)
+        # Edge taper: never charge the battery past the gate threshold within
+        # a single slot, so one slot cannot overshoot gate_soc (the real PSU
+        # would self-gate as the bus voltage crosses its output).
+        if gate_soc is not None:
+            headroom = max(0.0, min(headroom, battery.energy_wh(gate_soc) - energy))
+        absorbed = min(remainder * battery.eta_charge, headroom)
         energy += absorbed
         battery_charge += absorbed
         psu48_delivered_wh = direct + absorbed / battery.eta_charge
         grid_import += psu48_delivered_wh / support.psu48_eta
 
-    # --- Remaining 48 V bus load drains the battery (or, when the store is
-    # empty, forces the charger). Identical to the legacy DC-load path under
-    # neutral defaults with no active 48 V PSU. ---
+    # --- Remaining 48 V bus load drains the battery. Any shortfall (store at
+    # floor) is NOT imported here but carried to the AC settlement, so a
+    # same-slot PV surplus covers it via the charger instead of importing grid
+    # while PV is simultaneously stored/exported (energy conservation). ---
+    shortfall_dc = 0.0
     if bus_load > _EPS:
         needed_from_store = bus_load / battery.eta_discharge
         available = max(0.0, energy - floor_wh)
@@ -114,18 +139,20 @@ def step_hour(
         energy -= used
         battery_discharge += used
         shortfall_dc = (needed_from_store - used) * battery.eta_discharge
-        if shortfall_dc > _EPS:
-            grid_import += shortfall_dc / config.charger.eta
 
-    # --- AC balance ---
-    ac_total = slot.ac_wh + extra_ac_wh
-    if inverter_on:
-        ac_total += config.inverter.standby_power_w * slot.duration
-
-    balance = slot.pv_wh - ac_total
+    # --- AC balance settlement ---
+    # The residual DC bus shortfall is served by the charger (AC->DC), fed from
+    # PV surplus first and only then from the grid — never grid-imported while
+    # the same slot exports/stores PV.
+    dc_ac_demand = shortfall_dc / config.charger.eta
 
     if balance >= 0:
-        # Surplus: charge battery through the charger, export the rest.
+        # (a) cover the DC shortfall from PV surplus via the charger.
+        if dc_ac_demand > _EPS:
+            pv_for_dc = min(balance, dc_ac_demand)
+            balance -= pv_for_dc
+            dc_ac_demand -= pv_for_dc
+        # (b) charge the battery through the charger, export the rest.
         headroom = max(0.0, ceil_wh - energy)
         max_charger_ac = config.charger.max_power_w * slot.duration
         needed_ac = headroom / (battery.eta_charge * config.charger.eta)
@@ -139,7 +166,12 @@ def step_hour(
         grid_export += max(0.0, balance)
         if balance < 0:  # charger standby pushed balance negative
             grid_import += -balance
+        # (c) DC shortfall PV could not cover imports via the charger.
+        if dc_ac_demand > _EPS:
+            grid_import += dc_ac_demand
     else:
+        # No PV surplus: the DC shortfall imports via the charger.
+        grid_import += dc_ac_demand
         deficit = -balance
         if inverter_on:
             inv_floor_wh = battery.energy_wh(

@@ -212,10 +212,15 @@ class SupportPathSensor(BatteryManagerEntity, BinarySensorEntity):
     ) -> None:
         super().__init__(coordinator, key)
         self._data_key = data_key
+        self._psu_key = "dc48" if "dc48" in data_key else "dc24"
         self._attr_translation_key = key
 
     @property
-    def is_on(self) -> bool | None:
-        if not self.coordinator.data:
-            return None
-        return self.coordinator.data.get(self._data_key)
+    def available(self) -> bool:
+        # Reflects persisted support state — known and in sync with the always-
+        # available manual switch even while an update is failing (review #15).
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.support_active(self._psu_key)

@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-07-06
+
+### Fixed — whole-plugin review (16 findings across 10 subsystems)
+A comprehensive multi-agent review of the entire plugin surfaced 16
+confirmed defects (3 high, 5 medium, 8 low); all are fixed here, each
+with a regression test. Grouped by shared root cause:
+
+**Energy-balance core (`core/simulate.py`).** step_hour now computes the
+AC/PV balance once and settles the residual DC-bus load against the
+same-slot PV surplus, ending a **phantom grid import** where the DC load
+was imported from grid while PV was simultaneously exported/stored
+(energy non-conservation). The 48 V gate also closes during a
+net-charging slot (the charger lifts the bus over the PSU output, so the
+real PSU self-gates), the PSU charge is tapered so a slot cannot
+overshoot `gate_soc`, and a defensive clamp keeps `ceil >= floor` for a
+hand-edited inverted SOC band. Verified bit-identical for all
+non-affected scenarios (golden: only `forced_dc48` shifts, import −0.2
+kWh) and by a 200 000-case energy-conservation fuzz.
+
+**Appliance advisor (`core/optimize.py`).** `appliance_windows` now
+evaluates the hypothetical run under the same support-PSU schedules as
+the planned trajectory, instead of with the PSUs off — no more false
+"window open/closed" advisories whenever support is active.
+
+**Actuation commits only on confirmation (`coordinator.py`).** A failed
+plug turn-off no longer strands the plug ON while dropping ownership; the
+min-runtime dwell is stamped only on a confirmed switch (a failed
+actuation no longer blocks the retry for a whole window); and the OFF-lag
+grace is now un-timed, so a slow switch is not misread as an external
+override.
+
+**Cross-field validation.** The setup wizard now rejects mis-ordered PV
+windows (`morning_start < morning_end < afternoon_end`); the core
+renormalizes PV shares defensively so a hand-edited config can't silently
+discard forecast energy; and a night-spanning variable-load window
+(`start > end`) now wraps around midnight instead of dropping the load
+for all 24 hours.
+
+**Lifecycle & learning.** In-flight actuation tasks are cancelled before
+the unload flush, so none can overwrite the persisted state after it is
+captured. The consumption learner's 48 V-PSU attribution is now
+gate-aware (uses the battery-voltage proxy, so it no longer credits full
+nameplate during self-gated high-voltage hours — closes the Learning
+Rev. 4 gap), and a DST fall-back local hour now sums (not averages) a
+power sensor's two folded clock hours.
+
+**Robustness.** A load's cached SOC ages out after 7 days (a long-asleep
+device plans as empty and self-heals on wake); the export-path guard uses
+proper path containment (`is_relative_to`) instead of a string prefix;
+and the support mode/state entities stay available on a planner failure
+(reading persisted state), keeping them in sync with the always-available
+manual switch.
+
 ## [0.7.7] - 2026-07-05
 
 ### Added — F-N3: R2 battery-voltage controller for the manual 48 V PSU (docs/DC_TOPOLOGY.md §6)

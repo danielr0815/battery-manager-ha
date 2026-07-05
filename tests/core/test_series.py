@@ -1,8 +1,9 @@
 """Tests for hourly series construction."""
 
+from dataclasses import replace
 from datetime import datetime
 
-from core.model import ApplianceRun, SystemConfig
+from core.model import ApplianceRun, LoadProfile, PVParams, SystemConfig
 from core.series import build_slots, insert_appliance_run, slot_starts
 
 
@@ -32,6 +33,39 @@ def test_pv_distribution_sums_to_daily_forecast():
     inputs = build_slots(config, now, 50.0, [daily_kwh])
     total_wh = sum(s.pv_wh for s in inputs.slots)
     assert abs(total_wh - daily_kwh * 1000.0) < 1.0
+
+
+def test_misordered_pv_windows_still_distribute_full_forecast():
+    """Review #5: a mis-ordered PV config (degenerate window) must NOT silently
+    discard forecast energy — the shares renormalize to the full daily total."""
+    # afternoon_end <= morning_end => the afternoon window is degenerate.
+    pv = PVParams(
+        peak_power_w=100_000.0,
+        morning_start_hour=8,
+        morning_end_hour=16,
+        afternoon_end_hour=10,  # <= morning_end: degenerate
+        morning_ratio=0.7,
+    )
+    config = replace(SystemConfig(), pv=pv)
+    now = datetime(2026, 7, 4, 0, 0)
+    daily_kwh = 8.0
+    inputs = build_slots(config, now, 50.0, [daily_kwh])
+    total_wh = sum(s.pv_wh for s in inputs.slots)
+    assert abs(total_wh - daily_kwh * 1000.0) < 1.0  # full forecast, not short
+
+
+def test_night_spanning_variable_load_wraps_midnight():
+    """Review #6: a start > end variable-load window wraps around midnight
+    instead of dropping the load for all 24 hours."""
+    profile = LoadProfile(
+        base_w=50.0, variable_w=25.0, variable_start_hour=20, variable_end_hour=6
+    )
+    # In-window hours 20..23 and 0..5 get base+variable; the rest just base.
+    assert profile.power_w(22) == 75.0
+    assert profile.power_w(3) == 75.0
+    assert profile.power_w(6) == 50.0  # end is exclusive
+    assert profile.power_w(12) == 50.0
+    assert profile.power_w(20) == 75.0  # start inclusive
 
 
 def test_pv_clipped_at_peak_power():

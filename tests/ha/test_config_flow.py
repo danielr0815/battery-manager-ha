@@ -179,6 +179,42 @@ async def test_options_flow_rejects_inverted_controller_band(hass):
     assert result["errors"] == {"base": "controller_off_below_on"}
 
 
+async def test_pv_step_rejects_misordered_windows(hass):
+    """Review #5: the PV step must reject windows that are not strictly ordered
+    (morning_start < morning_end < afternoon_end), else a degenerate window
+    silently discards forecast energy."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], ENTRY_DATA
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "battery_capacity_wh": 5000.0,
+            "battery_min_soc_percent": 5.0,
+            "battery_max_soc_percent": 95.0,
+            "battery_charge_efficiency": 0.97,
+            "battery_discharge_efficiency": 0.97,
+        },
+    )
+    assert result["step_id"] == "pv"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "pv_max_power_w": 3200.0,
+            "pv_morning_start_hour": 13,  # start after end: mis-ordered
+            "pv_morning_end_hour": 7,
+            "pv_afternoon_end_hour": 18,
+            "pv_morning_ratio": 0.8,
+        },
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "pv"
+    assert result["errors"] == {"base": "pv_windows_out_of_order"}
+
+
 async def test_config_flow_all_steps_render(hass):
     """Every base-flow step must build its schema without raising."""
     result = await hass.config_entries.flow.async_init(

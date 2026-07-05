@@ -208,6 +208,7 @@
     },
     "error": {
       "min_soc_above_max": "Der minimale SOC muss unter dem maximalen SOC liegen.",
+      "pv_windows_out_of_order": "Die PV-Fenster müssen aufsteigend geordnet sein: Morgen-Start < Morgen-Ende < Nachmittag-Ende.",
       "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
       "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität.",
       "buffer_min_above_max": "Das Minimum des dynamischen Puffers muss unter dem Maximum liegen.",

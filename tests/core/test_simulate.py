@@ -1,10 +1,11 @@
 """Invariant tests for the pure energy-flow simulation."""
 
+from dataclasses import replace
 from datetime import datetime
 
-from core.model import LoadProfile, PlanInputs, SupportParams, SystemConfig
+from core.model import HourSlot, LoadProfile, PlanInputs, SupportParams, SystemConfig
 from core.series import build_slots
-from core.simulate import simulate
+from core.simulate import simulate, step_hour
 
 NOW_NIGHT = datetime(2026, 7, 3, 22, 0)
 NOW_NOON = datetime(2026, 7, 3, 12, 0)
@@ -59,6 +60,105 @@ def test_no_negative_flows():
         assert flow.grid_export_wh >= 0.0
         assert flow.battery_charge_wh >= 0.0
         assert flow.battery_discharge_wh >= 0.0
+
+
+def _slot(pv, ac, dc, dur=1.0):
+    return HourSlot(
+        index=0,
+        start=NOW_NOON,
+        duration=dur,
+        hour_of_day=12,
+        pv_wh=pv,
+        ac_wh=ac,
+        dc_wh=dc,
+    )
+
+
+# --- #1 energy conservation: no phantom import while PV is exported/stored ---
+
+
+def test_pv_surplus_covers_dc_load_no_phantom_import():
+    """Review #1: with the battery at its floor and a same-slot PV surplus, the
+    DC bus load must be served from PV (via the charger), NOT imported from grid
+    while the surplus is simultaneously exported/stored."""
+    config = SystemConfig()
+    # Zero charger standby so the assertion isolates the DC-load path (standby
+    # would otherwise leak a few Wh to grid once the surplus is exactly used).
+    config = replace(config, charger=replace(config.charger, standby_power_w=0.0))
+    soc = config.battery.soc_min_percent  # battery empty -> DC can't drain it
+    # 2 kWh PV surplus, 500 Wh DC bus load, inverter off (threshold above SOC).
+    # Pre-fix this imported ~540 Wh for the DC load while storing/exporting PV.
+    flow = step_hour(config, soc, _slot(pv=2000.0, ac=0.0, dc=500.0), 99.0)
+    assert flow.grid_import_wh < _EPS  # PV covered the DC load, nothing imported
+    # The (large) surplus still stores/exports after covering the DC load.
+    assert flow.grid_export_wh > 0.0 or flow.battery_charge_wh > 0.0
+
+
+def test_dc_load_at_floor_without_pv_still_imports():
+    """Regression: with no PV surplus, a floor-battery DC load imports via the
+    charger and never exports (the deficit path is unchanged)."""
+    config = SystemConfig()
+    soc = config.battery.soc_min_percent
+    flow = step_hour(config, soc, _slot(pv=0.0, ac=0.0, dc=500.0), 99.0)
+    assert flow.grid_import_wh > 0.0
+    assert flow.grid_export_wh < _EPS
+
+
+# --- #4 net-charging gate suppression ---
+
+
+def test_gate_closed_during_net_charging():
+    """Review #4: during a net-charging slot the charger lifts the 48 V bus over
+    the PSU output, so the real PSU self-gates — the gate must be closed."""
+    config = SystemConfig(support=SupportParams(configured=True))
+    flow = step_hour(
+        config, 50.0, _slot(pv=2000.0, ac=0.0, dc=200.0), 99.0, dc48_support=True
+    )
+    assert flow.gate_open is False
+    assert flow.psu48_delivered_wh < _EPS
+
+
+def test_gate_open_when_not_charging():
+    """Contrast: with no PV surplus the gate stays open and the PSU delivers."""
+    config = SystemConfig(support=SupportParams(configured=True))
+    flow = step_hour(
+        config, 50.0, _slot(pv=0.0, ac=0.0, dc=200.0), 99.0, dc48_support=True
+    )
+    assert flow.gate_open is True
+    assert flow.psu48_delivered_wh > 0.0
+
+
+# --- #9 gate-edge taper ---
+
+
+def test_psu48_charge_tapers_at_gate_soc():
+    """Review #9: the PSU must not charge the battery past gate_soc within a
+    single slot (no overshoot)."""
+    config = SystemConfig(
+        support=SupportParams(
+            configured=True, gate_soc_percent=60.0, dc48_power_w=5000.0
+        )
+    )
+    # Start just below the gate, big PSU power, no PV (not net-charging), no DC.
+    flow = step_hour(
+        config, 59.0, _slot(pv=0.0, ac=0.0, dc=0.0), 99.0, dc48_support=True
+    )
+    assert flow.soc_end_percent <= 60.0 + 1e-6  # tapered at the gate, no overshoot
+
+
+# --- #16 defensive inverted-bounds clamp ---
+
+
+def test_inverted_soc_bounds_do_not_break_sim():
+    """Review #16: a hand-edited min > max SOC must not produce NaN / negative
+    flows (the config flow also rejects it)."""
+    config = SystemConfig()
+    bad = replace(config.battery, soc_min_percent=90.0, soc_max_percent=10.0)
+    config = replace(config, battery=bad)
+    flow = step_hour(config, 50.0, _slot(pv=1000.0, ac=0.0, dc=100.0), 99.0)
+    assert flow.soc_end_percent == flow.soc_end_percent  # not NaN
+    assert flow.grid_import_wh >= 0.0
+    assert flow.grid_export_wh >= 0.0
 
 
 def test_policy_consistency():

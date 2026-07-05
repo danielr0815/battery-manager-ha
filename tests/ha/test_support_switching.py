@@ -485,6 +485,55 @@ async def test_manual_off_lag_does_not_reenter_manual(hass):
     assert coordinator._support_manual["dc48"] is True
 
 
+async def test_manual_off_lag_beyond_grace_still_stays_auto(hass):
+    """Review #10: the OFF-lag escape is un-timed — a device slower than
+    min_switch_interval_s that still reads 'on' after our OFF command (and
+    emits no event) must NOT be misclassified as an external override once the
+    grace window has expired."""
+    from datetime import timedelta
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    # BM commanded dc48 OFF a long time ago (well beyond min_switch_interval_s),
+    # but the device has never been observed to reach 'off'.
+    coordinator._support_manual["dc48"] = False
+    coordinator._support_state["dc48"] = False
+    coordinator._last_support_cmd["dc48"] = (
+        False,
+        dt_util.now() - timedelta(minutes=30),
+    )
+    coordinator._support_pending_off["dc48"] = True
+    hass.states.async_set(DC48, "on")
+    hass.states.async_set(PSU, "off")
+    hass.states.async_set(DCDC, "on")
+
+    coordinator._update_support_modes()
+    assert coordinator._support_manual["dc48"] is False  # stays auto, not manual
+
+
+async def test_unload_cancels_actuation_tasks_before_flush(hass):
+    """Review #7: in-flight actuation tasks must be cancelled before the unload
+    flush, so none can mutate the persisted state after the payload is captured."""
+    import asyncio
+
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls)
+
+    async def _slow() -> None:
+        await asyncio.sleep(100)
+
+    coordinator._switch_task = hass.async_create_task(_slow())
+    coordinator._dc48_ctrl_task = hass.async_create_task(_slow())
+
+    await coordinator.async_cancel_actuation_tasks()
+    assert coordinator._switch_task.done()
+    assert coordinator._dc48_ctrl_task.done()
+    # The subsequent flush then persists a stable payload without raising.
+    await coordinator.async_flush_persistent_state()
+
+
 async def test_manual_dc24_off_failure_keeps_manual(hass):
     """Review finding: if the make-before-break restore aborts (DC/DC does
     not confirm), the PSU stays physically on, so manual mode must persist

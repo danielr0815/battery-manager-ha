@@ -193,6 +193,24 @@ def _validate_buffer_clamps(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _validate_pv_windows(data: dict[str, Any]) -> str | None:
+    """The two PV windows must be strictly ordered
+    (morning_start < morning_end < afternoon_end); a mis-ordered/degenerate
+    window would otherwise silently discard a fixed fraction of every day's
+    forecast (the core also renormalizes defensively)."""
+    ms = data.get("pv_morning_start_hour")
+    me = data.get("pv_morning_end_hour")
+    ae = data.get("pv_afternoon_end_hour")
+    if (
+        ms is not None
+        and me is not None
+        and ae is not None
+        and not (int(ms) < int(me) < int(ae))
+    ):
+        return "pv_windows_out_of_order"
+    return None
+
+
 def _validate_controller_voltages(data: dict[str, Any]) -> str | None:
     """The R2 controller needs off_voltage strictly above on_voltage, else
     the hysteresis band collapses and it would chatter (docs/DC_TOPOLOGY §6)."""
@@ -427,30 +445,37 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
+            error = _validate_pv_windows(user_input)
+            if error is not None:
+                return self.async_show_form(
+                    step_id="pv",
+                    data_schema=self._pv_schema(),
+                    errors={"base": error},
+                )
             self._data.update(user_input)
             return await self.async_step_consumers()
+        return self.async_show_form(step_id="pv", data_schema=self._pv_schema())
+
+    def _pv_schema(self) -> vol.Schema:
         d = self._data
-        return self.async_show_form(
-            step_id="pv",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        "pv_max_power_w", default=_d(d, "pv_max_power_w")
-                    ): _number(0, 100_000, 50, "W"),
-                    vol.Required(
-                        "pv_morning_start_hour", default=_d(d, "pv_morning_start_hour")
-                    ): _number(0, 23),
-                    vol.Required(
-                        "pv_morning_end_hour", default=_d(d, "pv_morning_end_hour")
-                    ): _number(0, 23),
-                    vol.Required(
-                        "pv_afternoon_end_hour", default=_d(d, "pv_afternoon_end_hour")
-                    ): _number(0, 23),
-                    vol.Required(
-                        "pv_morning_ratio", default=_d(d, "pv_morning_ratio")
-                    ): _number(0.0, 1.0, 0.05),
-                }
-            ),
+        return vol.Schema(
+            {
+                vol.Required(
+                    "pv_max_power_w", default=_d(d, "pv_max_power_w")
+                ): _number(0, 100_000, 50, "W"),
+                vol.Required(
+                    "pv_morning_start_hour", default=_d(d, "pv_morning_start_hour")
+                ): _number(0, 23),
+                vol.Required(
+                    "pv_morning_end_hour", default=_d(d, "pv_morning_end_hour")
+                ): _number(0, 23),
+                vol.Required(
+                    "pv_afternoon_end_hour", default=_d(d, "pv_afternoon_end_hour")
+                ): _number(0, 23),
+                vol.Required(
+                    "pv_morning_ratio", default=_d(d, "pv_morning_ratio")
+                ): _number(0.0, 1.0, 0.05),
+            }
         )
 
     async def async_step_consumers(

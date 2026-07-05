@@ -208,6 +208,7 @@
     },
     "error": {
       "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
+      "pv_windows_out_of_order": "The PV windows must be strictly ordered: morning start < morning end < afternoon end.",
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
       "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum.",

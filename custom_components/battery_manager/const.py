@@ -16,6 +16,9 @@ MAX_PV_FORECAST_AGE_HOURS = 24
 MAX_SOC_AGE_HOURS = 1
 MAX_HISTORICAL_SOC_AGE_HOURS = 6
 MAX_HISTORICAL_FORECAST_AGE_HOURS = 72
+# A load's last-known SOC (cached while the device sleeps) is trusted for at
+# most this long; beyond it the load plans as "empty" and self-heals on wake.
+LOAD_SOC_CACHE_MAX_AGE_HOURS = 168  # 7 days
 
 # --- Input entity config keys (base entry) ---
 CONF_SOC_ENTITY = "soc_entity"

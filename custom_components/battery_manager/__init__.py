@@ -62,7 +62,12 @@ def _validate_file_path(file_path: str, base_dir: Path) -> Path:
     try:
         resolved_path = Path(file_path).resolve()
         resolved_base = base_dir.resolve()
-        if not str(resolved_path).startswith(str(resolved_base)):
+        # Proper path containment: a string startswith() would also accept a
+        # sibling dir sharing the prefix (e.g. '/config/exports_evil' vs
+        # '/config/exports'). is_relative_to compares path components.
+        if resolved_path != resolved_base and not resolved_path.is_relative_to(
+            resolved_base
+        ):
             raise ValueError(
                 f"Path '{file_path}' is outside allowed directory '{base_dir}'"
             )
@@ -204,6 +209,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok:
         coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
+        # Cancel in-flight actuation tasks BEFORE the flush so none can mutate
+        # the persisted state after the flush captures the payload (review #7).
+        await coordinator.async_cancel_actuation_tasks()
         # Flush any pending delayed save before teardown: a config-entry reload
         # does not fire EVENT_HOMEASSISTANT_FINAL_WRITE, so the persisted
         # support-mode / caused-off record would otherwise be lost if the

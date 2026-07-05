@@ -169,6 +169,77 @@ async def test_policy_always_off_switches_foreign_plug_off(hass):
     assert ("turn_off", PLUG) in calls
 
 
+async def test_failed_plug_off_keeps_ownership_for_later_cleanup(hass):
+    """Review #3: if the plug turn-off fails, ownership/charging state must NOT
+    be cleared — otherwise the plug is stranded ON while BM records it as
+    not-ours and never cleans it up. Keeping ownership bounds the stranding to
+    the next charge cycle instead of forever."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)  # AUTO + charge-enable
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_plug_owned[sub_id] = True
+    coordinator._load_charging_active[sub_id] = True
+
+    async def turn_off(call):
+        eid = call.data["entity_id"]
+        calls.append(("turn_off", eid))
+        if eid == PLUG:
+            raise HomeAssistantError("plug offline")  # actuation fails
+        hass.states.async_set(eid, "off")
+
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
+    calls.clear()
+
+    await coordinator._execute_load_switching([(sub_id, data, False, True)])
+    assert ("turn_off", PLUG) in calls  # attempted
+    assert hass.states.get(PLUG).state == "on"  # failed -> still on
+    assert coordinator._load_plug_owned[sub_id] is True  # KEPT, not dropped
+
+
+async def test_failed_activation_does_not_consume_dwell(hass):
+    """Review #11: a failed actuation must not stamp the min-runtime dwell, so
+    the retry next cycle is not blocked for the whole window."""
+    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+
+    async def turn_on(call):
+        eid = call.data["entity_id"]
+        calls.append(("turn_on", eid))
+        if eid == ENABLE:
+            raise HomeAssistantError("enable offline")  # activation fails
+        hass.states.async_set(eid, "on")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    calls.clear()
+
+    await coordinator._execute_load_switching(
+        [(sub_id, data, True, False)], now=dt_util.now()
+    )
+    assert sub_id not in coordinator._last_load_switch  # dwell NOT consumed
+
+
+async def test_successful_switch_stamps_dwell(hass):
+    """The dwell IS stamped on a confirmed switch (throttle still works)."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    now = dt_util.now()
+
+    await coordinator._execute_load_switching([(sub_id, data, True, False)], now=now)
+    assert coordinator._last_load_switch[sub_id] == now
+
+
 async def test_soc_cache_survives_sleeping_device(hass):
     """SOC unavailable (device asleep): planning keeps the last known value."""
     calls: list[tuple[str, str]] = []

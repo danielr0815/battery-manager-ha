@@ -7,18 +7,39 @@ from datetime import datetime, timedelta
 from .model import ApplianceRun, HourSlot, PlanInputs, SurplusLoadState, SystemConfig
 
 
+def _pv_share_total(pv) -> float:
+    """Sum of the per-window shares that are actually emitted. A mis-ordered
+    (degenerate) window drops its share, so this can be < 1.0."""
+    total = 0.0
+    if pv.morning_end_hour - pv.morning_start_hour > 0:
+        total += pv.morning_ratio
+    if pv.afternoon_end_hour - pv.morning_end_hour > 0:
+        total += 1.0 - pv.morning_ratio
+    return total
+
+
 def pv_hour_share(pv, hour_of_day: int) -> float:
-    """Share of the daily PV energy produced in the given hour (two-window model)."""
+    """Share of the daily PV energy produced in the given hour (two-window model).
+
+    Renormalized so the emitted shares sum to 1.0 even for a mis-ordered config:
+    a degenerate window would otherwise silently discard a fixed fraction of
+    every day's forecast. For a well-ordered config the total is already 1.0, so
+    this is a no-op (bit-identical). The config flow also validates the ordering.
+    """
     morning_hours = pv.morning_end_hour - pv.morning_start_hour
     afternoon_hours = pv.afternoon_end_hour - pv.morning_end_hour
+    raw = 0.0
     if morning_hours > 0 and pv.morning_start_hour <= hour_of_day < pv.morning_end_hour:
-        return pv.morning_ratio / morning_hours
-    if (
+        raw = pv.morning_ratio / morning_hours
+    elif (
         afternoon_hours > 0
         and pv.morning_end_hour <= hour_of_day < pv.afternoon_end_hour
     ):
-        return (1.0 - pv.morning_ratio) / afternoon_hours
-    return 0.0
+        raw = (1.0 - pv.morning_ratio) / afternoon_hours
+    if raw == 0.0:
+        return 0.0
+    total = _pv_share_total(pv)
+    return raw / total if total > 0.0 else raw
 
 
 def slot_starts(now: datetime, num_days: int) -> tuple[datetime, ...]:
