@@ -540,9 +540,22 @@ class BatteryManagerOptionsFlow(OptionsFlow):
 
 
 class SurplusLoadSubentryFlow(ConfigSubentryFlow):
-    """Add or reconfigure a surplus load (Fossibot, dehumidifier, ...)."""
+    """Add or reconfigure a surplus load (Fossibot, dehumidifier, ...).
 
-    def _schema(self, data: dict[str, Any]) -> vol.Schema:
+    Two steps: the storage fields (capacity, target SOC, SOC sensor) only
+    appear when the load is energy-limited — for continuous consumers like
+    a dehumidifier they are meaningless (operator wish, 2026-07-05).
+    """
+
+    _basic: dict[str, Any]
+    _existing: dict[str, Any]
+    _is_reconfigure: bool
+
+    # Storage-step keys, preserved across the dialog when the step is
+    # skipped so toggling "energy limited" off and on keeps the values.
+    _STORAGE_KEYS = (CONF_LOAD_CAPACITY_WH, CONF_LOAD_TARGET_SOC)
+
+    def _basic_schema(self, data: dict[str, Any]) -> vol.Schema:
         def dv(key):
             return data.get(key, DEFAULT_LOAD_CONFIG.get(key))
 
@@ -564,17 +577,10 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                 CONF_LOAD_IN_HOUSE, default=dv(CONF_LOAD_IN_HOUSE)
             ): selector.BooleanSelector(),
             vol.Required(
-                CONF_LOAD_CAPACITY_WH, default=dv(CONF_LOAD_CAPACITY_WH)
-            ): _number(0, 100_000, 100, "Wh"),
-            vol.Required(
-                CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
-            ): _number(0, 100, 1, "%"),
-            vol.Required(
                 CONF_LOAD_POWER_WARNING_PCT, default=dv(CONF_LOAD_POWER_WARNING_PCT)
             ): _number(0, 200, 5, "%"),
         }
         for key, domain in (
-            (CONF_LOAD_SOC_ENTITY, "sensor"),
             (CONF_LOAD_POWER_ENTITY, "sensor"),
             (CONF_LOAD_AVAILABILITY_ENTITY, None),
             (CONF_LOAD_CONTROL_SWITCH, "switch"),
@@ -597,36 +603,87 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         )
         return vol.Schema(schema)
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
+    def _storage_schema(self, data: dict[str, Any]) -> vol.Schema:
+        def dv(key):
+            return data.get(key, DEFAULT_LOAD_CONFIG.get(key))
+
+        return vol.Schema(
+            {
+                vol.Required(
+                    CONF_LOAD_CAPACITY_WH, default=dv(CONF_LOAD_CAPACITY_WH)
+                ): _number(0, 100_000, 100, "Wh"),
+                vol.Required(
+                    CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
+                ): _number(0, 100, 1, "%"),
+                vol.Optional(
+                    CONF_LOAD_SOC_ENTITY,
+                    description={"suggested_value": data.get(CONF_LOAD_SOC_ENTITY)},
+                ): _entity("sensor"),
+            }
+        )
+
+    def _finish(self, storage_input: dict[str, Any]) -> SubentryFlowResult:
+        # Preserved storage values (add: defaults) underlie the new input,
+        # so a load toggled to unlimited keeps them for a later toggle back.
+        data = {
+            key: self._existing.get(key, DEFAULT_LOAD_CONFIG.get(key))
+            for key in self._STORAGE_KEYS
+        }
+        if CONF_LOAD_SOC_ENTITY in self._existing:
+            data[CONF_LOAD_SOC_ENTITY] = self._existing[CONF_LOAD_SOC_ENTITY]
+        data.update(self._basic)
+        data.update(storage_input)
+        title = data.pop(CONF_LOAD_NAME)
+        if self._is_reconfigure:
+            return self.async_update_and_abort(
+                self._get_entry(),
+                self._get_reconfigure_subentry(),
+                title=title,
+                data=data,
+            )
+        return self.async_create_entry(title=title, data=data)
+
+    async def _handle_basic(
+        self, step_id: str, user_input: dict[str, Any] | None
     ) -> SubentryFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             error = _validate_load_control(user_input)
             if error is None:
-                title = user_input.pop(CONF_LOAD_NAME)
-                return self.async_create_entry(title=title, data=user_input)
+                self._basic = user_input
+                if user_input.get(CONF_LOAD_ENERGY_LIMITED):
+                    return await self.async_step_storage()
+                return self._finish({})
             errors["base"] = error
+        data = user_input if user_input is not None else self._existing
         return self.async_show_form(
-            step_id="user", data_schema=self._schema(user_input or {}), errors=errors
+            step_id=step_id, data_schema=self._basic_schema(data), errors=errors
         )
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        if not hasattr(self, "_existing"):
+            self._existing = {}
+            self._is_reconfigure = False
+        return await self._handle_basic("user", user_input)
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        subentry = self._get_reconfigure_subentry()
-        errors: dict[str, str] = {}
+        if not hasattr(self, "_existing"):
+            subentry = self._get_reconfigure_subentry()
+            self._existing = {**subentry.data, CONF_LOAD_NAME: subentry.title}
+            self._is_reconfigure = True
+        return await self._handle_basic("reconfigure", user_input)
+
+    async def async_step_storage(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
         if user_input is not None:
-            error = _validate_load_control(user_input)
-            if error is None:
-                title = user_input.pop(CONF_LOAD_NAME)
-                return self.async_update_and_abort(
-                    self._get_entry(), subentry, title=title, data=user_input
-                )
-            errors["base"] = error
-        data = user_input or {**subentry.data, CONF_LOAD_NAME: subentry.title}
+            return self._finish(user_input)
         return self.async_show_form(
-            step_id="reconfigure", data_schema=self._schema(data), errors=errors
+            step_id="storage", data_schema=self._storage_schema(self._existing)
         )
 
 

@@ -170,9 +170,6 @@
             "battery_tolerance_percent": "Erlaubter Batterieanteil (%)",
             "min_runtime_min": "Mindestlaufzeit (min)",
             "energy_limited": "Energiebegrenzt (Speicher, der voll wird)",
-            "capacity_wh": "Speicherkapazität (Wh)",
-            "target_soc_percent": "Ziel-SOC (%)",
-            "soc_entity": "SOC-Sensor (optional)",
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
@@ -187,9 +184,6 @@
             "battery_tolerance_percent": "Wie viel der Lastenergie pro Stunde aus der Hausbatterie kommen darf (überbrückt z. B. Wolkenlücken). 0 = nur echter Überschuss. Zusätzlicher Netzbezug wird unabhängig davon nie verursacht.",
             "min_runtime_min": "Mindest-Ein- bzw. Ausschaltdauer der realen Schaltung — schont Gerät und Relais.",
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
-            "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
-            "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
-            "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
@@ -207,9 +201,6 @@
             "battery_tolerance_percent": "Erlaubter Batterieanteil (%)",
             "min_runtime_min": "Mindestlaufzeit (min)",
             "energy_limited": "Energiebegrenzt (Speicher, der voll wird)",
-            "capacity_wh": "Speicherkapazität (Wh)",
-            "target_soc_percent": "Ziel-SOC (%)",
-            "soc_entity": "SOC-Sensor (optional)",
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
@@ -224,9 +215,6 @@
             "battery_tolerance_percent": "Wie viel der Lastenergie pro Stunde aus der Hausbatterie kommen darf (überbrückt z. B. Wolkenlücken). 0 = nur echter Überschuss. Zusätzlicher Netzbezug wird unabhängig davon nie verursacht.",
             "min_runtime_min": "Mindest-Ein- bzw. Ausschaltdauer der realen Schaltung — schont Gerät und Relais.",
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
-            "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
-            "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
-            "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
@@ -234,6 +222,20 @@
             "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus."
+          }
+        },
+        "storage": {
+          "title": "Speicher-Einstellungen",
+          "description": "Diese Felder gelten nur für energiebegrenzte Lasten (Speicher, der voll wird — z. B. eine Powerstation).",
+          "data": {
+            "capacity_wh": "Speicherkapazität (Wh)",
+            "target_soc_percent": "Ziel-SOC (%)",
+            "soc_entity": "SOC-Sensor (optional)"
+          },
+          "data_description": {
+            "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
+            "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
+            "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter."
           }
         }
       }

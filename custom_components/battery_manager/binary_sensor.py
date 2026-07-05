@@ -10,6 +10,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -48,12 +49,15 @@ async def async_setup_entry(
         SupportPathSensor(coordinator, ENTITY_SUPPORT_DC48, "support_dc48"),
     ]
 
+    ent_reg = er.async_get(hass)
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
             entities.append(
-                SurplusLoadRecommendationSensor(coordinator, subentry_id, subentry.title)
+                SurplusLoadRecommendationSensor(
+                    coordinator, subentry_id, subentry.title
+                )
             )
-            if subentry.data.get(CONF_LOAD_POWER_ENTITY) and (
+            warning_enabled = subentry.data.get(CONF_LOAD_POWER_ENTITY) and (
                 float(
                     subentry.data.get(
                         CONF_LOAD_POWER_WARNING_PCT,
@@ -61,10 +65,22 @@ async def async_setup_entry(
                     )
                 )
                 > 0
-            ):
+            )
+            if warning_enabled:
                 entities.append(
                     LoadPowerWarningSensor(coordinator, subentry_id, subentry.title)
                 )
+            else:
+                # Warning disabled (0 %) or no feedback sensor: drop a
+                # previously created warning entity instead of leaving it
+                # behind as an orphan.
+                stale = ent_reg.async_get_entity_id(
+                    "binary_sensor",
+                    DOMAIN,
+                    f"{entry.entry_id}_load_power_warning_{subentry_id}",
+                )
+                if stale:
+                    ent_reg.async_remove(stale)
         elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE and subentry.data.get(
             CONF_APPLIANCE_OPPORTUNISTIC
         ):

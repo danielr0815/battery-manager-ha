@@ -90,3 +90,88 @@ async def test_config_flow_all_steps_render(hass):
         assert result["type"] == "form", f"step before {next_step} failed"
         assert result["step_id"] == next_step
     hass.config_entries.flow.async_abort(result["flow_id"])
+
+
+async def test_load_subentry_flow_skips_storage_for_continuous_loads(hass):
+    """Operator wish (2026-07-05): capacity/target-SOC/SOC-sensor make no
+    sense for a continuous consumer — the storage step must not appear."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CAPACITY_WH,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_TARGET_SOC,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
+    schema_keys = {str(k) for k in result["data_schema"].schema}
+    assert CONF_LOAD_CAPACITY_WH not in schema_keys  # moved to storage step
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "name": "Entfeuchter Test",
+            "power_w": 400.0,
+            "battery_tolerance_percent": 15.0,
+            "min_runtime_min": 30,
+            CONF_LOAD_ENERGY_LIMITED: False,
+            "in_house_measurement": False,
+            "power_warning_percent": 50.0,
+            "input_off_policy": "auto",
+        },
+    )
+    # No storage step: the subentry is created directly, with preserved
+    # defaults for the hidden fields.
+    assert result["type"] == "create_entry"
+    sub = next(iter(entry.subentries.values()))
+    assert sub.title == "Entfeuchter Test"
+    assert sub.data[CONF_LOAD_CAPACITY_WH] == 2000.0
+    assert sub.data[CONF_LOAD_TARGET_SOC] == 100.0
+
+
+async def test_load_subentry_flow_shows_storage_for_energy_limited(hass):
+    """Energy-limited loads get the second step with the storage fields."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CAPACITY_WH,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_SOC_ENTITY,
+        CONF_LOAD_TARGET_SOC,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "name": "Fossibot Test",
+            "power_w": 300.0,
+            "battery_tolerance_percent": 15.0,
+            "min_runtime_min": 30,
+            CONF_LOAD_ENERGY_LIMITED: True,
+            "in_house_measurement": True,
+            "power_warning_percent": 0.0,
+            "input_off_policy": "auto",
+        },
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "storage"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOAD_CAPACITY_WH: 2000.0,
+            CONF_LOAD_TARGET_SOC: 90.0,
+            CONF_LOAD_SOC_ENTITY: "sensor.fossibot_soc",
+        },
+    )
+    assert result["type"] == "create_entry"
+    sub = next(iter(entry.subentries.values()))
+    assert sub.data[CONF_LOAD_TARGET_SOC] == 90.0
+    assert sub.data[CONF_LOAD_SOC_ENTITY] == "sensor.fossibot_soc"
