@@ -482,6 +482,12 @@
     "switch": {
       "vacation_mode": {
         "name": "Urlaubsmodus"
+      },
+      "support_dc24_manual": {
+        "name": "24-V-Stützung manuell"
+      },
+      "support_dc48_manual": {
+        "name": "48-V-Stützung manuell"
       }
     }
   },

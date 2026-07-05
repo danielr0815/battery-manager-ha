@@ -17,9 +17,12 @@ from custom_components.battery_manager.const import (
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
     DOMAIN,
 )
+
+DC48 = "switch.psu_48v"
 
 PSU = "switch.psu_24v"
 DCDC = "switch.dcdc_converter"
@@ -58,7 +61,7 @@ def _register_switch_services(hass, call_log, *, dead_entities=()):
     hass.services.async_register("homeassistant", "turn_off", turn_off)
 
 
-async def _setup(hass, call_log, *, dead_entities=()):
+async def _setup(hass, call_log, *, dead_entities=(), extra_data=None):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
@@ -68,7 +71,10 @@ async def _setup(hass, call_log, *, dead_entities=()):
     _register_switch_services(hass, call_log, dead_entities=dead_entities)
 
     entry = MockConfigEntry(
-        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+        domain=DOMAIN,
+        data={**ENTRY_DATA, **(extra_data or {})},
+        title="Battery Manager",
+        version=2,
     )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -363,3 +369,134 @@ async def test_bm_activated_psu_stays_auto_after_restart(hass):
 
     coordinator._update_support_modes()
     assert coordinator._support_manual["dc24"] is False  # stays automatic
+
+
+# ---------------------------------------------------------------------------
+# R3 manual-override switches (F-N3 §7, docs/DC_TOPOLOGY.md). The switch is
+# the single entry point: it actuates the PSU and pins manual mode so the
+# simulation forces the path on.
+# ---------------------------------------------------------------------------
+
+
+async def test_manual_switch_on_forces_and_actuates_dc48(hass):
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    coordinator._support_manual["dc48"] = False
+    coordinator._support_state["dc48"] = False
+    hass.states.async_set(DC48, "off")
+    calls.clear()
+
+    await coordinator.async_set_support_manual("dc48", True)
+    await hass.async_block_till_done()
+    assert ("turn_on", DC48) in calls
+    assert coordinator.support_manual("dc48") is True
+    # The simulation now treats the 48 V path as permanently on.
+    assert coordinator.build_system_config().support.dc48_forced_on is True
+
+
+async def test_manual_switch_off_restores_auto_dc48(hass):
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    coordinator._support_manual["dc48"] = True
+    coordinator._support_state["dc48"] = True
+    hass.states.async_set(DC48, "on")
+    calls.clear()
+
+    await coordinator.async_set_support_manual("dc48", False)
+    await hass.async_block_till_done()
+    assert ("turn_off", DC48) in calls
+    assert coordinator.support_manual("dc48") is False
+    assert coordinator.build_system_config().support.dc48_forced_on is False
+
+
+async def test_manual_switch_dc24_uses_make_before_break(hass):
+    """Entering 24 V manual mode must keep the rail sourced: PSU on before
+    the DC/DC goes off; exiting reverses it."""
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls)
+    coordinator._support_manual["dc24"] = False
+    hass.states.async_set(PSU, "off")
+    hass.states.async_set(DCDC, "on")
+    calls.clear()
+
+    await coordinator.async_set_support_manual("dc24", True)
+    await hass.async_block_till_done()
+    assert calls.index(("turn_on", PSU)) < calls.index(("turn_off", DCDC))
+    assert coordinator.support_manual("dc24") is True
+    assert coordinator.build_system_config().support.dc24_forced_on is True
+
+    calls.clear()
+    await coordinator.async_set_support_manual("dc24", False)
+    await hass.async_block_till_done()
+    # Restore: DC/DC on before the PSU goes off.
+    assert calls.index(("turn_on", DCDC)) < calls.index(("turn_off", PSU))
+    assert coordinator.support_manual("dc24") is False
+
+
+async def test_manual_switch_is_idempotent(hass):
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    coordinator._support_manual["dc48"] = True
+    hass.states.async_set(DC48, "on")
+    calls.clear()
+
+    await coordinator.async_set_support_manual("dc48", True)  # already manual
+    await hass.async_block_till_done()
+    assert calls == []
+
+
+async def test_manual_switch_entity_reflects_state(hass):
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    state = hass.states.get("switch.battery_manager_48_v_support_manual")
+    assert state is not None  # created because the dc48 switch is configured
+    # Externally-detected manual mode (F-N2) is reflected by the switch too.
+    coordinator._support_manual["dc48"] = True
+    assert coordinator.support_manual("dc48") is True
+
+
+async def test_manual_off_lag_does_not_reenter_manual(hass):
+    """Review finding: after an operator OFF, a lagging switch still reading
+    'on' must not be misread as an external override and bounced back to
+    forced-on (symmetric OFF-side grace)."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    # We just commanded dc48 OFF and have NOT yet observed it reach 'off';
+    # the entity lags and still reports 'on'.
+    coordinator._support_manual["dc48"] = False
+    coordinator._support_state["dc48"] = False
+    coordinator._last_support_cmd["dc48"] = (False, dt_util.now())
+    coordinator._support_pending_off["dc48"] = True
+    hass.states.async_set(DC48, "on")
+    hass.states.async_set(PSU, "off")
+    hass.states.async_set(DCDC, "on")
+
+    coordinator._update_support_modes()
+    assert coordinator._support_manual["dc48"] is False  # stayed auto
+
+    # Once the device IS seen off, a later external ON must still enter
+    # manual mode (operator re-enabling at the wall).
+    hass.states.async_set(DC48, "off")
+    coordinator._update_support_modes()  # observes off -> clears pending_off
+    hass.states.async_set(DC48, "on")
+    coordinator._update_support_modes()
+    assert coordinator._support_manual["dc48"] is True
+
+
+async def test_manual_dc24_off_failure_keeps_manual(hass):
+    """Review finding: if the make-before-break restore aborts (DC/DC does
+    not confirm), the PSU stays physically on, so manual mode must persist
+    rather than desyncing the model."""
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, dead_entities=(DCDC,))
+    coordinator._support_manual["dc24"] = True
+    coordinator._support_state["dc24"] = True
+    hass.states.async_set(PSU, "on")
+    hass.states.async_set(DCDC, "off")
+
+    with patch("asyncio.sleep", return_value=None):
+        await coordinator.async_set_support_manual("dc24", False)
+    # DC/DC restore failed -> stay in manual mode (PSU is still on).
+    assert coordinator._support_manual["dc24"] is True

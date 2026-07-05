@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-05
+
+### Added — F-N3 R3 manual-override switches (docs/DC_TOPOLOGY.md §7)
+- **A manual switch per support PSU** ("24 V / 48 V support manual"),
+  created when the PSU switch is configured. Turning it on forces the PSU
+  on and pauses automatic control (winter operation); the 24 V switch
+  uses the make-before-break sequence so the rail is never sourceless;
+  turning it off restores automatic control. The simulation forces the
+  path on while manual, so the SOC forecast matches reality. External
+  hand-switching (F-N2) and the switch share one state.
+
+### Fixed
+- Adversarial review of the interaction with the F-N2 state machine
+  (3 confirmed findings): an operator/auto OFF on a slow or assumed-state
+  switch no longer bounces back to forced-on — a symmetric "pending off"
+  confirmation distinguishes actuation lag (stay auto) from an operator
+  ON right after our OFF (enter manual); a failed 24 V make-before-break
+  restore keeps manual mode instead of desyncing the model; and the
+  idempotence check moved inside the switch lock so a rapid double-toggle
+  is honoured. Full suite 140 tests green.
+
 ## [0.7.2] - 2026-07-05
 
 ### Added — F-N3 phase 3: voltage gate live + calibration (docs/DC_TOPOLOGY.md)
