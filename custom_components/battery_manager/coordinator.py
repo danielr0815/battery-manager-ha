@@ -22,6 +22,8 @@ from .const import (
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_BATTERY_CELLS_SERIES,
+    CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
     CONF_DC24_SHARE_PERCENT,
@@ -29,6 +31,7 @@ from .const import (
     CONF_DCDC_MAX_CURRENT_A,
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
+    CONF_GATE_SOC_PERCENT,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
@@ -114,6 +117,12 @@ def _power_cap(voltage_v: Any, current_a: Any) -> float | None:
     return float(voltage_v) * current
 
 
+def _gate_soc(percent: Any) -> float | None:
+    """48 V PSU gate SOC; >= 100 % means always open (no gate)."""
+    value = float(percent)
+    return value if value < 100.0 else None
+
+
 class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Reads inputs, runs the core planner, applies hysteresis and switching."""
 
@@ -152,6 +161,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._support_pending_confirm = {"dc24": False, "dc48": False}
         self._dcdc_restore_task: asyncio.Task | None = None
         self._support_adopt_once = False
+        # 48 V gate calibration (F-N3 phase 3): SOC bracket where the real
+        # battery voltage crosses the PSU output — helps pick gate_soc.
+        self._gate_cal: dict[str, float | None] = {
+            "below_max_soc": None,
+            "above_min_soc": None,
+        }
         self._switch_lock = asyncio.Lock()
         self._switch_task: asyncio.Task | None = None
         self._assumed_state_warned = False
@@ -411,6 +426,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 psu48_max_power_w=_power_cap(
                     cfg[CONF_PSU48_OUTPUT_VOLTAGE_V], cfg[CONF_PSU48_MAX_CURRENT_A]
                 ),
+                # Gate (phase 3): >= 100 % means always open (None).
+                gate_soc_percent=_gate_soc(cfg[CONF_GATE_SOC_PERCENT]),
             ),
             loads=tuple(loads),
             appliances=tuple(appliances),
@@ -578,6 +595,49 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if raw is None:
             return False
         return raw >= max(10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W]))
+
+    def _update_gate_calibration(self, config: SystemConfig, soc: float) -> None:
+        """Track the SOC bracket where the real battery voltage crosses the
+        48 V PSU output (F-N3 phase 3). The gate SOC proxy should sit near
+        this crossing; the bracket is exposed as a hint for the operator.
+
+        Because the bus voltage sags under load, the two edges can overlap;
+        both are surfaced raw so the operator can judge in-season.
+        """
+        entity_id = self.raw_config.get(CONF_BATTERY_VOLTAGE_ENTITY)
+        if not entity_id or not config.support.configured:
+            return
+        voltage = self._read_float(entity_id)
+        if voltage is None or not (40.0 <= voltage <= 60.0):
+            return  # missing or implausible reading
+        threshold = config.support.psu48_output_voltage_v
+        if voltage < threshold:
+            # PSU would deliver here — remember the highest such SOC.
+            prev = self._gate_cal["below_max_soc"]
+            if prev is None or soc > prev:
+                self._gate_cal["below_max_soc"] = soc
+        else:
+            # PSU gated off — remember the lowest such SOC.
+            prev = self._gate_cal["above_min_soc"]
+            if prev is None or soc < prev:
+                self._gate_cal["above_min_soc"] = soc
+
+    def _gate_calibration_diag(self, config: SystemConfig) -> dict[str, Any]:
+        below = self._gate_cal["below_max_soc"]
+        above = self._gate_cal["above_min_soc"]
+        cells = int(self.raw_config.get(CONF_BATTERY_CELLS_SERIES, 16))
+        threshold = config.support.psu48_output_voltage_v
+        suggested = None
+        if below is not None and above is not None and below <= above:
+            suggested = round((below + above) / 2.0, 1)
+        return {
+            "threshold_v": threshold,
+            "volt_per_cell": round(threshold / cells, 3) if cells else None,
+            "delivering_below_soc_max": below,
+            "gated_above_soc_min": above,
+            "suggested_gate_soc": suggested,
+            "gate_soc_active": config.support.gate_soc_percent,
+        }
 
     def _bm_load_active(self, subentry_id: str) -> bool:
         """True while the load runs at the integration's own request.
@@ -905,6 +965,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._apply_support_switching(result, config, now)
         await self._apply_load_switching(result, now)
         self._update_power_warnings(result, now)
+        self._update_gate_calibration(config, soc)
 
         self._successful_updates += 1
         if not self._startup_complete and (
@@ -1026,6 +1087,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "support_dc24_mode": "manual" if self._support_manual["dc24"] else "auto",
             "support_dc48_mode": "manual" if self._support_manual["dc48"] else "auto",
             "consumption_profile": profile_diag,
+            "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
         }
 

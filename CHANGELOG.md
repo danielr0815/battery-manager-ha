@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-05
+
+### Added — F-N3 phase 3: voltage gate live + calibration (docs/DC_TOPOLOGY.md)
+- **48 V PSU voltage gate goes live.** A new `gate_soc_percent` option
+  (SOC proxy for the PSU's output-voltage threshold) makes the simulation
+  deliver the 48 V PSU only below that SOC. 100 % maps to "no gate"
+  (`None`), so an existing entry stays behaviour-neutral until the
+  operator sets a real value.
+- **Gate calibration diagnostic.** The coordinator watches where the real
+  battery-voltage sensor crosses the 48 V PSU output voltage and exposes
+  the SOC bracket (highest SOC still delivering / lowest SOC already
+  gated), a suggested gate SOC, and volts-per-cell (with the new
+  informational `battery_cells_series` option) as the `gate_calibration`
+  attribute on the SOC-forecast sensor — read it over a discharge evening
+  to pick `gate_soc_percent`.
+- Config-flow fields + en/de translations for the gate SOC and cell
+  count. Adversarially reviewed (gate correctness / calibration /
+  integration) with no findings. Full suite 133 tests green.
+
 ## [0.7.1] - 2026-07-05
 
 ### Added — F-N3 two-bus DC model, phase 2 (docs/DC_TOPOLOGY.md)

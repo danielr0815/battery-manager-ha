@@ -221,5 +221,6 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "lost_surplus_kwh": data.get("lost_surplus_kwh"),
             "loads": loads,
             "consumption_profile": data.get("consumption_profile") or {},
+            "gate_calibration": data.get("gate_calibration") or {},
             **(data.get("plan_params") or {}),
         }

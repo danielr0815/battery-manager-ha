@@ -26,6 +26,7 @@ from .const import (
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
@@ -37,6 +38,7 @@ from .const import (
     CONF_DCDC_MAX_CURRENT_A,
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
+    CONF_GATE_SOC_PERCENT,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_AVAILABILITY_ENTITY,
@@ -201,6 +203,14 @@ def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
         schema[vol.Required(amp_key, default=_d(current, amp_key))] = _number(
             0, amp_max, 0.05, "A"
         )
+    schema[
+        vol.Required(
+            CONF_BATTERY_CELLS_SERIES, default=_d(current, CONF_BATTERY_CELLS_SERIES)
+        )
+    ] = _number(4, 20, 1)
+    schema[
+        vol.Required(CONF_GATE_SOC_PERCENT, default=_d(current, CONF_GATE_SOC_PERCENT))
+    ] = _number(0, 100, 1, "%")
     return schema
 
 

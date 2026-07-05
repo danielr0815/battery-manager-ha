@@ -140,3 +140,76 @@ async def test_options_flow_renders_with_device_params(hass):
     assert result["type"] == "form"
     schema_keys = {str(k) for k in result["data_schema"].schema}
     assert CONF_DC24_SHARE_PERCENT in schema_keys
+
+
+async def test_gate_soc_maps_and_full_open(hass):
+    """gate_soc < 100 maps through; >= 100 means no gate (None)."""
+    from custom_components.battery_manager.const import (
+        CONF_GATE_SOC_PERCENT,
+        CONF_SUPPORT_DC48_SWITCH,
+    )
+
+    for entered, expected in ((40.0, 40.0), (100.0, None)):
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=ENTRY_DATA,
+            options={
+                CONF_GATE_SOC_PERCENT: entered,
+                CONF_SUPPORT_DC48_SWITCH: "switch.psu48",
+            },
+            title="Battery Manager",
+            version=2,
+        )
+        entry.add_to_hass(hass)
+        _set_input_states(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        sp = hass.data[DOMAIN][entry.entry_id].build_system_config().support
+        assert sp.gate_soc_percent == expected
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_gate_calibration_brackets_the_crossing(hass):
+    """The calibration tracks the highest SOC still below the PSU output
+    voltage and the lowest SOC already above it."""
+    from custom_components.battery_manager.const import (
+        CONF_BATTERY_VOLTAGE_ENTITY,
+        CONF_SUPPORT_DC48_SWITCH,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        options={
+            CONF_BATTERY_VOLTAGE_ENTITY: "sensor.batt_v",
+            CONF_SUPPORT_DC48_SWITCH: "switch.psu48",  # support configured
+        },
+        title="Battery Manager",
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    _set_input_states(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    config = coordinator.build_system_config()  # psu48 output 49.56 V default
+
+    # Below the threshold at SOC 40 and 55 -> below_max_soc = 55.
+    hass.states.async_set("sensor.batt_v", "49.2")
+    coordinator._update_gate_calibration(config, 40.0)
+    coordinator._update_gate_calibration(config, 55.0)
+    # Above the threshold at SOC 80 and 70 -> above_min_soc = 70.
+    hass.states.async_set("sensor.batt_v", "49.9")
+    coordinator._update_gate_calibration(config, 80.0)
+    coordinator._update_gate_calibration(config, 70.0)
+
+    diag = coordinator._gate_calibration_diag(config)
+    assert diag["delivering_below_soc_max"] == 55.0
+    assert diag["gated_above_soc_min"] == 70.0
+    assert diag["suggested_gate_soc"] == 62.5
+
+    # Implausible reading is ignored.
+    hass.states.async_set("sensor.batt_v", "5.0")
+    coordinator._update_gate_calibration(config, 10.0)
+    assert coordinator._gate_cal["below_max_soc"] == 55.0

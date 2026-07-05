@@ -91,10 +91,16 @@ CONF_DCDC_MAX_CURRENT_A = "dcdc_max_current_a"
 CONF_PSU24_OUTPUT_VOLTAGE_V = "psu24_output_voltage_v"
 CONF_PSU24_EFFICIENCY = "psu24_efficiency"
 CONF_PSU24_MAX_CURRENT_A = "psu24_max_current_a"
-# 48 V support PSU (nameplate; voltage gate goes live in phase 3).
+# 48 V support PSU (nameplate; voltage gate lives from phase 3).
 CONF_PSU48_OUTPUT_VOLTAGE_V = "psu48_output_voltage_v"
 CONF_PSU48_EFFICIENCY = "psu48_efficiency"
 CONF_PSU48_MAX_CURRENT_A = "psu48_max_current_a"
+# 48 V PSU voltage gate as an SOC proxy (phase 3): the PSU only delivers
+# while the battery SOC is below this value. 100 = always open (neutral).
+# Calibrate from the observed voltage-crossing bracket (diagnostic).
+CONF_GATE_SOC_PERCENT = "gate_soc_percent"
+# Series cell count (informational: derives V/cell for the gate hint).
+CONF_BATTERY_CELLS_SERIES = "battery_cells_series"
 
 # --- Surplus load subentry keys ---
 SUBENTRY_TYPE_LOAD = "surplus_load"
@@ -217,6 +223,8 @@ DEFAULT_CONFIG = {
     CONF_PSU48_OUTPUT_VOLTAGE_V: 49.56,
     CONF_PSU48_EFFICIENCY: 1.0,
     CONF_PSU48_MAX_CURRENT_A: 0.0,
+    CONF_GATE_SOC_PERCENT: 100.0,  # 100 = gate always open (neutral)
+    CONF_BATTERY_CELLS_SERIES: 16,
 }
 
 DEFAULT_LOAD_CONFIG = {
