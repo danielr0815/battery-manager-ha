@@ -61,8 +61,11 @@ from .const import (
     CONF_PSU24_EFFICIENCY,
     CONF_PSU24_MAX_CURRENT_A,
     CONF_PSU24_OUTPUT_VOLTAGE_V,
+    CONF_PSU48_CTRL_LOG_ONLY,
     CONF_PSU48_EFFICIENCY,
     CONF_PSU48_MAX_CURRENT_A,
+    CONF_PSU48_OFF_VOLTAGE_V,
+    CONF_PSU48_ON_VOLTAGE_V,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
@@ -190,6 +193,16 @@ def _validate_buffer_clamps(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _validate_controller_voltages(data: dict[str, Any]) -> str | None:
+    """The R2 controller needs off_voltage strictly above on_voltage, else
+    the hysteresis band collapses and it would chatter (docs/DC_TOPOLOGY §6)."""
+    on = data.get(CONF_PSU48_ON_VOLTAGE_V)
+    off = data.get(CONF_PSU48_OFF_VOLTAGE_V)
+    if on is not None and off is not None and float(off) <= float(on):
+        return "controller_off_below_on"
+    return None
+
+
 def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2).
 
@@ -243,6 +256,22 @@ def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
     schema[
         vol.Required(CONF_GATE_SOC_PERCENT, default=_d(current, CONF_GATE_SOC_PERCENT))
     ] = _number(0, 100, 1, "%")
+    # R2 voltage controller for the manual 48 V mode (docs/DC_TOPOLOGY.md §6).
+    schema[
+        vol.Required(
+            CONF_PSU48_ON_VOLTAGE_V, default=_d(current, CONF_PSU48_ON_VOLTAGE_V)
+        )
+    ] = _number(40, 60, 0.01, "V")
+    schema[
+        vol.Required(
+            CONF_PSU48_OFF_VOLTAGE_V, default=_d(current, CONF_PSU48_OFF_VOLTAGE_V)
+        )
+    ] = _number(40, 60, 0.01, "V")
+    schema[
+        vol.Required(
+            CONF_PSU48_CTRL_LOG_ONLY, default=_d(current, CONF_PSU48_CTRL_LOG_ONLY)
+        )
+    ] = selector.BooleanSelector()
     return schema
 
 
@@ -497,7 +526,9 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             data = _flatten_sections(user_input)
-            error = _validate_support_entities(data)
+            error = _validate_support_entities(data) or _validate_controller_voltages(
+                data
+            )
             if error is None:
                 self._data.update(data)
                 return self.async_create_entry(title="Battery Manager", data=self._data)
@@ -562,6 +593,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 _validate_support_entities(data)
                 or _validate_learning_sources(data)
                 or _validate_buffer_clamps(data)
+                or _validate_controller_voltages(data)
             )
             if error is None:
                 # Cleared selector fields are absent from the input. Store an

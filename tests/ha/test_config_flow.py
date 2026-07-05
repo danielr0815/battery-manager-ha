@@ -118,6 +118,67 @@ async def test_options_flow_flattens_sections_on_submit(hass):
     assert "planner_tuning" not in opts  # section wrappers removed
 
 
+async def test_options_flow_rejects_inverted_controller_band(hass):
+    """Review finding: the R2 controller off-voltage must be validated ABOVE
+    the on-voltage in the OPTIONS flow too (not only the setup wizard), else a
+    collapsed hysteresis band saves silently and the controller chatters."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "planner_tuning": {
+                "soc_buffer_percent": 6.0,
+                "hysteresis_percent": 1.0,
+                "threshold_inertia_percent": 2.0,
+                "min_switch_interval_s": 60,
+            },
+            "consumption_profile": {
+                "ac_base_load_w": 50.0,
+                "ac_variable_load_w": 75.0,
+                "ac_variable_start_hour": 6,
+                "ac_variable_end_hour": 20,
+                "dc_base_load_w": 50.0,
+                "dc_variable_load_w": 25.0,
+                "dc_variable_start_hour": 6,
+                "dc_variable_end_hour": 22,
+            },
+            "consumption_learning": {
+                "learning_window_days": 120,
+                "learning_max_age_days": 14,
+                "profile_half_life_days": 30,
+                "buffer_min_percent": 3.0,
+                "buffer_max_percent": 15.0,
+            },
+            "support_paths": {
+                "support_dc48_power_w": 60.0,
+                "support_switch_delay_s": 3,
+            },
+            "dc_devices": {
+                "dc24_share_percent": 100.0,
+                "dcdc_output_voltage_v": 24.0,
+                "dcdc_efficiency": 1.0,
+                "dcdc_max_current_a": 0.0,
+                "psu24_output_voltage_v": 24.0,
+                "psu24_efficiency": 1.0,
+                "psu24_max_current_a": 0.0,
+                "psu48_output_voltage_v": 49.56,
+                "psu48_efficiency": 1.0,
+                "psu48_max_current_a": 0.0,
+                "battery_cells_series": 16,
+                "gate_soc_percent": 100.0,
+                "psu48_on_voltage_v": 49.8,  # inverted: on above off
+                "psu48_off_voltage_v": 49.56,
+                "psu48_controller_log_only": False,
+            },
+        },
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "controller_off_below_on"}
+
+
 async def test_config_flow_all_steps_render(hass):
     """Every base-flow step must build its schema without raising."""
     result = await hass.config_entries.flow.async_init(

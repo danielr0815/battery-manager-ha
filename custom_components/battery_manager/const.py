@@ -102,6 +102,22 @@ CONF_GATE_SOC_PERCENT = "gate_soc_percent"
 # Series cell count (informational: derives V/cell for the gate hint).
 CONF_BATTERY_CELLS_SERIES = "battery_cells_series"
 
+# --- R2 voltage controller for the manual 48 V mode (docs/DC_TOPOLOGY.md §6) ---
+# While the 48 V PSU is in manual mode AND a battery-voltage sensor is set,
+# the controller switches the PSU on below `on_voltage` and off above
+# `off_voltage` (asymmetric hysteresis + dwell). Log-only by default: it
+# logs its decisions without actuating until the operator arms it after a
+# shakedown. Without a voltage sensor the manual mode stays F-N2 hands-off.
+CONF_PSU48_ON_VOLTAGE_V = "psu48_on_voltage_v"
+CONF_PSU48_OFF_VOLTAGE_V = "psu48_off_voltage_v"
+CONF_PSU48_CTRL_LOG_ONLY = "psu48_controller_log_only"
+# Dwell/plausibility constants (not per-install configurable in v1).
+DC48_CTRL_DWELL_ON_S = 60
+DC48_CTRL_DWELL_OFF_S = 300
+DC48_CTRL_FAILSAFE_MIN = 10  # invalid voltage this long -> fail-safe PSU on
+DC48_CTRL_VOLTAGE_MIN = 40.0  # plausibility window for the sensor
+DC48_CTRL_VOLTAGE_MAX = 60.0
+
 # --- Surplus load subentry keys ---
 SUBENTRY_TYPE_LOAD = "surplus_load"
 CONF_LOAD_NAME = "name"
@@ -225,6 +241,9 @@ DEFAULT_CONFIG = {
     CONF_PSU48_MAX_CURRENT_A: 0.0,
     CONF_GATE_SOC_PERCENT: 100.0,  # 100 = gate always open (neutral)
     CONF_BATTERY_CELLS_SERIES: 16,
+    CONF_PSU48_ON_VOLTAGE_V: 49.56,
+    CONF_PSU48_OFF_VOLTAGE_V: 49.8,
+    CONF_PSU48_CTRL_LOG_ONLY: True,  # arm only after a shakedown
 }
 
 DEFAULT_LOAD_CONFIG = {

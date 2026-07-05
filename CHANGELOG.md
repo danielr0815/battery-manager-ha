@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-07-05
+
+### Added — F-N3: R2 battery-voltage controller for the manual 48 V PSU (docs/DC_TOPOLOGY.md §6)
+- **While the 48 V support PSU is in manual mode AND a battery-voltage
+  sensor is configured, it is now regulated by battery voltage instead
+  of held permanently on.** Asymmetric hysteresis: switch ON when the
+  voltage stays at/below `psu48_on_voltage_v` (default 49.56 V) for
+  60 s, OFF when it stays at/above `psu48_off_voltage_v` (default
+  49.8 V) for 300 s, HOLD in the band between. This realises the
+  operator's winter workflow: keep the PSU armed, but let it drop out
+  once the pack recovers and re-engage when it sags again.
+- **Log-only shakedown (`psu48_controller_log_only`, default on).** The
+  controller computes and logs every decision but does not actuate the
+  switch — a safe dry run before arming it for real.
+- **The R3 switch is the sole mode truth for the regulated PSU
+  (operator decision A).** A controller-caused OFF never exits manual
+  mode; only toggling the manual switch returns the PSU to automatic
+  control. During the log-only shakedown (controller not actuating) an
+  external OFF still exits manual, exactly as before (F-N2 unchanged).
+- **Fail-safe.** A missing or implausible voltage reading (outside
+  40–60 V) for more than 10 minutes forces the PSU on; the hardware
+  self-gates above its output voltage, so "on" can never overcharge.
+  A single valid reading disarms the fail-safe.
+- The current decision, mode, reason and voltage are exposed under the
+  `support_dc48_controller` attribute of the SOC-forecast sensor. The
+  options flow AND the setup wizard validate `off_voltage > on_voltage`,
+  and the controller additionally refuses to regulate a collapsed band at
+  runtime (defense against a hand-edited/legacy config).
+- Three rounds of adversarial multi-agent review (a mid-run internet
+  outage crashed round 1's F-N2 lens; it was re-run clean). Confirmed and
+  fixed: (a) the band validation was missing from the options flow;
+  (b) the controller consumed the planner's shared switch throttle
+  (`_last_support_switch`), delaying unrelated 24 V switching; (c) flipping
+  `log_only` back on after a controller-caused OFF silently dropped manual
+  mode — closed with a persisted `dc48_ctrl_caused_off` flag so a
+  controller OFF is never reinterpreted as an operator wall-off across a
+  config reload; (d) that flag, once set, could trap the PSU off in manual
+  if the voltage sensor was later removed — the exemption now requires the
+  controller to still be engaged, and the flag is dropped when it is not;
+  (e) the flag was persisted only via a 10 s delayed save that a reload
+  could beat — the entry now flushes its state synchronously on unload.
+  Also hardened: dwell timers freeze (not reset) on a brief invalid
+  reading, and a queued controller command re-checks mode under the switch
+  lock so it cannot fire after the operator has exited manual.
+- Known follow-up: the consumption-learning correction
+  (`history_profile._psu48_series`) still assumes "48 V PSU on == full
+  rating delivered"; it will be made gate/controller-aware in the
+  learning phase (Rev. 4).
+
 ## [0.7.6] - 2026-07-05
 
 ### Changed — F-N3: 48 V PSU direct-offset billing (docs/DC_TOPOLOGY.md §4)

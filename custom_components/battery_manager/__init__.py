@@ -204,6 +204,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok:
         coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
+        # Flush any pending delayed save before teardown: a config-entry reload
+        # does not fire EVENT_HOMEASSISTANT_FINAL_WRITE, so the persisted
+        # support-mode / caused-off record would otherwise be lost if the
+        # reload beats the 10 s delayed write (review round 3).
+        await coordinator.async_flush_persistent_state()
         coordinator.cleanup()
         hass.data[DOMAIN].pop(entry.entry_id)
         if not hass.data[DOMAIN]:

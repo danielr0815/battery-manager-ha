@@ -179,7 +179,10 @@
               "psu48_efficiency": "48 V PSU: efficiency (0–1)",
               "psu48_max_current_a": "48 V PSU: max current (A)",
               "battery_cells_series": "Battery cells in series",
-              "gate_soc_percent": "48 V gate SOC threshold (%)"
+              "gate_soc_percent": "48 V gate SOC threshold (%)",
+              "psu48_on_voltage_v": "48 V controller: turn-on voltage (V)",
+              "psu48_off_voltage_v": "48 V controller: turn-off voltage (V)",
+              "psu48_controller_log_only": "48 V controller log-only (do not switch)"
             },
             "data_description": {
               "battery_voltage_entity": "48 V battery voltage sensor — for the gate calibration and (later) the 48 V PSU voltage controller.",
@@ -194,7 +197,10 @@
               "psu48_efficiency": "48 V PSU efficiency (1.0 = lossless).",
               "psu48_max_current_a": "48 V PSU max output current. 0 = uncapped.",
               "battery_cells_series": "Series cell count (e.g. 15 for Pylontech US5000). Informational: derives volts per cell as a calibration aid.",
-              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor."
+              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor.",
+              "psu48_on_voltage_v": "In manual 48 V mode: below this battery voltage the controller switches the PSU ON. Requires the battery voltage sensor.",
+              "psu48_off_voltage_v": "In manual 48 V mode: at or above this battery voltage the controller switches the PSU OFF. Must be above the turn-on voltage (hysteresis).",
+              "psu48_controller_log_only": "On = controller only logs its decisions without switching (dry run). Off = controller actively switches the 48 V PSU."
             }
           }
         }
@@ -204,7 +210,8 @@
       "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
-      "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum."
+      "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum.",
+      "controller_off_below_on": "The 48 V controller turn-off voltage must be above the turn-on voltage."
     },
     "abort": {
       "already_configured": "This system is already configured."
@@ -350,7 +357,8 @@
     "error": {
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
-      "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum."
+      "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum.",
+      "controller_off_below_on": "The 48 V controller turn-off voltage must be above the turn-on voltage."
     },
     "step": {
       "init": {
@@ -464,7 +472,10 @@
               "psu48_efficiency": "48 V PSU: efficiency (0–1)",
               "psu48_max_current_a": "48 V PSU: max current (A)",
               "battery_cells_series": "Battery cells in series",
-              "gate_soc_percent": "48 V gate SOC threshold (%)"
+              "gate_soc_percent": "48 V gate SOC threshold (%)",
+              "psu48_on_voltage_v": "48 V controller: turn-on voltage (V)",
+              "psu48_off_voltage_v": "48 V controller: turn-off voltage (V)",
+              "psu48_controller_log_only": "48 V controller log-only (do not switch)"
             },
             "data_description": {
               "battery_voltage_entity": "48 V battery voltage sensor — for the gate calibration and (later) the 48 V PSU voltage controller.",
@@ -479,7 +490,10 @@
               "psu48_efficiency": "48 V PSU efficiency (1.0 = lossless).",
               "psu48_max_current_a": "48 V PSU max output current. 0 = uncapped.",
               "battery_cells_series": "Series cell count (e.g. 15 for Pylontech US5000). Informational: derives volts per cell as a calibration aid.",
-              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor."
+              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor.",
+              "psu48_on_voltage_v": "In manual 48 V mode: below this battery voltage the controller switches the PSU ON. Requires the battery voltage sensor.",
+              "psu48_off_voltage_v": "In manual 48 V mode: at or above this battery voltage the controller switches the PSU OFF. Must be above the turn-on voltage (hysteresis).",
+              "psu48_controller_log_only": "On = controller only logs its decisions without switching (dry run). Off = controller actively switches the 48 V PSU."
             }
           }
         }

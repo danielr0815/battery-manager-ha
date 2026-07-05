@@ -205,7 +205,7 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
 | 4 ✓ | v0.7.3 | R3-Schalter + Modus-Konsolidierung (ein Eintrittspunkt) | Schalter toggeln, Modussensoren, Schiene nie quellenlos, Neustart mitten im Manuell-Modus |
 | 4b ✓ | v0.7.4/5 | Config-Dialoge in einklappbare Abschnitte gruppiert (UX, keine Verhaltensänderung) | Dialoge in der Oberfläche prüfen |
 | 4c ✓ | v0.7.6 | **48-V-Direktverrechnung scharf** (eigene Golden-Diffs): PSU deckt Buslast direkt, Rest lädt Batterie, Abrechnung = geliefert/η, Cap. Nur `forced_dc48` ändert sich, kostenneutral (Import unverändert, SOC-Kurve physikalischer) | Winter-Abend: `psu48_delivered_wh` in hourly_details ~0 bei voller Batterie, SOC schonender |
-| 5 | v0.7.7 | R2-Spannungsregler (Log-only-Flag) | 48 h Log-only gegen Victron-Historie, dann scharf über einen Abend-/Morgenzyklus |
+| 5 ✓ | v0.7.7 | **R2-Spannungsregler scharf** (asymmetrische Hysterese EIN ≤ 49,56 V / AUS ≥ 49,8 V, Dwell 60 s/300 s, Log-only-Flag default an, Fail-safe = EIN nach > 10 min ungültig, Regler-AUS beendet NIE den Manuell-Modus [Restfrage A]); off ≤ on in beiden Flows validiert + Laufzeit-Guard; Regler bucht NICHT auf `_last_support_switch` | 48 h Log-only gegen Victron-Historie, dann scharf über einen Abend-/Morgenzyklus |
 | 6 | v0.7.5 | Lernen Rev. 4 (LTS-Min/Max-Gating) | Relearn-Lauf, Profil-Export-Vergleich, 14-d-Watchdog |
 | 7 | v0.7.6 | Karten-Stützungs-Spur + Doku-Abschluss | Dashboard-Check |
 

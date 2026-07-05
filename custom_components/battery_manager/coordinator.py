@@ -48,8 +48,11 @@ from .const import (
     CONF_PSU24_EFFICIENCY,
     CONF_PSU24_MAX_CURRENT_A,
     CONF_PSU24_OUTPUT_VOLTAGE_V,
+    CONF_PSU48_CTRL_LOG_ONLY,
     CONF_PSU48_EFFICIENCY,
     CONF_PSU48_MAX_CURRENT_A,
+    CONF_PSU48_OFF_VOLTAGE_V,
+    CONF_PSU48_ON_VOLTAGE_V,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
@@ -59,6 +62,11 @@ from .const import (
     CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
+    DC48_CTRL_DWELL_OFF_S,
+    DC48_CTRL_DWELL_ON_S,
+    DC48_CTRL_FAILSAFE_MIN,
+    DC48_CTRL_VOLTAGE_MAX,
+    DC48_CTRL_VOLTAGE_MIN,
     DEBOUNCE_SECONDS,
     DEFAULT_CONFIG,
     DEFAULT_LOAD_CONFIG,
@@ -166,6 +174,29 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._support_pending_off = {"dc24": False, "dc48": False}
         self._dcdc_restore_task: asyncio.Task | None = None
         self._support_adopt_once = False
+        # R2 voltage controller for the regulated manual 48 V PSU (v0.7.7):
+        # while dc48 is in manual mode AND a battery-voltage sensor is
+        # configured, the PSU is cycled by battery voltage with asymmetric
+        # hysteresis instead of held permanently on. Continuous in-region
+        # timers implement the ON/OFF dwell; a separate timer arms the
+        # fail-safe when the reading is missing/implausible. The controller
+        # never exits manual mode — only the R3 switch does (operator ans A).
+        self._dc48_below_since: datetime | None = None
+        self._dc48_above_since: datetime | None = None
+        self._dc48_invalid_since: datetime | None = None
+        self._dc48_ctrl_task: asyncio.Task | None = None
+        # True while the PSU is off BECAUSE the R2 controller switched it off
+        # (not the operator). Persisted so a config change that flips log_only
+        # — which reloads the entry — cannot reinterpret a controller-caused
+        # off as an operator wall-off and silently drop manual mode (answer A).
+        self._dc48_ctrl_caused_off = False
+        self._dc48_ctrl_diag: dict[str, Any] = {
+            "active": False,
+            "mode": "off",
+            "decision": None,
+            "reason": "idle",
+            "voltage": None,
+        }
         # 48 V gate calibration (F-N3 phase 3): SOC bracket where the real
         # battery voltage crosses the PSU output — helps pick gate_soc.
         self._gate_cal: dict[str, float | None] = {
@@ -259,24 +290,42 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._support_state[key] = bool(
                     data.get("support_state", {}).get(key, False)
                 )
+            # R2 controller-caused-off flag survives the reload that a config
+            # change (e.g. log_only) triggers — only meaningful while the 48 V
+            # switch is configured and the path is in manual mode.
+            if (
+                self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
+                and self._support_manual["dc48"]
+            ):
+                self._dc48_ctrl_caused_off = bool(
+                    data.get("dc48_ctrl_caused_off", False)
+                )
             # Pre-0.6.5 store: no ownership record exists. The first mode
             # pass adopts an already-on PSU instead of flipping it to
             # manual (the old version may have switched it on itself).
             self._support_adopt_once = "support_state" not in data
 
-    def _save_persistent_state(self) -> None:
-        self._store.async_delay_save(
-            lambda: {
-                "load_soc": self._load_soc_cache,
-                "plug_owned": self._load_plug_owned,
-                "last_load_switch": {
-                    k: v.isoformat() for k, v in self._last_load_switch.items()
-                },
-                "support_manual": dict(self._support_manual),
-                "support_state": dict(self._support_state),
+    def _persistent_payload(self) -> dict[str, Any]:
+        return {
+            "load_soc": self._load_soc_cache,
+            "plug_owned": self._load_plug_owned,
+            "last_load_switch": {
+                k: v.isoformat() for k, v in self._last_load_switch.items()
             },
-            10,
-        )
+            "support_manual": dict(self._support_manual),
+            "support_state": dict(self._support_state),
+            "dc48_ctrl_caused_off": self._dc48_ctrl_caused_off,
+        }
+
+    def _save_persistent_state(self) -> None:
+        self._store.async_delay_save(self._persistent_payload, 10)
+
+    async def async_flush_persistent_state(self) -> None:
+        """Write the persistent state immediately, cancelling any pending
+        delayed save. Called on unload so a config-entry reload (which does not
+        fire EVENT_HOMEASSISTANT_FINAL_WRITE) cannot beat the 10 s delayed write
+        and read back a stale support-mode / caused-off record (review round 3)."""
+        await self._store.async_save(self._persistent_payload())
 
     # ------------------------------------------------------------------
     # Configuration assembly
@@ -301,6 +350,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             if cfg.get(key):
                 entities.append(cfg[key])
+        # The R2 48 V controller (v0.7.7) reads battery_voltage_entity but it
+        # is deliberately NOT tracked: an analog voltage sags/rises every few
+        # seconds, so a debounced full replan per change would be constant and
+        # wasteful. The controller runs on the 5-min poll instead — the PSU
+        # hard-gates above its own output voltage, so sub-poll latency is
+        # irrelevant (docs/DC_TOPOLOGY.md §6, fallback-only variant).
         for subentry in self.entry.subentries.values():
             data = subentry.data
             if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
@@ -968,6 +1023,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
         await self._apply_support_switching(result, config, now)
+        self._run_dc48_controller(now)
         await self._apply_load_switching(result, now)
         self._update_power_warnings(result, now)
         self._update_gate_calibration(config, soc)
@@ -1091,6 +1147,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "support_dc48": self._support_state["dc48"],
             "support_dc24_mode": "manual" if self._support_manual["dc24"] else "auto",
             "support_dc48_mode": "manual" if self._support_manual["dc48"] else "auto",
+            "support_dc48_controller": dict(self._dc48_ctrl_diag),
             "consumption_profile": profile_diag,
             "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
@@ -1163,10 +1220,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._support_manual[key]:
                 if real:
                     self._support_state[key] = True
+                    if key == "dc48":
+                        # Back on: it is no longer "off because of us".
+                        self._dc48_ctrl_caused_off = False
+                elif key == "dc48" and (
+                    self._dc48_controller_regulating()
+                    or (self._dc48_ctrl_caused_off and self._dc48_controller_engaged())
+                ):
+                    # The R2 voltage controller cycles this PSU: a hard 'off'
+                    # is its own doing (or an operator wall-flip the controller
+                    # will correct), NOT an exit signal. The R3 switch is the
+                    # sole mode truth for the regulated 48 V PSU (operator
+                    # answer A) — so reflect the physical off but STAY manual.
+                    # `_dc48_ctrl_caused_off` holds this even if log_only is
+                    # later flipped back on, so a controller-caused off is never
+                    # reinterpreted as an operator wall-off (review round 2). It
+                    # is gated on _engaged() so that removing the voltage sensor
+                    # (controller can no longer cycle the PSU) does NOT trap the
+                    # PSU off in manual forever (review round 3).
+                    self._support_state[key] = False
                 else:
                     # Manually switched off: automatic control resumes.
                     self._support_manual[key] = False
                     self._support_state[key] = False
+                    if key == "dc48":
+                        self._dc48_ctrl_caused_off = False
                     changed = True
                     _LOGGER.info(
                         "%s support PSU manually switched off — automatic"
@@ -1215,6 +1293,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # On, but not switched by us: manual override starts.
                 self._support_manual[key] = True
                 self._support_state[key] = True
+                if key == "dc48":
+                    self._dc48_ctrl_caused_off = False  # it is on, not off-by-us
                 changed = True
                 _LOGGER.info(
                     "%s support PSU was switched on externally — automatic"
@@ -1265,6 +1345,253 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._dcdc_restore_task = self.entry.async_create_background_task(
             self.hass, _restore(), name="battery_manager_dcdc_restore"
+        )
+
+    # ------------------------------------------------------------------
+    # R2 voltage controller for the regulated manual 48 V PSU (F-N3, v0.7.7)
+    # ------------------------------------------------------------------
+
+    def _dc48_controller_engaged(self) -> bool:
+        """The controller runs its timers and logs decisions whenever the
+        48 V PSU is in manual mode AND both a battery-voltage sensor and the
+        PSU switch are configured. In log-only mode it still runs (it only
+        withholds actuation) so the shakedown can record what it *would* do.
+        """
+        return (
+            self._support_manual.get("dc48", False)
+            and bool(self.raw_config.get(CONF_BATTERY_VOLTAGE_ENTITY))
+            and bool(self.raw_config.get(CONF_SUPPORT_DC48_SWITCH))
+        )
+
+    def _dc48_controller_regulating(self) -> bool:
+        """True only when the controller may actually switch the PSU — i.e.
+        engaged AND not in log-only shakedown. This is also the condition
+        under which a hard 'off' must not exit manual mode (operator ans A)."""
+        return self._dc48_controller_engaged() and not bool(
+            self.raw_config.get(CONF_PSU48_CTRL_LOG_ONLY, True)
+        )
+
+    def _run_dc48_controller(self, now: datetime) -> None:
+        """Battery-voltage hysteresis control of the manual 48 V PSU.
+
+        ON  when V stays <= on_voltage for DC48_CTRL_DWELL_ON_S,
+        OFF when V stays >= off_voltage for DC48_CTRL_DWELL_OFF_S,
+        HOLD in the band between (off_voltage > on_voltage). A missing or
+        implausible reading arms a fail-safe that forces the PSU ON after
+        DC48_CTRL_FAILSAFE_MIN minutes (the hardware self-gates above its
+        output voltage, so 'on' can never overcharge). Decisions are always
+        logged; actuation is skipped in log-only mode.
+        """
+        diag = self._dc48_ctrl_diag
+        if not self._dc48_controller_engaged():
+            # Idle: reset the timers so a later activation debounces cleanly.
+            self._dc48_below_since = None
+            self._dc48_above_since = None
+            self._dc48_invalid_since = None
+            # The controller is no longer cycling the PSU, so a physical 'off'
+            # can no longer be "its own doing": drop the caused-off record so it
+            # can't keep the exemption alive (defense-in-depth, review round 3).
+            self._dc48_ctrl_caused_off = False
+            diag.update(
+                active=False,
+                mode="off",
+                decision=None,
+                reason="inactive",
+                voltage=None,
+            )
+            return
+
+        log_only = not self._dc48_controller_regulating()
+        mode = "log_only" if log_only else "regulating"
+        on_v = float(self.raw_config.get(CONF_PSU48_ON_VOLTAGE_V, 49.56))
+        off_v = float(self.raw_config.get(CONF_PSU48_OFF_VOLTAGE_V, 49.8))
+
+        if off_v <= on_v:
+            # Defensive: both flows validate off > on, but a hand-edited or
+            # legacy config with a collapsed/inverted band would chatter the
+            # PSU (the else-branch HOLD region vanishes). Disable regulation
+            # rather than actuate — mirrors the buffer clamp in the dynamic
+            # buffer. The operator sees a warning and the diagnostic reason.
+            self._dc48_below_since = None
+            self._dc48_above_since = None
+            diag.update(
+                active=True,
+                mode=mode,
+                decision="hold",
+                voltage=None,
+                reason="invalid_config_off_le_on",
+            )
+            _LOGGER.warning(
+                "48 V R2 controller disabled: off-voltage %.2f V <= on-voltage"
+                " %.2f V (collapsed hysteresis band) — fix the configuration",
+                off_v,
+                on_v,
+            )
+            return
+
+        entity_id = self.raw_config[CONF_BATTERY_VOLTAGE_ENTITY]
+        voltage = self._read_float(entity_id)
+        plausible = (
+            voltage is not None
+            and DC48_CTRL_VOLTAGE_MIN <= voltage <= DC48_CTRL_VOLTAGE_MAX
+        )
+
+        if not plausible:
+            # Stale/implausible reading: FREEZE the dwell timers (do not reset)
+            # so a brief sensor blip does not lose accumulated dwell (spec §6
+            # "einfrieren") — this also denies a flapping sensor a way to stall
+            # regulation forever. Arm the fail-safe; a sustained outage forces
+            # the PSU on regardless.
+            if self._dc48_invalid_since is None:
+                self._dc48_invalid_since = now
+            invalid_for = now - self._dc48_invalid_since
+            if invalid_for >= timedelta(minutes=DC48_CTRL_FAILSAFE_MIN):
+                diag.update(
+                    active=True,
+                    mode=mode,
+                    decision="on",
+                    voltage=voltage,
+                    reason="failsafe_no_reading",
+                )
+                self._dc48_actuate(True, "fail-safe (no valid voltage)", log_only)
+            else:
+                diag.update(
+                    active=True,
+                    mode=mode,
+                    decision="hold",
+                    voltage=voltage,
+                    reason="waiting_failsafe",
+                )
+            return
+
+        # Valid reading: clear the fail-safe timer.
+        self._dc48_invalid_since = None
+
+        if voltage <= on_v:
+            self._dc48_above_since = None
+            if self._dc48_below_since is None:
+                self._dc48_below_since = now
+            held = now - self._dc48_below_since
+            if held >= timedelta(seconds=DC48_CTRL_DWELL_ON_S):
+                diag.update(
+                    active=True,
+                    mode=mode,
+                    decision="on",
+                    voltage=voltage,
+                    reason="below_on_voltage",
+                )
+                self._dc48_actuate(True, f"V {voltage:.2f} <= on {on_v:.2f}", log_only)
+            else:
+                diag.update(
+                    active=True,
+                    mode=mode,
+                    decision="hold",
+                    voltage=voltage,
+                    reason="on_dwell",
+                )
+        elif voltage >= off_v:
+            self._dc48_below_since = None
+            if self._dc48_above_since is None:
+                self._dc48_above_since = now
+            held = now - self._dc48_above_since
+            if held >= timedelta(seconds=DC48_CTRL_DWELL_OFF_S):
+                diag.update(
+                    active=True,
+                    mode=mode,
+                    decision="off",
+                    voltage=voltage,
+                    reason="above_off_voltage",
+                )
+                self._dc48_actuate(
+                    False, f"V {voltage:.2f} >= off {off_v:.2f}", log_only
+                )
+            else:
+                diag.update(
+                    active=True,
+                    mode=mode,
+                    decision="hold",
+                    voltage=voltage,
+                    reason="off_dwell",
+                )
+        else:
+            # Hysteresis band: hold and reset both dwell timers.
+            self._dc48_below_since = None
+            self._dc48_above_since = None
+            diag.update(
+                active=True,
+                mode=mode,
+                decision="hold",
+                voltage=voltage,
+                reason="hysteresis_band",
+            )
+
+    def _dc48_actuate(self, target: bool, reason: str, log_only: bool) -> None:
+        """Bring the 48 V PSU to ``target`` if it is not already there.
+
+        Edge-triggered against the physical switch state (self-heals drift).
+        In log-only mode the intended action is only logged. A real switch
+        runs detached under the switch lock and records the F-N2 command
+        bookkeeping so the manual-override detector never misreads the
+        controller's own OFF as an external event.
+        """
+        entity_id = self.raw_config[CONF_SUPPORT_DC48_SWITCH]
+        current = self._entity_tristate(entity_id)
+        if current is target:
+            return  # already in the desired state
+        if current is None and target is False:
+            return  # can't confirm an unavailable switch; only force-ON blind
+
+        if log_only:
+            _LOGGER.info(
+                "48 V R2 controller (log-only) would switch %s: %s",
+                "on" if target else "off",
+                reason,
+            )
+            return
+
+        if self._dc48_ctrl_task is not None and not self._dc48_ctrl_task.done():
+            return  # our own actuation is still in flight
+        if self._switch_task is not None and not self._switch_task.done():
+            return  # a planner sequence holds the switch lock; retry next cycle
+
+        async def _do() -> None:
+            async with self._switch_lock:
+                # Re-check under the lock: the operator may have exited manual
+                # (async_set_support_manual, which also holds this lock) while
+                # this actuation was queued. A stale controller command must not
+                # fire in auto mode — the R3 switch owns the final state then.
+                if not self._dc48_controller_regulating():
+                    return
+                if self._entity_tristate(entity_id) is target:
+                    return
+                if await self._switch_entity(entity_id, target):
+                    self._support_state["dc48"] = target
+                    # Remember whether the PSU is now off BECAUSE of us, so a
+                    # later log_only flip can't reinterpret it as an operator
+                    # wall-off and drop manual mode (review round 2).
+                    self._dc48_ctrl_caused_off = target is False
+                    # Record the F-N2 command bookkeeping only on a confirmed
+                    # actuation (rolled forward, never on a failed switch) so
+                    # the manual-override detector never misreads the
+                    # controller's own OFF as an external operator action.
+                    # NB: deliberately NOT touching _last_support_switch — that
+                    # is the planner's shared dc24/dc48 throttle and the
+                    # controller must not consume it (it has its own guards).
+                    self._last_support_cmd["dc48"] = (target, dt_util.now())
+                    self._support_pending_confirm["dc48"] = False
+                    self._support_pending_off["dc48"] = not target
+                    self._save_persistent_state()
+                    _LOGGER.info(
+                        "48 V R2 controller switched %s: %s",
+                        "on" if target else "off",
+                        reason,
+                    )
+                    if self.data:
+                        self.data["support_dc48"] = target
+                        self.async_update_listeners()
+
+        self._dc48_ctrl_task = self.entry.async_create_background_task(
+            self.hass, _do(), name="battery_manager_dc48_controller"
         )
 
     def support_manual(self, key: str) -> bool:
@@ -1338,6 +1665,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_support_cmd[key] = (on, now)
             self._support_pending_confirm[key] = False
             self._support_pending_off[key] = not on
+            if key == "dc48":
+                # Operator took over mode truth via the R3 switch: any prior
+                # controller-caused-off record is void.
+                self._dc48_ctrl_caused_off = False
         self._save_persistent_state()
         self.async_update_listeners()
         await self.async_request_refresh()
