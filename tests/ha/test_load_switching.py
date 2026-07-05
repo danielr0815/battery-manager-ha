@@ -55,7 +55,7 @@ def _register_switch_services(hass, call_log):
     hass.services.async_register("homeassistant", "turn_off", turn_off)
 
 
-async def _setup(hass, call_log, *, policy=INPUT_OFF_POLICY_AUTO):
+async def _setup(hass, call_log, *, policy=INPUT_OFF_POLICY_AUTO, power_w=300.0):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
@@ -73,7 +73,7 @@ async def _setup(hass, call_log, *, policy=INPUT_OFF_POLICY_AUTO):
         subentries_data=[
             ConfigSubentryData(
                 data={
-                    CONF_LOAD_POWER_W: 300.0,
+                    CONF_LOAD_POWER_W: power_w,
                     CONF_LOAD_ENERGY_LIMITED: True,
                     CONF_LOAD_CAPACITY_WH: 2000.0,
                     CONF_LOAD_TARGET_SOC: 90.0,
@@ -228,6 +228,40 @@ async def test_power_ema_serves_only_while_charging(hass):
 
     # Charge over: the EMA is dropped, planning returns to nominal power.
     coordinator._load_charging_active[sub_id] = False
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w is None
+    assert sub_id not in coordinator._load_power_ema
+
+
+async def test_standby_power_never_seeds_ema(hass):
+    """A standby reading (dehumidifier idling at ~20 W of 400 W nominal)
+    clears the old flat 10 W bar but sits far below STANDBY_FRACTION of
+    the nominal power — it must not become the planning power. The live
+    plan otherwise booked 11 h × 22 Wh for a device that really pulls
+    ~400 W (2026-07-05 incident)."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    hass.states.async_set(POWER_FEEDBACK, "19.6")
+
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w is None  # planner uses nominal 400 W
+    assert sub_id not in coordinator._load_power_ema
+
+
+async def test_operating_power_above_standby_threshold_is_learned(hass):
+    """A real operating value (350 W of 400 W nominal) is above the
+    standby threshold and seeds the EMA; when the device drops back to
+    standby without an active charge, the EMA is discarded again."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    hass.states.async_set(POWER_FEEDBACK, "350")
+
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w == 350.0
+
+    # Back to standby draw, no charge active (recommendation-only load):
+    # the learned value must not linger as planning power.
+    hass.states.async_set(POWER_FEEDBACK, "19.6")
     states = coordinator._get_load_states()
     assert states[0].measured_power_w is None
     assert sub_id not in coordinator._load_power_ema

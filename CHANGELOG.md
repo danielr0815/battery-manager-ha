@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-05
+
+### Fixed
+- **Standby draw no longer poisons the planning power** (live incident
+  2026-07-05): a load's power-feedback sample was accepted whenever it
+  read above a flat 10 W, so a 400 W dehumidifier idling at ~19.6 W
+  (Fritz powerline plug) taught the EMA ~22 W as "measured" planning
+  power. The plan then booked 11 hours at 22 Wh each (0.24 kWh) for a
+  device that really pulls ~400 W (~4.4 kWh — 18× over plan), and the
+  pass-2 export gate `export_drop ≥ (1−tol)×energy` became trivially
+  satisfiable. The v0.6.1 nominal floor did not apply (it guards only
+  the saturation gate of energy-limited loads). Samples are now accepted
+  only at `raw ≥ max(10 W, STANDBY_FRACTION × nominal power)` with
+  `STANDBY_FRACTION = 0.25`; below that, the v0.6.1 rule applies — the
+  EMA keeps serving only during an active charge, otherwise it is
+  discarded and the planner uses the nominal power.
+
 ## [0.6.1] - 2026-07-05
 
 ### Fixed

@@ -96,6 +96,13 @@ CONF_LOAD_INPUT_OFF_POLICY = "input_off_policy"
 # the measured node, e.g. via a feed-in setpoint) means no subtraction.
 CONF_LOAD_IN_HOUSE = "in_house_measurement"
 
+# Power-feedback samples below this fraction of the load's nominal power
+# are standby/idle draw (e.g. a 400 W dehumidifier reading ~20 W) and must
+# not replace the planning power via the EMA: the planner would book hours
+# at standby watts while the device really pulls its nominal power
+# (2026-07-05 live incident: 11 h × 22 Wh planned vs. ~4.4 kWh real).
+STANDBY_FRACTION = 0.25
+
 # End-of-charge policies for the load's input plug (docs/LOAD_CONTROL.md §3)
 INPUT_OFF_POLICY_AUTO = "auto"
 INPUT_OFF_POLICY_ALWAYS = "always_off"

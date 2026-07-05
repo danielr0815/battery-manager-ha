@@ -54,6 +54,7 @@ from .const import (
     INPUT_OFF_POLICY_KEEP,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
     STORAGE_VERSION,
     SUBENTRY_TYPE_APPLIANCE,
@@ -404,7 +405,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             measured = None
             if data.get(CONF_LOAD_POWER_ENTITY):
                 raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
-                if raw is not None and raw > 10.0:
+                # Readings below a fraction of the nominal power are
+                # standby draw, not a charge sample (a 400 W dehumidifier
+                # idling at ~20 W cleared the old flat 10 W bar and got
+                # planned at 22 W — 2026-07-05 live incident).
+                min_sample_w = max(
+                    10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W])
+                )
+                if raw is not None and raw >= min_sample_w:
                     previous = self._load_power_ema.get(subentry_id, raw)
                     measured = (
                         _POWER_EMA_ALPHA * raw + (1 - _POWER_EMA_ALPHA) * previous
