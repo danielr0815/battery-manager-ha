@@ -195,7 +195,20 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
 ## 11. Offene Betreiberfragen
 
 1. **Zellenzahl/Spannungsfenster** der Batterie (15s/16s LiFePO4)? Bestimmt, wo 49,56 V relativ zur Flachkurve liegt (Start-`gate_soc`).
-2. **24-V-Schienen-Messung** vorhanden/nachrüstbar (Shunt)? Sonst: Startwert für `dc24_share` (heute implizit 100 %)?
+2. **24-V-Schienen-Messung** (Stand 2026-07-05 teilbeantwortet): Der
+   Victron SmartShunt misst die 24-V-Schiene als „Starterspannung"
+   (`sensor.victron_dcsystem_starter_voltage_229`) — aber nur SPANNUNG,
+   kein Strom/keine Leistung → `dc24_share` bleibt vorerst Schätzwert
+   (Startwert?). Die HA-Entität liefert derzeit 2,43 V statt real
+   24,28 V: bekannter 10×-Skalierungsfehler der hass-victron-Integration
+   (Register 4402 mit Skala 100 statt 10 dekodiert; für `dcsource` als
+   Issue #27 „specsheet mismatch" bereits gefixt, für `dcsystem` nicht).
+   → Upstream-Issue + übergangsweise Template-Sensor ×10. Nach der
+   Korrektur wird die Schienenspannung als optionaler
+   `rail24_voltage_entity` wertvoll: reale **Dead-Rail-Verifikation** für
+   den Schienen-Schutz und die Make-before-break-Bestätigung (Schiene
+   wirklich versorgt statt nur Schalterzustand „on"), Plausibilität
+   ~20–29 V.
 3. **DC/DC**: Datenblatt-η und max. Ausgangsstrom?
 4. **Typenschilder**: 48-V-PSU max. Strom (sind 60 W = 49,56 V × ~1,21 A?); 24-V-PSU U/I; AC-Wirkungsgrade beider Netzteile?
 5. **R2-Scope:** Soll auch ein rein EXTERNES Einschalten des 48-V-Netzteils den Spannungsregler aktivieren (Plan-Annahme: ja — d. h. die Integration darf es oberhalb der Schwelle wieder ausschalten), oder nur der R3-Schalter?
