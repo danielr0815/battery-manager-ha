@@ -39,6 +39,83 @@ async def test_options_flow_renders_form(hass):
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == "form"
     assert result["step_id"] == "init"
+    # The tuning settings are grouped into collapsible sections now.
+    schema_keys = {str(k) for k in result["data_schema"].schema}
+    assert {
+        "planner_tuning",
+        "consumption_profile",
+        "consumption_learning",
+        "support_paths",
+        "dc_devices",
+    } <= schema_keys
+
+
+async def test_options_flow_flattens_sections_on_submit(hass):
+    """Sections nest their fields in the submitted data; the stored options
+    must be flat (the rest of the integration reads a flat config)."""
+    from custom_components.battery_manager.const import (
+        CONF_DC24_SHARE_PERCENT,
+        CONF_DCDC_EFFICIENCY,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    # Submit the nested section payload (as the HA frontend would).
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "planner_tuning": {
+                "soc_buffer_percent": 6.0,
+                "hysteresis_percent": 1.0,
+                "threshold_inertia_percent": 2.0,
+                "min_switch_interval_s": 60,
+            },
+            "consumption_profile": {
+                "ac_base_load_w": 50.0,
+                "ac_variable_load_w": 75.0,
+                "ac_variable_start_hour": 6,
+                "ac_variable_end_hour": 20,
+                "dc_base_load_w": 50.0,
+                "dc_variable_load_w": 25.0,
+                "dc_variable_start_hour": 6,
+                "dc_variable_end_hour": 22,
+            },
+            "consumption_learning": {
+                "learning_window_days": 120,
+                "learning_max_age_days": 14,
+                "profile_half_life_days": 30,
+                "buffer_min_percent": 3.0,
+                "buffer_max_percent": 15.0,
+            },
+            "support_paths": {
+                "support_dc48_power_w": 60.0,
+                "support_switch_delay_s": 3,
+            },
+            "dc_devices": {
+                CONF_DC24_SHARE_PERCENT: 80.0,
+                CONF_DCDC_EFFICIENCY: 0.93,
+                "dcdc_output_voltage_v": 24.3,
+                "dcdc_max_current_a": 20.0,
+                "psu24_output_voltage_v": 24.05,
+                "psu24_efficiency": 0.89,
+                "psu24_max_current_a": 25.0,
+                "psu48_output_voltage_v": 49.56,
+                "psu48_efficiency": 0.89,
+                "psu48_max_current_a": 1.15,
+                "battery_cells_series": 15,
+                "gate_soc_percent": 100.0,
+            },
+        },
+    )
+    assert result["type"] == "create_entry"
+    opts = result["data"]
+    # Stored flat, not nested — a real value from each section.
+    assert opts["soc_buffer_percent"] == 6.0
+    assert opts[CONF_DC24_SHARE_PERCENT] == 80.0
+    assert opts[CONF_DCDC_EFFICIENCY] == 0.93
+    assert opts["battery_cells_series"] == 15
+    assert "planner_tuning" not in opts  # section wrappers removed
 
 
 async def test_config_flow_all_steps_render(hass):

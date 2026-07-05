@@ -14,6 +14,7 @@ from homeassistant.config_entries import (
     SubentryFlowResult,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 
 from .const import (
@@ -82,6 +83,37 @@ from .const import (
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
 )
+
+# Collapsible section groups for the options flow (visual grouping only;
+# their fields are nested under the section key in the submitted data and
+# flattened again by _flatten_sections).
+SECTION_TUNING = "planner_tuning"
+SECTION_PROFILE = "consumption_profile"
+SECTION_LEARNING = "consumption_learning"
+SECTION_SUPPORT = "support_paths"
+SECTION_DEVICES = "dc_devices"
+_OPTION_SECTIONS = (
+    SECTION_TUNING,
+    SECTION_PROFILE,
+    SECTION_LEARNING,
+    SECTION_SUPPORT,
+    SECTION_DEVICES,
+)
+
+
+def _flatten_sections(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Merge collapsible section groups back into a flat dict.
+
+    HA nests each section's fields under the section key in the submitted
+    data; the rest of the integration reads a flat config, so undo it.
+    """
+    flat: dict[str, Any] = {}
+    for key, value in user_input.items():
+        if key in _OPTION_SECTIONS and isinstance(value, dict):
+            flat.update(value)
+        else:
+            flat[key] = value
+    return flat
 
 
 def _number(minimum: float, maximum: float, step: float = 1.0, unit: str | None = None):
@@ -506,13 +538,14 @@ class BatteryManagerOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            data = _flatten_sections(user_input)
             error = (
-                _validate_support_entities(user_input)
-                or _validate_learning_sources(user_input)
-                or _validate_buffer_clamps(user_input)
+                _validate_support_entities(data)
+                or _validate_learning_sources(data)
+                or _validate_buffer_clamps(data)
             )
             if error is None:
-                # Cleared selector fields are absent from user_input. Store an
+                # Cleared selector fields are absent from the input. Store an
                 # explicit None/[] so the options override the value still
                 # present in entry.data (raw_config merges data + options).
                 for key in (
@@ -522,19 +555,20 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     *_LEARNING_SINGLE_KEYS,
                     CONF_WORKDAY_ENTITY,
                 ):
-                    user_input.setdefault(key, None)
+                    data.setdefault(key, None)
                 for key in _LEARNING_MULTI_KEYS:
-                    user_input.setdefault(key, [])
-                return self.async_create_entry(title="", data=user_input)
+                    data.setdefault(key, [])
+                return self.async_create_entry(title="", data=data)
             errors["base"] = error
 
         # On a validation error, re-render with the just-entered values.
         current = {
             **self.config_entry.data,
             **self.config_entry.options,
-            **(user_input or {}),
+            **(_flatten_sections(user_input) if user_input else {}),
         }
-        schema: dict[Any, Any] = {
+
+        tuning = {
             vol.Required(
                 "soc_buffer_percent", default=_d(current, "soc_buffer_percent")
             ): _number(0, 30, 1, "%"),
@@ -548,6 +582,9 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             vol.Required(
                 "min_switch_interval_s", default=_d(current, "min_switch_interval_s")
             ): _number(0, 3600, 10, "s"),
+        }
+
+        support: dict[Any, Any] = {
             vol.Required(
                 CONF_SUPPORT_DC48_POWER_W,
                 default=_d(current, CONF_SUPPORT_DC48_POWER_W),
@@ -559,10 +596,10 @@ class BatteryManagerOptionsFlow(OptionsFlow):
         }
         for key in _SUPPORT_SWITCH_KEYS:
             # suggested_value (not default) keeps the field clearable in the UI.
-            schema[
+            support[
                 vol.Optional(key, description={"suggested_value": current.get(key)})
             ] = _entity("switch")
-        schema[
+        support[
             vol.Optional(
                 CONF_SUPPORT_DC24_POWER_ENTITY,
                 description={
@@ -571,43 +608,54 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             )
         ] = _entity("sensor")
 
-        # F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2).
-        schema.update(_device_param_fields(current))
-
-        # Fallback profile + learned-consumption sources (CONSUMPTION_FORECAST)
-        schema.update(_profile_schema_fields(current))
-        schema.update(_learning_schema_fields(current))
-        schema[
+        learning = dict(_learning_schema_fields(current))
+        learning[
             vol.Required(
                 CONF_LEARNING_WINDOW_DAYS,
                 default=_d(current, CONF_LEARNING_WINDOW_DAYS),
             )
         ] = _number(14, 120, 1, "d")
-        schema[
+        learning[
             vol.Required(
                 CONF_LEARNING_MAX_AGE_DAYS,
                 default=_d(current, CONF_LEARNING_MAX_AGE_DAYS),
             )
         ] = _number(3, 60, 1, "d")
-        schema[
+        learning[
             vol.Required(
                 CONF_PROFILE_HALF_LIFE_DAYS,
                 default=_d(current, CONF_PROFILE_HALF_LIFE_DAYS),
             )
         ] = _number(7, 120, 1, "d")
-        schema[
+        learning[
             vol.Required(
-                CONF_BUFFER_MIN_PERCENT,
-                default=_d(current, CONF_BUFFER_MIN_PERCENT),
+                CONF_BUFFER_MIN_PERCENT, default=_d(current, CONF_BUFFER_MIN_PERCENT)
             )
         ] = _number(0, 10, 0.5, "%")
-        schema[
+        learning[
             vol.Required(
-                CONF_BUFFER_MAX_PERCENT,
-                default=_d(current, CONF_BUFFER_MAX_PERCENT),
+                CONF_BUFFER_MAX_PERCENT, default=_d(current, CONF_BUFFER_MAX_PERCENT)
             )
         ] = _number(5, 30, 0.5, "%")
 
+        # Grouped into collapsible sections for readability (F-N UX request).
+        schema = {
+            vol.Required(SECTION_TUNING): section(
+                vol.Schema(tuning), {"collapsed": False}
+            ),
+            vol.Required(SECTION_PROFILE): section(
+                vol.Schema(_profile_schema_fields(current)), {"collapsed": True}
+            ),
+            vol.Required(SECTION_LEARNING): section(
+                vol.Schema(learning), {"collapsed": True}
+            ),
+            vol.Required(SECTION_SUPPORT): section(
+                vol.Schema(support), {"collapsed": True}
+            ),
+            vol.Required(SECTION_DEVICES): section(
+                vol.Schema(_device_param_fields(current)), {"collapsed": True}
+            ),
+        }
         return self.async_show_form(
             step_id="init", data_schema=vol.Schema(schema), errors=errors
         )

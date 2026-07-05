@@ -132,14 +132,18 @@ async def test_device_params_map_current_to_power_cap(hass):
 
 async def test_options_flow_renders_with_device_params(hass):
     """The options form must build (regression guard) and expose the new
-    device-parameter fields."""
+    device-parameter fields — now inside the collapsible 'dc_devices'
+    section."""
     from custom_components.battery_manager.const import CONF_DC24_SHARE_PERCENT
 
     entry = await _setup_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == "form"
-    schema_keys = {str(k) for k in result["data_schema"].schema}
-    assert CONF_DC24_SHARE_PERCENT in schema_keys
+    schema = result["data_schema"].schema
+    section_marker = next((k for k in schema if str(k) == "dc_devices"), None)
+    assert section_marker is not None  # grouped into a section
+    inner = schema[section_marker].schema.schema
+    assert CONF_DC24_SHARE_PERCENT in {str(k) for k in inner}
 
 
 async def test_gate_soc_maps_and_full_open(hass):

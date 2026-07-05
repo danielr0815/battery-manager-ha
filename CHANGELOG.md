@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-07-05
+
+### Changed
+- **The options dialog ("Planer-Feineinstellung") is grouped into five
+  collapsible sections** (operator UX request): control parameters
+  (expanded), consumption profile, consumption learning & sources,
+  support paths, and DC device parameters. The ~30 fields are no longer
+  one long undivided list. Purely a UI change — the stored config stays
+  flat (`_flatten_sections` merges the nested section data back) and
+  planning behaviour is unchanged. Field labels/descriptions moved into
+  their sections in both en/de. Adversarially reviewed (data flattening
+  + translation completeness), no findings. Full suite 141 tests green.
+  The one-time setup wizard's control step keeps its flat layout.
+
 ## [0.7.3] - 2026-07-05
 
 ### Added — F-N3 R3 manual-override switches (docs/DC_TOPOLOGY.md §7)
