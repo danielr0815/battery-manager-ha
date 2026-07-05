@@ -103,6 +103,15 @@ CONF_LOAD_IN_HOUSE = "in_house_measurement"
 # (2026-07-05 live incident: 11 h × 22 Wh planned vs. ~4.4 kWh real).
 STANDBY_FRACTION = 0.25
 
+# Power-deviation warning (operator requirement F-L7, 2026-07-05): while a
+# load runs at the integration's request but its real draw deviates from the
+# configured power by more than this percentage (per-load setting, 0 =
+# disabled) for POWER_WARNING_DWELL_MIN sustained minutes, a per-load
+# warning binary sensor turns on (full water tank, wrong nominal power,
+# foreign consumer). Short defrost pauses stay below the dwell.
+CONF_LOAD_POWER_WARNING_PCT = "power_warning_percent"
+POWER_WARNING_DWELL_MIN = 30
+
 # End-of-charge policies for the load's input plug (docs/LOAD_CONTROL.md §3)
 INPUT_OFF_POLICY_AUTO = "auto"
 INPUT_OFF_POLICY_ALWAYS = "always_off"
@@ -188,6 +197,7 @@ DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_TARGET_SOC: 100.0,
     CONF_LOAD_INPUT_OFF_POLICY: INPUT_OFF_POLICY_AUTO,
     CONF_LOAD_IN_HOUSE: True,
+    CONF_LOAD_POWER_WARNING_PCT: 50.0,
 }
 
 DEFAULT_APPLIANCE_CONFIG = {
@@ -218,6 +228,9 @@ ATTR_DATA_VALIDITY = "data_validity"
 ATTR_PLANNED_HOURS = "planned_hours"
 ATTR_PLANNED_ENERGY_KWH = "planned_energy_kwh"
 ATTR_THRESHOLD = "soc_threshold_percent"
+ATTR_EXPECTED_POWER_W = "expected_power_w"
+ATTR_MEASURED_POWER_W = "measured_power_w"
+ATTR_DEVIATING_SINCE = "deviating_since"
 
 # --- Services ---
 SERVICE_EXPORT_HOURLY_DETAILS = "export_hourly_details"

@@ -152,3 +152,40 @@ Planungsleistung verwendet. Der Energiefortschritt der Ladung wird ohnehin
   lädt — nach Ladeende würde der Taper-Restwert (10–40 W) sonst dauerhaft
   als „gemessene" Planungsleistung alle Gates schwächen. Die Logzeilen
   „Charging started/stopped" nennen den Klartext-Lastnamen.
+- **F-L7 (2026-07-05): Leistungsabweichungs-Warnung pro Last.** Der
+  Entfeuchter taut periodisch kurz ab (Leistung sinkt für Minuten) und
+  stoppt bei vollem Wassertank ganz (Leistung nahe 0 W trotz aktiver
+  Empfehlung). Abtau-Zyklen dürfen in den Leistungs-Durchschnitt
+  einfließen (Samples zwischen Standby-Schwelle und Nennleistung mitteln
+  den EMA; darunter wird das Sample verworfen und der EMA eingefroren —
+  „total versauen" ist durch die 25-%-Schwelle ausgeschlossen). Weicht
+  die reale Leistung aber **länger als 30 Minuten** um mehr als den
+  konfigurierten Prozentsatz (Feld „Leistungsabweichungs-Warnung", Default
+  50 %, 0 = aus) von der Nennleistung ab, während die Last auf
+  Veranlassung der Integration läuft, geht der neue Warnsensor der Last
+  (`binary_sensor … Leistungswarnung`, device class `problem`) auf an —
+  als Trigger für Benutzer-Benachrichtigungen (Tank leeren, Nennleistung
+  korrigieren, Fremdverbraucher). Kurze Abtau-Pausen setzen den Timer
+  zurück und lösen nicht aus; Handbetrieb löst nie aus (F-L6-Logik).
+- **F-L6 (2026-07-05): Manuelle Aktivierungen beeinflussen die Planung
+  nicht.** Der Betreiber schaltet Lasten (bzw. deren gemessene Steckdose)
+  gelegentlich von Hand — z. B. den Entfeuchter, oder einen fremden
+  Verbraucher an derselben Dose. Feedback-Messwerte trainieren die
+  Planungsleistung deshalb nur, solange die Last **auf Veranlassung der
+  Integration** läuft: bei geschalteten Lasten der reale Ladezustand
+  (Stecker UND Freigabe an), bei reinen Empfehlungs-Lasten die aktive
+  Plan-Empfehlung des letzten Zyklus **mit sauberem Start** — beim
+  Einschalten der Empfehlung darf die gemessene Dose noch nicht ziehen,
+  sonst würde eine schon laufende Hand-/Fremdlast gelernt und könnte
+  über den gelernten Wert den nächsten Plan kippen (Flatter-Schleife,
+  Review-Befund). Außerhalb dieser Fenster werden Messwerte ignoriert
+  und ein vorhandener EMA verworfen (Planung fällt auf die Nennleistung
+  zurück). Zusammen mit dem Standby-Filter (v0.6.2: Samples nur ≥
+  max(10 W, 25 % × Nennleistung)) ist die gelernte Leistung damit gegen
+  Hand- und Fremdnutzung abgeschirmt.
+  Präzisierung für geschaltete Lasten: Dort zählt bewusst der
+  **physische** Ladezustand — das Feedback („IN Total") misst das Gerät
+  selbst, ein manuell gestartetes Laden liefert also korrekte
+  Gerätedaten; das Fenster ist durch die Mindestlaufzeit begrenzt.
+  Entitäts-Ausfälle (unavailable/unknown) gelten dabei nie als „aus"
+  (sonst würde der EMA mitten in der Ladung verworfen).

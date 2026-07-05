@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-05
+
+### Added
+- **Per-load power-deviation warning** (operator requirement F-L7,
+  docs/LOAD_CONTROL.md §8): a new binary sensor per load (device class
+  `problem`) turns on when the load runs at the integration's request
+  but its real draw deviates from the configured power by more than a
+  per-load percentage (new subentry field, default 50 %, 0 = disabled)
+  for more than 30 sustained minutes. Catches a full dehumidifier water
+  tank (draw near 0 W), a wrong configured power and foreign consumers
+  on the measured outlet; short defrost pauses reset the timer and stay
+  silent. Attributes expose expected/measured watts and the deviation
+  start for notification automations; state transitions are logged.
+
+### Fixed
+- **Manual runs no longer train the planning power** (operator decision
+  F-L6, docs/LOAD_CONTROL.md §8): the operator sometimes runs a load —
+  or a foreign consumer on the load's measured outlet — by hand (e.g.
+  the dehumidifier while working in the basement). Power-feedback
+  samples are now accepted only while the load runs at the integration's
+  own request: for switched loads the physical charging state (plug AND
+  enable on — the feedback meters the device itself, so even a manual
+  charge yields correct device data, bounded by the switch dwell), for
+  recommendation-only loads the last plan's active recommendation WITH a
+  clean start (outlet idle at the activation edge — otherwise a
+  pre-existing draw would be learned, flip the next plan and oscillate;
+  adversarial-review finding). Outside these windows samples are ignored
+  and a lingering EMA is discarded, so planning falls back to the
+  nominal power instead of learning whatever happens to be plugged in.
+  Entity dropouts (unavailable/unknown plug or enable) no longer read as
+  "charge over" — that used to delete the learned EMA mid-charge.
+
 ## [0.6.2] - 2026-07-05
 
 ### Fixed

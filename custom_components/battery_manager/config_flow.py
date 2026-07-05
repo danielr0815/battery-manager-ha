@@ -46,6 +46,7 @@ from .const import (
     CONF_LOAD_NAME,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_PROFILE_HALF_LIFE_DAYS,
@@ -568,6 +569,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             vol.Required(
                 CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
             ): _number(0, 100, 1, "%"),
+            vol.Required(
+                CONF_LOAD_POWER_WARNING_PCT, default=dv(CONF_LOAD_POWER_WARNING_PCT)
+            ): _number(0, 200, 5, "%"),
         }
         for key, domain in (
             (CONF_LOAD_SOC_ENTITY, "sensor"),

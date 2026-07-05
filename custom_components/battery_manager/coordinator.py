@@ -35,6 +35,7 @@ from .const import (
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_PV_FORECAST_DAY_AFTER,
@@ -47,6 +48,7 @@ from .const import (
     CONF_SUPPORT_SWITCH_DELAY_S,
     DEBOUNCE_SECONDS,
     DEFAULT_CONFIG,
+    DEFAULT_LOAD_CONFIG,
     DOMAIN,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
@@ -54,6 +56,7 @@ from .const import (
     INPUT_OFF_POLICY_KEEP,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    POWER_WARNING_DWELL_MIN,
     STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
     STORAGE_VERSION,
@@ -134,6 +137,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_plug_owned: dict[str, bool] = {}
         self._last_load_switch: dict[str, datetime] = {}
         self._load_charging_active: dict[str, bool] = {}
+        # Last plan's slot-0 activation per load: the learning gate for
+        # recommendation-only loads (no control switch), see _bm_load_active.
+        # _load_learn_ok snapshots at each activation edge whether the
+        # outlet was idle — a pre-existing manual/foreign draw must not be
+        # learned (it would flip the next plan: period-2 oscillation).
+        self._load_plan_active: dict[str, bool] = {}
+        self._load_learn_ok: dict[str, bool] = {}
+        # Power-deviation warning (F-L7): sustained-deviation start per load
+        # and the resulting warning flag + diagnostics for the entity.
+        self._load_deviation_since: dict[str, datetime] = {}
+        self._load_power_warning: dict[str, bool] = {}
+        self._load_warning_diag: dict[str, dict[str, Any]] = {}
         self._load_switch_task: asyncio.Task | None = None
 
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
@@ -360,6 +375,139 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return self._last_valid_forecasts
         return None
 
+    def _update_power_warnings(self, result, now: datetime) -> None:
+        """Per-load power-deviation warning (operator requirement F-L7).
+
+        While a load runs at the integration's request but its real draw
+        deviates from the CONFIGURED power by more than the per-load
+        percentage for POWER_WARNING_DWELL_MIN sustained minutes, the
+        load's warning binary sensor turns on — full water tank (draw near
+        0 W), wrong nominal power or a foreign consumer on the measured
+        outlet. Short defrost pauses reset the timer before the dwell
+        elapses. A missing reading freezes the current state.
+        """
+        active_by_id = {lp.load_id: lp.active_now for lp in result.load_plans}
+        for subentry_id, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+                continue
+            data = subentry.data
+            # Subentries created before v0.6.3 lack the key: default 50 %.
+            pct = float(
+                data.get(
+                    CONF_LOAD_POWER_WARNING_PCT,
+                    DEFAULT_LOAD_CONFIG[CONF_LOAD_POWER_WARNING_PCT],
+                )
+            )
+            power_entity = data.get(CONF_LOAD_POWER_ENTITY)
+            if pct <= 0 or not power_entity:
+                continue  # disabled or nothing to measure
+            if subentry_id in self._load_charging_active:
+                active = self._load_charging_active[subentry_id]
+            else:
+                active = active_by_id.get(subentry_id, False)
+            if not active:
+                self._load_deviation_since.pop(subentry_id, None)
+                self._set_power_warning(subentry_id, subentry.title, False)
+                continue
+            raw = self._read_float(power_entity)
+            if raw is None:
+                continue  # no reading: keep the current state
+            nominal = float(data[CONF_LOAD_POWER_W])
+            self._load_warning_diag[subentry_id] = {
+                "expected_w": nominal,
+                "measured_w": raw,
+                "since": self._load_deviation_since.get(subentry_id),
+            }
+            if abs(raw - nominal) <= pct / 100.0 * nominal:
+                self._load_deviation_since.pop(subentry_id, None)
+                self._set_power_warning(subentry_id, subentry.title, False)
+                continue
+            since = self._load_deviation_since.setdefault(subentry_id, now)
+            self._load_warning_diag[subentry_id]["since"] = since
+            if now - since >= timedelta(minutes=POWER_WARNING_DWELL_MIN):
+                self._set_power_warning(
+                    subentry_id, subentry.title, True, raw=raw, nominal=nominal
+                )
+
+    def _set_power_warning(
+        self,
+        subentry_id: str,
+        title: str,
+        on: bool,
+        raw: float | None = None,
+        nominal: float | None = None,
+    ) -> None:
+        if self._load_power_warning.get(subentry_id, False) == on:
+            return
+        self._load_power_warning[subentry_id] = on
+        if on:
+            _LOGGER.warning(
+                "Load %s draws %.0f W while %.0f W are configured"
+                " (sustained > %d min) — full tank, wrong configured power"
+                " or a foreign consumer?",
+                title,
+                raw,
+                nominal,
+                POWER_WARNING_DWELL_MIN,
+            )
+        else:
+            _LOGGER.info("Load %s: power warning cleared", title)
+
+    def _update_plan_active(self, result) -> None:
+        """Track each load's plan activation and its learning permission.
+
+        At the OFF->ON edge of a recommendation, `_load_learn_ok` snapshots
+        whether the measured outlet was idle: only then did the draw start
+        in response to the plan, so only then may it train the planning
+        power. Without the snapshot, a pre-existing manual/foreign draw
+        would be learned on the first active cycle, flip the next plan to
+        inactive, get deleted again, and so on — a period-2 recommendation
+        oscillation (adversarial-review finding, 2026-07-05).
+        """
+        for load_plan in result.load_plans:
+            prev = self._load_plan_active.get(load_plan.load_id, False)
+            if load_plan.active_now and not prev:
+                self._load_learn_ok[load_plan.load_id] = not self._draw_above_standby(
+                    load_plan.load_id
+                )
+            elif not load_plan.active_now:
+                self._load_learn_ok.pop(load_plan.load_id, None)
+            self._load_plan_active[load_plan.load_id] = load_plan.active_now
+
+    def _draw_above_standby(self, subentry_id: str) -> bool:
+        """True when the load's feedback currently reads above the standby
+        threshold — i.e. something is already drawing on the measured
+        outlet."""
+        subentry = self.entry.subentries.get(subentry_id)
+        if subentry is None:
+            return False
+        data = subentry.data
+        if not data.get(CONF_LOAD_POWER_ENTITY):
+            return False
+        raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+        if raw is None:
+            return False
+        return raw >= max(10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W]))
+
+    def _bm_load_active(self, subentry_id: str) -> bool:
+        """True while the load runs at the integration's own request.
+
+        Switched loads: the real charging state (plug AND enable on, healed
+        from entity states every cycle — the feedback meters the device
+        itself, so even a manually started charge yields correct device
+        data; contamination is bounded by the switch dwell). Recommendation-
+        only loads: the last plan's slot-0 activation AND a clean start
+        (see _update_plan_active). Feedback samples outside these windows
+        come from manual runs or foreign consumers on the measured outlet
+        and must not train the planning power (operator decision F-L6,
+        2026-07-05: manual activations must not influence future planning).
+        """
+        if subentry_id in self._load_charging_active:
+            return bool(self._load_charging_active[subentry_id])
+        return bool(self._load_plan_active.get(subentry_id)) and bool(
+            self._load_learn_ok.get(subentry_id, False)
+        )
+
     def _get_load_states(self) -> tuple[SurplusLoadState, ...]:
         states = []
         for subentry_id, subentry in self.entry.subentries.items():
@@ -412,21 +560,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 min_sample_w = max(
                     10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W])
                 )
-                if raw is not None and raw >= min_sample_w:
+                bm_active = self._bm_load_active(subentry_id)
+                if raw is not None and raw >= min_sample_w and bm_active:
                     previous = self._load_power_ema.get(subentry_id, raw)
                     measured = (
                         _POWER_EMA_ALPHA * raw + (1 - _POWER_EMA_ALPHA) * previous
                     )
                     self._load_power_ema[subentry_id] = measured
                 elif subentry_id in self._load_power_ema:
-                    if self._load_charging_active.get(subentry_id):
-                        # Mid-charge feedback gap (v0.5.1): keep planning
+                    if bm_active:
+                        # Mid-run feedback gap (v0.5.1): keep planning
                         # with the last smoothed value.
                         measured = self._load_power_ema[subentry_id]
                     else:
-                        # Charge over: the EMA has tapered through the
-                        # cutoff band and would otherwise stick as a tiny
-                        # "measured" power that weakens every planning gate.
+                        # Run over (or the device is being used outside the
+                        # manager's plan): a taper/standby/foreign value
+                        # must not stick as "measured" planning power.
                         del self._load_power_ema[subentry_id]
             states.append(
                 SurplusLoadState(
@@ -656,11 +805,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         profile_diag.update(buffer_diag)
         result = await self.hass.async_add_executor_job(plan, config, inputs)
+        self._update_plan_active(result)
 
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
         await self._apply_support_switching(result, config, now)
         await self._apply_load_switching(result, now)
+        self._update_power_warnings(result, now)
 
         self._successful_updates += 1
         if not self._startup_complete and (
@@ -685,12 +836,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         for s, c, p, wh in load_plan.allocations
                     ),
                 )
+            diag = self._load_warning_diag.get(load_plan.load_id, {})
+            since = diag.get("since")
             load_plans[load_plan.load_id] = {
                 "name": load.name,
                 "active": load_plan.active_now,
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
                 "charging_active": self._load_charging_active.get(load_plan.load_id),
+                "power_warning": self._load_power_warning.get(load_plan.load_id, False),
+                "expected_power_w": diag.get("expected_w"),
+                "measured_power_w": diag.get("measured_w"),
+                "deviating_since": since.isoformat() if since else None,
                 "schedule": [
                     {
                         "start": slot.start.isoformat(),
@@ -966,14 +1123,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Direct charging-path control per load (docs/LOAD_CONTROL.md §3)
     # ------------------------------------------------------------------
 
-    def _charging_is_active(self, data: dict[str, Any]) -> bool:
+    def _entity_tristate(self, entity_id: str) -> bool | None:
+        """on/off as bool; None while unavailable/unknown (not 'off')."""
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state not in ("on", "off"):
+            return None
+        return state.state == "on"
+
+    def _charging_is_active(self, data: dict[str, Any]) -> bool | None:
         """Charging is active iff the input plug is on AND (if configured)
         the charge-enable gate is on. A plug that is on for passthrough
-        purposes with the gate off does NOT count as charging."""
-        if not self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]):
-            return False
+        purposes with the gate off does NOT count as charging. Returns
+        None while an involved entity is unavailable/unknown — a dropout
+        must not read as 'charge over' (it would delete the learned power
+        EMA mid-charge; same principle as the support-switch re-sync)."""
+        plug = self._entity_tristate(data[CONF_LOAD_CONTROL_SWITCH])
+        if plug is not True:
+            return plug  # False, or None while unavailable
         enable = data.get(CONF_LOAD_CHARGE_ENABLE)
-        return self._entity_is_on(enable) if enable else True
+        if not enable:
+            return True
+        return self._entity_tristate(enable)
 
     async def _apply_load_switching(self, result, now: datetime) -> None:
         """Evaluate controlled loads and start switching where needed."""
@@ -989,6 +1159,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not data.get(CONF_LOAD_CONTROL_SWITCH):
                 continue
             current = self._charging_is_active(data)
+            if current is None:
+                # Entity dropout: keep the last known charging state.
+                current = self._load_charging_active.get(subentry_id, False)
             self._load_charging_active[subentry_id] = current
             desired = desired_by_id.get(subentry_id, False)
             if desired == current:

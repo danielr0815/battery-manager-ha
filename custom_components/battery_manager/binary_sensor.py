@@ -13,10 +13,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    ATTR_DEVIATING_SINCE,
+    ATTR_EXPECTED_POWER_W,
+    ATTR_MEASURED_POWER_W,
     ATTR_PLANNED_ENERGY_KWH,
     ATTR_PLANNED_HOURS,
     ATTR_THRESHOLD,
     CONF_APPLIANCE_OPPORTUNISTIC,
+    CONF_LOAD_POWER_ENTITY,
+    CONF_LOAD_POWER_WARNING_PCT,
+    DEFAULT_LOAD_CONFIG,
     DOMAIN,
     ENTITY_INVERTER_STATUS,
     ENTITY_SUPPORT_DC24,
@@ -47,6 +53,18 @@ async def async_setup_entry(
             entities.append(
                 SurplusLoadRecommendationSensor(coordinator, subentry_id, subentry.title)
             )
+            if subentry.data.get(CONF_LOAD_POWER_ENTITY) and (
+                float(
+                    subentry.data.get(
+                        CONF_LOAD_POWER_WARNING_PCT,
+                        DEFAULT_LOAD_CONFIG[CONF_LOAD_POWER_WARNING_PCT],
+                    )
+                )
+                > 0
+            ):
+                entities.append(
+                    LoadPowerWarningSensor(coordinator, subentry_id, subentry.title)
+                )
         elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE and subentry.data.get(
             CONF_APPLIANCE_OPPORTUNISTIC
         ):
@@ -108,6 +126,43 @@ class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
         return {
             ATTR_PLANNED_HOURS: load_plan.get("planned_hours"),
             ATTR_PLANNED_ENERGY_KWH: load_plan.get("planned_energy_kwh"),
+        }
+
+
+class LoadPowerWarningSensor(BatteryManagerEntity, BinarySensorEntity):
+    """'On' when the load's real draw deviates from the configured power
+    for a sustained period while it runs at the integration's request
+    (F-L7): full water tank, wrong nominal power or a foreign consumer."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_translation_key = "load_power_warning"
+
+    def __init__(
+        self,
+        coordinator: BatteryManagerCoordinator,
+        subentry_id: str,
+        title: str,
+    ) -> None:
+        super().__init__(coordinator, f"load_power_warning_{subentry_id}")
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    def _plan(self) -> dict[str, Any] | None:
+        data = self.coordinator.data or {}
+        return (data.get("load_plans") or {}).get(self._subentry_id)
+
+    @property
+    def is_on(self) -> bool | None:
+        load_plan = self._plan()
+        return load_plan.get("power_warning", False) if load_plan else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        load_plan = self._plan() or {}
+        return {
+            ATTR_EXPECTED_POWER_W: load_plan.get("expected_power_w"),
+            ATTR_MEASURED_POWER_W: load_plan.get("measured_power_w"),
+            ATTR_DEVIATING_SINCE: load_plan.get("deviating_since"),
         }
 
 

@@ -178,7 +178,8 @@
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
             "input_off_policy": "Ladeeingang bei Ladeende",
-            "in_house_measurement": "In Hauslast-Messung enthalten"
+            "in_house_measurement": "In Hauslast-Messung enthalten",
+            "power_warning_percent": "Leistungsabweichungs-Warnung (%)"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -194,7 +195,8 @@
             "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
             "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
             "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird.",
-            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen."
+            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
+            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus."
           }
         },
         "reconfigure": {
@@ -213,7 +215,8 @@
             "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
             "input_off_policy": "Ladeeingang bei Ladeende",
-            "in_house_measurement": "In Hauslast-Messung enthalten"
+            "in_house_measurement": "In Hauslast-Messung enthalten",
+            "power_warning_percent": "Leistungsabweichungs-Warnung (%)"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -229,7 +232,8 @@
             "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
             "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
             "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird.",
-            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen."
+            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
+            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus."
           }
         }
       }
@@ -408,6 +412,9 @@
       },
       "support_dc48": {
         "name": "48-V-Netzstützung"
+      },
+      "load_power_warning": {
+        "name": "{name} Leistungswarnung"
       }
     },
     "switch": {
