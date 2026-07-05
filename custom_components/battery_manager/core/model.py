@@ -122,16 +122,47 @@ class ApplianceRun:
 
 @dataclass(frozen=True)
 class SupportParams:
-    """Emergency grid-support paths for the DC rails (docs/ALGORITHM.md D-A9)."""
+    """Emergency grid-support paths for the DC rails (docs/ALGORITHM.md D-A9).
+
+    The two-bus model (docs/DC_TOPOLOGY.md, F-N3) splits the DC load into a
+    24 V rail share (fed by the DC/DC converter from the battery, or by a
+    grid 24 V PSU) and a native 48 V bus share, with per-device efficiency
+    and power caps. All F-N3 fields carry NEUTRAL defaults — 100 % rail
+    share, unit efficiencies, uncapped currents, gate always open — so the
+    model reproduces the legacy single-bus behaviour bit-for-bit until the
+    operator enters real device values (phased rollout).
+    """
 
     configured: bool = False
     dc48_power_w: float = 60.0  # fixed-power PSU feeding the 48 V battery bus
-    # The 24 V PSU replaces the DC/DC converter entirely (DC load -> grid).
     # Manual override (F-N2): the operator switched a PSU on externally —
     # the simulation must treat that path as permanently active over the
     # whole horizon (winter operation), while the executor keeps hands off.
     dc24_forced_on: bool = False
     dc48_forced_on: bool = False
+
+    # --- F-N3 two-bus parameters (docs/DC_TOPOLOGY.md) ---
+    # Fraction of the DC load that sits on the 24 V rail (rest = native 48 V
+    # bus load). 1.0 = today's behaviour (whole DC load on the rail).
+    dc24_share: float = 1.0
+    # DC/DC converter (battery 48 V -> 24 V rail): efficiency, rail-side
+    # power cap (V_out x I_max, None = uncapped), output voltage.
+    dcdc_eta: float = 1.0
+    dcdc_max_power_w: float | None = None
+    dcdc_output_voltage_v: float = 24.0
+    # Grid-fed 24 V support PSU (replaces the DC/DC): efficiency, rail-side
+    # cap, output voltage. When both sources are on, the higher output
+    # voltage wins (operator rule, phase 2+); phase 1 selects by schedule.
+    psu24_eta: float = 1.0
+    psu24_max_power_w: float | None = None
+    psu24_output_voltage_v: float = 24.0
+    # 48 V support PSU: efficiency and rail-/bus-side cap wired for phase 3+;
+    # phase 1 still injects the flat `dc48_power_w`. `gate_soc_percent` is the
+    # voltage gate's SOC proxy — None = always open (neutral).
+    psu48_eta: float = 1.0
+    psu48_max_power_w: float | None = None
+    psu48_output_voltage_v: float = 49.56
+    gate_soc_percent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +249,13 @@ class HourFlows:
     extra_ac_wh: float  # surplus loads scheduled in this slot
     support_dc24: bool
     support_dc48: bool
+    # F-N3 two-bus diagnostics (docs/DC_TOPOLOGY.md); 0 under neutral defaults.
+    psu48_delivered_wh: float = 0.0  # PSU energy actually put on the 48 V bus
+    psu24_delivered_wh: float = 0.0  # rail energy served from the grid PSU
+    dcdc_input_wh: float = 0.0  # bus energy the DC/DC drew to feed the rail
+    dcdc_loss_wh: float = 0.0
+    unserved_dc_wh: float = 0.0  # rail demand above the active source's cap
+    gate_open: bool = False  # 48 V PSU voltage gate open this slot
 
 
 @dataclass(frozen=True)

@@ -34,28 +34,73 @@ def step_hour(
     inverter_output = 0.0
 
     inverter_on = soc_percent > threshold_percent
+    support = config.support
 
     # --- 48 V support PSU: fixed DC power onto the battery bus, from grid ---
-    if dc48_support and config.support.configured:
-        psu_wh = config.support.dc48_power_w * slot.duration
-        absorbed = min(psu_wh, max(0.0, ceil_wh - energy))
+    # Voltage gate (R1): the PSU only delivers while the bus voltage is below
+    # its output — modelled via an SOC proxy. gate_soc None = always open
+    # (neutral: identical to the pre-F-N3 "on == delivering" behaviour).
+    gate_soc = support.gate_soc_percent
+    gate_open = (
+        dc48_support
+        and support.configured
+        and (gate_soc is None or soc_percent < gate_soc)
+    )
+    psu48_delivered_wh = 0.0
+    if gate_open:
+        psu48_delivered_wh = support.dc48_power_w * slot.duration
+        absorbed = min(psu48_delivered_wh, max(0.0, ceil_wh - energy))
         energy += absorbed
         battery_charge += absorbed
-        grid_import += psu_wh  # PSU conversion losses neglected (documented)
+        grid_import += psu48_delivered_wh  # conversion losses neglected (phase 1)
 
-    # --- DC loads: 24 V rail ---
-    if dc24_from_grid and config.support.configured:
-        # 24 V PSU replaces the DC/DC converter: DC load served from grid.
-        grid_import += slot.dc_wh
-    elif slot.dc_wh > 0:
-        needed_from_store = slot.dc_wh / battery.eta_discharge
+    # --- DC load split across the two buses (F-N3, docs/DC_TOPOLOGY.md) ---
+    # `dc24_share` of the DC load sits on the 24 V rail; the rest is native
+    # 48 V bus load. Neutral default share=1.0 => whole load on the rail.
+    rail_wh = slot.dc_wh * support.dc24_share
+    native48_wh = slot.dc_wh - rail_wh
+    psu24_delivered_wh = 0.0
+    dcdc_input_wh = 0.0
+    dcdc_loss_wh = 0.0
+    unserved_dc_wh = 0.0
+
+    if dc24_from_grid and support.configured:
+        # 24 V PSU feeds the rail from the grid; the DC/DC is off.
+        cap_wh = (
+            support.psu24_max_power_w * slot.duration
+            if support.psu24_max_power_w is not None
+            else rail_wh
+        )
+        served = min(rail_wh, cap_wh)
+        grid_import += served / support.psu24_eta
+        psu24_delivered_wh = served
+        unserved_dc_wh = rail_wh - served
+        bus_draw24_wh = 0.0
+    else:
+        # DC/DC converter draws the rail energy from the 48 V bus.
+        cap_wh = (
+            support.dcdc_max_power_w * slot.duration
+            if support.dcdc_max_power_w is not None
+            else rail_wh
+        )
+        served = min(rail_wh, cap_wh)
+        bus_draw24_wh = served / support.dcdc_eta
+        dcdc_input_wh = bus_draw24_wh
+        dcdc_loss_wh = bus_draw24_wh - served
+        unserved_dc_wh = rail_wh - served
+
+    # Native 48 V load + the DC/DC's bus draw both drain the battery (or,
+    # when the store is empty, force the charger). Identical to the legacy
+    # DC-load path under neutral defaults (share 1, eta 1, uncapped).
+    bus_load = native48_wh + bus_draw24_wh
+    if bus_load > _EPS:
+        needed_from_store = bus_load / battery.eta_discharge
         available = max(0.0, energy - floor_wh)
         used = min(needed_from_store, available)
         energy -= used
         battery_discharge += used
         shortfall_dc = (needed_from_store - used) * battery.eta_discharge
         if shortfall_dc > _EPS:
-            # Forced charger operation: grid keeps the DC rail alive.
             grid_import += shortfall_dc / config.charger.eta
 
     # --- AC balance ---
@@ -109,8 +154,14 @@ def step_hour(
         inverter_on=inverter_on,
         inverter_output_wh=inverter_output,
         extra_ac_wh=extra_ac_wh,
-        support_dc24=dc24_from_grid and config.support.configured,
-        support_dc48=dc48_support and config.support.configured,
+        support_dc24=dc24_from_grid and support.configured,
+        support_dc48=dc48_support and support.configured,
+        psu48_delivered_wh=psu48_delivered_wh,
+        psu24_delivered_wh=psu24_delivered_wh,
+        dcdc_input_wh=dcdc_input_wh,
+        dcdc_loss_wh=dcdc_loss_wh,
+        unserved_dc_wh=unserved_dc_wh,
+        gate_open=gate_open,
     )
 
 

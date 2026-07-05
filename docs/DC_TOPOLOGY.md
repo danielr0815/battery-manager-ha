@@ -175,7 +175,7 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
 | `battery_cells_series` | 16 | **15** (Pylontech US5000) | 3 |
 | `psu48_output_voltage_v` / `psu48_max_current_a` / `psu48_eta` | 49,56 / — / 1,0 | 49,56 / **1,15** / 0,89 | 2 |
 | `psu24_output_voltage_v` / `psu24_max_current_a` / `psu24_eta` | — / — / 1,0 | **24,05** / **25** / 0,89 | 2 |
-| `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1,0 / — | **24 (bestätigen!)** / **0,93** / **20** | 2 |
+| `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1,0 / — | **24,3** / **0,93** / **20** | 2 |
 | `psu48_off_voltage_v` (Regler-AUS) / `psu48_on_voltage_v` (EIN) | 49,8 / 49,56 | 49,8 / 49,56 | 5 |
 | `gate_soc_percent` | 100 (= offen) | kalibriert (Phase 3) | 3 |
 | `dc24_share_percent` | 100 | Schätzwert | 2 |
@@ -263,11 +263,11 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
   24-V-PSU.
 - **B — 24-V-Stütznetzteil: Spannung 24,05 V, max. Strom 25 A** →
   `psu24_output_voltage_v = 24.05`, `psu24_max_current_a = 25`
-  (Cap ≈ 601 W). ⚠️ **Präzisierung nötig:** liegt sehr nah an der
-  DC/DC-Ausgangsspannung (Default 24,0 V). Nach Betreiber-Regel 8 („höhere
-  Spannung liefert") gewinnt bei beiden aktiv das PSU nur um 0,05 V — die
-  reale/eingestellte **DC/DC-Ausgangsspannung** sollte in Phase 2 gemessen
-  bzw. bestätigt werden, da sie den Sieger im Parallelfall bestimmt.
+  (Cap ≈ 601 W). **DC/DC-Ausgang real 24,3 V** (bestätigt) > PSU 24,05 V:
+  nach Betreiber-Regel 8 hat damit der **DC/DC-Wandler Vorrang** im
+  Parallelfall. Konsequenz: Das netzgespeiste 24-V-PSU versorgt die Schiene
+  nur, wenn der DC/DC AUS ist — deckt sich exakt mit der bestehenden
+  Make-before-break-Semantik (`dc24_from_grid` ⇔ DC/DC aus, PSU an).
 - **C — Schienen-Überlast: nur warnen** (Default übernommen): übersteigt
   die 24-V-Last den Cap der aktiven Quelle, wird `unserved_dc_wh` als
   Warnung geführt, kein Mangel durchgerechnet (praktisch unerreichbar bei

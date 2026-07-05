@@ -2,16 +2,43 @@
 
 from datetime import datetime
 
-from core.model import PlanInputs, SupportParams, SystemConfig
+from core.model import LoadProfile, PlanInputs, SupportParams, SystemConfig
 from core.series import build_slots
 from core.simulate import simulate
 
 NOW_NIGHT = datetime(2026, 7, 3, 22, 0)
 NOW_NOON = datetime(2026, 7, 3, 12, 0)
 
+_EPS = 1e-6
+
 
 def make_inputs(config, now, soc, forecasts):
     return build_slots(config, now, soc, forecasts)
+
+
+def _dc_config(support, dc_base_w=1000.0):
+    """Config with a fixed DC load and no PV, to isolate the DC-bus path."""
+    return SystemConfig(
+        support=support,
+        dc_profile=LoadProfile(base_w=dc_base_w, variable_w=0.0),
+        ac_profile=LoadProfile(base_w=0.0, variable_w=0.0),
+    )
+
+
+def _first_flow(config, *, soc=80.0, dc24_from_grid=False, dc48=False):
+    """Simulate one full night hour and return the first slot's flows.
+
+    Threshold above SOC keeps the inverter OFF, so no AC-side standby drain
+    pollutes the DC-path diagnostics we assert on."""
+    inputs = build_slots(config, NOW_NIGHT, soc, [0.0])
+    traj = simulate(
+        config,
+        inputs,
+        threshold_percent=99.0,
+        dc24_schedule=(dc24_from_grid,) * len(inputs.slots),
+        dc48_schedule=(dc48,) * len(inputs.slots),
+    )
+    return traj.flows[0]
 
 
 def test_soc_stays_within_bounds():
@@ -128,3 +155,93 @@ def test_empty_horizon_is_valid():
     traj = simulate(config, inputs, 50.0)
     assert traj.total_import_wh == 0.0
     assert traj.end_soc_percent == 50.0
+
+
+# ---------------------------------------------------------------------------
+# F-N3 two-bus combination equations (docs/DC_TOPOLOGY.md §4). These exercise
+# the new device physics directly, with non-neutral parameters that the
+# behaviour-neutral golden suite deliberately does not reach.
+# ---------------------------------------------------------------------------
+
+
+def test_dc24_share_splits_rail_and_native_bus():
+    """`dc24_share` puts part of the DC load on the 24 V rail (via DC/DC)
+    and the rest as native 48 V bus load."""
+    config = _dc_config(
+        SupportParams(configured=True, dc24_share=0.6), dc_base_w=1000.0
+    )
+    flow = _first_flow(config)
+    # 600 Wh on the rail through the DC/DC (eta 1 => bus draw 600),
+    # 400 Wh native — both drain the battery (bus_load 1000).
+    assert abs(flow.dcdc_input_wh - 600.0) < _EPS
+    assert abs(flow.unserved_dc_wh) < _EPS
+    assert abs(flow.battery_discharge_wh - 1000.0 / config.battery.eta_discharge) < 1e-3
+
+
+def test_dcdc_efficiency_adds_bus_draw_and_loss():
+    config = _dc_config(SupportParams(configured=True, dcdc_eta=0.9), dc_base_w=900.0)
+    flow = _first_flow(config)
+    # rail 900 Wh served; DC/DC draws 900/0.9 = 1000 from the bus, loss 100.
+    assert abs(flow.dcdc_input_wh - 1000.0) < _EPS
+    assert abs(flow.dcdc_loss_wh - 100.0) < _EPS
+
+
+def test_dcdc_cap_creates_unserved_rail_demand():
+    config = _dc_config(
+        SupportParams(configured=True, dcdc_max_power_w=500.0), dc_base_w=1000.0
+    )
+    flow = _first_flow(config)
+    # Cap 500 W over a 1 h slot: only 500 Wh served, 500 Wh unserved.
+    assert abs(flow.dcdc_input_wh - 500.0) < _EPS
+    assert abs(flow.unserved_dc_wh - 500.0) < _EPS
+
+
+def test_psu24_from_grid_efficiency_and_cap():
+    config = _dc_config(
+        SupportParams(configured=True, psu24_eta=0.85, psu24_max_power_w=600.0),
+        dc_base_w=1000.0,
+    )
+    flow = _first_flow(config, dc24_from_grid=True)
+    # 24 V PSU feeds the rail from the grid, capped at 600 Wh, 400 unserved;
+    # nothing drains the battery (DC/DC off), grid pays served/eta.
+    assert abs(flow.psu24_delivered_wh - 600.0) < _EPS
+    assert abs(flow.unserved_dc_wh - 400.0) < _EPS
+    assert abs(flow.dcdc_input_wh) < _EPS
+    assert abs(flow.battery_discharge_wh) < _EPS
+    assert flow.grid_import_wh >= 600.0 / 0.85 - _EPS
+
+
+def test_psu48_voltage_gate_opens_below_soc_proxy():
+    config = _dc_config(
+        SupportParams(configured=True, dc48_power_w=60.0, gate_soc_percent=50.0),
+        dc_base_w=0.0,
+    )
+    # Above the gate SOC: PSU switched on but delivers nothing.
+    high = _first_flow(config, soc=80.0, dc48=True)
+    assert high.gate_open is False
+    assert abs(high.psu48_delivered_wh) < _EPS
+    # Below the gate SOC: PSU delivers its rated power onto the bus.
+    low = _first_flow(config, soc=30.0, dc48=True)
+    assert low.gate_open is True
+    assert abs(low.psu48_delivered_wh - 60.0) < _EPS
+
+
+def test_rail_node_energy_conserved_per_slot():
+    """served + unserved == rail demand, and DC/DC loss == input - served,
+    across every combination of share / efficiency / cap."""
+    cases = [
+        SupportParams(configured=True, dc24_share=0.7, dcdc_eta=0.92),
+        SupportParams(configured=True, dcdc_max_power_w=400.0),
+        SupportParams(configured=True, psu24_eta=0.8, psu24_max_power_w=700.0),
+    ]
+    for sp in cases:
+        for grid in (False, True):
+            config = _dc_config(sp, dc_base_w=1000.0)
+            flow = _first_flow(config, dc24_from_grid=grid)
+            rail = 1000.0 * sp.dc24_share
+            served = (
+                flow.psu24_delivered_wh if grid else flow.dcdc_input_wh * sp.dcdc_eta
+            )
+            assert abs(served + flow.unserved_dc_wh - rail) < 1e-3
+            if not grid:
+                assert abs(flow.dcdc_loss_wh - (flow.dcdc_input_wh - served)) < 1e-3

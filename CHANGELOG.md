@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-05
+
+### Added — F-N3 two-bus DC model, phase 1 (docs/DC_TOPOLOGY.md)
+- **Behaviour-neutral two-bus core.** `SupportParams` gained the device
+  parameters for the real DC topology — 24 V rail share, DC/DC converter
+  and both support PSUs (efficiency, power cap = V_out × I_max, output
+  voltage) plus the 48 V PSU's voltage gate (`gate_soc_percent`). All
+  defaults are neutral (share 100 %, unit efficiencies, uncapped, gate
+  always open), so every plan stays byte-identical to pre-F-N3.
+  `core/simulate.py` `step_hour` now splits the DC load into a 24 V rail
+  part (served by the DC/DC from the battery, or by the grid 24 V PSU)
+  and a native 48 V bus part, with per-device efficiency and caps, and
+  `HourFlows` carries the delivered-energy / DC-DC-loss / unserved / gate
+  diagnostics.
+- A **golden-plan snapshot suite** (`tests/core/golden_topology.json` +
+  `test_golden_topology.py`) freezes 11 representative plans and proves the
+  refactor is bit-exact; six combination-equation tests exercise the new
+  physics with non-neutral parameters. Reviewed adversarially (three
+  lenses — neutrality, physics, integration — no findings).
+- Not yet wired to the config flow (phase 2, v0.7.1) and the 48 V PSU
+  still uses the flat-power formula (the physically correct direct-offset
+  billing lands in a later phase with its own golden diffs).
+
 ## [0.6.5] - 2026-07-05
 
 ### Added
