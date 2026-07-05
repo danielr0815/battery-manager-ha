@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-07-05
+
+### Added
+- **Manual override for the support PSUs** (operator decision F-N2,
+  docs/ALGORITHM.md D-A9): switching a support PSU on externally (e.g.
+  permanent winter operation) pauses the automatic control for exactly
+  that PSU — including the 24 V make-before-break — until it is switched
+  off externally again; then the automation takes over (and immediately
+  restores an off DC/DC converter so the 24 V rail is never left dead).
+  The mode survives restarts (persisted together with the integration's
+  own switch state, so "on, but not ours" stays distinguishable from
+  "on, because we switched it" across a reboot), and each PSU gets an
+  enum mode sensor (automatic/manual) for dashboards and notifications.
+  While a PSU is in manual mode the simulation treats that path as
+  permanently active, so the SOC forecast matches real winter operation.
+  Support switches are now tracked entities: manual toggles trigger a
+  debounced replan instead of waiting for the next 5-min poll.
+  Hardening from the adversarial review (9 confirmed findings): the
+  late-confirmation grace is per PSU AND per direction (an operator ON
+  right after a BM OFF enters manual mode instead of being reverted and
+  oscillating), an own unconfirmed 24 V activation is remembered so a
+  late device report is adopted as ours, the idle state sync never
+  adopts a foreign OFF->ON (single owner: the mode detector), the 24 V
+  rail guard is level-triggered (PSU off + DC/DC off is healed every
+  cycle, surviving failed restores and boot races), adopted states are
+  persisted, stale flags of a removed switch are dropped on restore,
+  pre-0.6.5 stores adopt an already-on PSU once instead of flipping it
+  to manual on the upgrade restart, and removed switches also drop
+  their mode sensor from the registry.
+
 ## [0.6.4] - 2026-07-05
 
 ### Changed

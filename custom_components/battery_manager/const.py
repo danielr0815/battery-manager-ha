@@ -218,6 +218,10 @@ ENTITY_LOST_SURPLUS = "lost_surplus"
 ENTITY_SOC_FORECAST_CURVE = "soc_forecast"
 ENTITY_SUPPORT_DC24 = "support_dc24"
 ENTITY_SUPPORT_DC48 = "support_dc48"
+ENTITY_SUPPORT_DC24_MODE = "support_dc24_mode"
+ENTITY_SUPPORT_DC48_MODE = "support_dc48_mode"
+SUPPORT_MODE_AUTO = "auto"
+SUPPORT_MODE_MANUAL = "manual"
 ENTITY_VACATION_MODE = "vacation_mode"
 
 # --- Attributes ---

@@ -391,6 +391,20 @@
       },
       "lost_surplus": {
         "name": "Verlorener Überschuss (Prognose)"
+      },
+      "support_dc24_mode": {
+        "name": "24-V-Stützung Modus",
+        "state": {
+          "auto": "Automatik",
+          "manual": "Manuell"
+        }
+      },
+      "support_dc48_mode": {
+        "name": "48-V-Stützung Modus",
+        "state": {
+          "auto": "Automatik",
+          "manual": "Manuell"
+        }
       }
     },
     "binary_sensor": {

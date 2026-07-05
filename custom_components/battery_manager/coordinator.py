@@ -120,7 +120,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._inverter_recommendation = False
         self._last_inverter_switch: datetime | None = None
         self._support_state = {"dc24": False, "dc48": False}
+        # Manual override per PSU (F-N2): entered when the switch turns on
+        # externally, left when it is switched off externally; persisted
+        # across restarts together with _support_state (the latter is what
+        # distinguishes "BM had it on before the restart" from "someone
+        # switched it on while HA was down").
+        self._support_manual = {"dc24": False, "dc48": False}
         self._last_support_switch: datetime | None = None
+        # Last commanded direction per PSU (for the late-confirmation
+        # grace), pending unconfirmed activations, the level-triggered
+        # DC/DC restore task, and the one-shot pre-0.6.5 adoption flag.
+        self._last_support_cmd: dict[str, tuple[bool, datetime]] = {}
+        self._support_pending_confirm = {"dc24": False, "dc48": False}
+        self._dcdc_restore_task: asyncio.Task | None = None
+        self._support_adopt_once = False
         self._switch_lock = asyncio.Lock()
         self._switch_task: asyncio.Task | None = None
         self._assumed_state_warned = False
@@ -190,6 +203,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
                     self._last_load_switch[k] = ts
+            # Support-PSU manual override (F-N2) survives restarts, together
+            # with the last known BM support state: after a restart, "PSU is
+            # on but we never switched it on" must only read as manual when
+            # the BM really did not have it on before. Flags of a PSU whose
+            # switch was removed from the config are dropped — they could
+            # never be cleared again and would poison the simulation.
+            for key, conf_key in (
+                ("dc24", CONF_SUPPORT_DC24_SWITCH),
+                ("dc48", CONF_SUPPORT_DC48_SWITCH),
+            ):
+                if not self.raw_config.get(conf_key):
+                    continue
+                self._support_manual[key] = bool(
+                    data.get("support_manual", {}).get(key, False)
+                )
+                self._support_state[key] = bool(
+                    data.get("support_state", {}).get(key, False)
+                )
+            # Pre-0.6.5 store: no ownership record exists. The first mode
+            # pass adopts an already-on PSU instead of flipping it to
+            # manual (the old version may have switched it on itself).
+            self._support_adopt_once = "support_state" not in data
 
     def _save_persistent_state(self) -> None:
         self._store.async_delay_save(
@@ -199,6 +234,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "last_load_switch": {
                     k: v.isoformat() for k, v in self._last_load_switch.items()
                 },
+                "support_manual": dict(self._support_manual),
+                "support_state": dict(self._support_state),
             },
             10,
         )
@@ -215,6 +252,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             cfg[CONF_PV_FORECAST_TOMORROW],
             cfg[CONF_PV_FORECAST_DAY_AFTER],
         ]
+        # Support switches are tracked so a manual toggle (F-N2) is picked
+        # up by the debounced refresh instead of the next 5-min poll — and
+        # a dead 24 V rail (PSU manually off, DC/DC still off) is healed
+        # quickly.
+        for key in (
+            CONF_SUPPORT_DC24_SWITCH,
+            CONF_SUPPORT_DC48_SWITCH,
+            CONF_DCDC_SWITCH,
+        ):
+            if cfg.get(key):
+                entities.append(cfg[key])
         for subentry in self.entry.subentries.values():
             data = subentry.data
             if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
@@ -321,6 +369,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             support=SupportParams(
                 configured=support_configured,
                 dc48_power_w=float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0)),
+                # Manual override (F-N2): a manually activated PSU is
+                # simulated as permanently on so the SOC forecast matches
+                # the real winter operation.
+                dc24_forced_on=self._support_manual["dc24"],
+                dc48_forced_on=self._support_manual["dc48"],
             ),
             loads=tuple(loads),
             appliances=tuple(appliances),
@@ -762,6 +815,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         now = dt_util.now()
+        # Manual-override detection first: build_system_config feeds the
+        # forced flags into the simulation (F-N2).
+        self._update_support_modes()
         soc = self._get_soc(now)
         forecasts = self._get_forecasts(now)
 
@@ -923,6 +979,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "appliance_windows": dict(result.appliance_windows),
             "support_dc24": self._support_state["dc24"],
             "support_dc48": self._support_state["dc48"],
+            "support_dc24_mode": "manual" if self._support_manual["dc24"] else "auto",
+            "support_dc48_mode": "manual" if self._support_manual["dc48"] else "auto",
             "consumption_profile": profile_diag,
             "hourly_details": hourly_details,
         }
@@ -961,12 +1019,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._last_inverter_switch = now
         return self._inverter_recommendation
 
-    def _sync_support_state_from_entities(self) -> None:
-        """Adopt the real switch states while no sequence is running.
+    def _update_support_modes(self) -> None:
+        """Manual-override detection for the support PSUs (F-N2, 2026-07-05).
 
-        Heals desyncs from restarts, manual toggles and aborted sequences.
-        'unavailable'/'unknown' states are ignored — never treated as 'off'.
+        A PSU that turns ON without the integration having switched it
+        (e.g. permanent winter operation) puts that path into MANUAL mode:
+        the automatic control keeps hands off it — including the 24 V
+        make-before-break — until the PSU is switched OFF externally
+        again. Both mode and the BM's own support state are persisted, so
+        after a restart "on, but not ours" is still distinguishable from
+        "on, because we switched it on".
+
+        An unexpected ON is only adopted as a late-confirming device when
+        the integration's LAST COMMAND for that specific PSU was 'on' and
+        recent, or when that command's confirmation is still pending —
+        per-key and per-direction, so an operator ON right after a BM OFF
+        enters manual mode instead of being reverted (review finding).
         """
+        if self._switch_task is not None and not self._switch_task.done():
+            return  # our own sequence is in flight: no verdict possible
+        changed = False
         for key, conf_key in (
             ("dc24", CONF_SUPPORT_DC24_SWITCH),
             ("dc48", CONF_SUPPORT_DC48_SWITCH),
@@ -974,9 +1046,132 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entity_id = self.raw_config.get(conf_key)
             if not entity_id:
                 continue
+            real = self._entity_tristate(entity_id)
+            if real is None:
+                continue  # unavailable/unknown: no verdict
+            if self._support_manual[key]:
+                if real:
+                    self._support_state[key] = True
+                else:
+                    # Manually switched off: automatic control resumes.
+                    self._support_manual[key] = False
+                    self._support_state[key] = False
+                    changed = True
+                    _LOGGER.info(
+                        "%s support PSU manually switched off — automatic"
+                        " control resumes",
+                        "24 V" if key == "dc24" else "48 V",
+                    )
+            elif real and not self._support_state[key]:
+                if self._support_pending_confirm[key]:
+                    # Our own activation whose confirmation timed out —
+                    # the device just reported late. Adopt, don't pause.
+                    self._support_pending_confirm[key] = False
+                    self._support_state[key] = True
+                    changed = True
+                    continue
+                cmd = self._last_support_cmd.get(key)
+                grace = timedelta(
+                    seconds=int(self.raw_config.get("min_switch_interval_s", 60))
+                )
+                if cmd is not None and cmd[0] and dt_util.now() - cmd[1] < grace:
+                    # We commanded THIS PSU on just now: late confirmation,
+                    # not a manual override.
+                    self._support_state[key] = True
+                    changed = True
+                    continue
+                if self._support_adopt_once:
+                    # Pre-0.6.5 store without an ownership record: an ON
+                    # left over from the old version's own escalation must
+                    # not flip to manual on the upgrade restart.
+                    self._support_state[key] = True
+                    changed = True
+                    continue
+                # On, but not switched by us: manual override starts.
+                self._support_manual[key] = True
+                self._support_state[key] = True
+                changed = True
+                _LOGGER.info(
+                    "%s support PSU was switched on externally — automatic"
+                    " control for this PSU is paused until it is switched"
+                    " off manually (F-N2)",
+                    "24 V" if key == "dc24" else "48 V",
+                )
+            elif not real:
+                # Hard 'off' settles any pending confirmation.
+                self._support_pending_confirm[key] = False
+        self._support_adopt_once = False
+        # Level-triggered rail guard: PSU hard-off AND DC/DC hard-off is
+        # always pathological (manual shutdown, failed restore, boot race).
+        self._ensure_dc24_rail_supplied()
+        if changed:
+            self._save_persistent_state()
+
+    def _ensure_dc24_rail_supplied(self) -> None:
+        """The 24 V rail must never be left dead: whenever BOTH the 24 V
+        PSU and the DC/DC converter read hard 'off', switch the DC/DC back
+        on (level-triggered, retried every cycle until it sticks)."""
+        dcdc_entity = self.raw_config.get(CONF_DCDC_SWITCH)
+        psu_entity = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
+        if not dcdc_entity or not psu_entity:
+            return
+        if self._dcdc_restore_task is not None and not self._dcdc_restore_task.done():
+            return
+        if (
+            self._entity_tristate(psu_entity) is not False
+            or self._entity_tristate(dcdc_entity) is not False
+        ):
+            return
+
+        async def _restore() -> None:
+            async with self._switch_lock:
+                # Re-check under the lock: a sequence may have run meanwhile.
+                if (
+                    self._entity_tristate(psu_entity) is False
+                    and self._entity_tristate(dcdc_entity) is False
+                    and await self._switch_entity(dcdc_entity, True)
+                ):
+                    _LOGGER.info(
+                        "24 V rail: DC/DC converter switched back on"
+                        " (rail had no supply)",
+                    )
+
+        self._dcdc_restore_task = self.entry.async_create_background_task(
+            self.hass, _restore(), name="battery_manager_dcdc_restore"
+        )
+
+    def _sync_support_state_from_entities(self) -> None:
+        """Adopt the real switch states while no sequence is running.
+
+        Heals ON->OFF desyncs from restarts and aborted sequences. An
+        OFF->ON transition is deliberately NOT adopted here: judging it
+        (manual override vs late confirmation) is the exclusive job of
+        _update_support_modes — adopting it would let the next plan revert
+        an operator's ON without ever entering manual mode (review
+        finding). Manual-mode PSUs are skipped entirely.
+        'unavailable'/'unknown' states are ignored — never treated as 'off'.
+        """
+        changed = False
+        for key, conf_key in (
+            ("dc24", CONF_SUPPORT_DC24_SWITCH),
+            ("dc48", CONF_SUPPORT_DC48_SWITCH),
+        ):
+            if self._support_manual[key]:
+                continue
+            entity_id = self.raw_config.get(conf_key)
+            if not entity_id:
+                continue
             state = self.hass.states.get(entity_id)
-            if state is not None and state.state in ("on", "off"):
-                self._support_state[key] = state.state == "on"
+            if state is None or state.state not in ("on", "off"):
+                continue
+            real = state.state == "on"
+            if real and not self._support_state[key]:
+                continue  # OFF->ON is judged by _update_support_modes only
+            if self._support_state[key] != real:
+                self._support_state[key] = real
+                changed = True
+        if changed:
+            self._save_persistent_state()
 
     def _warn_unreliable_switches_once(self) -> None:
         """Warn if a support switch cannot confirm its real device state."""
@@ -1045,6 +1240,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 first_on,
                 then_off,
             )
+            if activate:
+                # The ON service succeeded but the device has not confirmed
+                # yet: remember it so a late 'on' report is adopted as ours
+                # instead of being misread as a manual override (F-N2).
+                self._support_pending_confirm["dc24"] = True
             return False
         return await self._switch_entity(then_off, False)
 
@@ -1067,6 +1267,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._sync_support_state_from_entities()
 
         desired = {"dc24": result.support_dc24_now, "dc48": result.support_dc48_now}
+        # Manual-mode PSUs (F-N2) are not ours to switch: pin desired to
+        # the current state so no action is derived for them.
+        for key, manual in self._support_manual.items():
+            if manual:
+                desired[key] = self._support_state[key]
         if desired == self._support_state:
             return
         interval = timedelta(seconds=config.control.min_switch_interval_s)
@@ -1077,6 +1282,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         self._last_support_switch = now
+        # Per-key command record (direction + time): the basis for telling
+        # a late-confirming device from a manual override (F-N2).
+        for key in ("dc24", "dc48"):
+            if (
+                not self._support_manual[key]
+                and desired[key] != self._support_state[key]
+            ):
+                self._last_support_cmd[key] = (desired[key], now)
+                self._support_pending_confirm[key] = False
         self._switch_task = self.entry.async_create_background_task(
             self.hass,
             self._execute_support_switching(desired),
@@ -1089,6 +1303,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             dc48_entity = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
             if (
                 dc48_entity
+                and not self._support_manual["dc48"]
                 and desired["dc48"] != self._support_state["dc48"]
                 and await self._switch_entity(dc48_entity, desired["dc48"])
             ):
@@ -1104,6 +1319,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             dc24_entity = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
             if (
                 dc24_entity
+                and not self._support_manual["dc24"]
                 and desired["dc24"] != self._support_state["dc24"]
                 and await self._sequence_dc24(desired["dc24"], dc24_entity)
             ):
@@ -1113,6 +1329,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "grid PSU" if desired["dc24"] else "DC/DC converter",
                 )
 
+        # Persist the BM's own support state: after a restart it is the
+        # evidence that an 'on' PSU is ours and not a manual override.
+        self._save_persistent_state()
         # Reflect the new state in the entities without waiting for a replan.
         if self.data:
             self.data["support_dc24"] = self._support_state["dc24"]

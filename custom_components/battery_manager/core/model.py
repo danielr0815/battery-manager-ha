@@ -127,6 +127,11 @@ class SupportParams:
     configured: bool = False
     dc48_power_w: float = 60.0  # fixed-power PSU feeding the 48 V battery bus
     # The 24 V PSU replaces the DC/DC converter entirely (DC load -> grid).
+    # Manual override (F-N2): the operator switched a PSU on externally —
+    # the simulation must treat that path as permanently active over the
+    # whole horizon (winter operation), while the executor keeps hands off.
+    dc24_forced_on: bool = False
+    dc48_forced_on: bool = False
 
 
 @dataclass(frozen=True)

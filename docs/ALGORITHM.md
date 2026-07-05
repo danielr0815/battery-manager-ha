@@ -221,6 +221,30 @@ läuft sequenziert mit konfigurierbarer Verzögerung (Default 3 s):
 - Beim Start übernimmt die Integration den realen Ist-Zustand der Schalter
   (wichtig nach HA-Neustart mit aktiver Stützung).
 
+**Entscheidung F-N2 (2026-07-05): Manueller Override pro Netzteil.** Im
+Winter kann es sinnvoll sein, die Netzteile dauerhaft manuell zu aktivieren.
+Wird ein Stütz-Netzteil **extern eingeschaltet** (nicht durch die
+Integration), pausiert die automatische Steuerung für genau dieses Netzteil
+— inklusive der Make-before-break-Sequenz beim 24-V-Pfad. Erst wenn das
+Netzteil **extern wieder ausgeschaltet** wird, übernimmt die Automatik
+erneut (beim 24-V-Pfad wird dann ein ausgeschalteter DC/DC-Wandler sofort
+wieder eingeschaltet, damit die Schiene nicht tot ist). Details:
+
+- Der Modus (Automatik/Manuell) wird **pro Netzteil persistiert** und
+  überlebt HA-Neustarts; zusätzlich wird der eigene Schaltzustand der
+  Integration persistiert, damit nach einem Neustart „an, aber nicht von
+  uns" von „an, weil von uns geschaltet" unterscheidbar bleibt.
+- Im manuellen Modus rechnet die **Simulation den Pfad als dauerhaft
+  aktiv** (24 V: DC-Last aus dem Netz; 48 V: konstante Einspeisung) —
+  die SOC-Prognose entspricht damit dem realen Winterbetrieb.
+- Je Netzteil gibt es einen **Modus-Sensor** (`sensor. … support mode`,
+  enum Automatik/Manuell) für Dashboards und Benachrichtigungen.
+- Karenzzeit: Innerhalb von `min_switch_interval_s` nach einer eigenen
+  Schaltaktion gilt ein unerwartet eingeschaltetes Netzteil als spät
+  bestätigendes Gerät (Zustand wird übernommen), nicht als Override.
+- Manuelles **Ausschalten** eines automatisch aktivierten Netzteils bleibt
+  Automatik: Die Schutzfunktion darf es bei Bedarf wieder einschalten.
+
 ## 3. Prototyp-Ergebnisse (Stundenraster, Defaults der Integration)
 
 Prototyp: `standalone_test/`-unabhängiges Skript; Batterie 5 kWh (5–95 %),

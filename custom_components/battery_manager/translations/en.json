@@ -391,6 +391,20 @@
       },
       "lost_surplus": {
         "name": "Lost surplus forecast"
+      },
+      "support_dc24_mode": {
+        "name": "24 V support mode",
+        "state": {
+          "auto": "Automatic",
+          "manual": "Manual"
+        }
+      },
+      "support_dc48_mode": {
+        "name": "48 V support mode",
+        "state": {
+          "auto": "Automatic",
+          "manual": "Manual"
+        }
       }
     },
     "binary_sensor": {

@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     ATTR_GRID_EXPORT_KWH,
     ATTR_LAST_UPDATE,
+    CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_SWITCH,
     DOMAIN,
     ENTITY_GRID_IMPORT_FORECAST,
     ENTITY_HOURS_TO_MAX_SOC,
@@ -21,6 +28,10 @@ from .const import (
     ENTITY_MIN_SOC_FORECAST,
     ENTITY_SOC_FORECAST_CURVE,
     ENTITY_SOC_THRESHOLD,
+    ENTITY_SUPPORT_DC24_MODE,
+    ENTITY_SUPPORT_DC48_MODE,
+    SUPPORT_MODE_AUTO,
+    SUPPORT_MODE_MANUAL,
 )
 from .coordinator import BatteryManagerCoordinator
 from .entity import BatteryManagerEntity
@@ -83,6 +94,22 @@ async def async_setup_entry(
         for description in SENSOR_DESCRIPTIONS
     ]
     entities.append(BatteryManagerSocForecastSensor(coordinator))
+    # Manual/automatic mode per support PSU (F-N2) — only when the
+    # respective switch is configured; a leftover sensor of a removed
+    # switch is dropped from the registry instead of lingering.
+    ent_reg = er.async_get(hass)
+    for entity_key, conf_key, data_key in (
+        (ENTITY_SUPPORT_DC24_MODE, CONF_SUPPORT_DC24_SWITCH, "support_dc24_mode"),
+        (ENTITY_SUPPORT_DC48_MODE, CONF_SUPPORT_DC48_SWITCH, "support_dc48_mode"),
+    ):
+        if coordinator.raw_config.get(conf_key):
+            entities.append(SupportModeSensor(coordinator, entity_key, data_key))
+        else:
+            stale = ent_reg.async_get_entity_id(
+                "sensor", DOMAIN, f"{entry.entry_id}_{entity_key}"
+            )
+            if stale:
+                ent_reg.async_remove(stale)
     async_add_entities(entities)
 
 
@@ -118,6 +145,31 @@ class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
         if self._data_key == "grid_import_kwh":
             attrs[ATTR_GRID_EXPORT_KWH] = data.get("grid_export_kwh")
         return attrs
+
+
+class SupportModeSensor(BatteryManagerEntity, SensorEntity):
+    """Manual/automatic control mode of a support PSU (F-N2).
+
+    'manual' while the PSU was switched on externally: the integration
+    keeps hands off until it is switched off externally again.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [SUPPORT_MODE_AUTO, SUPPORT_MODE_MANUAL]
+    _attr_icon = "mdi:hand-back-right-outline"
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, key: str, data_key: str
+    ) -> None:
+        super().__init__(coordinator, key)
+        self._data_key = data_key
+        self._attr_translation_key = key
+
+    @property
+    def native_value(self) -> str | None:
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get(self._data_key)
 
 
 class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):

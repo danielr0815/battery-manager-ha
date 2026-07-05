@@ -448,3 +448,40 @@ def test_long_min_runtime_gates_interior_hours_consistently():
     result, _ = make_plan(config, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
     assert result.load_plans[0].planned_energy_wh == 0.0
     assert not any(result.load_plans[0].schedule)
+
+
+def test_forced_support_paths_are_simulated_as_always_on():
+    """F-N2: a manually activated PSU must shape the whole trajectory —
+    dc24 forced: DC load runs from grid everywhere; dc48 forced: constant
+    injection. Both schedules come back all-True."""
+    config = SystemConfig(
+        support=SupportParams(configured=True, dc24_forced_on=True, dc48_forced_on=True)
+    )
+    now = datetime(2026, 7, 3, 22, 0)
+    result, inputs = make_plan(config, now, 40.0, [0.0, 2.0, 2.0])
+    n = len(inputs.slots)
+    assert all(f.support_dc24 for f in result.trajectory.flows)
+    assert all(f.support_dc48 for f in result.trajectory.flows)
+    assert result.support_dc24_now and result.support_dc48_now
+
+    # Reference without overrides: the same cloudy scenario drains deeper.
+    base = SystemConfig(support=SupportParams(configured=True))
+    base_result, _ = make_plan(base, now, 40.0, [0.0, 2.0, 2.0])
+    assert result.min_soc_percent > base_result.min_soc_percent
+    assert n == len(base_result.trajectory.flows)
+
+
+def test_forced_dc48_feeds_stage1_decision():
+    """A forced 48 V injection lifts the SOC path — the automatic 24 V
+    stage must judge the supported trajectory, not the raw one."""
+    config = SystemConfig(
+        support=SupportParams(configured=True, dc48_power_w=400.0, dc48_forced_on=True)
+    )
+    now = datetime(2026, 7, 3, 22, 0)
+    soc_start = config.battery.soc_min_percent + 6.0
+    result, _ = make_plan(config, now, soc_start, [0.0, 0.0, 0.0])
+    # The strong forced injection keeps the SOC above the buffer floor,
+    # so no automatic 24 V hours are needed on top.
+    floor = config.battery.soc_min_percent + config.control.support_buffer_percent
+    assert result.min_soc_percent >= floor - 0.01
+    assert not any(f.support_dc24 for f in result.trajectory.flows)

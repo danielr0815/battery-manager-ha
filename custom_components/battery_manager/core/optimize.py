@@ -312,7 +312,12 @@ def support_escalation(
     trajectory: Trajectory,
 ) -> tuple[tuple[bool, ...], tuple[bool, ...], Trajectory]:
     """Last-resort protection (D-A9): shift DC loads to grid PSUs when the
-    battery would otherwise fall through the buffer floor / hard minimum."""
+    battery would otherwise fall through the buffer floor / hard minimum.
+
+    Manually overridden PSUs (F-N2, `dc24_forced_on`/`dc48_forced_on`) are
+    treated as permanently active: the trajectory must reflect the real
+    winter operation even though the executor does not control them.
+    """
     n = len(inputs.slots)
     dc24 = [False] * n
     dc48 = [False] * n
@@ -325,23 +330,43 @@ def support_escalation(
     buffer_floor = battery.soc_min_percent + config.control.support_buffer_percent
     recovery = buffer_floor + 1.0
 
+    # A forced 48 V injection changes the whole SOC path — stage 1 must
+    # judge the already-supported trajectory.
+    base = trajectory
+    if config.support.dc48_forced_on:
+        dc48 = [True] * n
+        base = simulate(
+            config, inputs, threshold, extra_ac_wh=extra_ac, dc48_schedule=tuple(dc48)
+        )
+
     # Stage 1: 24 V PSU replaces the DC/DC while SOC sits below the buffer floor.
-    active = False
-    for i, flow in enumerate(trajectory.flows):
-        if flow.soc_end_percent < buffer_floor:
-            active = True
-        elif active and flow.soc_end_percent >= recovery:
-            active = False
-        dc24[i] = active
+    if config.support.dc24_forced_on:
+        dc24 = [True] * n
+    else:
+        active = False
+        for i, flow in enumerate(base.flows):
+            if flow.soc_end_percent < buffer_floor:
+                active = True
+            elif active and flow.soc_end_percent >= recovery:
+                active = False
+            dc24[i] = active
     if not any(dc24):
-        return tuple(dc24), tuple(dc48), trajectory
+        return tuple(dc24), tuple(dc48), base
 
     traj = simulate(
-        config, inputs, threshold, extra_ac_wh=extra_ac, dc24_schedule=tuple(dc24)
+        config,
+        inputs,
+        threshold,
+        extra_ac_wh=extra_ac,
+        dc24_schedule=tuple(dc24),
+        dc48_schedule=tuple(dc48),
     )
 
     # Stage 2: 48 V support PSU on top wherever the hard minimum is still hit.
-    if traj.min_soc_percent < battery.soc_min_percent + 0.5:
+    if (
+        not config.support.dc48_forced_on
+        and traj.min_soc_percent < battery.soc_min_percent + 0.5
+    ):
         active = False
         for i, flow in enumerate(traj.flows):
             if flow.soc_end_percent < battery.soc_min_percent + 0.5:
