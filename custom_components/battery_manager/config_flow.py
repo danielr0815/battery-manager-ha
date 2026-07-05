@@ -429,18 +429,26 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            error = _validate_learning_sources(user_input)
+            data = _flatten_sections(user_input)
+            error = _validate_learning_sources(data)
             if error is None:
-                self._data.update(user_input)
+                self._data.update(data)
                 return await self.async_step_power()
             errors["base"] = error
         # On a validation error, re-render with the just-entered values.
-        d = {**self._data, **(user_input or {})}
+        d = {**self._data, **(_flatten_sections(user_input) if user_input else {})}
         return self.async_show_form(
             step_id="consumers",
             errors=errors,
             data_schema=vol.Schema(
-                {**_profile_schema_fields(d), **_learning_schema_fields(d)}
+                {
+                    vol.Required(SECTION_PROFILE): section(
+                        vol.Schema(_profile_schema_fields(d)), {"collapsed": False}
+                    ),
+                    vol.Required(SECTION_LEARNING): section(
+                        vol.Schema(_learning_schema_fields(d)), {"collapsed": True}
+                    ),
+                }
             ),
         )
 
@@ -488,43 +496,54 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            error = _validate_support_entities(user_input)
+            data = _flatten_sections(user_input)
+            error = _validate_support_entities(data)
             if error is None:
-                self._data.update(user_input)
+                self._data.update(data)
                 return self.async_create_entry(title="Battery Manager", data=self._data)
             errors["base"] = error
-        d = self._data
+        d = {**self._data, **(_flatten_sections(user_input) if user_input else {})}
+        tuning = {
+            vol.Required(
+                "soc_buffer_percent", default=_d(d, "soc_buffer_percent")
+            ): _number(0, 30, 1, "%"),
+            vol.Required(
+                "hysteresis_percent", default=_d(d, "hysteresis_percent")
+            ): _number(0, 10, 0.5, "%"),
+            vol.Required(
+                "threshold_inertia_percent",
+                default=_d(d, "threshold_inertia_percent"),
+            ): _number(0, 10, 0.5, "%"),
+            vol.Required(
+                "min_switch_interval_s", default=_d(d, "min_switch_interval_s")
+            ): _number(0, 3600, 10, "s"),
+        }
+        support = {
+            vol.Optional(CONF_SUPPORT_DC48_SWITCH): _entity("switch"),
+            vol.Required(
+                CONF_SUPPORT_DC48_POWER_W, default=_d(d, CONF_SUPPORT_DC48_POWER_W)
+            ): _number(0, 1000, 5, "W"),
+            vol.Optional(CONF_SUPPORT_DC24_SWITCH): _entity("switch"),
+            vol.Optional(CONF_SUPPORT_DC24_POWER_ENTITY): _entity("sensor"),
+            vol.Optional(CONF_DCDC_SWITCH): _entity("switch"),
+            vol.Required(
+                CONF_SUPPORT_SWITCH_DELAY_S, default=_d(d, CONF_SUPPORT_SWITCH_DELAY_S)
+            ): _number(1, 30, 1, "s"),
+        }
         return self.async_show_form(
             step_id="control",
             errors=errors,
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        "soc_buffer_percent", default=_d(d, "soc_buffer_percent")
-                    ): _number(0, 30, 1, "%"),
-                    vol.Required(
-                        "hysteresis_percent", default=_d(d, "hysteresis_percent")
-                    ): _number(0, 10, 0.5, "%"),
-                    vol.Required(
-                        "threshold_inertia_percent",
-                        default=_d(d, "threshold_inertia_percent"),
-                    ): _number(0, 10, 0.5, "%"),
-                    vol.Required(
-                        "min_switch_interval_s", default=_d(d, "min_switch_interval_s")
-                    ): _number(0, 3600, 10, "s"),
-                    vol.Optional(CONF_SUPPORT_DC48_SWITCH): _entity("switch"),
-                    vol.Required(
-                        CONF_SUPPORT_DC48_POWER_W,
-                        default=_d(d, CONF_SUPPORT_DC48_POWER_W),
-                    ): _number(0, 1000, 5, "W"),
-                    vol.Optional(CONF_SUPPORT_DC24_SWITCH): _entity("switch"),
-                    vol.Optional(CONF_SUPPORT_DC24_POWER_ENTITY): _entity("sensor"),
-                    vol.Optional(CONF_DCDC_SWITCH): _entity("switch"),
-                    vol.Required(
-                        CONF_SUPPORT_SWITCH_DELAY_S,
-                        default=_d(d, CONF_SUPPORT_SWITCH_DELAY_S),
-                    ): _number(1, 30, 1, "s"),
-                    **_device_param_fields(d),
+                    vol.Required(SECTION_TUNING): section(
+                        vol.Schema(tuning), {"collapsed": False}
+                    ),
+                    vol.Required(SECTION_SUPPORT): section(
+                        vol.Schema(support), {"collapsed": True}
+                    ),
+                    vol.Required(SECTION_DEVICES): section(
+                        vol.Schema(_device_param_fields(d)), {"collapsed": True}
+                    ),
                 }
             ),
         )

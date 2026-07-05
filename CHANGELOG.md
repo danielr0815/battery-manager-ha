@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-07-05
+
+### Changed
+- **The setup wizard is grouped into sections too** (operator request):
+  the "consumers" step splits into consumption profile + measurement
+  sources, and the "control" step into control parameters, support paths
+  and DC device parameters — matching the options dialog. Same flat
+  storage (`_flatten_sections`), verified by an end-to-end wizard
+  completion test; field labels moved into their sections in en/de with
+  automated coverage checks. Full suite 142 tests green.
+
 ## [0.7.4] - 2026-07-05
 
 ### Changed

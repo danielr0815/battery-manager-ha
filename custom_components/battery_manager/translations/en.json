@@ -53,39 +53,53 @@
       },
       "consumers": {
         "title": "Base loads",
-        "data": {
-          "ac_base_load_w": "AC base load (W)",
-          "ac_variable_load_w": "AC variable load (W)",
-          "ac_variable_start_hour": "AC variable start hour",
-          "ac_variable_end_hour": "AC variable end hour",
-          "dc_base_load_w": "DC base load (W)",
-          "dc_variable_load_w": "DC variable load (W)",
-          "dc_variable_start_hour": "DC variable start hour",
-          "dc_variable_end_hour": "DC variable end hour",
-          "ac_load_entity": "AC load sensor for learned profile (optional)",
-          "ac_balance_in_entities": "AC balance: inflow counters (optional)",
-          "ac_balance_out_entities": "AC balance: outflow counters (optional)",
-          "dc_load_entity": "DC load sensor for learned profile (optional)",
-          "dc_balance_in_entities": "DC balance: inflow counters (optional)",
-          "dc_balance_out_entities": "DC balance: outflow counters (optional)",
-          "workday_entity": "Workday sensor (optional, holidays)"
-        },
-        "data_description": {
-          "ac_base_load_w": "Permanent round-the-clock AC consumption of the household (fridge, router, standby …).",
-          "ac_variable_load_w": "Additional AC consumption occurring only within the time window configured below (daytime activity).",
-          "ac_variable_start_hour": "Start of the window in which the additional AC load occurs.",
-          "ac_variable_end_hour": "End of the window in which the additional AC load occurs.",
-          "dc_base_load_w": "Permanent consumption on the DC rail (24 V), supplied directly from the battery.",
-          "dc_variable_load_w": "Additional DC consumption occurring only within the time window configured below.",
-          "dc_variable_start_hour": "Start of the window in which the additional DC load occurs.",
-          "dc_variable_end_hour": "End of the window in which the additional DC load occurs.",
-          "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
-          "ac_balance_in_entities": "Alternative without a direct load sensor: counters for energy flowing into the AC consumption node (e.g. grid import, inverter output, PV passthrough). House load = inflows − outflows.",
-          "ac_balance_out_entities": "Counters for energy leaving the node unconsumed (e.g. grid export, battery charging from the house bus).",
-          "dc_load_entity": "Sensor for the DC consumer load (e.g. shunt). Enables learning of the DC profile; without it the DC profile stays static.",
-          "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
-          "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
-          "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date."
+        "sections": {
+          "consumption_profile": {
+            "name": "Consumption profile (static fallback)",
+            "description": "Used until learned consumption data is available.",
+            "data": {
+              "ac_base_load_w": "AC base load (W)",
+              "ac_variable_load_w": "AC variable load (W)",
+              "ac_variable_start_hour": "AC variable start hour",
+              "ac_variable_end_hour": "AC variable end hour",
+              "dc_base_load_w": "DC base load (W)",
+              "dc_variable_load_w": "DC variable load (W)",
+              "dc_variable_start_hour": "DC variable start hour",
+              "dc_variable_end_hour": "DC variable end hour"
+            },
+            "data_description": {
+              "ac_base_load_w": "Permanent round-the-clock AC consumption of the household (fridge, router, standby …).",
+              "ac_variable_load_w": "Additional AC consumption occurring only within the time window configured below (daytime activity).",
+              "ac_variable_start_hour": "Start of the window in which the additional AC load occurs.",
+              "ac_variable_end_hour": "End of the window in which the additional AC load occurs.",
+              "dc_base_load_w": "Permanent consumption on the DC rail (24 V), supplied directly from the battery.",
+              "dc_variable_load_w": "Additional DC consumption occurring only within the time window configured below.",
+              "dc_variable_start_hour": "Start of the window in which the additional DC load occurs.",
+              "dc_variable_end_hour": "End of the window in which the additional DC load occurs."
+            }
+          },
+          "consumption_learning": {
+            "name": "Measurement sources for learning (optional)",
+            "description": "Optional sensors that enable the nightly profile learning.",
+            "data": {
+              "ac_load_entity": "AC load sensor for learned profile (optional)",
+              "ac_balance_in_entities": "AC balance: inflow counters (optional)",
+              "ac_balance_out_entities": "AC balance: outflow counters (optional)",
+              "dc_load_entity": "DC load sensor for learned profile (optional)",
+              "dc_balance_in_entities": "DC balance: inflow counters (optional)",
+              "dc_balance_out_entities": "DC balance: outflow counters (optional)",
+              "workday_entity": "Workday sensor (optional, holidays)"
+            },
+            "data_description": {
+              "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
+              "ac_balance_in_entities": "Alternative without a direct load sensor: counters for energy flowing into the AC consumption node (e.g. grid import, inverter output, PV passthrough). House load = inflows − outflows.",
+              "ac_balance_out_entities": "Counters for energy leaving the node unconsumed (e.g. grid export, battery charging from the house bus).",
+              "dc_load_entity": "Sensor for the DC consumer load (e.g. shunt). Enables learning of the DC profile; without it the DC profile stays static.",
+              "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
+              "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
+              "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date."
+            }
+          }
         }
       },
       "power": {
@@ -112,55 +126,77 @@
       "control": {
         "title": "Planner & emergency support",
         "description": "Planner tuning and optional grid support paths that the integration switches directly.",
-        "data": {
-          "soc_buffer_percent": "SOC safety buffer (%)",
-          "hysteresis_percent": "Inverter hysteresis (%)",
-          "threshold_inertia_percent": "Threshold inertia (%)",
-          "min_switch_interval_s": "Minimum switch interval (s)",
-          "support_dc48_switch_entity": "48 V support PSU switch",
-          "support_dc48_power_w": "48 V support PSU power (W)",
-          "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
-          "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
-          "support_switch_delay_s": "Changeover delay (s, make-before-break)",
-          "support_dc24_power_entity": "24 V PSU power sensor (optional)",
-          "battery_voltage_entity": "Battery voltage sensor (optional)",
-          "dc24_share_percent": "24 V rail share (%)",
-          "dcdc_output_voltage_v": "DC/DC: output voltage (V)",
-          "dcdc_efficiency": "DC/DC: efficiency (0–1)",
-          "dcdc_max_current_a": "DC/DC: max current (A)",
-          "psu24_output_voltage_v": "24 V PSU: output voltage (V)",
-          "psu24_efficiency": "24 V PSU: efficiency (0–1)",
-          "psu24_max_current_a": "24 V PSU: max current (A)",
-          "psu48_output_voltage_v": "48 V PSU: output voltage (V)",
-          "psu48_efficiency": "48 V PSU: efficiency (0–1)",
-          "psu48_max_current_a": "48 V PSU: max current (A)",
-          "battery_cells_series": "Battery cells in series",
-          "gate_soc_percent": "48 V gate SOC threshold (%)"
-        },
-        "data_description": {
-          "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
-          "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
-          "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
-          "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
-          "support_dc48_switch_entity": "Optional: switch of the PSU that feeds the 48 V battery bus with fixed power in an emergency. Switched directly by the integration.",
-          "support_dc48_power_w": "Fixed feed-in power of the 48 V support PSU used by the simulation.",
-          "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
-          "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
-          "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
-          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
-          "dc24_share_percent": "Fraction of the DC load on the 24 V rail (rest = native 48 V bus). 100 % = whole DC load on the rail (as before).",
-          "battery_voltage_entity": "48 V battery voltage sensor — for the gate calibration and (later) the 48 V PSU voltage controller.",
-          "dcdc_output_voltage_v": "DC/DC converter output voltage. When it runs in parallel with the 24 V PSU, the higher-voltage source feeds the rail.",
-          "dcdc_efficiency": "DC/DC converter efficiency (1.0 = lossless).",
-          "dcdc_max_current_a": "DC/DC converter max output current. 0 = uncapped. Power cap = voltage × current.",
-          "psu24_output_voltage_v": "Output voltage of the grid-fed 24 V support PSU.",
-          "psu24_efficiency": "24 V PSU efficiency (1.0 = lossless).",
-          "psu24_max_current_a": "24 V PSU max output current. 0 = uncapped.",
-          "psu48_output_voltage_v": "Fixed output voltage of the 48 V support PSU (e.g. 49.56 V). Defines the voltage gate.",
-          "psu48_efficiency": "48 V PSU efficiency (1.0 = lossless).",
-          "psu48_max_current_a": "48 V PSU max output current. 0 = uncapped.",
-          "battery_cells_series": "Series cell count (e.g. 15 for Pylontech US5000). Informational: derives volts per cell as a calibration aid.",
-          "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor."
+        "sections": {
+          "planner_tuning": {
+            "name": "Control parameters",
+            "description": "SOC buffer, hysteresis and switching intervals of the planner.",
+            "data": {
+              "soc_buffer_percent": "SOC safety buffer (%)",
+              "hysteresis_percent": "Inverter hysteresis (%)",
+              "threshold_inertia_percent": "Threshold inertia (%)",
+              "min_switch_interval_s": "Minimum switch interval (s)"
+            },
+            "data_description": {
+              "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
+              "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
+              "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
+              "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths)."
+            }
+          },
+          "support_paths": {
+            "name": "Support paths (switches)",
+            "description": "Emergency DC-rail support via grid-fed PSUs.",
+            "data": {
+              "support_dc48_switch_entity": "48 V support PSU switch",
+              "support_dc48_power_w": "48 V support PSU power (W)",
+              "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
+              "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
+              "support_switch_delay_s": "Changeover delay (s, make-before-break)",
+              "support_dc24_power_entity": "24 V PSU power sensor (optional)"
+            },
+            "data_description": {
+              "support_dc48_switch_entity": "Optional: switch of the PSU that feeds the 48 V battery bus with fixed power in an emergency. Switched directly by the integration.",
+              "support_dc48_power_w": "Fixed feed-in power of the 48 V support PSU used by the simulation.",
+              "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
+              "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
+              "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
+              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
+            }
+          },
+          "dc_devices": {
+            "name": "DC device parameters (two-bus)",
+            "description": "Efficiencies, currents, voltages and the voltage gate of the DC topology.",
+            "data": {
+              "battery_voltage_entity": "Battery voltage sensor (optional)",
+              "dc24_share_percent": "24 V rail share (%)",
+              "dcdc_output_voltage_v": "DC/DC: output voltage (V)",
+              "dcdc_efficiency": "DC/DC: efficiency (0–1)",
+              "dcdc_max_current_a": "DC/DC: max current (A)",
+              "psu24_output_voltage_v": "24 V PSU: output voltage (V)",
+              "psu24_efficiency": "24 V PSU: efficiency (0–1)",
+              "psu24_max_current_a": "24 V PSU: max current (A)",
+              "psu48_output_voltage_v": "48 V PSU: output voltage (V)",
+              "psu48_efficiency": "48 V PSU: efficiency (0–1)",
+              "psu48_max_current_a": "48 V PSU: max current (A)",
+              "battery_cells_series": "Battery cells in series",
+              "gate_soc_percent": "48 V gate SOC threshold (%)"
+            },
+            "data_description": {
+              "battery_voltage_entity": "48 V battery voltage sensor — for the gate calibration and (later) the 48 V PSU voltage controller.",
+              "dc24_share_percent": "Fraction of the DC load on the 24 V rail (rest = native 48 V bus). 100 % = whole DC load on the rail (as before).",
+              "dcdc_output_voltage_v": "DC/DC converter output voltage. When it runs in parallel with the 24 V PSU, the higher-voltage source feeds the rail.",
+              "dcdc_efficiency": "DC/DC converter efficiency (1.0 = lossless).",
+              "dcdc_max_current_a": "DC/DC converter max output current. 0 = uncapped. Power cap = voltage × current.",
+              "psu24_output_voltage_v": "Output voltage of the grid-fed 24 V support PSU.",
+              "psu24_efficiency": "24 V PSU efficiency (1.0 = lossless).",
+              "psu24_max_current_a": "24 V PSU max output current. 0 = uncapped.",
+              "psu48_output_voltage_v": "Fixed output voltage of the 48 V support PSU (e.g. 49.56 V). Defines the voltage gate.",
+              "psu48_efficiency": "48 V PSU efficiency (1.0 = lossless).",
+              "psu48_max_current_a": "48 V PSU max output current. 0 = uncapped.",
+              "battery_cells_series": "Series cell count (e.g. 15 for Pylontech US5000). Informational: derives volts per cell as a calibration aid.",
+              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor."
+            }
+          }
         }
       }
     },

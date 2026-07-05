@@ -148,14 +148,18 @@ async def test_config_flow_all_steps_render(hass):
         ),
         (
             {
-                "ac_base_load_w": 50.0,
-                "ac_variable_load_w": 75.0,
-                "ac_variable_start_hour": 6,
-                "ac_variable_end_hour": 20,
-                "dc_base_load_w": 50.0,
-                "dc_variable_load_w": 25.0,
-                "dc_variable_start_hour": 6,
-                "dc_variable_end_hour": 22,
+                # The consumers step is grouped into sections now.
+                "consumption_profile": {
+                    "ac_base_load_w": 50.0,
+                    "ac_variable_load_w": 75.0,
+                    "ac_variable_start_hour": 6,
+                    "ac_variable_end_hour": 20,
+                    "dc_base_load_w": 50.0,
+                    "dc_variable_load_w": 25.0,
+                    "dc_variable_start_hour": 6,
+                    "dc_variable_end_hour": 22,
+                },
+                "consumption_learning": {},
             },
             "power",
         ),
@@ -167,6 +171,92 @@ async def test_config_flow_all_steps_render(hass):
         assert result["type"] == "form", f"step before {next_step} failed"
         assert result["step_id"] == next_step
     hass.config_entries.flow.async_abort(result["flow_id"])
+
+
+async def test_setup_wizard_completes_with_sectioned_steps(hass):
+    """The whole wizard (incl. the grouped consumers + control steps) must
+    complete and store a FLAT config, not nested section wrappers."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    payloads = [
+        ENTRY_DATA,
+        {
+            "battery_capacity_wh": 5000.0,
+            "battery_min_soc_percent": 5.0,
+            "battery_max_soc_percent": 95.0,
+            "battery_charge_efficiency": 0.97,
+            "battery_discharge_efficiency": 0.97,
+        },
+        {
+            "pv_max_power_w": 3200.0,
+            "pv_morning_start_hour": 7,
+            "pv_morning_end_hour": 13,
+            "pv_afternoon_end_hour": 18,
+            "pv_morning_ratio": 0.8,
+        },
+        {  # consumers (sectioned)
+            "consumption_profile": {
+                "ac_base_load_w": 50.0,
+                "ac_variable_load_w": 75.0,
+                "ac_variable_start_hour": 6,
+                "ac_variable_end_hour": 20,
+                "dc_base_load_w": 50.0,
+                "dc_variable_load_w": 25.0,
+                "dc_variable_start_hour": 6,
+                "dc_variable_end_hour": 22,
+            },
+            "consumption_learning": {},
+        },
+        {  # power
+            "charger_max_power_w": 2300.0,
+            "charger_efficiency": 0.92,
+            "charger_standby_power_w": 10.0,
+            "inverter_max_power_w": 2300.0,
+            "inverter_efficiency": 0.95,
+            "inverter_standby_power_w": 15.0,
+            "inverter_min_soc_percent": 20.0,
+        },
+        {  # control (sectioned)
+            "planner_tuning": {
+                "soc_buffer_percent": 5.0,
+                "hysteresis_percent": 1.0,
+                "threshold_inertia_percent": 2.0,
+                "min_switch_interval_s": 60,
+            },
+            "support_paths": {
+                "support_dc48_power_w": 60.0,
+                "support_switch_delay_s": 3,
+            },
+            "dc_devices": {
+                "dc24_share_percent": 100.0,
+                "dcdc_output_voltage_v": 24.0,
+                "dcdc_efficiency": 1.0,
+                "dcdc_max_current_a": 0.0,
+                "psu24_output_voltage_v": 24.0,
+                "psu24_efficiency": 1.0,
+                "psu24_max_current_a": 0.0,
+                "psu48_output_voltage_v": 49.56,
+                "psu48_efficiency": 1.0,
+                "psu48_max_current_a": 0.0,
+                "battery_cells_series": 16,
+                "gate_soc_percent": 100.0,
+            },
+        },
+    ]
+    for payload in payloads:
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], payload
+        )
+    assert result["type"] == "create_entry"
+    data = result["data"]
+    # Flattened: real values present at the top level, no section wrappers.
+    assert data["soc_buffer_percent"] == 5.0
+    assert data["ac_base_load_w"] == 50.0
+    assert data["dc24_share_percent"] == 100.0
+    assert not any(
+        k in data for k in ("planner_tuning", "dc_devices", "consumption_profile")
+    )
 
 
 BASIC_CONTINUOUS = {
