@@ -172,9 +172,6 @@
             "energy_limited": "Energy limited (storage that becomes full)",
             "power_entity": "Power feedback sensor (optional)",
             "availability_entity": "Availability entity (optional)",
-            "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
-            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
-            "input_off_policy": "Input plug at end of charge",
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)"
           },
@@ -186,9 +183,6 @@
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
-            "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
-            "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
-            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists for more than 30 minutes (e.g. full water tank: near 0 W), the load's warning sensor turns on. 0 = disabled. Short defrost pauses stay below the 30 minutes and do not trigger."
           }
@@ -203,9 +197,6 @@
             "energy_limited": "Energy limited (storage that becomes full)",
             "power_entity": "Power feedback sensor (optional)",
             "availability_entity": "Availability entity (optional)",
-            "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
-            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
-            "input_off_policy": "Input plug at end of charge",
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)"
           },
@@ -217,25 +208,28 @@
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
-            "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
-            "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
-            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists for more than 30 minutes (e.g. full water tank: near 0 W), the load's warning sensor turns on. 0 = disabled. Short defrost pauses stay below the 30 minutes and do not trigger."
           }
         },
         "storage": {
           "title": "Storage settings",
-          "description": "These fields only apply to energy-limited loads (a storage that fills up, e.g. a power station).",
+          "description": "These fields only apply to energy-limited loads (a storage that fills up, e.g. a power station): capacity, target SOC, SOC sensor and the charging path (input switch, charge enable, input-off policy).",
           "data": {
             "capacity_wh": "Storage capacity (Wh)",
             "target_soc_percent": "Target SOC (%)",
-            "soc_entity": "SOC sensor (optional)"
+            "soc_entity": "SOC sensor (optional)",
+            "control_switch_entity": "Charging input switch (optional — the integration switches it directly)",
+            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
+            "input_off_policy": "Input plug at end of charge"
           },
           "data_description": {
             "capacity_wh": "Storage size of the load (only relevant if energy limited), e.g. 2000 for a 2 kWh powerstation.",
             "target_soc_percent": "The load is charged up to this state of charge; above it, it counts as full and is no longer scheduled.",
-            "soc_entity": "State-of-charge sensor of the load. If the device sleeps (sensor unavailable), planning continues with the last known value."
+            "soc_entity": "State-of-charge sensor of the load. If the device sleeps (sensor unavailable), planning continues with the last known value.",
+            "control_switch_entity": "Switchable plug of the charging input. If set, the integration switches charging itself — a separate charging automation becomes redundant and should be disabled.",
+            "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery.",
+            "input_off_policy": "What happens to the input plug at the end of charging. \"Automatic\" = only switch off if the integration switched it on itself — recommended when the input is also used for passthrough."
           }
         }
       }

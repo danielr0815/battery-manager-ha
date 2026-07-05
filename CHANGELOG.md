@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.4] - 2026-07-05
 
 ### Changed
-- **Load dialog is now two-step**: capacity, target SOC and the SOC
-  sensor only appear when "energy limited" is enabled — for continuous
-  consumers like a dehumidifier they were meaningless clutter (operator
-  wish). Values are preserved when the toggle is switched off and back
-  on.
+- **Load dialog is now two-step**: capacity, target SOC, the SOC sensor
+  and the whole charging-path block (input switch, charge enable,
+  input-off policy — semantics defined for powerstation charging paths,
+  docs/LOAD_CONTROL.md §2/§3) only appear when "energy limited" is
+  enabled — for continuous consumers like a dehumidifier they were
+  meaningless clutter (operator wish). Values are preserved when the
+  toggle is switched off and back on; the keep_on-requires-enable
+  validation moved to the storage step accordingly.
 - **Power-deviation warning cleanly disableable per load** (0 % in the
   load dialog, e.g. for the Fossibots where it is not wanted): the
   warning binary sensor is then not created, and a previously created

@@ -542,9 +542,11 @@ class BatteryManagerOptionsFlow(OptionsFlow):
 class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     """Add or reconfigure a surplus load (Fossibot, dehumidifier, ...).
 
-    Two steps: the storage fields (capacity, target SOC, SOC sensor) only
-    appear when the load is energy-limited — for continuous consumers like
-    a dehumidifier they are meaningless (operator wish, 2026-07-05).
+    Two steps: the storage fields — capacity, target SOC, SOC sensor and
+    the whole charging-path block (input switch, charge enable, input-off
+    policy, docs/LOAD_CONTROL.md §2/§3) — only appear when the load is
+    energy-limited. For continuous consumers like a dehumidifier they are
+    meaningless (operator wish, 2026-07-05).
     """
 
     _basic: dict[str, Any]
@@ -553,7 +555,16 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
 
     # Storage-step keys, preserved across the dialog when the step is
     # skipped so toggling "energy limited" off and on keeps the values.
-    _STORAGE_KEYS = (CONF_LOAD_CAPACITY_WH, CONF_LOAD_TARGET_SOC)
+    _STORAGE_KEYS = (
+        CONF_LOAD_CAPACITY_WH,
+        CONF_LOAD_TARGET_SOC,
+        CONF_LOAD_INPUT_OFF_POLICY,
+    )
+    _STORAGE_ENTITY_KEYS = (
+        CONF_LOAD_SOC_ENTITY,
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_LOAD_CHARGE_ENABLE,
+    )
 
     def _basic_schema(self, data: dict[str, Any]) -> vol.Schema:
         def dv(key):
@@ -583,10 +594,30 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         for key, domain in (
             (CONF_LOAD_POWER_ENTITY, "sensor"),
             (CONF_LOAD_AVAILABILITY_ENTITY, None),
+        ):
+            # suggested_value (not default) keeps the field clearable in the UI.
+            schema[
+                vol.Optional(key, description={"suggested_value": data.get(key)})
+            ] = _entity(domain)
+        return vol.Schema(schema)
+
+    def _storage_schema(self, data: dict[str, Any]) -> vol.Schema:
+        def dv(key):
+            return data.get(key, DEFAULT_LOAD_CONFIG.get(key))
+
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_LOAD_CAPACITY_WH, default=dv(CONF_LOAD_CAPACITY_WH)
+            ): _number(0, 100_000, 100, "Wh"),
+            vol.Required(
+                CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
+            ): _number(0, 100, 1, "%"),
+        }
+        for key, domain in (
+            (CONF_LOAD_SOC_ENTITY, "sensor"),
             (CONF_LOAD_CONTROL_SWITCH, "switch"),
             (CONF_LOAD_CHARGE_ENABLE, ["input_boolean", "switch"]),
         ):
-            # suggested_value (not default) keeps the field clearable in the UI.
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
@@ -603,25 +634,6 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         )
         return vol.Schema(schema)
 
-    def _storage_schema(self, data: dict[str, Any]) -> vol.Schema:
-        def dv(key):
-            return data.get(key, DEFAULT_LOAD_CONFIG.get(key))
-
-        return vol.Schema(
-            {
-                vol.Required(
-                    CONF_LOAD_CAPACITY_WH, default=dv(CONF_LOAD_CAPACITY_WH)
-                ): _number(0, 100_000, 100, "Wh"),
-                vol.Required(
-                    CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
-                ): _number(0, 100, 1, "%"),
-                vol.Optional(
-                    CONF_LOAD_SOC_ENTITY,
-                    description={"suggested_value": data.get(CONF_LOAD_SOC_ENTITY)},
-                ): _entity("sensor"),
-            }
-        )
-
     def _finish(self, storage_input: dict[str, Any]) -> SubentryFlowResult:
         # Preserved storage values (add: defaults) underlie the new input,
         # so a load toggled to unlimited keeps them for a later toggle back.
@@ -629,8 +641,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             key: self._existing.get(key, DEFAULT_LOAD_CONFIG.get(key))
             for key in self._STORAGE_KEYS
         }
-        if CONF_LOAD_SOC_ENTITY in self._existing:
-            data[CONF_LOAD_SOC_ENTITY] = self._existing[CONF_LOAD_SOC_ENTITY]
+        for key in self._STORAGE_ENTITY_KEYS:
+            if key in self._existing:
+                data[key] = self._existing[key]
         data.update(self._basic)
         data.update(storage_input)
         title = data.pop(CONF_LOAD_NAME)
@@ -646,18 +659,13 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     async def _handle_basic(
         self, step_id: str, user_input: dict[str, Any] | None
     ) -> SubentryFlowResult:
-        errors: dict[str, str] = {}
         if user_input is not None:
-            error = _validate_load_control(user_input)
-            if error is None:
-                self._basic = user_input
-                if user_input.get(CONF_LOAD_ENERGY_LIMITED):
-                    return await self.async_step_storage()
-                return self._finish({})
-            errors["base"] = error
-        data = user_input if user_input is not None else self._existing
+            self._basic = user_input
+            if user_input.get(CONF_LOAD_ENERGY_LIMITED):
+                return await self.async_step_storage()
+            return self._finish({})
         return self.async_show_form(
-            step_id=step_id, data_schema=self._basic_schema(data), errors=errors
+            step_id=step_id, data_schema=self._basic_schema(self._existing)
         )
 
     async def async_step_user(
@@ -680,10 +688,18 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     async def async_step_storage(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self._finish(user_input)
+            # The charging-path combination rules live in this step now.
+            error = _validate_load_control(user_input)
+            if error is None:
+                return self._finish(user_input)
+            errors["base"] = error
+        data = user_input if user_input is not None else self._existing
         return self.async_show_form(
-            step_id="storage", data_schema=self._storage_schema(self._existing)
+            step_id="storage",
+            data_schema=self._storage_schema(data),
+            errors=errors,
         )
 
 
