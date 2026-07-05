@@ -135,3 +135,20 @@ Planungsleistung verwendet. Der Energiefortschritt der Ladung wird ohnehin
   offiziell einreichen. Genutzt wird stattdessen der lokale
   brand/-Mechanismus (HA ≥ 2026.3, siehe §6.2) — Icon liegt in
   `custom_components/battery_manager/brand/`, kein PR nötig.
+
+## 8. Betreiber-Entscheidung Ladezeitpunkt (2026-07-05)
+
+- **F-L5: Zusatzlasten so spät wie möglich aktivieren** — aber noch
+  rechtzeitig genug, dass keine Energie eingespeist werden muss. Nachholen
+  (bei jedem Replan mit besserer Information) schlägt das frühe Vorziehen
+  auf Prognosebasis; Vorziehen kostet zudem den Umweg über die Hausbatterie
+  (~18 % Zyklus-Verluste mit Default-Wirkungsgraden). Umsetzung: Pass 2
+  latest-first + Mindestlaufzeit-ehrliche Bewertung (ALGORITHM.md D-A4 v3).
+  Anlass war der Nachtlade-Vorfall vom 05.07. (Degenerierter-Slot-0-Bug:
+  drei Starts jeweils in Minute :59, real ~250 Wh je „5-Wh-Plan").
+- Flankierend persistiert der Coordinator den Schalt-Dwell über Neustarts
+  (der Verlust war Mitverursacher). Der Leistungs-EMA wird bewusst NICHT
+  persistiert und bei Feedback-Lücken nur serviert, solange die Last real
+  lädt — nach Ladeende würde der Taper-Restwert (10–40 W) sonst dauerhaft
+  als „gemessene" Planungsleistung alle Gates schwächen. Die Logzeilen
+  „Charging started/stopped" nennen den Klartext-Lastnamen.

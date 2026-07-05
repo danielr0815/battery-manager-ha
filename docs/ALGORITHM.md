@@ -124,8 +124,29 @@ Kandidaten springen).
   drückt UND gegenüber dem Plan ohne diese Stunde verschlechtert. Ein
   SOC-Tief am trüben Horizontende, das in beiden Varianten identisch
   auftritt, kann heutige Überschussstunden nicht mehr blockieren.
+- **v3 — Mindestlaufzeit-ehrliche Bewertung + latest-first (Betreiber-
+  Entscheidung, 2026-07-05):** Zwei Korrekturen nach dem Nachtlade-Vorfall
+  vom 05.07. (04:59:50, ~250 Wh real für 5 Wh Plan):
+  1. Jede Aktivierungsentscheidung wird mit der Energie bewertet UND
+     simuliert, die der Executor real erzwingt: `Leistung ×
+     max(Slot-Restdauer, Mindestlaufzeit)`, zeitlich über Slot-Grenzen
+     verteilt („Spill", alle betroffenen Slots werden gemeinsam geplant).
+     Damit kann der degenerierte Slot 0 (angebrochene Stunde, in Minute :59
+     nur 1/60 h) keine Mini-Energien mehr durch die Gates schleusen, die
+     die reale Mindestlaufzeit anschließend um Faktor 50 übertrifft. Das
+     Sättigungs-Gate ist zusätzlich auf die Nennleistung gefloort, damit
+     ein leerer/verfallener Feedback-EMA es nicht schwächt.
+  2. Pass 2 läuft **latest-first** (späteste begründbare Stunde zuerst):
+     Zusatzlasten werden so spät wie möglich aktiviert, aber noch
+     rechtzeitig, dass kein Überschuss verloren geht. Nachholen mit
+     besserer Information schlägt die frühe Wette auf die Prognose;
+     Vorziehen ist nur gerechtfertigt, wenn das Überschussfenster
+     leistungsbegrenzt ist. Slots nach dem letzten Export-Slot können
+     Bedingung (c) nie erfüllen und werden übersprungen; ohne Export im
+     Horizont entfällt Pass 2 komplett.
 - **Taktung:** Planung im Stundenraster; reale Empfehlung mit
-  Mindest-Ein-/Ausschaltdauer (Default 30 min) — schont Geräte und Relais.
+  Mindest-Ein-/Ausschaltdauer (Default 30 min) — schont Geräte und Relais
+  und geht seit v3 als committed-Energie in die Bewertung ein.
 - **Sättigung:** Fossibot-SOC ≥ konfigurierbarem Ziel (Default 100 %) → Last
   gilt als gesättigt und wird übersprungen (L8). Restenergiebedarf
   `= (Ziel−SOC) × 2 kWh`, geplante Ladeleistung aus Feedback-Entität

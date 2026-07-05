@@ -244,6 +244,10 @@ class LoadPlan:
     load_id: str
     schedule: tuple[bool, ...]  # per slot
     planned_energy_wh: float
+    # One entry per activation decision, for transparency/diagnostics:
+    # (start slot, covered slot count, pass number, booked energy Wh).
+    # Pass 1 = direct surplus, pass 2 = preemptive ("zielbasiert").
+    allocations: tuple[tuple[int, int, int, float], ...] = ()
 
     @property
     def active_now(self) -> bool:

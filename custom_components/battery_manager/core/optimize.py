@@ -81,6 +81,47 @@ def search_threshold(
     return best_threshold, best_traj
 
 
+def _committed_hours(load, slot) -> float:
+    """Runtime one activation decision really commits the executor to.
+
+    Switching a load on holds the real switch for at least `min_runtime_min`
+    (coordinator dwell), so the planner must evaluate and book that energy —
+    not the sliver left in a nearly elapsed slot. Without this, a 1-minute
+    slot 0 made ~5 Wh pass every gate while the dwell then charged ~250 Wh
+    unaccounted (degenerate-slot-0 artifact, observed live 2026-07-05 04:59).
+    The floor applies to interior slots too: with `min_runtime_min` > 60 the
+    hour would otherwise be booked smaller than it can ever execute.
+    """
+    return max(slot.duration, load.min_runtime_min / 60.0)
+
+
+def _spread_energy(
+    extra: list[float],
+    slots,
+    start: int,
+    power_w: float,
+    hours: float,
+) -> tuple[list[float], list[tuple[int, float]]]:
+    """Lay `power_w` running for `hours` into a copy of `extra`.
+
+    The energy is placed in real time from slot `start` on, spilling across
+    slot boundaries (a min-runtime commitment near the end of an hour lands
+    partly in the next slot). Returns the trial series and the covered
+    (slot index, occupied hours) pairs.
+    """
+    trial = list(extra)
+    covered: list[tuple[int, float]] = []
+    remaining_h = hours
+    j = start
+    while remaining_h > _EPS and j < len(slots):
+        take = min(remaining_h, slots[j].duration)
+        trial[j] += power_w * take
+        covered.append((j, take))
+        remaining_h -= take
+        j += 1
+    return trial, covered
+
+
 def allocate_loads(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -89,12 +130,19 @@ def allocate_loads(
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
     """Assign surplus loads to hours in two passes.
 
-    Pass 1 fills hours with direct surplus (per-slot battery share within the
-    load's tolerance). Pass 2 ("zielbasiert", decision 2026-07-04) additionally
-    allows hours WITHOUT direct surplus — e.g. pre-dawn charging to make room
-    before a strong production peak — but only when the full-horizon
-    re-simulation proves the energy is, time-shifted through the battery,
-    covered by otherwise-lost surplus.
+    Pass 1 fills hours with direct surplus (battery share within the load's
+    tolerance across the committed runtime). Pass 2 ("zielbasiert", decision
+    2026-07-04) additionally allows hours WITHOUT direct surplus — e.g.
+    pre-charging to make room before a strong production peak — but only when
+    the full-horizon re-simulation proves the energy is, time-shifted through
+    the battery, covered by otherwise-lost surplus. Pass 2 runs LATEST-FIRST
+    (operator decision 2026-07-05): preemptive hours are placed as late as
+    the constraints allow, because catching up on better information always
+    beats an early bet on the forecast.
+
+    Every candidate is evaluated with the energy the executor will really
+    deliver (`_committed_hours`), and the saturation gate is floored at the
+    nominal power so a decayed/empty feedback EMA can never weaken it.
 
     Loads run in parallel when surplus suffices; config order = priority when
     it does not. Every assignment is validated by re-simulation over the FULL
@@ -104,6 +152,9 @@ def allocate_loads(
     states = {s.load_id: s for s in inputs.load_states}
     schedules: dict[str, list[bool]] = {ld.load_id: [False] * n for ld in config.loads}
     planned_wh: dict[str, float] = dict.fromkeys(schedules, 0.0)
+    allocations: dict[str, list[tuple[int, int, int, float]]] = {
+        ld.load_id: [] for ld in config.loads
+    }
     remaining: dict[str, float | None] = {}
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
@@ -118,22 +169,30 @@ def allocate_loads(
         surplus = current.flows[i].grid_export_wh
         for load in config.loads:
             state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-            if not state.available:
+            if not state.available or schedules[load.load_id][i]:
                 continue
-            power_wh = state.planning_power_w(load) * slot.duration
+            power_w = state.planning_power_w(load)
+            commit_h = _committed_hours(load, slot)
+            power_wh = power_w * commit_h
             if power_wh <= _EPS:
                 continue
             rem = remaining[load.load_id]
-            if rem is not None and rem < power_wh:
+            if rem is not None and rem < max(power_w, load.nominal_power_w) * commit_h:
                 continue  # saturated (or nearly): skip
+            trial, covered = _spread_energy(extra, inputs.slots, i, power_w, commit_h)
+            if any(schedules[load.load_id][j] for j, _ in covered):
+                continue  # commitment overlaps an already-scheduled slot
             # Soft surplus condition (D-A4): battery may cover at most
-            # `battery_tolerance` of the load's energy in this slot.
-            battery_share = max(0.0, power_wh - surplus) / power_wh
+            # `battery_tolerance` of the committed energy. Spilled slots
+            # contribute their export prorated by the occupied share.
+            surplus_cov = surplus + sum(
+                current.flows[j].grid_export_wh * (take / inputs.slots[j].duration)
+                for j, take in covered[1:]
+            )
+            battery_share = max(0.0, power_wh - surplus_cov) / power_wh
             if battery_share > load.battery_tolerance + _EPS:
                 continue
             # Hard conditions via full re-simulation (Z2/Z3).
-            trial = list(extra)
-            trial[i] += power_wh
             traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
             if traj.total_import_wh > base_import + _EPS:
                 continue
@@ -141,11 +200,19 @@ def allocate_loads(
                 continue
             extra = trial
             current = traj
-            schedules[load.load_id][i] = True
-            planned_wh[load.load_id] += power_wh
+            for j, _ in covered:
+                schedules[load.load_id][j] = True
+            # Book what actually landed in the horizon (a commitment may be
+            # truncated at the horizon end); the gates above deliberately
+            # used the full committed energy.
+            placed_wh = power_w * sum(take for _, take in covered)
+            planned_wh[load.load_id] += placed_wh
+            allocations[load.load_id].append((i, len(covered), 1, placed_wh))
             if rem is not None:
-                remaining[load.load_id] = rem - power_wh
-            surplus = max(0.0, surplus - power_wh)
+                remaining[load.load_id] = rem - placed_wh
+            # Only the slot-local share draws on this slot's surplus; the
+            # spilled share is already reflected in the re-simulated flows.
+            surplus = max(0.0, surplus - power_w * covered[0][1])
 
     # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2).
     # A load may run without direct surplus when the re-simulation proves:
@@ -153,40 +220,60 @@ def allocate_loads(
     # (c) lost surplus drops by >= (1 - tolerance) x the load's energy —
     # i.e. the battery drain is provably refilled from would-be-lost export.
     # Energy-limited loads only get here with budget left over from pass 1
-    # (saturating in the sun window is always preferred).
-    for i, slot in enumerate(inputs.slots):
-        for load in config.loads:
-            state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-            if not state.available or schedules[load.load_id][i]:
-                continue
-            power_wh = state.planning_power_w(load) * slot.duration
-            if power_wh <= _EPS:
-                continue
-            rem = remaining[load.load_id]
-            if rem is not None and rem < power_wh:
-                continue
-            trial = list(extra)
-            trial[i] += power_wh
-            traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-            if traj.total_import_wh > base_import + _EPS:
-                continue
-            if _degrades_min_soc(traj, current, buffer_floor):
-                continue
-            export_drop = current.total_export_wh - traj.total_export_wh
-            if export_drop + _EPS < (1.0 - load.battery_tolerance) * power_wh:
-                continue
-            extra = trial
-            current = traj
-            schedules[load.load_id][i] = True
-            planned_wh[load.load_id] += power_wh
-            if rem is not None:
-                remaining[load.load_id] = rem - power_wh
+    # (saturating in the sun window is always preferred). Iterated latest-
+    # first; slots after the last export can never satisfy (c), so they are
+    # skipped outright, as is the whole pass on an export-free horizon.
+    if current.total_export_wh > _EPS:
+        last_export = max(
+            (j for j, f in enumerate(current.flows) if f.grid_export_wh > _EPS),
+            default=-1,
+        )
+        for i in range(last_export, -1, -1):
+            slot = inputs.slots[i]
+            for load in config.loads:
+                state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
+                if not state.available or schedules[load.load_id][i]:
+                    continue
+                power_w = state.planning_power_w(load)
+                commit_h = _committed_hours(load, slot)
+                power_wh = power_w * commit_h
+                if power_wh <= _EPS:
+                    continue
+                rem = remaining[load.load_id]
+                if (
+                    rem is not None
+                    and rem < max(power_w, load.nominal_power_w) * commit_h
+                ):
+                    continue
+                trial, covered = _spread_energy(
+                    extra, inputs.slots, i, power_w, commit_h
+                )
+                if any(schedules[load.load_id][j] for j, _ in covered):
+                    continue
+                traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
+                if traj.total_import_wh > base_import + _EPS:
+                    continue
+                if _degrades_min_soc(traj, current, buffer_floor):
+                    continue
+                export_drop = current.total_export_wh - traj.total_export_wh
+                if export_drop + _EPS < (1.0 - load.battery_tolerance) * power_wh:
+                    continue
+                extra = trial
+                current = traj
+                for j, _ in covered:
+                    schedules[load.load_id][j] = True
+                placed_wh = power_w * sum(take for _, take in covered)
+                planned_wh[load.load_id] += placed_wh
+                allocations[load.load_id].append((i, len(covered), 2, placed_wh))
+                if rem is not None:
+                    remaining[load.load_id] = rem - placed_wh
 
     plans = [
         LoadPlan(
             load_id=load.load_id,
             schedule=tuple(schedules[load.load_id]),
             planned_energy_wh=planned_wh[load.load_id],
+            allocations=tuple(allocations[load.load_id]),
         )
         for load in config.loads
     ]

@@ -13,6 +13,7 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
@@ -29,6 +30,7 @@ from custom_components.battery_manager.const import (
 PLUG = "switch.shelly_fossibot_input"
 ENABLE = "input_boolean.charge_fossibot"
 FOSSI_SOC = "sensor.fossibot_soc"
+POWER_FEEDBACK = "sensor.fossibot_in_total"
 
 BASE_DATA = {
     CONF_SOC_ENTITY: "sensor.test_soc",
@@ -76,6 +78,7 @@ async def _setup(hass, call_log, *, policy=INPUT_OFF_POLICY_AUTO):
                     CONF_LOAD_CAPACITY_WH: 2000.0,
                     CONF_LOAD_TARGET_SOC: 90.0,
                     CONF_LOAD_SOC_ENTITY: FOSSI_SOC,
+                    CONF_LOAD_POWER_ENTITY: POWER_FEEDBACK,
                     CONF_LOAD_CONTROL_SWITCH: PLUG,
                     CONF_LOAD_CHARGE_ENABLE: ENABLE,
                     CONF_LOAD_INPUT_OFF_POLICY: policy,
@@ -140,7 +143,9 @@ async def test_passthrough_plug_stays_on(hass):
 
 async def test_policy_always_off_switches_foreign_plug_off(hass):
     calls: list[tuple[str, str]] = []
-    coordinator, sub_id, data = await _setup(hass, calls, policy=INPUT_OFF_POLICY_ALWAYS)
+    coordinator, sub_id, data = await _setup(
+        hass, calls, policy=INPUT_OFF_POLICY_ALWAYS
+    )
     hass.states.async_set(PLUG, "on")
     hass.states.async_set(ENABLE, "on")
     calls.clear()
@@ -165,3 +170,64 @@ async def test_soc_cache_survives_sleeping_device(hass):
     hass.states.async_set(FOSSI_SOC, "62.5")
     states = coordinator._get_load_states()
     assert states[0].soc_percent == 62.5
+
+
+async def test_switch_dwell_survives_restart(hass):
+    """The per-load switch dwell must not reset on restart: a wiped
+    timestamp allowed switching right after boot (co-factor of the
+    2026-07-05 degenerate-slot-0 night charge). The power EMA is
+    deliberately NOT persisted (a taper-decayed value must not become
+    permanent planning power)."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+
+    from homeassistant.util import dt as dt_util
+
+    ts = dt_util.utcnow().replace(microsecond=0)
+    coordinator._load_power_ema[sub_id] = 505.4
+    coordinator._last_load_switch[sub_id] = ts
+
+    captured: dict = {}
+    coordinator._store.async_delay_save = lambda data_func, _delay: captured.update(
+        data_func()
+    )
+    coordinator._save_persistent_state()
+    assert captured["last_load_switch"] == {sub_id: ts.isoformat()}
+    assert "power_ema" not in captured
+
+    # Round-trip: a restarted coordinator restores the dwell verbatim. A
+    # fresh Store instance simulates the restart (the old one caches its
+    # first async_load result for its lifetime).
+    from homeassistant.helpers.storage import Store
+
+    await coordinator._store.async_save(captured)
+    coordinator._load_power_ema.clear()
+    coordinator._last_load_switch.clear()
+    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    await coordinator.async_load_persistent_state()
+    assert coordinator._last_load_switch == {sub_id: ts}
+    assert coordinator._load_power_ema == {}
+
+
+async def test_power_ema_serves_only_while_charging(hass):
+    """A feedback gap keeps the EMA only DURING an active charge (v0.5.1
+    rule); after the charge the taper-decayed value is discarded so the
+    planner falls back to the nominal power."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(POWER_FEEDBACK, "505")
+
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w == 505.0
+
+    # Feedback drops out mid-charge: last smoothed value keeps serving.
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    coordinator._load_charging_active[sub_id] = True
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w == 505.0
+
+    # Charge over: the EMA is dropped, planning returns to nominal power.
+    coordinator._load_charging_active[sub_id] = False
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w is None
+    assert sub_id not in coordinator._load_power_ema

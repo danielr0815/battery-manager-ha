@@ -165,12 +165,24 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_plug_owned = {
                 k: bool(v) for k, v in data.get("plug_owned", {}).items()
             }
+            # The switch dwell survives restarts: a wiped timestamp allowed
+            # switching right after boot (co-factor of the 2026-07-05
+            # night-charge incident). The power EMA is deliberately NOT
+            # persisted — a taper-decayed value (last reading of a finished
+            # charge) would otherwise become permanent planning power.
+            for k, v in data.get("last_load_switch", {}).items():
+                ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
+                if ts is not None:
+                    self._last_load_switch[k] = ts
 
     def _save_persistent_state(self) -> None:
         self._store.async_delay_save(
             lambda: {
                 "load_soc": self._load_soc_cache,
                 "plug_owned": self._load_plug_owned,
+                "last_load_switch": {
+                    k: v.isoformat() for k, v in self._last_load_switch.items()
+                },
             },
             10,
         )
@@ -399,7 +411,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     self._load_power_ema[subentry_id] = measured
                 elif subentry_id in self._load_power_ema:
-                    measured = self._load_power_ema[subentry_id]
+                    if self._load_charging_active.get(subentry_id):
+                        # Mid-charge feedback gap (v0.5.1): keep planning
+                        # with the last smoothed value.
+                        measured = self._load_power_ema[subentry_id]
+                    else:
+                        # Charge over: the EMA has tapered through the
+                        # cutoff band and would otherwise stick as a tiny
+                        # "measured" power that weakens every planning gate.
+                        del self._load_power_ema[subentry_id]
             states.append(
                 SurplusLoadState(
                     load_id=subentry_id,
@@ -644,6 +664,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         load_plans: dict[str, dict[str, Any]] = {}
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
+            pass_by_slot: dict[int, int] = {}
+            for start, count, pass_no, _wh in load_plan.allocations:
+                for j in range(start, start + count):
+                    pass_by_slot[j] = pass_no
+            if load_plan.allocations:
+                _LOGGER.debug(
+                    "Load %s planned: %s",
+                    load.name,
+                    "; ".join(
+                        f"pass {p} from slot {s} ({c} slot(s), {wh:.0f} Wh)"
+                        for s, c, p, wh in load_plan.allocations
+                    ),
+                )
             load_plans[load_plan.load_id] = {
                 "name": load.name,
                 "active": load_plan.active_now,
@@ -656,6 +689,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "end": (
                             slot.start + timedelta(hours=slot.duration)
                         ).isoformat(),
+                        # 1 = direct surplus, 2 = preemptive ("zielbasiert")
+                        "pass": pass_by_slot.get(slot.index),
                     }
                     for slot, on in zip(inputs.slots, load_plan.schedule, strict=True)
                     if on
@@ -973,6 +1008,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for subentry_id, data, activate, plug_was_on in actions:
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
+                subentry = self.entry.subentries.get(subentry_id)
+                label = subentry.title if subentry else subentry_id
                 if activate:
                     if enable and not await self._switch_entity(enable, True):
                         continue
@@ -983,7 +1020,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # allows the 'auto' policy to switch it off again.
                         self._load_plug_owned[subentry_id] = True
                     self._load_charging_active[subentry_id] = True
-                    _LOGGER.info("Charging started for load %s", subentry_id)
+                    _LOGGER.info("Charging started for load %s", label)
                 else:
                     policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
                     if not enable and policy == INPUT_OFF_POLICY_KEEP:
@@ -992,7 +1029,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         _LOGGER.warning(
                             "Load %s: policy 'keep_on' without a charge-enable"
                             " entity cannot stop charging",
-                            subentry_id,
+                            label,
                         )
                         continue
                     if enable:
@@ -1011,7 +1048,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._load_charging_active[subentry_id] = False
                     _LOGGER.info(
                         "Charging stopped for load %s (input %s)",
-                        subentry_id,
+                        label,
                         "off" if turn_plug_off else "stays on",
                     )
         self._save_persistent_state()

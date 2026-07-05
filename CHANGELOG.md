@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-05
+
+### Fixed
+- **Degenerate-slot-0 night charging** (live incident 2026-07-05 04:59):
+  the planner evaluated activation candidates with `power × slot
+  duration`, and slot 0 (the partial current hour) shrinks to 1 minute
+  just before each hour boundary. A nearly-full powerstation (6 Wh below
+  target) then passed every gate with a ~5 Wh candidate, and the
+  executor's 30-min minimum runtime charged ~250 Wh from the house
+  battery — 50× the planned energy, never accounted for in the
+  simulation. All three observed "Charging started" events sat in a :59
+  minute. Candidates are now evaluated and simulated with the energy the
+  executor really commits (`power × max(slot remainder, min runtime)`,
+  spilled across slot boundaries and scheduled as one block), and the
+  saturation gate is floored at the nominal power so a decayed/empty
+  feedback EMA cannot weaken it.
+- The per-load switch dwell timestamps are now persisted across restarts
+  (a wiped dwell allowed switching right after boot — a co-factor of the
+  incident). The power EMA is deliberately NOT persisted, and a feedback
+  gap keeps serving the last smoothed value only WHILE the load is
+  actually charging: after the charge, the taper-decayed reading (often
+  10–40 W) is discarded so it can never stick as permanent "measured"
+  planning power that would weaken every gate (adversarial-review
+  finding on the first draft of this fix).
+- Pass-1 slot-local surplus bookkeeping no longer double-counts the
+  spilled share of a commitment (parallel loads in a partial slot 0 were
+  starved conservatively), commitments truncated at the horizon end book
+  only the energy actually placed, and the min-runtime commitment floor
+  applies to interior hours too (min_runtime > 60 min configs no longer
+  produce phantom 1-hour plans that can never execute).
+
+### Changed
+- **Pass 2 ("zielbasiert") now allocates latest-first** (operator
+  decision F-L5, docs/LOAD_CONTROL.md §8): preemptive charging hours are
+  placed as late as the constraints allow — just early enough that no
+  surplus is lost — instead of at the earliest justifiable hour (e.g.
+  22:00 the night before). Slots after the last export slot are skipped,
+  and the whole pass is pruned on export-free horizons.
+- Load allocations are transparent: `LoadPlan.allocations` records
+  (slot, span, pass, energy) per decision, the coordinator debug-logs
+  them, each `load_plans` schedule entry carries its `pass`, and the
+  "Charging started/stopped" log lines name the load in plain text.
+
 ## [0.6.0] - 2026-07-04
 
 ### Added — Stufe 2 (docs/CONSUMPTION_FORECAST.md §5)
