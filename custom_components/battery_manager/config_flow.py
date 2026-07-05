@@ -26,11 +26,16 @@ from .const import (
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
+    CONF_DC24_SHARE_PERCENT,
     CONF_DC_BALANCE_IN,
     CONF_DC_BALANCE_OUT,
     CONF_DC_LOAD_ENTITY,
+    CONF_DCDC_EFFICIENCY,
+    CONF_DCDC_MAX_CURRENT_A,
+    CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
@@ -50,6 +55,12 @@ from .const import (
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_PROFILE_HALF_LIFE_DAYS,
+    CONF_PSU24_EFFICIENCY,
+    CONF_PSU24_MAX_CURRENT_A,
+    CONF_PSU24_OUTPUT_VOLTAGE_V,
+    CONF_PSU48_EFFICIENCY,
+    CONF_PSU48_MAX_CURRENT_A,
+    CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
@@ -143,6 +154,54 @@ def _validate_buffer_clamps(data: dict[str, Any]) -> str | None:
     if low is not None and high is not None and float(low) >= float(high):
         return "buffer_min_above_max"
     return None
+
+
+def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2).
+
+    Shared by the base control step and the options flow. Neutral defaults
+    (share 100 %, efficiency 1.0, 0 A = uncapped) leave planning unchanged
+    until the operator enters real nameplate values.
+    """
+    schema: dict[Any, Any] = {
+        vol.Optional(
+            CONF_BATTERY_VOLTAGE_ENTITY,
+            description={"suggested_value": current.get(CONF_BATTERY_VOLTAGE_ENTITY)},
+        ): _entity("sensor"),
+        vol.Required(
+            CONF_DC24_SHARE_PERCENT, default=_d(current, CONF_DC24_SHARE_PERCENT)
+        ): _number(0, 100, 5, "%"),
+    }
+    for volt_key, eta_key, amp_key, amp_max in (
+        (
+            CONF_DCDC_OUTPUT_VOLTAGE_V,
+            CONF_DCDC_EFFICIENCY,
+            CONF_DCDC_MAX_CURRENT_A,
+            100,
+        ),
+        (
+            CONF_PSU24_OUTPUT_VOLTAGE_V,
+            CONF_PSU24_EFFICIENCY,
+            CONF_PSU24_MAX_CURRENT_A,
+            100,
+        ),
+        (
+            CONF_PSU48_OUTPUT_VOLTAGE_V,
+            CONF_PSU48_EFFICIENCY,
+            CONF_PSU48_MAX_CURRENT_A,
+            20,
+        ),
+    ):
+        schema[vol.Required(volt_key, default=_d(current, volt_key))] = _number(
+            0, 60, 0.01, "V"
+        )
+        schema[vol.Required(eta_key, default=_d(current, eta_key))] = _number(
+            0.5, 1.0, 0.01
+        )
+        schema[vol.Required(amp_key, default=_d(current, amp_key))] = _number(
+            0, amp_max, 0.05, "A"
+        )
+    return schema
 
 
 def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
@@ -423,6 +482,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_SUPPORT_SWITCH_DELAY_S,
                         default=_d(d, CONF_SUPPORT_SWITCH_DELAY_S),
                     ): _number(1, 30, 1, "s"),
+                    **_device_param_fields(d),
                 }
             ),
         )
@@ -448,6 +508,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 for key in (
                     *_SUPPORT_SWITCH_KEYS,
                     CONF_SUPPORT_DC24_POWER_ENTITY,
+                    CONF_BATTERY_VOLTAGE_ENTITY,
                     *_LEARNING_SINGLE_KEYS,
                     CONF_WORKDAY_ENTITY,
                 ):
@@ -499,6 +560,9 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 },
             )
         ] = _entity("sensor")
+
+        # F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2).
+        schema.update(_device_param_fields(current))
 
         # Fallback profile + learned-consumption sources (CONSUMPTION_FORECAST)
         schema.update(_profile_schema_fields(current))

@@ -122,7 +122,18 @@
           "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
           "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
           "support_switch_delay_s": "Changeover delay (s, make-before-break)",
-          "support_dc24_power_entity": "24 V PSU power sensor (optional)"
+          "support_dc24_power_entity": "24 V PSU power sensor (optional)",
+          "battery_voltage_entity": "Battery voltage sensor (optional)",
+          "dc24_share_percent": "24 V rail share (%)",
+          "dcdc_output_voltage_v": "DC/DC output voltage (V)",
+          "dcdc_efficiency": "DC/DC efficiency (0-1)",
+          "dcdc_max_current_a": "DC/DC max current (A, 0 = uncapped)",
+          "psu24_output_voltage_v": "24 V PSU output voltage (V)",
+          "psu24_efficiency": "24 V PSU efficiency (0-1)",
+          "psu24_max_current_a": "24 V PSU max current (A, 0 = uncapped)",
+          "psu48_output_voltage_v": "48 V PSU output voltage (V)",
+          "psu48_efficiency": "48 V PSU efficiency (0-1)",
+          "psu48_max_current_a": "48 V PSU max current (A, 0 = uncapped)"
         },
         "data_description": {
           "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -134,7 +145,9 @@
           "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
           "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
           "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
-          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
+          "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
+          "dc24_share_percent": "Fraction of the DC load on the 24 V rail (rest = native 48 V bus load). 100 % = whole DC load on the rail (default). Drives the two-bus split of the support-path simulation.",
+          "battery_voltage_entity": "Battery voltage for the (later) voltage-gated 48 V controller. Recorded in this phase, not yet acting."
         }
       }
     },
@@ -323,7 +336,18 @@
           "profile_half_life_days": "Recency half-life (days)",
           "buffer_min_percent": "Dynamic SOC buffer: minimum (%)",
           "buffer_max_percent": "Dynamic SOC buffer: maximum (%)",
-          "workday_entity": "Workday sensor (optional, holidays)"
+          "workday_entity": "Workday sensor (optional, holidays)",
+          "battery_voltage_entity": "Battery voltage sensor (optional)",
+          "dc24_share_percent": "24 V rail share (%)",
+          "dcdc_output_voltage_v": "DC/DC output voltage (V)",
+          "dcdc_efficiency": "DC/DC efficiency (0-1)",
+          "dcdc_max_current_a": "DC/DC max current (A, 0 = uncapped)",
+          "psu24_output_voltage_v": "24 V PSU output voltage (V)",
+          "psu24_efficiency": "24 V PSU efficiency (0-1)",
+          "psu24_max_current_a": "24 V PSU max current (A, 0 = uncapped)",
+          "psu48_output_voltage_v": "48 V PSU output voltage (V)",
+          "psu48_efficiency": "48 V PSU efficiency (0-1)",
+          "psu48_max_current_a": "48 V PSU max current (A, 0 = uncapped)"
         },
         "data_description": {
           "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -355,7 +379,9 @@
           "profile_half_life_days": "Weighting of learning days: a day of this age still counts half. Replaces an explicit season model — smaller values follow behaviour changes faster, larger ones smooth more.",
           "buffer_min_percent": "Lower clamp of the dynamic safety buffer derived from the forecast uncertainty (P80−P50).",
           "buffer_max_percent": "Upper clamp of the dynamic safety buffer — limits how much reserve the uncertainty may request.",
-          "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date."
+          "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date.",
+          "dc24_share_percent": "Fraction of the DC load on the 24 V rail (rest = native 48 V bus load). 100 % = whole DC load on the rail (default). Drives the two-bus split of the support-path simulation.",
+          "battery_voltage_entity": "Battery voltage for the (later) voltage-gated 48 V controller. Recorded in this phase, not yet acting."
         }
       }
     }

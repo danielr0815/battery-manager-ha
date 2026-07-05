@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-05
+
+### Added — F-N3 two-bus DC model, phase 2 (docs/DC_TOPOLOGY.md)
+- **Device parameters are now configurable.** The base "control" step and
+  the options flow gained the F-N3 fields — 24 V rail share, and per
+  device (DC/DC converter, 24 V PSU, 48 V PSU) the output voltage,
+  efficiency and max current (0 A = uncapped, rail-side power cap =
+  V_out × I_max) — plus an optional battery-voltage sensor for the later
+  voltage-gated controller. `build_system_config` maps them into the core
+  `SupportParams`. All defaults are neutral (share 100 %, efficiency 1.0,
+  uncapped, gate open), so an existing entry keeps its exact v0.7.0
+  behaviour until real nameplate values are entered.
+- `hourly_details` now carries the two-bus diagnostics (PSU delivered
+  energy, DC/DC input/loss, unserved rail demand, gate state) for
+  plausibility-checking the plan after entering real values.
+- Adversarially reviewed (neutrality/back-compat, config-flow, edge).
+
 ## [0.7.0] - 2026-07-05
 
 ### Added — F-N3 two-bus DC model, phase 1 (docs/DC_TOPOLOGY.md)

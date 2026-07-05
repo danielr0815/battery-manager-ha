@@ -76,6 +76,26 @@ CONF_SUPPORT_DC24_POWER_ENTITY = "support_dc24_power_entity"
 CONF_DCDC_SWITCH = "dcdc_switch_entity"
 CONF_SUPPORT_SWITCH_DELAY_S = "support_switch_delay_s"
 
+# --- F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2) ---
+# All NEUTRAL by default (share 100 %, efficiencies 1.0, 0 A = uncapped),
+# so the upgrade changes nothing until the operator enters real values.
+# Battery voltage sensor for the (later) voltage-gated 48 V controller.
+CONF_BATTERY_VOLTAGE_ENTITY = "battery_voltage_entity"
+# Fraction of the DC load on the 24 V rail (rest = native 48 V bus load).
+CONF_DC24_SHARE_PERCENT = "dc24_share_percent"
+# DC/DC converter (battery 48 V -> 24 V rail).
+CONF_DCDC_OUTPUT_VOLTAGE_V = "dcdc_output_voltage_v"
+CONF_DCDC_EFFICIENCY = "dcdc_efficiency"
+CONF_DCDC_MAX_CURRENT_A = "dcdc_max_current_a"
+# Grid-fed 24 V support PSU (feeds the rail when the DC/DC is off).
+CONF_PSU24_OUTPUT_VOLTAGE_V = "psu24_output_voltage_v"
+CONF_PSU24_EFFICIENCY = "psu24_efficiency"
+CONF_PSU24_MAX_CURRENT_A = "psu24_max_current_a"
+# 48 V support PSU (nameplate; voltage gate goes live in phase 3).
+CONF_PSU48_OUTPUT_VOLTAGE_V = "psu48_output_voltage_v"
+CONF_PSU48_EFFICIENCY = "psu48_efficiency"
+CONF_PSU48_MAX_CURRENT_A = "psu48_max_current_a"
+
 # --- Surplus load subentry keys ---
 SUBENTRY_TYPE_LOAD = "surplus_load"
 CONF_LOAD_NAME = "name"
@@ -186,6 +206,17 @@ DEFAULT_CONFIG = {
     # Support paths
     CONF_SUPPORT_DC48_POWER_W: 60.0,
     CONF_SUPPORT_SWITCH_DELAY_S: 3,
+    # F-N3 two-bus device parameters — neutral defaults (docs/DC_TOPOLOGY.md).
+    CONF_DC24_SHARE_PERCENT: 100.0,
+    CONF_DCDC_OUTPUT_VOLTAGE_V: 24.0,
+    CONF_DCDC_EFFICIENCY: 1.0,
+    CONF_DCDC_MAX_CURRENT_A: 0.0,  # 0 = uncapped
+    CONF_PSU24_OUTPUT_VOLTAGE_V: 24.0,
+    CONF_PSU24_EFFICIENCY: 1.0,
+    CONF_PSU24_MAX_CURRENT_A: 0.0,
+    CONF_PSU48_OUTPUT_VOLTAGE_V: 49.56,
+    CONF_PSU48_EFFICIENCY: 1.0,
+    CONF_PSU48_MAX_CURRENT_A: 0.0,
 }
 
 DEFAULT_LOAD_CONFIG = {

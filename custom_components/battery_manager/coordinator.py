@@ -24,6 +24,10 @@ from .const import (
     CONF_APPLIANCE_RUN_ENERGY_WH,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
+    CONF_DC24_SHARE_PERCENT,
+    CONF_DCDC_EFFICIENCY,
+    CONF_DCDC_MAX_CURRENT_A,
+    CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
@@ -38,6 +42,12 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
+    CONF_PSU24_EFFICIENCY,
+    CONF_PSU24_MAX_CURRENT_A,
+    CONF_PSU24_OUTPUT_VOLTAGE_V,
+    CONF_PSU48_EFFICIENCY,
+    CONF_PSU48_MAX_CURRENT_A,
+    CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
@@ -94,6 +104,14 @@ def _series_source(series: tuple[float | None, ...] | None, index: int) -> str:
     if series is not None and index < len(series) and series[index] is not None:
         return "L"
     return "S"
+
+
+def _power_cap(voltage_v: Any, current_a: Any) -> float | None:
+    """Rail-side power cap V_out x I_max; 0 A (or less) means uncapped."""
+    current = float(current_a)
+    if current <= 0:
+        return None
+    return float(voltage_v) * current
 
 
 class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -374,6 +392,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # the real winter operation.
                 dc24_forced_on=self._support_manual["dc24"],
                 dc48_forced_on=self._support_manual["dc48"],
+                # F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md). A
+                # 0 A current means "uncapped" (None); the rail-side power
+                # cap is V_out x I_max.
+                dc24_share=float(cfg[CONF_DC24_SHARE_PERCENT]) / 100.0,
+                dcdc_eta=float(cfg[CONF_DCDC_EFFICIENCY]),
+                dcdc_output_voltage_v=float(cfg[CONF_DCDC_OUTPUT_VOLTAGE_V]),
+                dcdc_max_power_w=_power_cap(
+                    cfg[CONF_DCDC_OUTPUT_VOLTAGE_V], cfg[CONF_DCDC_MAX_CURRENT_A]
+                ),
+                psu24_eta=float(cfg[CONF_PSU24_EFFICIENCY]),
+                psu24_output_voltage_v=float(cfg[CONF_PSU24_OUTPUT_VOLTAGE_V]),
+                psu24_max_power_w=_power_cap(
+                    cfg[CONF_PSU24_OUTPUT_VOLTAGE_V], cfg[CONF_PSU24_MAX_CURRENT_A]
+                ),
+                psu48_eta=float(cfg[CONF_PSU48_EFFICIENCY]),
+                psu48_output_voltage_v=float(cfg[CONF_PSU48_OUTPUT_VOLTAGE_V]),
+                psu48_max_power_w=_power_cap(
+                    cfg[CONF_PSU48_OUTPUT_VOLTAGE_V], cfg[CONF_PSU48_MAX_CURRENT_A]
+                ),
             ),
             loads=tuple(loads),
             appliances=tuple(appliances),
@@ -946,6 +983,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "inverter_enabled": flow.inverter_on,
                 "support_dc24": flow.support_dc24,
                 "support_dc48": flow.support_dc48,
+                # F-N3 two-bus diagnostics (docs/DC_TOPOLOGY.md).
+                "psu48_delivered_wh": flow.psu48_delivered_wh,
+                "psu24_delivered_wh": flow.psu24_delivered_wh,
+                "dcdc_input_wh": flow.dcdc_input_wh,
+                "dcdc_loss_wh": flow.dcdc_loss_wh,
+                "unserved_dc_wh": flow.unserved_dc_wh,
+                "gate_open": flow.gate_open,
                 "profile_sources": (
                     f"{_series_source(ac_series, slot.index)}"
                     f"/{_series_source(dc_series, slot.index)}"

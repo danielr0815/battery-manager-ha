@@ -122,7 +122,18 @@
           "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
           "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
           "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)",
-          "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)"
+          "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)",
+          "battery_voltage_entity": "Batteriespannungs-Sensor (optional)",
+          "dc24_share_percent": "24-V-Schienenanteil (%)",
+          "dcdc_output_voltage_v": "DC/DC-Ausgangsspannung (V)",
+          "dcdc_efficiency": "DC/DC-Wirkungsgrad (0-1)",
+          "dcdc_max_current_a": "DC/DC max. Strom (A, 0 = unbegrenzt)",
+          "psu24_output_voltage_v": "24-V-Netzteil Ausgangsspannung (V)",
+          "psu24_efficiency": "24-V-Netzteil Wirkungsgrad (0-1)",
+          "psu24_max_current_a": "24-V-Netzteil max. Strom (A, 0 = unbegrenzt)",
+          "psu48_output_voltage_v": "48-V-Netzteil Ausgangsspannung (V)",
+          "psu48_efficiency": "48-V-Netzteil Wirkungsgrad (0-1)",
+          "psu48_max_current_a": "48-V-Netzteil max. Strom (A, 0 = unbegrenzt)"
         },
         "data_description": {
           "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -134,7 +145,9 @@
           "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Wird direkt geschaltet.",
           "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
           "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
-          "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft)."
+          "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
+          "dc24_share_percent": "Anteil der DC-Last, der auf der 24-V-Schiene liegt (Rest = native 48-V-Buslast). 100 % = ganze DC-Last auf der Schiene (Standard). Bestimmt die Zwei-Bus-Aufteilung der Stützpfad-Simulation.",
+          "battery_voltage_entity": "Batteriespannung für die (spätere) spannungsgeführte 48-V-Regelung. In dieser Phase nur erfasst, noch nicht wirksam."
         }
       }
     },
@@ -323,7 +336,18 @@
           "profile_half_life_days": "Rezenz-Halbwertszeit (Tage)",
           "buffer_min_percent": "Dynamischer SOC-Puffer: Minimum (%)",
           "buffer_max_percent": "Dynamischer SOC-Puffer: Maximum (%)",
-          "workday_entity": "Werktag-Sensor (optional, Feiertage)"
+          "workday_entity": "Werktag-Sensor (optional, Feiertage)",
+          "battery_voltage_entity": "Batteriespannungs-Sensor (optional)",
+          "dc24_share_percent": "24-V-Schienenanteil (%)",
+          "dcdc_output_voltage_v": "DC/DC-Ausgangsspannung (V)",
+          "dcdc_efficiency": "DC/DC-Wirkungsgrad (0-1)",
+          "dcdc_max_current_a": "DC/DC max. Strom (A, 0 = unbegrenzt)",
+          "psu24_output_voltage_v": "24-V-Netzteil Ausgangsspannung (V)",
+          "psu24_efficiency": "24-V-Netzteil Wirkungsgrad (0-1)",
+          "psu24_max_current_a": "24-V-Netzteil max. Strom (A, 0 = unbegrenzt)",
+          "psu48_output_voltage_v": "48-V-Netzteil Ausgangsspannung (V)",
+          "psu48_efficiency": "48-V-Netzteil Wirkungsgrad (0-1)",
+          "psu48_max_current_a": "48-V-Netzteil max. Strom (A, 0 = unbegrenzt)"
         },
         "data_description": {
           "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -355,7 +379,9 @@
           "profile_half_life_days": "Gewichtung der Lerntage: Ein Tag mit diesem Alter zählt noch halb. Ersetzt ein explizites Saisonmodell — kleinere Werte folgen Verhaltensänderungen schneller, größere glätten stärker.",
           "buffer_min_percent": "Untere Klemme des dynamischen Sicherheitspuffers aus der Prognose-Unsicherheit (P80−P50).",
           "buffer_max_percent": "Obere Klemme des dynamischen Sicherheitspuffers — begrenzt, wie viel Reserve die Unsicherheit maximal anfordern darf.",
-          "workday_entity": "Binary-Sensor der Workday-Integration (an = Werktag). Feiertage werden dann wie Wochenenden gelernt und geplant; Folgetage im Horizont fragt die Integration über workday.check_date ab."
+          "workday_entity": "Binary-Sensor der Workday-Integration (an = Werktag). Feiertage werden dann wie Wochenenden gelernt und geplant; Folgetage im Horizont fragt die Integration über workday.check_date ab.",
+          "dc24_share_percent": "Anteil der DC-Last, der auf der 24-V-Schiene liegt (Rest = native 48-V-Buslast). 100 % = ganze DC-Last auf der Schiene (Standard). Bestimmt die Zwei-Bus-Aufteilung der Stützpfad-Simulation.",
+          "battery_voltage_entity": "Batteriespannung für die (spätere) spannungsgeführte 48-V-Regelung. In dieser Phase nur erfasst, noch nicht wirksam."
         }
       }
     }
