@@ -57,6 +57,10 @@ threshold → gate closed, regardless of SOC.
   as a configured share `dc24_share` (default 100 % = today's behaviour)
   and is applied IN `step_hour` — the smallest blast radius (series.py,
   learning series, dynamic buffer remain untouched).
+- **Fixed native-48 V base load** (`native48_base_w`, added v0.7.12): a
+  constant load wired directly to the 48 V bus is carved off (in watts) BEFORE
+  the `dc24_share` split, because a percentage cannot represent a fixed
+  absolute load (it would scale with the total DC load). Default 0 W.
 - `HourFlows` extended with: `psu48_delivered_wh`, `psu24_delivered_wh`,
   `dcdc_input_wh`, `dcdc_loss_wh`, `unserved_dc_wh`, `gate_open` —
   for hourly_details, debug export and card diagnostics.

@@ -146,6 +146,31 @@ def test_psu48_charge_tapers_at_gate_soc():
     assert flow.soc_end_percent <= 60.0 + 1e-6  # tapered at the gate, no overshoot
 
 
+# --- native 48 V fixed base load (v0.7.12) ---
+
+
+def test_native48_base_load_bypasses_the_rail():
+    """A fixed native-48 V base load is carved off BEFORE the rail split, so it
+    stays on the 48 V bus and does not flow through the DC/DC converter (a
+    percentage share could not represent a constant absolute load)."""
+    slot = _slot(pv=0.0, ac=0.0, dc=500.0)  # 500 Wh DC load, no PV
+    f0 = step_hour(
+        SystemConfig(support=SupportParams(configured=True)), 80.0, slot, 99.0
+    )
+    f1 = step_hour(
+        SystemConfig(support=SupportParams(configured=True, native48_base_w=200.0)),
+        80.0,
+        slot,
+        99.0,
+    )
+    # Neutral (base 0, share 1.0, eta 1.0): all 500 Wh go through the DC/DC.
+    assert abs(f0.dcdc_input_wh - 500.0) < _EPS
+    # With a 200 W native 48 V base: only the remaining 300 Wh use the DC/DC.
+    assert abs(f1.dcdc_input_wh - 300.0) < _EPS
+    # Total DC load served is unchanged (battery drain identical).
+    assert abs(f0.battery_discharge_wh - f1.battery_discharge_wh) < _EPS
+
+
 # --- #16 defensive inverted-bounds clamp ---
 
 

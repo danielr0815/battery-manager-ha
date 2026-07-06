@@ -57,6 +57,7 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
+    CONF_NATIVE48_BASE_W,
     CONF_PROFILE_HALF_LIFE_DAYS,
     CONF_PSU24_EFFICIENCY,
     CONF_PSU24_MAX_CURRENT_A,
@@ -233,6 +234,9 @@ def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
             CONF_BATTERY_VOLTAGE_ENTITY,
             description={"suggested_value": current.get(CONF_BATTERY_VOLTAGE_ENTITY)},
         ): _entity("sensor"),
+        vol.Required(
+            CONF_NATIVE48_BASE_W, default=_d(current, CONF_NATIVE48_BASE_W)
+        ): _number(0, 10_000, 1, "W"),
         vol.Required(
             CONF_DC24_SHARE_PERCENT, default=_d(current, CONF_DC24_SHARE_PERCENT)
         ): _number(0, 100, 5, "%"),

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-07-06
+
+### Added
+- **Fixed native-48 V base load (`native48_base_w`).** A constant load wired
+  directly to the 48 V bus (e.g. ~35 W) can now be given as absolute watts,
+  carved off the DC load BEFORE the `dc24_share` rail split — a percentage
+  share could not represent it (it would scale with the total DC load). The
+  remainder is split by `dc24_share` as before. Default 0 W → behaviour
+  unchanged (golden snapshots identical).
+- **Forecast card: off-window loads are labelled with their start time.** A
+  surplus load scheduled beyond the shown horizon (e.g. a 3-day plan with the
+  card's default `hours: 48`) previously showed planned energy in the legend
+  but no lane block, which looked contradictory. The legend now appends when
+  the run starts (e.g. "Wed 12:00").
+
 ## [0.7.11] - 2026-07-06
 
 ### Fixed

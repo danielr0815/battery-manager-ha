@@ -53,10 +53,15 @@ def step_hour(
     net_charging = balance > _EPS
 
     # --- DC load split across the two buses (F-N3, docs/DC_TOPOLOGY.md) ---
-    # `dc24_share` of the DC load sits on the 24 V rail; the rest is native
-    # 48 V bus load. Neutral default share=1.0 => whole load on the rail.
-    rail_wh = slot.dc_wh * support.dc24_share
-    native48_wh = slot.dc_wh - rail_wh
+    # A FIXED native-48 V base load is carved off first (a constant load wired
+    # directly to the 48 V bus, which a percentage cannot represent), then
+    # `dc24_share` of the REMAINING load sits on the 24 V rail and the rest is
+    # native 48 V bus load. Neutral defaults (base=0, share=1.0) => whole load
+    # on the rail, bit-for-bit as before.
+    native48_base_wh = min(slot.dc_wh, support.native48_base_w * slot.duration)
+    remaining_dc_wh = slot.dc_wh - native48_base_wh
+    rail_wh = remaining_dc_wh * support.dc24_share
+    native48_wh = native48_base_wh + (remaining_dc_wh - rail_wh)
     psu24_delivered_wh = 0.0
     dcdc_input_wh = 0.0
     dcdc_loss_wh = 0.0

@@ -168,6 +168,7 @@
             "description": "Efficiencies, currents, voltages and the voltage gate of the DC topology.",
             "data": {
               "battery_voltage_entity": "Battery voltage sensor (optional)",
+              "native48_base_w": "Fixed native 48 V base load (W)",
               "dc24_share_percent": "24 V rail share (%)",
               "dcdc_output_voltage_v": "DC/DC: output voltage (V)",
               "dcdc_efficiency": "DC/DC: efficiency (0–1)",
@@ -186,7 +187,8 @@
             },
             "data_description": {
               "battery_voltage_entity": "48 V battery voltage sensor — for the gate calibration and (later) the 48 V PSU voltage controller.",
-              "dc24_share_percent": "Fraction of the DC load on the 24 V rail (rest = native 48 V bus). 100 % = whole DC load on the rail (as before).",
+              "native48_base_w": "A fixed, roughly constant load wired directly to the 48 V bus (e.g. ~35 W). Carved off BEFORE the rail split — more accurate than a percentage, which would scale with the total DC load. 0 = none.",
+              "dc24_share_percent": "Fraction of the REMAINING DC load (after the fixed 48 V base) on the 24 V rail (rest = native 48 V bus). 100 % = all remaining DC load on the rail (as before).",
               "dcdc_output_voltage_v": "DC/DC converter output voltage. When it runs in parallel with the 24 V PSU, the higher-voltage source feeds the rail.",
               "dcdc_efficiency": "DC/DC converter efficiency (1.0 = lossless).",
               "dcdc_max_current_a": "DC/DC converter max output current. 0 = uncapped. Power cap = voltage × current.",
@@ -462,6 +464,7 @@
             "description": "Efficiencies, currents, voltages and the voltage gate of the DC topology.",
             "data": {
               "battery_voltage_entity": "Battery voltage sensor (optional)",
+              "native48_base_w": "Fixed native 48 V base load (W)",
               "dc24_share_percent": "24 V rail share (%)",
               "dcdc_output_voltage_v": "DC/DC: output voltage (V)",
               "dcdc_efficiency": "DC/DC: efficiency (0–1)",
@@ -480,7 +483,8 @@
             },
             "data_description": {
               "battery_voltage_entity": "48 V battery voltage sensor — for the gate calibration and (later) the 48 V PSU voltage controller.",
-              "dc24_share_percent": "Fraction of the DC load on the 24 V rail (rest = native 48 V bus). 100 % = whole DC load on the rail (as before).",
+              "native48_base_w": "A fixed, roughly constant load wired directly to the 48 V bus (e.g. ~35 W). Carved off BEFORE the rail split — more accurate than a percentage, which would scale with the total DC load. 0 = none.",
+              "dc24_share_percent": "Fraction of the REMAINING DC load (after the fixed 48 V base) on the 24 V rail (rest = native 48 V bus). 100 % = all remaining DC load on the rail (as before).",
               "dcdc_output_voltage_v": "DC/DC converter output voltage. When it runs in parallel with the 24 V PSU, the higher-voltage source feeds the rail.",
               "dcdc_efficiency": "DC/DC converter efficiency (1.0 = lossless).",
               "dcdc_max_current_a": "DC/DC converter max output current. 0 = uncapped. Power cap = voltage × current.",

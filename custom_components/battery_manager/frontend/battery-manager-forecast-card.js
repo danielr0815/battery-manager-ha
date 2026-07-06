@@ -258,6 +258,9 @@ class BatteryManagerForecastCard extends HTMLElement {
         .legend .active {
           color: var(--primary-color); font-weight: 500;
         }
+        .legend .off {
+          font-style: italic; opacity: 0.8;
+        }
         .readout {
           font-size: 0.8em; color: var(--secondary-text-color);
           text-align: right; min-height: 1.2em; padding: 2px 4px 0;
@@ -504,6 +507,11 @@ class BatteryManagerForecastCard extends HTMLElement {
 
     this._chartMeta = { points, x, y, margin, plotH, lanesH, t0, t1, lang };
 
+    const whenFmt = new Intl.DateTimeFormat(lang, {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
     const legend = loads
       .map((load) => {
         const planned = Number(load.planned_energy_kwh || 0);
@@ -513,9 +521,23 @@ class BatteryManagerForecastCard extends HTMLElement {
         const active = load.active
           ? ` · <span class="active">${t("active")}</span>`
           : "";
+        // A load can be scheduled OUTSIDE the plotted window (e.g. a horizon
+        // longer than `hours`): it shows planned energy but no lane block, which
+        // looks contradictory. Flag it with when the first block runs.
+        const sched = load.schedule || [];
+        const firstMs = sched.length ? new Date(sched[0].start).getTime() : NaN;
+        const inWindow = sched.some((b) => {
+          const s = new Date(b.start).getTime();
+          const e = new Date(b.end).getTime();
+          return Number.isFinite(s) && Number.isFinite(e) && e > t0 && s < t1;
+        });
+        const offWindow =
+          planned > 0 && sched.length && !inWindow && Number.isFinite(firstMs)
+            ? ` · <span class="off">${whenFmt.format(firstMs)}</span>`
+            : "";
         return `<span><span class="dot" style="background:${load.color}"></span>${esc(
           load.name ?? "?"
-        )} (${detail})${active}</span>`;
+        )} (${detail})${active}${offWindow}</span>`;
       })
       .join("");
 

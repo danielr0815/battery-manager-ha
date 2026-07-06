@@ -151,8 +151,14 @@ class SupportParams:
     dc48_forced_on: bool = False
 
     # --- F-N3 two-bus parameters (docs/DC_TOPOLOGY.md) ---
-    # Fraction of the DC load that sits on the 24 V rail (rest = native 48 V
-    # bus load). 1.0 = today's behaviour (whole DC load on the rail).
+    # A FIXED native-48 V base load (W) carved off the DC load BEFORE the rail
+    # split — for a roughly constant load wired directly to the 48 V bus, which
+    # a percentage share cannot represent (it would scale with the total DC
+    # load). 0 = none. Applied per slot as native48_base_w * duration, capped at
+    # the slot's DC load.
+    native48_base_w: float = 0.0
+    # Fraction of the REMAINING DC load (after the fixed 48 V base) that sits on
+    # the 24 V rail (rest = native 48 V bus load). 1.0 = today's behaviour.
     dc24_share: float = 1.0
     # DC/DC converter (battery 48 V -> 24 V rail): efficiency, rail-side
     # power cap (V_out x I_max, None = uncapped), output voltage.

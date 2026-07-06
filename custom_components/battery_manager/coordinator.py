@@ -46,6 +46,7 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
+    CONF_NATIVE48_BASE_W,
     CONF_PSU24_EFFICIENCY,
     CONF_PSU24_MAX_CURRENT_A,
     CONF_PSU24_OUTPUT_VOLTAGE_V,
@@ -476,6 +477,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md). A
                 # 0 A current means "uncapped" (None); the rail-side power
                 # cap is V_out x I_max.
+                native48_base_w=float(cfg[CONF_NATIVE48_BASE_W]),
                 dc24_share=float(cfg[CONF_DC24_SHARE_PERCENT]) / 100.0,
                 dcdc_eta=float(cfg[CONF_DCDC_EFFICIENCY]),
                 dcdc_output_voltage_v=float(cfg[CONF_DCDC_OUTPUT_VOLTAGE_V]),

@@ -168,6 +168,7 @@
             "description": "Wirkungsgrade, Ströme, Spannungen und Spannungs-Gate der DC-Topologie.",
             "data": {
               "battery_voltage_entity": "Batteriespannungs-Sensor (optional)",
+              "native48_base_w": "Feste 48-V-Grundlast (W)",
               "dc24_share_percent": "24-V-Schienenanteil (%)",
               "dcdc_output_voltage_v": "DC/DC: Ausgangsspannung (V)",
               "dcdc_efficiency": "DC/DC: Wirkungsgrad (0–1)",
@@ -186,7 +187,8 @@
             },
             "data_description": {
               "battery_voltage_entity": "Sensor der 48-V-Batteriespannung — für die Gate-Kalibrierung und (später) den Spannungsregler des 48-V-Netzteils.",
-              "dc24_share_percent": "Anteil der DC-Last, der an der 24-V-Schiene hängt (Rest = nativer 48-V-Bus). 100 % = ganze DC-Last auf der Schiene (wie bisher).",
+              "native48_base_w": "Feste, konstante Last direkt am 48-V-Bus (z. B. ~35 W). Wird VOR der Schienenaufteilung abgezogen — genauer als ein Prozentwert, der mit der Gesamt-DC-Last skalieren würde. 0 = keine.",
+              "dc24_share_percent": "Anteil der VERBLEIBENDEN DC-Last (nach der festen 48-V-Grundlast), der an der 24-V-Schiene hängt (Rest = nativer 48-V-Bus). 100 % = ganze restliche DC-Last auf der Schiene (wie bisher).",
               "dcdc_output_voltage_v": "Ausgangsspannung des DC/DC-Wandlers. Bei parallelem Betrieb mit dem 24-V-Netzteil versorgt die Quelle mit der höheren Spannung die Schiene.",
               "dcdc_efficiency": "Wirkungsgrad des DC/DC-Wandlers (1,0 = verlustfrei).",
               "dcdc_max_current_a": "Maximaler Ausgangsstrom des DC/DC-Wandlers. 0 = unbegrenzt. Leistungsgrenze = Spannung × Strom.",
@@ -462,6 +464,7 @@
             "description": "Wirkungsgrade, Ströme, Spannungen und Spannungs-Gate der DC-Topologie.",
             "data": {
               "battery_voltage_entity": "Batteriespannungs-Sensor (optional)",
+              "native48_base_w": "Feste 48-V-Grundlast (W)",
               "dc24_share_percent": "24-V-Schienenanteil (%)",
               "dcdc_output_voltage_v": "DC/DC: Ausgangsspannung (V)",
               "dcdc_efficiency": "DC/DC: Wirkungsgrad (0–1)",
@@ -480,7 +483,8 @@
             },
             "data_description": {
               "battery_voltage_entity": "Sensor der 48-V-Batteriespannung — für die Gate-Kalibrierung und (später) den Spannungsregler des 48-V-Netzteils.",
-              "dc24_share_percent": "Anteil der DC-Last, der an der 24-V-Schiene hängt (Rest = nativer 48-V-Bus). 100 % = ganze DC-Last auf der Schiene (wie bisher).",
+              "native48_base_w": "Feste, konstante Last direkt am 48-V-Bus (z. B. ~35 W). Wird VOR der Schienenaufteilung abgezogen — genauer als ein Prozentwert, der mit der Gesamt-DC-Last skalieren würde. 0 = keine.",
+              "dc24_share_percent": "Anteil der VERBLEIBENDEN DC-Last (nach der festen 48-V-Grundlast), der an der 24-V-Schiene hängt (Rest = nativer 48-V-Bus). 100 % = ganze restliche DC-Last auf der Schiene (wie bisher).",
               "dcdc_output_voltage_v": "Ausgangsspannung des DC/DC-Wandlers. Bei parallelem Betrieb mit dem 24-V-Netzteil versorgt die Quelle mit der höheren Spannung die Schiene.",
               "dcdc_efficiency": "Wirkungsgrad des DC/DC-Wandlers (1,0 = verlustfrei).",
               "dcdc_max_current_a": "Maximaler Ausgangsstrom des DC/DC-Wandlers. 0 = unbegrenzt. Leistungsgrenze = Spannung × Strom.",

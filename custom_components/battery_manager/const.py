@@ -86,7 +86,9 @@ CONF_SUPPORT_SWITCH_DELAY_S = "support_switch_delay_s"
 # so the upgrade changes nothing until the operator enters real values.
 # Battery voltage sensor for the (later) voltage-gated 48 V controller.
 CONF_BATTERY_VOLTAGE_ENTITY = "battery_voltage_entity"
-# Fraction of the DC load on the 24 V rail (rest = native 48 V bus load).
+# Fixed native-48 V base load (W) carved off before the rail split.
+CONF_NATIVE48_BASE_W = "native48_base_w"
+# Fraction of the remaining DC load on the 24 V rail (rest = native 48 V bus).
 CONF_DC24_SHARE_PERCENT = "dc24_share_percent"
 # DC/DC converter (battery 48 V -> 24 V rail).
 CONF_DCDC_OUTPUT_VOLTAGE_V = "dcdc_output_voltage_v"
@@ -234,6 +236,7 @@ DEFAULT_CONFIG = {
     CONF_SUPPORT_DC48_POWER_W: 60.0,
     CONF_SUPPORT_SWITCH_DELAY_S: 3,
     # F-N3 two-bus device parameters — neutral defaults (docs/DC_TOPOLOGY.md).
+    CONF_NATIVE48_BASE_W: 0.0,
     CONF_DC24_SHARE_PERCENT: 100.0,
     CONF_DCDC_OUTPUT_VOLTAGE_V: 24.0,
     CONF_DCDC_EFFICIENCY: 1.0,
