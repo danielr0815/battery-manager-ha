@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-07-06
+
+### Fixed
+- **The R2 controller diagnostic is now actually exposed.** A live check of
+  v0.7.9 found that `support_dc48_controller` (active/mode/decision/reason/
+  voltage) was written to the coordinator data but surfaced on no entity —
+  the earlier claim that it lived on the SOC-forecast sensor was wrong. It is
+  now an attribute of the **48 V support-mode sensor**
+  (`…_48_v_support_mode`), so the log-only shakedown and live regulation are
+  observable in the UI.
+
+### Verified live (v0.7.9 on the operator instance)
+- v0.7.9 running; the Rev. 4 one-time full relearn fired on the upgrade; the
+  LTS min/max fetch runs with no statistics errors; the forecast card
+  resource registered/updated. No errors from the new code (only a transient
+  SOC-unavailable at restart).
+
 ## [0.7.9] - 2026-07-06
 
 ### Changed — F-N3 phase 6: consumption learning Rev. 4 (docs/DC_TOPOLOGY.md §9)

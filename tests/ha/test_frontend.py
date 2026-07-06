@@ -87,6 +87,38 @@ async def test_card_resource_yaml_mode_skips_registry(hass):
     await _async_register_card_resource(hass, f"{CARD_URL}?v=0.4.0")
 
 
+async def test_dc48_mode_sensor_exposes_controller_diagnostic(hass):
+    """The 48 V support-mode sensor surfaces the R2 controller diagnostic
+    (active/mode/decision/reason/voltage) so the log-only shakedown and live
+    regulation are observable in the UI (live-verify finding)."""
+    from custom_components.battery_manager.const import CONF_SUPPORT_DC48_SWITCH
+
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set("sensor.pv_today", "10.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, CONF_SUPPORT_DC48_SWITCH: "switch.psu48"},
+        title="Battery Manager",
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    modes = [
+        s for s in hass.states.async_all("sensor") if s.state in ("auto", "manual")
+    ]
+    dc48 = next((s for s in modes if "controller" in s.attributes), None)
+    assert dc48 is not None
+    ctrl = dc48.attributes["controller"]
+    assert {"active", "mode", "decision", "reason", "voltage"} <= set(ctrl)
+    assert ctrl["active"] is False  # not manual + no voltage sensor -> inactive
+
+
 async def test_soc_forecast_sensor_carries_plan_context(hass):
     """The forecast sensor must expose the full plan for the bundled card."""
     await _setup_entry(hass)

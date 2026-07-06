@@ -180,6 +180,14 @@ class SupportModeSensor(BatteryManagerEntity, SensorEntity):
             else SUPPORT_MODE_AUTO
         )
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        # Surface the R2 voltage-controller diagnostic on the 48 V mode sensor
+        # so the log-only shakedown and live regulation are observable.
+        if self._psu_key != "dc48":
+            return None
+        return {"controller": self.coordinator.dc48_controller_diagnostic()}
+
 
 class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
     """Forecasted SOC curve: state = SOC in one hour, attribute = full curve.

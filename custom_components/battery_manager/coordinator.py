@@ -1625,6 +1625,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Public accessor for a PSU's manual-override state (R3 switch)."""
         return self._support_manual.get(key, False)
 
+    def dc48_controller_diagnostic(self) -> dict[str, Any]:
+        """Public snapshot of the R2 controller state (active/mode/decision/
+        reason/voltage) for the 48 V support-mode sensor, so the log-only
+        shakedown and the live regulation are observable in the UI."""
+        return dict(self._dc48_ctrl_diag)
+
     def support_active(self, key: str) -> bool:
         """Public accessor for a support PSU's current on/off state.
 
