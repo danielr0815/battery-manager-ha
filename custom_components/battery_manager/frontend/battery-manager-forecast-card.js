@@ -42,6 +42,8 @@ const STRINGS = {
     loads: "Surplus loads",
     nothing_planned: "nothing planned",
     active: "active",
+    support_dc24: "24 V grid support",
+    support_dc48: "48 V grid support",
     no_entity: "No entity configured. Pick the Battery Manager SOC forecast sensor.",
     not_found: "Entity not found:",
     no_data: "Waiting for the first planning run …",
@@ -55,6 +57,8 @@ const STRINGS = {
     loads: "Überschusslasten",
     nothing_planned: "nichts geplant",
     active: "aktiv",
+    support_dc24: "24-V-Netzstützung",
+    support_dc48: "48-V-Netzstützung",
     no_entity:
       "Keine Entität konfiguriert. Wähle den SOC-Prognose-Sensor des Battery Managers.",
     not_found: "Entität nicht gefunden:",
@@ -292,7 +296,12 @@ class BatteryManagerForecastCard extends HTMLElement {
     let points = a.forecast
       // null coerces to finite 0 (epoch/0 %), so reject it before conversion
       .filter((p) => p && p.t != null && p.soc != null)
-      .map((p) => ({ time: new Date(p.t).getTime(), soc: Number(p.soc) }))
+      .map((p) => ({
+        time: new Date(p.t).getTime(),
+        soc: Number(p.soc),
+        dc24: !!p.dc24,
+        dc48: !!p.dc48,
+      }))
       .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.soc));
     if (points.length < 2) {
       return this._message(t("no_data"));
@@ -310,7 +319,35 @@ class BatteryManagerForecastCard extends HTMLElement {
       ...load,
       color: LOAD_COLORS[i % LOAD_COLORS.length],
     }));
-    const lanes = loads.filter((l) => (l.schedule || []).length > 0);
+    // Grid-support lanes (24 V / 48 V): the forecast flags mark the slot
+    // ENDING at each point, so a contiguous run of flagged points is one block
+    // from the start of its first slot to the end of its last.
+    const supportBlocks = (key) => {
+      const blocks = [];
+      let runStart = null;
+      for (let i = 1; i < points.length; i++) {
+        if (points[i][key]) {
+          if (runStart === null) runStart = points[i - 1].time;
+        } else if (runStart !== null) {
+          blocks.push({ start: runStart, end: points[i - 1].time });
+          runStart = null;
+        }
+      }
+      if (runStart !== null) {
+        blocks.push({ start: runStart, end: points[points.length - 1].time });
+      }
+      return blocks;
+    };
+    const supportLanes = [
+      { name: t("support_dc24"), color: "#26a69a", key: "dc24" },
+      { name: t("support_dc48"), color: "#7e57c2", key: "dc48" },
+    ]
+      .map((d) => ({ name: d.name, color: d.color, schedule: supportBlocks(d.key) }))
+      .filter((l) => l.schedule.length > 0);
+    const lanes = [
+      ...loads.filter((l) => (l.schedule || []).length > 0),
+      ...supportLanes,
+    ];
 
     const width = Math.max(this._width || this.clientWidth || 320, 280);
     // Generous right margin: the curve must not run into the card edge
@@ -479,12 +516,26 @@ class BatteryManagerForecastCard extends HTMLElement {
       })
       .join("");
 
+    // Support lanes get a plain dot+name legend entry (no planned energy).
+    const supportLegend = supportLanes
+      .map(
+        (l) =>
+          `<span><span class="dot" style="background:${l.color}"></span>${esc(
+            l.name
+          )}</span>`
+      )
+      .join("");
+
     return `
       <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
       <div class="readout" id="readout">&nbsp;</div>
-      ${legend ? `<div class="legend">${legend}</div>` : ""}
+      ${
+        legend || supportLegend
+          ? `<div class="legend">${legend}${supportLegend}</div>`
+          : ""
+      }
     `;
   }
 

@@ -55,10 +55,11 @@ def _prime(learner, source_entities, computed_at=None):
     learner.data["computed_at"] = (computed_at or dt_util.now()).isoformat()
 
 
-async def test_psu48_series_is_gate_aware(hass):
-    """Review #8: the learner must not attribute the 48 V PSU's full nameplate
-    during hours whose mean battery voltage is at/above the PSU output (the real
-    PSU self-gates there and delivers ~0)."""
+async def test_psu48_series_gated_by_lts_min_max(hass):
+    """Rev. 4 (§9): the learner attributes the 48 V PSU by the hour's LTS
+    min/max battery voltage — full when max < U_thr, none when min > U_thr, and
+    the ambiguous clamp regime in between is EXCLUDED (None) rather than
+    classified. Without a voltage sample the flat approximation is kept."""
     from datetime import datetime
 
     entry = _entry(
@@ -80,14 +81,43 @@ async def test_psu48_series_is_gate_aware(hass):
     fractions = {"switch.psu48": {(day, h): 1.0 for h in range(24)}}  # on all day
     coverage_start = {"switch.psu48": datetime(2026, 1, 1, tzinfo=dt_util.UTC)}
     tz = dt_util.get_default_time_zone()
-    voltage_means = {(day, 10): 49.0, (day, 14): 50.0}  # hour10 open, hour14 gated
+    voltage_minmax = {
+        (day, 10): (49.0, 49.4),  # max < U_thr  -> full delivery
+        (day, 14): (49.7, 50.1),  # min > U_thr  -> gated off
+        (day, 16): (49.4, 49.8),  # straddles U_thr -> clamp regime -> exclude
+    }
 
     series = learner._psu48_series(
-        day, cfg, fractions, coverage_start, tz, voltage_means
+        day, cfg, fractions, coverage_start, tz, voltage_minmax
     )
-    assert series[10] == 60.0  # gate open (V < 49.56) -> full attribution
-    assert series[14] == 0.0  # gate closed (V >= 49.56) -> nothing attributed
+    assert series[10] == 60.0  # bus below threshold all hour -> full attribution
+    assert series[14] == 0.0  # bus above threshold all hour -> nothing attributed
+    assert series[16] is None  # clamp regime -> hour excluded from learning
     assert series[3] == 60.0  # no voltage sample -> flat fallback
+
+
+async def test_psu48_series_off_hour_is_learnable(hass):
+    """An hour where the switch is OFF attributes 0 and stays learnable
+    regardless of voltage (no exclusion)."""
+    from datetime import datetime
+
+    entry = _entry(hass, **{CONF_SUPPORT_DC48_SWITCH: "switch.psu48"})
+    learner = ProfileLearner(hass, entry)
+    cfg = {
+        CONF_SUPPORT_DC48_SWITCH: "switch.psu48",
+        CONF_SUPPORT_DC48_POWER_W: 60.0,
+        CONF_PSU48_OUTPUT_VOLTAGE_V: 49.56,
+    }
+    day = "2026-01-15"
+    fractions = {"switch.psu48": {(day, 16): 0.0}}  # off at hour 16
+    coverage_start = {"switch.psu48": datetime(2026, 1, 1, tzinfo=dt_util.UTC)}
+    tz = dt_util.get_default_time_zone()
+    voltage_minmax = {(day, 16): (49.4, 49.8)}  # would be clamp regime if on
+
+    series = learner._psu48_series(
+        day, cfg, fractions, coverage_start, tz, voltage_minmax
+    )
+    assert series[16] == 0.0  # off -> nothing attributed, hour NOT excluded
 
 
 async def test_dst_fallback_sums_power_hour(hass):

@@ -106,7 +106,10 @@ HourMap = dict[tuple[str, int], float]
 # change, so cached days computed under the old rules are refetched.
 # v2: statistic gaps of power-feedback sensors count as 0 W.
 # v3: support paths corrected arithmetically instead of excluded.
-_CLEANING_RULES_VERSION = 3
+# v4: 48 V PSU attribution gated by LTS hourly min/max battery voltage — full
+#     delivery when max < U_thr, none when min > U_thr, hour excluded in the
+#     clamp regime in between (Rev. 4, docs/DC_TOPOLOGY.md §9).
+_CLEANING_RULES_VERSION = 4
 
 
 def _default_data() -> dict[str, Any]:
@@ -592,6 +595,11 @@ class ProfileLearner:
                 CONF_SUPPORT_DC24_SWITCH,
                 CONF_SUPPORT_DC24_POWER_ENTITY,
                 CONF_DCDC_SWITCH,
+                # Rev. 4 gate inputs: a changed threshold or voltage sensor
+                # re-classifies every 48 V PSU-on hour, so the window must
+                # be re-cleaned.
+                CONF_BATTERY_VOLTAGE_ENTITY,
+                CONF_PSU48_OUTPUT_VOLTAGE_V,
             )
         )
         return repr(parts)
@@ -649,9 +657,9 @@ class ProfileLearner:
             stat_ids.add(appliance["detection_entity"])
         if cfg.get(CONF_SUPPORT_DC24_POWER_ENTITY):
             stat_ids.add(cfg[CONF_SUPPORT_DC24_POWER_ENTITY])
-        # Battery voltage is fetched (when configured) as the 48 V gate proxy:
-        # the PSU self-gates above its output voltage, so its energy must not be
-        # attributed during high-voltage hours (review #8).
+        # Battery voltage is fetched (when configured) as the 48 V gate signal:
+        # the PSU self-gates above its output voltage, so its energy is
+        # attributed by the hour's LTS min/max voltage (Rev. 4, §9).
         voltage_entity = cfg.get(CONF_BATTERY_VOLTAGE_ENTITY)
         if voltage_entity:
             stat_ids.add(voltage_entity)
@@ -674,16 +682,18 @@ class ProfileLearner:
                     available,
                     "hour",
                     {"energy": "kWh", "power": "W"},
-                    {"mean", "change"},
+                    {"mean", "min", "max", "change"},
                 )
             )
         hour_maps = {
             entity_id: _rows_to_hour_map(rows, meta_by_id.get(entity_id))
             for entity_id, rows in stats.items()
         }
-        # True hourly mean of the battery voltage (gauge — not summed on DST).
-        voltage_means = (
-            _rows_to_mean_map(stats.get(voltage_entity, []))
+        # Hourly min/max of the battery voltage (gauge): a DST-folded local hour
+        # takes the min-of-mins and max-of-maxes. Used to gate 48 V PSU energy
+        # attribution (Rev. 4, §9).
+        voltage_minmax = (
+            _rows_to_minmax_map(stats.get(voltage_entity, []))
             if voltage_entity in available
             else {}
         )
@@ -777,7 +787,7 @@ class ProfileLearner:
                 day, {"ac": None, "dc": None}
             )
             psu48_draw = self._psu48_series(
-                day, cfg, fractions, coverage_start, tz, voltage_means
+                day, cfg, fractions, coverage_start, tz, voltage_minmax
             )
             p24_series = (
                 _day_series_zero_filled(p24_map, day) if p24_map is not None else None
@@ -830,17 +840,24 @@ class ProfileLearner:
         fractions: dict[str, dict[tuple[str, int], float]],
         coverage_start: dict[str, datetime | None],
         tz: tzinfo,
-        voltage_means: dict[tuple[str, int], float] | None = None,
+        voltage_minmax: dict[tuple[str, int], tuple[float, float]] | None = None,
     ) -> list[float | None] | None:
         """48 V PSU energy per hour: configured power x switch on-fraction.
 
         Subtracted from the AC measurement (PSU draw) and added to the DC
-        measurement (injection into the battery bus). Gate-aware: the real PSU
-        self-gates above its output voltage, so hours whose mean battery voltage
-        is at/above ``psu48_output_voltage_v`` deliver ~0 despite the switch
-        reading ON — attributing full nameplate there would over-correct the
-        learned AC/DC split (review #8). Without a voltage proxy the flat
-        approximation is kept. None = switch history not covered -> hour dropped.
+        measurement (injection into the battery bus). Gate-aware via the hour's
+        LTS min/max battery voltage (Rev. 4, docs/DC_TOPOLOGY.md §9): the real
+        PSU self-gates above its output voltage, so
+          - ``max < U_thr``  => the bus stayed below the threshold all hour
+                                => full delivery (power x on-fraction);
+          - ``min > U_thr``  => the bus stayed above it all hour => ~0 delivered;
+          - otherwise         => the clamp regime (bus crossed the threshold, the
+                                PSU delivered exactly the bus load) cannot be
+                                cleanly attributed => the hour is EXCLUDED (None).
+        Attributing full nameplate in the gated/clamp regimes would over-correct
+        the learned AC/DC split. Without a voltage signal the flat approximation
+        (power x on-fraction) is kept. None = hour dropped (uncovered switch
+        history, or the clamp regime).
         """
         switch = cfg.get(CONF_SUPPORT_DC48_SWITCH)
         if not switch:
@@ -849,15 +866,23 @@ class ProfileLearner:
         covered_from = coverage_start.get(switch)
         power = float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0))
         threshold_v = float(cfg.get(CONF_PSU48_OUTPUT_VOLTAGE_V, 49.56))
-        vmeans = voltage_means or {}
+        vminmax = voltage_minmax or {}
 
         def _hour(hour: int) -> float | None:
             if not _hour_covered(covered_from, day, hour, tz):
                 return None
-            v = vmeans.get((day, hour))
-            if v is not None and v >= threshold_v:
-                return 0.0  # gate closed: PSU delivered ~0 this hour
-            return power * on_fr.get((day, hour), 0.0)
+            on = on_fr.get((day, hour), 0.0)
+            if on <= 0.0:
+                return 0.0  # PSU off this hour: nothing to attribute, learnable
+            minmax = vminmax.get((day, hour))
+            if minmax is None:
+                return power * on  # no voltage signal: flat approximation
+            vmin, vmax = minmax
+            if vmax < threshold_v:
+                return power * on  # bus below threshold all hour: full delivery
+            if vmin > threshold_v:
+                return 0.0  # bus above threshold all hour: gated off
+            return None  # clamp regime: exclude the hour rather than classify
 
         return [_hour(hour) for hour in range(24)]
 
@@ -1173,18 +1198,19 @@ def _rows_to_hour_map(
     return dict(sums)
 
 
-def _rows_to_mean_map(rows: list[dict[str, Any]]) -> dict[tuple[str, int], float]:
-    """Map LTS mean rows to the true hourly MEAN per local (date, hour).
+def _rows_to_minmax_map(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, int], tuple[float, float]]:
+    """Map LTS min/max rows to (min, max) per local (date, hour).
 
-    For gauge sensors (e.g. battery voltage) — unlike _rows_to_hour_map which
-    treats a power mean as Wh and sums — a DST-folded local hour is averaged,
-    since a voltage is not additive.
+    For a gauge sensor (e.g. battery voltage). A DST-folded local hour combines
+    the two real hours conservatively — min of the mins, max of the maxes — so
+    the widest observed band is used. A row missing either statistic is skipped.
     """
-    sums: dict[tuple[str, int], float] = {}
-    counts: dict[tuple[str, int], int] = {}
+    out: dict[tuple[str, int], tuple[float, float]] = {}
     for row in rows:
-        raw = row.get("mean")
-        if raw is None:
+        lo, hi = row.get("min"), row.get("max")
+        if lo is None or hi is None:
             continue
         start = row.get("start")
         local = dt_util.as_local(
@@ -1193,9 +1219,13 @@ def _rows_to_mean_map(rows: list[dict[str, Any]]) -> dict[tuple[str, int], float
             else start
         )
         key = (local.date().isoformat(), local.hour)
-        sums[key] = sums.get(key, 0.0) + float(raw)
-        counts[key] = counts.get(key, 0) + 1
-    return {key: sums[key] / counts[key] for key in sums}
+        lo_f, hi_f = float(lo), float(hi)
+        if key in out:
+            prev_lo, prev_hi = out[key]
+            out[key] = (min(prev_lo, lo_f), max(prev_hi, hi_f))
+        else:
+            out[key] = (lo_f, hi_f)
+    return out
 
 
 def _day_series(hour_map: HourMap, day: str) -> list[float | None]:

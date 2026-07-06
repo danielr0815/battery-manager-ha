@@ -206,8 +206,10 @@ bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
 | 4b ✓ | v0.7.4/5 | Config-Dialoge in einklappbare Abschnitte gruppiert (UX, keine Verhaltensänderung) | Dialoge in der Oberfläche prüfen |
 | 4c ✓ | v0.7.6 | **48-V-Direktverrechnung scharf** (eigene Golden-Diffs): PSU deckt Buslast direkt, Rest lädt Batterie, Abrechnung = geliefert/η, Cap. Nur `forced_dc48` ändert sich, kostenneutral (Import unverändert, SOC-Kurve physikalischer) | Winter-Abend: `psu48_delivered_wh` in hourly_details ~0 bei voller Batterie, SOC schonender |
 | 5 ✓ | v0.7.7 | **R2-Spannungsregler scharf** (asymmetrische Hysterese EIN ≤ 49,56 V / AUS ≥ 49,8 V, Dwell 60 s/300 s, Log-only-Flag default an, Fail-safe = EIN nach > 10 min ungültig, Regler-AUS beendet NIE den Manuell-Modus [Restfrage A]); off ≤ on in beiden Flows validiert + Laufzeit-Guard; Regler bucht NICHT auf `_last_support_switch` | 48 h Log-only gegen Victron-Historie, dann scharf über einen Abend-/Morgenzyklus |
-| 6 | v0.7.5 | Lernen Rev. 4 (LTS-Min/Max-Gating) | Relearn-Lauf, Profil-Export-Vergleich, 14-d-Watchdog |
-| 7 | v0.7.6 | Karten-Stützungs-Spur + Doku-Abschluss | Dashboard-Check |
+| 6 ✓ | v0.7.9 | **Lernen Rev. 4 scharf** (LTS-Stunden-Min/Max-Gating der 48-V-Attribution: `max < U_thr` ⇒ voll, `min > U_thr` ⇒ nichts, sonst Clamp-Regime ⇒ Stunde ausgeschlossen; `_CLEANING_RULES_VERSION = 4` + Gate-Config im Fingerprint ⇒ einmaliger Voll-Relearn). Optionaler AC-seitiger 48-V-Messsensor als Tier-1-Quelle bleibt offen (braucht Operator-Hardware). | Relearn-Lauf, Profil-Export-Vergleich, 14-d-Watchdog |
+| 7 ✓ | v0.7.9 | **Karten-Stützungs-Spur** (24/48-V-Stützung als eigene Lane in der Prognose-Karte; Flags kompakt am `soc_forecast`-Attribut) + Doku-Abschluss | Dashboard-Check |
+
+**F-N3 abgeschlossen** (v0.7.9): alle Phasen 0–7 umgesetzt, adversarial reviewt, live-verifizierbar. Whole-Plugin-Review (v0.7.8) + Rev.4/Card (v0.7.9) sind der Stand.
 
 ## 11. Betreiber-Entscheidungen (2026-07-05) und Restfragen
 

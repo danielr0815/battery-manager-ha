@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-07-06
+
+### Changed — F-N3 phase 6: consumption learning Rev. 4 (docs/DC_TOPOLOGY.md §9)
+- **The 48 V PSU's energy is now attributed to the learned AC/DC profile by
+  the hour's LTS min/max battery voltage instead of a mean proxy.** For a
+  PSU-on hour: `max < U_thr` → full nameplate delivered; `min > U_thr` →
+  nothing delivered (the bus stayed above the PSU output all hour); the
+  ambiguous clamp regime in between (the PSU delivered exactly the bus load)
+  is **excluded from learning** rather than mis-classified. Hours where the
+  switch was off, or with no voltage signal, keep the flat approximation.
+  This replaces the v0.7.8 mean-voltage proxy with the physically correct
+  min/max gate. `_CLEANING_RULES_VERSION` bumps to 4 and the gate config
+  (voltage entity + threshold) joins the cleaning fingerprint, so the change
+  triggers a **one-time full-window relearn**.
+
+### Added — F-N3 phase 7: forecast-card grid-support lane
+- The bundled forecast card now draws a **24 V / 48 V grid-support lane**
+  below the SOC chart, marking the hours the plan engages each support PSU.
+  The SOC-forecast sensor's `forecast` attribute carries compact per-hour
+  `dc24`/`dc48` flags (emitted only when active) for the card to render.
+- F-N3 is complete: all phases 0–7 implemented, reviewed, and deployable.
+
 ## [0.7.8] - 2026-07-06
 
 ### Fixed — whole-plugin review (16 findings across 10 subsystems)

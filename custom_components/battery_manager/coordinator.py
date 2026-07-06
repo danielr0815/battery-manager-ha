@@ -1104,12 +1104,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         naive_now = now.replace(tzinfo=None)
         soc_forecast = [{"t": naive_now.isoformat(), "soc": round(soc, 1)}]
         for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
-            soc_forecast.append(
-                {
-                    "t": (slot.start + timedelta(hours=slot.duration)).isoformat(),
-                    "soc": round(flow.soc_end_percent, 1),
-                }
-            )
+            point = {
+                "t": (slot.start + timedelta(hours=slot.duration)).isoformat(),
+                "soc": round(flow.soc_end_percent, 1),
+            }
+            # Grid-support flags for the slot ending at this point, so the card
+            # can render a 24 V / 48 V support lane. Only emitted when active,
+            # to keep the forecast attribute compact.
+            if flow.support_dc24:
+                point["dc24"] = True
+            if flow.support_dc48:
+                point["dc48"] = True
+            soc_forecast.append(point)
 
         hourly_details = [
             {

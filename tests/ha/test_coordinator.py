@@ -38,6 +38,41 @@ async def _setup_entry(hass):
     return entry
 
 
+async def test_forecast_curve_carries_support_flags(hass):
+    """Phase 7: when the plan engages a grid-support PSU (last-resort protection
+    at low SOC), the SOC forecast curve marks the affected points so the card
+    can draw a support lane."""
+    from custom_components.battery_manager.const import (
+        CONF_SUPPORT_DC24_SWITCH,
+        CONF_SUPPORT_DC48_SWITCH,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **ENTRY_DATA,
+            CONF_SUPPORT_DC24_SWITCH: "switch.psu24",
+            CONF_SUPPORT_DC48_SWITCH: "switch.psu48",
+        },
+        title="Battery Manager",
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    # Low SOC + no PV: the DC base load drains the battery below the buffer
+    # floor, so the planner escalates grid support.
+    hass.states.async_set(
+        "sensor.test_soc", "6", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(pv, "0.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    curve = coordinator.data["soc_forecast"]
+    assert any(p.get("dc24") or p.get("dc48") for p in curve)
+
+
 async def test_setup_creates_coordinator_with_active_listeners(hass):
     """Entry setup must arm the entity-change listeners (regression: was never set)."""
     entry = await _setup_entry(hass)
