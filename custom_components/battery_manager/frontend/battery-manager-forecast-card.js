@@ -20,7 +20,10 @@
  * via Home Assistant CSS variables inside an <ha-card>.
  */
 
-const CARD_VERSION = "0.6.0";
+// Read the version from this module's own `?v=` cache-bust param (set from
+// manifest.json when the resource is registered) so it never drifts.
+const CARD_VERSION =
+  new URL(import.meta.url).searchParams.get("v") || "dev";
 const CARD_TYPE = "battery-manager-forecast-card";
 const DOCS_URL = "https://github.com/danielr0815/battery-manager-ha";
 

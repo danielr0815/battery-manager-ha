@@ -1,191 +1,183 @@
-# Spezifikation: Gesteuerte Ladepfade für Überschusslasten (v0.3)
+# Specification: Controlled charging paths for surplus loads (v0.3)
 
-> Status: **Entwurf — wartet auf Betreiber-Feedback** (2026-07-04)
-> Erweitert REQUIREMENTS.md (L-Anforderungen) und ALGORITHM.md um die direkte
-> Ansteuerung von Powerstation-Ladepfaden durch die Integration.
+> Status: **implemented as of v0.7.10.**
+> Extends REQUIREMENTS.md (L requirements) and ALGORITHM.md with direct
+> actuation of powerstation charging paths by the integration.
 
-## 1. Ausgangslage (Betreiber-Beschreibung, F2400-B als Beispiel)
+## 1. Starting point (operator description, F2400-B as an example)
 
-- Der 230-V-**Eingang** des Fossibot hängt an einer schaltbaren Steckdose
+- The 230 V **input** of the Fossibot hangs on a switchable socket
   (`switch.shelly_01_switch_0`).
-- Ist der Eingang **aus**, schläft der Fossibot: alle seine Sensoren (inkl.
-  SOC) werden `unavailable`. Das ist der **Normalzustand** vor dem Laden —
-  nicht „Gerät weg".
-- Ist der Eingang **an**, wacht der Fossibot auf, **lädt** und versorgt
-  gleichzeitig eine ggf. am **Ausgang** angeschlossene Last (z. B. PC) im
-  Passthrough direkt aus dem Eingang.
-- Über `input_boolean.charge_f2400_b` kann das **Laden der Batterie
-  deaktiviert** werden, obwohl der Eingang an ist (Ausgang wird dann weiter
-  aus dem Eingang versorgt, Batterie bleibt unverändert).
-- Der Eingang wird auch von **externen Automationen** aktiviert — z. B. um
-  den Fossibot zu wecken oder den Ausgang aus dem Netz statt aus der
-  Batterie zu versorgen. Diese Nutzung gehört dem Betreiber, nicht dem
-  Battery Manager.
+- If the input is **off**, the Fossibot sleeps: all of its sensors (incl.
+  SOC) become `unavailable`. This is the **normal state** before charging —
+  not "device gone".
+- If the input is **on**, the Fossibot wakes up, **charges**, and at the same
+  time supplies a load possibly connected to the **output** (e.g. a PC) via
+  passthrough directly from the input.
+- Via `input_boolean.charge_f2400_b`, **charging of the battery** can be
+  **disabled** even though the input is on (the output is then still supplied
+  from the input, the battery stays unchanged).
+- The input is also activated by **external automations** — e.g. to wake the
+  Fossibot or to supply the output from the grid instead of from the battery.
+  This usage belongs to the operator, not to the Battery Manager.
 
-**Zustandsmodell des Ladepfads:**
+**State model of the charging path:**
 
-| Eingang (Shelly) | Freigabe (input_boolean) | Batterie lädt | Ausgang versorgt aus |
+| Input (Shelly) | Enable (input_boolean) | Battery charges | Output supplied from |
 |---|---|---|---|
-| aus | egal | nein | Fossibot-Batterie (wenn Ausgang an) |
-| an | an | **ja** | Eingang (Passthrough) |
-| an | aus | nein | Eingang (Passthrough) |
+| off | irrelevant | no | Fossibot battery (if output on) |
+| on | on | **yes** | input (passthrough) |
+| on | off | no | input (passthrough) |
 
-## 2. Neue Konfigurationsfelder je Überschusslast (optional)
+## 2. New configuration fields per surplus load (optional)
 
-| Feld | Beispiel F2400-B | Bedeutung |
+| Field | Example F2400-B | Meaning |
 |---|---|---|
-| **Ladeeingang-Schalter** (`control_switch_entity`) | `switch.shelly_01_switch_0` | Schaltet die 230-V-Versorgung des Ladeeingangs. Wenn gesetzt, schaltet die Integration den Ladepfad **selbst** (statt nur zu empfehlen). |
-| **Lade-Freigabe** (`charge_enable_entity`) | `input_boolean.charge_f2400_b` | Gate „Batterie darf laden". Wird von der Integration zusammen mit dem Eingang geschaltet. |
+| **Charging-input switch** (`control_switch_entity`) | `switch.shelly_01_switch_0` | Switches the 230 V supply of the charging input. If set, the integration switches the charging path **itself** (instead of only recommending). |
+| **Charge enable** (`charge_enable_entity`) | `input_boolean.charge_f2400_b` | Gate "the battery may charge". Switched by the integration together with the input. |
 
-Ohne diese Felder bleibt alles wie bisher: reine Empfehlungs-Entität, der
-Betreiber schaltet per Automation.
+Without these fields everything stays as before: a pure recommendation entity,
+the operator switches via automation.
 
-## 3. Schaltsemantik
+## 3. Switching semantics
 
-**Laden aktiv** ⇔ Eingang AN **und** Freigabe AN.
+**Charging active** ⇔ input ON **and** enable ON.
 
-- **Ladebeginn (Planstunde beginnt):**
-  1. Merken, ob der Eingang bereits an war (→ „Fremdbesitz", Passthrough).
-  2. Lade-Freigabe EIN.
-  3. Eingang EIN (falls aus).
-- **Ladeende (keine Planstunde mehr / Last gesättigt):**
-  1. Lade-Freigabe AUS — immer.
-  2. Eingang AUS — **nur wenn die Integration ihn selbst eingeschaltet
-     hat** („Ownership-Regel"). War er beim Ladebeginn schon an (z. B.
-     Passthrough-Versorgung des PCs durch eine Betreiber-Automation),
-     bleibt er an.
-- **Mindestlaufzeit** (`min_runtime_min`, Default 30 min) wirkt als
-  Mindest-Ein/Aus-Verweilzeit der realen Schaltung (kein Takten in
-  Wolkenlücken).
-- Die Schaltvorgänge laufen — wie bei den Stützpfaden — in einem
-  abbruchsicheren Hintergrund-Task; reale Schalterzustände werden im
-  Leerlauf rückgelesen (heilt manuelle Eingriffe).
-- Die Empfehlungs-Entität der Last bleibt bestehen (Transparenz +
-  Trigger-Möglichkeit für zusätzliche Betreiber-Automationen).
+- **Charge start (planned hour begins):**
+  1. Remember whether the input was already on (→ "foreign ownership",
+     passthrough).
+  2. Charge enable ON.
+  3. Input ON (if off).
+- **Charge end (no more planned hour / load saturated):**
+  1. Charge enable OFF — always.
+  2. Input OFF — **only if the integration switched it on itself**
+     ("ownership rule"). If it was already on at charge start (e.g.
+     passthrough supply of the PC by an operator automation), it stays on.
+- **Minimum runtime** (`min_runtime_min`, default 30 min) acts as a minimum
+  on/off dwell time of the real switching (no cycling in cloud gaps).
+- The switching operations run — as with the support paths — in an
+  abort-safe background task; real switch states are read back while idle
+  (heals manual interventions).
+- The load's recommendation entity remains (transparency + trigger option
+  for additional operator automations).
 
-**Konfliktvermeidung:** Wenn die Integration den Ladepfad selbst schaltet,
-muss die bisherige Lade-Automation („F2400 Intelligente Ladesteuerung")
-deaktiviert oder auf andere Aufgaben beschränkt werden — zwei Regler auf
-demselben Schalter erzeugen Ping-Pong.
+**Conflict avoidance:** If the integration switches the charging path itself,
+the previous charging automation ("F2400 Intelligent charge control") must be
+disabled or restricted to other tasks — two controllers on the same switch
+produce ping-pong.
 
-## 4. SOC-Handling bei schlafendem Gerät (ersetzt bisheriges Verhalten)
+## 4. SOC handling with a sleeping device (replaces previous behaviour)
 
-Bisher: energiebegrenzte Last mit unlesbarem SOC ⇒ nicht verfügbar.
-**Neu:**
+Previously: an energy-limited load with an unreadable SOC ⇒ unavailable.
+**New:**
 
-- SOC-Wert wird bei jeder gültigen Lesung **gecacht** und bei
-  `unavailable`/`unknown` **weiterverwendet** (letztgültiger Wert, ohne
-  Altersgrenze — Selbstentladung ist klein, Korrektur erfolgt beim nächsten
-  Aufwachen).
-- Der Cache wird **persistiert** (HA-Storage), damit er einen
-  HA-Neustart mit schlafendem Fossibot überlebt.
-- Ist gar kein SOC bekannt (Erstinstallation, Storage leer): Last gilt als
-  **ladebedürftig** (Annahme SOC = 0). Selbstheilend: Beim ersten geplanten
-  Laden wacht das Gerät auf, meldet den echten SOC, und der Plan
-  korrigiert sich innerhalb eines Zyklus (≤ 5 min). Ein evtl. volles Gerät
-  beendet das Laden ohnehin über sein internes Limit.
-- Kein aktives „Wecken zum Messen": Der SOC wird genau dann live, wenn er
-  gebraucht wird (während des Ladens). Externe Weck-Automationen des
-  Betreibers aktualisieren den Cache nebenbei.
+- The SOC value is **cached** on every valid reading and **reused** on
+  `unavailable`/`unknown` (last valid value, without an age limit —
+  self-discharge is small, correction happens at the next wake-up).
+- The cache is **persisted** (HA storage) so it survives an HA restart with
+  a sleeping Fossibot.
+- If no SOC is known at all (fresh install, empty storage): the load is
+  treated as **needing a charge** (assumption SOC = 0). Self-healing: at the
+  first scheduled charge the device wakes up, reports the real SOC, and the
+  plan corrects itself within one cycle (≤ 5 min). A device that happens to
+  be full ends charging anyway via its internal limit.
+- No active "waking to measure": the SOC becomes live exactly when it is
+  needed (during charging). The operator's external wake automations update
+  the cache as a side effect.
 
-## 5. Leistungsmessung und Passthrough
+## 5. Power measurement and passthrough
 
-`total_input` (IN Total) misst Eingang = Laden **+** Passthrough-Ausgang.
-Aus Sicht der AC-Bilanz des Hauses ist das korrekt die Leistung, die die
-Last bei aktivem Eingang zieht — sie wird weiterhin (geglättet) als
-Planungsleistung verwendet. Der Energiefortschritt der Ladung wird ohnehin
-über den SOC (Ground Truth) verfolgt, nicht über die Leistung integriert.
+`total_input` (IN Total) measures input = charging **+** passthrough output.
+From the point of view of the house's AC balance this is correctly the power
+that the load draws while the input is active — it is still used (smoothed)
+as the planning power. The energy progress of the charge is tracked over the
+SOC (ground truth) anyway, not integrated over the power.
 
-## 6. Weitere Punkte aus dem Betreiber-Wunsch
+## 6. Further points from the operator's wish list
 
-### 6.1 SOC-Prognoseverlauf visualisieren
+### 6.1 Visualize the SOC forecast trajectory
 
-- Neuer Sensor `sensor.…_soc_forecast`: Zustand = prognostizierter SOC in
-  1 h; Attribut `forecast` = Liste `[{t: ISO-Zeit, soc: %}, …]` über den
-  ganzen Horizont (aus der finalen Plan-Trajektorie, inkl. Lastwirkung).
-- Anzeige über die bereits installierte **ApexCharts-Card** mit
-  `data_generator` — fertiges Karten-YAML wird in der README mitgeliefert.
+- New sensor `sensor.…_soc_forecast`: state = forecast SOC in 1 h; attribute
+  `forecast` = list `[{t: ISO time, soc: %}, …]` over the whole horizon (from
+  the final plan trajectory, incl. load effect).
+- Display via the already-installed **ApexCharts card** with `data_generator`
+  — ready-made card YAML is shipped in the README.
 
 ### 6.2 Icon
 
-- **Lokal ausgeliefert** (kein brands-PR nötig): Seit HA 2026.3 dürfen
-  Custom Integrations ihre Marken-Bilder direkt mitliefern. Die Dateien
-  liegen unter `custom_components/battery_manager/brand/`
-  (`icon.png` 256×256, `icon@2x.png` 512×512, dazu `logo.png`/`logo@2x.png`).
-  HA serviert sie über die lokale Brands-Proxy-API
-  (`/api/brands/integration/battery_manager/icon.png`); lokale Bilder haben
-  Vorrang vor dem CDN, keine manifest-Konfiguration nötig. Motiv:
-  Batterie mit Blitz + Sonne.
+- **Shipped locally** (no brands PR needed): since HA 2026.3, custom
+  integrations may ship their brand images directly. The files live under
+  `custom_components/battery_manager/brand/` (`icon.png` 256×256, `icon@2x.png`
+  512×512, plus `logo.png`/`logo@2x.png`). HA serves them via the local
+  brands proxy API (`/api/brands/integration/battery_manager/icon.png`); local
+  images take precedence over the CDN, no manifest configuration needed. Motif:
+  battery with lightning bolt + sun.
 
-## 7. Betreiber-Entscheidungen (2026-07-04)
+## 7. Operator decisions (2026-07-04)
 
-- **F-L1: Eingang-aus-Politik ist PRO LAST KONFIGURIERBAR** (Feld
+- **F-L1: The input-off policy is CONFIGURABLE PER LOAD** (field
   `input_off_policy`):
-  - `auto` (Default): Ownership-Regel — Eingang nur aus, wenn die
-    Integration ihn selbst eingeschaltet hat.
-  - `always_off`: Eingang beim Ladeende immer ausschalten.
-  - `keep_on`: Eingang nie ausschalten (nur Freigabe toggeln). Hinweis:
-    Ohne konfigurierte Lade-Freigabe kann das Laden in diesem Modus nicht
-    gestoppt werden — nur sinnvoll mit Freigabe-Entität.
-- **F-L2: Ja** — unbekannter SOC ⇒ ladebedürftig annehmen (Annahme 0 %).
-- **F-L3: Ja** — die Integration übernimmt die Ladeschaltung; die bisherige
-  Automation „F2400 Intelligente Ladesteuerung" wird vom Betreiber
-  deaktiviert.
-- **F-L4 (revidiert 2026-07-04):** Der Betreiber möchte das Icon **nicht**
-  offiziell einreichen. Genutzt wird stattdessen der lokale
-  brand/-Mechanismus (HA ≥ 2026.3, siehe §6.2) — Icon liegt in
-  `custom_components/battery_manager/brand/`, kein PR nötig.
+  - `auto` (default): ownership rule — input off only if the integration
+    switched it on itself.
+  - `always_off`: always switch the input off at charge end.
+  - `keep_on`: never switch the input off (only toggle the enable). Note:
+    without a configured charge enable, charging cannot be stopped in this
+    mode — only meaningful with an enable entity.
+- **F-L2: Yes** — an unknown SOC ⇒ assume it needs a charge (assumption 0 %).
+- **F-L3: Yes** — the integration takes over the charge switching; the
+  previous automation "F2400 Intelligent charge control" is disabled by the
+  operator.
+- **F-L4 (revised 2026-07-04):** the operator does **not** want to submit the
+  icon officially. Instead the local brand/ mechanism is used (HA ≥ 2026.3,
+  see §6.2) — the icon lives in `custom_components/battery_manager/brand/`, no
+  PR needed.
 
-## 8. Betreiber-Entscheidung Ladezeitpunkt (2026-07-05)
+## 8. Operator decision on charge timing (2026-07-05)
 
-- **F-L5: Zusatzlasten so spät wie möglich aktivieren** — aber noch
-  rechtzeitig genug, dass keine Energie eingespeist werden muss. Nachholen
-  (bei jedem Replan mit besserer Information) schlägt das frühe Vorziehen
-  auf Prognosebasis; Vorziehen kostet zudem den Umweg über die Hausbatterie
-  (~18 % Zyklus-Verluste mit Default-Wirkungsgraden). Umsetzung: Pass 2
-  latest-first + Mindestlaufzeit-ehrliche Bewertung (ALGORITHM.md D-A4 v3).
-  Anlass war der Nachtlade-Vorfall vom 05.07. (Degenerierter-Slot-0-Bug:
-  drei Starts jeweils in Minute :59, real ~250 Wh je „5-Wh-Plan").
-- Flankierend persistiert der Coordinator den Schalt-Dwell über Neustarts
-  (der Verlust war Mitverursacher). Der Leistungs-EMA wird bewusst NICHT
-  persistiert und bei Feedback-Lücken nur serviert, solange die Last real
-  lädt — nach Ladeende würde der Taper-Restwert (10–40 W) sonst dauerhaft
-  als „gemessene" Planungsleistung alle Gates schwächen. Die Logzeilen
-  „Charging started/stopped" nennen den Klartext-Lastnamen.
-- **F-L7 (2026-07-05): Leistungsabweichungs-Warnung pro Last.** Der
-  Entfeuchter taut periodisch kurz ab (Leistung sinkt für Minuten) und
-  stoppt bei vollem Wassertank ganz (Leistung nahe 0 W trotz aktiver
-  Empfehlung). Abtau-Zyklen dürfen in den Leistungs-Durchschnitt
-  einfließen (Samples zwischen Standby-Schwelle und Nennleistung mitteln
-  den EMA; darunter wird das Sample verworfen und der EMA eingefroren —
-  „total versauen" ist durch die 25-%-Schwelle ausgeschlossen). Weicht
-  die reale Leistung aber **länger als 30 Minuten** um mehr als den
-  konfigurierten Prozentsatz (Feld „Leistungsabweichungs-Warnung", Default
-  50 %, 0 = aus) von der Nennleistung ab, während die Last auf
-  Veranlassung der Integration läuft, geht der neue Warnsensor der Last
-  (`binary_sensor … Leistungswarnung`, device class `problem`) auf an —
-  als Trigger für Benutzer-Benachrichtigungen (Tank leeren, Nennleistung
-  korrigieren, Fremdverbraucher). Kurze Abtau-Pausen setzen den Timer
-  zurück und lösen nicht aus; Handbetrieb löst nie aus (F-L6-Logik).
-- **F-L6 (2026-07-05): Manuelle Aktivierungen beeinflussen die Planung
-  nicht.** Der Betreiber schaltet Lasten (bzw. deren gemessene Steckdose)
-  gelegentlich von Hand — z. B. den Entfeuchter, oder einen fremden
-  Verbraucher an derselben Dose. Feedback-Messwerte trainieren die
-  Planungsleistung deshalb nur, solange die Last **auf Veranlassung der
-  Integration** läuft: bei geschalteten Lasten der reale Ladezustand
-  (Stecker UND Freigabe an), bei reinen Empfehlungs-Lasten die aktive
-  Plan-Empfehlung des letzten Zyklus **mit sauberem Start** — beim
-  Einschalten der Empfehlung darf die gemessene Dose noch nicht ziehen,
-  sonst würde eine schon laufende Hand-/Fremdlast gelernt und könnte
-  über den gelernten Wert den nächsten Plan kippen (Flatter-Schleife,
-  Review-Befund). Außerhalb dieser Fenster werden Messwerte ignoriert
-  und ein vorhandener EMA verworfen (Planung fällt auf die Nennleistung
-  zurück). Zusammen mit dem Standby-Filter (v0.6.2: Samples nur ≥
-  max(10 W, 25 % × Nennleistung)) ist die gelernte Leistung damit gegen
-  Hand- und Fremdnutzung abgeschirmt.
-  Präzisierung für geschaltete Lasten: Dort zählt bewusst der
-  **physische** Ladezustand — das Feedback („IN Total") misst das Gerät
-  selbst, ein manuell gestartetes Laden liefert also korrekte
-  Gerätedaten; das Fenster ist durch die Mindestlaufzeit begrenzt.
-  Entitäts-Ausfälle (unavailable/unknown) gelten dabei nie als „aus"
-  (sonst würde der EMA mitten in der Ladung verworfen).
+- **F-L5: Activate additional loads as late as possible** — but still early
+  enough that no energy has to be exported. Catching up (at each replan with
+  better information) beats pulling forward early on a forecast basis; pulling
+  forward also costs the detour via the house battery (~18 % cycle losses with
+  the default efficiencies). Implementation: Pass 2 latest-first + a
+  minimum-runtime-honest evaluation (ALGORITHM.md D-A4 v3). The trigger was the
+  night-charge incident of 05.07 (degenerate-slot-0 bug: three starts each at
+  minute :59, really ~250 Wh per "5 Wh plan").
+- Alongside this, the coordinator persists the switch dwell across restarts
+  (the loss was a contributing cause). The power EMA is deliberately NOT
+  persisted, and on feedback gaps is only served while the load is really
+  charging — after charge end, the taper residual (10–40 W) would otherwise
+  permanently weaken all gates as "measured" planning power. The log lines
+  "Charging started/stopped" name the plain-text load name.
+- **F-L7 (2026-07-05): power-deviation warning per load.** The dehumidifier
+  periodically defrosts briefly (power drops for minutes) and stops entirely
+  when the water tank is full (power near 0 W despite an active
+  recommendation). Defrost cycles may enter the power average (samples between
+  the standby threshold and the rated power average the EMA; below that the
+  sample is discarded and the EMA is frozen — "totally ruining it" is
+  precluded by the 25 % threshold). But if the real power deviates for **longer
+  than 30 minutes** by more than the configured percentage (field "power-
+  deviation warning", default 50 %, 0 = off) from the rated power while the
+  load is running at the integration's instigation, the load's new warning
+  sensor (`binary_sensor … power warning`, device class `problem`) goes on —
+  as a trigger for user notifications (empty the tank, correct the rated power,
+  foreign load). Short defrost pauses reset the timer and do not fire; manual
+  operation never fires (F-L6 logic).
+- **F-L6 (2026-07-05): manual activations do not influence planning.** The
+  operator occasionally switches loads (or rather their metered socket) by
+  hand — e.g. the dehumidifier, or a foreign load on the same socket. Feedback
+  measurements therefore only train the planning power while the load is
+  running **at the integration's instigation**: for switched loads the real
+  charging state (plug AND enable on), for pure recommendation loads the active
+  plan recommendation of the last cycle **with a clean start** — when the
+  recommendation is switched on, the metered socket must not yet be drawing,
+  otherwise an already-running hand/foreign load would be learned and could
+  tip over the next plan via the learned value (flutter loop, review finding).
+  Outside these windows measurements are ignored and any existing EMA is
+  discarded (planning falls back to the rated power). Together with the standby
+  filter (v0.6.2: samples only ≥ max(10 W, 25 % × rated power)) the learned
+  power is thus shielded against hand and foreign use.
+  Clarification for switched loads: there the **physical** charging state
+  deliberately counts — the feedback ("IN Total") measures the device itself,
+  so a manually started charge yields correct device data; the window is
+  bounded by the minimum runtime. Entity outages (unavailable/unknown) never
+  count as "off" here (otherwise the EMA would be discarded mid-charge).

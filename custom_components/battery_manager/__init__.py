@@ -157,6 +157,10 @@ async def _async_register_card_resource(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Battery Manager from a config entry."""
     coordinator = BatteryManagerCoordinator(hass, entry)
+    # Device sw_version from the manifest (single source of truth, no drift).
+    # Integration.version is an AwesomeVersion — DeviceInfo needs a plain str.
+    _mf_version = (await async_get_integration(hass, DOMAIN)).version
+    coordinator.integration_version = str(_mf_version) if _mf_version else None
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 

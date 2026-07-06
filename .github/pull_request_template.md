@@ -1,46 +1,31 @@
-# Pull Request
+## Description
 
-## Beschreibung
-Beschreibe die Änderungen in diesem Pull Request.
+<!-- What does this change do, and why? Link any related issue. -->
 
-## Art der Änderung
-Bitte lösche nicht zutreffende Optionen:
+## Type of change
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)  
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
-- [ ] Code refactoring (no functional changes)
-- [ ] Performance improvement
-- [ ] Test improvement
+- [ ] Bug fix (non-breaking)
+- [ ] New feature (non-breaking)
+- [ ] Breaking change
+- [ ] Documentation
+- [ ] Refactor (no functional change)
+- [ ] Test / CI
 
-## Wie wurde es getestet?
-Beschreibe die Tests die du durchgeführt hast um deine Änderungen zu verifizieren.
+## How was it tested?
 
-- [ ] Standalone Tests ausgeführt (`python test_battery_manager.py`)
-- [ ] CLI Tests ausgeführt (`python test_battery_manager_cli.py --run-scenarios`)
-- [ ] Error Handling Tests (`python test_error_handling.py`)
-- [ ] System Validation (`python validate_system.py`)
-- [ ] Manuelle Tests in Home Assistant
-- [ ] HACS Validation
+- [ ] Core suite: `python -m pytest tests/core -p no:homeassistant`
+- [ ] Full suite (Linux/WSL): `python -m pytest tests`
+- [ ] Lint: `ruff check custom_components tests` and `ruff format --check .`
+- [ ] Golden snapshots regenerated **and the diff reviewed** (only if planner
+      behaviour changed): `python scripts/gen_golden.py`
+- [ ] Manual test in Home Assistant (if it touches the HA layer)
 
-## Test Konfiguration:
-* Home Assistant Version:
-* Python Version:
-* Test Hardware/Setup:
+## Checklist
 
-## Checkliste:
-- [ ] Mein Code folgt dem Stil der Projekt-Guidelines
-- [ ] Ich habe eine Selbstüberprüfung meines Codes durchgeführt
-- [ ] Ich habe Kommentare hinzugefügt, besonders in schwer verständlichen Bereichen
-- [ ] Ich habe entsprechende Änderungen an der Dokumentation vorgenommen
-- [ ] Meine Änderungen erzeugen keine neuen Warnungen
-- [ ] Ich habe Tests hinzugefügt die beweisen dass meine Korrektur effektiv ist oder dass mein Feature funktioniert
-- [ ] Neue und vorhandene Unit Tests bestehen lokal mit meinen Änderungen
-- [ ] Eventuelle abhängige Änderungen wurden zusammengeführt und veröffentlicht
+- [ ] `manifest.json` version bumped if this is a user-visible change
+      (HACS tracks `main` by commit SHA)
+- [ ] CHANGELOG.md updated
+- [ ] Comments explain the *why* for any non-obvious logic
+- [ ] Docs updated if behaviour or config changed
 
-## Screenshots (falls relevant):
-Füge Screenshots hinzu um visuellen Änderungen zu zeigen.
-
-## Zusätzliche Notizen:
-Weitere Informationen die für Reviewer hilfreich sein könnten.
+Test setup — HA version: `…`  ·  Python version: `…`

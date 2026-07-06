@@ -1,242 +1,238 @@
-# Battery Manager — Anforderungsanalyse und Überarbeitung
+# Battery Manager — Requirements Analysis and Rework
 
-> Status: **Entwurf in Diskussion** (Stand 2026-07-03)
-> Dieses Dokument hält den analysierten Ist-Zustand, die erkannten Schwächen und die
-> zu klärenden Anforderungen für die Überarbeitung des Steuerungsalgorithmus fest.
+> Status: historical design record. It captures the original requirements and intent; some file/line references describe the pre-refactor layout (see docs/ARCHITECTURE.md for the current code map).
 
-## 1. Ist-Zustand (aus dem Code rekonstruiert)
+## 1. Current State (reconstructed from the code)
 
-### 1.1 Modelliertes System
+### 1.1 Modelled System
 
-Der Simulationskern modelliert folgende Topologie (aus `energy_flow.py` abgeleitet):
+The simulation core models the following topology (derived from the energy-flow logic, now in `core/simulate.py`):
 
 ```
-PV ──(AC-seitig!)──┐
-                   ├── AC-Verbraucher (Basis + variabel + Zusatzlast)
-Netz ──────────────┤
+PV ──(AC side!)────┐
+                   ├── AC loads (base + variable + additional load)
+Grid ──────────────┤
                    │
              Charger (AC→DC, 92 %)          Inverter (DC→AC, 95 %, min. SOC)
                    │                               │
-                   └────────── Batterie ───────────┘
+                   └────────── Battery ───────────┘
                                   │
-                            DC-Verbraucher
+                              DC loads
 ```
 
-**Wichtig:** Im Code wird die PV-Produktion auf der **AC-Seite** bilanziert
-(`ac_balance = pv - ac_consumption`). Die Batterie wird ausschließlich über den
-Charger (AC→DC) geladen. Das README behauptet dagegen „PV to DC Load: direct DC
-consumption has highest priority" — **Code und Doku widersprechen sich**.
-→ Zu klären: tatsächliche Hardware-Topologie (Frage F1).
+**Important:** In the code, PV production is balanced on the **AC side**
+(`ac_balance = pv - ac_consumption`). The battery is charged exclusively through the
+charger (AC→DC). The README, by contrast, claims "PV to DC Load: direct DC
+consumption has highest priority" — **code and documentation contradict each other**.
+→ To be clarified: the actual hardware topology (question F1).
 
-### 1.2 Eingaben und Ausgaben
+### 1.2 Inputs and Outputs
 
-**Eingaben** (via HA-Entitäten): aktueller SOC (%), PV-Tagesprognosen heute/morgen/übermorgen (kWh).
-**Interne Modelle:** stündliche PV-Verteilkurve (Morgen-/Nachmittagsfenster, Ratio),
-statische Lastprofile (Basis + variables Zeitfenster) für AC und DC.
+**Inputs** (via HA entities): current SOC (%), daily PV forecasts for today/tomorrow/day-after (kWh).
+**Internal models:** hourly PV distribution curve (morning/afternoon window, ratio),
+static load profiles (base + variable time window) for AC and DC.
 
-**Ausgaben** (HA-Entitäten): SOC-Schwelle (%), Inverter-Status (an/aus),
-Min-/Max-SOC-Prognose, Stunden bis Max-SOC, Entladeprognose, Zusatzlast-Status,
-Netz-Import/Export der Prognoseperiode.
+**Outputs** (HA entities): SOC threshold (%), inverter status (on/off),
+min/max SOC forecast, hours until max SOC, discharge forecast, additional-load status,
+grid import/export for the forecast period.
 
-### 1.3 Kernalgorithmus („Maximum-Based Controller")
+### 1.3 Core Algorithm ("Maximum-Based Controller")
 
-1. Simuliere SOC-Verlauf stündlich von jetzt bis **08:00 in zwei Tagen**.
-2. Bestimme `min_soc_forecast` — aber nur bis zu dem Zeitpunkt, an dem der SOC
-   erstmals das Ziel (`target_soc`, Default 85 %) erreicht.
-3. Schwelle: `threshold = current_soc − (min_soc_forecast − min_battery_soc) + forced_charger_soc`
-   begrenzt auf `[max(batterie_min, inverter_min) … min(target_soc, current_soc)]`.
-4. `inverter_enabled = current_soc > threshold` → Binary Sensor für die reale Steuerung.
+1. Simulate the SOC trajectory hourly from now until **08:00 two days out**.
+2. Determine `min_soc_forecast` — but only up to the point at which the SOC
+   first reaches the target (`target_soc`, default 85 %).
+3. Threshold: `threshold = current_soc − (min_soc_forecast − min_battery_soc) + forced_charger_soc`,
+   clamped to `[max(battery_min, inverter_min) … min(target_soc, current_soc)]`.
+4. `inverter_enabled = current_soc > threshold` → binary sensor for the real control.
 
-### 1.4 Zusatzlast-Logik (`_calculate_additional_load_optimization`)
+### 1.4 Additional-Load Logic (`_calculate_additional_load_optimization`)
 
-- Stundenweise Iteration; solange die Last inaktiv ist, prüft ein „Safety Check",
-  ob mit dauerhaft aktiver Zusatzlast der SOC bis zum Erreichen des Ziel-SOC nie
-  unter das Inverter-Minimum fällt. Wenn ja → **sofort aktivieren**.
-- Deaktivierung nur, wenn **beides** gilt: >50 % der Zusatzlast kommt aus der
-  Batterie **und** der Ziel-SOC ist aktuell erreicht.
+- Hour-by-hour iteration; while the load is inactive, a "safety check" verifies
+  whether, with the additional load permanently active, the SOC never drops
+  below the inverter minimum before the target SOC is reached. If so → **activate immediately**.
+- Deactivation only when **both** hold: >50 % of the additional load comes from the
+  battery **and** the target SOC is currently reached.
 
-## 2. Erkannte Schwächen des Algorithmus
+## 2. Identified Weaknesses of the Algorithm
 
-### 2.1 Zusatzlast wird zu früh/zu lange aktiviert (vom Nutzer bestätigtes Problem)
+### 2.1 Additional Load Activated Too Early / For Too Long (problem confirmed by the user)
 
-1. **Aktivierung prüft nicht, ob Überschuss vorliegt.** Der Safety Check bewertet
-   nur „SOC bleibt über Minimum und erreicht irgendwann das Ziel". Er aktiviert
-   die Last also auch dann, wenn sie aktuell komplett aus Batterie/Netz gespeist
-   wird — Hauptzweck „Überschussverwertung" wird nicht geprüft (controller.py:743–794).
-2. **Safety Check endet beim ersten Ziel-Erreichen.** Alles danach ist ungeprüft
-   (controller.py:952–962): Erreicht der SOC morgen Mittag kurz das Ziel, ist der
-   Absturz morgen Abend unter das Minimum unsichtbar.
-3. **Deaktivierung erfordert `current_soc >= target`.** Fällt der SOC nach der
-   Aktivierung (Ziel nie erreicht), bleibt die Last aktiv, selbst wenn sie zu 100 %
-   aus der Batterie gespeist wird — bis der SOC das Inverter-Minimum erreicht und
-   der normale Verbrauch aus dem Netz gekauft werden muss (controller.py:823–830).
-   → **Exakt das vom Nutzer beobachtete Fehlverhalten.**
+1. **Activation does not check whether a surplus exists.** The safety check only
+   evaluates "SOC stays above the minimum and eventually reaches the target". It
+   therefore activates the load even when it is currently fed entirely from the
+   battery/grid — the primary purpose "surplus utilisation" is not verified
+   (historical: controller.py additional-load logic).
+2. **The safety check ends at the first target-reach.** Everything after that is
+   unchecked (historical: controller.py): if the SOC briefly reaches the target
+   around midday tomorrow, the drop below the minimum tomorrow evening is invisible.
+3. **Deactivation requires `current_soc >= target`.** If the SOC falls after
+   activation (target never reached), the load stays active even when it is fed
+   100 % from the battery — until the SOC reaches the inverter minimum and the
+   normal consumption has to be bought from the grid (historical: controller.py).
+   → **Exactly the misbehaviour observed by the user.**
 
-### 2.2 Strukturelle Probleme
+### 2.2 Structural Problems
 
-- **Simulierte Politik ≠ angewendete Politik.** Die Simulation nimmt an, der
-  Inverter läuft, sobald SOC > Inverter-Minimum (20 %). Real wird der Inverter
-  aber über die berechnete Schwelle geschaltet. Die Prognose simuliert also ein
-  anderes Systemverhalten als das, das die Prognose selbst herbeiführt
-  (Rückkopplung nicht modelliert) → unzuverlässige/oszillierende Schwellwerte.
-- **Heuristische Schwellenformel** ohne klar definierte Zielgröße. Es wird nichts
-  optimiert (keine Kosten-/Nutzenfunktion); die Formel ist eine Momentaufnahme-Heuristik.
-- **Doppelte Simulationen mit inkonsistenten Annahmen:** `_calculate_total_grid_flows`
-  simuliert ohne Zusatzlast-Fahrplan erneut (controller.py:393–460) und richtet die
-  Folgestunden nicht an Stundengrenzen aus — Import/Export-Sensoren passen nicht
-  zu den übrigen Ausgaben.
-- **Mutierender globaler Zustand** (`set_additional_load_active` am geteilten
-  `ac_consumer`, SOC-Manipulation an `battery`) macht die Logik fehleranfällig
-  und schwer testbar; viel toter Code (`_test_additional_load_activation`,
+- **Simulated policy ≠ applied policy.** The simulation assumes the inverter
+  runs as soon as SOC > inverter minimum (20 %). In reality, the inverter is
+  switched via the computed threshold. The forecast therefore simulates a
+  different system behaviour than the one the forecast itself brings about
+  (feedback not modelled) → unreliable/oscillating thresholds.
+- **Heuristic threshold formula** without a clearly defined objective. Nothing is
+  optimised (no cost/benefit function); the formula is a snapshot heuristic.
+- **Duplicate simulations with inconsistent assumptions:** `_calculate_total_grid_flows`
+  simulates again without the additional-load schedule (historical: controller.py)
+  and does not align the following hours to hour boundaries — the import/export
+  sensors do not match the remaining outputs.
+- **Mutating global state** (`set_additional_load_active` on the shared
+  `ac_consumer`, SOC manipulation on `battery`) makes the logic error-prone and
+  hard to test; a lot of dead code (`_test_additional_load_activation`,
   `_simulate_with_additional_load_schedule`, `_project_soc_*`).
-- **Statische Lastprofile** (Basis + ein Zeitfenster) bilden reale Haushalte grob ab;
-  keine Nutzung von HA-Historie, keine Wochentag-/Saisonprofile.
-- **PV-Stundenkurve** ist ein einfaches Zwei-Fenster-Modell; stündliche
-  Prognosedaten (z. B. Solcast/Forecast.Solar liefern Stundenwerte) werden nicht genutzt.
+- **Static load profiles** (base + one time window) capture real households only
+  coarsely; no use of HA history, no weekday/seasonal profiles.
+- **PV hourly curve** is a simple two-window model; hourly forecast data
+  (e.g. Solcast/Forecast.Solar provide hourly values) is not used.
 
-### 2.3 Bekannte Bugs der HA-Schicht (separat vom Algorithmus)
+### 2.3 Known Bugs in the HA Layer (separate from the algorithm)
 
-- `coordinator.py:91`: `_listeners_setup` wird nie `True` → sofortige Updates bei
-  Entity-Änderungen sind wirkungslos, nur 5-Minuten-Polling. Listener werden beim
-  Unload nicht entfernt.
+- The coordinator's `_listeners_setup` is never set to `True` → immediate updates
+  on entity changes are ineffective, only 5-minute polling. Listeners are not
+  removed on unload. (historical: coordinator.py)
 
-## 3. Geklärte Rahmenbedingungen (Betreiber-Antworten, 2026-07-03)
+## 3. Clarified Boundary Conditions (operator answers, 2026-07-03)
 
-- **Topologie bestätigt:** PV ist AC-seitig gekoppelt. Das Codemodell
-  (PV → AC-Bilanz, Batterie nur über AC→DC-Charger, DC-Verbraucher an der
-  Batterie, Entlade-Inverter DC→AC) entspricht der realen Anlage.
-- **Optimierungsziel:** Maximaler Eigenverbrauch und minimaler Netzbezug.
-  Einspeisung wird **nicht vergütet** — exportierte Energie ist verloren.
-  Keine dynamischen Tarife.
-- **Steuerkette:** HA-Automationen schalten real sowohl den Entlade-Inverter
-  (über Inverter-Status/SOC-Schwelle) als auch die Zusatzlast
-  (über `additional_load_status`).
-- **Zusatzlasten (Zielbild, heute nur 1 pauschale Last):**
-  - **Last 1 + Last 2:** je eine Fossibot F2400 Powerstation (2 kWh) als
-    zusätzliche ladbare Speicher; beide sind in Home Assistant integriert
-    (SOC/Schaltbarkeit vorhanden).
-  - **Last 3:** Luftentfeuchter im Gemeinschaftskeller, optional (reine
-    Überschussverwertung, kann jederzeit unterbrochen werden).
-- **Haushaltsgeräte:** Geschirrspüler und Waschmaschine sollen berücksichtigt
-  werden:
-  1. Wird erkannt, dass ein Gerät gestartet wurde, soll dessen erwarteter
-     Restverbrauch sofort in die Prognose einfließen.
-  2. Ausbaustufe: Der Nutzer kann Geräte als „darf starten, wenn Überschuss
-     verfügbar" markieren → das Plugin signalisiert/startet, wenn der Lauf ohne
-     Netzbezug möglich ist.
+- **Topology confirmed:** PV is AC-side coupled. The code model
+  (PV → AC balance, battery charged only via the AC→DC charger, DC loads on the
+  battery, discharge inverter DC→AC) matches the real installation.
+- **Optimisation objective:** Maximum self-consumption and minimum grid draw.
+  Feed-in is **not remunerated** — exported energy is lost. No dynamic tariffs.
+- **Control chain:** HA automations really switch both the discharge inverter
+  (via inverter status / SOC threshold) and the additional load
+  (via `additional_load_status`).
+- **Additional loads (target picture, today only 1 flat load):**
+  - **Load 1 + Load 2:** one Fossibot F2400 powerstation (2 kWh) each, as
+    additional chargeable storage; both are integrated in Home Assistant
+    (SOC/switchability available).
+  - **Load 3:** dehumidifier in the shared cellar, optional (pure surplus
+    utilisation, can be interrupted at any time).
+- **Household appliances:** dishwasher and washing machine are to be taken into
+  account:
+  1. When a device is detected as started, its expected remaining consumption
+     should immediately flow into the forecast.
+  2. Expansion stage: The user can mark devices as "may start when surplus is
+     available" → the plugin signals/starts when the run is possible without
+     grid draw.
 
-## 4. Anforderungen an die überarbeitete Lösung (Entwurf)
+## 4. Requirements for the Reworked Solution (draft)
 
-### 4.1 Zielfunktion
+### 4.1 Objective Function
 
-- **Z1:** Primäres Ziel ist die Minimierung des Netzbezugs UND der Einspeisung
-  über den Prognosehorizont (Export ist wertlos, Import kostet). Da beide Ziele
-  aus derselben Bilanz folgen: Minimiere `grid_import + grid_export` (gewichtbar).
-- **Z2:** Harte Nebenbedingung: Der normale Hausverbrauch hat immer Vorrang vor
-  allen optionalen Lasten. Optionale Lasten dürfen nie dazu führen, dass für den
-  Normalverbrauch Netzstrom gekauft werden muss.
-- **Z3:** Die Batterie-Betriebsgrenzen (min/max SOC, Inverter-Minimum) sind
-  harte Nebenbedingungen über den GESAMTEN Horizont (nicht nur bis zum ersten
-  Erreichen eines Ziel-SOC).
+- **Z1:** The primary goal is to minimise grid draw AND feed-in over the forecast
+  horizon (export is worthless, import costs). Since both goals follow from the
+  same balance: minimise `grid_import + grid_export` (weightable).
+- **Z2:** Hard constraint: normal household consumption always has priority over
+  all optional loads. Optional loads must never cause grid power to be bought for
+  the normal consumption.
+- **Z3:** The battery operating limits (min/max SOC, inverter minimum) are hard
+  constraints over the ENTIRE horizon (not only up to the first time a target SOC
+  is reached).
 
-### 4.2 Überschusslast-Management (neu)
+### 4.2 Surplus-Load Management (new)
 
-- **L1:** Unterstützung mehrerer optionaler Lasten mit Prioritätsreihenfolge
-  (konfigurierbar), statt einer pauschalen Zusatzlast.
-- **L2:** Je Last konfigurierbar: Leistung (W), Typ (unterbrechbar wie
-  Entfeuchter / Energiemenge bis „fertig" wie Powerstation-Ladung),
-  optional SOC-Entität (Fossibot) zur Bestimmung der Restenergie.
-- **L3:** Eine optionale Last wird nur aktiviert, wenn ihr Verbrauch im
-  Aktivierungszeitraum (nahezu vollständig) aus PV-Überschuss gedeckt ist, der
-  sonst exportiert würde oder wegen voller Batterie verloren ginge —
-  konfigurierbare Toleranz (z. B. max. X % aus Batterie).
-  *Erweiterung v2 (2026-07-04):* Auch zeitversetzte Deckung über die Batterie
-  ist zulässig („vorsorgliches Platzschaffen"), wenn die Simulation über den
-  gesamten Horizont beweist, dass kein zusätzlicher Netzimport entsteht und
-  der verlorene Überschuss um mindestens (1 − Toleranz) × Lastenergie sinkt
-  (Details: ALGORITHM.md D-A4 v2).
-- **L4:** Deaktivierung, sobald die Überschussbedingung nicht mehr erfüllt ist —
-  unabhängig davon, ob ein Ziel-SOC erreicht wurde.
-- **L5:** Pro Last eine eigene HA-Entität (Schaltempfehlung/Status), damit
-  Automationen sie einzeln schalten können.
+- **L1:** Support for several optional loads with a priority order (configurable),
+  instead of one flat additional load.
+- **L2:** Configurable per load: power (W), type (interruptible like a
+  dehumidifier / energy amount until "done" like a powerstation charge),
+  optional SOC entity (Fossibot) to determine the remaining energy.
+- **L3:** An optional load is only activated when its consumption in the
+  activation window is (almost entirely) covered by PV surplus that would
+  otherwise be exported or lost due to a full battery — configurable tolerance
+  (e.g. max. X % from the battery).
+  *Extension v2 (2026-07-04):* Time-shifted coverage via the battery is also
+  permitted ("precautionary space-making") if the simulation proves over the
+  entire horizon that no additional grid import arises and the lost surplus
+  drops by at least (1 − tolerance) × load energy
+  (details: ALGORITHM.md D-A4 v2).
+- **L4:** Deactivation as soon as the surplus condition is no longer met —
+  regardless of whether a target SOC has been reached.
+- **L5:** A dedicated HA entity per load (switch recommendation/status) so that
+  automations can switch them individually.
 
-### 4.3 Haushaltsgeräte (neu)
+### 4.3 Household Appliances (new)
 
-- **G1:** Konfigurierbare Geräte (Waschmaschine, Geschirrspüler) mit
-  Erkennungs-Entität (z. B. Steckdosen-Leistung oder Status-Sensor) und
-  hinterlegtem Restlauf-Verbrauchsprofil (kWh, Dauer).
-- **G2:** Läuft ein Gerät, wird sein erwarteter Restverbrauch in die
-  AC-Lastprognose eingerechnet.
-- **G3 (Ausbaustufe):** „Startfenster-Empfehlung": Entität je Gerät, die
-  anzeigt, ob ein kompletter Lauf ab jetzt (oder in Stunde X) ohne Netzbezug
-  möglich wäre.
+- **G1:** Configurable devices (washing machine, dishwasher) with a detection
+  entity (e.g. socket power or status sensor) and a stored remaining-run
+  consumption profile (kWh, duration).
+- **G2:** When a device is running, its expected remaining consumption is added
+  to the AC load forecast.
+- **G3 (expansion stage):** "start-window recommendation": an entity per device
+  that shows whether a complete run starting now (or in hour X) would be possible
+  without grid draw.
 
-### 4.4 Prognose & Modell
+### 4.4 Forecast & Model
 
-- **P1:** Konsistente Politik-Simulation: Die Simulation muss dasselbe
-  Schaltverhalten annehmen, das die berechneten Ausgaben real bewirken
-  (Rückkopplung Schwelle → Inverter → SOC-Verlauf).
-- **P2:** Eine einzige Simulation pro Update liefert alle Ausgaben konsistent
-  (keine parallelen Simulationen mit abweichenden Annahmen).
-- **P3 (Ausbaustufe):** Stündliche PV-Prognosen direkt nutzen, wenn verfügbar
-  (z. B. Solcast/Forecast.Solar-Stundenwerte), statt Tageswerte über eine
-  statische Kurve zu verteilen.
-- **P4 (Ausbaustufe):** Lastprofile aus HA-Historie lernen statt statischer
-  Basis-/Zeitfensterwerte.
+- **P1:** Consistent policy simulation: the simulation must assume the same
+  switching behaviour that the computed outputs actually cause
+  (feedback threshold → inverter → SOC trajectory).
+- **P2:** A single simulation per update delivers all outputs consistently
+  (no parallel simulations with differing assumptions).
+- **P3 (expansion stage):** Use hourly PV forecasts directly when available
+  (e.g. Solcast/Forecast.Solar hourly values) instead of distributing daily
+  values over a static curve.
+- **P4 (expansion stage):** Learn load profiles from HA history instead of static
+  base/time-window values.
 
-### 4.5 Qualität
+### 4.5 Quality
 
-- **Q1:** Der Simulationskern bleibt HA-unabhängig und pur (keine Seiteneffekte,
-  keine mutierten Shared-Objects) → deterministisch testbar.
-- **Q2:** pytest-Testsuite (Kern + HA-Schicht), lauffähig in CI.
-- **Q3:** Bekannte Bugs der HA-Schicht werden behoben (Entity-Listener,
-  Listener-Cleanup).
+- **Q1:** The simulation core stays HA-independent and pure (no side effects, no
+  mutated shared objects) → deterministically testable.
+- **Q2:** pytest test suite (core + HA layer), runnable in CI.
+- **Q3:** Known bugs in the HA layer are fixed (entity listener, listener cleanup).
 
-## 5. Geklärte Detailfragen (2026-07-03)
+## 5. Clarified Detail Questions (2026-07-03)
 
-- **D1 Priorität:** Lasten dürfen **parallel** laufen, wenn der Überschuss für
-  mehrere reicht; die Prioritätsreihenfolge entscheidet nur bei Knappheit.
-- **D2 Fossibots:** Nur laden, gedrosselt auf **300 W**. Die Energie versorgt
-  direkt angeschlossene Verbraucher (z. B. PC) — keine Rückspeisung ins
-  Hausnetz. Die **tatsächliche Ladeleistung soll aus dem Feedback der
-  HA-Entitäten gelesen** und im Algorithmus verwendet werden (gemessene
-  Leistung statt Festwert; Festwert nur als Fallback/Startschätzung).
-- **D3 Geräte:**
-  - Geschirrspüler: erkennbar über Steckdosen-Leistungsmessung; hat WLAN und
-    kann evtl. direkt integriert werden.
-  - Waschmaschine: bereits integriert via LG ThinQ
+- **D1 Priority:** Loads may run **in parallel** when the surplus is enough for
+  several; the priority order only decides in case of scarcity.
+- **D2 Fossibots:** Charge only, throttled to **300 W**. The energy supplies
+  directly connected loads (e.g. PC) — no feed-back into the house grid. The
+  **actual charging power should be read from the feedback of the HA entities**
+  and used in the algorithm (measured power instead of a fixed value; the fixed
+  value only as fallback/initial estimate).
+- **D3 Devices:**
+  - Dishwasher: detectable via socket power measurement; has Wi-Fi and can
+    possibly be integrated directly.
+  - Washing machine: already integrated via LG ThinQ
     (`F_V8_Y___W.B_2QEUK`, DEVICE_WASHER).
-- **D4 Migration:** **Breaking Change ist akzeptiert** — Config Flow und
-  Datenmodell dürfen neu aufgebaut werden; einmalige Neukonfiguration ist ok.
+- **D4 Migration:** **Breaking change is accepted** — config flow and data model
+  may be rebuilt; a one-time reconfiguration is fine.
 
-### Ergänzungen aus der Algorithmus-Diskussion (siehe ALGORITHM.md)
+### Additions from the Algorithm Discussion (see ALGORITHM.md)
 
-- **Topologie-Detail:** Zwei DC-Ebenen — 48-V-Batterie und 24-V-Schiene über
-  DC/DC-Wandler. Notfall-Stützpfade: 48-V-Netzteil mit fixer Leistung
-  (Default 60 W, Parameter) und 24-V-Netzteil als DC/DC-Ersatz.
-- **N1:** Beide Stützpfade werden vom Plugin **direkt geschaltet**
-  (konfigurierte Switch-Entitäten) und als letzte Eskalationsstufe zum Schutz
-  der Batterie in der Simulation berücksichtigt (Details: ALGORITHM.md D-A9).
-- **N1a (Make-before-break, 2026-07-04):** Die 24-V-Schiene darf nie ohne
-  Quelle sein: Das 24-V-Netzteil wird erst aktiviert und nach kurzem Delay
-  der DC/DC-Wandler abgeschaltet; umgekehrt wird erst der DC/DC-Wandler
-  aktiviert und nach dem Delay das Netzteil abgeschaltet. Delay
-  konfigurierbar (Default 3 s); bei nicht bestätigter neuer Quelle wird die
-  Umschaltung abgebrochen (alte Quelle bleibt an).
-- **N2 (Ausbaustufe):** Risikobewertung aus Jahreszeit/vergangener
-  Prognosegüte → dynamischer SOC-Puffer statt fixer 5 %.
-- **Entschiedene Stellschrauben:** Gleichstand → „Nutzen" (Batterie vor
-  starker Sonne leerfahren hat Vorrang; Backstop N1); Hysterese ±1 % mit max.
-  1 Inverter-Schaltung/min; SOC-Puffer +5 %; Zusatzlast-Batterieanteil
-  Default 15 % (0–50 % konfigurierbar), Mindest-Ein-/Ausschaltdauer 30 min.
+- **Topology detail:** Two DC levels — 48 V battery and 24 V rail via a DC/DC
+  converter. Emergency support paths: a 48 V PSU with fixed power
+  (default 60 W, parameter) and a 24 V PSU as a DC/DC replacement.
+- **N1:** Both support paths are **switched directly** by the plugin (configured
+  switch entities) and are taken into account in the simulation as the last
+  escalation stage to protect the battery (details: ALGORITHM.md D-A9).
+- **N1a (make-before-break, 2026-07-04):** The 24 V rail must never be without a
+  source: the 24 V PSU is activated first and, after a short delay, the DC/DC
+  converter is switched off; conversely, the DC/DC converter is activated first
+  and, after the delay, the PSU is switched off. The delay is configurable
+  (default 3 s); if the new source is not confirmed, the switchover is aborted
+  (the old source stays on).
+- **N2 (expansion stage):** Risk assessment from season / past forecast quality →
+  dynamic SOC buffer instead of a fixed 5 %.
+- **Decided knobs:** Tie → "benefit" (draining the battery ahead of strong sun
+  has priority; backstop N1); hysteresis ±1 % with max. 1 inverter switch/min;
+  SOC buffer +5 %; additional-load battery share default 15 %
+  (0–50 % configurable), minimum on/off duration 30 min.
 
-### Ergänzte Anforderungen aus D1–D3
+### Requirements Added from D1–D3
 
-- **L6:** Parallelbetrieb mehrerer Überschusslasten; Priorität greift nur bei
-  knappem Überschuss.
-- **L7:** Je Last optional eine Leistungs-Feedback-Entität (z. B. Fossibot-
-  Ladeleistung): Bei aktiver Last wird die gemessene Leistung (geglättet) als
-  Lastleistung verwendet; konfigurierter Nennwert dient als Fallback.
-- **L8:** Je Last optional eine SOC-/Fertig-Entität (Fossibot-SOC), um „Last
-  ist gesättigt" zu erkennen (voll geladen → Last steht nicht mehr zur
-  Verfügung und wird übersprungen).
+- **L6:** Parallel operation of several surplus loads; priority only takes effect
+  when the surplus is scarce.
+- **L7:** Optionally per load a power-feedback entity (e.g. Fossibot charging
+  power): when the load is active, the measured power (smoothed) is used as the
+  load power; the configured nominal value serves as a fallback.
+- **L8:** Optionally per load a SOC/done entity (Fossibot SOC) to detect "load is
+  saturated" (fully charged → the load is no longer available and is skipped).

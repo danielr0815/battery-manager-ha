@@ -145,6 +145,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.raw_config = {**DEFAULT_CONFIG, **entry.data, **entry.options}
+        # Single source of truth for the version, set from manifest.json in
+        # async_setup_entry (the device sw_version — avoids a hard-coded
+        # constant drifting from the manifest).
+        self.integration_version: str | None = None
 
         # Input caching for graceful degradation
         self._last_valid_soc: float | None = None

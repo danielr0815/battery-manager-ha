@@ -1,47 +1,39 @@
 ---
-name: Bug Report
-about: Melde einen Fehler um die Integration zu verbessern
+name: Bug report
+about: Report a problem to help improve the integration
 title: '[BUG] '
 labels: ['bug']
 assignees: ''
-
 ---
 
-**Fehlerbeschreibung**
-Eine klare und präzise Beschreibung des Fehlers.
+**Describe the bug**
+A clear and concise description of what the bug is.
 
-**Reproduktion**
-Schritte zur Reproduktion des Verhaltens:
-1. Gehe zu '...'
-2. Klicke auf '....'
-3. Scrolle nach unten zu '....'
-4. Siehe Fehler
+**To reproduce**
+Steps to reproduce the behaviour:
+1. …
+2. …
+3. See error
 
-**Erwartetes Verhalten**
-Eine klare und präzise Beschreibung des erwarteten Verhaltens.
+**Expected behaviour**
+What you expected to happen.
 
-**Screenshots**
-Falls zutreffend, füge Screenshots hinzu um das Problem zu erklären.
+**System information**
+- Home Assistant version: [e.g. 2026.7.1]
+- Battery Manager version: [see the device's `sw_version`, e.g. 0.7.10]
+- Installation method: [HACS / manual]
 
-**System Information:**
- - Home Assistant Version: [z.B. 2024.6.0]
- - Battery Manager Version: [z.B. 0.1.0]
- - Installation Method: [HACS / Manual]
- - Browser (falls relevant): [z.B. Chrome, Safari]
-
-**Konfiguration**
+**Configuration** (anonymised)
 ```yaml
-# Deine Battery Manager Konfiguration (anonymisiert)
-battery_manager:
-  battery_capacity_wh: 10000
-  # ... weitere Konfigurationsdetails
+# Relevant options from the integration (remove anything sensitive)
 ```
 
 **Logs**
 ```
-# Relevante Log-Einträge aus Home Assistant
-# Zu finden unter Einstellungen -> System -> Protokolle
+# Relevant entries from Settings → System → Logs (enable debug logging for
+# custom_components.battery_manager if possible)
 ```
 
-**Zusätzlicher Kontext**
-Weitere Informationen über das Problem.
+**Additional context**
+Anything else that might help (screenshots, the exported hourly-details table
+from the `battery_manager.export_hourly_details` service, etc.).

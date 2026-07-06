@@ -3,7 +3,9 @@
 DOMAIN = "battery_manager"
 
 INTEGRATION_NAME = "Battery Manager"
-INTEGRATION_VERSION = "0.6.0"
+# The version is NOT hard-coded here (it drifted from manifest.json for
+# releases): the device sw_version is read from the manifest at runtime —
+# see BatteryManagerCoordinator.integration_version.
 
 # Update behaviour
 UPDATE_INTERVAL_SECONDS = 300

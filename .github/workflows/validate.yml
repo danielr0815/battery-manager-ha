@@ -49,6 +49,21 @@ jobs:
       - name: Ruff check
         run: ruff check custom_components tests
 
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Version consistency (manifest == pyproject)
+        run: |
+          python - <<'PY'
+          import json, re, pathlib
+          mf = json.loads(pathlib.Path(
+              "custom_components/battery_manager/manifest.json").read_text())["version"]
+          pp = re.search(r'^version\s*=\s*"([^"]+)"',
+                         pathlib.Path("pyproject.toml").read_text(), re.M).group(1)
+          assert mf == pp, f"version drift: manifest {mf} != pyproject {pp}"
+          print("version OK:", mf)
+          PY
+
   tests:
     runs-on: "ubuntu-latest"
     name: Tests (pytest)

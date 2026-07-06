@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, INTEGRATION_NAME, INTEGRATION_VERSION
+from .const import DOMAIN, INTEGRATION_NAME
 from .coordinator import BatteryManagerCoordinator
 
 
@@ -23,7 +23,7 @@ class BatteryManagerEntity(CoordinatorEntity[BatteryManagerCoordinator]):
             name=INTEGRATION_NAME,
             manufacturer="Battery Manager",
             model="Energy Optimizer",
-            sw_version=INTEGRATION_VERSION,
+            sw_version=coordinator.integration_version,
         )
 
     @property

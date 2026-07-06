@@ -1,143 +1,144 @@
-# Battery Manager — Lösungsstrategie für die Überarbeitung
+# Battery Manager — Solution Strategy for the Rework
 
-> Status: **Entwurf zur Abstimmung** (Stand 2026-07-03)
-> Basiert auf [REQUIREMENTS.md](REQUIREMENTS.md).
+> Status: historical design rationale; see [ARCHITECTURE.md](ARCHITECTURE.md) and the other docs for the current design.
+> Based on [REQUIREMENTS.md](REQUIREMENTS.md).
 
-## 1. Kernidee des neuen Algorithmus
+## 1. Core Idea of the New Algorithm
 
-Ohne Einspeisevergütung ist die Zielfunktion einfach und messbar:
+Without a feed-in tariff, the objective function is simple and measurable:
 
-> **Minimiere `Netzimport + Netzexport` über den Prognosehorizont.**
+> **Minimise `grid import + grid export` over the forecast horizon.**
 
-Daraus folgt die eigentliche Aufgabe der Steuerung:
+From this follows the actual task of the controller:
 
-- **Export entsteht**, wenn PV-Überschuss kommt und die Batterie voll ist
-  → vorher gezielt Platz schaffen (Inverter laufen lassen, Haus aus Batterie
-  versorgen) **oder** Überschuss in Zusatzlasten lenken.
-- **Import entsteht**, wenn die Batterie leer ist, bevor der nächste
-  PV-Überschuss kommt → nicht zu viel entladen.
+- **Export arises** when a PV surplus comes in and the battery is full
+  → deliberately make room beforehand (run the inverters, supply the house from
+  the battery) **or** steer the surplus into additional loads.
+- **Import arises** when the battery is empty before the next PV surplus
+  arrives → do not discharge too much.
 
-Die SOC-Schwelle des Inverters balanciert genau diesen Zielkonflikt. Statt sie
-wie bisher mit einer Heuristik-Formel zu schätzen, wird sie künftig **durch
-Simulation gesucht**:
+The inverter's SOC threshold balances exactly this trade-off. Instead of
+estimating it with a heuristic formula as before, it is henceforth **found by
+simulation**:
 
-### Schwellwert per Politik-Simulation (statt Formel)
-
-```
-für jeden Kandidaten T in {min_soc … max_soc, Schrittweite 1 %}:
-    simuliere den Horizont mit der ECHTEN Politik:
-        Inverter an  ⇔  SOC > T
-    bewerte: kosten(T) = w_i · import_kWh + w_e · export_kWh
-wähle T mit minimalen Kosten (bei Gleichstand: höheres T = batterieschonender)
-```
-
-- **Politik-konsistent:** Die Simulation bildet exakt das Verhalten ab, das der
-  ausgegebene Schwellwert real bewirkt (behebt Schwäche 2.2 aus REQUIREMENTS.md).
-- **Rechenaufwand trivial:** ~90 Kandidaten × ~60 Stunden × einfache Bilanz —
-  weit unter einer Sekunde, reine Python-Stdlib, keine Solver-Abhängigkeit.
-- **Erklärbar & testbar:** Für jeden Kandidaten existiert eine nachvollziehbare
-  Trajektorie; Tests können Kostenwerte direkt prüfen.
-
-### Überschusslasten per Überschuss-Allokation
-
-Nach der Schwellwert-Wahl liefert die Gewinner-Trajektorie pro Stunde den
-**verlorenen Überschuss** (Energie, die exportiert würde, weil Batterie voll
-bzw. Charger am Limit). Darauf arbeitet die Lastplanung:
+### Threshold via Policy Simulation (instead of a formula)
 
 ```
-für jede Stunde h mit Überschuss S(h) > 0:
-    für jede verfügbare Last L in Prioritätsreihenfolge:
-        wenn S(h) ≥ P(L) · (1 − Batterie-Toleranz):
-            plane L in Stunde h ein; S(h) -= P(L)
-re-simuliere mit eingeplanten Lasten (volle Horizont-Prüfung):
-    – kein zusätzlicher Netzimport gegenüber Plan ohne Lasten (Z2)
-    – min-SOC nie verletzt (Z3)
-    verletzt → Stunde/Last streichen, wiederholen (konvergiert schnell)
+for each candidate T in {min_soc … max_soc, step size 1 %}:
+    simulate the horizon with the REAL policy:
+        inverter on  ⇔  SOC > T
+    evaluate: cost(T) = w_i · import_kWh + w_e · export_kWh
+choose T with minimal cost (on a tie: higher T = gentler on the battery)
 ```
 
-- Aktivierung **nur bei realem Überschuss** (behebt Schwäche 2.1/1).
-- Prüfung über den **gesamten Horizont**, nicht bis zum ersten Ziel-Erreichen
-  (behebt Schwäche 2.1/2 und 2.1/3).
-- Parallelbetrieb mehrerer Lasten ergibt sich natürlich aus der Allokation.
-- Fossibot-Besonderheiten: verfügbare Restenergie aus SOC-Entität
-  (voll → Last gesättigt, L8), Leistung aus Feedback-Entität geglättet (L7).
+- **Policy-consistent:** The simulation reflects exactly the behaviour that the
+  emitted threshold actually produces in reality (fixes weakness 2.2 from
+  REQUIREMENTS.md).
+- **Trivial compute cost:** ~90 candidates × ~60 hours × simple balance — well
+  under one second, pure Python stdlib, no solver dependency.
+- **Explainable & testable:** For every candidate there is a traceable
+  trajectory; tests can check cost values directly.
 
-### Haushaltsgeräte
+### Surplus Loads via Surplus Allocation
 
-- **Laufender Betrieb erkannt** (LG-Washer-Status / Steckdosenleistung):
-  hinterlegtes Restlaufprofil (kWh über n Stunden) wird der AC-Lastprognose
-  aufaddiert (G2). Damit sinkt der berechnete Überschuss automatisch und
-  Zusatzlasten weichen zurück — genau die vom Betreiber gewünschte Korrektur.
-- **Startfenster-Empfehlung (G3):** Simulation „Was wäre, wenn das Gerät jetzt
-  startet?" → binary_sensor `*_start_window` = an, wenn der komplette Lauf
-  keinen zusätzlichen Netzimport erzeugt.
+After the threshold choice, the winning trajectory provides, per hour, the
+**lost surplus** (energy that would be exported because the battery is full or
+the charger is at its limit). The load planning works on top of this:
 
-## 2. Verworfene Alternativen
+```
+for each hour h with surplus S(h) > 0:
+    for each available load L in priority order:
+        if S(h) ≥ P(L) · (1 − battery tolerance):
+            schedule L in hour h; S(h) -= P(L)
+re-simulate with the scheduled loads (full horizon check):
+    – no additional grid import compared to the plan without loads (Z2)
+    – min-SOC never violated (Z3)
+    violated → drop hour/load, repeat (converges quickly)
+```
 
-| Ansatz | Warum nicht |
+- Activation **only on a real surplus** (fixes weakness 2.1/1).
+- Check over the **entire horizon**, not just up to the first time the target
+  is reached (fixes weakness 2.1/2 and 2.1/3).
+- Parallel operation of multiple loads follows naturally from the allocation.
+- Fossibot particularities: available remaining energy from the SOC entity
+  (full → load saturated, L8), power from the feedback entity smoothed (L7).
+
+### Household Appliances
+
+- **Running operation detected** (LG washer status / socket power): a stored
+  remaining-run profile (kWh over n hours) is added onto the AC load forecast
+  (G2). This automatically lowers the computed surplus, and additional loads
+  back off — exactly the correction the operator wants.
+- **Start-window recommendation (G3):** simulation "What if the appliance
+  started now?" → binary_sensor `*_start_window` = on when the complete run
+  produces no additional grid import.
+
+## 2. Rejected Alternatives
+
+| Approach | Why not |
 |---|---|
-| **Bestehende Heuristik patchen** | Behebt die akuten Bugs, aber Politik-Inkonsistenz und fehlende Zielfunktion bleiben; Mehrlasten/Geräte passen nicht ins Modell. |
-| **LP/MILP-Optimierung (z. B. PuLP/HiGHS)** | Mathematisch optimal, aber externe Solver-Binaries sind auf HAOS/Alpine fragil, schwer zu debuggen, und der Nutzen ggü. der Simulationssuche ist bei diesem Problemumfang (1 Schwelle + wenige Lasten) minimal. Kann später als Option nachgerüstet werden. |
-| **ML/gelernte Politik** | Datenbedarf, Erklärbarkeit und Wartbarkeit stehen in keinem Verhältnis zum Problem. |
+| **Patch the existing heuristic** | Fixes the acute bugs, but policy inconsistency and the missing objective function remain; multiple loads/appliances do not fit the model. |
+| **LP/MILP optimisation (e.g. PuLP/HiGHS)** | Mathematically optimal, but external solver binaries are fragile on HAOS/Alpine, hard to debug, and the benefit over the simulation search is minimal for this problem size (1 threshold + a few loads). Can be retrofitted later as an option. |
+| **ML / learned policy** | Data needs, explainability and maintainability are out of all proportion to the problem. |
 
-## 3. Architektur
+## 3. Architecture
 
-### 3.1 Simulationskern (rewrite, HA-frei, `battery_manager/core/`)
+### 3.1 Simulation Core (rewrite, HA-free, `battery_manager/core/`)
 
 ```
 core/
 ├── model.py       # Frozen dataclasses: BatteryParams, ChargerParams,
 │                  # InverterParams, SurplusLoad, Appliance, SystemConfig
-├── series.py      # Aufbau der Stundenreihen: PV-Verteilung, Lastprofile,
-│                  # Geräte-Restläufe → HourlyInputs
+├── series.py      # Building the hourly series: PV distribution, load profiles,
+│                  # appliance remaining-runs → HourlyInputs
 ├── simulate.py    # simulate(config, inputs, policy) -> Trajectory
-│                  # PURE FUNCTION: keine Seiteneffekte, kein Shared State
-└── optimize.py    # Schwellwertsuche + Überschuss-Allokation + Geräte-Advisor
-                   # -> PlanResult (Schwelle, Lastpläne, Prognosen, Flüsse)
+│                  # PURE FUNCTION: no side effects, no shared state
+└── optimize.py    # Threshold search + surplus allocation + appliance advisor
+                   # -> PlanResult (threshold, load plans, forecasts, flows)
 ```
 
-Prinzipien (Q1): unveränderliche Konfigurationsobjekte, Ein-/Ausgaben als
-Datenklassen, keine Objekte mit verstecktem Zustand wie bisher
-(`set_additional_load_active`, SOC-Mutation an geteilten Instanzen).
-Die Energiefluss-Bilanz einer Stunde wird aus `energy_flow.py` fachlich
-übernommen, aber als pure Funktion neu implementiert.
+Principles (Q1): immutable configuration objects, inputs/outputs as data
+classes, no objects with hidden state as before (`set_additional_load_active`,
+SOC mutation on shared instances). The energy-flow balance of an hour is
+adopted in substance and re-implemented as a pure function in `core/simulate.py`
+(the `step_hour` function).
 
-### 3.2 HA-Schicht
+### 3.2 HA Layer
 
-- **Coordinator:** Listener-Bug + fehlendes Unsubscribe beheben (Q3);
-  ansonsten Struktur beibehalten (Polling + Debounce bei Entity-Änderungen).
-- **Config Flow v2** (Breaking Change, D4):
-  - Basiskonfiguration wie bisher (Batterie, PV, Charger, Inverter, Grundlasten).
-  - **Config Subentries** (HA ≥ 2025.3) je Überschusslast und je Haushaltsgerät:
-    beliebig viele Lasten/Geräte über „Hinzufügen"-UI, einzeln editierbar.
-- **Entitäten:**
-  - bestehende Sensoren bleiben (Schwelle, Inverter-Status, Min/Max-SOC, …)
-  - je Überschusslast: `binary_sensor.<last>_empfehlung` (+ Attribute: geplante
-    Stunden, erwartete Energie)
-  - je Gerät: `binary_sensor.<gerät>_startfenster`
-  - `sensor.verlorener_überschuss_kwh` (prognostizierter Export) als
-    Transparenz-/Debug-Wert
-- **Version 0.2.0**, `translations/de.json` + `en.json` neu.
+- **Coordinator:** fix the listener bug + missing unsubscribe (Q3); otherwise
+  keep the structure (polling + debounce on entity changes).
+- **Config Flow v2** (breaking change, D4):
+  - Base configuration as before (battery, PV, charger, inverter, base loads).
+  - **Config subentries** (HA ≥ 2025.3) per surplus load and per household
+    appliance: arbitrarily many loads/appliances via an "Add" UI, individually
+    editable.
+- **Entities:**
+  - existing sensors remain (threshold, inverter status, min/max SOC, …)
+  - per surplus load: `binary_sensor.<load>_recommendation` (+ attributes:
+    scheduled hours, expected energy)
+  - per appliance: `binary_sensor.<appliance>_start_window`
+  - `sensor.lost_surplus_kwh` (forecast export) as a transparency/debug value
+- **Version 0.2.0**, `translations/de.json` + `en.json` new.
 
 ### 3.3 Tests & CI
 
-- **Kern:** Szenario-Tests (Sonnentag/Regentag/Übergang, volle/leere Batterie),
-  Invarianten-Tests (Energieerhaltung pro Stunde, SOC-Grenzen, „Zusatzlast
-  erzeugt nie Import"), Regressionstests mit den Fehlbildern aus Abschnitt 2.1
-  der REQUIREMENTS.md.
-- **HA-Schicht:** pytest-homeassistant-custom-component: Config Flow, Coordinator
-  (inkl. Listener!), Entity-Werte.
-- **CI:** pytest + ruff in validate.yml ergänzen.
+- **Core:** scenario tests (sunny day/rainy day/transition, full/empty battery),
+  invariant tests (energy conservation per hour, SOC limits, "an additional load
+  never creates import"), regression tests with the failure patterns from
+  section 2.1 of REQUIREMENTS.md.
+- **HA layer:** pytest-homeassistant-custom-component: config flow, coordinator
+  (incl. listener!), entity values.
+- **CI:** add pytest + ruff to validate.yml.
 
-## 4. Umsetzungsphasen
+## 4. Implementation Phases
 
-| Phase | Inhalt | Ergebnis |
+| Phase | Content | Result |
 |---|---|---|
-| **0** | Dev-Umgebung, pytest-Harness, Coordinator-Bugfix (Listener) | Sofort mergebar, Basis für alles Weitere |
-| **1** | Kern-Rewrite (`core/`), Schwellwert-Suche, EINE Überschusslast mit korrekter Überschusslogik, Testsuite, CI | Behebt alle bekannten Algorithmus-Fehler |
-| **2** | Mehrere Lasten (Subentries, Prioritäten, parallel), Fossibot-Feedback (Leistung/SOC), Last-Entitäten | Zielbild Überschussverwertung |
-| **3** | Haushaltsgeräte: Restlauf-Prognose + Startfenster-Empfehlung | Zielbild Geräte |
-| **4** *(optional)* | Stündliche PV-Prognosen (Solcast/Forecast.Solar direkt), gelernte Lastprofile aus HA-Historie, de/en-Feinschliff | Genauigkeit |
+| **0** | Dev environment, pytest harness, coordinator bugfix (listener) | Immediately mergeable, foundation for everything else |
+| **1** | Core rewrite (`core/`), threshold search, ONE surplus load with correct surplus logic, test suite, CI | Fixes all known algorithm errors |
+| **2** | Multiple loads (subentries, priorities, parallel), Fossibot feedback (power/SOC), load entities | Target picture for surplus utilisation |
+| **3** | Household appliances: remaining-run forecast + start-window recommendation | Target picture for appliances |
+| **4** *(optional)* | Hourly PV forecasts (Solcast/Forecast.Solar directly), learned load profiles from HA history, de/en polish | Accuracy |
 
-Jede Phase endet mit lauffähigen Tests und einem testbaren Stand auf der
-realen HA-Instanz (http://hass:8123).
+Each phase ends with runnable tests and a testable state on the real HA instance
+(http://hass:8123).

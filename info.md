@@ -1,63 +1,51 @@
 # Battery Manager
 
-Eine intelligente Home Assistant Integration für die Verwaltung von Batteriespeichersystemen mit PV-Anlagen.
+Simulation-based battery energy optimization for AC-coupled PV systems **without
+feed-in remuneration**. The integration plans hourly energy flows over the full
+forecast horizon and derives switching recommendations that minimize grid import
+**and** wasted (exported) surplus.
 
-## Features
+## What it does
 
-- 🔋 **Intelligente SOC-Verwaltung**: Automatische Berechnung optimaler Batterieladestände
-- ☀️ **PV-Prognose Integration**: Nutzt Wettervorhersagen für bessere Entscheidungen
-- 📊 **Predictive Analytics**: Vorhersage von Min/Max SOC-Werten über mehrere Stunden
-- 🔄 **Automatische Wechselrichter-Steuerung**: Ein-/Ausschalten basierend auf intelligenten Algorithmen
-- 📈 **Detaillierte Sensoren**: Umfassende Überwachung aller relevanten Werte
-- 🏠 **Home Assistant Native**: Vollständig integriert in die HA-Oberfläche
+- 🔎 **Threshold planning** — simulates the whole forecast horizon for every
+  candidate discharge threshold and picks the one with the lowest cost
+  (grid import − terminal battery value + a small export penalty).
+- ☀️ **Surplus allocation** — schedules configured surplus loads (powerstations,
+  dehumidifier, …) into hours that would otherwise be exported, re-simulating
+  every assignment so it can never cause extra grid import.
+- 🧺 **Appliance advisor** — signals when a full washer/dishwasher run fits into
+  the surplus right now.
+- 🔌 **Emergency grid support** — last-resort switching of the 24 V / 48 V
+  support PSUs when the battery would fall through its minimum.
+- 🧠 **Consumption learning** — learns the AC/DC load profile from recorder
+  history, cleaning out its own controlled loads.
+- 📈 **Bundled dashboard card** — a Lovelace card that renders the planned SOC
+  curve, the threshold, the reserve zone, and the load/support schedule. No
+  extra frontend download.
 
-## Bereitgestellte Entitäten
+## Entities (overview)
 
-Die Integration stellt 4 Hauptentitäten zur Verfügung:
+Around nine entity families: the inverter recommendation, the SOC threshold,
+min/max SOC and grid-import/lost-surplus forecasts, the planned SOC-forecast
+curve, plus per-surplus-load and per-appliance recommendations and the state of
+the 24 V / 48 V grid-support paths.
 
-| Entität | Typ | Beschreibung |
-|---------|-----|--------------|
-| **Wechselrichter Status** | Binary Sensor | Aktueller Zustand des Wechselrichters (an/aus) |
-| **SOC Schwellwert** | Sensor | Berechneter Schwellwert für Wechselrichter-Steuerung |
-| **Min SOC Prognose** | Sensor | Minimal erwarteter SOC in der Vorhersageperiode |
-| **Max SOC Prognose** | Sensor | Maximal erwarteter SOC in der Vorhersageperiode |
+## Configuration
 
-## Konfiguration
+Configured entirely through the UI (**Settings → Devices & Services → Add
+Integration → Battery Manager**). You provide a battery-SOC sensor and three
+daily PV-forecast sensors, then the system parameters. Surplus loads and
+appliances are added as sub-entries on the integration card.
 
-Die Integration wird über die Home Assistant Benutzeroberfläche konfiguriert:
+## Requirements
 
-1. Gehe zu **Einstellungen** → **Geräte & Dienste**
-2. Klicke auf **"+ INTEGRATION HINZUFÜGEN"**
-3. Suche nach **"Battery Manager"**
-4. Folge den Konfigurationsschritten
-5. Gib die erforderlichen Entitäten für SOC und PV-Prognosen an
+- **Home Assistant** 2025.3.0 or newer
+- **No** external Python dependencies (pure-Python planner core)
 
-## Systemanforderungen
+See the [README](https://github.com/danielr0815/battery-manager-ha) for the full
+documentation, and [docs/ARCHITECTURE.md](https://github.com/danielr0815/battery-manager-ha/blob/main/docs/ARCHITECTURE.md)
+to dive into the code.
 
-- **Home Assistant**: Version 2024.1.0 oder höher
-- **Python**: 3.11 oder höher
-- **Abhängigkeiten**: Keine externen Python-Pakete erforderlich
+## License
 
-## Unterstützte Systeme
-
-- Batteriespeicher mit SOC-Sensor
-- PV-Anlagen mit Prognose-Entitäten
-- Wechselrichter mit schaltbaren Ausgängen
-- Kompatibel mit den meisten europäischen Energiesystemen
-
-## Erweiterte Features
-
-- **Simulation Engine**: Integrierte Simulationsmöglichkeiten für Testing
-- **Flexible Konfiguration**: Anpassbare Parameter für verschiedene Systemgrößen
-- **Robuste Fehlerbehandlung**: Graceful Handling von fehlenden Daten
-- **Performance Optimiert**: Effiziente Algorithmen für Echtzeitbetrieb
-
-## Support & Community
-
-- **GitHub Issues**: [Probleme und Feature-Requests](https://github.com/danielr0815/battery-manager-ha/issues)
-- **Dokumentation**: Vollständige Dokumentation im Repository
-- **Community**: Aktive Entwicklung und Unterstützung
-
-## Lizenz
-
-MIT License - Siehe LICENSE-Datei für Details.
+MIT — see the LICENSE file.

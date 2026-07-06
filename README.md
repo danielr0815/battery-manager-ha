@@ -1,8 +1,8 @@
 # Battery Manager Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/release/danielr0815/battery-manager-ha.svg)](https://github.com/danielr0815/battery-manager-ha/releases)
-[![License](https://img.shields.io/github/license/danielr0815/battery-manager-ha.svg)](LICENSE)
+[![CI](https://github.com/danielr0815/battery-manager-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/danielr0815/battery-manager-ha/actions/workflows/validate.yml)
+[![License: MIT](https://img.shields.io/github/license/danielr0815/battery-manager-ha.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.3.0+-blue.svg)](https://www.home-assistant.io/)
 
 Simulation-based battery energy optimization for AC-coupled PV systems without
@@ -10,10 +10,9 @@ feed-in remuneration: the integration plans hourly energy flows over the full
 forecast horizon and derives switching recommendations that minimize grid
 import **and** wasted (exported) surplus.
 
-> **v0.2.0 is a complete algorithm rewrite** (breaking change — the
-> integration must be configured once anew). Design documents live in
-> [docs/](docs/): [REQUIREMENTS.md](docs/REQUIREMENTS.md),
-> [STRATEGY.md](docs/STRATEGY.md), [ALGORITHM.md](docs/ALGORITHM.md).
+New to the code base? Start with **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+— the code map, the update cycle, and the glossary of the shorthand used in the
+comments and design docs.
 
 ## How it works
 
@@ -165,20 +164,37 @@ series:
 
 </details>
 
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | **Start here.** Code map (core vs HA layer), the coordinator update cycle, and the decision-code glossary. |
+| [docs/ALGORITHM.md](docs/ALGORITHM.md) | The planner: threshold search, surplus allocation, appliance advisor, emergency support. |
+| [docs/DC_TOPOLOGY.md](docs/DC_TOPOLOGY.md) | The two-bus DC model, the 48 V voltage gate, and the R2/R3 support controllers (F-N3). |
+| [docs/CONSUMPTION_FORECAST.md](docs/CONSUMPTION_FORECAST.md) | How the AC/DC consumption profile is learned from recorder history. |
+| [docs/LOAD_CONTROL.md](docs/LOAD_CONTROL.md) | Direct charging-path control of surplus loads (powerstations). |
+| [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), [docs/STRATEGY.md](docs/STRATEGY.md) | Historical design records (original requirements and rationale). |
+
 ## Development & testing
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install homeassistant pytest pytest-homeassistant-custom-component ruff
+# activate: `source .venv/bin/activate` (Linux/macOS/WSL) or
+#           `.venv\Scripts\activate`     (Windows PowerShell)
+python -m pip install homeassistant pytest pytest-homeassistant-custom-component ruff
 
 # Core suite (pure Python, runs anywhere incl. Windows):
 python -m pytest tests/core -p no:homeassistant
 
-# Full suite incl. Home Assistant layer (Linux/WSL/CI):
+# Full suite incl. Home Assistant layer (needs Linux/WSL — the HA test
+# helpers do not install on Windows):
 python -m pytest tests
 
 ruff check custom_components tests
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow (golden snapshots,
+versioning) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 The simulation core (`custom_components/battery_manager/core/`) is free of
 Home Assistant imports and side effects: frozen dataclasses in, frozen

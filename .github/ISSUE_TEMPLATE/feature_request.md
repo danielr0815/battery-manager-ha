@@ -1,29 +1,27 @@
 ---
-name: Feature Request
-about: Schlage eine neue Funktion für die Integration vor
+name: Feature request
+about: Suggest a new capability for the integration
 title: '[FEATURE] '
 labels: ['enhancement']
 assignees: ''
-
 ---
 
-**Ist dein Feature Request related zu einem Problem? Beschreibe es.**
-Eine klare und präzise Beschreibung des Problems. z.B. Es ist frustrierend wenn [...]
+**Is your request related to a problem?**
+A clear description of the problem, e.g. "It's frustrating when […]".
 
-**Beschreibe die gewünschte Lösung**
-Eine klare und präzise Beschreibung was du dir wünschst.
+**Describe the solution you'd like**
+What you want to happen.
 
-**Beschreibe Alternativen die du in Betracht gezogen hast**
-Eine klare und präzise Beschreibung von alternativen Lösungen oder Features die du in Betracht gezogen hast.
+**Alternatives you've considered**
+Other approaches or workarounds you thought about.
 
-**Anwendungsfall**
-Beschreibe konkret wie diese Funktion verwendet werden würde:
-- Als Benutzer möchte ich...
-- Damit ich...
-- So dass...
+**Use case**
+- As a user I want to …
+- so that …
 
-**Mögliche Implementierung** (optional)
-Falls du technische Ideen zur Umsetzung hast, beschreibe sie hier.
+**Possible implementation** (optional)
+Any technical ideas — which entities/config it would touch, how it fits the
+planner (see [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md)).
 
-**Zusätzlicher Kontext**
-Weitere Informationen, Screenshots oder Beispiele zu diesem Feature Request.
+**Additional context**
+Anything else, screenshots, or examples.

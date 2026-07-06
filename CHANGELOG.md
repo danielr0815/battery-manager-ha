@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-07-06
+
+### Fixed
+- **Device `sw_version` no longer drifts.** The version was hard-coded in
+  `const.py` (stuck at 0.6.0) and in the dashboard card, so every device
+  reported the wrong firmware. Both are now derived from `manifest.json` at
+  runtime (the coordinator reads the integration version; the card reads its
+  own `?v=` cache-bust param). A CI check now fails the build if
+  `manifest.json` and `pyproject.toml` versions diverge.
+
+### Documentation
+- **All documentation is now in English**, and the design docs' stale
+  "draft / awaiting feedback" headers were corrected to their shipped status.
+  The `docs/*.md` design records were translated faithfully (technical content,
+  decision codes, and tables preserved); references to deleted files
+  (`controller.py`, `energy_flow.py`, `standalone_test/`) were removed or
+  marked historical.
+- **New [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the developer
+  onboarding entry point: the core-vs-HA code map, the coordinator update
+  cycle, the decision-code glossary, and a recommended reading order. Linked
+  from the README (new documentation index) and CONTRIBUTING.
+- **CONTRIBUTING.md rewritten** to the real workflow (ruff, the split
+  core/HA test suites with the `-p no:homeassistant` flag, golden snapshots via
+  the new `scripts/gen_golden.py`, versioning). **SECURITY.md** trimmed to what
+  the project actually offers (GitHub Security Advisories; no placeholder email
+  or fictional CVSS/scanning pipeline). **info.md** (HACS store page) and the
+  issue/PR templates rewritten in English with real commands.
+
+### Added / repo hygiene
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `.github/dependabot.yml`
+  (GitHub Actions), `.editorconfig`, a `[project]` table + dev dependency group
+  in `pyproject.toml`, `scripts/gen_golden.py`. CI now also runs
+  `ruff format --check`. Removed stale root docs (`PROJECT_COMPLETE.md`,
+  `STARTUP_OPTIMIZATION.md`, `HACS_INSTALLATION.md`) and the frozen
+  `docs/IMPLEMENTATION_PLAN.md` (superseded by ARCHITECTURE.md).
+
 ## [0.7.10] - 2026-07-06
 
 ### Fixed

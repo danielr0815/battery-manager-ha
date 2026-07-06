@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep the GitHub Actions used by the CI/release workflows current and
+  # pinned. This makes the "Dependabot enabled" statement in SECURITY.md true.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+      - ci

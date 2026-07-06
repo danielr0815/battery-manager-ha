@@ -1,276 +1,275 @@
-# Battery Manager — Algorithmus-Design im Detail
+# Battery Manager — Algorithm Design in Detail
 
-> Status: **In Diskussion** (Stand 2026-07-03)
-> Vertiefung zu [STRATEGY.md](STRATEGY.md); Entscheidungspunkte D-A1 … D-A8.
-> Ein lauffähiger Prototyp der Kernlogik existiert (Szenario-Ergebnisse in §3).
+> Status: reflects the shipped planner as of v0.7.10.
+> In-depth companion to [STRATEGY.md](STRATEGY.md); decision points D-A1 … D-A9.
 
-## 1. Ablauf eines Planungslaufs
+## 1. Flow of a Planning Run
 
-Alle ~5 Minuten (bzw. bei Änderung einer Eingangs-Entität):
+Every ~5 minutes (or whenever an input entity changes):
 
 ```
-1. Eingangsreihen bauen (Stundenraster bis Ende der Prognosedaten):
-   PV(h)        aus Tagesprognosen × Verteilkurve (später: Stundenprognosen)
-   AC-Last(h)   Basisprofil + erkannte Geräte-Restläufe (Waschmaschine/Spüler)
-   DC-Last(h)   Basisprofil
-2. Schwellwertsuche:
-   für T in [max(batt_min, inv_min) … batt_max], 1-%-Schritte:
-       Trajektorie = simulate(T)        # Politik: Inverter an ⇔ SOC > T
-       kosten(T) = Import(T) − f·SOC_Ende(T) + w_e·Export(T)
-   T* = argmin kosten     (Gleichstand → siehe D-A1)
-3. Überschuss-Allokation auf T*-Trajektorie:
-   Export-Stunden identifizieren → Lasten nach Priorität zuteilen
-   (parallel, wenn Überschuss reicht); jede Zuteilung per Re-Simulation
-   gegen Z2 (kein Zusatz-Import) und Z3 (SOC-Grenzen, ganzer Horizont) geprüft
-4. Geräte-Advisor: „Lauf ab jetzt ohne Zusatz-Import möglich?" je Gerät
-5. Ausgaben: T*, Inverter-Empfehlung (mit Hysterese), Lastpläne/-empfehlungen,
-   Min/Max-SOC, Import/Export-Prognose — alles aus EINER Trajektorie
+1. Build the input series (hourly grid up to the end of the forecast data):
+   PV(h)        from daily forecasts × distribution curve (later: hourly forecasts)
+   AC load(h)   base profile + detected appliance remainders (washer/dishwasher)
+   DC load(h)   base profile
+2. Threshold search:
+   for T in [max(batt_min, inv_min) … batt_max], in 1-% steps:
+       trajectory = simulate(T)         # policy: inverter on ⇔ SOC > T
+       cost(T) = Import(T) − f·SOC_end(T) + w_e·Export(T)
+   T* = argmin cost      (tie → see D-A1)
+3. Surplus allocation on the T* trajectory:
+   identify export hours → assign loads by priority
+   (in parallel when the surplus is sufficient); each assignment is checked
+   by re-simulation against Z2 (no additional import) and Z3 (SOC limits, whole horizon)
+4. Appliance advisor: "Can a run start now without additional import?" per appliance
+5. Outputs: T*, inverter recommendation (with hysteresis), load plans/recommendations,
+   min/max SOC, import/export forecast — all from ONE trajectory
 ```
 
-## 2. Entscheidungspunkte
+## 2. Decision Points
 
-### D-A1 Terminalwert & Gleichstands-Regel (wichtigste Stellschraube)
+### D-A1 Terminal Value & Tie-Breaking Rule (the most important tuning knob)
 
-Am Horizontende verbleibende Batterieenergie muss bewertet werden, sonst
-„verheizt" der Optimierer sie grundlos bis zum Minimum.
+The battery energy remaining at the end of the horizon must be valued, otherwise
+the optimizer "burns it off" down to the minimum for no reason.
 
-- **Terminalwert:** `f = η_entladen · η_inverter ≈ 0,92` — gespeicherte Energie
-  ist so viel wert wie der Import, den sie später ersetzt. Damit ist
-  „jetzt entladen vs. aufheben" bei fehlendem PV-Überschuss kostenneutral —
-  mathematisch korrekt, denn genau so ist es real.
-- **Gleichstands-Regel entscheidet dann das Verhalten:**
-  - **(a) höhere Schwelle bevorzugen („Halten")**: robust gegen
-    Prognosefehler (volle Batterie schützt vor Import, Export ist eh wertlos).
-    Konsequenz: An trüben Tagen kauft das Haus Netzstrom, obwohl die Batterie
-    z. B. 60 % hat — sie wird erst später (durch DC-Last/nächste Lücke) genutzt.
-    Sieht „dumm" aus, ist aber kostenneutral. → Prototyp-Szenario S2.
-  - **(b) niedrigere Schwelle bevorzugen („Nutzen")**: Haus läuft bevorzugt aus
-    der Batterie („gefühlter Eigenverbrauch"), Risiko: bei unerwartetem
-    Verbrauch ist die Reserve weg.
-  - **Entscheidung des Betreibers (2026-07-03): (b) Nutzen.** Begründung:
-    1. Es soll vermieden werden, dass die Batterie bei der nächsten starken
-       Sonne nicht weit genug entladen ist (Energie würde verschenkt).
-    2. Als Backstop existiert eine **Notfall-Stützung** (§D-A9): Netzteile
-       können die DC-Ebenen übernehmen und verhindern hart, dass die Batterie
-       in den unerlaubten Bereich fällt.
-    3. Der Puffer aus D-A3 (+5 %) fängt normale Prognosefehler.
-    Zusätzlich bleibt der Export-Malus `w_e = 0,05` als zweiter Tiebreaker.
-  - **Ausbaustufe (Phase 4):** Risikobewertung aus Jahreszeit und
-    Prognosegüte der Vergangenheit (beobachteter Forecast-Fehler) → Puffer
-    dynamisch statt fix 5 %.
-  - **Erkenntnis aus der Kern-Implementierung (2026-07-04):** Bei Tagen ohne
-    nennenswerten PV-Überschuss ist „Halten" meist **strikt** günstiger, kein
-    Gleichstand: Die Batterie ist auf dem direkten DC-Pfad (η≈0,97) mehr wert
-    als über den Inverter (η≈0,92 + Standby), und eine leere Batterie zwingt
-    die DC-Schiene in teuren Netzbezug über den Charger (Faktor 1/0,92). Der
-    Optimierer findet das selbst; der „Nutzen"-Tiebreak greift nur bei echten
-    Gleichständen (er wählt dann die untere Kante des kostengleichen
-    Plateaus). Das gewünschte „vor starker Sonne Platz schaffen" entsteht
-    automatisch, sobald Überschuss prognostiziert ist (Szenario S1).
+- **Terminal value:** `f = η_discharge · η_inverter ≈ 0.92` — stored energy
+  is worth as much as the import it later replaces. This makes
+  "discharge now vs. keep it" cost-neutral when there is no PV surplus —
+  mathematically correct, because that is exactly how it works in reality.
+- **The tie-breaking rule then decides the behaviour:**
+  - **(a) prefer the higher threshold ("Hold")**: robust against
+    forecast errors (a full battery protects against import, export is worthless anyway).
+    Consequence: on overcast days the house buys grid power even though the battery
+    is at, say, 60 % — it is only used later (by DC load / the next gap).
+    Looks "dumb" but is cost-neutral. → prototype scenario S2.
+  - **(b) prefer the lower threshold ("Use")**: the house runs preferentially from
+    the battery ("perceived self-consumption"), risk: if consumption is
+    unexpected, the reserve is gone.
+  - **Operator decision (2026-07-03): (b) Use.** Rationale:
+    1. It should be avoided that the battery is not discharged far enough for the
+       next strong sun (energy would be wasted).
+    2. As a backstop there is an **emergency support** (§D-A9): PSUs
+       can take over the DC levels and hard-prevent the battery
+       from falling into the disallowed range.
+    3. The buffer from D-A3 (+5 %) catches normal forecast errors.
+    In addition, the export malus `w_e = 0.05` remains as a second tiebreaker.
+  - **Extension stage (Phase 4):** risk assessment from season and
+    past forecast quality (observed forecast error) → buffer
+    dynamic instead of a fixed 5 %.
+  - **Finding from the core implementation (2026-07-04):** On days without
+    notable PV surplus, "Hold" is usually **strictly** cheaper, no
+    tie: the battery on the direct DC path (η≈0.97) is worth more
+    than via the inverter (η≈0.92 + standby), and an empty battery forces
+    the DC rail into expensive grid draw via the charger (factor 1/0.92). The
+    optimizer finds this itself; the "Use" tiebreak only takes effect on real
+    ties (it then picks the lower edge of the cost-equal
+    plateau). The desired "make room before strong sun" arises
+    automatically as soon as surplus is forecast (scenario S1).
 
-### D-A2 Hysterese & Schaltstabilität
+### D-A2 Hysteresis & Switching Stability
 
-Problem: `SOC > T*` wird alle 5 min neu bewertet; nahe der Schwelle droht
-Flattern des realen Inverters (und T* selbst kann zwischen fast gleichwertigen
-Kandidaten springen).
+Problem: `SOC > T*` is re-evaluated every 5 min; near the threshold there is a risk of
+flapping of the real inverter (and T* itself can jump between nearly equivalent
+candidates).
 
-- **Entscheidung des Betreibers (2026-07-03):** Der Inverter verträgt häufiges
-  Schalten; Limit nur **max. 1 Schaltvorgang pro Minute**.
-  1. Ausgabe-Hysterese: an bei `SOC ≥ T*+1 %`, aus bei `SOC ≤ T*−1 %`,
-     dazwischen letzten Zustand halten.
-  2. Schwellen-Trägheit: neues T* nur übernehmen, wenn es ≥ 2 % vom alten
-     abweicht oder die Kosten um > ε besser sind (verhindert Springen zwischen
-     gleichwertigen Kandidaten).
-  3. Mindest-Schaltabstand für die Inverter-Empfehlung: **1 min**.
+- **Operator decision (2026-07-03):** The inverter tolerates frequent
+  switching; limit only **at most 1 switching operation per minute**.
+  1. Output hysteresis: on at `SOC ≥ T*+1 %`, off at `SOC ≤ T*−1 %`,
+     in between hold the last state.
+  2. Threshold inertia: adopt a new T* only if it deviates ≥ 2 % from the old
+     one or the cost is better by > ε (prevents jumping between
+     equivalent candidates).
+  3. Minimum switching interval for the inverter recommendation: **1 min**.
 
-### D-A3 Umgang mit Prognose-Unsicherheit
+### D-A3 Handling Forecast Uncertainty
 
-- Optionen: (a) PV-Pessimismusfaktor (Prognose × 0,9), (b) SOC-Puffer über dem
-  Minimum (Planung rechnet mit `min+X %`), (c) nichts — häufiges Replanning
-  korrigiert.
-- **Entscheidung des Betreibers (2026-07-03): (b) mit X = 5 %** (konfigurierbar)
-  plus (c). Ein Pessimismusfaktor (a) verzerrt auch die Lastallokation
-  (Überschuss wird systematisch unterschätzt → Fossibots laden zu selten).
+- Options: (a) PV pessimism factor (forecast × 0.9), (b) SOC buffer above the
+  minimum (planning computes with `min+X %`), (c) nothing — frequent replanning
+  corrects.
+- **Operator decision (2026-07-03): (b) with X = 5 %** (configurable)
+  plus (c). A pessimism factor (a) also distorts the load allocation
+  (surplus is systematically underestimated → Fossibots charge too rarely).
 
-### D-A4 Zusatzlasten: Toleranz & Taktung
+### D-A4 Additional Loads: Tolerance & Cycling
 
-- **Batterieanteil-Toleranz:** **Entscheidung des Betreibers: etwas Toleranz
-  erlauben.** Default **15 %** Batterieanteil pro Last (konfigurierbar 0–50 %).
-  Die harte Bedingung „kein zusätzlicher Netzimport über den Horizont" (Z2)
-  bleibt davon unberührt und wird weiterhin per Re-Simulation geprüft — die
-  Toleranz erlaubt nur, dass eine Last kurzzeitig anteilig aus der Batterie
-  läuft (z. B. Wolkenlücke), solange die Bilanz stimmt.
-- **v2 — zielbasiertes Gate (Entscheidung des Betreibers, 2026-07-04):**
-  Zusätzlich zu den direkten Überschussstunden (Pass 1) gibt es einen
-  zweiten Allokationspass: Eine Last darf auch in einer Stunde **ohne**
-  direkten Überschuss laufen (z. B. Vorladen vor einer kurzen, starken
-  Mittagsspitze), wenn die Re-Simulation über den gesamten Horizont beweist:
-  (a) der Netzimport steigt nicht, (b) der SOC-Puffer hält, und (c) der
-  verlorene Überschuss sinkt um mindestens `(1 − Toleranz) × Lastenergie` —
-  die Energie stammt also nachweislich, zeitversetzt über die Batterie, aus
-  sonst verlorenem Überschuss. Energiebegrenzte Lasten (Fossibots) kommen
-  nur mit Restbudget aus Pass 1 in Pass 2 (Sättigung im Sonnenfenster hat
-  Vorrang, spart Batteriezyklen). Das schädliche Szenario „5 Uhr, 50 % SOC"
-  wird durch (a) automatisch verworfen (Batterie würde das
-  Inverter-Minimum reißen → Import); das nützliche Szenario „kurzes
-  Sonnenfenster, hoher SOC" wird automatisch erlaubt.
-- **Merge-Prinzip (Betreiber-Einsicht, 2026-07-04):** Alle Gate-Bedingungen
-  sind **Differenzvergleiche** zweier vollständiger Trajektorien. Sobald
-  beide Varianten (mit/ohne Laststunde) den Max-SOC erreichen, sind sie ab
-  dort identisch — alles nach dem „Merge-Punkt" kürzt sich automatisch
-  heraus. Ein explizites Abschneiden der Simulation ist deshalb unnötig.
-  Konsequenz für die min-SOC-Bedingung (b): Sie prüft **relativ** — eine
-  Laststunde wird nur verworfen, wenn sie den minimalen SOC unter den Puffer
-  drückt UND gegenüber dem Plan ohne diese Stunde verschlechtert. Ein
-  SOC-Tief am trüben Horizontende, das in beiden Varianten identisch
-  auftritt, kann heutige Überschussstunden nicht mehr blockieren.
-- **v3 — Mindestlaufzeit-ehrliche Bewertung + latest-first (Betreiber-
-  Entscheidung, 2026-07-05):** Zwei Korrekturen nach dem Nachtlade-Vorfall
-  vom 05.07. (04:59:50, ~250 Wh real für 5 Wh Plan):
-  1. Jede Aktivierungsentscheidung wird mit der Energie bewertet UND
-     simuliert, die der Executor real erzwingt: `Leistung ×
-     max(Slot-Restdauer, Mindestlaufzeit)`, zeitlich über Slot-Grenzen
-     verteilt („Spill", alle betroffenen Slots werden gemeinsam geplant).
-     Damit kann der degenerierte Slot 0 (angebrochene Stunde, in Minute :59
-     nur 1/60 h) keine Mini-Energien mehr durch die Gates schleusen, die
-     die reale Mindestlaufzeit anschließend um Faktor 50 übertrifft. Das
-     Sättigungs-Gate ist zusätzlich auf die Nennleistung gefloort, damit
-     ein leerer/verfallener Feedback-EMA es nicht schwächt.
-  2. Pass 2 läuft **latest-first** (späteste begründbare Stunde zuerst):
-     Zusatzlasten werden so spät wie möglich aktiviert, aber noch
-     rechtzeitig, dass kein Überschuss verloren geht. Nachholen mit
-     besserer Information schlägt die frühe Wette auf die Prognose;
-     Vorziehen ist nur gerechtfertigt, wenn das Überschussfenster
-     leistungsbegrenzt ist. Slots nach dem letzten Export-Slot können
-     Bedingung (c) nie erfüllen und werden übersprungen; ohne Export im
-     Horizont entfällt Pass 2 komplett.
-- **Taktung:** Planung im Stundenraster; reale Empfehlung mit
-  Mindest-Ein-/Ausschaltdauer (Default 30 min) — schont Geräte und Relais
-  und geht seit v3 als committed-Energie in die Bewertung ein.
-- **Sättigung:** Fossibot-SOC ≥ konfigurierbarem Ziel (Default 100 %) → Last
-  gilt als gesättigt und wird übersprungen (L8). Restenergiebedarf
-  `= (Ziel−SOC) × 2 kWh`, geplante Ladeleistung aus Feedback-Entität
-  (EMA-geglättet), Fallback 300 W (L7).
+- **Battery-share tolerance:** **Operator decision: allow some
+  tolerance.** Default **15 %** battery share per load (configurable 0–50 %).
+  The hard condition "no additional grid import over the horizon" (Z2)
+  remains unaffected and is still checked by re-simulation — the
+  tolerance only allows a load to run partly from the battery for a short time
+  (e.g. a cloud gap), as long as the balance holds.
+- **v2 — objective-based gate (operator decision, 2026-07-04):**
+  In addition to the direct surplus hours (pass 1) there is a
+  second allocation pass: a load may also run in an hour **without**
+  direct surplus (e.g. pre-charging before a short, strong
+  midday peak) if the re-simulation over the entire horizon proves:
+  (a) grid import does not rise, (b) the SOC buffer holds, and (c) the
+  lost surplus drops by at least `(1 − tolerance) × load energy` —
+  so the energy demonstrably comes, time-shifted through the battery, from
+  otherwise-lost surplus. Energy-limited loads (Fossibots) enter
+  pass 2 only with budget left over from pass 1 (saturating within the sun window has
+  priority, saving battery cycles). The harmful scenario "5 a.m., 50 % SOC"
+  is automatically discarded by (a) (the battery would breach the
+  inverter minimum → import); the useful scenario "short
+  sun window, high SOC" is automatically allowed.
+- **Merge principle (operator insight, 2026-07-04):** All gate conditions
+  are **difference comparisons** of two complete trajectories. As soon as
+  both variants (with/without the load hour) reach the max SOC, they are
+  identical from there on — everything after the "merge point" cancels out
+  automatically. An explicit truncation of the simulation is therefore unnecessary.
+  Consequence for the min-SOC condition (b): it checks **relatively** — a
+  load hour is only discarded if it pushes the minimum SOC below the buffer
+  AND worsens it relative to the plan without that hour. An
+  SOC trough at an overcast horizon end that occurs identically in both variants
+  can no longer block today's surplus hours.
+- **v3 — minimum-runtime-honest evaluation + latest-first (operator
+  decision, 2026-07-05):** Two corrections after the night-charging incident
+  of 07-05 (04:59:50, ~250 Wh real for a 5 Wh plan):
+  1. Every activation decision is evaluated AND simulated with the energy
+     that the executor really forces: `power ×
+     max(slot remaining duration, minimum runtime)`, distributed over time across slot
+     boundaries ("spill", all affected slots are planned together).
+     This means the degenerate slot 0 (a partial hour, at minute :59
+     only 1/60 h) can no longer slip mini-energies through the gates that
+     the real minimum runtime then exceeds by a factor of 50. The
+     saturation gate is additionally floored at the nominal power, so that
+     an empty/decayed feedback EMA cannot weaken it.
+  2. Pass 2 runs **latest-first** (the latest justifiable hour first):
+     additional loads are activated as late as possible, but still
+     early enough that no surplus is lost. Catching up with
+     better information beats the early bet on the forecast;
+     bringing forward is only justified if the surplus window is
+     power-limited. Slots after the last export slot can
+     never satisfy condition (c) and are skipped; without export in the
+     horizon pass 2 is dropped entirely.
+- **Cycling:** planning on the hourly grid; the real recommendation with a
+  minimum on/off duration (default 30 min) — spares appliances and relays
+  and, since v3, enters the evaluation as committed energy.
+- **Saturation:** Fossibot SOC ≥ configurable target (default 100 %) → the load
+  is considered saturated and is skipped (L8). Remaining energy demand
+  `= (target−SOC) × 2 kWh`, planned charge power from the feedback entity
+  (EMA-smoothed), fallback 300 W (L7).
 
-### D-A5 Geräteprofile (Waschmaschine/Geschirrspüler)
+### D-A5 Appliance Profiles (Washer/Dishwasher)
 
-- v1: pro Gerät konfiguriert: Erkennungs-Entität (Status oder Leistung),
-  Programm-Energie (kWh) und -Dauer (h). Läuft das Gerät, wird die Restenergie
-  gleichverteilt über die Restdauer der AC-Prognose aufaddiert (G2).
-- LG ThinQ (Waschmaschine) liefert Restzeit → genauere Verteilung möglich.
-- Startfenster-Empfehlung (G3): Testeinfügung des kompletten Profils ab jetzt;
-  `an`, wenn Import-Delta = 0 (und SOC-Grenzen halten).
+- v1: configured per appliance: detection entity (status or power),
+  program energy (kWh) and duration (h). While the appliance runs, the remaining energy is
+  spread evenly over the remaining duration of the AC forecast and added on (G2).
+- LG ThinQ (washer) provides remaining time → more accurate distribution possible.
+- Start-window recommendation (G3): trial insertion of the complete profile from now;
+  `on` when import delta = 0 (and the SOC limits hold).
 
-### D-A6 Horizont
+### D-A6 Horizon
 
-- Bisher: bis 08:00 übermorgen (willkürlich). Mit Terminalwert ist das
-  Horizontende unkritisch. **Empfehlung:** volle verfügbare Prognose nutzen
-  (bis Mitternacht von Tag 3).
+- So far: until 08:00 the day after tomorrow (arbitrary). With the terminal value the
+  horizon end is uncritical. **Recommendation:** use the full available forecast
+  (until midnight of day 3).
 
-### D-A7 Zeitraster
+### D-A7 Time Grid
 
-- **Empfehlung:** Stunden in v1 (Datenlage: Tagesprognosen). Kern so bauen,
-  dass das Raster ein Parameter ist → 15-min-Raster in Phase 4 möglich.
+- **Recommendation:** hours in v1 (data situation: daily forecasts). Build the core so
+  that the grid is a parameter → a 15-min grid becomes possible in Phase 4.
 
-### D-A8 Verhalten bei Datenausfall
+### D-A8 Behaviour on Data Loss
 
-- Wie bisher: letzte gültige Werte mit Altersgrenzen (SOC 1 h/6 h, Prognose
-  24 h/72 h). **Empfehlung ergänzend:** Bei Überschreiten wird der letzte Plan
-  eingefroren und nach weiteren 2 h werden alle Empfehlungs-Entitäten
-  `unavailable` + Zusatzlasten-Empfehlung „aus" (fail-safe: lieber Überschuss
-  verschenken als Netzbezug riskieren).
+- As before: last valid values with age limits (SOC 1 h/6 h, forecast
+  24 h/72 h). **Additional recommendation:** on exceedance the last plan is
+  frozen, and after a further 2 h all recommendation entities become
+  `unavailable` + the additional-load recommendation "off" (fail-safe: better to
+  waste surplus than risk grid draw).
 
-### D-A9 Notfall-Stützung der DC-Ebenen (neu, aus Betreiber-Antwort zu D-A1)
+### D-A9 Emergency Support of the DC Levels (new, from the operator answer to D-A1)
 
-Die Anlage hat zwei DC-Ebenen: die **48-V-Batterie** und eine **24-V-Schiene**,
-die normal über einen DC/DC-Wandler aus der Batterie versorgt wird. Für den
-Notfall existieren zwei Stütz-Möglichkeiten:
+The system has two DC levels: the **48 V battery** and a **24 V rail**,
+which is normally supplied from the battery via a DC/DC converter. For the
+emergency there are two support options:
 
-1. **48-V-Stütznetzteil:** speist mit fixer Leistung (Default **60 W**,
-   Parameter) auf die Batterieebene → kompensiert Grundlast, Batterie fällt
-   nicht in den unerlaubten Bereich.
-2. **24-V-Netzteil statt DC/DC:** übernimmt die 24-V-Verbraucher komplett aus
-   dem Netz → entlastet die Batterie um die DC-Last.
+1. **48 V support PSU:** feeds a fixed power (default **60 W**,
+   parameter) into the battery level → compensates the base load, the battery does
+   not fall into the disallowed range.
+2. **24 V PSU instead of DC/DC:** takes over the 24 V loads entirely from
+   the grid → relieves the battery of the DC load.
 
-**Design:** Das Plugin bekommt je Stützpfad eine Empfehlungs-Entität
-(binary_sensor), die „an" geht, wenn die Simulation trotz Inverter-aus ein
-Unterschreiten von `batt_min + Puffer` erwartet. Die Stützpfade gehen als
-schaltbare Lasten/Quellen in die Simulation ein (48-V-Stützung = −60 W auf die
-Batteriebilanz; 24-V-Netzteil = DC-Last → 0, Netzimport stattdessen).
-Priorität: Stützung ist letzte Eskalationsstufe — normale Planung soll sie nie
-brauchen; sie deckt Prognosefehler und Ausnahmesituationen ab.
+**Design:** The plugin gets one recommendation entity per support path
+(binary_sensor) that turns "on" when the simulation, despite inverter-off, expects
+a drop below `batt_min + buffer`. The support paths enter the simulation as
+switchable loads/sources (48 V support = −60 W on the
+battery balance; 24 V PSU = DC load → 0, grid import instead).
+Priority: support is the last escalation stage — normal planning should never
+need it; it covers forecast errors and exceptional situations.
 
-**Entscheidung F-N1 (2026-07-03):** Beide Stützpfade sind über HA-Entitäten
-schaltbar und das Plugin soll sie **direkt schalten** (Entitäts-IDs in der
-Konfiguration; zusätzlich Status-Entitäten zur Transparenz). Anders als bei
-Inverter/Zusatzlasten (Empfehlung + Nutzer-Automation) übernimmt die
-Integration hier selbst die Schaltung — Schutzfunktion mit Vorrang.
+**Decision F-N1 (2026-07-03):** Both support paths are switchable via HA entities
+and the plugin shall **switch them directly** (entity IDs in the
+configuration; plus status entities for transparency). Unlike with
+inverter/additional loads (recommendation + user automation), the
+integration performs the switching itself here — a protective function with priority.
 
-**Ergänzung Make-before-break (2026-07-04, Betreiber-Anforderung):** Die
-24-V-Schiene darf beim Umschalten nie ohne Quelle sein. Deshalb ist auch der
-**48-V→24-V-DC/DC-Wandler** als Schalter konfigurierbar, und die Umschaltung
-läuft sequenziert mit konfigurierbarer Verzögerung (Default 3 s):
+**Addition make-before-break (2026-07-04, operator requirement):** The
+24 V rail must never be without a source when switching over. Therefore the
+**48 V→24 V DC/DC converter** is also configurable as a switch, and the switchover
+runs sequenced with a configurable delay (default 3 s):
 
-- **Aktivierung Netzbetrieb:** 24-V-Netzteil EIN → Delay → DC/DC AUS.
-- **Rückkehr Batteriebetrieb:** DC/DC EIN → Delay → 24-V-Netzteil AUS.
-- **Fehlerfall:** Meldet die neu eingeschaltete Quelle nach dem Delay nicht
-  „on", wird die Umschaltung abgebrochen — die bisherige Quelle bleibt an,
-  der nächste Planungszyklus versucht es erneut (Mindest-Schaltabstand gilt).
-- Ist kein DC/DC-Schalter konfiguriert, wird nur das Netzteil geschaltet
-  (Annahme: Parallelspeisung/Dioden-Entkopplung ist zulässig).
-- Beim Start übernimmt die Integration den realen Ist-Zustand der Schalter
-  (wichtig nach HA-Neustart mit aktiver Stützung).
+- **Activate grid operation:** 24 V PSU ON → delay → DC/DC OFF.
+- **Return to battery operation:** DC/DC ON → delay → 24 V PSU OFF.
+- **Fault case:** If the newly switched-on source does not report
+  "on" after the delay, the switchover is aborted — the previous source stays on,
+  and the next planning cycle tries again (the minimum switching interval applies).
+- If no DC/DC switch is configured, only the PSU is switched
+  (assumption: parallel feeding / diode decoupling is permissible).
+- On startup the integration adopts the real actual state of the switches
+  (important after an HA restart with active support).
 
-**Entscheidung F-N2 (2026-07-05): Manueller Override pro Netzteil.** Im
-Winter kann es sinnvoll sein, die Netzteile dauerhaft manuell zu aktivieren.
-Wird ein Stütz-Netzteil **extern eingeschaltet** (nicht durch die
-Integration), pausiert die automatische Steuerung für genau dieses Netzteil
-— inklusive der Make-before-break-Sequenz beim 24-V-Pfad. Erst wenn das
-Netzteil **extern wieder ausgeschaltet** wird, übernimmt die Automatik
-erneut (beim 24-V-Pfad wird dann ein ausgeschalteter DC/DC-Wandler sofort
-wieder eingeschaltet, damit die Schiene nicht tot ist). Details:
+**Decision F-N2 (2026-07-05): Manual override per PSU.** In
+winter it can make sense to activate the PSUs permanently by hand.
+If a support PSU is **switched on externally** (not by the
+integration), the automatic control pauses for exactly this PSU
+— including the make-before-break sequence on the 24 V path. Only when the
+PSU is **switched off externally again** does the automation take over
+again (on the 24 V path a switched-off DC/DC converter is then immediately
+switched back on so that the rail is not dead). Details:
 
-- Der Modus (Automatik/Manuell) wird **pro Netzteil persistiert** und
-  überlebt HA-Neustarts; zusätzlich wird der eigene Schaltzustand der
-  Integration persistiert, damit nach einem Neustart „an, aber nicht von
-  uns" von „an, weil von uns geschaltet" unterscheidbar bleibt.
-- Im manuellen Modus rechnet die **Simulation den Pfad als dauerhaft
-  aktiv** (24 V: DC-Last aus dem Netz; 48 V: konstante Einspeisung) —
-  die SOC-Prognose entspricht damit dem realen Winterbetrieb.
-- Je Netzteil gibt es einen **Modus-Sensor** (`sensor. … support mode`,
-  enum Automatik/Manuell) für Dashboards und Benachrichtigungen.
-- Karenzzeit: Innerhalb von `min_switch_interval_s` nach einer eigenen
-  Schaltaktion gilt ein unerwartet eingeschaltetes Netzteil als spät
-  bestätigendes Gerät (Zustand wird übernommen), nicht als Override.
-- Manuelles **Ausschalten** eines automatisch aktivierten Netzteils bleibt
-  Automatik: Die Schutzfunktion darf es bei Bedarf wieder einschalten.
+- The mode (automatic/manual) is **persisted per PSU** and
+  survives HA restarts; in addition the integration's own switching state is
+  persisted, so that after a restart "on, but not from
+  us" stays distinguishable from "on, because switched by us".
+- In manual mode the **simulation treats the path as permanently
+  active** (24 V: DC load from the grid; 48 V: constant feed-in) —
+  the SOC forecast thus matches real winter operation.
+- Per PSU there is a **mode sensor** (`sensor. … support mode`,
+  enum automatic/manual) for dashboards and notifications.
+- Grace period: within `min_switch_interval_s` after our own
+  switching action, an unexpectedly switched-on PSU is treated as a
+  late-confirming device (the state is adopted), not as an override.
+- Manually **switching off** an automatically activated PSU stays
+  automatic: the protective function may switch it back on if needed.
 
-## 3. Prototyp-Ergebnisse (Stundenraster, Defaults der Integration)
+## 3. Prototype Results (hourly grid, integration defaults)
 
-Prototyp: `standalone_test/`-unabhängiges Skript; Batterie 5 kWh (5–95 %),
-Inverter-Min 20 %, Charger 92 %/Inverter 95 %, Lasten: 2× Fossibot 300 W
-(je 2 kWh Bedarf) + Entfeuchter 400 W, Priorität in dieser Reihenfolge.
+Prototype: a script independent of the current HA layer (historical); battery 5 kWh (5–95 %),
+inverter min 20 %, charger 92 %/inverter 95 %, loads: 2× Fossibot 300 W
+(2 kWh demand each) + dehumidifier 400 W, priority in this order.
 
-| Szenario | Ergebnis |
+| Scenario | Result |
 |---|---|
-| **S1** 20:00, SOC 80 %, morgen 14 kWh | T\* = 57 % → Batterie wird nachts ins Haus entladen (Platz schaffen), **Import 0**, Lasten laden 8–14 Uhr: Export sinkt 17,1 → 9,9 kWh |
-| **S2** 20:00, SOC 60 %, morgen 1,5 kWh | T\* = 95 % („Halten", D-A1a): kein Inverter-Betrieb, Batterie als Reserve, Import 2,5 kWh (wäre bei jeder anderen Schwelle gleich oder schlechter) |
-| **S3 = Nutzer-Fehlerszenario** 21:00, SOC 84 %, morgen 13 kWh | **Keine Last nachts aktiv** — Fossibots/Entfeuchter laufen erst 8–14 Uhr im echten Überschuss; Import bleibt 0. Alte Logik hätte die Last sofort aktiviert. |
-| **S4** 11:00, SOC 93 %, sonnig | Lasten laufen **sofort** (Batterie fast voll, Überschuss da), Export 10,8 → 4,8 kWh |
+| **S1** 20:00, SOC 80 %, tomorrow 14 kWh | T\* = 57 % → the battery is discharged into the house overnight (make room), **import 0**, loads charge 8–14:00: export drops 17.1 → 9.9 kWh |
+| **S2** 20:00, SOC 60 %, tomorrow 1.5 kWh | T\* = 95 % ("Hold", D-A1a): no inverter operation, battery as reserve, import 2.5 kWh (would be equal or worse at any other threshold) |
+| **S3 = user error scenario** 21:00, SOC 84 %, tomorrow 13 kWh | **No load active overnight** — Fossibots/dehumidifier only run 8–14:00 in the real surplus; import stays 0. The old logic would have activated the load immediately. |
+| **S4** 11:00, SOC 93 %, sunny | Loads run **immediately** (battery almost full, surplus present), export 10.8 → 4.8 kWh |
 
-Beobachtungen:
+Observations:
 
-- Die Schwellwertsuche erzeugt genau das erwartete Verhalten „vor sonnigen
-  Tagen Platz schaffen, vor trüben Tagen sparen" — ohne dass dieses Verhalten
-  irgendwo einprogrammiert wäre; es folgt aus der Zielfunktion.
-- Die Allokation verhindert konstruktionsbedingt das alte Fehlverhalten
-  (S3): Lasten laufen nur in Stunden mit realem Überschuss.
-- Restlicher Export in S1/S3/S4 ist physikalisch unvermeidbar (PV-Überschuss >
-  Speicher + Lastaufnahme) — sichtbar im geplanten Sensor
-  `verlorener Überschuss`.
+- The threshold search produces exactly the expected behaviour "make room before
+  sunny days, save before overcast days" — without this behaviour being
+  programmed in anywhere; it follows from the objective function.
+- The allocation prevents by construction the old misbehaviour
+  (S3): loads run only in hours with real surplus.
+- Remaining export in S1/S3/S4 is physically unavoidable (PV surplus >
+  storage + load intake) — visible in the planned sensor
+  `lost surplus`.
 
-## 4. Offene Punkte nach dieser Diskussion
+## 4. Open Points After This Discussion
 
-- Bestätigung/Änderung der Empfehlungen D-A1 … D-A4 durch den Betreiber.
-- Exakte Konfigurationsfelder je Last/Gerät → wird beim Config-Flow-Design
-  (Phase 2/3) festgelegt.
+- Confirmation/change of the recommendations D-A1 … D-A4 by the operator.
+- Exact configuration fields per load/appliance → determined during the config-flow design
+  (Phase 2/3).

@@ -1,287 +1,289 @@
-# Spezifikation: Zwei-Bus-DC-Modell & spannungsgeführte Stützpfade (F-N3)
+# Specification: Two-Bus DC Model & Voltage-Guided Support Paths (F-N3)
 
-> Status: **Entwurf — wartet auf Betreiber-Feedback** (2026-07-05)
-> Erweitert ALGORITHM.md D-A9/F-N1/F-N2 um die physikalisch korrekte
-> Abbildung der DC-Ebenen. Synthese aus drei unabhängigen Designentwürfen
-> (Physik / HA-UX / Migration) + zwei Jury-Reviews; Zielversionen
-> v0.7.0 … v0.7.6, je Phase einzeln deploybar und per Konfiguration
-> rückrollbar.
+> Status: **implemented — F-N3 phases 0-7 complete as of v0.7.9/0.7.10.**
+> Extends ALGORITHM.md D-A9/F-N1/F-N2 with the physically correct
+> representation of the DC levels. Synthesis of three independent design
+> drafts (physics / HA-UX / migration) + two jury reviews; target versions
+> v0.7.0 … v0.7.6, each phase independently deployable and roll-back-able
+> via configuration.
 
-## 1. Betreiber-Anforderungen (2026-07-05)
+## 1. Operator Requirements (2026-07-05)
 
-- **R1 — Spannungs-Gate 48-V-Netzteil:** Ausgangsspannung fix 49,56 V.
-  Die ~60 W fließen nur, solange die Batteriespannung UNTER der Schwelle
-  liegt; darüber liefert das Netzteil nichts, auch wenn es eingeschaltet
-  ist. Schwelle konfigurierbar.
-- **R2 — Manueller 48-V-Modus = Spannungsregler:** Im manuellen Modus
-  soll das 48-V-Netzteil aktiv eingeschaltet werden, sobald die
-  Batteriespannung unter der Schwelle liegt (und oberhalb wieder aus).
-- **R3 — Manuell-Modus per Schalter:** Zusätzlich zur externen
-  Aktivierung (F-N2) je Netzteil ein Schalter der Integration.
-- **R4 — Geräteparameter:** 48-V-Netzteil, 24-V-Netzteil und
-  DC/DC-Wandler bekommen konfigurierbare Parameter: max. Strom,
-  Ausgangsspannung (→ Leistungs-Caps = U × I), Wirkungsgrade.
-- **R5 — Kombinationsabhängige Lastflüsse:** (48 V + DC/DC),
-  (48 V + 24 V), (nur 24 V), (nur DC/DC) ergeben unterschiedliche
-  AC/DC-Verteilungen, die die Simulation jeweils korrekt abbilden muss.
+- **R1 — Voltage gate for the 48 V PSU:** output voltage fixed at 49.56 V.
+  The ~60 W flow only as long as the battery voltage is BELOW the
+  threshold; above it the PSU delivers nothing, even when switched on.
+  Threshold configurable.
+- **R2 — Manual 48 V mode = voltage controller:** in manual mode the
+  48 V PSU should be actively switched on as soon as the battery voltage
+  drops below the threshold (and off again above it).
+- **R3 — Manual mode via switch:** in addition to external activation
+  (F-N2), one switch of the integration per PSU.
+- **R4 — Device parameters:** the 48 V PSU, 24 V PSU and DC/DC converter
+  get configurable parameters: max current, output voltage
+  (→ power caps = U × I), efficiencies.
+- **R5 — Combination-dependent load flows:** (48 V + DC/DC),
+  (48 V + 24 V), (24 V only), (DC/DC only) yield different
+  AC/DC distributions that the simulation must each represent correctly.
 
-## 2. Ist-Modell und seine bekannten Fehler
+## 2. Current Model and Its Known Errors
 
-Der Kern ([simulate.py](../custom_components/battery_manager/core/simulate.py))
-kennt **eine** ungeteilte DC-Lastreihe (`slot.dc_wh`) als Batterielast über
-`eta_discharge` — keine Bus-Trennung, kein DC/DC-Wirkungsgrad, keine Caps:
+The core ([simulate.py](../custom_components/battery_manager/core/simulate.py))
+knows **one** undivided DC load series (`slot.dc_wh`) as battery load via
+`eta_discharge` — no bus separation, no DC/DC efficiency, no caps:
 
-| Fehler | Wirkung |
+| Error | Effect |
 |---|---|
-| 24-V-PSU verschiebt die GESAMTE DC-Last ins Netz (1:1) | native 48-V-Lasten wandern fälschlich mit; kein η, kein Cap |
-| ~~48-V-PSU speist pauschal 60 W, ohne Spannungs-Gate~~ (gefixt v0.7.2) | Winter-Prognose kreditiert Energie, die real nie fließt |
-| ~~`grid_import += psu_wh` IMMER (auch bei voller Batterie)~~ (gefixt v0.7.6) | Überberechnung des Imports |
-| Lernen (Rev. 3) nimmt „Schalter an == 60 W geliefert" an | über-korrigiert AC und DC in Gate-zu-Stunden |
+| 24 V PSU shifts the ENTIRE DC load onto the grid (1:1) | native 48 V loads wrongly move with it; no η, no cap |
+| ~~48 V PSU feeds a flat 60 W, without a voltage gate~~ (fixed v0.7.2) | winter forecast credits energy that never really flows |
+| ~~`grid_import += psu_wh` ALWAYS (even with a full battery)~~ (fixed v0.7.6) | over-calculation of the import |
+| Learning (Rev. 3) assumes "switch on == 60 W delivered" | over-corrects AC and DC in gate-closed hours |
 
-**Live-Befund (2026-07-05):** Bei ~41 % SOC und −38 A Last lag
-`sensor.victron_battery_voltage` bei **48,66 V** (< 49,56 V!), während die
-Zellen 3,24 V (≈ 51,9 V) zeigten — Leitungs-/Shunt-Abfälle unter Last.
-Konsequenzen: (a) das Gate ist **lastgekoppelt**, nicht nur SOC-abhängig —
-das Netzteil trägt unter Winterlast schon bei mittlerem SOC; (b) es ist zu
-klären, an welchem Messpunkt das Netzteil real vergleicht (Bus vs.
-BMS-Klemme); (c) während Ladephasen hebt der Charger den Bus über die
-Schwelle → Gate zu, unabhängig vom SOC.
+**Live finding (2026-07-05):** at ~41 % SOC and −38 A load,
+`sensor.victron_battery_voltage` read **48.66 V** (< 49.56 V!), while the
+cells showed 3.24 V (≈ 51.9 V) — line/shunt drops under load.
+Consequences: (a) the gate is **load-coupled**, not just SOC-dependent —
+the PSU already contributes under winter load at medium SOC; (b) it must
+be clarified at which measurement point the PSU actually compares (bus vs.
+BMS terminal); (c) during charge phases the charger lifts the bus above the
+threshold → gate closed, regardless of SOC.
 
-## 3. Zielbild Datenmodell (Kern)
+## 3. Target Data Model (Core)
 
-- Neue frozen Dataclasses: `Psu48(output_voltage_v, max_current_a, eta)`,
+- New frozen dataclasses: `Psu48(output_voltage_v, max_current_a, eta)`,
   `Psu24(output_voltage_v, max_current_a, eta)`,
-  `DcDc(eta, max_current_a)`. **Ein-Parameter-Gate:** die Schwelle IST
-  die Ausgangsspannung (kein zweites Feld).
-- **Kein HourSlot-Split:** die Aufteilung 24-V-Schiene vs. nativer
-  48-V-Bus kommt als konfigurierter Anteil `dc24_share` (Default 100 % =
-  heutiges Verhalten) und wird IN `step_hour` angewandt — kleinster
-  Blast-Radius (series.py, Lernserien, dynamischer Puffer bleiben
-  unberührt).
-- `HourFlows` erweitert um: `psu48_delivered_wh`, `psu24_delivered_wh`,
+  `DcDc(eta, max_current_a)`. **Single-parameter gate:** the threshold IS
+  the output voltage (no second field).
+- **No HourSlot split:** the split of 24 V rail vs. native 48 V bus comes
+  as a configured share `dc24_share` (default 100 % = today's behaviour)
+  and is applied IN `step_hour` — the smallest blast radius (series.py,
+  learning series, dynamic buffer remain untouched).
+- `HourFlows` extended with: `psu48_delivered_wh`, `psu24_delivered_wh`,
   `dcdc_input_wh`, `dcdc_loss_wh`, `unserved_dc_wh`, `gate_open` —
-  für hourly_details, Debug-Export und Karten-Diagnose.
+  for hourly_details, debug export and card diagnostics.
 
-## 4. Simulationsgleichungen (ein Durchlauf, zwei orthogonale Dimensionen)
+## 4. Simulation Equations (one pass, two orthogonal dimensions)
 
-Notation je Slot: `dt`, `L24 = dc_wh × dc24_share`,
-`L48 = dc_wh × (1 − dc24_share)`, Caps `P48 = U48 × I48`,
-`P24 = U24 × I24`, η24/η48/η_dcdc; Batterie-η wie bisher.
+Notation per slot: `dt`, `L24 = dc_wh × dc24_share`,
+`L48 = dc_wh × (1 − dc24_share)`, caps `P48 = U48 × I48`,
+`P24 = U24 × I24`, η24/η48/η_dcdc; battery η as before.
 
-**Dimension 1 — Schienenquelle** (`dc24_from_grid`, Semantik unverändert):
+**Dimension 1 — rail source** (`dc24_from_grid`, semantics unchanged):
 
-- *DC/DC (Normalfall):* `served24 = min(L24, P_dcdc·dt)`;
-  `bus_draw24 = served24 / η_dcdc`; Verlust = Differenz;
-  `unserved += L24 − served24` (Schienen-Brownout: darf in keinem
-  akzeptierten Plan auftreten — Warnpfad).
-- *24-V-PSU:* `served24 = min(L24, P24·dt)`;
-  `grid_import += served24 / η24`; `bus_draw24 = 0`; ein bindender Cap
-  wird als `unserved` SICHTBAR gemacht, nicht still aus der Batterie
-  nachgefüllt (DC/DC ist in dieser Kombination aus).
-- *Beide an* (Parallelbetrieb, Betreiber-Antwort 8): **keine Entkopplung,
-  die Quelle mit der höheren Ausgangsspannung liefert** — die Simulation
-  vergleicht `psu24_output_voltage_v` vs. `dcdc_output_voltage_v` und
-  ordnet den Slot der höheren zu (die andere ~0 W). Damit ist auch der
-  3-s-Make-before-break-Überlapp brownout-frei abgebildet.
+- *DC/DC (normal case):* `served24 = min(L24, P_dcdc·dt)`;
+  `bus_draw24 = served24 / η_dcdc`; loss = difference;
+  `unserved += L24 − served24` (rail brownout: must not occur in any
+  accepted plan — warning path).
+- *24 V PSU:* `served24 = min(L24, P24·dt)`;
+  `grid_import += served24 / η24`; `bus_draw24 = 0`; a binding cap is
+  made VISIBLE as `unserved`, not silently refilled from the battery
+  (DC/DC is off in this combination).
+- *Both on* (parallel operation, operator answer 8): **no decoupling,
+  the source with the higher output voltage delivers** — the simulation
+  compares `psu24_output_voltage_v` vs. `dcdc_output_voltage_v` and
+  assigns the slot to the higher one (the other ~0 W). This also
+  represents the 3 s make-before-break overlap brownout-free.
 
-**Dimension 2 — 48-V-Bus:** `bus_load = L48 + bus_draw24`.
-`gate_open = dc48_an UND soc_start < gate_soc UND kein Netto-Ladeslot`
-(Charger/PV-Ladung hebt den Bus über die Schwelle — Jury-Gap #1).
+**Dimension 2 — 48 V bus:** `bus_load = L48 + bus_draw24`.
+`gate_open = dc48_on AND soc_start < gate_soc AND no net charge slot`
+(charger/PV charging lifts the bus above the threshold — Jury-Gap #1).
 
-- PSU-Einspeisung verrechnet **zuerst direkt** gegen die gleichzeitige
-  Buslast (ohne Batterie-Umweg — behebt den heutigen Doppel-η-Fehler),
-  der Rest lädt die Batterie MIT `eta_charge`;
-  **Abrechnung nach GELIEFERTER Energie**: `grid_import += delivered/η48`
-  (volle Batterie oder zues Gate ⇒ ~0 statt heute 60 Wh).
-- **Taper am Gate-Rand** (Jury-Gap #2): im Grenz-Slot ist
-  `delivered ≤ Energie bis gate_soc` — halbiert den
-  Worst-Case-Slotfehler.
-- Rest wie bisher: Batterie-Entnahme über η_discharge bis floor,
-  Shortfall über Charger aus dem Netz.
+- PSU feed is netted **first directly** against the simultaneous bus load
+  (without the battery detour — this fixes today's double-η error), the
+  remainder charges the battery WITH `eta_charge`;
+  **billing by DELIVERED energy**: `grid_import += delivered/η48`
+  (full battery or closed gate ⇒ ~0 instead of today's 60 Wh).
+- **Taper at the gate edge** (Jury-Gap #2): in the boundary slot
+  `delivered ≤ energy up to gate_soc` — halves the worst-case slot error.
+- Rest as before: battery draw via η_discharge down to floor,
+  shortfall via the charger from the grid.
 
-**Testnetz:** Energieerhaltungs-Property je Slot (Zuflüsse = Abflüsse +
-ΔSpeicher + Verluste) über JEDE Trajektorie der Suite; Golden-Plan-
-Snapshots beweisen Bit-Gleichheit unter neutralen Defaults.
+**Test net:** energy-conservation property per slot (inflows = outflows +
+ΔStorage + losses) over EVERY trajectory of the suite; golden-plan
+snapshots prove bit-equality under neutral defaults.
 
-## 5. Spannung ↔ SOC (Gate-Proxy)
+## 5. Voltage ↔ SOC (Gate Proxy)
 
-- **Echtzeit (R2-Regler):** direkter Spannungssensor `battery_voltage_entity`
-  = `sensor.victron_battery_voltage` (BMS, 15s-Zellsumme).
-- **15s-Kontext (Betreiber 2026-07-05):** Batterie = Pylontech US5000 =
-  15 Zellen. 49,56 V / 15 = **3,304 V/Zelle** — knapp unter der
-  Plateau-Ruhespannung bei mittlerem SOC. Bus ≈ Zellsumme (Live:
-  48,66–48,7 V ≈ 3,245 V × 15), also nur geringer Leitungsabfall; die
-  frühere „Bus sackt tief unter Zellen"-Sorge war ein 16s-Rechenfehler.
-- **Simulation (SOC-Raster):** konfigurierbares `gate_soc_percent` als
-  Proxy. Kalibrierung über eine mitlaufende **14-Tage-Diagnose** (SOC an
-  beobachteten Schwellen-Kreuzungen, als Attribut des Modus-Sensors).
-  **Explizit in der Saison kalibrieren** (Jury-Gap #3: LiFePO4-OCV und
-  Sag verschieben sich im Winter, genau wenn es zählt).
-- Grenzen dokumentiert: LiFePO4-Flachkurve, Lastsag (Gate öffnet unter
-  Last früher als in Ruhe — bei 15s moderat), Ladung schließt das Gate.
-  Sanity-Warnung, wenn `gate_soc ≤ soc_min + support_buffer` („Netzteil
-  kann nie helfen").
+- **Real-time (R2 controller):** direct voltage sensor `battery_voltage_entity`
+  = `sensor.victron_battery_voltage` (BMS, 15s cell sum).
+- **15s context (operator 2026-07-05):** battery = Pylontech US5000 =
+  15 cells. 49.56 V / 15 = **3.304 V/cell** — just below the plateau
+  rest voltage at medium SOC. Bus ≈ cell sum (live: 48.66–48.7 V ≈
+  3.245 V × 15), so only a small line drop; the earlier "bus sags far
+  below the cells" concern was a 16s calculation error.
+- **Simulation (SOC grid):** configurable `gate_soc_percent` as a proxy.
+  Calibration via a concurrent **14-day diagnostic** (SOC at observed
+  threshold crossings, as an attribute of the mode sensor).
+  **Explicitly calibrate in season** (Jury-Gap #3: LiFePO4 OCV and sag
+  shift in winter, exactly when it matters).
+- Limits documented: LiFePO4 flat curve, load sag (gate opens earlier
+  under load than at rest — moderate at 15s), charging closes the gate.
+  Sanity warning when `gate_soc ≤ soc_min + support_buffer` ("PSU can
+  never help").
 
-## 6. R2-Regler: spannungsgeführter manueller 48-V-Modus
+## 6. R2 Controller: voltage-guided manual 48 V mode
 
-Kleiner Zustandsautomat im Coordinator (nie im Kern), aktiv NUR im
-dc48-Manuell-Modus:
+Small state machine in the coordinator (never in the core), active ONLY in
+dc48 manual mode:
 
-- **Hybrid-Trigger:** State-Listener auf dem Spannungssensor + Fallback
-  je Koordinator-Zyklus (Selbstheilung nach Neustart/Listener-Verlust).
-- **Asymmetrische Hysterese + Dwell** (ein unnötiges EIN ist gratis —
-  das Gerät gated intern; ein falsches AUS kostet Stützung): EIN bei
-  `V ≤ 49,56 V` (Ausgangsspannung), AUS bei `V ≥ 49,8 V` (Betreiber 9);
-  beide Schwellen + Dwell als **Options-Felder** (nicht fest). Bei
-  Unterschreitung schaltet der Regler das PSU zwingend wieder ein
-  (Betreiber 5).
-- **Plausibilität:** nur 40–60 V akzeptieren; stale/unavailable ⇒
-  einfrieren; Sensor > 10 min ungültig ⇒ **Fail-safe = EIN** + Warnung.
-- Aktionen laufen über `_switch_lock`, zählen gegen
-  `min_switch_interval_s` (geteiltes Budget mit dem Planner, D-A2) und
-  werden in `_last_support_cmd`/`_support_pending_confirm` registriert —
-  der F-N2-Detektor darf Regler-Aktionen nie als „extern" werten. **Ein
-  vom Regler verursachtes PSU-AUS beendet daher NICHT den Manuell-Modus**
-  (löst Restfrage A; Modus-Ende nur über den R3-Schalter, §7).
-- **48-h-Log-only-Shakedown** vor der ersten scharfen Aktivierung
-  (Restfrage D).
-- **Feature-Gate:** ohne konfigurierten Spannungssensor bleibt
-  dc48-manuell exakt F-N2-hands-off — die bestehenden Tests bleiben gültig.
-- **24 V manuell bleibt hands-off** (unverändert F-N2): dort gibt es keinen
-  Regler, also gilt weiter „externes AUS = Modus-Ende".
+- **Hybrid trigger:** state listener on the voltage sensor + fallback per
+  coordinator cycle (self-healing after restart/listener loss).
+- **Asymmetric hysteresis + dwell** (one unnecessary ON is free — the
+  device gates internally; a false OFF costs support): ON at
+  `V ≤ 49.56 V` (output voltage), OFF at `V ≥ 49.8 V` (operator 9);
+  both thresholds + dwell as **options fields** (not fixed). On dropping
+  below, the controller mandatorily switches the PSU back on
+  (operator 5).
+- **Plausibility:** accept only 40–60 V; stale/unavailable ⇒ freeze;
+  sensor invalid > 10 min ⇒ **fail-safe = ON** + warning.
+- Actions run through `_switch_lock`, count against
+  `min_switch_interval_s` (shared budget with the planner, D-A2) and are
+  registered in `_last_support_cmd`/`_support_pending_confirm` — the
+  F-N2 detector must never treat controller actions as "external". **A
+  controller-caused PSU OFF therefore does NOT end manual mode** (resolves
+  open question A; mode end only via the R3 switch, §7).
+- **48 h log-only shakedown** before the first live activation
+  (open question D).
+- **Feature gate:** without a configured voltage sensor, dc48 manual
+  stays exactly F-N2 hands-off — the existing tests remain valid.
+- **24 V manual stays hands-off** (unchanged F-N2): there is no controller
+  there, so "external OFF = mode end" still applies.
 
-## 7. R3: Manuell-Schalter
+## 7. R3: Manual Switch
 
-- Zwei neue Schalter-Entitäten (`… Stützung 24 V manuell` / `… 48 V
-  manuell`), immer verfügbar (Muster: Urlaubsschalter).
-- **Ein** gemeinsamer Eintrittspunkt `async_set_support_manual(key,
-  on, source)` für Schalter UND externe Erkennung; Quelle wird
-  mitpersistiert (Anzeige/Diagnose). Externe EIN-Erkennung setzt den
-  Schalter mit; externes AUS beendet den Modus und setzt ihn zurück.
-- Eintritt/Austritt des 24-V-Modus über die Make-before-break-Sequenz.
-- **Race-Regeln** (Jury-Gap #5): Modus-Mutation nie während einer
-  laufenden N1a-Sequenz (bis Sequenzende verzögern); Doppel-Toggle
-  idempotent; Anzeigeverhalten während der Grace-Fenster definiert.
+- Two new switch entities (`… Support 24 V manual` / `… 48 V manual`),
+  always available (pattern: the vacation switch).
+- **One** shared entry point `async_set_support_manual(key, on, source)`
+  for the switch AND external detection; the source is persisted with it
+  (display/diagnostics). External ON detection sets the switch too;
+  external OFF ends the mode and resets it.
+- Entry/exit of the 24 V mode via the make-before-break sequence.
+- **Race rules** (Jury-Gap #5): never mutate the mode during a running
+  N1a sequence (defer until sequence end); double toggle idempotent;
+  display behaviour during the grace windows defined.
 
-## 8. Konfiguration (Basis-Flow, Support-Schritt)
+## 8. Configuration (base flow, support step)
 
-Neue Felder — ALLE mit verhaltensneutralen Defaults (η = 1,0, Caps
-unbegrenzt, Gate offen, `dc24_share` = 100 %): das Upgrade ändert nichts,
-bis der Betreiber reale Werte einträgt (Rollback = Felder leeren):
+New fields — ALL with behaviour-neutral defaults (η = 1.0, caps
+unlimited, gate open, `dc24_share` = 100 %): the upgrade changes nothing
+until the operator enters real values (rollback = clear the fields):
 
-| Feld | Default | Live-Wert (Betreiber) | Phase |
+| Field | Default | Live value (operator) | Phase |
 |---|---|---|---|
-| `battery_voltage_entity` | — (Feature-Gate) | `sensor.victron_battery_voltage` | 2 |
+| `battery_voltage_entity` | — (feature gate) | `sensor.victron_battery_voltage` | 2 |
 | `battery_cells_series` | 16 | **15** (Pylontech US5000) | 3 |
-| `psu48_output_voltage_v` / `psu48_max_current_a` / `psu48_eta` | 49,56 / — / 1,0 | 49,56 / **1,15** / 0,89 | 2 |
-| `psu24_output_voltage_v` / `psu24_max_current_a` / `psu24_eta` | — / — / 1,0 | **24,05** / **25** / 0,89 | 2 |
-| `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1,0 / — | **24,3** / **0,93** / **20** | 2 |
-| `psu48_off_voltage_v` (Regler-AUS) / `psu48_on_voltage_v` (EIN) | 49,8 / 49,56 | 49,8 / 49,56 | 5 |
-| `gate_soc_percent` | 100 (= offen) | kalibriert (Phase 3) | 3 |
-| `dc24_share_percent` | 100 | Schätzwert | 2 |
+| `psu48_output_voltage_v` / `psu48_max_current_a` / `psu48_eta` | 49.56 / — / 1.0 | 49.56 / **1.15** / 0.89 | 2 |
+| `psu24_output_voltage_v` / `psu24_max_current_a` / `psu24_eta` | — / — / 1.0 | **24.05** / **25** / 0.89 | 2 |
+| `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1.0 / — | **24.3** / **0.93** / **20** | 2 |
+| `psu48_off_voltage_v` (controller OFF) / `psu48_on_voltage_v` (ON) | 49.8 / 49.56 | 49.8 / 49.56 | 5 |
+| `gate_soc_percent` | 100 (= open) | calibrated (phase 3) | 3 |
+| `dc24_share_percent` | 100 | estimate | 2 |
 
 `rail24_voltage_entity` (optional): `sensor.victron_dcsystem_starter_voltage_229`
-(×10-Fix erledigt) → Dead-Rail-Verifikation.
+(×10 fix done) → dead-rail verification.
 
-## 9. Lernen (Reinigungsregeln Rev. 4)
+## 9. Learning (Cleaning Rules Rev. 4)
 
-- `_psu48_series` wird spannungs-gated über **LTS-Stunden-Min/Max**
-  (Jury-Gap #4): `max < U_thr` ⇒ volle Stunde geliefert;
-  `min > U_thr` ⇒ nichts geliefert; sonst (Clamp-Regime, PSU liefert
-  genau die Buslast) ⇒ Stunde **ausschließen statt klassifizieren**.
-- Optionaler AC-seitiger Messsensor fürs 48-V-Netzteil als Tier-1-Quelle —
-  mit **Deadband gegen Standby-Poisoning** (Lehre aus v0.6.2).
-- η-bewusste 24-V-Korrektur; `_CLEANING_RULES_VERSION = 4` +
-  Fingerprint ⇒ einmaliger Voll-Refetch.
+- `_psu48_series` is voltage-gated via **LTS hour min/max**
+  (Jury-Gap #4): `max < U_thr` ⇒ full hour delivered;
+  `min > U_thr` ⇒ nothing delivered; otherwise (clamp regime, PSU
+  delivers exactly the bus load) ⇒ **exclude the hour instead of
+  classifying it**.
+- Optional AC-side measurement sensor for the 48 V PSU as a tier-1 source —
+  with **deadband against standby poisoning** (lesson from v0.6.2).
+- η-aware 24 V correction; `_CLEANING_RULES_VERSION = 4` +
+  fingerprint ⇒ one-time full refetch.
 
-## 10. Phasenplan (je Phase: deploybar, Tests, Live-Verifikation, Rollback)
+## 10. Phase Plan (per phase: deployable, tests, live verification, rollback)
 
-| Phase | Version | Inhalt | Live-Verifikation |
+| Phase | Version | Content | Live verification |
 |---|---|---|---|
-| 0 ✓ | v0.6.5 | F-N2 committet (erledigt) | 24-h-Soak der Override-Logik |
-| 1 | v0.7.0 | Kern: Dataclasses, HourFlows, Kombinations-Gleichungen, Gate verdrahtet aber default-offen; Golden-Snapshots bit-exakt | `export_hourly_details` vorher/nachher identisch |
-| 2 | v0.7.1 | Config-Flow + Verdrahtung + Diagnose-Spalten | reale Typenschild-Werte eintragen (Gate offen lassen), Plan-Deltas plausibilisieren |
-| 3 ✓ | v0.7.2 | R1-Gate scharf + Kalibrier-Diagnose | PSU manuell bei hohem SOC an ⇒ Prognose kreditiert KEINE 60 W; Abend-Entladung gegen Victron-Spannungsgraph |
-| 4 ✓ | v0.7.3 | R3-Schalter + Modus-Konsolidierung (ein Eintrittspunkt) | Schalter toggeln, Modussensoren, Schiene nie quellenlos, Neustart mitten im Manuell-Modus |
-| 4b ✓ | v0.7.4/5 | Config-Dialoge in einklappbare Abschnitte gruppiert (UX, keine Verhaltensänderung) | Dialoge in der Oberfläche prüfen |
-| 4c ✓ | v0.7.6 | **48-V-Direktverrechnung scharf** (eigene Golden-Diffs): PSU deckt Buslast direkt, Rest lädt Batterie, Abrechnung = geliefert/η, Cap. Nur `forced_dc48` ändert sich, kostenneutral (Import unverändert, SOC-Kurve physikalischer) | Winter-Abend: `psu48_delivered_wh` in hourly_details ~0 bei voller Batterie, SOC schonender |
-| 5 ✓ | v0.7.7 | **R2-Spannungsregler scharf** (asymmetrische Hysterese EIN ≤ 49,56 V / AUS ≥ 49,8 V, Dwell 60 s/300 s, Log-only-Flag default an, Fail-safe = EIN nach > 10 min ungültig, Regler-AUS beendet NIE den Manuell-Modus [Restfrage A]); off ≤ on in beiden Flows validiert + Laufzeit-Guard; Regler bucht NICHT auf `_last_support_switch` | 48 h Log-only gegen Victron-Historie, dann scharf über einen Abend-/Morgenzyklus |
-| 6 ✓ | v0.7.9 | **Lernen Rev. 4 scharf** (LTS-Stunden-Min/Max-Gating der 48-V-Attribution: `max < U_thr` ⇒ voll, `min > U_thr` ⇒ nichts, sonst Clamp-Regime ⇒ Stunde ausgeschlossen; `_CLEANING_RULES_VERSION = 4` + Gate-Config im Fingerprint ⇒ einmaliger Voll-Relearn). Optionaler AC-seitiger 48-V-Messsensor als Tier-1-Quelle bleibt offen (braucht Operator-Hardware). | Relearn-Lauf, Profil-Export-Vergleich, 14-d-Watchdog |
-| 7 ✓ | v0.7.9 | **Karten-Stützungs-Spur** (24/48-V-Stützung als eigene Lane in der Prognose-Karte; Flags kompakt am `soc_forecast`-Attribut) + Doku-Abschluss | Dashboard-Check |
+| 0 ✓ | v0.6.5 | F-N2 committed (done) | 24 h soak of the override logic |
+| 1 | v0.7.0 | Core: dataclasses, HourFlows, combination equations, gate wired but default-open; golden snapshots bit-exact | `export_hourly_details` before/after identical |
+| 2 | v0.7.1 | Config flow + wiring + diagnostic columns | enter real nameplate values (leave gate open), sanity-check plan deltas |
+| 3 ✓ | v0.7.2 | R1 gate live + calibration diagnostic | PSU manually on at high SOC ⇒ forecast credits NO 60 W; evening discharge against the Victron voltage graph |
+| 4 ✓ | v0.7.3 | R3 switch + mode consolidation (one entry point) | toggle switch, mode sensors, rail never source-less, restart mid manual mode |
+| 4b ✓ | v0.7.4/5 | Config dialogs grouped into collapsible sections (UX, no behaviour change) | check dialogs in the UI |
+| 4c ✓ | v0.7.6 | **48 V direct netting live** (own golden diffs): PSU covers the bus load directly, the remainder charges the battery, billing = delivered/η, cap. Only `forced_dc48` changes, cost-neutral (import unchanged, SOC curve more physical) | winter evening: `psu48_delivered_wh` in hourly_details ~0 with a full battery, SOC gentler |
+| 5 ✓ | v0.7.7 | **R2 voltage controller live** (asymmetric hysteresis ON ≤ 49.56 V / OFF ≥ 49.8 V, dwell 60 s/300 s, log-only flag default on, fail-safe = ON after > 10 min invalid, controller OFF NEVER ends manual mode [open question A]); off ≤ on validated in both flows + runtime guard; controller does NOT book onto `_last_support_switch` | 48 h log-only against Victron history, then live over one evening/morning cycle |
+| 6 ✓ | v0.7.9 | **Learning Rev. 4 live** (LTS hour min/max gating of the 48 V attribution: `max < U_thr` ⇒ full, `min > U_thr` ⇒ nothing, otherwise clamp regime ⇒ hour excluded; `_CLEANING_RULES_VERSION = 4` + gate config in the fingerprint ⇒ one-time full relearn). An optional AC-side 48 V measurement sensor as a tier-1 source remains open (needs operator hardware). | relearn run, profile-export comparison, 14 d watchdog |
+| 7 ✓ | v0.7.9 | **Card support lane** (24/48 V support as its own lane in the forecast card; flags compactly on the `soc_forecast` attribute) + documentation wrap-up | dashboard check |
 
-**F-N3 abgeschlossen** (v0.7.9): alle Phasen 0–7 umgesetzt, adversarial reviewt, live-verifizierbar. Whole-Plugin-Review (v0.7.8) + Rev.4/Card (v0.7.9) sind der Stand.
+**F-N3 complete** (v0.7.9): all phases 0–7 implemented, adversarially
+reviewed, live-verifiable. Whole-plugin review (v0.7.8) + Rev. 4/card
+(v0.7.9) are the current state.
 
-## 11. Betreiber-Entscheidungen (2026-07-05) und Restfragen
+## 11. Operator Decisions (2026-07-05) and Open Questions
 
-**Beantwortet:**
+**Answered:**
 
-1. **Batterie: Pylontech US5000 → 15s LiFePO4** (nominal 48 V, Ladeschluss
-   ~53,2 V, deckt sich mit `victron_battery_info_maxchargevoltage`).
-   Zellenzahl/Spannungsfenster werden **konfigurierbar** (Default aus dem
-   15s-Profil). Damit ist auch Q12 aufgelöst — siehe unten.
-2. **24-V-Schienenspannung: gefixt** — der ×10-Skalierungsfehler wurde
-   lokal korrigiert, `sensor.victron_dcsystem_starter_voltage_229` liefert
-   jetzt die realen ~24,3 V. Wird als optionaler `rail24_voltage_entity`
-   für die Dead-Rail-Verifikation eingeplant (Plausibilität ~20–29 V).
-   Weiterhin nur SPANNUNG gemessen (kein Strom) → `dc24_share` bleibt
-   konfigurierter Schätzwert.
-3. **DC/DC-Wandler:** max. **20 A**, η **> 0,93** → `dcdc_max_current_a =
-   20`, `dcdc_eta = 0.93` (Cap ≈ 24 V × 20 A = 480 W schienenseitig).
-4. **48-V-PSU:** **Meanwell HGL-60H-54A**, max. **1,15 A**, Ausgang auf
-   49,56 V eingestellt → `psu48_max_current_a = 1.15`,
-   `psu48_output_voltage_v = 49.56` (Cap ≈ 57 W). AC-η ~0,89 (Datenblatt),
-   konfigurierbar.
-5. **R2-Scope: ja** — externes EIN aktiviert den Spannungsregler; er darf
-   oberhalb der Schwelle abschalten UND **muss bei Unterschreitung
-   automatisch wieder einschalten**. → Der 48-V-Manuell-Modus ist ein
-   geregelter Standby, kein hands-off (siehe §6, unterscheidet ihn von der
-   24-V-Logik). ⚠️ Zusammenspiel mit (6) klärungsbedürftig — Restfrage A.
-6. **Exit: ok** — externes AUS beendet den Manuell-Modus (zurück zu
-   Automatik). ⚠️ Kollidiert im geregelten 48-V-Modus mit (5) — Restfrage A.
-8. **Parallele 24-V-Quellen: keine Entkopplung — die Quelle mit der
-   HÖHEREN Ausgangsspannung liefert** (die andere ~0 W). Ersetzt die
-   bisherige „PSU-Priorität"-Annahme: bei beiden aktiv vergleicht die
-   Simulation `psu24_output_voltage_v` vs. `dcdc_output_voltage_v`; die
-   höhere versorgt die Schiene. Nebeneffekt: Make-before-break ist dadurch
-   physikalisch brownout-frei (die höhere Quelle trägt im Überlapp).
-9. **Regler-AUS-Schwelle: 49,8 V** (statt 50,06 V). EIN-Schwelle bei
-   ≤ 49,56 V (Ausgangsspannung); beide Schwellen + Dwell als Options-Felder.
-11. **PSU-Standby-Verbrauch: vernachlässigen** (dokumentiert).
-12. **AUFGELÖST (Rechenfehler meinerseits):** Meine 51,9 V beruhten auf
-    einer 16s-Annahme. Mit **15s** gilt 3,24 V/Zelle × 15 = 48,6 V ≈
-    gemessene Busspannung 48,66–48,7 V — Bus und Zellsumme stimmen also
-    praktisch überein, es gibt KEINE große Messpunkt-Diskrepanz. Die
-    Sorge „Gate stark lastgekoppelt/Bus sackt tief unter Zellen" entfällt
-    weitgehend; die Schwelle 49,56 V liegt schlicht knapp unter der
-    Plateau-Ruhespannung. Spannungs-Entität: `victron_battery_voltage`
-    (BMS) bevorzugt.
+1. **Battery: Pylontech US5000 → 15s LiFePO4** (nominal 48 V, charge
+   cut-off ~53.2 V, matches `victron_battery_info_maxchargevoltage`).
+   Cell count/voltage window become **configurable** (default from the
+   15s profile). This also resolves Q12 — see below.
+2. **24 V rail voltage: fixed** — the ×10 scaling error was corrected
+   locally, `sensor.victron_dcsystem_starter_voltage_229` now delivers
+   the real ~24.3 V. Planned as the optional `rail24_voltage_entity`
+   for dead-rail verification (plausibility ~20–29 V). Still only
+   VOLTAGE measured (no current) → `dc24_share` stays a configured
+   estimate.
+3. **DC/DC converter:** max **20 A**, η **> 0.93** → `dcdc_max_current_a =
+   20`, `dcdc_eta = 0.93` (cap ≈ 24 V × 20 A = 480 W rail-side).
+4. **48 V PSU:** **Meanwell HGL-60H-54A**, max **1.15 A**, output set to
+   49.56 V → `psu48_max_current_a = 1.15`,
+   `psu48_output_voltage_v = 49.56` (cap ≈ 57 W). AC η ~0.89 (datasheet),
+   configurable.
+5. **R2 scope: yes** — external ON activates the voltage controller; it
+   may switch off above the threshold AND **must switch back on
+   automatically when dropping below it**. → The 48 V manual mode is a
+   controlled standby, not hands-off (see §6, distinguishing it from the
+   24 V logic). ⚠️ Interaction with (6) needs clarification — open
+   question A.
+6. **Exit: ok** — external OFF ends manual mode (back to automatic).
+   ⚠️ Collides with (5) in the controlled 48 V mode — open question A.
+8. **Parallel 24 V sources: no decoupling — the source with the HIGHER
+   output voltage delivers** (the other ~0 W). Replaces the previous
+   "PSU priority" assumption: when both are active the simulation
+   compares `psu24_output_voltage_v` vs. `dcdc_output_voltage_v`; the
+   higher one supplies the rail. Side effect: make-before-break is thereby
+   physically brownout-free (the higher source carries during the
+   overlap).
+9. **Controller OFF threshold: 49.8 V** (instead of 50.06 V). ON
+   threshold at ≤ 49.56 V (output voltage); both thresholds + dwell as
+   options fields.
+11. **PSU standby consumption: neglect** (documented).
+12. **RESOLVED (calculation error on my part):** my 51.9 V was based on a
+    16s assumption. With **15s**, 3.24 V/cell × 15 = 48.6 V ≈ the
+    measured bus voltage 48.66–48.7 V — bus and cell sum thus practically
+    agree, there is NO large measurement-point discrepancy. The concern
+    "gate strongly load-coupled/bus sags far below the cells" largely
+    falls away; the threshold 49.56 V simply lies just below the plateau
+    rest voltage. Voltage entity: `victron_battery_voltage` (BMS)
+    preferred.
 
-**Restfragen — alle entschieden (2026-07-05):**
+**Open questions — all decided (2026-07-05):**
 
-- **A — Regler-AUS vs. Benutzer-AUS: OK (bestätigt).** Im geregelten
-  48-V-Modus ist der **R3-Schalter „48 V manuell" die alleinige
-  Modus-Wahrheit**; ein externes physisches EIN startet den Modus und
-  setzt den Schalter mit; beendet wird nur über den R3-Schalter. Ein vom
-  Regler verursachtes PSU-AUS beendet den Modus nicht. Die reine
-  F-N2-hands-off-Logik (externes AUS = Modus-Ende) bleibt nur für die
-  24-V-PSU.
-- **B — 24-V-Stütznetzteil: Spannung 24,05 V, max. Strom 25 A** →
+- **A — controller OFF vs. user OFF: OK (confirmed).** In the controlled
+  48 V mode the **R3 switch "48 V manual" is the sole mode truth**; an
+  external physical ON starts the mode and sets the switch too; it is
+  ended only via the R3 switch. A controller-caused PSU OFF does not end
+  the mode. The pure F-N2 hands-off logic (external OFF = mode end)
+  remains only for the 24 V PSU.
+- **B — 24 V support PSU: voltage 24.05 V, max current 25 A** →
   `psu24_output_voltage_v = 24.05`, `psu24_max_current_a = 25`
-  (Cap ≈ 601 W). **DC/DC-Ausgang real 24,3 V** (bestätigt) > PSU 24,05 V:
-  nach Betreiber-Regel 8 hat damit der **DC/DC-Wandler Vorrang** im
-  Parallelfall. Konsequenz: Das netzgespeiste 24-V-PSU versorgt die Schiene
-  nur, wenn der DC/DC AUS ist — deckt sich exakt mit der bestehenden
-  Make-before-break-Semantik (`dc24_from_grid` ⇔ DC/DC aus, PSU an).
-- **C — Schienen-Überlast: nur warnen** (Default übernommen): übersteigt
-  die 24-V-Last den Cap der aktiven Quelle, wird `unserved_dc_wh` als
-  Warnung geführt, kein Mangel durchgerechnet (praktisch unerreichbar bei
-  480/601 W Caps).
-- **D — 48-h-Log-only-Shakedown: ja** (Default übernommen): der Regler
-  läuft in Phase 5 zunächst 48 h nur protokollierend, bevor er scharf
-  schaltet.
+  (cap ≈ 601 W). **DC/DC output really 24.3 V** (confirmed) > PSU 24.05 V:
+  by operator rule 8 the **DC/DC converter therefore has priority** in the
+  parallel case. Consequence: the grid-fed 24 V PSU supplies the rail only
+  when the DC/DC is OFF — matches exactly the existing make-before-break
+  semantics (`dc24_from_grid` ⇔ DC/DC off, PSU on).
+- **C — rail overload: only warn** (default adopted): if the 24 V load
+  exceeds the cap of the active source, `unserved_dc_wh` is carried as a
+  warning, no shortage is computed through (practically unreachable at
+  480/601 W caps).
+- **D — 48 h log-only shakedown: yes** (default adopted): the controller
+  runs in phase 5 first for 48 h only logging, before it switches live.
 
-## 12. Hauptrisiken
+## 12. Main Risks
 
-- **Gate-Proxy-Fehler** (Flachkurve + Sag + Saison): darum Kalibrier-Diagnose, In-Saison-Kalibrierung, Taper, und das Lernen klassifiziert über echte Spannungs-LTS statt über den Proxy.
-- **Regler-Flattern** an der Schwelle: asymmetrische Hysterese + Dwell + Log-only-Shakedown.
-- **Regressionen** in frisch stabilisiertem Planerverhalten (v0.6.1–v0.6.5): Golden-Snapshots + verhaltensneutrale Defaults + eine Phase pro Version mit Live-Soak.
+- **Gate proxy error** (flat curve + sag + season): hence calibration diagnostic, in-season calibration, taper, and the learning classifies via real voltage LTS instead of via the proxy.
+- **Controller chatter** at the threshold: asymmetric hysteresis + dwell + log-only shakedown.
+- **Regressions** in freshly stabilized planner behaviour (v0.6.1–v0.6.5): golden snapshots + behaviour-neutral defaults + one phase per version with live soak.

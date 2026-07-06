@@ -1,3 +1,38 @@
+# This is a Home Assistant CUSTOM COMPONENT, not a PyPI package — it is loaded
+# by Home Assistant from custom_components/, not `pip install`ed. There is
+# deliberately no [build-system]; this file carries project metadata, the dev
+# dependency group, and the tool configuration (ruff, pytest).
+#
+# Runtime version source of truth: custom_components/battery_manager/manifest.json.
+# The device `sw_version` and the dashboard card version are both derived from
+# it at runtime, so the value below is metadata only.
+
+[project]
+name = "battery-manager-ha"
+version = "0.7.11"
+description = "Solar-battery optimizer for Home Assistant: SOC forecast, discharge-threshold planning, surplus-load and grid-support control."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+authors = [{ name = "Daniel R." }]
+keywords = ["home-assistant", "hacs", "solar", "battery", "energy"]
+
+[project.urls]
+Homepage = "https://github.com/danielr0815/battery-manager-ha"
+Documentation = "https://github.com/danielr0815/battery-manager-ha/blob/main/docs/ARCHITECTURE.md"
+Issues = "https://github.com/danielr0815/battery-manager-ha/issues"
+Changelog = "https://github.com/danielr0815/battery-manager-ha/blob/main/CHANGELOG.md"
+
+# Dev tooling (PEP 735 dependency group). Install with `pip install --group dev`
+# (pip >= 25.1), or install the tools directly (see CONTRIBUTING.md).
+[dependency-groups]
+dev = [
+    "homeassistant",
+    "pytest",
+    "pytest-homeassistant-custom-component",
+    "ruff",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
