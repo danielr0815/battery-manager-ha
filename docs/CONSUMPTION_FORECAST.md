@@ -439,15 +439,15 @@ buffer_% = clamp(uncertainty_wh / capacity_wh × 100,
 ```
 
 - **Effective sites in the kernel — deliberate separation:** `soc_buffer_percent`
-  acts today in four places: (1) lower bound of the threshold search, (2)
-  buffer floor of the load allocation, (3) appliance advisor, (4) **trigger of
-  the grid-support escalation** (D-A9). The dynamic buffer replaces the
-  effective sites 1–3 (intended: more night reserve, more conservative
-  switch-on gate). Site 4 stays on the **fixed** config buffer: new kernel
-  parameter `ControlParams.support_buffer_percent` (default = configured
-  `soc_buffer_percent`), otherwise the grid support paths would switch
-  systematically earlier/more often at night (wide band → up to 15 %) — an
-  unwanted behaviour change.
+  acts in three places: (1) lower bound of the threshold search, (2) buffer
+  floor of the load allocation, (3) appliance advisor. The dynamic buffer
+  replaces these (intended: more night reserve, more conservative switch-on
+  gate). The **grid-support escalation** (D-A9) is deliberately *not* driven by
+  the buffer at all: since v0.7.13 it uses its own four **absolute** SOC
+  thresholds (`support_dc24_activate_soc` … `support_dc48_recovery_soc`), so a
+  dynamically widened planning buffer never makes the grid support paths switch
+  earlier/more often at night. (Before v0.7.13 this decoupling was achieved via
+  a fixed `support_buffer_percent` kernel parameter, now removed.)
 - **Partially learned profile:** the dynamic buffer is active as soon as **at
   least one path** has valid quantiles; statically filled slots and unlearned
   paths contribute **0** to the sum (coverage share in the diagnostic

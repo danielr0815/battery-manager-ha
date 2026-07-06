@@ -80,6 +80,14 @@ CONF_SUPPORT_DC24_SWITCH = "support_dc24_switch_entity"
 CONF_SUPPORT_DC24_POWER_ENTITY = "support_dc24_power_entity"
 CONF_DCDC_SWITCH = "dcdc_switch_entity"
 CONF_SUPPORT_SWITCH_DELAY_S = "support_switch_delay_s"
+# Escalation thresholds (D-A9): four ABSOLUTE battery-SOC % that drive the
+# two grid-support hysteresis loops, independent of the planning buffer.
+# Defaults 10 / 11 / 5.5 / 10 reproduce the legacy hard-coded thresholds at
+# the default battery config. See ControlParams for the ordering rule.
+CONF_SUPPORT_DC24_ACTIVATE_SOC = "support_dc24_activate_soc"
+CONF_SUPPORT_DC24_RECOVERY_SOC = "support_dc24_recovery_soc"
+CONF_SUPPORT_DC48_ACTIVATE_SOC = "support_dc48_activate_soc"
+CONF_SUPPORT_DC48_RECOVERY_SOC = "support_dc48_recovery_soc"
 
 # --- F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2) ---
 # All NEUTRAL by default (share 100 %, efficiencies 1.0, 0 A = uncapped),
@@ -235,6 +243,11 @@ DEFAULT_CONFIG = {
     # Support paths
     CONF_SUPPORT_DC48_POWER_W: 60.0,
     CONF_SUPPORT_SWITCH_DELAY_S: 3,
+    # Escalation thresholds (absolute SOC %) — neutral defaults = legacy.
+    CONF_SUPPORT_DC24_ACTIVATE_SOC: 10.0,
+    CONF_SUPPORT_DC24_RECOVERY_SOC: 11.0,
+    CONF_SUPPORT_DC48_ACTIVATE_SOC: 5.5,
+    CONF_SUPPORT_DC48_RECOVERY_SOC: 10.0,
     # F-N3 two-bus device parameters — neutral defaults (docs/DC_TOPOLOGY.md).
     CONF_NATIVE48_BASE_W: 0.0,
     CONF_DC24_SHARE_PERCENT: 100.0,

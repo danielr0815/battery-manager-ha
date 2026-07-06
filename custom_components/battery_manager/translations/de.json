@@ -152,7 +152,11 @@
               "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
               "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
               "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)",
-              "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)"
+              "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)",
+              "support_dc24_activate_soc": "24-V-Stützung: Aktivieren bei SOC (%)",
+              "support_dc24_recovery_soc": "24-V-Stützung: Zurücknehmen bei SOC (%)",
+              "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
+              "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: Schalter des Netzteils, das im Notfall mit fester Leistung die 48-V-Batterieschiene stützt. Wird von der Integration direkt geschaltet.",
@@ -160,7 +164,11 @@
               "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Wird direkt geschaltet.",
               "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
               "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
-              "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft)."
+              "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
+              "support_dc24_activate_soc": "Batterie-SOC, bei dem (oder darunter) das 24-V-Netzteil die DC-Schiene vom DC/DC-Wandler übernimmt (Notfall-Schutzschwelle, unabhängig vom Planungspuffer). Standard 10 %.",
+              "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %.",
+              "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
+              "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %."
             }
           },
           "dc_devices": {
@@ -214,7 +222,11 @@
       "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
       "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität.",
       "buffer_min_above_max": "Das Minimum des dynamischen Puffers muss unter dem Maximum liegen.",
-      "controller_off_below_on": "Die Ausschalt-Spannung des 48-V-Reglers muss über der Einschalt-Spannung liegen."
+      "controller_off_below_on": "Die Ausschalt-Spannung des 48-V-Reglers muss über der Einschalt-Spannung liegen.",
+      "support_dc24_recovery_not_above_activate": "Die Rücknahme-SOC der 24-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
+      "support_dc48_recovery_not_above_activate": "Die Rücknahme-SOC der 48-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
+      "support_dc48_activate_above_dc24": "Die Aktivierungs-SOC der 48-V-Stützung muss bei oder unter der 24-V-Aktivierungs-SOC liegen (die Notfallstufe schaltet nicht später als die 24-V-Stützung).",
+      "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen."
     },
     "abort": {
       "already_configured": "Dieses System ist bereits konfiguriert."
@@ -361,7 +373,11 @@
       "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
       "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität.",
       "buffer_min_above_max": "Das Minimum des dynamischen Puffers muss unter dem Maximum liegen.",
-      "controller_off_below_on": "Die Ausschalt-Spannung des 48-V-Reglers muss über der Einschalt-Spannung liegen."
+      "controller_off_below_on": "Die Ausschalt-Spannung des 48-V-Reglers muss über der Einschalt-Spannung liegen.",
+      "support_dc24_recovery_not_above_activate": "Die Rücknahme-SOC der 24-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
+      "support_dc48_recovery_not_above_activate": "Die Rücknahme-SOC der 48-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
+      "support_dc48_activate_above_dc24": "Die Aktivierungs-SOC der 48-V-Stützung muss bei oder unter der 24-V-Aktivierungs-SOC liegen (die Notfallstufe schaltet nicht später als die 24-V-Stützung).",
+      "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen."
     },
     "step": {
       "init": {
@@ -448,7 +464,11 @@
               "support_dc24_switch_entity": "Schalter 24-V-Netzteil (ersetzt DC/DC)",
               "dcdc_switch_entity": "Schalter 48-V→24-V-DC/DC-Wandler",
               "support_switch_delay_s": "Umschaltverzögerung (s, unterbrechungsfrei)",
-              "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)"
+              "support_dc24_power_entity": "Leistungssensor 24-V-Netzteil (optional)",
+              "support_dc24_activate_soc": "24-V-Stützung: Aktivieren bei SOC (%)",
+              "support_dc24_recovery_soc": "24-V-Stützung: Zurücknehmen bei SOC (%)",
+              "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
+              "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: Schalter des Netzteils, das im Notfall mit fester Leistung die 48-V-Batterieschiene stützt. Wird von der Integration direkt geschaltet. Feld leeren = Funktion deaktivieren.",
@@ -456,7 +476,11 @@
               "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Feld leeren = Funktion deaktivieren.",
               "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
               "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
-              "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft)."
+              "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
+              "support_dc24_activate_soc": "Batterie-SOC, bei dem (oder darunter) das 24-V-Netzteil die DC-Schiene vom DC/DC-Wandler übernimmt (Notfall-Schutzschwelle, unabhängig vom Planungspuffer). Standard 10 %.",
+              "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %.",
+              "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
+              "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %."
             }
           },
           "dc_devices": {

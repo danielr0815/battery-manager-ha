@@ -179,6 +179,168 @@ async def test_options_flow_rejects_inverted_controller_band(hass):
     assert result["errors"] == {"base": "controller_off_below_on"}
 
 
+async def test_options_flow_rejects_bad_support_hysteresis(hass):
+    """v0.7.13: the four absolute escalation SOC thresholds must form a sane
+    hysteresis ladder — each stage needs activate < recovery, and the 48 V
+    last-resort stage must sit at/below the 24 V stage. Bad ladders are
+    rejected; the operator's example ladder saves flat."""
+    entry = await _setup_entry(hass)
+
+    def payload(support_extra):
+        support = {"support_dc48_power_w": 60.0, "support_switch_delay_s": 3}
+        support.update(support_extra)
+        return {
+            "planner_tuning": {
+                "soc_buffer_percent": 6.0,
+                "hysteresis_percent": 1.0,
+                "threshold_inertia_percent": 2.0,
+                "min_switch_interval_s": 60,
+            },
+            "consumption_profile": {
+                "ac_base_load_w": 50.0,
+                "ac_variable_load_w": 75.0,
+                "ac_variable_start_hour": 6,
+                "ac_variable_end_hour": 20,
+                "dc_base_load_w": 50.0,
+                "dc_variable_load_w": 25.0,
+                "dc_variable_start_hour": 6,
+                "dc_variable_end_hour": 22,
+            },
+            "consumption_learning": {
+                "learning_window_days": 120,
+                "learning_max_age_days": 14,
+                "profile_half_life_days": 30,
+                "buffer_min_percent": 3.0,
+                "buffer_max_percent": 15.0,
+            },
+            "support_paths": support,
+            "dc_devices": {
+                "dc24_share_percent": 80.0,
+                "dcdc_efficiency": 0.93,
+                "dcdc_output_voltage_v": 24.3,
+                "dcdc_max_current_a": 20.0,
+                "psu24_output_voltage_v": 24.05,
+                "psu24_efficiency": 0.89,
+                "psu24_max_current_a": 25.0,
+                "psu48_output_voltage_v": 49.56,
+                "psu48_efficiency": 0.89,
+                "psu48_max_current_a": 1.15,
+                "battery_cells_series": 15,
+                "gate_soc_percent": 100.0,
+            },
+        }
+
+    async def submit(support_extra):
+        res = await hass.config_entries.options.async_init(entry.entry_id)
+        return await hass.config_entries.options.async_configure(
+            res["flow_id"], payload(support_extra)
+        )
+
+    # 24 V recover-SOC not above its activate-SOC -> no dead band.
+    res = await submit({"support_dc24_recovery_soc": 10.0})  # == default activate 10
+    assert res["type"] == "form"
+    assert res["errors"] == {"base": "support_dc24_recovery_not_above_activate"}
+
+    # 48 V recover-SOC not above its activate-SOC.
+    res = await submit({"support_dc48_recovery_soc": 4.0})  # < default activate 5.5
+    assert res["type"] == "form"
+    assert res["errors"] == {"base": "support_dc48_recovery_not_above_activate"}
+
+    # 48 V activate above the 24 V activate -> deeper stage would fire later.
+    res = await submit(
+        {"support_dc48_activate_soc": 11.0, "support_dc48_recovery_soc": 13.0}
+    )
+    assert res["type"] == "form"
+    assert res["errors"] == {"base": "support_dc48_activate_above_dc24"}
+
+    # 48 V recover above the 24 V recover -> releases later than the 24 V stage.
+    res = await submit({"support_dc48_recovery_soc": 13.0})  # > default 24 V recover 11
+    assert res["type"] == "form"
+    assert res["errors"] == {"base": "support_dc48_recovery_above_dc24"}
+
+    # The operator's example ladder saves, stored flat.
+    res = await submit(
+        {
+            "support_dc24_activate_soc": 10.0,
+            "support_dc24_recovery_soc": 12.0,
+            "support_dc48_activate_soc": 7.0,
+            "support_dc48_recovery_soc": 10.0,
+        }
+    )
+    assert res["type"] == "create_entry"
+    assert res["data"]["support_dc24_recovery_soc"] == 12.0
+    assert res["data"]["support_dc48_activate_soc"] == 7.0
+
+
+async def test_migrate_backfills_escalation_thresholds_from_soc_min(hass):
+    """v2.2 -> 2.3 (v0.7.13): a pre-existing entry with a NON-default soc_min
+    must keep its exact legacy grid-support switch points. The migration
+    backfills the soc_min-derived absolute thresholds (not the fixed 10/11/5.5/10
+    defaults, which would gut last-resort protection at soc_min=10)."""
+    from custom_components.battery_manager import async_migrate_entry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **ENTRY_DATA,
+            "battery_min_soc_percent": 10.0,
+            "soc_buffer_percent": 5.0,
+        },
+        title="Battery Manager",
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await async_migrate_entry(hass, entry)
+    assert entry.minor_version == 3
+    # Legacy formula at soc_min=10, buffer=5: floor = 15.
+    assert entry.options["support_dc24_activate_soc"] == 15.0
+    assert entry.options["support_dc24_recovery_soc"] == 16.0
+    assert entry.options["support_dc48_activate_soc"] == 10.5
+    assert entry.options["support_dc48_recovery_soc"] == 15.0
+
+
+async def test_migrate_is_neutral_at_default_soc_min(hass):
+    """At the default battery config (soc_min 5, buffer 5) the backfilled values
+    equal the absolute DEFAULT_CONFIG thresholds — the migration is a no-op."""
+    from custom_components.battery_manager import async_migrate_entry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await async_migrate_entry(hass, entry)
+    assert entry.minor_version == 3
+    assert entry.options["support_dc24_activate_soc"] == 10.0
+    assert entry.options["support_dc24_recovery_soc"] == 11.0
+    assert entry.options["support_dc48_activate_soc"] == 5.5
+    assert entry.options["support_dc48_recovery_soc"] == 10.0
+
+
+async def test_migrate_preserves_explicit_escalation_values(hass):
+    """A post-0.7.13 entry that already carries escalation thresholds must not be
+    overwritten by the backfill — only the minor_version is advanced."""
+    from custom_components.battery_manager import async_migrate_entry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        options={"support_dc24_activate_soc": 8.0},
+        title="Battery Manager",
+        version=2,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await async_migrate_entry(hass, entry)
+    assert entry.minor_version == 3
+    assert entry.options["support_dc24_activate_soc"] == 8.0
+    assert "support_dc48_activate_soc" not in entry.options
+
+
 async def test_pv_step_rejects_misordered_windows(hass):
     """Review #5: the PV step must reject windows that are not strictly ordered
     (morning_start < morning_end < afternoon_end), else a degenerate window

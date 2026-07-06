@@ -192,12 +192,28 @@ emergency there are two support options:
    the grid → relieves the battery of the DC load.
 
 **Design:** The plugin gets one recommendation entity per support path
-(binary_sensor) that turns "on" when the simulation, despite inverter-off, expects
-a drop below `batt_min + buffer`. The support paths enter the simulation as
-switchable loads/sources (48 V support = −60 W on the
-battery balance; 24 V PSU = DC load → 0, grid import instead).
+(binary_sensor) that turns "on" when the simulation, despite inverter-off,
+expects the SOC to drop to the stage's **activate** threshold. The support
+paths enter the simulation as switchable loads/sources (48 V support = −60 W on
+the battery balance; 24 V PSU = DC load → 0, grid import instead).
 Priority: support is the last escalation stage — normal planning should never
 need it; it covers forecast errors and exceptional situations.
+
+**Thresholds (v0.7.13):** each stage is a hysteresis loop driven by two
+**absolute** battery-SOC values, configurable and independent of the planning
+buffer (so a dynamically widened planning buffer, D-C8, never moves the PSUs):
+`support_dc24_activate_soc`/`support_dc24_recovery_soc` (default 10 / 11 %) and
+`support_dc48_activate_soc`/`support_dc48_recovery_soc` (default 5.5 / 10 %). A
+stage switches on below its activate SOC and off again at/above its recovery
+SOC; a wider gap latches the support on longer, so an SOC parked on a threshold
+holds steadily on grid instead of chattering. The recommended ordering is
+`soc_min < dc48_activate < dc48_recovery ≤ dc24_activate < dc24_recovery`.
+Config validation enforces the parts that do not depend on the battery's
+`soc_min` (which is set in a separate step): `activate < recovery` for each
+stage, and the 48 V last-resort stage at or below the 24 V stage
+(`dc48_activate ≤ dc24_activate` and `dc48_recovery ≤ dc24_recovery`). The
+defaults reproduce the pre-0.7.13 hard-coded thresholds at the default battery
+config, and a migration backfills the exact legacy values for existing entries.
 
 **Decision F-N1 (2026-07-03):** Both support paths are switchable via HA entities
 and the plugin shall **switch them directly** (entity IDs in the

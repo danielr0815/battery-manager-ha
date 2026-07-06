@@ -152,7 +152,11 @@
               "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
               "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
               "support_switch_delay_s": "Changeover delay (s, make-before-break)",
-              "support_dc24_power_entity": "24 V PSU power sensor (optional)"
+              "support_dc24_power_entity": "24 V PSU power sensor (optional)",
+              "support_dc24_activate_soc": "24 V support: activate at SOC (%)",
+              "support_dc24_recovery_soc": "24 V support: recover at SOC (%)",
+              "support_dc48_activate_soc": "48 V support: activate at SOC (%)",
+              "support_dc48_recovery_soc": "48 V support: recover at SOC (%)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: switch of the PSU that feeds the 48 V battery bus with fixed power in an emergency. Switched directly by the integration.",
@@ -160,7 +164,11 @@
               "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
               "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
               "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
-              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
+              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
+              "support_dc24_activate_soc": "Battery SOC at or below which the 24 V grid PSU takes over the DC rail from the DC/DC converter (a last-resort protection level, independent of the planning buffer). Default 10 %.",
+              "support_dc24_recovery_soc": "Battery SOC at or above which the 24 V grid support switches back off. Set it a few percent above the activate level: a wider gap latches the support on longer and stops it chattering when the SOC parks on the threshold overnight. Default 11 %.",
+              "support_dc48_activate_soc": "Battery SOC at or below which the last-resort 48 V support PSU also engages (deepest protection). Keep it at or below the 24 V activate level. Default 5.5 %.",
+              "support_dc48_recovery_soc": "Battery SOC at or above which the 48 V support switches back off. Must be above the 48 V activate level and at or below the 24 V recover level. Default 10 %."
             }
           },
           "dc_devices": {
@@ -214,7 +222,11 @@
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
       "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum.",
-      "controller_off_below_on": "The 48 V controller turn-off voltage must be above the turn-on voltage."
+      "controller_off_below_on": "The 48 V controller turn-off voltage must be above the turn-on voltage.",
+      "support_dc24_recovery_not_above_activate": "The 24 V support recover-SOC must be above its activate-SOC (a hysteresis dead band is required).",
+      "support_dc48_recovery_not_above_activate": "The 48 V support recover-SOC must be above its activate-SOC (a hysteresis dead band is required).",
+      "support_dc48_activate_above_dc24": "The 48 V support activate-SOC must be at or below the 24 V activate-SOC (the last-resort stage engages no later than the 24 V support).",
+      "support_dc48_recovery_above_dc24": "The 48 V support recover-SOC must be at or below the 24 V recover-SOC."
     },
     "abort": {
       "already_configured": "This system is already configured."
@@ -361,7 +373,11 @@
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
       "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum.",
-      "controller_off_below_on": "The 48 V controller turn-off voltage must be above the turn-on voltage."
+      "controller_off_below_on": "The 48 V controller turn-off voltage must be above the turn-on voltage.",
+      "support_dc24_recovery_not_above_activate": "The 24 V support recover-SOC must be above its activate-SOC (a hysteresis dead band is required).",
+      "support_dc48_recovery_not_above_activate": "The 48 V support recover-SOC must be above its activate-SOC (a hysteresis dead band is required).",
+      "support_dc48_activate_above_dc24": "The 48 V support activate-SOC must be at or below the 24 V activate-SOC (the last-resort stage engages no later than the 24 V support).",
+      "support_dc48_recovery_above_dc24": "The 48 V support recover-SOC must be at or below the 24 V recover-SOC."
     },
     "step": {
       "init": {
@@ -448,7 +464,11 @@
               "support_dc24_switch_entity": "24 V PSU switch (replaces DC/DC)",
               "dcdc_switch_entity": "48 V → 24 V DC/DC converter switch",
               "support_switch_delay_s": "Changeover delay (s, make-before-break)",
-              "support_dc24_power_entity": "24 V PSU power sensor (optional)"
+              "support_dc24_power_entity": "24 V PSU power sensor (optional)",
+              "support_dc24_activate_soc": "24 V support: activate at SOC (%)",
+              "support_dc24_recovery_soc": "24 V support: recover at SOC (%)",
+              "support_dc48_activate_soc": "48 V support: activate at SOC (%)",
+              "support_dc48_recovery_soc": "48 V support: recover at SOC (%)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: switch of the PSU that feeds the 48 V battery bus with fixed power in an emergency. Switched directly by the integration. Clear the field to disable.",
@@ -456,7 +476,11 @@
               "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Clear the field to disable.",
               "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
               "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
-              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter)."
+              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
+              "support_dc24_activate_soc": "Battery SOC at or below which the 24 V grid PSU takes over the DC rail from the DC/DC converter (a last-resort protection level, independent of the planning buffer). Default 10 %.",
+              "support_dc24_recovery_soc": "Battery SOC at or above which the 24 V grid support switches back off. Set it a few percent above the activate level: a wider gap latches the support on longer and stops it chattering when the SOC parks on the threshold overnight. Default 11 %.",
+              "support_dc48_activate_soc": "Battery SOC at or below which the last-resort 48 V support PSU also engages (deepest protection). Keep it at or below the 24 V activate level. Default 5.5 %.",
+              "support_dc48_recovery_soc": "Battery SOC at or above which the 48 V support switches back off. Must be above the 48 V activate level and at or below the 24 V recover level. Default 10 %."
             }
           },
           "dc_devices": {

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-07-06
+
+### Added
+- **Configurable grid-support escalation thresholds (D-A9).** The SOC levels at
+  which the emergency grid PSUs switch were hard-coded (24 V on below
+  `soc_min + buffer`, off at `+1 %`; 48 V on below `soc_min + 0.5 %`, off at the
+  buffer floor). They are now four **absolute** battery-SOC thresholds, one
+  hysteresis loop per stage, fully independent of the planning buffer:
+  - `support_dc24_activate_soc` (default 10 %) — SOC at/below which the 24 V PSU
+    takes the DC rail from the DC/DC converter.
+  - `support_dc24_recovery_soc` (default 11 %) — SOC at/above which the 24 V
+    support switches back off.
+  - `support_dc48_activate_soc` (default 5.5 %) — SOC at/below which the
+    last-resort 48 V PSU also engages.
+  - `support_dc48_recovery_soc` (default 10 %) — SOC at/above which the 48 V
+    support switches back off.
+
+  Widening the gap between a stage's activate and recovery SOC latches its
+  grid support on longer, so a battery parked on a threshold overnight holds
+  steadily on grid instead of chattering across it each cycle (the cause of the
+  observed overnight 24 V PSU flapping). Cross-field validation enforces a sane
+  ladder (`activate < recovery` per stage; the 48 V stage at/below the 24 V
+  stage). The neutral defaults reproduce the previous hard-coded behaviour
+  bit-for-bit at the default battery config (golden identical), and a config
+  entry migration (minor version 2 → 3) backfills the exact legacy
+  soc_min-derived thresholds for existing entries, so the upgrade never moves
+  the switch points even when the battery minimum SOC is not the default 5 %.
+  Making the thresholds absolute removes the previous coupling of the 24 V
+  activation to `soc_buffer_percent` (the internal `support_buffer_percent`
+  parameter is gone).
+
 ## [0.7.12] - 2026-07-06
 
 ### Added

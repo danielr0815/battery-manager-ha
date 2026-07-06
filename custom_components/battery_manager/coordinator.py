@@ -60,8 +60,12 @@ from .const import (
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    CONF_SUPPORT_DC24_ACTIVATE_SOC,
+    CONF_SUPPORT_DC24_RECOVERY_SOC,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_ACTIVATE_SOC,
     CONF_SUPPORT_DC48_POWER_W,
+    CONF_SUPPORT_DC48_RECOVERY_SOC,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
     DC48_CTRL_DWELL_OFF_S,
@@ -459,9 +463,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             control=ControlParams(
                 inverter_min_soc_percent=float(cfg["inverter_min_soc_percent"]),
                 soc_buffer_percent=float(cfg["soc_buffer_percent"]),
-                # The escalation trigger always keeps the FIXED value, even
-                # when the planning buffer is set dynamically (D-C8).
-                support_buffer_percent=float(cfg["soc_buffer_percent"]),
+                # Grid-support escalation thresholds (D-A9) as absolute SOC %,
+                # independent of the planning buffer (D-C8). Neutral defaults
+                # reproduce the historical hard-coded thresholds.
+                support_dc24_activate_soc=float(cfg[CONF_SUPPORT_DC24_ACTIVATE_SOC]),
+                support_dc24_recovery_soc=float(cfg[CONF_SUPPORT_DC24_RECOVERY_SOC]),
+                support_dc48_activate_soc=float(cfg[CONF_SUPPORT_DC48_ACTIVATE_SOC]),
+                support_dc48_recovery_soc=float(cfg[CONF_SUPPORT_DC48_RECOVERY_SOC]),
                 hysteresis_percent=float(cfg["hysteresis_percent"]),
                 threshold_inertia_percent=float(cfg["threshold_inertia_percent"]),
                 min_switch_interval_s=int(cfg["min_switch_interval_s"]),
@@ -1031,8 +1039,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             dc_load_w=dc_series,
         )
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
-        # soon as any learned quantiles exist; the escalation trigger keeps
-        # the fixed support_buffer_percent set in build_system_config.
+        # soon as any learned quantiles exist. Only soc_buffer_percent is
+        # overridden here; the grid-support escalation reads its own absolute
+        # SOC thresholds, so a widened planning buffer never moves the PSUs.
         if quantiles_active:
             buffer_percent, buffer_diag = self._dynamic_buffer(
                 config, inputs.slots, band

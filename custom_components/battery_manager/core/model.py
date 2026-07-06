@@ -187,14 +187,26 @@ class ControlParams:
     `soc_buffer_percent` is the PLANNING buffer (threshold search floor,
     load-allocation floor, appliance advisor) — it may be set dynamically
     per run from the learned forecast uncertainty (D-C8).
-    `support_buffer_percent` stays at the FIXED configured value: it only
-    triggers the grid-PSU escalation (D-A9), which must not fire earlier
-    just because the forecast band is wide at night.
+
+    The grid-support escalation (D-A9) uses four ABSOLUTE battery-SOC
+    thresholds, deliberately independent of the planning buffer so a
+    dynamically widened planning buffer never moves the grid PSUs. The sane
+    ordering (low to high) is:
+      soc_min < dc48_activate < dc48_recovery <= dc24_activate < dc24_recovery
+    Each stage is a hysteresis loop: it switches ON below its activate SOC and
+    OFF again at/above its recovery SOC. A wider gap between activate and
+    recovery latches a PSU on longer, so an SOC parked near a threshold holds
+    steadily on grid instead of chattering across it each cycle. Defaults
+    (10 / 11 / 5.5 / 10) reproduce the legacy hard-coded behaviour at the
+    default battery config (soc_min 5 %, buffer 5 %).
     """
 
     inverter_min_soc_percent: float = 20.0
     soc_buffer_percent: float = 5.0
-    support_buffer_percent: float = 5.0
+    support_dc24_activate_soc: float = 10.0
+    support_dc24_recovery_soc: float = 11.0
+    support_dc48_activate_soc: float = 5.5
+    support_dc48_recovery_soc: float = 10.0
     hysteresis_percent: float = 1.0
     threshold_inertia_percent: float = 2.0
     export_tiebreak: float = 0.05

@@ -340,11 +340,17 @@ def support_escalation(
     if not config.support.configured or n == 0:
         return tuple(dc24), tuple(dc48), trajectory
 
-    battery = config.battery
-    # Deliberately the FIXED buffer (D-C8): a dynamically widened planning
-    # buffer must not make the grid PSUs switch earlier/more often.
-    buffer_floor = battery.soc_min_percent + config.control.support_buffer_percent
-    recovery = buffer_floor + 1.0
+    control = config.control
+    # Grid-support escalation thresholds are ABSOLUTE battery SOC % (D-A9),
+    # deliberately independent of the planning buffer (D-C8): a dynamically
+    # widened planning buffer must not make the grid PSUs switch earlier/more
+    # often. Each stage is a hysteresis loop (ON below activate, OFF at/above
+    # recovery); a wider activate->recovery gap latches a PSU on longer so an
+    # SOC parked near a threshold holds steadily instead of chattering.
+    dc24_activate = control.support_dc24_activate_soc
+    dc24_recovery = control.support_dc24_recovery_soc
+    dc48_activate = control.support_dc48_activate_soc
+    dc48_recovery = control.support_dc48_recovery_soc
 
     # A forced 48 V injection changes the whole SOC path — stage 1 must
     # judge the already-supported trajectory.
@@ -355,15 +361,15 @@ def support_escalation(
             config, inputs, threshold, extra_ac_wh=extra_ac, dc48_schedule=tuple(dc48)
         )
 
-    # Stage 1: 24 V PSU replaces the DC/DC while SOC sits below the buffer floor.
+    # Stage 1: 24 V PSU replaces the DC/DC while SOC sits below its activate SOC.
     if config.support.dc24_forced_on:
         dc24 = [True] * n
     else:
         active = False
         for i, flow in enumerate(base.flows):
-            if flow.soc_end_percent < buffer_floor:
+            if flow.soc_end_percent < dc24_activate:
                 active = True
-            elif active and flow.soc_end_percent >= recovery:
+            elif active and flow.soc_end_percent >= dc24_recovery:
                 active = False
             dc24[i] = active
     if not any(dc24):
@@ -378,16 +384,13 @@ def support_escalation(
         dc48_schedule=tuple(dc48),
     )
 
-    # Stage 2: 48 V support PSU on top wherever the hard minimum is still hit.
-    if (
-        not config.support.dc48_forced_on
-        and traj.min_soc_percent < battery.soc_min_percent + 0.5
-    ):
+    # Stage 2: 48 V support PSU on top wherever SOC sits below its activate SOC.
+    if not config.support.dc48_forced_on and traj.min_soc_percent < dc48_activate:
         active = False
         for i, flow in enumerate(traj.flows):
-            if flow.soc_end_percent < battery.soc_min_percent + 0.5:
+            if flow.soc_end_percent < dc48_activate:
                 active = True
-            elif active and flow.soc_end_percent >= buffer_floor:
+            elif active and flow.soc_end_percent >= dc48_recovery:
                 active = False
             dc48[i] = active
         if any(dc48):

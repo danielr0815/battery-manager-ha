@@ -1,9 +1,12 @@
 """Scenario tests for the planner (docs/ALGORITHM.md §3, S1-S4 + regressions)."""
 
+from dataclasses import replace
 from datetime import datetime
 
 from core.model import (
     Appliance,
+    HourSlot,
+    PlanInputs,
     SupportParams,
     SurplusLoad,
     SurplusLoadState,
@@ -306,6 +309,84 @@ def test_support_stays_off_when_unconfigured():
     assert result.support_dc48_now is False
 
 
+def _esc_slot(index, *, pv, dc, hour=0):
+    """A bare simulation slot: no AC load, so only the DC path moves the SOC."""
+    return HourSlot(
+        index=index,
+        start=datetime(2026, 1, 1, hour),
+        duration=1.0,
+        hour_of_day=hour,
+        pv_wh=pv,
+        ac_wh=0.0,
+        dc_wh=dc,
+    )
+
+
+def test_support_dc24_recovery_soc_latches():
+    """A higher 24 V recover-SOC keeps the grid support latched on through a
+    partial SOC recovery instead of releasing at the default 11 % — the fix for
+    the overnight chatter when the SOC parks just above the activate level."""
+    base_cfg = SystemConfig(support=SupportParams(configured=True))
+    # dc24 activate 10 %; narrow recover 11 %, wide recover 15 %.
+    slots = (
+        _esc_slot(0, pv=0.0, dc=350.0),  # drains below the 24 V activate level
+        _esc_slot(1, pv=500.0, dc=0.0, hour=1),  # partial PV recovery into (11, 15)
+        _esc_slot(2, pv=0.0, dc=0.0, hour=2),  # holds at the recovered level
+    )
+    inputs = PlanInputs(
+        now=datetime(2026, 1, 1, 0), start_soc_percent=12.0, slots=slots
+    )
+    threshold = 100.0  # inverter parked off: isolates the DC path
+    extra_ac = (0.0, 0.0, 0.0)
+
+    def run(recover_soc):
+        cfg = replace(
+            base_cfg,
+            control=replace(base_cfg.control, support_dc24_recovery_soc=recover_soc),
+        )
+        base = simulate(cfg, inputs, threshold, extra_ac_wh=extra_ac)
+        dc24, _dc48, _ = support_escalation(cfg, inputs, threshold, extra_ac, base)
+        return dc24
+
+    narrow = run(11.0)  # historical default
+    wide = run(15.0)
+    # Both engage while the battery is below the activate level...
+    assert narrow[0] is True and wide[0] is True
+    # ...but only the higher recover-SOC stays latched across the recovery.
+    assert narrow[1] is False
+    assert wide[1] is True and wide[2] is True
+    assert sum(wide) > sum(narrow)
+
+
+def test_dc48_activate_soc_configurable():
+    """A higher 48 V activate-SOC makes the last-resort PSU engage at a higher
+    SOC — deeper protection triggers earlier. A constant native-48 V load drains
+    the battery even when the 24 V rail is grid-fed, so the 48 V stage is the
+    only relief left."""
+    base_cfg = SystemConfig(
+        support=SupportParams(configured=True, native48_base_w=121.0)
+    )
+    slots = (_esc_slot(0, pv=0.0, dc=300.0),)
+    inputs = PlanInputs(now=datetime(2026, 1, 1, 0), start_soc_percent=9.0, slots=slots)
+    threshold = 100.0
+    extra_ac = (0.0,)
+
+    def run(activate_soc):
+        cfg = replace(
+            base_cfg,
+            control=replace(base_cfg.control, support_dc48_activate_soc=activate_soc),
+        )
+        base = simulate(cfg, inputs, threshold, extra_ac_wh=extra_ac)
+        _dc24, dc48, _ = support_escalation(cfg, inputs, threshold, extra_ac, base)
+        return dc48
+
+    dc48_narrow = run(5.5)  # historical default: activate at 5.5 %
+    dc48_wide = run(8.0)  # activate at 8 %
+    # The 24 V-supported SOC sits ~6.5 %: only the raised threshold engages 48 V.
+    assert not any(dc48_narrow)
+    assert any(dc48_wide)
+
+
 def test_pass2_preemptive_charging_when_sun_window_too_short():
     """Short, strong production peak: a powerstation cannot saturate within
     the window, so pass 2 pre-charges it from the battery — provably refilled
@@ -545,8 +626,8 @@ def test_forced_dc48_feeds_stage1_decision():
     now = datetime(2026, 7, 3, 22, 0)
     soc_start = config.battery.soc_min_percent + 6.0
     result, _ = make_plan(config, now, soc_start, [0.0, 0.0, 0.0])
-    # The strong forced injection keeps the SOC above the buffer floor,
+    # The strong forced injection keeps the SOC above the 24 V activate level,
     # so no automatic 24 V hours are needed on top.
-    floor = config.battery.soc_min_percent + config.control.support_buffer_percent
+    floor = config.control.support_dc24_activate_soc
     assert result.min_soc_percent >= floor - 0.01
     assert not any(f.support_dc24 for f in result.trajectory.flows)

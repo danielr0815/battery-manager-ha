@@ -24,6 +24,11 @@ from homeassistant.loader import async_get_integration
 from .const import (
     CONF_AS_TABLE,
     CONF_LEARNING_WINDOW_DAYS,
+    CONF_SUPPORT_DC24_ACTIVATE_SOC,
+    CONF_SUPPORT_DC24_RECOVERY_SOC,
+    CONF_SUPPORT_DC48_ACTIVATE_SOC,
+    CONF_SUPPORT_DC48_RECOVERY_SOC,
+    DEFAULT_CONFIG,
     DOMAIN,
     LEARNED_STORE_KEY,
     LEARNED_STORE_MAJOR,
@@ -272,6 +277,39 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 container[CONF_LEARNING_WINDOW_DAYS] = 120
         hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
         _LOGGER.info("Migrated Battery Manager entry to version 2.2")
+    if entry.version == 2 and entry.minor_version < 3:
+        # v0.7.13: the grid-support escalation switched from soc_min-derived
+        # thresholds to four ABSOLUTE SOC values. The new absolute DEFAULT_CONFIG
+        # values (10/11/5.5/10) are only neutral for the default battery config
+        # (soc_min 5 %); a pre-0.7.13 entry with a different soc_min would
+        # otherwise silently change (or disable) its grid support. Backfill the
+        # exact legacy-equivalent thresholds, computed from the entry's own
+        # soc_min/buffer, so the upgrade never moves the switch points.
+        escalation_keys = (
+            CONF_SUPPORT_DC24_ACTIVATE_SOC,
+            CONF_SUPPORT_DC24_RECOVERY_SOC,
+            CONF_SUPPORT_DC48_ACTIVATE_SOC,
+            CONF_SUPPORT_DC48_RECOVERY_SOC,
+        )
+        already_set = any(
+            k in entry.data or k in entry.options for k in escalation_keys
+        )
+        if already_set:
+            hass.config_entries.async_update_entry(entry, minor_version=3)
+        else:
+            merged = {**DEFAULT_CONFIG, **entry.data, **entry.options}
+            soc_min = float(merged["battery_min_soc_percent"])
+            buffer = float(merged["soc_buffer_percent"])
+            floor = soc_min + buffer
+            options = dict(entry.options)
+            options[CONF_SUPPORT_DC24_ACTIVATE_SOC] = floor
+            options[CONF_SUPPORT_DC24_RECOVERY_SOC] = floor + 1.0
+            options[CONF_SUPPORT_DC48_ACTIVATE_SOC] = soc_min + 0.5
+            options[CONF_SUPPORT_DC48_RECOVERY_SOC] = floor
+            hass.config_entries.async_update_entry(
+                entry, options=options, minor_version=3
+            )
+        _LOGGER.info("Migrated Battery Manager entry to version 2.3")
     return True
 
 

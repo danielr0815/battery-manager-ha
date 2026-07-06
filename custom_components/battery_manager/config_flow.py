@@ -72,9 +72,13 @@ from .const import (
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_POWER_ENTITY,
+    CONF_SUPPORT_DC24_RECOVERY_SOC,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_ACTIVATE_SOC,
     CONF_SUPPORT_DC48_POWER_W,
+    CONF_SUPPORT_DC48_RECOVERY_SOC,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
     CONF_WORKDAY_ENTITY,
@@ -222,6 +226,31 @@ def _validate_controller_voltages(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _validate_support_hysteresis(data: dict[str, Any]) -> str | None:
+    """The four absolute escalation SOC thresholds must form a sane hysteresis
+    ladder (D-A9): each stage needs activate < recovery for a real dead band,
+    and the deeper 48 V last-resort stage must sit at or below the 24 V stage
+    (both its activate and its recovery), so it engages no later and releases
+    no later than the 24 V support.
+    """
+    a24 = data.get(CONF_SUPPORT_DC24_ACTIVATE_SOC)
+    r24 = data.get(CONF_SUPPORT_DC24_RECOVERY_SOC)
+    a48 = data.get(CONF_SUPPORT_DC48_ACTIVATE_SOC)
+    r48 = data.get(CONF_SUPPORT_DC48_RECOVERY_SOC)
+    if any(v is None for v in (a24, r24, a48, r48)):
+        return None
+    a24, r24, a48, r48 = float(a24), float(r24), float(a48), float(r48)
+    if a24 >= r24:
+        return "support_dc24_recovery_not_above_activate"
+    if a48 >= r48:
+        return "support_dc48_recovery_not_above_activate"
+    if a48 > a24:
+        return "support_dc48_activate_above_dc24"
+    if r48 > r24:
+        return "support_dc48_recovery_above_dc24"
+    return None
+
+
 def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2).
 
@@ -362,7 +391,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Multi-step base configuration."""
 
     VERSION = 2
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -555,8 +584,10 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             data = _flatten_sections(user_input)
-            error = _validate_support_entities(data) or _validate_controller_voltages(
-                data
+            error = (
+                _validate_support_entities(data)
+                or _validate_controller_voltages(data)
+                or _validate_support_hysteresis(data)
             )
             if error is None:
                 self._data.update(data)
@@ -589,6 +620,22 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             vol.Required(
                 CONF_SUPPORT_SWITCH_DELAY_S, default=_d(d, CONF_SUPPORT_SWITCH_DELAY_S)
             ): _number(1, 30, 1, "s"),
+            vol.Required(
+                CONF_SUPPORT_DC24_ACTIVATE_SOC,
+                default=_d(d, CONF_SUPPORT_DC24_ACTIVATE_SOC),
+            ): _number(0, 100, 0.5, "%"),
+            vol.Required(
+                CONF_SUPPORT_DC24_RECOVERY_SOC,
+                default=_d(d, CONF_SUPPORT_DC24_RECOVERY_SOC),
+            ): _number(0, 100, 0.5, "%"),
+            vol.Required(
+                CONF_SUPPORT_DC48_ACTIVATE_SOC,
+                default=_d(d, CONF_SUPPORT_DC48_ACTIVATE_SOC),
+            ): _number(0, 100, 0.5, "%"),
+            vol.Required(
+                CONF_SUPPORT_DC48_RECOVERY_SOC,
+                default=_d(d, CONF_SUPPORT_DC48_RECOVERY_SOC),
+            ): _number(0, 100, 0.5, "%"),
         }
         return self.async_show_form(
             step_id="control",
@@ -623,6 +670,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 or _validate_learning_sources(data)
                 or _validate_buffer_clamps(data)
                 or _validate_controller_voltages(data)
+                or _validate_support_hysteresis(data)
             )
             if error is None:
                 # Cleared selector fields are absent from the input. Store an
@@ -673,6 +721,22 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 CONF_SUPPORT_SWITCH_DELAY_S,
                 default=_d(current, CONF_SUPPORT_SWITCH_DELAY_S),
             ): _number(1, 30, 1, "s"),
+            vol.Required(
+                CONF_SUPPORT_DC24_ACTIVATE_SOC,
+                default=_d(current, CONF_SUPPORT_DC24_ACTIVATE_SOC),
+            ): _number(0, 100, 0.5, "%"),
+            vol.Required(
+                CONF_SUPPORT_DC24_RECOVERY_SOC,
+                default=_d(current, CONF_SUPPORT_DC24_RECOVERY_SOC),
+            ): _number(0, 100, 0.5, "%"),
+            vol.Required(
+                CONF_SUPPORT_DC48_ACTIVATE_SOC,
+                default=_d(current, CONF_SUPPORT_DC48_ACTIVATE_SOC),
+            ): _number(0, 100, 0.5, "%"),
+            vol.Required(
+                CONF_SUPPORT_DC48_RECOVERY_SOC,
+                default=_d(current, CONF_SUPPORT_DC48_RECOVERY_SOC),
+            ): _number(0, 100, 0.5, "%"),
         }
         for key in _SUPPORT_SWITCH_KEYS:
             # suggested_value (not default) keeps the field clearable in the UI.
