@@ -9,7 +9,7 @@
 
 [project]
 name = "battery-manager-ha"
-version = "0.7.15"
+version = "0.7.16"
 description = "Solar-battery optimizer for Home Assistant: SOC forecast, discharge-threshold planning, surplus-load and grid-support control."
 readme = "README.md"
 requires-python = ">=3.13"

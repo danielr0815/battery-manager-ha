@@ -258,7 +258,9 @@
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "in_house_measurement": "In Hauslast-Messung enthalten",
-            "power_warning_percent": "Leistungsabweichungs-Warnung (%)"
+            "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
+            "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
+            "input_off_policy": "Steckdose beim Abschalten"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -270,7 +272,9 @@
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
-            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus."
+            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus.",
+            "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
+            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird."
           }
         },
         "reconfigure": {
@@ -285,7 +289,9 @@
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "in_house_measurement": "In Hauslast-Messung enthalten",
-            "power_warning_percent": "Leistungsabweichungs-Warnung (%)"
+            "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
+            "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
+            "input_off_policy": "Steckdose beim Abschalten"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -297,27 +303,25 @@
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
-            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus."
+            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus.",
+            "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
+            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird."
           }
         },
         "storage": {
           "title": "Speicher-Einstellungen",
-          "description": "Diese Felder gelten nur für energiebegrenzte Lasten (Speicher, der voll wird — z. B. eine Powerstation): Speichergröße, Ziel-SOC, SOC-Sensor und der Ladepfad (Eingangs-Schalter, Lade-Freigabe, Ladeende-Politik).",
+          "description": "Diese Felder gelten nur für energiebegrenzte Lasten (Speicher, der voll wird — z. B. eine Powerstation): Speichergröße, Ziel-SOC, SOC-Sensor und die Lade-Freigabe.",
           "data": {
             "capacity_wh": "Speicherkapazität (Wh)",
             "target_soc_percent": "Ziel-SOC (%)",
             "soc_entity": "SOC-Sensor (optional)",
-            "control_switch_entity": "Ladeeingang-Schalter (optional — die Integration schaltet ihn direkt)",
-            "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
-            "input_off_policy": "Ladeeingang bei Ladeende"
+            "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)"
           },
           "data_description": {
             "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
             "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
             "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
-            "control_switch_entity": "Schaltbare Steckdose des Ladeeingangs. Wenn gesetzt, schaltet die Integration das Laden selbst — eine eigene Lade-Automation ist dann überflüssig und sollte deaktiviert werden.",
-            "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden.",
-            "input_off_policy": "Was beim Ladeende mit dem Eingang passiert. „Automatisch“ = nur ausschalten, wenn die Integration ihn selbst eingeschaltet hat — empfohlen, wenn der Eingang auch für Passthrough genutzt wird."
+            "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden."
           }
         }
       }

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-07-09
+
+### Changed
+- **Any surplus load can now be switched directly by the integration, not only
+  energy-limited storage.** The **control switch** and its **off policy** moved
+  from the (energy-limited-only) storage page to the load's **basic settings**,
+  so a continuous consumer — a dehumidifier, heater, … — can be assigned a switch
+  and is driven directly by BM. This is what the F-SUBHOUR sub-hour executor
+  needs to actively switch such a load; without it a continuous load could only
+  be recommendation-only. The **charge-enable** gate stays on the storage page
+  (meaningful only for a powerstation). No data migration — existing loads keep
+  their control switch; the `keep_on`-needs-charge-enable rule is now validated
+  across both steps.
+
 ## [0.7.15] - 2026-07-09
 
 ### Added

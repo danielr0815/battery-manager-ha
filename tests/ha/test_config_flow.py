@@ -549,14 +549,17 @@ async def test_load_subentry_flow_skips_storage_for_continuous_loads(hass):
     assert result["type"] == "form"
     assert result["step_id"] == "user"
     schema_keys = {str(k) for k in result["data_schema"].schema}
-    for moved in (
+    # Storage-only fields stay hidden for a continuous load...
+    for storage_only in (
         CONF_LOAD_CAPACITY_WH,
         CONF_LOAD_TARGET_SOC,
-        CONF_LOAD_CONTROL_SWITCH,
         CONF_LOAD_CHARGE_ENABLE,
-        CONF_LOAD_INPUT_OFF_POLICY,
     ):
-        assert moved not in schema_keys, f"{moved} belongs to the storage step"
+        assert storage_only not in schema_keys, f"{storage_only} belongs to storage"
+    # ...but the control switch + off policy are on the basic step now, so a
+    # continuous load (dehumidifier) can be switched directly by BM (F-SUBHOUR).
+    assert CONF_LOAD_CONTROL_SWITCH in schema_keys
+    assert CONF_LOAD_INPUT_OFF_POLICY in schema_keys
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], dict(BASIC_CONTINUOUS)
@@ -589,7 +592,13 @@ async def test_load_subentry_flow_shows_storage_for_energy_limited(hass):
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        {**BASIC_CONTINUOUS, "name": "Fossibot Test", "energy_limited": True},
+        {
+            **BASIC_CONTINUOUS,
+            "name": "Fossibot Test",
+            "energy_limited": True,
+            CONF_LOAD_CONTROL_SWITCH: "switch.fossibot_plug",
+            CONF_LOAD_INPUT_OFF_POLICY: "auto",
+        },
     )
     assert result["type"] == "form"
     assert result["step_id"] == "storage"
@@ -600,8 +609,6 @@ async def test_load_subentry_flow_shows_storage_for_energy_limited(hass):
             CONF_LOAD_CAPACITY_WH: 2000.0,
             CONF_LOAD_TARGET_SOC: 90.0,
             CONF_LOAD_SOC_ENTITY: "sensor.fossibot_soc",
-            CONF_LOAD_CONTROL_SWITCH: "switch.fossibot_plug",
-            CONF_LOAD_INPUT_OFF_POLICY: "auto",
         },
     )
     assert result["type"] == "create_entry"
@@ -627,17 +634,70 @@ async def test_load_subentry_storage_step_validates_charging_path(hass):
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        {**BASIC_CONTINUOUS, "name": "Fossibot Test", "energy_limited": True},
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
         {
-            CONF_LOAD_CAPACITY_WH: 2000.0,
-            CONF_LOAD_TARGET_SOC: 90.0,
+            **BASIC_CONTINUOUS,
+            "name": "Fossibot Test",
+            "energy_limited": True,
             CONF_LOAD_CONTROL_SWITCH: "switch.fossibot_plug",
             CONF_LOAD_INPUT_OFF_POLICY: "keep_on",  # no enable entity!
         },
     )
+    assert result["step_id"] == "storage"
+    # keep_on needs a charge-enable; the storage step submitted without one is
+    # rejected (the rule is validated across both steps' combined data).
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {CONF_LOAD_CAPACITY_WH: 2000.0, CONF_LOAD_TARGET_SOC: 90.0},
+    )
     assert result["type"] == "form"
     assert result["step_id"] == "storage"
+    assert result["errors"] == {"base": "keep_on_requires_enable"}
+
+
+async def test_continuous_load_can_have_control_switch(hass):
+    """F-SUBHOUR: a continuous consumer (dehumidifier) can now be assigned a
+    control switch on the basic step, so BM switches it directly (sub-hour)."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_LOAD_ENERGY_LIMITED,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {**BASIC_CONTINUOUS, CONF_LOAD_CONTROL_SWITCH: "switch.dehumidifier_plug"},
+    )
+    assert result["type"] == "create_entry"  # continuous load: no storage step
+    sub = next(iter(entry.subentries.values()))
+    assert sub.data[CONF_LOAD_ENERGY_LIMITED] is False
+    assert sub.data[CONF_LOAD_CONTROL_SWITCH] == "switch.dehumidifier_plug"
+
+
+async def test_continuous_load_keep_on_without_enable_rejected_on_basic(hass):
+    """A continuous load with keep_on but no charge-enable is rejected on the
+    basic step (the charging-path rule is validated there for continuous loads)."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_LOAD_INPUT_OFF_POLICY,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            **BASIC_CONTINUOUS,
+            CONF_LOAD_CONTROL_SWITCH: "switch.dehumidifier_plug",
+            CONF_LOAD_INPUT_OFF_POLICY: "keep_on",
+        },
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
     assert result["errors"] == {"base": "keep_on_requires_enable"}

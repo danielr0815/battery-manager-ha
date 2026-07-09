@@ -826,11 +826,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     _STORAGE_KEYS = (
         CONF_LOAD_CAPACITY_WH,
         CONF_LOAD_TARGET_SOC,
-        CONF_LOAD_INPUT_OFF_POLICY,
     )
     _STORAGE_ENTITY_KEYS = (
         CONF_LOAD_SOC_ENTITY,
-        CONF_LOAD_CONTROL_SWITCH,
         CONF_LOAD_CHARGE_ENABLE,
     )
 
@@ -880,6 +878,27 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
+        # The control switch and its off policy apply to ANY controlled load
+        # (a continuous consumer like a dehumidifier is switched by BM too), so
+        # they live on the basic step; the charge-enable gate stays on the
+        # storage step (only energy-limited powerstations gate charging).
+        schema[
+            vol.Optional(
+                CONF_LOAD_CONTROL_SWITCH,
+                description={"suggested_value": data.get(CONF_LOAD_CONTROL_SWITCH)},
+            )
+        ] = _entity("switch")
+        schema[
+            vol.Required(
+                CONF_LOAD_INPUT_OFF_POLICY, default=dv(CONF_LOAD_INPUT_OFF_POLICY)
+            )
+        ] = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=INPUT_OFF_POLICIES,
+                translation_key="input_off_policy",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        )
         return vol.Schema(schema)
 
     def _storage_schema(self, data: dict[str, Any]) -> vol.Schema:
@@ -896,23 +915,11 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         }
         for key, domain in (
             (CONF_LOAD_SOC_ENTITY, "sensor"),
-            (CONF_LOAD_CONTROL_SWITCH, "switch"),
             (CONF_LOAD_CHARGE_ENABLE, ["input_boolean", "switch"]),
         ):
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
-        schema[
-            vol.Required(
-                CONF_LOAD_INPUT_OFF_POLICY, default=dv(CONF_LOAD_INPUT_OFF_POLICY)
-            )
-        ] = selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=INPUT_OFF_POLICIES,
-                translation_key="input_off_policy",
-                mode=selector.SelectSelectorMode.DROPDOWN,
-            )
-        )
         return vol.Schema(schema)
 
     def _finish(self, storage_input: dict[str, Any]) -> SubentryFlowResult:
@@ -943,8 +950,18 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         if user_input is not None:
             self._basic = user_input
             if user_input.get(CONF_LOAD_ENERGY_LIMITED):
+                # charge-enable is captured on the storage step -> validate there.
                 return await self.async_step_storage()
-            return self._finish({})
+            # Continuous load: no storage step, so the charging-path rules
+            # (control switch + off policy, no charge-enable) are validated here.
+            error = _validate_load_control(user_input)
+            if error is None:
+                return self._finish({})
+            return self.async_show_form(
+                step_id=step_id,
+                data_schema=self._basic_schema(user_input),
+                errors={"base": error},
+            )
         return self.async_show_form(
             step_id=step_id, data_schema=self._basic_schema(self._existing)
         )
@@ -971,8 +988,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            # The charging-path combination rules live in this step now.
-            error = _validate_load_control(user_input)
+            # Validate the FULL charging path: control switch + off policy come
+            # from the basic step, charge-enable from this one.
+            error = _validate_load_control({**self._basic, **user_input})
             if error is None:
                 return self._finish(user_input)
             errors["base"] = error
