@@ -95,6 +95,36 @@ def _committed_hours(load, slot) -> float:
     return max(slot.duration, load.min_runtime_min / 60.0)
 
 
+def _quantised_hours(load, slot) -> list[float]:
+    """Candidate commit durations for one (load, slot), LARGEST first.
+
+    The FIRST candidate is always `_committed_hours` — the whole-slot / dwell
+    floor — so a load that fits a full slot books exactly as before (the
+    regression anchor: if the whole slot clears every gate it is chosen and the
+    plan is bit-identical to the pre-F-SUBHOUR behaviour). A NON-energy-limited
+    load additionally offers SHORTER runs quantised to its `min_runtime_min`
+    (>= one quantum, never less — F-SUBHOUR R1/R2), so a small surplus the
+    battery buffers within the hour can still be captured at ~net-zero cost.
+    Energy-limited loads (powerstations) only ever get the whole-slot candidate;
+    their stop is governed by the target SOC, and the executor keeps its
+    level-driven behaviour for them (no sub-hour cap).
+    """
+    whole = _committed_hours(load, slot)
+    if load.energy_limited:
+        return [whole]
+    q = load.min_runtime_min / 60.0
+    if q <= _EPS:
+        return [whole]
+    candidates = [whole]
+    k = int((whole - _EPS) / q)  # largest k with k*q < whole
+    while k >= 1:
+        d = k * q
+        if d < whole - _EPS:
+            candidates.append(d)
+        k -= 1
+    return candidates
+
+
 def _spread_energy(
     extra: list[float],
     slots,
@@ -151,6 +181,7 @@ def allocate_loads(
     n = len(inputs.slots)
     states = {s.load_id: s for s in inputs.load_states}
     schedules: dict[str, list[bool]] = {ld.load_id: [False] * n for ld in config.loads}
+    run_h: dict[str, list[float]] = {ld.load_id: [0.0] * n for ld in config.loads}
     planned_wh: dict[str, float] = dict.fromkeys(schedules, 0.0)
     allocations: dict[str, list[tuple[int, int, int, float]]] = {
         ld.load_id: [] for ld in config.loads
@@ -172,47 +203,53 @@ def allocate_loads(
             if not state.available or schedules[load.load_id][i]:
                 continue
             power_w = state.planning_power_w(load)
-            commit_h = _committed_hours(load, slot)
-            power_wh = power_w * commit_h
-            if power_wh <= _EPS:
-                continue
             rem = remaining[load.load_id]
-            if rem is not None and rem < max(power_w, load.nominal_power_w) * commit_h:
-                continue  # saturated (or nearly): skip
-            trial, covered = _spread_energy(extra, inputs.slots, i, power_w, commit_h)
-            if any(schedules[load.load_id][j] for j, _ in covered):
-                continue  # commitment overlaps an already-scheduled slot
-            # Soft surplus condition (D-A4): battery may cover at most
-            # `battery_tolerance` of the committed energy. Spilled slots
-            # contribute their export prorated by the occupied share.
-            surplus_cov = surplus + sum(
-                current.flows[j].grid_export_wh * (take / inputs.slots[j].duration)
-                for j, take in covered[1:]
-            )
-            battery_share = max(0.0, power_wh - surplus_cov) / power_wh
-            if battery_share > load.battery_tolerance + _EPS:
-                continue
-            # Hard conditions via full re-simulation (Z2/Z3).
-            traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-            if traj.total_import_wh > base_import + _EPS:
-                continue
-            if _degrades_min_soc(traj, current, buffer_floor):
-                continue
-            extra = trial
-            current = traj
-            for j, _ in covered:
-                schedules[load.load_id][j] = True
-            # Book what actually landed in the horizon (a commitment may be
-            # truncated at the horizon end); the gates above deliberately
-            # used the full committed energy.
-            placed_wh = power_w * sum(take for _, take in covered)
-            planned_wh[load.load_id] += placed_wh
-            allocations[load.load_id].append((i, len(covered), 1, placed_wh))
-            if rem is not None:
-                remaining[load.load_id] = rem - placed_wh
-            # Only the slot-local share draws on this slot's surplus; the
-            # spilled share is already reflected in the re-simulated flows.
-            surplus = max(0.0, surplus - power_w * covered[0][1])
+            # Try the largest quantised run first, falling back to shorter
+            # min_runtime multiples so a small battery-buffered surplus can still
+            # be captured (F-SUBHOUR R1-R3). The whole-slot candidate is first,
+            # so a full-hour placement stays bit-identical to the old behaviour.
+            for commit_h in _quantised_hours(load, slot):
+                power_wh = power_w * commit_h
+                if power_wh <= _EPS:
+                    continue
+                if rem is not None and rem < max(power_w, load.nominal_power_w) * commit_h:
+                    continue  # saturated (or nearly): skip
+                trial, covered = _spread_energy(extra, inputs.slots, i, power_w, commit_h)
+                if any(schedules[load.load_id][j] for j, _ in covered):
+                    continue  # commitment overlaps an already-scheduled slot
+                # Soft surplus condition (D-A4): battery may cover at most
+                # `battery_tolerance` of the committed energy. Spilled slots
+                # contribute their export prorated by the occupied share.
+                surplus_cov = surplus + sum(
+                    current.flows[j].grid_export_wh * (take / inputs.slots[j].duration)
+                    for j, take in covered[1:]
+                )
+                battery_share = max(0.0, power_wh - surplus_cov) / power_wh
+                if battery_share > load.battery_tolerance + _EPS:
+                    continue
+                # Hard conditions via full re-simulation (Z2/Z3).
+                traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
+                if traj.total_import_wh > base_import + _EPS:
+                    continue
+                if _degrades_min_soc(traj, current, buffer_floor):
+                    continue
+                extra = trial
+                current = traj
+                for j, take in covered:
+                    schedules[load.load_id][j] = True
+                    run_h[load.load_id][j] = take
+                # Book what actually landed in the horizon (a commitment may be
+                # truncated at the horizon end); the gates above deliberately
+                # used the full committed energy.
+                placed_wh = power_w * sum(take for _, take in covered)
+                planned_wh[load.load_id] += placed_wh
+                allocations[load.load_id].append((i, len(covered), 1, placed_wh))
+                if rem is not None:
+                    remaining[load.load_id] = rem - placed_wh
+                # Only the slot-local share draws on this slot's surplus; the
+                # spilled share is already reflected in the re-simulated flows.
+                surplus = max(0.0, surplus - power_w * covered[0][1])
+                break  # placed the largest feasible quantum; done with this slot
 
     # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2).
     # A load may run without direct surplus when the re-simulation proves:
@@ -235,38 +272,44 @@ def allocate_loads(
                 if not state.available or schedules[load.load_id][i]:
                     continue
                 power_w = state.planning_power_w(load)
-                commit_h = _committed_hours(load, slot)
-                power_wh = power_w * commit_h
-                if power_wh <= _EPS:
-                    continue
                 rem = remaining[load.load_id]
-                if (
-                    rem is not None
-                    and rem < max(power_w, load.nominal_power_w) * commit_h
-                ):
-                    continue
-                trial, covered = _spread_energy(
-                    extra, inputs.slots, i, power_w, commit_h
-                )
-                if any(schedules[load.load_id][j] for j, _ in covered):
-                    continue
-                traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-                if traj.total_import_wh > base_import + _EPS:
-                    continue
-                if _degrades_min_soc(traj, current, buffer_floor):
-                    continue
-                export_drop = current.total_export_wh - traj.total_export_wh
-                if export_drop + _EPS < (1.0 - load.battery_tolerance) * power_wh:
-                    continue
-                extra = trial
-                current = traj
-                for j, _ in covered:
-                    schedules[load.load_id][j] = True
-                placed_wh = power_w * sum(take for _, take in covered)
-                planned_wh[load.load_id] += placed_wh
-                allocations[load.load_id].append((i, len(covered), 2, placed_wh))
-                if rem is not None:
-                    remaining[load.load_id] = rem - placed_wh
+                # Largest-first quantised search (F-SUBHOUR): a sub-hour
+                # preemptive run needs only export_drop >= (1-tol)*(k*q) energy,
+                # so a small afternoon dribble a whole hour cannot capture may
+                # still be soaked by a min_runtime chunk.
+                for commit_h in _quantised_hours(load, slot):
+                    power_wh = power_w * commit_h
+                    if power_wh <= _EPS:
+                        continue
+                    if (
+                        rem is not None
+                        and rem < max(power_w, load.nominal_power_w) * commit_h
+                    ):
+                        continue
+                    trial, covered = _spread_energy(
+                        extra, inputs.slots, i, power_w, commit_h
+                    )
+                    if any(schedules[load.load_id][j] for j, _ in covered):
+                        continue
+                    traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
+                    if traj.total_import_wh > base_import + _EPS:
+                        continue
+                    if _degrades_min_soc(traj, current, buffer_floor):
+                        continue
+                    export_drop = current.total_export_wh - traj.total_export_wh
+                    if export_drop + _EPS < (1.0 - load.battery_tolerance) * power_wh:
+                        continue
+                    extra = trial
+                    current = traj
+                    for j, take in covered:
+                        schedules[load.load_id][j] = True
+                        run_h[load.load_id][j] = take
+                    placed_wh = power_w * sum(take for _, take in covered)
+                    planned_wh[load.load_id] += placed_wh
+                    allocations[load.load_id].append((i, len(covered), 2, placed_wh))
+                    if rem is not None:
+                        remaining[load.load_id] = rem - placed_wh
+                    break
 
     plans = [
         LoadPlan(
@@ -274,6 +317,7 @@ def allocate_loads(
             schedule=tuple(schedules[load.load_id]),
             planned_energy_wh=planned_wh[load.load_id],
             allocations=tuple(allocations[load.load_id]),
+            run_hours=tuple(run_h[load.load_id]),
         )
         for load in config.loads
     ]

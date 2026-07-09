@@ -23,6 +23,7 @@ from .const import (
     CONF_AC_LOAD_ENTITY,
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_NAME,
+    CONF_APPLIANCE_OFF_THRESHOLD_W,
     CONF_APPLIANCE_OPPORTUNISTIC,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
@@ -50,6 +51,7 @@ from .const import (
     CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_MIN_OFF_MIN,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_NAME,
     CONF_LOAD_POWER_ENTITY,
@@ -848,6 +850,19 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                 CONF_LOAD_MIN_RUNTIME_MIN, default=dv(CONF_LOAD_MIN_RUNTIME_MIN)
             ): _number(0, 240, 5, "min"),
             vol.Required(
+                # Back-compat: a pre-0.7.15 load lacks the key — mirror the
+                # coordinator fallback (min_off == min_runtime) so a no-change
+                # reconfigure never silently shortens the OFF dwell.
+                CONF_LOAD_MIN_OFF_MIN,
+                default=data.get(
+                    CONF_LOAD_MIN_OFF_MIN,
+                    data.get(
+                        CONF_LOAD_MIN_RUNTIME_MIN,
+                        DEFAULT_LOAD_CONFIG[CONF_LOAD_MIN_OFF_MIN],
+                    ),
+                ),
+            ): _number(0, 240, 5, "min"),
+            vol.Required(
                 CONF_LOAD_ENERGY_LIMITED, default=dv(CONF_LOAD_ENERGY_LIMITED)
             ): selector.BooleanSelector(),
             vol.Required(
@@ -995,6 +1010,20 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
                     CONF_APPLIANCE_POWER_THRESHOLD_W,
                     default=dv(CONF_APPLIANCE_POWER_THRESHOLD_W),
                 ): _number(1, 3000, 1, "W"),
+                vol.Required(
+                    # Back-compat: a pre-0.7.15 appliance lacks the key — mirror
+                    # the coordinator fallback (off == on threshold = no
+                    # hysteresis) so a no-change reconfigure keeps run-end
+                    # detection unchanged.
+                    CONF_APPLIANCE_OFF_THRESHOLD_W,
+                    default=data.get(
+                        CONF_APPLIANCE_OFF_THRESHOLD_W,
+                        data.get(
+                            CONF_APPLIANCE_POWER_THRESHOLD_W,
+                            DEFAULT_APPLIANCE_CONFIG[CONF_APPLIANCE_OFF_THRESHOLD_W],
+                        ),
+                    ),
+                ): _number(0, 3000, 1, "W"),
                 vol.Required(
                     CONF_APPLIANCE_RUN_ENERGY_WH,
                     default=dv(CONF_APPLIANCE_RUN_ENERGY_WH),

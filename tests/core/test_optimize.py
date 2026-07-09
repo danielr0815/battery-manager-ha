@@ -13,7 +13,9 @@ from core.model import (
     SystemConfig,
 )
 from core.optimize import (
+    _committed_hours,
     _degrades_min_soc,
+    _quantised_hours,
     allocate_loads,
     appliance_windows,
     plan,
@@ -631,3 +633,132 @@ def test_forced_dc48_feeds_stage1_decision():
     floor = config.control.support_dc24_activate_soc
     assert result.min_soc_percent >= floor - 0.01
     assert not any(f.support_dc24 for f in result.trajectory.flows)
+
+
+# ---------------------------------------------------------------------------
+# F-SUBHOUR: sub-hour surplus-load allocation (docs/F-SUBHOUR-ALLOCATION.md)
+# ---------------------------------------------------------------------------
+
+
+def _slot(duration=1.0, hour=12):
+    return HourSlot(
+        index=0,
+        start=datetime(2026, 7, 3, hour, 0),
+        duration=duration,
+        hour_of_day=hour,
+        pv_wh=0.0,
+        ac_wh=0.0,
+        dc_wh=0.0,
+    )
+
+
+def _s3_plan():
+    """The S3 night scenario (thin, spread surplus) — the case sub-hour helps."""
+    cfg = SystemConfig(loads=(FOSSIBOT_1, DEHUMIDIFIER))
+    states = (
+        SurplusLoadState(load_id="fossibot_1", soc_percent=0.0),
+        SurplusLoadState(load_id="dehumidifier"),
+    )
+    return make_plan(cfg, datetime(2026, 7, 3, 21, 0), 84.0, [0.0, 13.0, 11.0], states)
+
+
+def test_quantised_hours_whole_slot_first_is_regression_anchor():
+    # R6: the FIRST candidate is always _committed_hours, so a full-hour
+    # placement is chosen exactly as before F-SUBHOUR.
+    cands = _quantised_hours(DEHUMIDIFIER, _slot(1.0))
+    assert cands[0] == _committed_hours(DEHUMIDIFIER, _slot(1.0)) == 1.0
+    assert cands == [1.0, 0.5]  # then the 30-min min_runtime fallback
+
+
+def test_quantised_hours_never_below_min_runtime():
+    # R2: no candidate shorter than min_runtime_min.
+    q = DEHUMIDIFIER.min_runtime_min / 60.0
+    assert all(d >= q - 1e-9 for d in _quantised_hours(DEHUMIDIFIER, _slot(1.0)))
+
+
+def test_quantised_hours_energy_limited_is_whole_slot_only():
+    # R12: energy-limited loads keep a single whole-slot candidate.
+    assert _quantised_hours(FOSSIBOT_1, _slot(1.0)) == [1.0]
+    assert _quantised_hours(FOSSIBOT_1, _slot(0.5)) == [0.5]
+
+
+def test_quantised_hours_partial_first_slot_unchanged_head():
+    # A partial slot 0 still offers the whole remaining slot first (regression).
+    cands = _quantised_hours(DEHUMIDIFIER, _slot(0.75))
+    assert cands[0] == _committed_hours(DEHUMIDIFIER, _slot(0.75)) == 0.75
+    assert cands == [0.75, 0.5]
+
+
+def test_subhour_captures_thin_surplus_with_min_runtime_chunks():
+    # R1/R3: the dehumidifier books at least one 30-min chunk to soak a thin
+    # surplus a whole hour could not, and NEVER a run below min_runtime (R2).
+    result, _ = _s3_plan()
+    d1 = next(lp for lp in result.load_plans if lp.load_id == "dehumidifier")
+    q = DEHUMIDIFIER.min_runtime_min / 60.0
+    assert any(abs(h - q) < 1e-9 for h in d1.run_hours), "expected a sub-hour chunk"
+    assert all(h == 0.0 or h >= q - 1e-9 for h in d1.run_hours)
+
+
+def test_run_hours_and_schedule_stay_consistent():
+    # R5: schedule[i] == (run_hours[i] > 0), same length.
+    result, _ = _s3_plan()
+    for lp in result.load_plans:
+        assert len(lp.run_hours) == len(lp.schedule)
+        assert all(
+            bool(s) == (h > 0)
+            for s, h in zip(lp.schedule, lp.run_hours, strict=True)
+        )
+
+
+def test_energy_limited_load_books_only_whole_slots():
+    # R12: F1 (energy-limited) only ever books whole slots, never a fraction.
+    result, inputs = _s3_plan()
+    f1 = next(lp for lp in result.load_plans if lp.load_id == "fossibot_1")
+    for i, h in enumerate(f1.run_hours):
+        if h > 0:
+            assert abs(h - inputs.slots[i].duration) < 1e-9
+
+
+def test_active_run_hours_sums_contiguous_block_from_slot0():
+    # R7: the executor's frozen run length is the contiguous run from slot 0.
+    from core.model import LoadPlan
+
+    lp = LoadPlan(
+        load_id="x",
+        schedule=(True, True, False, True),
+        planned_energy_wh=0.0,
+        run_hours=(0.5, 1.0, 0.0, 1.0),
+    )
+    assert lp.active_run_hours() == 1.5  # 0.5 + 1.0, stops at the gap
+    off = LoadPlan(load_id="x", schedule=(False,), planned_energy_wh=0.0, run_hours=(0.0,))
+    assert off.active_run_hours() == 0.0
+    # legacy fallback: run_hours empty -> count whole scheduled slots
+    legacy = LoadPlan(load_id="x", schedule=(True, True, False), planned_energy_wh=0.0)
+    assert legacy.active_run_hours() == 2.0
+
+
+def test_active_run_hours_stops_at_partial_slot_with_durations():
+    """F-SUBHOUR fix: a slot not filled to its own duration ends the real-time
+    run block, so the executor's frozen deadline never spans a planned-OFF gap."""
+    from core.model import LoadPlan
+
+    # 30-min cap in a full hour, with the NEXT hour separately scheduled: the
+    # real-time run is only 0.5 h (gap after), not 0.5+1.0=1.5 h.
+    lp = LoadPlan(
+        load_id="x", schedule=(True, True, False), planned_energy_wh=0.0,
+        run_hours=(0.5, 1.0, 0.0),
+    )
+    assert lp.active_run_hours((1.0, 1.0, 1.0)) == 0.5
+    assert lp.active_run_hours() == 1.5  # legacy no-durations path unchanged
+    # a FULL slot 0 continues into slot 1 (partial cap there ends the block)
+    lp2 = LoadPlan(
+        load_id="x", schedule=(True, True, False), planned_energy_wh=0.0,
+        run_hours=(1.0, 0.5, 0.0),
+    )
+    assert lp2.active_run_hours((1.0, 1.0, 1.0)) == 1.5
+    # a PARTIAL first slot fully filled (0.5 == slot0 0.5 h) continues
+    lp3 = LoadPlan(
+        load_id="x", schedule=(True, True, False), planned_energy_wh=0.0,
+        run_hours=(0.5, 1.0, 0.0),
+    )
+    assert lp3.active_run_hours((0.5, 1.0, 1.0)) == 1.5

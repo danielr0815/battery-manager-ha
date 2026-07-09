@@ -11,7 +11,10 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_point_in_time,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -19,6 +22,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     APPLIANCE_RUNNING_STATES,
     CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_APPLIANCE_OFF_THRESHOLD_W,
     CONF_APPLIANCE_OPPORTUNISTIC,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_RUN_DURATION_H,
@@ -40,6 +44,7 @@ from .const import (
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_MIN_OFF_MIN,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
@@ -220,6 +225,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Appliance run tracking and load power smoothing
         self._appliance_started: dict[str, datetime] = {}
+        # H1: keys restored from persistence get ONE restart-boundary staleness
+        # check in _get_appliance_runs, so a run that finished during downtime
+        # cannot pin a genuinely-new run at 0 remaining.
+        self._appliance_started_restored: set[str] = set()
         self._load_power_ema: dict[str, float] = {}
 
         # Charging-path control (docs/LOAD_CONTROL.md): SOC cache survives
@@ -243,6 +252,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_power_warning: dict[str, bool] = {}
         self._load_warning_diag: dict[str, dict[str, Any]] = {}
         self._load_switch_task: asyncio.Task | None = None
+        # F-SUBHOUR (approach A): the frozen sub-hour run deadline per controlled
+        # non-energy-limited load, and the one-shot timer that force-switches it
+        # OFF at that deadline so the planned partial-hour energy is delivered
+        # exactly (no ~250 Wh over-run). Persisted so a restart never uncaps a run.
+        self._load_run_deadline: dict[str, datetime] = {}
+        self._load_off_timer: dict[str, Any] = {}
 
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
         self.learner = ProfileLearner(hass, entry)
@@ -283,6 +298,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
                     self._last_load_switch[k] = ts
+            # F-SUBHOUR: restore the frozen run deadline so a restart mid-run
+            # still force-offs at the planned time (the poll enforces it; a past
+            # deadline offs on the first refresh) — never uncapped (R13).
+            for k, v in data.get("load_run_deadline", {}).items():
+                ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
+                if ts is not None:
+                    self._load_run_deadline[k] = ts
+            # F-SUBHOUR H1: restore appliance run starts (a still-running
+            # appliance keeps its real elapsed; a finished one is popped on the
+            # next _get_appliance_runs when detection reads not-running).
+            for k, v in data.get("appliance_started", {}).items():
+                ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
+                if ts is not None:
+                    self._appliance_started[k] = ts
+                    self._appliance_started_restored.add(k)
             # Support-PSU manual override (F-N2) survives restarts, together
             # with the last known BM support state: after a restart, "PSU is
             # on but we never switched it on" must only read as manual when
@@ -322,6 +352,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "plug_owned": self._load_plug_owned,
             "last_load_switch": {
                 k: v.isoformat() for k, v in self._last_load_switch.items()
+            },
+            "load_run_deadline": {
+                k: v.isoformat() for k, v in self._load_run_deadline.items()
+            },
+            # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
+            # does not re-latch at `now` and re-inject the full run energy.
+            "appliance_started": {
+                k: v.isoformat() for k, v in self._appliance_started.items()
             },
             "support_manual": dict(self._support_manual),
             "support_state": dict(self._support_state),
@@ -401,6 +439,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         / 100.0,
                         min_runtime_min=int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
+                        # Back-compat: an existing load without the key keeps its
+                        # symmetric dwell (min_off == min_runtime), see F-SUBHOUR R14.
+                        min_off_min=int(
+                            data.get(
+                                CONF_LOAD_MIN_OFF_MIN,
+                                data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30),
+                            )
+                        ),
                         energy_limited=bool(data.get(CONF_LOAD_ENERGY_LIMITED, False)),
                         capacity_wh=float(data.get(CONF_LOAD_CAPACITY_WH, 0.0)),
                         target_soc_percent=float(data.get(CONF_LOAD_TARGET_SOC, 100.0)),
@@ -835,18 +881,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return tuple(states)
 
-    def _appliance_is_running(self, data: dict[str, Any]) -> bool:
+    def _appliance_is_running(self, data: dict[str, Any], latched: bool) -> bool:
+        """Detection with hysteresis (F-SUBHOUR H2).
+
+        A numeric detection entity starts a run at `power_threshold_w` and keeps
+        it latched until the power drops below `off_threshold_w` (default = the
+        on threshold, i.e. no hysteresis unless configured lower). A brief
+        sub-threshold dip during a run (e.g. a dishwasher soak between heater
+        bursts) therefore does not reset the run clock and re-inject the full
+        energy. During an entity dropout the last (latched) state is held."""
         entity_id = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
         if not entity_id:
             return False
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
-            return False
+            return latched  # hold last state during a dropout, do not reset
         try:
             power = float(state.state)
         except (ValueError, TypeError):
             return state.state.lower() in APPLIANCE_RUNNING_STATES
-        return power >= float(data.get(CONF_APPLIANCE_POWER_THRESHOLD_W, 10.0))
+        on_th = float(data.get(CONF_APPLIANCE_POWER_THRESHOLD_W, 10.0))
+        off_th = min(float(data.get(CONF_APPLIANCE_OFF_THRESHOLD_W, on_th)), on_th)
+        return power >= (off_th if latched else on_th)
 
     def _get_appliance_runs(self, now: datetime) -> tuple[ApplianceRun, ...]:
         runs = []
@@ -854,10 +910,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
                 continue
             data = subentry.data
-            if self._appliance_is_running(data):
+            if self._appliance_is_running(data, subentry_id in self._appliance_started):
                 started = self._appliance_started.setdefault(subentry_id, now)
                 duration = float(data[CONF_APPLIANCE_RUN_DURATION_H])
                 elapsed_h = (now - started).total_seconds() / 3600.0
+                # H1 restart-boundary re-anchor: a persisted start restored across
+                # a restart may belong to a run that finished during downtime
+                # while a NEW run is now active. Only at the first post-restart
+                # evaluation, if it is already fully elapsed, treat it as a fresh
+                # run so the active run is not silently omitted at 0 remaining.
+                if subentry_id in self._appliance_started_restored:
+                    self._appliance_started_restored.discard(subentry_id)
+                    if duration > 0 and elapsed_h >= duration:
+                        started = self._appliance_started[subentry_id] = now
+                        elapsed_h = 0.0
                 remaining_h = max(0.0, duration - elapsed_h)
                 if remaining_h > 0 and duration > 0:
                     runs.append(
@@ -873,6 +939,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
             else:
                 self._appliance_started.pop(subentry_id, None)
+                self._appliance_started_restored.discard(subentry_id)
         return tuple(runs)
 
     # ------------------------------------------------------------------
@@ -1063,7 +1130,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
         await self._apply_support_switching(result, config, now)
         self._run_dc48_controller(now)
-        await self._apply_load_switching(result, now)
+        await self._apply_load_switching(
+            result, now, tuple(s.duration for s in inputs.slots)
+        )
         self._update_power_warnings(result, now)
         self._update_gate_calibration(config, soc)
 
@@ -1094,7 +1163,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             since = diag.get("since")
             load_plans[load_plan.load_id] = {
                 "name": load.name,
-                "active": load_plan.active_now,
+                # Effective active: whole-slot active_now capped by the frozen
+                # sub-hour deadline (F-SUBHOUR R8/R12), so the binary sensor an
+                # operator's automation follows flips off at the run's end.
+                "active": self._effective_load_active(load_plan, now),
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
                 "charging_active": self._load_charging_active.get(load_plan.load_id),
@@ -1954,37 +2026,105 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return True
         return self._entity_tristate(enable)
 
-    async def _apply_load_switching(self, result, now: datetime) -> None:
+    def _maintain_recommendation_deadline(
+        self, load_id, data, plan, now: datetime, slot_durations
+    ) -> None:
+        """Sub-hour cap for a recommendation-only load (no control switch;
+        F-SUBHOUR R12). BM cannot switch the load, so the deadline only governs
+        the published `active` flag the operator's automation follows: it is
+        anchored on the first cycle the plan is active and held (even once past)
+        until the plan goes inactive, so the sensor reads active from the run's
+        start to `run_start + max(min_runtime, run)` and off for the rest. A
+        later export window (the plan cycles inactive->active) re-anchors."""
+        active = bool(plan and plan.active_now)
+        energy_limited = bool(data.get(CONF_LOAD_ENERGY_LIMITED, False))
+        if not active or energy_limited:
+            if load_id in self._load_run_deadline:
+                self._load_run_deadline.pop(load_id, None)
+                self._cancel_off_timer(load_id)
+            return
+        if load_id not in self._load_run_deadline:
+            off_min = max(
+                int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
+                round(plan.active_run_hours(slot_durations) * 60.0),
+            )
+            off_at = now + timedelta(minutes=off_min)
+            self._load_run_deadline[load_id] = off_at
+            self._arm_off_timer(load_id, off_at)
+
+    def _effective_load_active(self, load_plan, now: datetime) -> bool:
+        """Published `active` for the load binary sensor: the whole-slot
+        `active_now` capped by the frozen sub-hour deadline (F-SUBHOUR)."""
+        deadline = self._load_run_deadline.get(load_plan.load_id)
+        return bool(load_plan.active_now) and (deadline is None or now < deadline)
+
+    async def _apply_load_switching(
+        self, result, now: datetime, slot_durations: tuple[float, ...] | None = None
+    ) -> None:
         """Evaluate controlled loads and start switching where needed."""
         if self._load_switch_task is not None and not self._load_switch_task.done():
             return
 
-        desired_by_id = {lp.load_id: lp.active_now for lp in result.load_plans}
-        actions: list[tuple[str, dict[str, Any], bool, bool]] = []
+        plans_by_id = {lp.load_id: lp for lp in result.load_plans}
+        actions: list[tuple[str, dict[str, Any], bool, bool, float]] = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
             data = subentry.data
+            plan = plans_by_id.get(subentry_id)
             if not data.get(CONF_LOAD_CONTROL_SWITCH):
+                # Recommendation-only load: no switch to drive, but F-SUBHOUR R12
+                # still needs a sub-hour cap so the published `active` (which the
+                # operator's own automation follows) flips off at the deadline.
+                self._maintain_recommendation_deadline(
+                    subentry_id, data, plan, now, slot_durations
+                )
                 continue
             current = self._charging_is_active(data)
             if current is None:
                 # Entity dropout: keep the last known charging state.
                 current = self._load_charging_active.get(subentry_id, False)
             self._load_charging_active[subentry_id] = current
-            desired = desired_by_id.get(subentry_id, False)
+            active_now = bool(plan and plan.active_now)
+            energy_limited = bool(data.get(CONF_LOAD_ENERGY_LIMITED, False))
+            # F-SUBHOUR (approach A): once a non-energy-limited load's frozen
+            # sub-hour run deadline passes, force it OFF even if the plan still
+            # wants it on — the booked partial-hour energy has been delivered.
+            # The min_off dwell then blocks an immediate re-on (duty-cycling).
+            deadline = self._load_run_deadline.get(subentry_id)
+            if (
+                current
+                and not energy_limited
+                and deadline is not None
+                and now >= deadline
+            ):
+                desired = False
+            else:
+                desired = active_now
             if desired == current:
                 continue
-            # Min runtime acts as an on/off dwell time for the real device.
-            dwell = timedelta(minutes=int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)))
+            # Split dwell (R14): ON->OFF is gated by the minimum ON time
+            # (min_runtime), OFF->ON by the minimum OFF time (min_off) — the
+            # latter protects compressor loads from short-cycling.
+            if current:  # pending switch OFF
+                dwell_min = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+            else:  # pending switch ON
+                dwell_min = int(
+                    data.get(
+                        CONF_LOAD_MIN_OFF_MIN,
+                        data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30),
+                    )
+                )
             last = self._last_load_switch.get(subentry_id)
-            if last is not None and now - last < dwell:
+            if last is not None and now - last < timedelta(minutes=dwell_min):
                 continue
             # The dwell timestamp is stamped only on a CONFIRMED switch inside
             # the executor — not here — so a failed actuation does not consume
-            # the min-runtime window and block an immediate retry (review #11).
+            # the dwell window and block an immediate retry (review #11).
             plug_was_on = self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH])
-            actions.append((subentry_id, dict(data), desired, plug_was_on))
+            # The planned contiguous run (h) lets the ON path freeze a deadline.
+            run_h = plan.active_run_hours(slot_durations) if plan else 0.0
+            actions.append((subentry_id, dict(data), desired, plug_was_on, run_h))
 
         if actions:
             self._load_switch_task = self.entry.async_create_background_task(
@@ -1995,13 +2135,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _execute_load_switching(
         self,
-        actions: list[tuple[str, dict[str, Any], bool, bool]],
+        actions: list[tuple[str, dict[str, Any], bool, bool, float]],
         now: datetime | None = None,
     ) -> None:
         if now is None:
             now = dt_util.now()
         async with self._switch_lock:
-            for subentry_id, data, activate, plug_was_on in actions:
+            for action in actions:
+                # Tolerate the legacy 4-tuple (no planned run) so any caller
+                # that does not carry a sub-hour run just gets no deadline.
+                subentry_id, data, activate, plug_was_on = action[:4]
+                run_h = action[4] if len(action) > 4 else 0.0
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
                 subentry = self.entry.subentries.get(subentry_id)
@@ -2017,6 +2161,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._load_plug_owned[subentry_id] = True
                     self._load_charging_active[subentry_id] = True
                     self._last_load_switch[subentry_id] = now
+                    # F-SUBHOUR (approach A): freeze the planned contiguous run
+                    # and arm an active OFF at run_start + max(min_runtime, run_h)
+                    # so a sub-hour booking is delivered exactly (no ~250 Wh
+                    # over-run). Energy-limited loads keep the target-SOC stop.
+                    if not data.get(CONF_LOAD_ENERGY_LIMITED, False) and run_h > 0.0:
+                        off_min = max(
+                            int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
+                            round(run_h * 60.0),
+                        )
+                        off_at = now + timedelta(minutes=off_min)
+                        self._load_run_deadline[subentry_id] = off_at
+                        self._arm_off_timer(subentry_id, off_at)
+                    else:
+                        self._load_run_deadline.pop(subentry_id, None)
+                        self._cancel_off_timer(subentry_id)
                     _LOGGER.info("Charging started for load %s", label)
                 else:
                     policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
@@ -2052,6 +2211,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._load_plug_owned[subentry_id] = False
                     self._load_charging_active[subentry_id] = False
                     self._last_load_switch[subentry_id] = now
+                    # F-SUBHOUR: run finished — clear the frozen deadline + timer.
+                    self._load_run_deadline.pop(subentry_id, None)
+                    self._cancel_off_timer(subentry_id)
                     _LOGGER.info(
                         "Charging stopped for load %s (input %s)",
                         label,
@@ -2092,6 +2254,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await asyncio.sleep(DEBOUNCE_SECONDS)
         await self.async_request_refresh()
 
+    def _arm_off_timer(self, load_id: str, off_at: datetime) -> None:
+        """Arm a one-shot timer to force a load OFF at its frozen run deadline.
+
+        The 300 s poll is too coarse to stop a sub-hour run precisely, so a
+        point-in-time timer requests a refresh at the deadline; the next
+        `_apply_load_switching` pass then sees `now >= deadline` and switches the
+        load off (F-SUBHOUR approach A, R8). Re-arming cancels any prior timer.
+        """
+        self._cancel_off_timer(load_id)
+
+        @callback
+        def _fire(_now: datetime) -> None:
+            self._load_off_timer.pop(load_id, None)
+            self.hass.async_create_task(
+                self.async_request_refresh(), "battery_manager_subhour_off"
+            )
+
+        self._load_off_timer[load_id] = async_track_point_in_time(
+            self.hass, _fire, off_at
+        )
+
+    def _cancel_off_timer(self, load_id: str) -> None:
+        """Cancel a load's pending force-OFF timer, if any."""
+        unsub = self._load_off_timer.pop(load_id, None)
+        if unsub is not None:
+            with contextlib.suppress(Exception):
+                unsub()
+
     async def async_cancel_actuation_tasks(self) -> None:
         """Cancel and await any in-flight background actuation task.
 
@@ -2102,6 +2292,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Cancelling mid-sequence is safe: a make-before-break leaves at worst both
         sources on (never sourceless) and the reload re-reads and heals.
         """
+        # F-SUBHOUR: drop any pending force-OFF timers before flush/unload so a
+        # detached point-in-time callback cannot fire after teardown (R13).
+        for load_id in list(self._load_off_timer):
+            self._cancel_off_timer(load_id)
         tasks = [
             self._switch_task,
             self._dc48_ctrl_task,

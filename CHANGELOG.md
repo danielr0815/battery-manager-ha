@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-07-09
+
+### Added
+- **Sub-hour surplus-load allocation (F-SUBHOUR).** A non-energy-limited load
+  (dehumidifier, heater) can now be scheduled for a **sub-hour run** quantised to
+  its `min_runtime_min`, instead of only whole hours. This captures a small
+  surplus the battery buffers within the hour at ~net-zero cost (e.g. a 400 W
+  load 30 min to soak a ~200 Wh surplus). The planner searches quantised
+  durations largest-first (the whole-slot booking stays the regression anchor,
+  so full-hour plans are unchanged); **energy-limited powerstations keep their
+  target-SOC behaviour**, untouched. The executor (approach A) freezes the
+  planned contiguous run on the ON edge and **actively switches the load off**
+  at `run_start + max(min_runtime, run)` via a one-shot timer, so the booked
+  partial-hour energy is delivered exactly (no over-run). See
+  docs/F-SUBHOUR-ALLOCATION.md.
+- **Separate minimum OFF time (`min_off_min`) per load.** `min_runtime_min` is
+  now the minimum ON time (ON→OFF dwell); the new `min_off_min` is the minimum
+  OFF time (OFF→ON dwell), protecting compressor loads (dehumidifier, fridge)
+  from short-cycling when a surplus keeps pulsing. Back-compatible: an existing
+  load without the key keeps its symmetric dwell (`min_off = min_runtime`).
+
+### Changed
+- **Appliance detection hardened.** A detected run now uses **hysteresis**: it
+  stays latched until the power drops below a new `off_threshold_w` (default
+  below the running threshold), so a brief dip — e.g. a dishwasher soak between
+  heater bursts — no longer resets the run clock and re-injects the full run
+  energy; a sensor dropout holds the last state. The run start is now
+  **persisted across restarts**, so a restart mid-run keeps the real elapsed
+  time instead of re-injecting the full run energy.
+
 ## [0.7.14] - 2026-07-08
 
 ### Changed

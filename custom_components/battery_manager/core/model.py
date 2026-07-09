@@ -80,7 +80,8 @@ class SurplusLoad:
     name: str
     nominal_power_w: float
     battery_tolerance: float = 0.15  # allowed battery share of the load's power
-    min_runtime_min: int = 30
+    min_runtime_min: int = 30  # minimum ON time (dwell before switch-off)
+    min_off_min: int = 30  # minimum OFF time (dwell before re-on; anti-short-cycle)
     energy_limited: bool = False  # True: needs energy until "full" (powerstation)
     capacity_wh: float = 0.0  # storage size if energy_limited
     target_soc_percent: float = 100.0
@@ -312,16 +313,51 @@ class LoadPlan:
     """Planned activation for one surplus load."""
 
     load_id: str
-    schedule: tuple[bool, ...]  # per slot
+    schedule: tuple[bool, ...]  # per slot: run_hours[i] > 0
     planned_energy_wh: float
     # One entry per activation decision, for transparency/diagnostics:
     # (start slot, covered slot count, pass number, booked energy Wh).
     # Pass 1 = direct surplus, pass 2 = preemptive ("zielbasiert").
     allocations: tuple[tuple[int, int, int, float], ...] = ()
+    # Planned RUN HOURS actually booked in each slot (F-SUBHOUR): a
+    # non-energy-limited load may run only a sub-hour fraction of a slot
+    # (a multiple of min_runtime_min), so `schedule` alone (a bool) can no
+    # longer express the committed duration the executor must deliver. Same
+    # length/indexing as `schedule`; schedule[i] == (run_hours[i] > 0).
+    # Empty () means "not populated" (legacy callers) -> treat as whole slots.
+    run_hours: tuple[float, ...] = ()
 
     @property
     def active_now(self) -> bool:
         return bool(self.schedule) and self.schedule[0]
+
+    def active_run_hours(self, durations: tuple[float, ...] | None = None) -> float:
+        """Contiguous planned run length (h) from slot 0 (F-SUBHOUR R7).
+
+        The total on-time the executor should deliver for the CURRENT
+        activation: the run hours over the unbroken REAL-TIME block starting at
+        slot 0. A run in slot i is contiguous with slot i+1 only if it fills
+        slot i to its boundary (``_spread_energy`` always fills an earlier slot
+        before spilling, so ``run_hours[i] < duration[i]`` means the run ENDS
+        inside slot i — e.g. a 30-min cap in a full hour with the next hour
+        separately scheduled). ``durations`` gives the per-slot hour lengths
+        (slot 0 may be a partial hour); the block therefore terminates at the
+        first slot not filled to its own duration. Without ``durations`` the
+        legacy whole-slot fallback counts contiguous scheduled slots."""
+        if not self.schedule or not self.schedule[0]:
+            return 0.0
+        total = 0.0
+        for idx, on in enumerate(self.schedule):
+            if not on:
+                break
+            if self.run_hours and idx < len(self.run_hours):
+                rh = self.run_hours[idx]
+                total += rh
+                if durations is not None and idx < len(durations) and rh < durations[idx] - 1e-9:
+                    break  # run ends inside this slot -> real-time block ends
+            else:
+                total += 1.0
+        return total
 
 
 @dataclass(frozen=True)

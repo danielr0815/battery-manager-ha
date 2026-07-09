@@ -252,3 +252,110 @@ async def test_gate_calibration_brackets_the_crossing(hass):
     hass.states.async_set("sensor.batt_v", "5.0")
     coordinator._update_gate_calibration(config, 10.0)
     assert coordinator._gate_cal["below_max_soc"] == 55.0
+
+
+# ---------------------------------------------------------------------------
+# F-SUBHOUR Feature-2 hardening: appliance detection (H1 persist, H2 hysteresis)
+# ---------------------------------------------------------------------------
+
+
+async def test_appliance_started_survives_restart(hass):
+    """H1: the appliance run start is persisted so a restart mid-run keeps the
+    real elapsed instead of re-latching at now and re-injecting full energy."""
+    from datetime import timedelta
+
+    import homeassistant.util.dt as dt_util
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    started = dt_util.utcnow() - timedelta(minutes=40)
+    coordinator._appliance_started["dw"] = started
+    await coordinator.async_flush_persistent_state()
+    coordinator._appliance_started.clear()
+    await coordinator.async_load_persistent_state()
+    assert coordinator._appliance_started.get("dw") == started
+
+
+async def test_appliance_detection_hysteresis(hass):
+    """H2: a run stays latched until power drops below the OFF threshold; a brief
+    dip above it does not reset the run; a sensor dropout holds the last state."""
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_OFF_THRESHOLD_W,
+        CONF_APPLIANCE_POWER_THRESHOLD_W,
+    )
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    dw = "sensor.dishwasher_power"
+    data = {
+        CONF_APPLIANCE_DETECTION_ENTITY: dw,
+        CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+        CONF_APPLIANCE_OFF_THRESHOLD_W: 5.0,
+    }
+    hass.states.async_set(dw, "50")
+    assert coordinator._appliance_is_running(data, latched=False) is True  # start >= 20
+    hass.states.async_set(dw, "10")  # dip: below on (20), above off (5)
+    assert coordinator._appliance_is_running(data, latched=False) is False  # would not start
+    assert coordinator._appliance_is_running(data, latched=True) is True  # stays latched
+    hass.states.async_set(dw, "3")  # below off threshold
+    assert coordinator._appliance_is_running(data, latched=True) is False  # run ends
+    hass.states.async_set(dw, "unavailable")  # sensor dropout
+    assert coordinator._appliance_is_running(data, latched=True) is True  # holds last
+    assert coordinator._appliance_is_running(data, latched=False) is False
+
+    # Back-compat: no off threshold configured -> off == on threshold (no hysteresis).
+    data_no_hys = {
+        CONF_APPLIANCE_DETECTION_ENTITY: dw,
+        CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+    }
+    hass.states.async_set(dw, "10")
+    assert coordinator._appliance_is_running(data_no_hys, latched=True) is False
+
+
+async def test_appliance_stale_start_reanchors_after_restart(hass):
+    """H1 restart edge: a persisted start whose run already fully elapsed (run
+    finished during downtime while a NEW run is active) is re-anchored to now on
+    the first post-restart evaluation, so the active run is not omitted at 0."""
+    from datetime import timedelta
+
+    import homeassistant.util.dt as dt_util
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_POWER_THRESHOLD_W,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    _set_input_states(hass)
+    hass.states.async_set("sensor.dw_power", "500")  # appliance running
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.dw_power",
+                    CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 2.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE, title="Dishwasher", unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    sub_id = next(iter(entry.subentries))
+    now = dt_util.utcnow()
+    # Restored start 3 h ago (run 2 h finished during downtime); a new run is on.
+    coordinator._appliance_started[sub_id] = now - timedelta(hours=3)
+    coordinator._appliance_started_restored.add(sub_id)
+    runs = coordinator._get_appliance_runs(now)
+    assert len(runs) == 1  # NOT omitted at 0 remaining
+    assert runs[0].remaining_hours > 1.9  # re-anchored -> ~full 2 h run
+    assert coordinator._appliance_started[sub_id] == now
