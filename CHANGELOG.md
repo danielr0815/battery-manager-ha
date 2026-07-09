@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-07-08
+
+### Changed
+- **Forecast card: the hover readout now names the active lanes.** Moving the
+  crosshair still shows the slot's time and planned SOC, and now also lists which
+  surplus loads and grid-support paths (24 V / 48 V) are switched on in that hour,
+  each with its colour dot matching the lanes below the plot. A slot with nothing
+  running shows just time and SOC as before.
+
 ## [0.7.13] - 2026-07-06
 
 ### Added

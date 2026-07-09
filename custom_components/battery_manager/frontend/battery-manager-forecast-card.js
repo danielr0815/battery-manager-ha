@@ -265,6 +265,11 @@ class BatteryManagerForecastCard extends HTMLElement {
           font-size: 0.8em; color: var(--secondary-text-color);
           text-align: right; min-height: 1.2em; padding: 2px 4px 0;
         }
+        .readout .chip { margin-left: 8px; white-space: nowrap; }
+        .readout .dot {
+          display: inline-block; width: 8px; height: 8px;
+          border-radius: 50%; margin-right: 4px;
+        }
       </style>
       <ha-card>
         <div class="header">
@@ -505,7 +510,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       `<g id="hover-marker"></g>`
     );
 
-    this._chartMeta = { points, x, y, margin, plotH, lanesH, t0, t1, lang };
+    this._chartMeta = { points, x, y, margin, plotH, lanesH, t0, t1, lang, lanes };
 
     const whenFmt = new Intl.DateTimeFormat(lang, {
       weekday: "short",
@@ -616,7 +621,31 @@ class BatteryManagerForecastCard extends HTMLElement {
       hour: "2-digit",
       minute: "2-digit",
     });
-    readout.textContent = `${fmt.format(nearest.time)} · ${nearest.soc} %`;
+    // Which lanes (surplus loads + grid-support paths) cover the hovered slot?
+    // Blocks are [start, end); the crosshair snaps to `nearest`, so test that
+    // point for membership to stay consistent with the marker the user sees.
+    const activeLanes = (meta.lanes || []).filter((lane) =>
+      (lane.schedule || []).some((b) => {
+        const s = new Date(b.start).getTime();
+        const e = new Date(b.end).getTime();
+        return (
+          Number.isFinite(s) &&
+          Number.isFinite(e) &&
+          nearest.time >= s &&
+          nearest.time < e
+        );
+      })
+    );
+    const when = esc(`${fmt.format(nearest.time)} · ${nearest.soc} %`);
+    const chips = activeLanes
+      .map(
+        (lane) =>
+          `<span class="chip"><span class="dot" style="background:${lane.color}"></span>${esc(
+            lane.name ?? "?"
+          )}</span>`
+      )
+      .join("");
+    readout.innerHTML = chips ? `${when} · ${chips}` : when;
   }
 }
 
