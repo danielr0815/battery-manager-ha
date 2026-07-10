@@ -213,6 +213,34 @@ class ControlParams:
     export_tiebreak: float = 0.05
     min_switch_interval_s: int = 60
 
+    # --- F-PREDRAIN two-buffer pre-drain (docs/F-PREDRAIN.md, WP2) ---
+    # All NEUTRAL defaults: ratio 0.0, confidences 1.0, cutoff/end unused, so
+    # the planner is bit-for-bit identical to v0.7.19 until WP3 wires the
+    # recommended live values (ratio 0.10 / alpha 0.5 / beta 1.2) via the
+    # coordinator/config-flow fallbacks. The recommended values are NOT the
+    # dataclass defaults on purpose (goldens must stay frozen).
+    #
+    # Z2' import-trade ratio: a continuous load's pre-drain may add a little
+    # grid import (e.g. the charger standby of an extended morning charge) as
+    # long as it is bought back by rescued export at this exchange rate. 0.0 =
+    # today's "no extra import" rule.
+    import_trade_ratio: float = 0.0
+    # Lower-buffer stress confidence (alpha): PV multiplier of the pessimistic
+    # re-simulation that must still keep the inverter reserve above its floor.
+    # 1.0 = trust the forecast fully (stress sim == nominal sim, gate off).
+    predrain_pv_confidence: float = 1.0
+    # Upper-buffer reserve confidence (beta): PV multiplier of the optimistic
+    # re-simulation used to justify an in-window pre-drain that the nominal
+    # forecast alone does not. 1.0 = gate off.
+    upper_pv_reserve: float = 1.0
+    # A slot counts as "strong PV" (inside the day's absorption window) when its
+    # average power reaches this threshold.
+    strong_pv_cutoff_w: float = 200.0
+    # Site override: cap the PV window's end at the last slot starting before
+    # this local hour ("sun behind the house"). None = derive purely from the
+    # forecast shape.
+    pv_window_end_hour: int | None = None
+
 
 @dataclass(frozen=True)
 class SystemConfig:
@@ -377,3 +405,14 @@ class PlanResult:
     min_soc_percent: float
     max_soc_percent: float
     hours_to_max_soc: int
+    # --- F-PREDRAIN diagnostics (docs/F-PREDRAIN.md §3.5, WP2) ---
+    # Grid import the load allocation traded for rescued export, i.e. the final
+    # allocation trajectory's import above the no-loads base (>= 0 clamp). 0.0
+    # under neutral params.
+    import_trade_used_wh: float = 0.0
+    # Min SOC of the final accepted series under the alpha stress sim, or None
+    # when alpha == 1.0 (stress gate off).
+    stressed_min_soc_percent: float | None = None
+    # Per calendar day (ISO date -> local hour): the last "strong PV" slot of
+    # that day's absorption window (F4). Empty when no day has strong PV.
+    pv_window_ends: dict[str, int] = field(default_factory=dict)

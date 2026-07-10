@@ -420,3 +420,50 @@ def test_psu48_efficiency_and_power_cap():
     # Capped at 57 W; all of it charges the battery (no bus load).
     assert abs(flow.psu48_delivered_wh - 57.0) < 1e-3
     assert abs(flow.grid_import_wh - 57.0 / 0.9) < 1e-2
+
+
+# ---------------------------------------------------------------------------
+# F-PREDRAIN F3: the pv_scale stress/optimism multiplier (docs/F-PREDRAIN.md
+# §3.3). The planner re-runs the horizon pessimistically (alpha < 1) to protect
+# the lower buffer and optimistically (beta > 1) to size the upper buffer.
+# ---------------------------------------------------------------------------
+
+
+def test_pv_scale_one_is_bit_identical():
+    """The neutral default must reproduce the unscaled run exactly."""
+    config = SystemConfig()
+    inputs = make_inputs(config, NOW_NOON, 50.0, [15.0, 15.0, 0.0])
+    a = simulate(config, inputs, 40.0)
+    b = simulate(config, inputs, 40.0, pv_scale=1.0)
+    assert a.total_import_wh == b.total_import_wh
+    assert a.total_export_wh == b.total_export_wh
+    assert [f.soc_end_percent for f in a.flows] == [f.soc_end_percent for f in b.flows]
+
+
+def test_pv_scale_below_one_reduces_pv():
+    config = SystemConfig()
+    inputs = make_inputs(config, NOW_NOON, 50.0, [20.0, 0.0, 0.0])
+    full = simulate(config, inputs, 20.0)
+    stressed = simulate(config, inputs, 20.0, pv_scale=0.5)
+    # Less PV -> less export, a lower end SOC, and import can only rise.
+    assert stressed.total_export_wh < full.total_export_wh
+    assert stressed.end_soc_percent <= full.end_soc_percent + 1e-9
+    assert stressed.total_import_wh >= full.total_import_wh - 1e-9
+
+
+def test_pv_scale_zero_removes_all_pv():
+    config = SystemConfig()
+    slot = _slot(pv=1000.0, ac=0.0, dc=0.0)
+    # Battery full so the surplus must export rather than charge.
+    with_pv = step_hour(config, 95.0, slot, 20.0)  # inverter on, PV exports
+    without = step_hour(config, 95.0, slot, 20.0, pv_scale=0.0)
+    assert with_pv.grid_export_wh > 0.0
+    assert without.grid_export_wh < _EPS  # no PV left to export
+
+
+def test_pv_scale_above_one_boosts_export():
+    config = SystemConfig()
+    inputs = make_inputs(config, NOW_NOON, 80.0, [10.0, 0.0, 0.0])
+    nominal = simulate(config, inputs, 20.0)
+    optimistic = simulate(config, inputs, 20.0, pv_scale=1.2)
+    assert optimistic.total_export_wh >= nominal.total_export_wh - 1e-9

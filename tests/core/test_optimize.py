@@ -1,12 +1,14 @@
 """Scenario tests for the planner (docs/ALGORITHM.md §3, S1-S4 + regressions)."""
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.model import (
     Appliance,
+    ControlParams,
     HourSlot,
     PlanInputs,
+    PVParams,
     SupportParams,
     SurplusLoad,
     SurplusLoadState,
@@ -19,6 +21,7 @@ from core.optimize import (
     allocate_loads,
     appliance_windows,
     plan,
+    pv_windows,
     search_threshold,
     support_escalation,
 )
@@ -762,3 +765,185 @@ def test_active_run_hours_stops_at_partial_slot_with_durations():
         run_hours=(0.5, 1.0, 0.0),
     )
     assert lp3.active_run_hours((0.5, 1.0, 1.0)) == 1.5
+
+
+# ---------------------------------------------------------------------------
+# F-PREDRAIN: import-trade rule + two-buffer pre-drain gates (docs/F-PREDRAIN.md
+# §3, WP2). Root cause (live 2026-07-10): the 10 W charger standby of an
+# extended morning charge modeled ~10 Wh of new import that vetoed 250-520 Wh of
+# rescued night export per candidate. Test contract T1-T5, T12, T13.
+# ---------------------------------------------------------------------------
+
+FB_STATE = SurplusLoadState(load_id="fossibot_b", soc_percent=46.4)  # 872 Wh to go
+DEHUMID_STATE = SurplusLoadState(load_id="dehumidifier")
+
+
+def _predrain_config(ratio=0.1, alpha=0.5, beta=1.2, cutoff=200.0, end_hour=None,
+                     loads=(DEHUMIDIFIER,)):
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=ratio,
+        predrain_pv_confidence=alpha,
+        upper_pv_reserve=beta,
+        strong_pv_cutoff_w=cutoff,
+        pv_window_end_hour=end_hour,
+    )
+    return SystemConfig(control=control, loads=loads)
+
+
+def _dehumid_hours(result, inputs):
+    lp = next(p for p in result.load_plans if p.load_id == "dehumidifier")
+    return [inputs.slots[i].hour_of_day for i, on in enumerate(lp.schedule) if on]
+
+
+def test_t1_night_predrain_needs_import_trade():
+    """T1: with the 10 W charger standby a night pre-drain adds ~10 Wh of
+    modeled import — vetoed at ratio=0, but rescued once a small import may be
+    traded for the export it saves."""
+    now = datetime(2026, 7, 3, 21, 0)
+
+    def run(ratio):
+        cfg = _predrain_config(ratio=ratio, alpha=1.0, beta=1.0)
+        return make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+
+    r0, inputs = run(0.0)
+    r1, _ = run(0.1)
+    night0 = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
+    night1 = [h for h in _dehumid_hours(r1, inputs) if not daylight_h(h)]
+    assert not night0, "ratio=0 must keep the standby veto (no night predrain)"
+    assert night1, "ratio=0.1 must rescue the night predrain"
+    assert r0.import_trade_used_wh <= 1e-6
+    assert r1.import_trade_used_wh > 0.0
+
+
+def test_t2_cumulative_import_trade_invariant():
+    """T2: over the whole allocation, final import stays within the cumulative
+    trade invariant against the no-loads base."""
+    now = datetime(2026, 7, 3, 21, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    inputs = build_slots(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    result = plan(cfg, inputs)
+    _, base = search_threshold(cfg, inputs)
+    traj = result.trajectory
+    assert traj.total_import_wh - base.total_import_wh <= (
+        0.1 * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
+    )
+    assert traj.total_import_wh > base.total_import_wh  # a trade actually happened
+
+
+def test_t3_energy_limited_never_night_charged_with_ratio():
+    """T3: even with a generous ratio, an energy-limited powerstation keeps the
+    strict no-extra-import rule and never night-charges (L5)."""
+    now = datetime(2026, 7, 3, 21, 0)
+    cfg = _predrain_config(ratio=0.5, alpha=0.5, beta=1.2, loads=(FOSSIBOT_B,))
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0], load_states=states)
+    for i, on in enumerate(result.load_plans[0].schedule):
+        if on:
+            assert daylight(inputs.slots[i]), (
+                f"fossibot night-charged at {inputs.slots[i].hour_of_day}:00"
+            )
+
+
+def test_t4_alpha_stress_gate_protects_inverter_reserve():
+    """T4: the pessimistic stress gate (alpha) refuses the DEEPEST pre-dawn
+    hours a full-confidence run would take, holding the stressed reserve at the
+    inverter+buffer floor (NOT soc_min+buffer). alpha=1.0 disables it."""
+    now = datetime(2026, 7, 3, 21, 0)
+
+    def run(alpha):
+        cfg = _predrain_config(ratio=0.1, alpha=alpha, beta=1.0,
+                               loads=(FOSSIBOT_B, DEHUMIDIFIER))
+        return make_plan(cfg, now, 90.0, [0.0, 15.0], load_states=(FB_STATE, DEHUMID_STATE))
+
+    trusting, inputs = run(1.0)
+    stressed, _ = run(0.5)
+    predawn_trust = [h for h in _dehumid_hours(trusting, inputs) if h < 7]
+    predawn_stress = [h for h in _dehumid_hours(stressed, inputs) if h < 7]
+    # Full confidence drains deeper into the night (down to the 20 % cutoff);
+    # the stressed run books strictly fewer, later pre-dawn hours.
+    assert predawn_trust and predawn_stress
+    assert min(predawn_trust) < min(predawn_stress)
+    assert trusting.min_soc_percent < stressed.min_soc_percent
+    floor = 20.0 + 5.0  # inverter_min_soc + soc_buffer (NOT soc_min + buffer)
+    assert stressed.stressed_min_soc_percent >= floor - 0.5
+    assert trusting.stressed_min_soc_percent is None  # alpha=1.0 -> gate off
+
+
+def test_t5_predrain_hours_hug_the_window_latest_first():
+    """T5: pre-drain hours sit as late as the constraints allow (L4): a
+    contiguous pre-dawn block ending right before the production window, never a
+    detached earlier evening run."""
+    now = datetime(2026, 7, 3, 21, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    lp = result.load_plans[0]
+    day1 = now.date() + timedelta(days=1)
+    predawn = sorted(
+        inputs.slots[i].hour_of_day
+        for i, on in enumerate(lp.schedule)
+        if on and inputs.slots[i].start.date() == day1 and inputs.slots[i].hour_of_day < 7
+    )
+    assert predawn, "a short pre-dawn window must force predrain hours"
+    assert predawn == list(range(min(predawn), max(predawn) + 1)), "block not contiguous"
+    assert max(predawn) == 6  # hugs the 07:00 production start
+
+
+def test_t12_beta_books_in_window_opportunities_never_night():
+    """T12: the optimistic upper-buffer gate (c2) books in-window slots the
+    nominal forecast alone cannot justify; beta=1.0 does not. c2 never books a
+    night slot (outside every PV window), and the ratio invariant still holds."""
+    now = datetime(2026, 7, 4, 8, 0)
+
+    def run(beta):
+        cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=beta)
+        return make_plan(cfg, now, 92.0, [7.0])
+
+    r10, inputs = run(1.0)
+    r12, _ = run(1.2)
+    booked10 = {i for i, on in enumerate(r10.load_plans[0].schedule) if on}
+    booked12 = {i for i, on in enumerate(r12.load_plans[0].schedule) if on}
+    extra = booked12 - booked10
+    assert extra, "beta=1.2 must open extra in-window opportunity slots"
+    windows = pv_windows(inputs, 200.0, None)
+    for i in extra:
+        w = windows[inputs.slots[i].start.date()]
+        assert w[0] <= i <= w[1], f"c2 slot {i} not inside its PV window {w}"
+        assert daylight(inputs.slots[i]), "c2 must never book a night slot"
+    cfg12 = _predrain_config(ratio=0.1, alpha=1.0, beta=1.2)
+    _, base = search_threshold(cfg12, inputs)
+    traj = r12.trajectory
+    assert traj.total_import_wh - base.total_import_wh <= (
+        0.1 * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
+    )
+
+
+def test_t13_pv_window_derivation_and_override():
+    """T13: the PV window is derived from the (daily/two-window) slot series —
+    an east-heavy profile ends early; the site override caps it earlier still; a
+    day without strong PV has no window."""
+    east = SystemConfig(
+        pv=PVParams(
+            peak_power_w=3200.0,
+            morning_start_hour=6,
+            morning_end_hour=11,
+            afternoon_end_hour=19,
+            morning_ratio=0.9,
+        )
+    )
+    inputs = build_slots(east, datetime(2026, 7, 4, 0, 0), 50.0, [9.0])
+    day = datetime(2026, 7, 4).date()
+    first, last = pv_windows(inputs, 200.0, None)[day]
+    # Strong PV only in the morning (hours 6-10); the weak afternoon is excluded.
+    assert inputs.slots[first].hour_of_day == 6
+    assert inputs.slots[last].hour_of_day == 10
+    # The site override caps the end at the last slot starting before hour 9.
+    capped = pv_windows(inputs, 200.0, 9)[day]
+    assert inputs.slots[capped[1]].hour_of_day == 8
+    # A cloudy day (all slots below the cutoff) has no window.
+    cloudy = build_slots(east, datetime(2026, 7, 4, 0, 0), 50.0, [0.5])
+    assert pv_windows(cloudy, 200.0, None) == {}
+
+
+def daylight_h(hour):
+    return 7 <= hour < 18
