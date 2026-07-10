@@ -2401,12 +2401,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, load_id, data, plan, now: datetime, slot_durations
     ) -> None:
         """Sub-hour cap for a recommendation-only load (no control switch;
-        F-SUBHOUR R12). BM cannot switch the load, so the deadline only governs
-        the published `active` flag the operator's automation follows: it is
-        anchored on the OFF->ON edge and held (even once past) so the sensor reads
-        active from the run's start to `run_start + max(min_runtime, run)` and off
-        for the rest. A later export window (plan cycles inactive->active)
-        re-anchors.
+        F-SUBHOUR R12, extended to energy-limited loads by F-RESIDUAL-TOPUP R9).
+        BM cannot switch the load, so the deadline only governs the published
+        `active` flag the operator's automation follows: it is anchored on the
+        OFF->ON edge and held (even once past) so the sensor reads active from the
+        run's start to `run_start + max(min_runtime, run)` and off for the rest. A
+        later export window (plan cycles inactive->active) re-anchors.
 
         FIX-5: while the plan stays CONTINUOUSLY active (e.g. a night pre-drain
         glued to the following day's block never lets it cycle inactive), the
@@ -2416,8 +2416,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mirroring a controlled load's force-off -> min_off dwell -> re-on cycle —
         so the sensor duty-cycles instead of staying wedged off."""
         active = bool(plan and plan.active_now)
-        energy_limited = bool(data.get(CONF_LOAD_ENERGY_LIMITED, False))
-        if not active or energy_limited:
+        if not active:
             if load_id in self._load_run_deadline:
                 self._load_run_deadline.pop(load_id, None)
                 self._cancel_off_timer(load_id)
@@ -2475,18 +2474,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 current = self._load_charging_active.get(subentry_id, False)
             self._load_charging_active[subentry_id] = current
             active_now = bool(plan and plan.active_now)
-            energy_limited = bool(data.get(CONF_LOAD_ENERGY_LIMITED, False))
-            # F-SUBHOUR (approach A): once a non-energy-limited load's frozen
+            # F-SUBHOUR (approach A) + F-RESIDUAL-TOPUP R7: once a load's frozen
             # sub-hour run deadline passes, force it OFF even if the plan still
             # wants it on — the booked partial-hour energy has been delivered.
-            # The min_off dwell then blocks an immediate re-on (duty-cycling).
+            # Energy-limited loads are included as an UPPER CAP over their primary
+            # level-driven target-SOC stop (R8): the fossibot integration serves
+            # stale cached SOC with fresh timestamps, which would else hold the
+            # plan active for the whole slot hour and deliver real_power × 1 h
+            # against ~150 Wh of validated energy. The min_off dwell then blocks
+            # an immediate re-on (duty-cycling).
             deadline = self._load_run_deadline.get(subentry_id)
-            if (
-                current
-                and not energy_limited
-                and deadline is not None
-                and now >= deadline
-            ):
+            if current and deadline is not None and now >= deadline:
                 desired = False
             else:
                 desired = active_now
@@ -2550,11 +2548,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._load_plug_owned[subentry_id] = True
                     self._load_charging_active[subentry_id] = True
                     self._last_load_switch[subentry_id] = now
-                    # F-SUBHOUR (approach A): freeze the planned contiguous run
-                    # and arm an active OFF at run_start + max(min_runtime, run_h)
-                    # so a sub-hour booking is delivered exactly (no ~250 Wh
-                    # over-run). Energy-limited loads keep the target-SOC stop.
-                    if not data.get(CONF_LOAD_ENERGY_LIMITED, False) and run_h > 0.0:
+                    # F-SUBHOUR (approach A) + F-RESIDUAL-TOPUP R7: freeze the
+                    # planned contiguous run and arm an active OFF at
+                    # run_start + max(min_runtime, run_h) so a sub-hour booking is
+                    # delivered exactly (no ~250 Wh over-run). Energy-limited loads
+                    # are capped the same way — the deadline is an UPPER bound over
+                    # their primary level-driven target-SOC stop, so a stale
+                    # load-SOC sensor (R8) cannot stretch a ~150 Wh top-up into a
+                    # full real_power × 1 h night charge.
+                    if run_h > 0.0:
                         off_min = max(
                             int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
                             round(run_h * 60.0),

@@ -60,6 +60,8 @@ simulator (already energy‑ and duration‑exact). No sub‑`min_runtime` runs
 - **R1** For a **non‑energy‑limited** load, a per‑(load, slot) commitment MAY be
   `k · q` hours where `q = min_runtime_min/60` and `k ∈ {1,2,…}`, capped at the
   slot's remaining duration. Energy‑limited loads keep `max(slot.duration, q)`.
+  *(Superseded by docs/F-RESIDUAL-TOPUP.md R1, v0.8.1: energy‑limited loads now
+  get the same `k·q` candidate list as continuous loads.)*
 - **R2** A commitment is **never shorter than `min_runtime_min`** (`k ≥ 1`).
   Guards the executor's minimum on‑time and the under‑count invariant.
 - **R3** Among valid quanta the planner selects the **largest `k`** that passes
@@ -99,9 +101,11 @@ simulator (already energy‑ and duration‑exact). No sub‑`min_runtime` runs
   test asserts `planned_energy_wh ≥ power·min_runtime` and simulated‑delivered ≈
   booked for a sub‑hour placement.
 - **R12** **energy‑limited** loads: unchanged (level‑driven, target‑SOC stop; no
-  quantum, no force‑off). **Recommendation‑only** loads (no control switch):
-  publish `active=False` at `off_at` so the operator's automation stops them
-  (deadline anchored on first‑seen‑active).
+  quantum, no force‑off). *(Superseded by docs/F-RESIDUAL-TOPUP.md R7/R9, v0.8.1:
+  energy‑limited loads now quantise like continuous loads, and the executor caps
+  a sub‑hour run with the same frozen off‑deadline.)* **Recommendation‑only**
+  loads (no control switch): publish `active=False` at `off_at` so the operator's
+  automation stops them (deadline anchored on first‑seen‑active).
 - **R13 (lifecycle)** The one‑shot timer is tracked and cancelled in
   `async_cancel_actuation_tasks` before flush/unload. Run state (`run_start`,
   `off_at`) is persisted or safely reconstructed post‑restart so a restart never

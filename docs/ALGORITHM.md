@@ -143,6 +143,19 @@ candidates).
      power-limited. Slots after the last export slot can
      never satisfy condition (c) and are skipped; without export in the
      horizon pass 2 is dropped entirely.
+- **v4 — lateness is absolute for energy-limited residual top-ups (operator
+  decision, 2026-07-10):** After a night trickle-charge incident (a Fossibot
+  156 Wh short of its target booked a 0.5 h / 150 Wh run at "now" and charged
+  from the house battery), the as-late-as-possible principle is made
+  **absolute** — it must not be broken by partial ("started") hours or any other
+  implementation reason. Energy-limited loads therefore **quantise like
+  continuous loads** (a `k · min_runtime` sub-hour commitment, not only whole
+  slots), so a residual smaller than one nominal hour is bookable in any slot and
+  pass 2's latest-first order — not slot-0 geometry — decides its placement. The
+  executor bounds such a sub-hour run with a frozen off-deadline as an UPPER CAP
+  over the primary level-driven target-SOC stop, so a stale load-SOC sensor
+  cannot stretch a ~150 Wh top-up into a full-hour night charge
+  (docs/F-RESIDUAL-TOPUP.md).
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.

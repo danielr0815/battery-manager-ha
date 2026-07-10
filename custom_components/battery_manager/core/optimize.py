@@ -158,17 +158,17 @@ def _quantised_hours(load, slot) -> list[float]:
     The FIRST candidate is always `_committed_hours` — the whole-slot / dwell
     floor — so a load that fits a full slot books exactly as before (the
     regression anchor: if the whole slot clears every gate it is chosen and the
-    plan is bit-identical to the pre-F-SUBHOUR behaviour). A NON-energy-limited
-    load additionally offers SHORTER runs quantised to its `min_runtime_min`
-    (>= one quantum, never less — F-SUBHOUR R1/R2), so a small surplus the
-    battery buffers within the hour can still be captured at ~net-zero cost.
-    Energy-limited loads (powerstations) only ever get the whole-slot candidate;
-    their stop is governed by the target SOC, and the executor keeps its
-    level-driven behaviour for them (no sub-hour cap).
+    plan is bit-identical to the pre-F-SUBHOUR behaviour). Both load classes then
+    offer SHORTER runs quantised to `min_runtime_min` (>= one quantum, never
+    less — F-SUBHOUR R2), so a small surplus the battery buffers within the hour,
+    or an energy-limited residual below one nominal hour, can still be captured
+    at a later slot instead of defaulting to slot-0 geometry (F-RESIDUAL-TOPUP
+    R1). Energy-limited loads share the same candidate list: their level-driven
+    target-SOC stop stays primary, and the executor now caps a sub-hour booking
+    with the same frozen off-deadline as a continuous load (F-RESIDUAL-TOPUP R7),
+    so the removed "no sub-hour cap" carve-out no longer risks an over-run.
     """
     whole = _committed_hours(load, slot)
-    if load.energy_limited:
-        return [whole]
     q = load.min_runtime_min / 60.0
     if q <= _EPS:
         return [whole]

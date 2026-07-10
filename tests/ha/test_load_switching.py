@@ -552,15 +552,92 @@ async def test_subhour_run_longer_than_min_runtime_sets_that_deadline(hass):
     coordinator._cancel_off_timer(sub_id)
 
 
-async def test_energy_limited_load_gets_no_deadline(hass):
-    """Energy-limited loads keep target-SOC behaviour: no sub-hour cap (R12)."""
+async def test_energy_limited_on_arms_deadline_and_forces_off_when_stale(hass):
+    """F-RESIDUAL-TOPUP R7: an energy-limited controlled load booked for a
+    sub-hour run now gets the SAME frozen off-deadline as a continuous load, and
+    is force-switched OFF at the deadline even while the plan (fed a STALE load
+    SOC that never reaches target) still wants it on. This upper-caps the run at
+    real_power x max(min_runtime, D) instead of a full-hour night charge (R8)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(
+        hass, calls, energy_limited=True, min_runtime_min=30, min_off_min=30
+    )
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    t0 = dt_util.utcnow()
+    # ON edge: a 0.5 h booking arms off_at = run_start + max(30, 30) = +30 min.
+    await coordinator._execute_load_switching([(sub_id, data, True, False, 0.5)], now=t0)
+    assert sub_id in coordinator._load_run_deadline
+    off_at = coordinator._load_run_deadline[sub_id]
+    assert 29.0 <= (off_at - t0).total_seconds() / 60.0 <= 31.0
+    assert sub_id in coordinator._load_off_timer  # one-shot timer armed
+
+    # Stale SOC: the plan still shows the load active past the deadline. The cap
+    # must force it OFF regardless (the level-driven stop never fired).
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_charging_active[sub_id] = True
+    calls.clear()
+    result = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id, schedule=(True,), planned_energy_wh=0.0, run_hours=(0.5,)
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(result, off_at + timedelta(minutes=1))
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls or ("turn_off", PLUG) in calls
+    assert sub_id not in coordinator._load_run_deadline
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_energy_limited_plan_off_before_deadline_clears_timer(hass):
+    """F-RESIDUAL-TOPUP R7: the level-driven stop stays PRIMARY — a plan-driven
+    OFF before the frozen deadline (target SOC reached early) still switches the
+    load off and clears the deadline + one-shot timer."""
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, data = await _setup(hass, calls, energy_limited=True)
     hass.states.async_set(PLUG, "off")
     hass.states.async_set(ENABLE, "off")
-    await coordinator._execute_load_switching([(sub_id, data, True, False, 2.0)])
+    await coordinator._execute_load_switching([(sub_id, data, True, False, 0.5)])
+    assert sub_id in coordinator._load_run_deadline
+    assert sub_id in coordinator._load_off_timer
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    await coordinator._execute_load_switching([(sub_id, data, False, True, 0.0)])
     assert sub_id not in coordinator._load_run_deadline
     assert sub_id not in coordinator._load_off_timer
+
+
+async def test_rec_only_energy_limited_active_flips_at_deadline(hass):
+    """F-RESIDUAL-TOPUP R9: a recommendation-only ENERGY-LIMITED load also gets
+    its published `active` capped by the frozen sub-hour deadline (before this
+    fix the recommendation-deadline machinery skipped energy-limited loads)."""
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(
+        hass, calls, energy_limited=True, with_control_switch=False, min_runtime_min=30
+    )
+    plan = LoadPlan(
+        load_id=sub_id, schedule=(True,), planned_energy_wh=0.0, run_hours=(0.5,)
+    )
+    now = dt_util.utcnow()
+    coordinator._maintain_recommendation_deadline(sub_id, data, plan, now, (1.0,))
+    assert sub_id in coordinator._load_run_deadline  # anchored despite energy_limited
+    assert coordinator._effective_load_active(plan, now) is True
+    after = coordinator._load_run_deadline[sub_id] + timedelta(seconds=1)
+    assert coordinator._effective_load_active(plan, after) is False  # capped
+    coordinator._cancel_off_timer(sub_id)
 
 
 async def test_off_clears_deadline_and_timer(hass):

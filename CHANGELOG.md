@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-10
+
+### Fixed
+- **Night trickle-charge incident (F-RESIDUAL-TOPUP).** An energy-limited load a
+  residual (< nominal x 1 h) short of its target SOC could only book its partial
+  current hour (slot 0), so a ~150 Wh top-up was charged from the house battery
+  at night instead of waiting for the next PV window. With the device's
+  self-discharge this produced a repeating night trickle-charge loop,
+  round-tripping energy through the battery at ~80 % efficiency.
+
+### Changed
+- **Energy-limited loads quantise like continuous loads (F-RESIDUAL-TOPUP R1).**
+  The planner now offers energy-limited loads the same `k · min_runtime` sub-hour
+  candidate list as continuous loads, so a residual top-up is bookable in any
+  slot and pass 2's latest-first order — not slot-0 geometry — decides its
+  placement (typically the next PV window, or just before it). No new config; the
+  no-import guarantee, the pre-drain gates, and whole-slot bookings are unchanged.
+- **Executor caps energy-limited sub-hour runs (F-RESIDUAL-TOPUP R7-R9).** On the
+  ON edge a sub-hour energy-limited run now freezes an off-deadline
+  (`run_start + max(min_runtime, planned_run)`) as an upper cap over the primary
+  target-SOC stop, so a stale load-SOC sensor cannot stretch a ~150 Wh top-up
+  into a full-hour charge. Recommendation-only energy-limited loads get the same
+  published-`active` cap.
+
 ## [0.8.0] - 2026-07-10
 
 ### Added

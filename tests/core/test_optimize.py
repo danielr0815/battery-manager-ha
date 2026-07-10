@@ -198,24 +198,12 @@ def test_measured_feedback_power_overrides_nominal():
         SurplusLoadState(load_id="fossibot_1", soc_percent=0.0, measured_power_w=250.0),
     )
     result, _ = make_plan(config, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
-    scheduled_hours = sum(result.load_plans[0].schedule)
-    assert scheduled_hours > 0
-    # Planned energy must reflect the measured 250 W, not the nominal 300 W.
-    assert (
-        abs(
-            result.load_plans[0].planned_energy_wh
-            - sum(
-                250.0 * s.duration
-                for s, active in zip(
-                    build_slots(config, now, 93.0, [12.0, 12.0, 12.0]).slots,
-                    result.load_plans[0].schedule,
-                    strict=True,
-                )
-                if active
-            )
-        )
-        < 1e-6
-    )
+    lp = result.load_plans[0]
+    assert sum(lp.schedule) > 0
+    # Planned energy must reflect the measured 250 W, not the nominal 300 W —
+    # summed over the actually booked run hours (a residual may book a sub-hour
+    # quantum now that energy-limited loads quantise too, F-RESIDUAL-TOPUP R1).
+    assert abs(lp.planned_energy_wh - 250.0 * sum(lp.run_hours)) < 1e-6
 
 
 def test_appliance_window_open_on_sunny_day():
@@ -685,9 +673,19 @@ def test_quantised_hours_never_below_min_runtime():
     assert all(d >= q - 1e-9 for d in _quantised_hours(DEHUMIDIFIER, _slot(1.0)))
 
 
-def test_quantised_hours_energy_limited_is_whole_slot_only():
-    # R12: energy-limited loads keep a single whole-slot candidate.
-    assert _quantised_hours(FOSSIBOT_1, _slot(1.0)) == [1.0]
+def test_quantised_hours_energy_limited_matches_continuous():
+    # F-RESIDUAL-TOPUP R1: an energy-limited load now gets the SAME candidate
+    # list as a continuous load of the same min_runtime — whole first, then k*q
+    # fallbacks, none below one quantum (R2 unchanged).
+    q = FOSSIBOT_1.min_runtime_min / 60.0  # 0.5 h
+    cands = _quantised_hours(FOSSIBOT_1, _slot(1.0))
+    assert cands[0] == _committed_hours(FOSSIBOT_1, _slot(1.0)) == 1.0
+    assert cands == [1.0, 0.5]
+    assert all(d >= q - 1e-9 for d in cands)
+    # A same-min_runtime load that is NOT energy-limited yields the identical list.
+    twin = replace(FOSSIBOT_1, energy_limited=False, capacity_wh=0.0)
+    assert _quantised_hours(twin, _slot(1.0)) == cands
+    # A partial slot shorter than one quantum still floors at the dwell quantum.
     assert _quantised_hours(FOSSIBOT_1, _slot(0.5)) == [0.5]
 
 
@@ -719,13 +717,19 @@ def test_run_hours_and_schedule_stay_consistent():
         )
 
 
-def test_energy_limited_load_books_only_whole_slots():
-    # R12: F1 (energy-limited) only ever books whole slots, never a fraction.
+def test_energy_limited_booking_is_quantised_and_consistent():
+    # F-RESIDUAL-TOPUP R1: an energy-limited load may now book a sub-hour run,
+    # but every booked run is a whole slot or a k*q multiple (>= one quantum, R2),
+    # and schedule[i] == (run_hours[i] > 0) stays exact.
     result, inputs = _s3_plan()
     f1 = next(lp for lp in result.load_plans if lp.load_id == "fossibot_1")
+    q = FOSSIBOT_1.min_runtime_min / 60.0
     for i, h in enumerate(f1.run_hours):
+        assert bool(f1.schedule[i]) == (h > 0)
         if h > 0:
-            assert abs(h - inputs.slots[i].duration) < 1e-9
+            whole = abs(h - inputs.slots[i].duration) < 1e-9
+            multiple = h >= q - 1e-9 and abs(round(h / q) * q - h) < 1e-9
+            assert whole or multiple, f"slot {i}: run {h} is neither whole nor k*q"
 
 
 def test_active_run_hours_sums_contiguous_block_from_slot0():
@@ -771,6 +775,95 @@ def test_active_run_hours_stops_at_partial_slot_with_durations():
         run_hours=(0.5, 1.0, 0.0),
     )
     assert lp3.active_run_hours((0.5, 1.0, 1.0)) == 1.5
+
+
+# ---------------------------------------------------------------------------
+# F-RESIDUAL-TOPUP: latest-feasible placement for energy-limited residual
+# top-ups (docs/F-RESIDUAL-TOPUP.md). Root cause (live 2026-07-10 18:47): an
+# energy-limited load a residual (< nominal x 1 h) short of target could only
+# book slot 0 (its partial-hour geometry was the sole sub-hour commitment), so a
+# ~150 Wh top-up night-charged from the house battery. R1 gives energy-limited
+# loads the SAME sub-hour candidate list as continuous loads, so pass 2's
+# latest-first order — not slot-0 geometry — decides the placement.
+# ---------------------------------------------------------------------------
+
+
+def test_r4_live_scene_residual_books_next_day_not_slot0():
+    """R4: reproduce the 2026-07-10 18:47 incident. A fossibot 156 Wh short of
+    its 90 % target, no PV left today, strong clipping PV tomorrow. v0.8.0 booked
+    a 0.5 h / 150 Wh run at slot 0 (a night charge from the house battery); the
+    fix books exactly one 0.5 h quantum the next day and nothing in the coming
+    night (no covered slot starts before 06:00 next day)."""
+    config = SystemConfig(loads=(FOSSIBOT_B,))
+    now = datetime(2026, 7, 10, 18, 47)  # partial slot 0
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
+    result, inputs = make_plan(config, now, 72.0, [0.0, 15.0], load_states=states)
+    lp = result.load_plans[0]
+    assert not lp.schedule[0], "booked at slot 0 (night charge) — the incident"
+    six_am_next = datetime(2026, 7, 11, 6, 0)
+    covered = [i for i, on in enumerate(lp.schedule) if on]
+    for i in covered:
+        assert inputs.slots[i].start >= six_am_next, (
+            f"covered slot {i} starts {inputs.slots[i].start} (< 06:00 next day)"
+        )
+    assert len(covered) == 1
+    assert abs(lp.run_hours[covered[0]] - 0.5) < 1e-9
+    assert abs(lp.planned_energy_wh - 150.0) < 1.0
+
+
+def test_pass2_residual_books_latest_of_two_feasible_slots():
+    """Latest-first tiebreak (R3): a short power-limited peak (11-13) saturates
+    pass 1 in-window; the energy-limited overflow spills to pass 2 as pre-window
+    preemptive runs hugging the window start. An overflow of exactly one 0.5 h
+    quantum books the LATEST feasible pre-window slot (hour 10), even though an
+    earlier slot (hour 9) is also clip-refilled feasible for a larger remainder."""
+    short_peak = PVParams(
+        peak_power_w=3200.0, morning_start_hour=11, morning_end_hour=13,
+        afternoon_end_hour=14, morning_ratio=0.7,
+    )
+    config = SystemConfig(pv=short_peak, loads=(FOSSIBOT_1,))
+    now = datetime(2026, 7, 4, 20, 0)
+
+    def pass2(soc):
+        states = (SurplusLoadState(load_id="fossibot_1", soc_percent=soc),)
+        result, inputs = make_plan(config, now, 90.0, [0.0, 8.0], load_states=states)
+        lp = result.load_plans[0]
+        hours = sorted(
+            inputs.slots[s].hour_of_day
+            for (s, _c, p, _wh) in lp.allocations if p == 2
+        )
+        return lp, inputs, hours
+
+    # rem 1050 = 900 in-window (hours 11,12,13) + exactly one 0.5 h overflow.
+    lp, inputs, hours = pass2(47.5)
+    assert hours == [10], f"expected a single pass-2 run at hour 10, got {hours}"
+    slot10 = next(
+        i for i, on in enumerate(lp.schedule)
+        if on and inputs.slots[i].hour_of_day == 10
+    )
+    assert abs(lp.run_hours[slot10] - 0.5) < 1e-9  # sub-hour quantum (R1)
+    # A larger remainder proves hour 9 is ALSO a feasible pass-2 slot, so the
+    # residual chose hour 10 over hour 9 by latest-first, not for lack of one.
+    _lp2, _in2, bigger = pass2(20.0)
+    assert 9 in bigger and 10 in bigger
+
+
+def test_pass1_residual_capture_in_direct_surplus_hour():
+    """Pass-1 residual capture (R6): midday, battery full, strong surplus. A
+    fossibot 156 Wh short of target books a single 0.5 h pass-1 run right now,
+    saturating within the sun window — a new capture class (before R1 the whole-
+    hour saturation gate rejected the residual and it booked nothing)."""
+    config = SystemConfig(loads=(FOSSIBOT_B,))
+    now = datetime(2026, 7, 4, 11, 0)
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
+    result, inputs = make_plan(config, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
+    lp = result.load_plans[0]
+    assert result.grid_export_kwh > 0.128  # a real direct surplus to capture
+    assert lp.active_now  # booked now, in the direct-surplus hour
+    slot0 = [a for a in lp.allocations if a[0] == 0]
+    assert slot0 and slot0[0][2] == 1, "expected a pass-1 booking at slot 0"
+    assert abs(lp.run_hours[0] - 0.5) < 1e-9
+    assert abs(lp.planned_energy_wh - 150.0) < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -1127,8 +1220,9 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
 
     Scenario: modest day-1 then a strong day-2. The dehumidifier pre-drains and
     trades ~10 Wh; the fossibot has a large remaining budget. With the fix it
-    charges every surplus slot it can (incl. a pass-2 refill evaluated AFTER the
-    trade) and declines the rest; the buggy gate booked strictly fewer slots."""
+    charges every surplus slot it can (incl. pass-2 refills evaluated AFTER the
+    trade — one a 0.5 h residual quantum since F-RESIDUAL-TOPUP R1) and declines
+    the rest; the buggy gate booked strictly fewer slots."""
     now = datetime(2026, 7, 3, 21, 0)
     fb = SurplusLoad(
         load_id="fb", name="B", nominal_power_w=300.0, battery_tolerance=0.05,
@@ -1150,11 +1244,11 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
     fb_plan = next(p for p in load_plans if p.load_id == "fb")
 
     # (a) A continuous trade fired AND the fossibot still books its full surplus
-    #     coverage (1800 Wh over six slots, incl. a pass-2 refill). The buggy gate
-    #     (anchored at base) starved the last slot -> only 1500 Wh.
+    #     coverage (1950 Wh, incl. pass-2 refills — one a 0.5 h residual quantum,
+    #     F-RESIDUAL-TOPUP R1). The buggy base-anchored gate booked only 1500 Wh.
     assert traj.total_import_wh - base.total_import_wh > 1e-6  # deh traded
     assert any(a[2] == 2 for a in fb_plan.allocations)  # a post-trade refill booked
-    assert abs(fb_plan.planned_energy_wh - 1800.0) < 1e-6
+    assert abs(fb_plan.planned_energy_wh - 1950.0) < 1e-6
 
     # (b) The fossibot adds NO grid import (L5): its remaining budget (6000 Wh)
     #     far exceeds the surplus it took, so every further candidate WOULD have
