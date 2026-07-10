@@ -1,5 +1,6 @@
 """Config/options flow smoke tests (schema construction must never raise)."""
 
+import voluptuous as vol
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
@@ -16,6 +17,35 @@ ENTRY_DATA = {
     CONF_PV_FORECAST_TOMORROW: "sensor.pv_tomorrow",
     CONF_PV_FORECAST_DAY_AFTER: "sensor.pv_day_after",
 }
+
+
+def _section_fields(schema, section_key):
+    """The inner {marker: validator} dict of a collapsible options section."""
+    marker = next(k for k in schema if str(k) == section_key)
+    return schema[marker].schema.schema
+
+
+def _marker_default(marker):
+    """The resolved default of a schema marker, or vol.UNDEFINED when unset."""
+    default = getattr(marker, "default", vol.UNDEFINED)
+    if default is vol.UNDEFINED:
+        return vol.UNDEFINED
+    return default() if callable(default) else default
+
+
+def _no_change_options_payload(schema):
+    """Build the payload a no-change options submit produces: every section's
+    fields at their RENDERED defaults; clearable (no-default) fields stay unset."""
+    payload = {}
+    for section_marker in schema:
+        inner = schema[section_marker].schema.schema
+        section_data = {}
+        for marker in inner:
+            default = _marker_default(marker)
+            if default is not vol.UNDEFINED:
+                section_data[str(marker)] = default
+        payload[str(section_marker)] = section_data
+    return payload
 
 
 async def _setup_entry(hass):
@@ -270,6 +300,83 @@ async def test_options_flow_rejects_bad_support_hysteresis(hass):
     assert res["type"] == "create_entry"
     assert res["data"]["support_dc24_recovery_soc"] == 12.0
     assert res["data"]["support_dc48_activate_soc"] == 7.0
+
+
+async def test_predrain_options_no_change_reconfigure_is_behaviour_preserving(hass):
+    """v0.7.15 review trap (F-PREDRAIN WP3): an existing install that never set
+    the pre-drain options must (a) run with the RECOMMENDED live values via the
+    coordinator's absent-key fallback, (b) get exactly those values as the
+    options-form defaults, and (c) reproduce identical planner params after a
+    no-change reconfigure — so re-saving the untouched form never alters
+    behaviour."""
+    from custom_components.battery_manager.const import (
+        CONF_IMPORT_TRADE_RATIO,
+        CONF_PREDRAIN_PV_CONFIDENCE,
+        CONF_PV_FORECAST_MODE,
+        CONF_PV_WINDOW_END_HOUR,
+        CONF_STRONG_PV_CUTOFF_W,
+        CONF_UPPER_PV_RESERVE,
+        IMPORT_TRADE_RATIO_DEFAULT,
+        PREDRAIN_PV_CONFIDENCE_DEFAULT,
+        PV_FORECAST_MODE_AUTO,
+        STRONG_PV_CUTOFF_W_DEFAULT,
+        UPPER_PV_RESERVE_DEFAULT,
+    )
+
+    entry = await _setup_entry(hass)  # no pre-drain options stored
+    coord = hass.data[DOMAIN][entry.entry_id]
+
+    # (a) The coordinator's absent-key fallback = the recommended live values,
+    # so the feature is active right after the update.
+    ctrl = coord.build_system_config().control
+    assert ctrl.import_trade_ratio == IMPORT_TRADE_RATIO_DEFAULT
+    assert ctrl.predrain_pv_confidence == PREDRAIN_PV_CONFIDENCE_DEFAULT
+    assert ctrl.upper_pv_reserve == UPPER_PV_RESERVE_DEFAULT
+    assert ctrl.strong_pv_cutoff_w == STRONG_PV_CUTOFF_W_DEFAULT
+    assert ctrl.pv_window_end_hour is None  # optional override unset
+    assert coord._pv_forecast_mode == PV_FORECAST_MODE_AUTO
+
+    # (b) The options form defaults the same fields to those exact values.
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    tuning = _section_fields(result["data_schema"].schema, "planner_tuning")
+    defaults = {
+        str(m): _marker_default(m)
+        for m in tuning
+        if _marker_default(m) is not vol.UNDEFINED
+    }
+    assert defaults[CONF_PV_FORECAST_MODE] == PV_FORECAST_MODE_AUTO
+    assert defaults[CONF_IMPORT_TRADE_RATIO] == IMPORT_TRADE_RATIO_DEFAULT
+    assert defaults[CONF_PREDRAIN_PV_CONFIDENCE] == PREDRAIN_PV_CONFIDENCE_DEFAULT
+    assert defaults[CONF_UPPER_PV_RESERVE] == UPPER_PV_RESERVE_DEFAULT
+    assert defaults[CONF_STRONG_PV_CUTOFF_W] == STRONG_PV_CUTOFF_W_DEFAULT
+    assert CONF_PV_WINDOW_END_HOUR not in defaults  # optional -> stays unset
+
+    # (c) Submit the form untouched (its own rendered defaults) -> a coordinator
+    # rebuilt from the stored options yields identical pre-drain params.
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    opts = result["data"]
+    assert opts[CONF_IMPORT_TRADE_RATIO] == IMPORT_TRADE_RATIO_DEFAULT
+    assert CONF_PV_WINDOW_END_HOUR not in opts or opts[CONF_PV_WINDOW_END_HOUR] is None
+
+    entry2 = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, options=opts, title="Battery Manager", version=2
+    )
+    entry2.add_to_hass(hass)
+    hass.states.async_set("sensor.test_soc", "55", {"unit_of_measurement": "%"})
+    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(pv, "10.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry2.entry_id)
+    await hass.async_block_till_done()
+    ctrl2 = hass.data[DOMAIN][entry2.entry_id].build_system_config().control
+    assert ctrl2.import_trade_ratio == ctrl.import_trade_ratio
+    assert ctrl2.predrain_pv_confidence == ctrl.predrain_pv_confidence
+    assert ctrl2.upper_pv_reserve == ctrl.upper_pv_reserve
+    assert ctrl2.strong_pv_cutoff_w == ctrl.strong_pv_cutoff_w
+    assert ctrl2.pv_window_end_hour == ctrl.pv_window_end_hour
 
 
 async def test_migrate_backfills_escalation_thresholds_from_soc_min(hass):

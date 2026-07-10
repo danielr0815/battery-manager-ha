@@ -249,6 +249,13 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads": loads,
             "consumption_profile": data.get("consumption_profile") or {},
             "gate_calibration": data.get("gate_calibration") or {},
+            # F-PREDRAIN observability (docs/F-PREDRAIN.md §3.5): per-day PV
+            # source, the import the pre-drain traded for rescued export, the
+            # stressed lower-buffer reserve, and the per-day PV-window end hours.
+            "pv_source": data.get("pv_source") or {},
+            "import_trade_used_wh": data.get("import_trade_used_wh"),
+            "stressed_min_soc": data.get("stressed_min_soc"),
+            "pv_window_ends": data.get("pv_window_ends") or {},
             **(data.get("plan_params") or {}),
         }
 
