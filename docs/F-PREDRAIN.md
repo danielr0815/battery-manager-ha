@@ -96,24 +96,50 @@ no-loads base trajectory:
   and config-flow default (WP3), NOT as the dataclass default.
 - Energy-limited loads keep the strict Z2 comparison unchanged (L5).
 
-### 3.3 F3 — Lower buffer: pessimistic stress gate Z4 (WP2)
+### 3.3 F3 — Lower buffer: pessimistic stress gate Z4 (WP2; REVISED v2)
 
-- `simulate(config, inputs, threshold, extra_ac_wh=..., pv_scale: float = 1.0)`
-  — multiplies each slot's `pv_wh` by `pv_scale` (1.0 = no change; keep the
-  parameter orthogonal to the peak cap, which applies to the UNSCALED input at
-  build time; scaling happens inside simulate's slot loop).
-- For every **pass-2** candidate of a **continuous** load: additionally run the
-  stress sim with `pv_scale = predrain_pv_confidence` (alpha) on the trial
-  series and gate with `_degrades_min_soc(trial_stress, current_stress, floor)`
-  where `floor = inverter_min_soc_percent + soc_buffer_percent` (NOT
-  `soc_min + buffer`; the inverter cutoff is the operator's protected bound,
-  L2) and `current_stress` is the stress sim of the currently accepted `extra`
-  series (recompute on each acceptance; cache between candidates).
-- `ControlParams.predrain_pv_confidence: float = 1.0` (neutral; alpha 1.0 makes
-  the stress sim identical to the nominal sim). Recommended live value 0.5 via
-  WP3 fallback.
+**v2 revision (2026-07-10, after acceptance testing).** The v1 whole-horizon
+stress (alpha applied to every slot, min over the full horizon) failed
+acceptance on the live scenario: three consecutive alpha-days push the
+stressed baseline to ~9 %, which (a) vetoes bookings the OLD planner accepted
+(recommended config lost MORE than v0.7.19) and (b) goes vacuous once the
+baseline pins at the bottom. It also contradicts the operator's replan
+philosophy (the plan re-runs every 5 min; catch-up on better information).
+
+**v2 semantics — the stress is LOCAL to the candidate's bet window:**
+
+- `simulate(..., pv_scale: float | Sequence[float] = 1.0)` — scalar as before;
+  a sequence gives a PER-SLOT scale factor (same length as slots).
+- **Bet window** of a candidate starting at slot `i`:
+  `recovery = end index of the first PV window (per pv_windows()) whose end
+  is >= i` (the next full recharge opportunity), capped at the last slot. If
+  no window ends at/after `i`, use the last slot.
+- **Gate:** build the scale vector `s[k] = alpha for i <= k <= recovery, else
+  1.0`; run the stress sim on the TRIAL series with that vector; let
+  `m_trial = min(soc_end over slots i..recovery)`. Reject iff
+  `m_trial < stress_floor - EPS AND m_trial < m_baseline - EPS`, where
+  `stress_floor = inverter_min_soc_percent + soc_buffer_percent` and
+  `m_baseline` is the same windowed min computed on the CURRENT accepted
+  `extra` series with the SAME scale vector (degrade-fallback: pre-existing
+  stressed dips must not veto a run that does not worsen them).
+- Baseline caching: one baseline sim per candidate slot `i` (not per
+  candidate duration); invalidate on acceptance. Slots before `i` are
+  identical between trial and baseline (scale 1.0, same extra), so the
+  windowed comparison is well-posed.
+- `ControlParams.predrain_pv_confidence: float = 1.0` (neutral; alpha 1.0
+  skips the gate entirely). Recommended live value 0.5 via WP3 fallback.
 - NOTE: existing Z3 (`_degrades_min_soc` vs `soc_min + buffer` on the nominal
   sim) stays as-is for all loads/passes.
+- `PlanResult.stressed_min_soc_percent` diagnostic (3.5): report the windowed
+  stressed min of the FIRST booked pre-drain bet window under the final
+  series, or None when alpha == 1.0 or nothing pre-drain-booked (implementer:
+  keep it simple and document the exact choice).
+
+**Acceptance criterion (binding):** on the 2026-07-10 repro scenario
+(scratchpad `repro_v080.py`), the recommended config (ratio 0.10 / alpha 0.5 /
+beta 1.2) must (a) book night slots in the FIRST two nights, (b) achieve
+lost_surplus strictly below the neutral config's value (3.12 kWh) minus 1.0
+kWh, and (c) keep `import_trade_used_wh <= 0.10 x rescued export + 1 Wh`.
 
 ### 3.4 F4 — Upper buffer: optimistic opportunity gate (c2) + PV window (WP2)
 
