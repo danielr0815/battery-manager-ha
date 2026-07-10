@@ -129,18 +129,30 @@
         "sections": {
           "planner_tuning": {
             "name": "Regelparameter",
-            "description": "SOC-Puffer, Hysterese und Schaltabstände des Planers.",
+            "description": "SOC-Puffer, Hysterese, Schaltabstände und PV-Vorentladung des Planers.",
             "data": {
               "soc_buffer_percent": "SOC-Sicherheitspuffer (%)",
               "hysteresis_percent": "Wechselrichter-Hysterese (%)",
               "threshold_inertia_percent": "Schwellen-Trägheit (%)",
-              "min_switch_interval_s": "Mindest-Schaltabstand (s)"
+              "min_switch_interval_s": "Mindest-Schaltabstand (s)",
+              "pv_forecast_mode": "PV-Prognosemodus",
+              "import_trade_ratio": "Import-Toleranz",
+              "predrain_pv_confidence": "PV-Vertrauen (unterer Puffer)",
+              "upper_pv_reserve": "PV-Reserve (oberer Puffer)",
+              "strong_pv_cutoff_w": "Schwelle 'Sonne hinter dem Haus'",
+              "pv_window_end_hour": "Festes PV-Fensterende"
             },
             "data_description": {
               "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
               "hysteresis_percent": "Totband um die SOC-Schwelle: Die Wechselrichter-Empfehlung wechselt erst, wenn der SOC die Schwelle um diesen Wert über- oder unterschreitet — verhindert Flattern.",
               "threshold_inertia_percent": "Eine neue Schwelle wird erst übernommen, wenn sie sich um mindestens diesen Betrag von der bisherigen unterscheidet — verhindert Springen zwischen gleichwertigen Plänen.",
-              "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade)."
+              "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade).",
+              "pv_forecast_mode": "Wie die stündliche PV-Form ermittelt wird: Automatisch nutzt die stündlichen wh_period-Attribute der Prognose, falls vorhanden (sonst das Zwei-Fenster-Modell), Stündlich erzwingt sie, Täglich ignoriert sie (Verhalten v0.7.19).",
+              "import_trade_ratio": "Wie viel zusätzlichen Netzbezug eine Vorentladung je Wh geretteten Überschusses verursachen darf (0 = keiner). Geringe Ladegerät-Standby-Kosten können so durch weit größere Überschuss-Einsparungen aufgewogen werden (Empfehlung: 0,10).",
+              "predrain_pv_confidence": "Pessimismus des Stresstests für den unteren Puffer: Die PV des Folgetages wird mit diesem Faktor gemindert, und der Lauf muss die Wechselrichter-Reserve über ihrem Boden halten. 1,0 = Prognose voll vertrauen (Empfehlung: 0,5).",
+              "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
+              "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
+              "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten."
             }
           },
           "support_paths": {
@@ -397,18 +409,30 @@
         "sections": {
           "planner_tuning": {
             "name": "Regelparameter",
-            "description": "SOC-Puffer, Hysterese und Schaltabstände des Planers.",
+            "description": "SOC-Puffer, Hysterese, Schaltabstände und PV-Vorentladung des Planers.",
             "data": {
               "soc_buffer_percent": "SOC-Sicherheitspuffer (%)",
               "hysteresis_percent": "Wechselrichter-Hysterese (%)",
               "threshold_inertia_percent": "Schwellen-Trägheit (%)",
-              "min_switch_interval_s": "Mindest-Schaltabstand (s)"
+              "min_switch_interval_s": "Mindest-Schaltabstand (s)",
+              "pv_forecast_mode": "PV-Prognosemodus",
+              "import_trade_ratio": "Import-Toleranz",
+              "predrain_pv_confidence": "PV-Vertrauen (unterer Puffer)",
+              "upper_pv_reserve": "PV-Reserve (oberer Puffer)",
+              "strong_pv_cutoff_w": "Schwelle 'Sonne hinter dem Haus'",
+              "pv_window_end_hour": "Festes PV-Fensterende"
             },
             "data_description": {
               "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
               "hysteresis_percent": "Totband um die SOC-Schwelle: Die Wechselrichter-Empfehlung wechselt erst, wenn der SOC die Schwelle um diesen Wert über- oder unterschreitet — verhindert Flattern.",
               "threshold_inertia_percent": "Eine neue Schwelle wird erst übernommen, wenn sie sich um mindestens diesen Betrag von der bisherigen unterscheidet — verhindert Springen zwischen gleichwertigen Plänen.",
-              "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade)."
+              "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade).",
+              "pv_forecast_mode": "Wie die stündliche PV-Form ermittelt wird: Automatisch nutzt die stündlichen wh_period-Attribute der Prognose, falls vorhanden (sonst das Zwei-Fenster-Modell), Stündlich erzwingt sie, Täglich ignoriert sie (Verhalten v0.7.19).",
+              "import_trade_ratio": "Wie viel zusätzlichen Netzbezug eine Vorentladung je Wh geretteten Überschusses verursachen darf (0 = keiner). Geringe Ladegerät-Standby-Kosten können so durch weit größere Überschuss-Einsparungen aufgewogen werden (Empfehlung: 0,10).",
+              "predrain_pv_confidence": "Pessimismus des Stresstests für den unteren Puffer: Die PV des Folgetages wird mit diesem Faktor gemindert, und der Lauf muss die Wechselrichter-Reserve über ihrem Boden halten. 1,0 = Prognose voll vertrauen (Empfehlung: 0,5).",
+              "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
+              "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
+              "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten."
             }
           },
           "consumption_profile": {
@@ -547,6 +571,13 @@
         "auto": "Automatisch (nur aus, wenn die Integration ihn eingeschaltet hat)",
         "always_off": "Immer ausschalten",
         "keep_on": "Anlassen (nur Lade-Freigabe schalten)"
+      }
+    },
+    "pv_forecast_mode": {
+      "options": {
+        "auto": "Automatisch (stündlich, wenn verfügbar)",
+        "hourly": "Stündlich (wh_period-Attribute erzwingen)",
+        "daily": "Nur täglich (stündliche Attribute ignorieren)"
       }
     }
   },

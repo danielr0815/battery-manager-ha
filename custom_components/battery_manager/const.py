@@ -196,6 +196,43 @@ CONF_APPLIANCE_OPPORTUNISTIC = "opportunistic_start"
 # States of a detection entity considered "running" (non-numeric entities)
 APPLIANCE_RUNNING_STATES = {"on", "run", "running", "washing", "active", "wash"}
 
+# --- F-PREDRAIN two-buffer pre-drain (docs/F-PREDRAIN.md §3, WP3) ---
+# System-level planner options. The core dataclass defaults are NEUTRAL (ratio
+# 0.0, confidences 1.0, gate off) so the goldens stay frozen; these RECOMMENDED
+# live values are the coordinator/config-flow fallbacks instead (via
+# DEFAULT_CONFIG below), so an un-reconfigured install activates the feature
+# after the update (F-PREDRAIN §3.2 note).
+CONF_PV_FORECAST_MODE = "pv_forecast_mode"
+CONF_IMPORT_TRADE_RATIO = "import_trade_ratio"
+CONF_PREDRAIN_PV_CONFIDENCE = "predrain_pv_confidence"
+CONF_UPPER_PV_RESERVE = "upper_pv_reserve"
+CONF_STRONG_PV_CUTOFF_W = "strong_pv_cutoff_w"
+# Optional site override with NO default (unset/empty = derive purely from the
+# forecast shape), so it is deliberately absent from DEFAULT_CONFIG.
+CONF_PV_WINDOW_END_HOUR = "pv_window_end_hour"
+
+# PV forecast ingestion mode (docs/F-PREDRAIN.md F1): "auto" uses the hourly
+# wh_period attributes when present and falls back to the two-window synthesis,
+# "hourly" is the same today (hourly when present), "daily" ignores the
+# attributes entirely (golden-anchor behaviour). Replaces WP1's internal
+# PV_FORECAST_MODE_DEFAULT constant.
+PV_FORECAST_MODE_AUTO = "auto"
+PV_FORECAST_MODE_HOURLY = "hourly"
+PV_FORECAST_MODE_DAILY = "daily"
+PV_FORECAST_MODES = [
+    PV_FORECAST_MODE_AUTO,
+    PV_FORECAST_MODE_HOURLY,
+    PV_FORECAST_MODE_DAILY,
+]
+
+# Recommended live fallbacks (NOT the neutral core dataclass defaults). Used as
+# the coordinator absent-key fallback AND the config-flow form default so a
+# no-change reconfigure keeps the pre-drain behaviour unchanged.
+IMPORT_TRADE_RATIO_DEFAULT = 0.10
+PREDRAIN_PV_CONFIDENCE_DEFAULT = 0.5
+UPPER_PV_RESERVE_DEFAULT = 1.2
+STRONG_PV_CUTOFF_W_DEFAULT = 200.0
+
 # --- Default configuration (base entry) ---
 DEFAULT_CONFIG = {
     # Battery
@@ -242,6 +279,14 @@ DEFAULT_CONFIG = {
     "hysteresis_percent": 1.0,
     "threshold_inertia_percent": 2.0,
     "min_switch_interval_s": 60,
+    # F-PREDRAIN pre-drain (docs/F-PREDRAIN.md §3) — RECOMMENDED live values, so
+    # an un-reconfigured install runs with the feature active. pv_window_end_hour
+    # is intentionally omitted (no default = unset/derive from the forecast).
+    CONF_PV_FORECAST_MODE: PV_FORECAST_MODE_AUTO,
+    CONF_IMPORT_TRADE_RATIO: IMPORT_TRADE_RATIO_DEFAULT,
+    CONF_PREDRAIN_PV_CONFIDENCE: PREDRAIN_PV_CONFIDENCE_DEFAULT,
+    CONF_UPPER_PV_RESERVE: UPPER_PV_RESERVE_DEFAULT,
+    CONF_STRONG_PV_CUTOFF_W: STRONG_PV_CUTOFF_W_DEFAULT,
     # Support paths
     CONF_SUPPORT_DC48_POWER_W: 60.0,
     CONF_SUPPORT_SWITCH_DELAY_S: 3,

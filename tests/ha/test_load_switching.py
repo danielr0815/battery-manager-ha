@@ -1118,3 +1118,185 @@ async def test_appliance_window_removed_when_opportunistic_disabled(hass):
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert reg.async_get_entity_id("binary_sensor", DOMAIN, uid) is None  # dropped
+
+
+# ---------------------------------------------------------------------------
+# F-PREDRAIN T9: contiguous night-block execution via the frozen deadline
+# (docs/F-PREDRAIN.md §5). A pre-drain "make room" run is a multi-hour
+# contiguous block for a continuous load; the F-SUBHOUR executor must deliver
+# exactly the planned hours, ignore a mid-run plan extension, and honour the
+# split dwell (min_runtime on OFF, min_off on re-on).
+# ---------------------------------------------------------------------------
+
+
+def _night_plan(sub_id, hours):
+    """A LoadPlan for a `hours`-slot contiguous run from slot 0."""
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    return LoadPlan(
+        load_id=sub_id,
+        schedule=(True,) * hours,
+        planned_energy_wh=400.0 * hours,
+        run_hours=(1.0,) * hours,
+    )
+
+
+async def test_night_block_runs_exactly_planned_hours_then_force_off(hass):
+    """(a) A 3 h contiguous planned night block freezes a +180 min deadline,
+    stays on until it, and is force-switched OFF at the deadline even though the
+    plan still wants it on (F-PREDRAIN §5 T9a / F-SUBHOUR R8)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=30
+    )
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    now = dt_util.utcnow()
+    durations = (1.0, 1.0, 1.0)
+    result = SimpleNamespace(load_plans=[_night_plan(sub_id, 3)])
+
+    # ON edge: the 3 h block freezes a +180 min off-deadline.
+    await coordinator._apply_load_switching(result, now, durations)
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls
+    off_at = coordinator._load_run_deadline[sub_id]
+    assert 179.0 <= (off_at - now).total_seconds() / 60.0 <= 181.0
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # Just before the deadline the plan still wants it on: no premature off.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        result, now + timedelta(minutes=179), durations
+    )
+    await hass.async_block_till_done()
+    assert calls == []
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # Past the deadline: force off despite the plan still wanting it on.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        result, off_at + timedelta(minutes=1), durations
+    )
+    await hass.async_block_till_done()
+    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
+    assert sub_id not in coordinator._load_run_deadline
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_extended_plan_still_force_offs_and_min_off_gates_re_on(hass):
+    """(b) If the plan EXTENDS mid-run, the frozen deadline must not move (no
+    endless run); at the ORIGINAL deadline the load force-offs, and the min_off
+    dwell then blocks the immediate re-on (F-PREDRAIN §5 T9b)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=45
+    )
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    now = dt_util.utcnow()
+    durations = (1.0,) * 6
+
+    # ON edge with a 2 h block: deadline at +120 min.
+    await coordinator._apply_load_switching(
+        SimpleNamespace(load_plans=[_night_plan(sub_id, 2)]), now, durations
+    )
+    await hass.async_block_till_done()
+    off_at = coordinator._load_run_deadline[sub_id]
+    assert 119.0 <= (off_at - now).total_seconds() / 60.0 <= 121.0
+
+    # Plan extends to 4 h mid-run: the frozen deadline must NOT move.
+    extended = SimpleNamespace(load_plans=[_night_plan(sub_id, 4)])
+    calls.clear()
+    await coordinator._apply_load_switching(
+        extended, now + timedelta(minutes=60), durations
+    )
+    await hass.async_block_till_done()
+    assert coordinator._load_run_deadline[sub_id] == off_at  # unchanged
+    assert calls == []  # still running, no switch
+
+    # Past the ORIGINAL deadline: force off despite the extended plan.
+    off_now = off_at + timedelta(minutes=1)
+    calls.clear()
+    await coordinator._apply_load_switching(extended, off_now, durations)
+    await hass.async_block_till_done()
+    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
+    assert sub_id not in coordinator._load_run_deadline
+
+    # min_off (45) blocks the immediate re-on even though the plan wants it on.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        extended, off_now + timedelta(minutes=10), durations
+    )
+    await hass.async_block_till_done()
+    assert calls == []
+
+    # After the min_off dwell elapses the re-on is allowed.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        extended, off_now + timedelta(minutes=46), durations
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls or ("turn_on", ENABLE) in calls
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_plan_flap_does_not_switch_off_before_min_runtime(hass):
+    """(c) A plan-inactive flap shortly after the block starts must NOT switch the
+    load off before its minimum ON time (min_runtime) has elapsed; once it has, a
+    still-inactive plan does switch it off (F-PREDRAIN §5 T9c / F-SUBHOUR R14)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=30
+    )
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    now = dt_util.utcnow()
+    durations = (1.0, 1.0, 1.0)
+
+    # Start the 3 h block.
+    await coordinator._apply_load_switching(
+        SimpleNamespace(load_plans=[_night_plan(sub_id, 3)]), now, durations
+    )
+    await hass.async_block_till_done()
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # Build the "plan inactive" result explicitly (frozen dataclass -> new one).
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    inactive = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id, schedule=(False,), planned_energy_wh=0.0, run_hours=(0.0,)
+            )
+        ]
+    )
+
+    # Flap inactive 10 min in (< min_runtime 30): must NOT switch off.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        inactive, now + timedelta(minutes=10), durations
+    )
+    await hass.async_block_till_done()
+    assert calls == []
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # After min_runtime, a still-inactive plan switches it off.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        inactive, now + timedelta(minutes=31), durations
+    )
+    await hass.async_block_till_done()
+    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
+    coordinator._cancel_off_timer(sub_id)

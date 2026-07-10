@@ -41,6 +41,7 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
+    CONF_IMPORT_TRADE_RATIO,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_AVAILABILITY_ENTITY,
@@ -60,6 +61,7 @@ from .const import (
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_NATIVE48_BASE_W,
+    CONF_PREDRAIN_PV_CONFIDENCE,
     CONF_PROFILE_HALF_LIFE_DAYS,
     CONF_PSU24_EFFICIENCY,
     CONF_PSU24_MAX_CURRENT_A,
@@ -71,9 +73,12 @@ from .const import (
     CONF_PSU48_ON_VOLTAGE_V,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
+    CONF_PV_FORECAST_MODE,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
+    CONF_PV_WINDOW_END_HOUR,
     CONF_SOC_ENTITY,
+    CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
@@ -83,6 +88,7 @@ from .const import (
     CONF_SUPPORT_DC48_RECOVERY_SOC,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
+    CONF_UPPER_PV_RESERVE,
     CONF_WORKDAY_ENTITY,
     DEFAULT_APPLIANCE_CONFIG,
     DEFAULT_CONFIG,
@@ -90,6 +96,7 @@ from .const import (
     DOMAIN,
     INPUT_OFF_POLICIES,
     INPUT_OFF_POLICY_KEEP,
+    PV_FORECAST_MODES,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
 )
@@ -326,6 +333,47 @@ def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
         )
     ] = selector.BooleanSelector()
     return schema
+
+
+def _predrain_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """F-PREDRAIN two-buffer pre-drain tuning (docs/F-PREDRAIN.md §3).
+
+    Shared by the base control step and the options flow, appended to the
+    planner-tuning section. The recommended live values live in DEFAULT_CONFIG
+    (resolved via _d), so the form default and the coordinator absent-key
+    fallback resolve to the SAME value — a no-change reconfigure keeps the
+    pre-drain behaviour unchanged (v0.7.15 review trap). pv_window_end_hour has
+    no default: cleared/empty = derive the window end from the forecast shape.
+    """
+    return {
+        vol.Required(
+            CONF_PV_FORECAST_MODE, default=_d(current, CONF_PV_FORECAST_MODE)
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=PV_FORECAST_MODES,
+                translation_key="pv_forecast_mode",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Required(
+            CONF_IMPORT_TRADE_RATIO, default=_d(current, CONF_IMPORT_TRADE_RATIO)
+        ): _number(0, 0.5, 0.01),
+        vol.Required(
+            CONF_PREDRAIN_PV_CONFIDENCE,
+            default=_d(current, CONF_PREDRAIN_PV_CONFIDENCE),
+        ): _number(0.2, 1.0, 0.05),
+        vol.Required(
+            CONF_UPPER_PV_RESERVE, default=_d(current, CONF_UPPER_PV_RESERVE)
+        ): _number(1.0, 1.5, 0.05),
+        vol.Required(
+            CONF_STRONG_PV_CUTOFF_W, default=_d(current, CONF_STRONG_PV_CUTOFF_W)
+        ): _number(50, 1000, 10, "W"),
+        # suggested_value (not default) keeps the optional override clearable.
+        vol.Optional(
+            CONF_PV_WINDOW_END_HOUR,
+            description={"suggested_value": current.get(CONF_PV_WINDOW_END_HOUR)},
+        ): _number(10, 20, 1, "h"),
+    }
 
 
 def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
@@ -611,6 +659,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 "min_switch_interval_s", default=_d(d, "min_switch_interval_s")
             ): _number(0, 3600, 10, "s"),
         }
+        tuning.update(_predrain_schema_fields(d))  # F-PREDRAIN pre-drain (WP3)
         support = {
             vol.Optional(CONF_SUPPORT_DC48_SWITCH): _entity("switch"),
             vol.Required(
@@ -682,6 +731,9 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     *_SUPPORT_SWITCH_KEYS,
                     CONF_SUPPORT_DC24_POWER_ENTITY,
                     CONF_BATTERY_VOLTAGE_ENTITY,
+                    # Cleared = unset the site override so the window end derives
+                    # from the forecast again (F-PREDRAIN F4).
+                    CONF_PV_WINDOW_END_HOUR,
                     *_LEARNING_SINGLE_KEYS,
                     CONF_WORKDAY_ENTITY,
                 ):
@@ -713,6 +765,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 "min_switch_interval_s", default=_d(current, "min_switch_interval_s")
             ): _number(0, 3600, 10, "s"),
         }
+        tuning.update(_predrain_schema_fields(current))  # F-PREDRAIN pre-drain (WP3)
 
         support: dict[Any, Any] = {
             vol.Required(

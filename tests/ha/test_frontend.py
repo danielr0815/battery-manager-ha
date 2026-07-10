@@ -139,3 +139,36 @@ async def test_soc_forecast_sensor_carries_plan_context(hass):
     assert attrs["grid_import_kwh"] is not None
     assert attrs["lost_surplus_kwh"] is not None
     assert isinstance(attrs["loads"], list)
+
+
+async def test_soc_forecast_sensor_exposes_predrain_diagnostics(hass):
+    """F-PREDRAIN WP4: the forecast sensor carries the pre-drain observability
+    attributes (per-day PV source, traded import, stressed reserve, PV-window
+    ends) with plausible values so the card and the operator can inspect them."""
+    await _setup_entry(hass)
+
+    state = _find_forecast_state(hass)
+    assert state is not None
+    attrs = state.attributes
+
+    # Per-day PV source: one label per horizon day, each hourly/two_window. The
+    # daily-only fixture entities carry no wh_period, so every day is two_window.
+    pv_source = attrs["pv_source"]
+    assert isinstance(pv_source, dict) and pv_source
+    assert set(pv_source.values()) <= {"hourly", "two_window"}
+    assert all(v == "two_window" for v in pv_source.values())
+
+    # Traded import >= 0 and rounded to 0.1 Wh.
+    trade = attrs["import_trade_used_wh"]
+    assert trade is not None and trade >= 0.0
+    assert round(trade, 1) == trade
+
+    # Recommended alpha 0.5 < 1.0 -> the stressed reserve is populated (a %).
+    stressed = attrs["stressed_min_soc"]
+    assert stressed is not None
+    assert 0.0 <= stressed <= 100.0
+    assert round(stressed, 2) == stressed
+
+    # PV-window ends: a dict keyed by ISO date -> local hour (may be empty when
+    # no day reaches the strong-PV cutoff, e.g. a low synthetic profile).
+    assert isinstance(attrs["pv_window_ends"], dict)

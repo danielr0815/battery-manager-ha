@@ -129,18 +129,30 @@
         "sections": {
           "planner_tuning": {
             "name": "Control parameters",
-            "description": "SOC buffer, hysteresis and switching intervals of the planner.",
+            "description": "SOC buffer, hysteresis, switching intervals and the PV pre-drain tuning of the planner.",
             "data": {
               "soc_buffer_percent": "SOC safety buffer (%)",
               "hysteresis_percent": "Inverter hysteresis (%)",
               "threshold_inertia_percent": "Threshold inertia (%)",
-              "min_switch_interval_s": "Minimum switch interval (s)"
+              "min_switch_interval_s": "Minimum switch interval (s)",
+              "pv_forecast_mode": "PV forecast mode",
+              "import_trade_ratio": "Import tolerance (ratio)",
+              "predrain_pv_confidence": "PV confidence (lower buffer)",
+              "upper_pv_reserve": "PV reserve (upper buffer)",
+              "strong_pv_cutoff_w": "'Sun behind the house' threshold (W)",
+              "pv_window_end_hour": "Fixed PV window end (hour, optional)"
             },
             "data_description": {
               "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
               "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
               "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
-              "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths)."
+              "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
+              "pv_forecast_mode": "How the hourly PV shape is derived: Automatic uses the forecast's hourly wh_period attributes when present (else the two-window model), Hourly forces them, Daily ignores them (v0.7.19 behaviour).",
+              "import_trade_ratio": "How much extra grid import a pre-drain may cause per Wh of rescued export (0 = none). A small charger-standby cost can then buy back much larger export savings (recommendation: 0.10).",
+              "predrain_pv_confidence": "Pessimism of the lower-buffer stress test: the next day's PV is de-rated by this factor and the run must still keep the inverter reserve above its floor. 1.0 = trust the forecast fully (recommendation: 0.5).",
+              "upper_pv_reserve": "Optimism of the upper-buffer opportunity test: in-window pre-drains are justified against a PV forecast scaled up by this factor. 1.0 = gate off (recommendation: 1.2).",
+              "strong_pv_cutoff_w": "Average power above which an hour counts as strong PV (inside the absorption window). After the last such hour the sun is 'behind the house' and the upper reserve may be spent (recommendation: 200 W).",
+              "pv_window_end_hour": "Optional site override: cap the PV window's end at the last hour before this local hour (e.g. a roof shaded from mid-afternoon). Empty = derive purely from the forecast."
             }
           },
           "support_paths": {
@@ -397,18 +409,30 @@
         "sections": {
           "planner_tuning": {
             "name": "Control parameters",
-            "description": "SOC buffer, hysteresis and switching intervals of the planner.",
+            "description": "SOC buffer, hysteresis, switching intervals and the PV pre-drain tuning of the planner.",
             "data": {
               "soc_buffer_percent": "SOC safety buffer (%)",
               "hysteresis_percent": "Inverter hysteresis (%)",
               "threshold_inertia_percent": "Threshold inertia (%)",
-              "min_switch_interval_s": "Minimum switch interval (s)"
+              "min_switch_interval_s": "Minimum switch interval (s)",
+              "pv_forecast_mode": "PV forecast mode",
+              "import_trade_ratio": "Import tolerance (ratio)",
+              "predrain_pv_confidence": "PV confidence (lower buffer)",
+              "upper_pv_reserve": "PV reserve (upper buffer)",
+              "strong_pv_cutoff_w": "'Sun behind the house' threshold (W)",
+              "pv_window_end_hour": "Fixed PV window end (hour, optional)"
             },
             "data_description": {
               "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
               "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
               "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
-              "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths)."
+              "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
+              "pv_forecast_mode": "How the hourly PV shape is derived: Automatic uses the forecast's hourly wh_period attributes when present (else the two-window model), Hourly forces them, Daily ignores them (v0.7.19 behaviour).",
+              "import_trade_ratio": "How much extra grid import a pre-drain may cause per Wh of rescued export (0 = none). A small charger-standby cost can then buy back much larger export savings (recommendation: 0.10).",
+              "predrain_pv_confidence": "Pessimism of the lower-buffer stress test: the next day's PV is de-rated by this factor and the run must still keep the inverter reserve above its floor. 1.0 = trust the forecast fully (recommendation: 0.5).",
+              "upper_pv_reserve": "Optimism of the upper-buffer opportunity test: in-window pre-drains are justified against a PV forecast scaled up by this factor. 1.0 = gate off (recommendation: 1.2).",
+              "strong_pv_cutoff_w": "Average power above which an hour counts as strong PV (inside the absorption window). After the last such hour the sun is 'behind the house' and the upper reserve may be spent (recommendation: 200 W).",
+              "pv_window_end_hour": "Optional site override: cap the PV window's end at the last hour before this local hour (e.g. a roof shaded from mid-afternoon). Empty = derive purely from the forecast."
             }
           },
           "consumption_profile": {
@@ -547,6 +571,13 @@
         "auto": "Automatic (off only if the integration switched it on)",
         "always_off": "Always switch off",
         "keep_on": "Keep on (toggle charge-enable only)"
+      }
+    },
+    "pv_forecast_mode": {
+      "options": {
+        "auto": "Automatic (hourly when available)",
+        "hourly": "Hourly (force wh_period attributes)",
+        "daily": "Daily only (ignore hourly attributes)"
       }
     }
   },

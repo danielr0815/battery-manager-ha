@@ -37,6 +37,7 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
+    CONF_IMPORT_TRADE_RATIO,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
@@ -52,6 +53,7 @@ from .const import (
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_NATIVE48_BASE_W,
+    CONF_PREDRAIN_PV_CONFIDENCE,
     CONF_PSU24_EFFICIENCY,
     CONF_PSU24_MAX_CURRENT_A,
     CONF_PSU24_OUTPUT_VOLTAGE_V,
@@ -62,9 +64,12 @@ from .const import (
     CONF_PSU48_ON_VOLTAGE_V,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_PV_FORECAST_DAY_AFTER,
+    CONF_PV_FORECAST_MODE,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
+    CONF_PV_WINDOW_END_HOUR,
     CONF_SOC_ENTITY,
+    CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
     CONF_SUPPORT_DC24_SWITCH,
@@ -73,6 +78,7 @@ from .const import (
     CONF_SUPPORT_DC48_RECOVERY_SOC,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
+    CONF_UPPER_PV_RESERVE,
     DC48_CTRL_DWELL_OFF_S,
     DC48_CTRL_DWELL_ON_S,
     DC48_CTRL_FAILSAFE_MIN,
@@ -82,6 +88,7 @@ from .const import (
     DEFAULT_CONFIG,
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
+    IMPORT_TRADE_RATIO_DEFAULT,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
@@ -92,12 +99,17 @@ from .const import (
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
     POWER_WARNING_DWELL_MIN,
+    PREDRAIN_PV_CONFIDENCE_DEFAULT,
+    PV_FORECAST_MODE_AUTO,
+    PV_FORECAST_MODE_DAILY,
     STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
     STORAGE_VERSION,
+    STRONG_PV_CUTOFF_W_DEFAULT,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
     UPDATE_INTERVAL_SECONDS,
+    UPPER_PV_RESERVE_DEFAULT,
 )
 from .core import (
     DAY_TYPE_ABSENCE,
@@ -123,12 +135,6 @@ from .history_profile import ProfileLearner
 _LOGGER = logging.getLogger(__name__)
 
 _POWER_EMA_ALPHA = 0.3
-
-# PV forecast ingestion mode (docs/F-PREDRAIN.md F1). WP3 will surface this as a
-# config option; for now it is a fixed internal default. "auto" uses the hourly
-# wh_period attributes when present and falls back to the two-window synthesis;
-# "daily" ignores the attributes entirely (golden-anchor behaviour).
-PV_FORECAST_MODE_DEFAULT = "auto"
 
 
 def _series_source(series: tuple[float | None, ...] | None, index: int) -> str:
@@ -176,7 +182,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_forecast_update: datetime | None = None
         # Hourly PV forecast (docs/F-PREDRAIN.md F1): merged naive-local hour -> Wh
         # map, cached with the same stale-fallback semantics as the daily state.
-        self._pv_forecast_mode = PV_FORECAST_MODE_DEFAULT
+        # The ingestion mode is a system option (WP3); absent = the recommended
+        # "auto" (hourly when present, else two-window). Read once here — an
+        # options change reloads the entry and rebuilds the coordinator.
+        self._pv_forecast_mode = self.raw_config.get(
+            CONF_PV_FORECAST_MODE, PV_FORECAST_MODE_AUTO
+        )
         self._last_valid_pv_hourly: dict[datetime, float] | None = None
         self._last_pv_hourly_update: datetime | None = None
         # Per-day PV source label ("hourly"/"two_window") for WP4 sensor exposure.
@@ -562,6 +573,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 hysteresis_percent=float(cfg["hysteresis_percent"]),
                 threshold_inertia_percent=float(cfg["threshold_inertia_percent"]),
                 min_switch_interval_s=int(cfg["min_switch_interval_s"]),
+                # F-PREDRAIN two-buffer pre-drain (docs/F-PREDRAIN.md §3). The
+                # absent-key fallbacks are the RECOMMENDED live values (NOT the
+                # neutral core defaults), so an un-reconfigured install runs with
+                # the feature active. pv_window_end_hour has no default: absent =
+                # unset (None), deriving the window purely from the forecast.
+                import_trade_ratio=float(
+                    cfg.get(CONF_IMPORT_TRADE_RATIO, IMPORT_TRADE_RATIO_DEFAULT)
+                ),
+                predrain_pv_confidence=float(
+                    cfg.get(
+                        CONF_PREDRAIN_PV_CONFIDENCE, PREDRAIN_PV_CONFIDENCE_DEFAULT
+                    )
+                ),
+                upper_pv_reserve=float(
+                    cfg.get(CONF_UPPER_PV_RESERVE, UPPER_PV_RESERVE_DEFAULT)
+                ),
+                strong_pv_cutoff_w=float(
+                    cfg.get(CONF_STRONG_PV_CUTOFF_W, STRONG_PV_CUTOFF_W_DEFAULT)
+                ),
+                pv_window_end_hour=(
+                    int(cfg[CONF_PV_WINDOW_END_HOUR])
+                    if cfg.get(CONF_PV_WINDOW_END_HOUR) is not None
+                    else None
+                ),
             ),
             support=SupportParams(
                 configured=support_configured,
@@ -692,7 +727,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         same max-age window. In "daily" mode the hourly attributes are ignored
         (None) so build_slots falls back to the two-window synthesis.
         """
-        if self._pv_forecast_mode == "daily":
+        if self._pv_forecast_mode == PV_FORECAST_MODE_DAILY:
             return None
         cfg = self.raw_config
         merged: dict[datetime, float] = {}
@@ -730,6 +765,56 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "hourly" if day in covered_days else "two_window"
             )
         return sources
+
+    def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
+        """One INFO line per cycle when the plan books preemptive night charging.
+
+        A pre-drain "make room" run (pass 2) for a CONTINUOUS load that lands
+        OUTSIDE every PV absorption window is the F-PREDRAIN feature's headline
+        action (docs/F-PREDRAIN.md F4) — surface it once per cycle with the load
+        name, the booked slot times and the grid import the trade cost. Emitted
+        at most once per cycle (all loads aggregated into a single line).
+        """
+        ends = result.pv_window_ends  # {iso date -> last strong-PV hour}
+        if not result.load_plans:
+            return
+        cutoff = config.control.strong_pv_cutoff_w
+        # First strong-PV slot index per day. The end-hour override only caps the
+        # window END, so the start comes straight from the forecast shape; the
+        # authoritative capped end is taken from the plan result.
+        first_idx: dict[str, int] = {}
+        for slot in inputs.slots:
+            if slot.duration > 0.0 and slot.pv_wh / slot.duration >= cutoff:
+                first_idx.setdefault(slot.start.date().isoformat(), slot.index)
+
+        def _in_window(slot) -> bool:
+            day = slot.start.date().isoformat()
+            end_hour = ends.get(day)
+            if end_hour is None or day not in first_idx:
+                return False
+            return slot.index >= first_idx[day] and slot.hour_of_day <= end_hour
+
+        booked: list[str] = []
+        for load_plan, load in zip(result.load_plans, config.loads, strict=True):
+            if load.energy_limited:
+                continue  # pre-drain is continuous-loads only (F-PREDRAIN L5)
+            night = [
+                inputs.slots[j]
+                for start, count, pass_no, _wh in load_plan.allocations
+                if pass_no == 2
+                for j in range(start, start + count)
+                if j < len(inputs.slots) and not _in_window(inputs.slots[j])
+            ]
+            if night:
+                times = ", ".join(s.start.strftime("%Y-%m-%d %H:%M") for s in night)
+                booked.append(f"{load.name} @ {times}")
+        if booked:
+            _LOGGER.info(
+                "F-PREDRAIN: preemptive night charging booked for %s"
+                " (import traded %.1f Wh)",
+                "; ".join(booked),
+                result.import_trade_used_wh,
+            )
 
     def _update_power_warnings(self, result, now: datetime) -> None:
         """Per-load power-deviation warning (operator requirement F-L7).
@@ -1343,6 +1428,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         profile_diag.update(buffer_diag)
         result = await self.hass.async_add_executor_job(plan, config, inputs)
         self._update_plan_active(result)
+        self._log_night_predrain(result, inputs, config)
 
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
@@ -1468,6 +1554,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "grid_import_kwh": round(result.grid_import_kwh, 3),
             "grid_export_kwh": round(result.grid_export_kwh, 3),
             "lost_surplus_kwh": round(result.lost_surplus_kwh, 3),
+            # F-PREDRAIN diagnostics (docs/F-PREDRAIN.md §3.5) for the SOC-forecast
+            # sensor (WP4): per-day PV source, the traded import, the stressed
+            # reserve and the derived per-day PV-window end hours.
+            "pv_source": dict(self._pv_source_by_day),
+            "import_trade_used_wh": round(result.import_trade_used_wh, 1),
+            "stressed_min_soc": (
+                round(result.stressed_min_soc_percent, 2)
+                if result.stressed_min_soc_percent is not None
+                else None
+            ),
+            "pv_window_ends": dict(result.pv_window_ends),
             "load_plans": load_plans,
             "soc_forecast": soc_forecast,
             # Static planning context for the bundled forecast card
