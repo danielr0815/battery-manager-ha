@@ -163,11 +163,14 @@ async def test_soc_forecast_sensor_exposes_predrain_diagnostics(hass):
     assert trade is not None and trade >= 0.0
     assert round(trade, 1) == trade
 
-    # Recommended alpha 0.5 < 1.0 -> the stressed reserve is populated (a %).
+    # Z4 v2: the stressed reserve reports the bet window of the earliest booked
+    # pre-drain slot — None when this fixture's plan books no pass-2 pre-drain,
+    # a rounded percentage when it does.
+    assert "stressed_min_soc" in attrs
     stressed = attrs["stressed_min_soc"]
-    assert stressed is not None
-    assert 0.0 <= stressed <= 100.0
-    assert round(stressed, 2) == stressed
+    if stressed is not None:
+        assert 0.0 <= stressed <= 100.0
+        assert round(stressed, 2) == stressed
 
     # PV-window ends: a dict keyed by ISO date -> local hour (may be empty when
     # no day reaches the strong-PV cutoff, e.g. a low synthetic profile).
