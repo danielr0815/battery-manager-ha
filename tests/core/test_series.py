@@ -145,3 +145,134 @@ def test_learned_series_shorter_than_horizon_falls_back():
     assert abs(inputs.slots[0].ac_wh - 300.0) < 1e-9
     for got, expected in zip(inputs.slots[1:], baseline.slots[1:], strict=True):
         assert got.ac_wh == expected.ac_wh
+
+
+# ---------------------------------------------------------------------------
+# F-PREDRAIN F1: hourly PV forecast mapping (build_slots pv_hourly)
+# ---------------------------------------------------------------------------
+
+
+def test_pv_hourly_none_and_empty_are_bit_identical_to_reference():
+    """T7 identity anchor: no map / an empty map reproduce the two-window PV
+    slot-for-slot (bit-identical float equality), including the partial slot 0."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 12, 30)  # partial first slot
+    reference = build_slots(config, now, 50.0, [8.0, 8.0, 8.0])
+    with_none = build_slots(config, now, 50.0, [8.0, 8.0, 8.0], pv_hourly=None)
+    with_empty = build_slots(config, now, 50.0, [8.0, 8.0, 8.0], pv_hourly={})
+    for r, n, e in zip(
+        reference.slots, with_none.slots, with_empty.slots, strict=True
+    ):
+        assert r.pv_wh == n.pv_wh == e.pv_wh
+
+
+def test_pv_hourly_covered_hours_take_bucket_value():
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)  # full day from midnight
+    pv_hourly = {
+        datetime(2026, 7, 4, 10, 0): 1000.0,
+        datetime(2026, 7, 4, 11, 0): 1500.0,
+        datetime(2026, 7, 4, 12, 0): 1200.0,
+    }
+    inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    by_hour = {s.hour_of_day: s.pv_wh for s in inputs.slots}
+    assert by_hour[10] == 1000.0
+    assert by_hour[11] == 1500.0
+    assert by_hour[12] == 1200.0
+
+
+def test_pv_hourly_slot0_partial_gets_prorated_share():
+    """Slot 0 covers only part of its hour -> it gets that fraction of the hour's
+    bucket (docs/F-PREDRAIN.md F1)."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 10, 30)  # slot 0 = 10:30..11:00 (0.5 h of hour 10)
+    pv_hourly = {
+        datetime(2026, 7, 4, 10, 0): 1000.0,
+        datetime(2026, 7, 4, 11, 0): 800.0,
+    }
+    inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    assert abs(inputs.slots[0].duration - 0.5) < 1e-9
+    assert abs(inputs.slots[0].pv_wh - 500.0) < 1e-9  # 1000 * 0.5
+    assert inputs.slots[1].hour_of_day == 11
+    assert abs(inputs.slots[1].pv_wh - 800.0) < 1e-9  # full hour, no proration
+
+
+def test_pv_hourly_gap_spreads_residual_over_uncovered_hours():
+    """Uncovered hours share the day's residual (daily total minus covered
+    buckets) via the two-window weights; night hours carry no weight."""
+    config = SystemConfig()  # morning 7-13 ratio 0.8, afternoon 13-18, peak 3200
+    now = datetime(2026, 7, 4, 0, 0)
+    daily_kwh = 8.0
+    pv_hourly = {
+        datetime(2026, 7, 4, 7, 0): 1000.0,
+        datetime(2026, 7, 4, 8, 0): 1000.0,
+        datetime(2026, 7, 4, 9, 0): 1000.0,
+    }
+    inputs = build_slots(config, now, 50.0, [daily_kwh], pv_hourly=pv_hourly)
+    by_hour = {s.hour_of_day: s.pv_wh for s in inputs.slots}
+    # Covered hours keep their bucket value exactly.
+    assert by_hour[7] == 1000.0 and by_hour[8] == 1000.0 and by_hour[9] == 1000.0
+    # Residual (8000 - 3000) lands on the uncovered PV hours only.
+    assert by_hour[10] > 0.0  # uncovered morning hour
+    assert by_hour[13] > 0.0  # uncovered afternoon hour
+    assert by_hour[10] > by_hour[13]  # morning weight > afternoon weight
+    assert by_hour[2] == 0.0  # night hour has no two-window weight
+    total = sum(s.pv_wh for s in inputs.slots)
+    assert abs(total - daily_kwh * 1000.0) < 1.0  # energy conserved
+
+
+def test_pv_hourly_residual_dropped_when_only_night_uncovered():
+    """When every PV-bearing hour is covered, the leftover residual has no
+    uncovered daytime hour to land on and is dropped (not smeared into night)."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    pv_hourly = {datetime(2026, 7, 4, h, 0): 500.0 for h in range(7, 18)}  # 5500 Wh
+    inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    total = sum(s.pv_wh for s in inputs.slots)
+    assert abs(total - 5500.0) < 1e-6
+
+
+def test_pv_hourly_peak_cap_applies_to_covered_hour():
+    config = SystemConfig()  # peak 3200 W
+    now = datetime(2026, 7, 4, 0, 0)
+    pv_hourly = {datetime(2026, 7, 4, 12, 0): 5000.0}  # above the cap
+    inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    by_hour = {s.hour_of_day: s.pv_wh for s in inputs.slots}
+    assert by_hour[12] == config.pv.peak_power_w
+
+
+def test_pv_hourly_peak_cap_on_partial_slot_is_power_based():
+    """The cap limits POWER, so a partial slot is capped at peak * duration."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 12, 30)  # 0.5 h of hour 12
+    pv_hourly = {datetime(2026, 7, 4, 12, 0): 5000.0}
+    inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    assert abs(inputs.slots[0].duration - 0.5) < 1e-9
+    assert abs(inputs.slots[0].pv_wh - config.pv.peak_power_w * 0.5) < 1e-9
+
+
+def test_pv_hourly_is_per_day_disjoint():
+    """A multi-day map maps each day from its own buckets; day 1 covered hours
+    are untouched by day 0's residual."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    pv_hourly = {
+        datetime(2026, 7, 4, 11, 0): 900.0,  # day 0
+        datetime(2026, 7, 5, 11, 0): 700.0,  # day 1
+    }
+    inputs = build_slots(config, now, 50.0, [8.0, 8.0], pv_hourly=pv_hourly)
+    day0 = {s.hour_of_day: s.pv_wh for s in inputs.slots if s.start.day == 4}
+    day1 = {s.hour_of_day: s.pv_wh for s in inputs.slots if s.start.day == 5}
+    assert day0[11] == 900.0
+    assert day1[11] == 700.0
+
+
+def test_pv_hourly_does_not_change_ac_or_dc_loads():
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    pv_hourly = {datetime(2026, 7, 4, 12, 0): 1000.0}
+    with_h = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    without = build_slots(config, now, 50.0, [8.0])
+    for a, b in zip(with_h.slots, without.slots, strict=True):
+        assert a.ac_wh == b.ac_wh
+        assert a.dc_wh == b.dc_wh

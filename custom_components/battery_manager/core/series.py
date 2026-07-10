@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
+from .forecast_hours import coverage_and_residual
 from .model import ApplianceRun, HourSlot, PlanInputs, SurplusLoadState, SystemConfig
 
 
@@ -77,6 +78,101 @@ def _series_value(series: tuple[float | None, ...] | None, index: int) -> float 
     return series[index]
 
 
+def _pv_wh_series(
+    config: SystemConfig,
+    now: datetime,
+    daily_forecasts_kwh: list[float],
+    starts: tuple[datetime, ...],
+    pv_hourly: dict[datetime, float] | None,
+) -> list[float]:
+    """Per-slot PV Wh for the whole horizon.
+
+    With a non-empty `pv_hourly` map the hourly forecast drives each slot
+    (docs/F-PREDRAIN.md F1); otherwise the legacy two-window synthesis is used
+    and the result is bit-identical to the pre-F1 code.
+    """
+    if pv_hourly:
+        return _pv_wh_hourly(config, now, daily_forecasts_kwh, starts, pv_hourly)
+    result: list[float] = []
+    for index, slot_start in enumerate(starts):
+        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
+        day_offset = (slot_start.date() - now.date()).days
+        daily_kwh = (
+            daily_forecasts_kwh[day_offset]
+            if 0 <= day_offset < len(daily_forecasts_kwh)
+            else 0.0
+        )
+        pv_w = min(
+            daily_kwh * 1000.0 * pv_hour_share(config.pv, slot_start.hour),
+            config.pv.peak_power_w,
+        )
+        result.append(pv_w * duration)
+    return result
+
+
+def _pv_wh_hourly(
+    config: SystemConfig,
+    now: datetime,
+    daily_forecasts_kwh: list[float],
+    starts: tuple[datetime, ...],
+    pv_hourly: dict[datetime, float],
+) -> list[float]:
+    """Map an hourly PV forecast onto the slot grid (docs/F-PREDRAIN.md F1).
+
+    A slot whose hour is present in the map takes that hour's Wh, prorated by the
+    slot duration (the partial first slot gets its share of the hour). Hours a day
+    does not cover share that day's RESIDUAL (daily total minus the day's covered
+    buckets) via the two-window weights, renormalised over the day's uncovered
+    slots only and clamped at 0. The per-slot peak-power cap then applies exactly
+    as in the two-window path.
+    """
+    peak = config.pv.peak_power_w
+    # Per-day residual from the daily forecast state vs. the day's covered buckets.
+    residual_by_day: dict[date, float] = {}
+    for day_offset, daily_kwh in enumerate(daily_forecasts_kwh):
+        day = now.date() + timedelta(days=day_offset)
+        _covered_wh, residual_wh = coverage_and_residual(
+            (wh for key, wh in pv_hourly.items() if key.date() == day),
+            daily_kwh * 1000.0,
+        )
+        residual_by_day[day] = residual_wh
+
+    # Two-window weight (share x duration) of every UNCOVERED slot, per day.
+    covered: list[bool] = []
+    weights: list[float] = []
+    weight_sum_by_day: dict[date, float] = {}
+    for index, slot_start in enumerate(starts):
+        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
+        if slot_start.replace(minute=0, second=0, microsecond=0) in pv_hourly:
+            covered.append(True)
+            weights.append(0.0)
+            continue
+        covered.append(False)
+        weight = pv_hour_share(config.pv, slot_start.hour) * duration
+        if weight < 0.0:
+            weight = 0.0
+        weights.append(weight)
+        day = slot_start.date()
+        weight_sum_by_day[day] = weight_sum_by_day.get(day, 0.0) + weight
+
+    result: list[float] = []
+    for index, slot_start in enumerate(starts):
+        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
+        cap = peak * duration
+        if covered[index]:
+            hour_key = slot_start.replace(minute=0, second=0, microsecond=0)
+            pv_wh = pv_hourly[hour_key] * duration
+        else:
+            day = slot_start.date()
+            weight_sum = weight_sum_by_day.get(day, 0.0)
+            if weight_sum > 0.0:
+                pv_wh = residual_by_day.get(day, 0.0) * weights[index] / weight_sum
+            else:
+                pv_wh = 0.0
+        result.append(min(pv_wh, cap))
+    return result
+
+
 def build_slots(
     config: SystemConfig,
     now: datetime,
@@ -86,6 +182,7 @@ def build_slots(
     load_states: tuple[SurplusLoadState, ...] = (),
     ac_load_w: tuple[float | None, ...] | None = None,
     dc_load_w: tuple[float | None, ...] | None = None,
+    pv_hourly: dict[datetime, float] | None = None,
 ) -> PlanInputs:
     """Assemble PlanInputs from daily forecasts and load profiles.
 
@@ -96,24 +193,20 @@ def build_slots(
     (docs/CONSUMPTION_FORECAST.md D-C5): mean Watt per slot, addressed by
     slot index. A None value (or a series shorter than the horizon) falls
     back to the static profile for that slot only.
+
+    `pv_hourly` is an optional naive-local hour-start -> Wh map (docs/F-PREDRAIN.md
+    F1). When non-empty it drives the per-slot PV instead of the two-window model;
+    None or an empty map keeps the two-window synthesis bit-identical to before.
     """
     slots: list[HourSlot] = []
 
-    for index, slot_start in enumerate(slot_starts(now, len(daily_forecasts_kwh))):
+    starts = slot_starts(now, len(daily_forecasts_kwh))
+    pv_wh_series = _pv_wh_series(config, now, daily_forecasts_kwh, starts, pv_hourly)
+
+    for index, slot_start in enumerate(starts):
         duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
 
         hour_of_day = slot_start.hour
-        day_offset = (slot_start.date() - now.date()).days
-        daily_kwh = (
-            daily_forecasts_kwh[day_offset]
-            if 0 <= day_offset < len(daily_forecasts_kwh)
-            else 0.0
-        )
-
-        pv_w = min(
-            daily_kwh * 1000.0 * pv_hour_share(config.pv, hour_of_day),
-            config.pv.peak_power_w,
-        )
         ac_override = _series_value(ac_load_w, index)
         dc_override = _series_value(dc_load_w, index)
         ac_w = (
@@ -133,7 +226,7 @@ def build_slots(
                 start=slot_start,
                 duration=duration,
                 hour_of_day=hour_of_day,
-                pv_wh=pv_w * duration,
+                pv_wh=pv_wh_series[index],
                 ac_wh=ac_w * duration,
                 dc_wh=dc_w * duration,
             )
