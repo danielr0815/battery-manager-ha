@@ -313,6 +313,92 @@ async def test_appliance_detection_hysteresis(hass):
     assert coordinator._appliance_is_running(data_no_hys, latched=True) is False
 
 
+# ---------------------------------------------------------------------------
+# F-PREDRAIN F1 (WP1): hourly PV forecast attribute reading
+# ---------------------------------------------------------------------------
+
+
+async def test_coordinator_reads_wh_period_hourly_forecast(hass):
+    """The coordinator reads each PV entity's hourly `wh_period` attribute, parses
+    naive keys as local and aware/UTC keys with conversion, sums sub-hour buckets,
+    skips malformed entries, and labels the per-day PV source."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc",
+        "55",
+        {"unit_of_measurement": "%", "device_class": "battery"},
+    )
+    # Open-Meteo shape: naive-local hourly keys, plus a malformed key and a
+    # malformed value that must both be skipped.
+    hass.states.async_set(
+        "sensor.pv_today",
+        "10.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-07-10 10:00:00": 1000.0,
+                "2026-07-10 11:00:00": 1500.0,
+                "not a datetime": 42.0,
+                "2026-07-10 12:00:00": "bad-value",
+            },
+        },
+    )
+    # Balcony-forecast shape: aware UTC 15-min buckets. UTC 08:00 = local 10:00
+    # (CEST, +2 h); the four quarter-hours must sum into that one local hour.
+    hass.states.async_set(
+        "sensor.pv_tomorrow",
+        "12.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-07-11T08:00:00+00:00": 100.0,
+                "2026-07-11T08:15:00+00:00": 150.0,
+                "2026-07-11T08:30:00+00:00": 200.0,
+                "2026-07-11T08:45:00+00:00": 50.0,
+            },
+        },
+    )
+    # No wh_period -> this day stays two-window.
+    hass.states.async_set(
+        "sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"}
+    )
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator.last_update_success  # the map is plumbed into build_slots
+
+    pv_map = coordinator._get_pv_hourly(dt_util.now())
+    assert pv_map is not None
+    # Naive-local keys parsed as local.
+    assert pv_map[datetime(2026, 7, 10, 10, 0)] == 1000.0
+    assert pv_map[datetime(2026, 7, 10, 11, 0)] == 1500.0
+    # Malformed key and malformed value are both skipped.
+    assert datetime(2026, 7, 10, 12, 0) not in pv_map
+    # Aware UTC keys converted to local (+2 h); the 15-min buckets are summed.
+    assert pv_map[datetime(2026, 7, 11, 10, 0)] == 500.0
+    # All keys are naive (tzinfo dropped).
+    assert all(key.tzinfo is None for key in pv_map)
+
+    # Per-day source labelling for a horizon anchored on the fixture day.
+    fixture_now = datetime(2026, 7, 10, 9, 0, tzinfo=dt_util.get_default_time_zone())
+    sources = coordinator._pv_day_sources(fixture_now, 3, pv_map)
+    assert sources == {
+        "2026-07-10": "hourly",
+        "2026-07-11": "hourly",
+        "2026-07-12": "two_window",
+    }
+
+
 async def test_appliance_stale_start_reanchors_after_restart(hass):
     """H1 restart edge: a persisted start whose run already fully elapsed (run
     finished during downtime while a NEW run is active) is re-anchored to now on

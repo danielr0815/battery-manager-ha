@@ -112,6 +112,7 @@ from .core import (
     SurplusLoad,
     SurplusLoadState,
     SystemConfig,
+    aggregate_hours,
     build_slots,
     plan,
     profile_value,
@@ -122,6 +123,12 @@ from .history_profile import ProfileLearner
 _LOGGER = logging.getLogger(__name__)
 
 _POWER_EMA_ALPHA = 0.3
+
+# PV forecast ingestion mode (docs/F-PREDRAIN.md F1). WP3 will surface this as a
+# config option; for now it is a fixed internal default. "auto" uses the hourly
+# wh_period attributes when present and falls back to the two-window synthesis;
+# "daily" ignores the attributes entirely (golden-anchor behaviour).
+PV_FORECAST_MODE_DEFAULT = "auto"
 
 
 def _series_source(series: tuple[float | None, ...] | None, index: int) -> str:
@@ -167,6 +174,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_soc_update: datetime | None = None
         self._last_valid_forecasts: list[float] | None = None
         self._last_forecast_update: datetime | None = None
+        # Hourly PV forecast (docs/F-PREDRAIN.md F1): merged naive-local hour -> Wh
+        # map, cached with the same stale-fallback semantics as the daily state.
+        self._pv_forecast_mode = PV_FORECAST_MODE_DEFAULT
+        self._last_valid_pv_hourly: dict[datetime, float] | None = None
+        self._last_pv_hourly_update: datetime | None = None
+        # Per-day PV source label ("hourly"/"two_window") for WP4 sensor exposure.
+        self._pv_source_by_day: dict[str, str] = {}
 
         # Hysteresis / switching state (docs/ALGORITHM.md D-A2)
         self._displayed_threshold: float | None = None
@@ -632,6 +646,90 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             return self._last_valid_forecasts
         return None
+
+    def _read_wh_period(self, entity_id: str) -> dict[datetime, float]:
+        """Parse an entity's hourly ``wh_period`` attribute into a naive-local
+        hour -> Wh map (docs/F-PREDRAIN.md F1).
+
+        Keys are parsed with dt_util.parse_datetime: naive keys are treated as
+        LOCAL, aware keys are converted to local and made naive. 15/30-min buckets
+        are summed per hour by aggregate_hours. Malformed keys/values are skipped.
+        """
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return {}
+        raw = state.attributes.get("wh_period")
+        if not isinstance(raw, dict):
+            return {}
+        entries: list[tuple[datetime, float]] = []
+        skipped = 0
+        for key, value in raw.items():
+            ts = dt_util.parse_datetime(str(key))
+            if ts is None:
+                skipped += 1
+                continue
+            if ts.tzinfo is not None:
+                ts = dt_util.as_local(ts).replace(tzinfo=None)
+            try:
+                wh = float(value)
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            entries.append((ts, wh))
+        if skipped:
+            _LOGGER.debug(
+                "battery_manager: skipped %d malformed wh_period entries on %s",
+                skipped,
+                entity_id,
+            )
+        return aggregate_hours(entries)
+
+    def _get_pv_hourly(self, now: datetime) -> dict[datetime, float] | None:
+        """Merged naive-local hourly PV map from the three forecast entities.
+
+        Mirrors _get_forecasts' stale-cache fallback: a good read is cached and,
+        when the entities go unavailable, the last good map is reused within the
+        same max-age window. In "daily" mode the hourly attributes are ignored
+        (None) so build_slots falls back to the two-window synthesis.
+        """
+        if self._pv_forecast_mode == "daily":
+            return None
+        cfg = self.raw_config
+        merged: dict[datetime, float] = {}
+        for key in (
+            CONF_PV_FORECAST_TODAY,
+            CONF_PV_FORECAST_TOMORROW,
+            CONF_PV_FORECAST_DAY_AFTER,
+        ):
+            # Day-disjoint entities: last-writer-wins update is a plain union.
+            merged.update(self._read_wh_period(cfg[key]))
+        if merged:
+            self._last_valid_pv_hourly = merged
+            self._last_pv_hourly_update = now
+            return merged
+        if (
+            self._last_valid_pv_hourly is not None
+            and self._last_pv_hourly_update is not None
+            and now - self._last_pv_hourly_update
+            <= timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
+        ):
+            return self._last_valid_pv_hourly
+        return None
+
+    def _pv_day_sources(
+        self, now: datetime, num_days: int, pv_hourly: dict[datetime, float] | None
+    ) -> dict[str, str]:
+        """Per-day PV source label for later sensor exposure (docs/F-PREDRAIN.md
+        F1 diagnostics). A day is "hourly" when the merged map carries at least
+        one bucket for that calendar day, else "two_window"."""
+        covered_days = {key.date() for key in pv_hourly} if pv_hourly else set()
+        sources: dict[str, str] = {}
+        for offset in range(num_days):
+            day = now.date() + timedelta(days=offset)
+            sources[day.isoformat()] = (
+                "hourly" if day in covered_days else "two_window"
+            )
+        return sources
 
     def _update_power_warnings(self, result, now: datetime) -> None:
         """Per-load power-deviation warning (operator requirement F-L7).
@@ -1210,6 +1308,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._learned_series(now, config, len(forecasts))
         )
 
+        # Hourly PV forecast (docs/F-PREDRAIN.md F1): None/empty -> two-window.
+        pv_hourly = self._get_pv_hourly(now)
+        self._pv_source_by_day = self._pv_day_sources(now, len(forecasts), pv_hourly)
+
         inputs = build_slots(
             config,
             now.replace(tzinfo=None),
@@ -1219,6 +1321,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             load_states=load_states,
             ac_load_w=ac_series,
             dc_load_w=dc_series,
+            pv_hourly=pv_hourly,
         )
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
         # soon as any learned quantiles exist. Only soc_buffer_percent is

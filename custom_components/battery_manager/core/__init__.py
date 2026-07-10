@@ -5,6 +5,7 @@ Everything in this package is pure Python without Home Assistant imports:
 frozen dataclasses in, frozen dataclasses out, no shared mutable state.
 """
 
+from .forecast_hours import aggregate_hours, coverage_and_residual
 from .load_profile import (
     DAY_TYPE_ABSENCE,
     DAY_TYPE_WEEKDAY,
@@ -60,9 +61,11 @@ __all__ = [
     "SurplusLoadState",
     "SystemConfig",
     "aggregate_bins",
+    "aggregate_hours",
     "balance_day",
     "build_slots",
     "clean_day",
+    "coverage_and_residual",
     "day_type",
     "on_fractions",
     "plan",
