@@ -296,8 +296,12 @@ async def test_appliance_detection_hysteresis(hass):
     hass.states.async_set(dw, "50")
     assert coordinator._appliance_is_running(data, latched=False) is True  # start >= 20
     hass.states.async_set(dw, "10")  # dip: below on (20), above off (5)
-    assert coordinator._appliance_is_running(data, latched=False) is False  # would not start
-    assert coordinator._appliance_is_running(data, latched=True) is True  # stays latched
+    assert (
+        coordinator._appliance_is_running(data, latched=False) is False
+    )  # would not start
+    assert (
+        coordinator._appliance_is_running(data, latched=True) is True
+    )  # stays latched
     hass.states.async_set(dw, "3")  # below off threshold
     assert coordinator._appliance_is_running(data, latched=True) is False  # run ends
     hass.states.async_set(dw, "unavailable")  # sensor dropout
@@ -368,9 +372,7 @@ async def test_coordinator_reads_wh_period_hourly_forecast(hass):
         },
     )
     # No wh_period -> this day stays two-window.
-    hass.states.async_set(
-        "sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"}
-    )
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -417,11 +419,13 @@ async def test_pv_hourly_per_entity_cache_survives_one_unavailable(hass):
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
     hass.states.async_set(
-        "sensor.pv_today", "10.0",
+        "sensor.pv_today",
+        "10.0",
         {"unit_of_measurement": "kWh", "wh_period": {"2026-07-10 10:00:00": 1000.0}},
     )
     hass.states.async_set(
-        "sensor.pv_tomorrow", "12.0",
+        "sensor.pv_tomorrow",
+        "12.0",
         {"unit_of_measurement": "kWh", "wh_period": {"2026-07-11 11:00:00": 700.0}},
     )
     hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
@@ -457,13 +461,17 @@ async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
     hass.states.async_set(
-        "sensor.pv_today", "10.0",
-        {"unit_of_measurement": "kWh", "wh_period": {
-            "2026-07-10 10:00:00": float("nan"),
-            "2026-07-10 11:00:00": float("inf"),
-            "2026-07-10 12:00:00": -500.0,
-            "2026-07-10 13:00:00": 800.0,
-        }},
+        "sensor.pv_today",
+        "10.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-07-10 10:00:00": float("nan"),
+                "2026-07-10 11:00:00": float("inf"),
+                "2026-07-10 12:00:00": -500.0,
+                "2026-07-10 13:00:00": 800.0,
+            },
+        },
     )
     hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
     hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
@@ -497,7 +505,8 @@ async def test_hourly_mode_warns_once_when_no_wh_period(hass, caplog):
 
     def _warned():
         return [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if "hourly PV mode active but no wh_period" in r.getMessage()
         ]
 
@@ -526,8 +535,15 @@ async def test_night_predrain_logs_only_on_change(hass, caplog):
     load = SurplusLoad(load_id="deh", name="Entfeuchter", nominal_power_w=400.0)
     config = SystemConfig(loads=(load,))
     slots = tuple(
-        HourSlot(index=i, start=datetime(2026, 7, 10, 3 + i, 0), duration=1.0,
-                 hour_of_day=3 + i, pv_wh=0.0, ac_wh=0.0, dc_wh=0.0)
+        HourSlot(
+            index=i,
+            start=datetime(2026, 7, 10, 3 + i, 0),
+            duration=1.0,
+            hour_of_day=3 + i,
+            pv_wh=0.0,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
         for i in range(3)
     )
     inputs = SimpleNamespace(slots=slots)
@@ -535,8 +551,13 @@ async def test_night_predrain_logs_only_on_change(hass, caplog):
     def result(start):
         return SimpleNamespace(
             load_plans=(
-                LoadPlan(load_id="deh", schedule=(True,) * 3, planned_energy_wh=400.0,
-                         allocations=((start, 1, 2, 400.0),), run_hours=(1.0,) * 3),
+                LoadPlan(
+                    load_id="deh",
+                    schedule=(True,) * 3,
+                    planned_energy_wh=400.0,
+                    allocations=((start, 1, 2, 400.0),),
+                    run_hours=(1.0,) * 3,
+                ),
             ),
             pv_window_ends={},  # no PV window -> every pass-2 slot counts as night
             import_trade_used_wh=10.0,
@@ -576,7 +597,10 @@ async def test_appliance_stale_start_reanchors_after_restart(hass):
     _set_input_states(hass)
     hass.states.async_set("sensor.dw_power", "500")  # appliance running
     entry = MockConfigEntry(
-        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2,
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
         subentries_data=[
             ConfigSubentryData(
                 data={
@@ -585,7 +609,9 @@ async def test_appliance_stale_start_reanchors_after_restart(hass):
                     CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
                     CONF_APPLIANCE_RUN_DURATION_H: 2.0,
                 },
-                subentry_type=SUBENTRY_TYPE_APPLIANCE, title="Dishwasher", unique_id=None,
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Dishwasher",
+                unique_id=None,
             )
         ],
     )

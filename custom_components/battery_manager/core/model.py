@@ -383,7 +383,11 @@ class LoadPlan:
             if self.run_hours and idx < len(self.run_hours):
                 rh = self.run_hours[idx]
                 total += rh
-                if durations is not None and idx < len(durations) and rh < durations[idx] - 1e-9:
+                if (
+                    durations is not None
+                    and idx < len(durations)
+                    and rh < durations[idx] - 1e-9
+                ):
                     break  # run ends inside this slot -> real-time block ends
             else:
                 total += 1.0

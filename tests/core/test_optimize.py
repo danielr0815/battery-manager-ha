@@ -712,8 +712,7 @@ def test_run_hours_and_schedule_stay_consistent():
     for lp in result.load_plans:
         assert len(lp.run_hours) == len(lp.schedule)
         assert all(
-            bool(s) == (h > 0)
-            for s, h in zip(lp.schedule, lp.run_hours, strict=True)
+            bool(s) == (h > 0) for s, h in zip(lp.schedule, lp.run_hours, strict=True)
         )
 
 
@@ -743,7 +742,9 @@ def test_active_run_hours_sums_contiguous_block_from_slot0():
         run_hours=(0.5, 1.0, 0.0, 1.0),
     )
     assert lp.active_run_hours() == 1.5  # 0.5 + 1.0, stops at the gap
-    off = LoadPlan(load_id="x", schedule=(False,), planned_energy_wh=0.0, run_hours=(0.0,))
+    off = LoadPlan(
+        load_id="x", schedule=(False,), planned_energy_wh=0.0, run_hours=(0.0,)
+    )
     assert off.active_run_hours() == 0.0
     # legacy fallback: run_hours empty -> count whole scheduled slots
     legacy = LoadPlan(load_id="x", schedule=(True, True, False), planned_energy_wh=0.0)
@@ -758,20 +759,26 @@ def test_active_run_hours_stops_at_partial_slot_with_durations():
     # 30-min cap in a full hour, with the NEXT hour separately scheduled: the
     # real-time run is only 0.5 h (gap after), not 0.5+1.0=1.5 h.
     lp = LoadPlan(
-        load_id="x", schedule=(True, True, False), planned_energy_wh=0.0,
+        load_id="x",
+        schedule=(True, True, False),
+        planned_energy_wh=0.0,
         run_hours=(0.5, 1.0, 0.0),
     )
     assert lp.active_run_hours((1.0, 1.0, 1.0)) == 0.5
     assert lp.active_run_hours() == 1.5  # legacy no-durations path unchanged
     # a FULL slot 0 continues into slot 1 (partial cap there ends the block)
     lp2 = LoadPlan(
-        load_id="x", schedule=(True, True, False), planned_energy_wh=0.0,
+        load_id="x",
+        schedule=(True, True, False),
+        planned_energy_wh=0.0,
         run_hours=(1.0, 0.5, 0.0),
     )
     assert lp2.active_run_hours((1.0, 1.0, 1.0)) == 1.5
     # a PARTIAL first slot fully filled (0.5 == slot0 0.5 h) continues
     lp3 = LoadPlan(
-        load_id="x", schedule=(True, True, False), planned_energy_wh=0.0,
+        load_id="x",
+        schedule=(True, True, False),
+        planned_energy_wh=0.0,
         run_hours=(0.5, 1.0, 0.0),
     )
     assert lp3.active_run_hours((0.5, 1.0, 1.0)) == 1.5
@@ -818,8 +825,11 @@ def test_pass2_residual_books_latest_of_two_feasible_slots():
     quantum books the LATEST feasible pre-window slot (hour 10), even though an
     earlier slot (hour 9) is also clip-refilled feasible for a larger remainder."""
     short_peak = PVParams(
-        peak_power_w=3200.0, morning_start_hour=11, morning_end_hour=13,
-        afternoon_end_hour=14, morning_ratio=0.7,
+        peak_power_w=3200.0,
+        morning_start_hour=11,
+        morning_end_hour=13,
+        afternoon_end_hour=14,
+        morning_ratio=0.7,
     )
     config = SystemConfig(pv=short_peak, loads=(FOSSIBOT_1,))
     now = datetime(2026, 7, 4, 20, 0)
@@ -829,8 +839,7 @@ def test_pass2_residual_books_latest_of_two_feasible_slots():
         result, inputs = make_plan(config, now, 90.0, [0.0, 8.0], load_states=states)
         lp = result.load_plans[0]
         hours = sorted(
-            inputs.slots[s].hour_of_day
-            for (s, _c, p, _wh) in lp.allocations if p == 2
+            inputs.slots[s].hour_of_day for (s, _c, p, _wh) in lp.allocations if p == 2
         )
         return lp, inputs, hours
 
@@ -838,7 +847,8 @@ def test_pass2_residual_books_latest_of_two_feasible_slots():
     lp, inputs, hours = pass2(47.5)
     assert hours == [10], f"expected a single pass-2 run at hour 10, got {hours}"
     slot10 = next(
-        i for i, on in enumerate(lp.schedule)
+        i
+        for i, on in enumerate(lp.schedule)
         if on and inputs.slots[i].hour_of_day == 10
     )
     assert abs(lp.run_hours[slot10] - 0.5) < 1e-9  # sub-hour quantum (R1)
@@ -856,7 +866,9 @@ def test_pass1_residual_capture_in_direct_surplus_hour():
     config = SystemConfig(loads=(FOSSIBOT_B,))
     now = datetime(2026, 7, 4, 11, 0)
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
-    result, inputs = make_plan(config, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
+    result, inputs = make_plan(
+        config, now, 93.0, [12.0, 12.0, 12.0], load_states=states
+    )
     lp = result.load_plans[0]
     assert result.grid_export_kwh > 0.128  # a real direct surplus to capture
     assert lp.active_now  # booked now, in the direct-surplus hour
@@ -877,8 +889,9 @@ FB_STATE = SurplusLoadState(load_id="fossibot_b", soc_percent=46.4)  # 872 Wh to
 DEHUMID_STATE = SurplusLoadState(load_id="dehumidifier")
 
 
-def _predrain_config(ratio=0.1, alpha=0.5, beta=1.2, cutoff=200.0, end_hour=None,
-                     loads=(DEHUMIDIFIER,)):
+def _predrain_config(
+    ratio=0.1, alpha=0.5, beta=1.2, cutoff=200.0, end_hour=None, loads=(DEHUMIDIFIER,)
+):
     control = replace(
         ControlParams(),
         import_trade_ratio=ratio,
@@ -954,9 +967,12 @@ def test_t4_alpha_stress_gate_protects_inverter_reserve():
     now = datetime(2026, 7, 3, 21, 0)
 
     def run(alpha):
-        cfg = _predrain_config(ratio=0.1, alpha=alpha, beta=1.0,
-                               loads=(FOSSIBOT_B, DEHUMIDIFIER))
-        return make_plan(cfg, now, 90.0, [0.0, 15.0], load_states=(FB_STATE, DEHUMID_STATE))
+        cfg = _predrain_config(
+            ratio=0.1, alpha=alpha, beta=1.0, loads=(FOSSIBOT_B, DEHUMIDIFIER)
+        )
+        return make_plan(
+            cfg, now, 90.0, [0.0, 15.0], load_states=(FB_STATE, DEHUMID_STATE)
+        )
 
     trusting, inputs = run(1.0)
     stressed, _ = run(0.5)
@@ -984,10 +1000,14 @@ def test_t5_predrain_hours_hug_the_window_latest_first():
     predawn = sorted(
         inputs.slots[i].hour_of_day
         for i, on in enumerate(lp.schedule)
-        if on and inputs.slots[i].start.date() == day1 and inputs.slots[i].hour_of_day < 7
+        if on
+        and inputs.slots[i].start.date() == day1
+        and inputs.slots[i].hour_of_day < 7
     )
     assert predawn, "a short pre-dawn window must force predrain hours"
-    assert predawn == list(range(min(predawn), max(predawn) + 1)), "block not contiguous"
+    assert predawn == list(range(min(predawn), max(predawn) + 1)), (
+        "block not contiguous"
+    )
     assert max(predawn) == 6  # hugs the 07:00 production start
 
 
@@ -1081,7 +1101,9 @@ def test_t4_windowed_gate_scopes_stress_to_recovery_window():
     first_night = sorted(
         inputs.slots[i].hour_of_day
         for i, on in enumerate(lp.schedule)
-        if on and inputs.slots[i].start.date() == day1 and inputs.slots[i].hour_of_day < 7
+        if on
+        and inputs.slots[i].start.date() == day1
+        and inputs.slots[i].hour_of_day < 7
     )
     assert first_night, "windowed gate must still book a first-night pre-drain"
 
@@ -1118,35 +1140,50 @@ def test_t4_windowed_gate_relief_when_base_window_already_below_floor():
     already pinned at the hard floor by a heavy DC tail, so a strict floor test
     would wrongly veto the (fully refilled, export-covered) pre-drain."""
     deh = SurplusLoad(
-        load_id="deh", name="E", nominal_power_w=400.0,
-        battery_tolerance=0.15, min_runtime_min=60,
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=60,
     )
     alpha = 0.5
     control = replace(
-        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=alpha,
-        upper_pv_reserve=1.0, strong_pv_cutoff_w=200.0,
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=alpha,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
     )
     config = SystemConfig(
-        control=control, loads=(deh,),
-        ac_profile=LoadProfile(0.0, 0.0), dc_profile=LoadProfile(0.0, 0.0),
+        control=control,
+        loads=(deh,),
+        ac_profile=LoadProfile(0.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
     )
     start = datetime(2026, 7, 4, 8, 0)
 
     def slot(i, hour, pv, ac=0.0, dc=0.0):
         return HourSlot(
-            index=i, start=start + timedelta(hours=i), duration=1.0,
-            hour_of_day=hour, pv_wh=pv, ac_wh=ac, dc_wh=dc,
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
         )
 
     slots = (
-        slot(0, 8, 300, ac=500),   # little export -> pass 1 skips; pre-drain here
-        slot(1, 9, 5000, ac=50),   # spike -> refill to ceiling + big export
+        slot(0, 8, 300, ac=500),  # little export -> pass 1 skips; pre-drain here
+        slot(1, 9, 5000, ac=50),  # spike -> refill to ceiling + big export
         *(slot(2 + k, 10 + k, 300, dc=1100) for k in range(5)),  # heavy DC tail
         slot(7, 15, 40, dc=80),
         slot(8, 16, 20, dc=80),
     )
     inputs = PlanInputs(
-        now=start, start_soc_percent=70.0, slots=slots,
+        now=start,
+        start_soc_percent=70.0,
+        slots=slots,
         load_states=(SurplusLoadState(load_id="deh"),),
     )
     n = len(inputs.slots)
@@ -1163,11 +1200,13 @@ def test_t4_windowed_gate_relief_when_base_window_already_below_floor():
     floor = control.inverter_min_soc_percent + control.soc_buffer_percent  # 25
     base_wmin = _windowed_min_soc(
         simulate(config, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=scale_vec),
-        0, recovery,
+        0,
+        recovery,
     )
     trial_wmin = _windowed_min_soc(
         simulate(config, inputs, threshold, extra_ac_wh=extra, pv_scale=scale_vec),
-        0, recovery,
+        0,
+        recovery,
     )
     # Premise: the bet window already breaks the floor WITHOUT the load ...
     assert base_wmin < floor
@@ -1193,12 +1232,18 @@ def test_fix1_appliance_windows_survive_predrain_booking():
     pv_windows date->tuple dict the diagnostic builds internally."""
     now = datetime(2026, 7, 3, 21, 0)
     dishwasher = Appliance(
-        appliance_id="dishwasher", name="Dishwasher",
-        run_energy_wh=600.0, run_duration_h=2.0, opportunistic_start=True,
+        appliance_id="dishwasher",
+        name="Dishwasher",
+        run_energy_wh=600.0,
+        run_duration_h=2.0,
+        opportunistic_start=True,
     )
     control = replace(
-        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=0.5,
-        upper_pv_reserve=1.0, strong_pv_cutoff_w=200.0,
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=0.5,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
     )
     cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), appliances=(dishwasher,))
     result, _inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
@@ -1225,13 +1270,21 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
     the rest; the buggy gate booked strictly fewer slots."""
     now = datetime(2026, 7, 3, 21, 0)
     fb = SurplusLoad(
-        load_id="fb", name="B", nominal_power_w=300.0, battery_tolerance=0.05,
-        min_runtime_min=30, energy_limited=True, capacity_wh=6000.0,
+        load_id="fb",
+        name="B",
+        nominal_power_w=300.0,
+        battery_tolerance=0.05,
+        min_runtime_min=30,
+        energy_limited=True,
+        capacity_wh=6000.0,
         target_soc_percent=100.0,
     )
     control = replace(
-        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=1.0,
-        upper_pv_reserve=1.0, strong_pv_cutoff_w=200.0,
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
     )
     cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER, fb))
     states = (
@@ -1271,7 +1324,9 @@ def test_fix6_ratio_zero_rejects_sub_wh_standby_trade():
     now = datetime(2026, 7, 3, 21, 0)
     charger = ConverterParams(max_power_w=2300.0, eta=0.92, standby_power_w=0.5)
     control = replace(
-        ControlParams(), import_trade_ratio=0.0, predrain_pv_confidence=1.0,
+        ControlParams(),
+        import_trade_ratio=0.0,
+        predrain_pv_confidence=1.0,
         upper_pv_reserve=1.0,
     )
     cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), charger=charger)
@@ -1291,37 +1346,53 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
     gate now makes. Exercised with the gate's own primitives on a small battery
     so the single spill slot alone can cross the floor."""
     deh = SurplusLoad(
-        load_id="deh", name="E", nominal_power_w=400.0,
-        battery_tolerance=0.15, min_runtime_min=90,
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=90,
     )
     control = replace(
-        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=0.5,
-        upper_pv_reserve=1.2, strong_pv_cutoff_w=200.0,
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=0.5,
+        upper_pv_reserve=1.2,
+        strong_pv_cutoff_w=200.0,
     )
     cfg = SystemConfig(
-        control=control, loads=(deh,), battery=BatteryParams(capacity_wh=2000.0),
-        ac_profile=LoadProfile(0.0, 0.0), dc_profile=LoadProfile(0.0, 0.0),
+        control=control,
+        loads=(deh,),
+        battery=BatteryParams(capacity_wh=2000.0),
+        ac_profile=LoadProfile(0.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
     )
     start = datetime(2026, 7, 4, 6, 0)
 
     def slot(i, hour, pv, ac=0.0, dc=0.0):
         return HourSlot(
-            index=i, start=start + timedelta(hours=i), duration=1.0,
-            hour_of_day=hour, pv_wh=pv, ac_wh=ac, dc_wh=dc,
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
         )
 
     slots = (
         slot(0, 6, 1500, ac=50),
         slot(1, 7, 1500, ac=50),
         slot(2, 8, 500, ac=250),
-        slot(3, 9, 300, ac=250),      # LAST window slot (pv/dur >= 200)
-        slot(4, 10, 60, dc=1400),     # post-window: heavy drain lands near the floor
+        slot(3, 9, 300, ac=250),  # LAST window slot (pv/dur >= 200)
+        slot(4, 10, 60, dc=1400),  # post-window: heavy drain lands near the floor
         slot(5, 11, 50, dc=1400),
         slot(6, 12, 40, dc=1400),
         slot(7, 13, 30, dc=1400),
     )
     inputs = PlanInputs(
-        now=start, start_soc_percent=55.0, slots=slots,
+        now=start,
+        start_soc_percent=55.0,
+        slots=slots,
         load_states=(SurplusLoadState(load_id="deh"),),
     )
     n = len(slots)
@@ -1342,11 +1413,13 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
         sv = [alpha if i <= j <= lo else 1.0 for j in range(n)]
         t = _windowed_min_soc(
             simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial), pv_scale=sv),
-            i, lo,
+            i,
+            lo,
         )
         b = _windowed_min_soc(
             simulate(cfg, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=sv),
-            i, lo,
+            i,
+            lo,
         )
         return t, b
 

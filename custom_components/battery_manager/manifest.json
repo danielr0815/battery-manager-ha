@@ -1,10 +1,10 @@
 {
   "domain": "battery_manager",
   "name": "Battery Manager",
+  "after_dependencies": ["frontend", "lovelace", "recorder"],
   "codeowners": ["@danielr0815"],
   "config_flow": true,
   "dependencies": ["http"],
-  "after_dependencies": ["frontend", "lovelace", "recorder"],
   "documentation": "https://github.com/danielr0815/battery-manager-ha",
   "integration_type": "device",
   "iot_class": "local_polling",

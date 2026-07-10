@@ -572,7 +572,9 @@ async def test_energy_limited_on_arms_deadline_and_forces_off_when_stale(hass):
     hass.states.async_set(ENABLE, "off")
     t0 = dt_util.utcnow()
     # ON edge: a 0.5 h booking arms off_at = run_start + max(30, 30) = +30 min.
-    await coordinator._execute_load_switching([(sub_id, data, True, False, 0.5)], now=t0)
+    await coordinator._execute_load_switching(
+        [(sub_id, data, True, False, 0.5)], now=t0
+    )
     assert sub_id in coordinator._load_run_deadline
     off_at = coordinator._load_run_deadline[sub_id]
     assert 29.0 <= (off_at - t0).total_seconds() / 60.0 <= 31.0
@@ -587,7 +589,10 @@ async def test_energy_limited_on_arms_deadline_and_forces_off_when_stale(hass):
     result = SimpleNamespace(
         load_plans=[
             LoadPlan(
-                load_id=sub_id, schedule=(True,), planned_energy_wh=0.0, run_hours=(0.5,)
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
             )
         ]
     )
@@ -673,7 +678,10 @@ async def test_deadline_forces_off_even_when_plan_wants_on(hass):
     result = SimpleNamespace(
         load_plans=[
             LoadPlan(
-                load_id=sub_id, schedule=(True,), planned_energy_wh=0.0, run_hours=(0.5,)
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
             )
         ]
     )
@@ -705,7 +713,10 @@ async def test_min_off_dwell_blocks_re_on(hass):
     result = SimpleNamespace(
         load_plans=[
             LoadPlan(
-                load_id=sub_id, schedule=(True,), planned_energy_wh=0.0, run_hours=(0.5,)
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
             )
         ]
     )
@@ -760,12 +771,18 @@ async def test_rec_only_deadline_reanchors_and_is_not_wedged(hass):
     from custom_components.battery_manager.core.model import LoadPlan
 
     coordinator, sub_id, data = await _setup(
-        hass, [], energy_limited=False, with_control_switch=False,
-        min_runtime_min=30, min_off_min=30,
+        hass,
+        [],
+        energy_limited=False,
+        with_control_switch=False,
+        min_runtime_min=30,
+        min_off_min=30,
     )
     # A 4 h contiguous block from slot 0 (deadline = run_start + 240 min).
     plan = LoadPlan(
-        load_id=sub_id, schedule=(True,) * 4, planned_energy_wh=1600.0,
+        load_id=sub_id,
+        schedule=(True,) * 4,
+        planned_energy_wh=1600.0,
         run_hours=(1.0,) * 4,
     )
     durations = (1.0,) * 4
@@ -1163,7 +1180,8 @@ async def test_removing_load_subentry_cleans_up_its_entities(hass):
     for key, eid in eids.items():
         assert reg.async_get(eid) is None, f"{key} should be removed with the load"
     assert [
-        e for e in er.async_entries_for_config_entry(reg, entry.entry_id)
+        e
+        for e in er.async_entries_for_config_entry(reg, entry.entry_id)
         if e.config_subentry_id == sub_id
     ] == []
     # Config-entry-level entities untouched (shared device survives).
@@ -1427,7 +1445,10 @@ async def test_plan_flap_does_not_switch_off_before_min_runtime(hass):
     inactive = SimpleNamespace(
         load_plans=[
             LoadPlan(
-                load_id=sub_id, schedule=(False,), planned_energy_wh=0.0, run_hours=(0.0,)
+                load_id=sub_id,
+                schedule=(False,),
+                planned_energy_wh=0.0,
+                run_hours=(0.0,),
             )
         ]
     )

@@ -19,7 +19,9 @@ from datetime import datetime
 from pathlib import Path
 
 # Match tests/core/conftest.py so the module also runs standalone (regeneration).
-_COMPONENT = Path(__file__).resolve().parents[2] / "custom_components" / "battery_manager"
+_COMPONENT = (
+    Path(__file__).resolve().parents[2] / "custom_components" / "battery_manager"
+)
 if str(_COMPONENT) not in sys.path:
     sys.path.insert(0, str(_COMPONENT))
 

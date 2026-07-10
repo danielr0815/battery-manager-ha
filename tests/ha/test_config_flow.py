@@ -951,9 +951,7 @@ async def test_load_priority_clamps_and_resave_is_write_free(hass, monkeypatch):
         k for k in result["data_schema"].schema if str(k) == CONF_LOAD_PRIORITY
     )
     assert marker.default() == 2  # current effective position
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {}
-    )
+    result = await hass.config_entries.subentries.async_configure(result["flow_id"], {})
     assert result["type"] == "abort"
     await hass.async_block_till_done()
     assert [sid for sid in calls if sid != id_a] == []  # zero sibling writes

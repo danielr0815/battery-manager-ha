@@ -220,7 +220,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # unavailable must not clobber the merged map with a partial read. Each
         # entity keeps its own last-good (map, timestamp); the merge reuses a
         # cached entity map within MAX_HISTORICAL_FORECAST_AGE_HOURS.
-        self._pv_hourly_by_entity: dict[str, tuple[dict[datetime, float], datetime]] = {}
+        self._pv_hourly_by_entity: dict[
+            str, tuple[dict[datetime, float], datetime]
+        ] = {}
         # FIX-10: state-change guard for the "hourly mode but no wh_period" warning.
         self._pv_hourly_empty_warned = False
         # Per-day PV source label ("hourly"/"two_window") for WP4 sensor exposure.
@@ -382,8 +384,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 k: bool(v) for k, v in data.get("load_bm_enabled", {}).items()
             }
             self._load_runtime_seconds = {
-                k: float(v)
-                for k, v in data.get("load_runtime_seconds", {}).items()
+                k: float(v) for k, v in data.get("load_runtime_seconds", {}).items()
             }
             # The tick cursor (_load_run_since) is intentionally not restored —
             # see _persistent_payload; the first tick re-arms it so a restart gap
@@ -620,9 +621,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     cfg.get(CONF_IMPORT_TRADE_RATIO, IMPORT_TRADE_RATIO_DEFAULT)
                 ),
                 predrain_pv_confidence=float(
-                    cfg.get(
-                        CONF_PREDRAIN_PV_CONFIDENCE, PREDRAIN_PV_CONFIDENCE_DEFAULT
-                    )
+                    cfg.get(CONF_PREDRAIN_PV_CONFIDENCE, PREDRAIN_PV_CONFIDENCE_DEFAULT)
                 ),
                 upper_pv_reserve=float(
                     cfg.get(CONF_UPPER_PV_RESERVE, UPPER_PV_RESERVE_DEFAULT)
@@ -828,9 +827,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sources: dict[str, str] = {}
         for offset in range(num_days):
             day = now.date() + timedelta(days=offset)
-            sources[day.isoformat()] = (
-                "hourly" if day in covered_days else "two_window"
-            )
+            sources[day.isoformat()] = "hourly" if day in covered_days else "two_window"
         return sources
 
     def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
@@ -1096,7 +1093,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_bm_enabled[load_id] = bool(enabled)
         self._save_persistent_state()
 
-    def _load_is_running(self, load_id: str, data: dict[str, Any], now: datetime) -> bool:
+    def _load_is_running(
+        self, load_id: str, data: dict[str, Any], now: datetime
+    ) -> bool:
         """True while the load REALLY draws power (runtime counter, v0.7.18).
 
         Uses the configured power-feedback sensor when present (so any real run
@@ -2452,7 +2451,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         min_runtime = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
 
         def _anchor() -> None:
-            off_min = max(min_runtime, round(plan.active_run_hours(slot_durations) * 60.0))
+            off_min = max(
+                min_runtime, round(plan.active_run_hours(slot_durations) * 60.0)
+            )
             off_at = now + timedelta(minutes=off_min)
             self._load_run_deadline[load_id] = off_at
             self._arm_off_timer(load_id, off_at)

@@ -37,9 +37,7 @@ def _degrades_min_soc(
     )
 
 
-def pv_windows(
-    inputs: PlanInputs, cutoff_w: float, end_hour: int | None
-) -> dict:
+def pv_windows(inputs: PlanInputs, cutoff_w: float, end_hour: int | None) -> dict:
     """Per calendar day, the [first, last] slot index of strong PV production.
 
     A slot is "strong" when its average power (`pv_wh / duration`) reaches
@@ -86,7 +84,9 @@ def _recovery_index(windows: dict, i: int, n: int) -> int:
     index that is >= `i`. With no strong-PV window ahead (e.g. a cloudy tail) the
     bet only settles at the horizon end.
     """
-    return min((last for (_first, last) in windows.values() if last >= i), default=n - 1)
+    return min(
+        (last for (_first, last) in windows.values() if last >= i), default=n - 1
+    )
 
 
 def _windowed_min_soc(traj: Trajectory, lo: int, hi: int) -> float:
@@ -304,9 +304,14 @@ def allocate_loads(
                 power_wh = power_w * commit_h
                 if power_wh <= _EPS:
                     continue
-                if rem is not None and rem < max(power_w, load.nominal_power_w) * commit_h:
+                if (
+                    rem is not None
+                    and rem < max(power_w, load.nominal_power_w) * commit_h
+                ):
                     continue  # saturated (or nearly): skip
-                trial, covered = _spread_energy(extra, inputs.slots, i, power_w, commit_h)
+                trial, covered = _spread_energy(
+                    extra, inputs.slots, i, power_w, commit_h
+                )
                 if any(schedules[load.load_id][j] for j, _ in covered):
                     continue  # commitment overlaps an already-scheduled slot
                 # Soft surplus condition (D-A4): battery may cover at most
@@ -427,11 +432,15 @@ def allocate_loads(
                         accept = export_drop + _EPS >= need
                         if not accept and beta != 1.0 and in_window(i):
                             trial_beta = simulate(
-                                config, inputs, threshold,
-                                extra_ac_wh=trial_tuple, pv_scale=beta,
+                                config,
+                                inputs,
+                                threshold,
+                                extra_ac_wh=trial_tuple,
+                                pv_scale=beta,
                             )
                             drop_beta = (
-                                current_beta.total_export_wh - trial_beta.total_export_wh
+                                current_beta.total_export_wh
+                                - trial_beta.total_export_wh
                             )
                             accept = drop_beta + _EPS >= need
                         if not accept:
@@ -453,19 +462,23 @@ def allocate_loads(
                                 alpha if i <= j <= hi else 1.0 for j in range(n)
                             ]
                             trial_stress = simulate(
-                                config, inputs, threshold,
-                                extra_ac_wh=trial_tuple, pv_scale=scale_vec,
+                                config,
+                                inputs,
+                                threshold,
+                                extra_ac_wh=trial_tuple,
+                                pv_scale=scale_vec,
                             )
                             trial_wmin = _windowed_min_soc(trial_stress, i, hi)
                             key = (i, hi)
                             if key not in stress_base:
                                 base_stress = simulate(
-                                    config, inputs, threshold,
-                                    extra_ac_wh=tuple(extra), pv_scale=scale_vec,
+                                    config,
+                                    inputs,
+                                    threshold,
+                                    extra_ac_wh=tuple(extra),
+                                    pv_scale=scale_vec,
                                 )
-                                stress_base[key] = _windowed_min_soc(
-                                    base_stress, i, hi
-                                )
+                                stress_base[key] = _windowed_min_soc(base_stress, i, hi)
                             if (
                                 trial_wmin < stress_floor - _EPS
                                 and trial_wmin < stress_base[key] - _EPS
@@ -479,8 +492,11 @@ def allocate_loads(
                             trial_beta
                             if trial_beta is not None
                             else simulate(
-                                config, inputs, threshold,
-                                extra_ac_wh=tuple(extra), pv_scale=beta,
+                                config,
+                                inputs,
+                                threshold,
+                                extra_ac_wh=tuple(extra),
+                                pv_scale=beta,
                             )
                         )
                     for j, take in covered:
@@ -674,7 +690,9 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
 
     # F-PREDRAIN diagnostics (§3.5): the traded import, the stressed reserve, and
     # the derived PV absorption windows (WP4 exposes these as sensor attributes).
-    import_trade_used_wh = max(0.0, alloc_traj.total_import_wh - base_traj.total_import_wh)
+    import_trade_used_wh = max(
+        0.0, alloc_traj.total_import_wh - base_traj.total_import_wh
+    )
     stressed_min_soc: float | None = None
     alpha = control.predrain_pv_confidence
     if alpha != 1.0 and alloc_traj.flows:

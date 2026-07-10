@@ -160,9 +160,7 @@ def test_pv_hourly_none_and_empty_are_bit_identical_to_reference():
     reference = build_slots(config, now, 50.0, [8.0, 8.0, 8.0])
     with_none = build_slots(config, now, 50.0, [8.0, 8.0, 8.0], pv_hourly=None)
     with_empty = build_slots(config, now, 50.0, [8.0, 8.0, 8.0], pv_hourly={})
-    for r, n, e in zip(
-        reference.slots, with_none.slots, with_empty.slots, strict=True
-    ):
+    for r, n, e in zip(reference.slots, with_none.slots, with_empty.slots, strict=True):
         assert r.pv_wh == n.pv_wh == e.pv_wh
 
 
