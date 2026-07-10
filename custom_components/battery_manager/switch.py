@@ -8,7 +8,8 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     CONF_SUPPORT_DC24_SWITCH,
@@ -20,17 +21,17 @@ from .const import (
     SUBENTRY_TYPE_LOAD,
 )
 from .coordinator import BatteryManagerCoordinator
-from .entity import BatteryManagerEntity
+from .entity import BatteryManagerEntity, async_add_by_subentry
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the vacation-mode switch and the manual support-override switches."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities: list[SwitchEntity] = [BatteryManagerVacationSwitch(coordinator)]
+    entities: list[Entity] = [BatteryManagerVacationSwitch(coordinator)]
 
     # A manual-override switch per configured support PSU (F-N2/R3). A
     # leftover switch of a removed PSU is dropped from the registry.
@@ -48,17 +49,17 @@ async def async_setup_entry(
             if stale:
                 ent_reg.async_remove(stale)
 
-    # A "BM control active" switch per current surplus load (v0.7.17): off holds
-    # the load unavailable so a device can be paused without removing its control
-    # switch. (Like the other per-load entities it is not subentry-scoped, so a
-    # removed load leaves a stale registry entry until cleaned up — follow-up.)
+    # A "BM control active" switch per surplus load (v0.7.17): off holds the load
+    # unavailable so a device can be paused without removing its control switch.
+    # Scoped to its subentry so it is removed automatically with the load (v0.7.19).
+    per_subentry: dict[str, list[Entity]] = {}
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
-            entities.append(
+            per_subentry[subentry_id] = [
                 SurplusLoadControlSwitch(coordinator, subentry_id, subentry.title)
-            )
+            ]
 
-    async_add_entities(entities)
+    async_add_by_subentry(async_add_entities, entities, per_subentry)
 
 
 class BatteryManagerVacationSwitch(BatteryManagerEntity, SwitchEntity):

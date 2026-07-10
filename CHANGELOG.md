@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.19] - 2026-07-10
+
+### Fixed
+- **Per-load entities are now scoped to their config subentry.** Previously every
+  per-load/appliance entity (recommendation, power-warning, BM-control switch,
+  runtime sensor, reset button, appliance start-window) was attached to the
+  config entry rather than the subentry, so deleting a load or appliance left its
+  entities behind as stale "unavailable" registry rows. They are now added with
+  `config_subentry_id`, so Home Assistant removes them automatically when the
+  subentry is deleted. Existing entities are re-homed in place on the next
+  start/reload (no duplicates), so the fix migrates transparently — the shared
+  Battery Manager device and all config-entry-level entities are untouched.
+- The appliance **start-window** binary sensor is now also removed when an
+  appliance's **opportunistic** option is turned off (subentry kept), instead of
+  lingering as a stale entity — matching the existing power-warning cleanup.
+
 ## [0.7.18] - 2026-07-10
 
 ### Added

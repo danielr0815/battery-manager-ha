@@ -13,7 +13,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     ATTR_GRID_EXPORT_KWH,
@@ -35,7 +36,7 @@ from .const import (
     SUPPORT_MODE_MANUAL,
 )
 from .coordinator import BatteryManagerCoordinator
-from .entity import BatteryManagerEntity
+from .entity import BatteryManagerEntity, async_add_by_subentry
 
 SENSOR_DESCRIPTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -86,11 +87,11 @@ SENSOR_DESCRIPTIONS: tuple[dict[str, Any], ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Battery Manager sensors."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities: list[SensorEntity] = [
+    entities: list[Entity] = [
         BatteryManagerSensor(coordinator, description)
         for description in SENSOR_DESCRIPTIONS
     ]
@@ -111,13 +112,15 @@ async def async_setup_entry(
             )
             if stale:
                 ent_reg.async_remove(stale)
-    # Real active-runtime counter per surplus load (v0.7.18).
+    # Real active-runtime counter per surplus load (v0.7.18), scoped to its
+    # subentry so it is removed automatically when the load is deleted (v0.7.19).
+    per_subentry: dict[str, list[Entity]] = {}
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
-            entities.append(
+            per_subentry[subentry_id] = [
                 SurplusLoadRuntimeSensor(coordinator, subentry_id, subentry.title)
-            )
-    async_add_entities(entities)
+            ]
+    async_add_by_subentry(async_add_entities, entities, per_subentry)
 
 
 class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):

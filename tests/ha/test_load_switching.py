@@ -971,3 +971,150 @@ async def test_load_control_switch_state_survives_restart(hass):
     coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
     await coordinator.async_load_persistent_state()
     assert coordinator.load_bm_enabled(sub_id) is False  # restored, still paused
+
+
+async def test_removing_load_subentry_cleans_up_its_entities(hass):
+    """v0.7.19: per-load entities are scoped to their subentry (config_subentry_id),
+    so removing the load subentry removes ALL its entity-registry rows
+    automatically; the shared device's config-entry-level entities survive."""
+    from homeassistant.helpers import entity_registry as er
+
+    call_log: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, call_log)
+    entry = coordinator.entry
+    reg = er.async_get(hass)
+
+    # All five per-load entities exist and are scoped to the load subentry.
+    expected = [
+        ("binary_sensor", f"load_{sub_id}"),
+        ("binary_sensor", f"load_power_warning_{sub_id}"),
+        ("switch", f"load_control_{sub_id}"),
+        ("sensor", f"load_runtime_{sub_id}"),
+        ("button", f"load_runtime_reset_{sub_id}"),
+    ]
+    eids = {}
+    for platform, key in expected:
+        eid = reg.async_get_entity_id(platform, DOMAIN, f"{entry.entry_id}_{key}")
+        assert eid is not None, f"{key} not created"
+        assert reg.async_get(eid).config_subentry_id == sub_id, f"{key} not scoped"
+        eids[key] = eid
+
+    # Config-entry-level entities stay at subentry None (not scoped to the load).
+    base_eids = [
+        e.entity_id
+        for e in er.async_entries_for_config_entry(reg, entry.entry_id)
+        if e.config_subentry_id is None
+    ]
+    assert base_eids  # e.g. the main SOC/threshold sensors, vacation switch
+
+    # Remove the load subentry -> HA clears exactly its subentry-scoped rows.
+    hass.config_entries.async_remove_subentry(entry, sub_id)
+    await hass.async_block_till_done()
+
+    for key, eid in eids.items():
+        assert reg.async_get(eid) is None, f"{key} should be removed with the load"
+    assert [
+        e for e in er.async_entries_for_config_entry(reg, entry.entry_id)
+        if e.config_subentry_id == sub_id
+    ] == []
+    # Config-entry-level entities untouched (shared device survives).
+    for eid in base_eids:
+        assert reg.async_get(eid) is not None
+
+
+async def test_setup_rehomes_legacy_unscoped_entity(hass):
+    """Migration: an entity left at config_subentry_id=None by a pre-v0.7.19
+    install is re-homed to its load subentry on the next setup — updated in
+    place (same entity_id, no duplicate), so live installs migrate transparently."""
+    from homeassistant.helpers import entity_registry as er
+
+    coordinator, sub_id, _ = await _setup(hass, [])
+    entry = coordinator.entry
+    reg = er.async_get(hass)
+    unique_id = f"{entry.entry_id}_load_runtime_{sub_id}"
+    eid = reg.async_get_entity_id("sensor", DOMAIN, unique_id)
+    assert eid and reg.async_get(eid).config_subentry_id == sub_id
+
+    # Simulate the old, unscoped state.
+    reg.async_update_entity(eid, config_subentry_id=None)
+    assert reg.async_get(eid).config_subentry_id is None
+
+    # Reload -> the platform re-adds with config_subentry_id -> row re-homed.
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert reg.async_get_entity_id("sensor", DOMAIN, unique_id) == eid  # same row
+    assert reg.async_get(eid).config_subentry_id == sub_id  # re-homed
+    matches = [
+        e
+        for e in er.async_entries_for_config_entry(reg, entry.entry_id)
+        if e.unique_id == unique_id
+    ]
+    assert len(matches) == 1  # no duplicate created
+
+
+async def test_appliance_window_removed_when_opportunistic_disabled(hass):
+    """v0.7.19: subentry-scoping auto-removes on subentry deletion, but toggling
+    an appliance's 'opportunistic' OFF (subentry kept) must still drop its stale
+    start-window entity — mirrors the load power-warning cleanup."""
+    from homeassistant.config_entries import ConfigSubentryData
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_OPPORTUNISTIC,
+        CONF_APPLIANCE_POWER_THRESHOLD_W,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set("sensor.pv_today", "10.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.dw_power", "0")
+
+    appliance_data = {
+        CONF_APPLIANCE_DETECTION_ENTITY: "sensor.dw_power",
+        CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+        CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
+        CONF_APPLIANCE_RUN_DURATION_H: 2.0,
+        CONF_APPLIANCE_OPPORTUNISTIC: True,
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=BASE_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data=appliance_data,
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Dishwasher",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    reg = er.async_get(hass)
+    sub_id = next(iter(entry.subentries))
+    uid = f"{entry.entry_id}_appliance_{sub_id}"
+    eid = reg.async_get_entity_id("binary_sensor", DOMAIN, uid)
+    assert eid is not None  # created while opportunistic
+    assert reg.async_get(eid).config_subentry_id == sub_id  # scoped
+
+    # Toggle opportunistic OFF (subentry kept) and reload.
+    hass.config_entries.async_update_subentry(
+        entry,
+        entry.subentries[sub_id],
+        data={**appliance_data, CONF_APPLIANCE_OPPORTUNISTIC: False},
+    )
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert reg.async_get_entity_id("binary_sensor", DOMAIN, uid) is None  # dropped

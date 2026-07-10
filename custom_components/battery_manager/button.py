@@ -5,30 +5,30 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN, SUBENTRY_TYPE_LOAD
 from .coordinator import BatteryManagerCoordinator
-from .entity import BatteryManagerEntity
+from .entity import BatteryManagerEntity, async_add_by_subentry
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up a runtime-reset button per surplus load."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities: list[ButtonEntity] = []
-    # One reset button per current surplus load. (Like the other per-load
-    # entities it is not subentry-scoped, so a removed load leaves a stale
-    # registry entry until cleaned up — tracked as a follow-up.)
+    # One reset button per surplus load, scoped to its subentry so it is removed
+    # automatically when the load subentry is deleted (v0.7.19).
+    per_subentry: dict[str, list[Entity]] = {}
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
-            entities.append(
+            per_subentry[subentry_id] = [
                 SurplusLoadRuntimeResetButton(coordinator, subentry_id, subentry.title)
-            )
-    async_add_entities(entities)
+            ]
+    async_add_by_subentry(async_add_entities, [], per_subentry)
 
 
 class SurplusLoadRuntimeResetButton(BatteryManagerEntity, ButtonEntity):

@@ -11,7 +11,8 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     ATTR_DEVIATING_SINCE,
@@ -32,31 +33,34 @@ from .const import (
     SUBENTRY_TYPE_LOAD,
 )
 from .coordinator import BatteryManagerCoordinator
-from .entity import BatteryManagerEntity
+from .entity import BatteryManagerEntity, async_add_by_subentry
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Battery Manager binary sensors (incl. per-subentry entities)."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[BinarySensorEntity] = [
+    entities: list[Entity] = [
         InverterRecommendationSensor(coordinator),
         SupportPathSensor(coordinator, ENTITY_SUPPORT_DC24, "support_dc24"),
         SupportPathSensor(coordinator, ENTITY_SUPPORT_DC48, "support_dc48"),
     ]
 
+    # Per-subentry entities are scoped to their subentry so they are removed
+    # automatically when the load/appliance subentry is deleted (v0.7.19).
+    per_subentry: dict[str, list[Entity]] = {}
     ent_reg = er.async_get(hass)
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
-            entities.append(
+            load_entities: list[Entity] = [
                 SurplusLoadRecommendationSensor(
                     coordinator, subentry_id, subentry.title
                 )
-            )
+            ]
             warning_enabled = subentry.data.get(CONF_LOAD_POWER_ENTITY) and (
                 float(
                     subentry.data.get(
@@ -67,7 +71,7 @@ async def async_setup_entry(
                 > 0
             )
             if warning_enabled:
-                entities.append(
+                load_entities.append(
                     LoadPowerWarningSensor(coordinator, subentry_id, subentry.title)
                 )
             else:
@@ -81,14 +85,26 @@ async def async_setup_entry(
                 )
                 if stale:
                     ent_reg.async_remove(stale)
-        elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE and subentry.data.get(
-            CONF_APPLIANCE_OPPORTUNISTIC
-        ):
-            entities.append(
-                ApplianceStartWindowSensor(coordinator, subentry_id, subentry.title)
-            )
+            per_subentry[subentry_id] = load_entities
+        elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE:
+            if subentry.data.get(CONF_APPLIANCE_OPPORTUNISTIC):
+                per_subentry[subentry_id] = [
+                    ApplianceStartWindowSensor(coordinator, subentry_id, subentry.title)
+                ]
+            else:
+                # Opportunistic disabled while the subentry is kept: drop a
+                # previously created start-window entity instead of leaving it
+                # behind as an orphan (subentry-scoping only auto-removes on
+                # subentry deletion — mirrors the power-warning cleanup above).
+                stale = ent_reg.async_get_entity_id(
+                    "binary_sensor",
+                    DOMAIN,
+                    f"{entry.entry_id}_appliance_{subentry_id}",
+                )
+                if stale:
+                    ent_reg.async_remove(stale)
 
-    async_add_entities(entities)
+    async_add_by_subentry(async_add_entities, entities, per_subentry)
 
 
 class InverterRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
