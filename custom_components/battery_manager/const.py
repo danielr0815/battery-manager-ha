@@ -166,6 +166,14 @@ CONF_LOAD_IN_HOUSE = "in_house_measurement"
 # (2026-07-05 live incident: 11 h × 22 Wh planned vs. ~4.4 kWh real).
 STANDBY_FRACTION = 0.25
 
+# Stale-SOC guard (F-EXECUTOR-GUARDS G2): a load SOC that stays EXACTLY
+# unchanged for this many minutes while the device charges above the standby
+# bar is latched as stale (the fossibot integration serves cached values with
+# FRESH timestamps, so age checks cannot catch it; its cadence is ~1 min, so
+# 12 min of frozen SOC while drawing ~500 W is unambiguous). Deliberately a
+# constant, not a config key.
+STALE_LOAD_SOC_MIN = 12
+
 # Power-deviation warning (operator requirement F-L7, 2026-07-05): while a
 # load runs at the integration's request but its real draw deviates from the
 # configured power by more than this percentage (per-load setting, 0 =

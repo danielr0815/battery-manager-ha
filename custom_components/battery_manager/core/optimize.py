@@ -209,6 +209,28 @@ def _spread_energy(
     return trial, covered
 
 
+def _daywise_latest_first(slots) -> list[int]:
+    """Pass-1 slot order for energy-limited loads (F-PLANNER-HONESTY R7 v2):
+    calendar days ASCENDING, the hours WITHIN each day DESCENDING.
+
+    The operator principle has two clauses — "as late as possible" AND "just
+    early enough to avoid export". A whole-horizon descending order (R7 v1)
+    deferred a saturating load past an exporting day and stranded that day's
+    real surplus while betting on the least certain forecast zone; the day
+    bound keeps lateness where it is free: the first day whose export the load
+    can rescue wins, latest hours of that day. Grouped by `slot.start.date()`
+    like `pv_windows`; slots are chronological, so the day dict preserves
+    calendar order.
+    """
+    by_day: dict = {}
+    for i, slot in enumerate(slots):
+        by_day.setdefault(slot.start.date(), []).append(i)
+    order: list[int] = []
+    for indices in by_day.values():
+        order.extend(reversed(indices))
+    return order
+
+
 def allocate_loads(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -218,14 +240,20 @@ def allocate_loads(
     """Assign surplus loads to hours in two passes.
 
     Pass 1 fills hours with direct surplus (battery share within the load's
-    tolerance across the committed runtime). Pass 2 ("zielbasiert", decision
-    2026-07-04) additionally allows hours WITHOUT direct surplus — e.g.
-    pre-charging to make room before a strong production peak — but only when
-    the full-horizon re-simulation proves the energy is, time-shifted through
-    the battery, covered by otherwise-lost surplus. Pass 2 runs LATEST-FIRST
-    (operator decision 2026-07-05): preemptive hours are placed as late as
-    the constraints allow, because catching up on better information always
-    beats an early bet on the forecast.
+    tolerance across the committed runtime), LOAD-OUTER in config order
+    (F-PLANNER-HONESTY R7 v2): a load books its complete pass-1 allocation
+    before the next load sees the horizon, and energy-limited loads walk the
+    slots day-bounded latest-first — days ascending, hours within each day
+    descending (lateness where it is free, without stranding an earlier day's
+    export) — while continuous loads walk ascending. Pass 2 ("zielbasiert",
+    decision 2026-07-04) additionally allows
+    hours WITHOUT direct surplus — e.g. pre-charging to make room before a
+    strong production peak — but only when the full-horizon re-simulation
+    proves the energy is, time-shifted through the battery, covered by
+    otherwise-lost surplus. Pass 2 runs LATEST-FIRST (operator decision
+    2026-07-05): preemptive hours are placed as late as the constraints allow,
+    because catching up on better information always beats an early bet on the
+    forecast.
 
     Every candidate is evaluated with the energy the executor will really
     deliver (`_committed_hours`), and the saturation gate is floored at the
@@ -245,6 +273,10 @@ def allocate_loads(
     allocations: dict[str, list[tuple[int, int, int, float]]] = {
         ld.load_id: [] for ld in config.loads
     }
+    # Explain-plan (F-PLANNER-HONESTY R12/R13): one reason string per
+    # allocation entry, recorded at acceptance time — the only moment the
+    # planner knows WHY a booking passed its gates.
+    reasons: dict[str, list[str]] = {ld.load_id: [] for ld in config.loads}
     remaining: dict[str, float | None] = {}
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
@@ -288,13 +320,31 @@ def allocate_loads(
         w = windows.get(inputs.slots[i].start.date())
         return w is not None and w[0] <= i <= w[1]
 
-    for i, slot in enumerate(inputs.slots):
-        surplus = current.flows[i].grid_export_wh
-        for load in config.loads:
-            state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-            if not state.available or schedules[load.load_id][i]:
+    # Pass 1 — direct-surplus hours, LOAD-OUTER in config order (F-PLANNER-
+    # HONESTY R7 v2): strict priority — a load books its complete pass-1
+    # allocation before the next load sees the horizon. Slots are walked
+    # DAY-BOUNDED latest-first for energy-limited loads (days ascending,
+    # hours within each day descending: a residual that saturates before
+    # taking every export hour must take the LATEST hours of the FIRST day
+    # whose surplus it can rescue — resolves O1 of F-RESIDUAL-TOPUP without
+    # stranding an earlier day's export) and ASCENDING for continuous loads
+    # (they book every feasible export hour anyway; ascending keeps deltas
+    # minimal). Each candidate reads the CURRENT accepted trajectory's export
+    # (R8): earlier bookings — same load or a higher-priority one — are
+    # already re-simulated into `current`, so the old intra-slot decrement
+    # approximation is replaced by the exact value.
+    for load in config.loads:
+        state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
+        if not state.available:
+            continue
+        power_w = state.planning_power_w(load)
+        slot_order = (
+            _daywise_latest_first(inputs.slots) if load.energy_limited else range(n)
+        )
+        for i in slot_order:
+            slot = inputs.slots[i]
+            if schedules[load.load_id][i]:
                 continue
-            power_w = state.planning_power_w(load)
             rem = remaining[load.load_id]
             # Try the largest quantised run first, falling back to shorter
             # min_runtime multiples so a small battery-buffered surplus can still
@@ -317,7 +367,7 @@ def allocate_loads(
                 # Soft surplus condition (D-A4): battery may cover at most
                 # `battery_tolerance` of the committed energy. Spilled slots
                 # contribute their export prorated by the occupied share.
-                surplus_cov = surplus + sum(
+                surplus_cov = current.flows[i].grid_export_wh + sum(
                     current.flows[j].grid_export_wh * (take / inputs.slots[j].duration)
                     for j, take in covered[1:]
                 )
@@ -338,14 +388,17 @@ def allocate_loads(
                 # Book what actually landed in the horizon (a commitment may be
                 # truncated at the horizon end); the gates above deliberately
                 # used the full committed energy.
-                placed_wh = power_w * sum(take for _, take in covered)
+                placed_h = sum(take for _, take in covered)
+                placed_wh = power_w * placed_h
                 planned_wh[load.load_id] += placed_wh
                 allocations[load.load_id].append((i, len(covered), 1, placed_wh))
+                reasons[load.load_id].append(
+                    f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
+                    f"direct surplus, {round(placed_h * 60)} min x "
+                    f"{round(power_w)} W, battery share {round(battery_share * 100)}%"
+                )
                 if rem is not None:
                     remaining[load.load_id] = rem - placed_wh
-                # Only the slot-local share draws on this slot's surplus; the
-                # spilled share is already reflected in the re-simulated flows.
-                surplus = max(0.0, surplus - power_w * covered[0][1])
                 break  # placed the largest feasible quantum; done with this slot
 
     # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2,
@@ -423,6 +476,7 @@ def allocate_loads(
                     export_drop = current.total_export_wh - traj.total_export_wh
                     need = (1.0 - load.battery_tolerance) * power_wh
                     trial_beta = None
+                    via_beta = False  # which gate accepted -> reason string (R13)
                     if load.energy_limited:
                         # Legacy nominal refill gate only (no two-buffer machinery).
                         if export_drop + _EPS < need:
@@ -443,6 +497,7 @@ def allocate_loads(
                                 - trial_beta.total_export_wh
                             )
                             accept = drop_beta + _EPS >= need
+                            via_beta = accept
                         if not accept:
                             continue
                         # Z4 windowed lower-buffer stress gate (§3.3 v2): stress
@@ -505,6 +560,19 @@ def allocate_loads(
                     placed_wh = power_w * sum(take for _, take in covered)
                     planned_wh[load.load_id] += placed_wh
                     allocations[load.load_id].append((i, len(covered), 2, placed_wh))
+                    # "latest feasible slot" is structurally true: pass 2 walks
+                    # descending and accepts the first slot that passes (R13).
+                    reasons[load.load_id].append(
+                        f"pass 2 @ {slot.start.strftime('%m-%d %H:%M')}: "
+                        + (
+                            "in-window insurance (beta), latest feasible slot"
+                            if via_beta
+                            else (
+                                f"covered by otherwise-lost export "
+                                f"({round(export_drop)} Wh), latest feasible slot"
+                            )
+                        )
+                    )
                     if rem is not None:
                         remaining[load.load_id] = rem - placed_wh
                     break
@@ -516,6 +584,7 @@ def allocate_loads(
             planned_energy_wh=planned_wh[load.load_id],
             allocations=tuple(allocations[load.load_id]),
             run_hours=tuple(run_h[load.load_id]),
+            reasons=tuple(reasons[load.load_id]),
         )
         for load in config.loads
     ]

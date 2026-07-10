@@ -105,6 +105,7 @@ from .const import (
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
     PV_FORECAST_MODE_HOURLY,
+    STALE_LOAD_SOC_MIN,
     STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
     STORAGE_VERSION,
@@ -194,8 +195,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
+            # F-EXECUTOR-GUARDS R10: pass the entry explicitly — newer HA cores
+            # hard-error on the implicit ContextVar lookup (report_usage).
+            config_entry=entry,
             update_interval=timedelta(seconds=INITIAL_UPDATE_INTERVAL_SECONDS),
         )
+        # Alias kept deliberately (R10): the code base reads `self.entry`
+        # everywhere; `self.config_entry` is the base-class attribute.
         self.entry = entry
         self.raw_config = {**DEFAULT_CONFIG, **entry.data, **entry.options}
         # Single source of truth for the version, set from manifest.json in
@@ -295,6 +301,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # cannot pin a genuinely-new run at 0 remaining.
         self._appliance_started_restored: set[str] = set()
         self._load_power_ema: dict[str, float] = {}
+        # Learned planning power (F-PLANNER-HONESTY R2): per load the run-max
+        # of the accepted-sample EMA — run-max so an end-of-charge taper cannot
+        # erode it, EMA so a spike cannot inflate it, and only samples past the
+        # v0.6.2 standby bar feed it (the single gate; standby poisoning stays
+        # impossible). `_load_run_power_max` tracks the CURRENT run (same
+        # lifecycle as `_load_power_ema`); `_load_learned_power_w` is the
+        # persisted last-run-wins store an OFF load plans with.
+        self._load_run_power_max: dict[str, float] = {}
+        self._load_learned_power_w: dict[str, float] = {}
+        # Stale-SOC guard (F-EXECUTOR-GUARDS G2): evidence tuple (frozen value,
+        # since) while actively charging above the standby bar, and the latch
+        # (frozen value, for the log + unlatch compare). In-memory only — a
+        # restart re-detects within STALE_LOAD_SOC_MIN minutes.
+        self._load_soc_frozen: dict[str, tuple[float, datetime]] = {}
+        self._load_soc_stale: dict[str, float] = {}
 
         # Charging-path control (docs/LOAD_CONTROL.md): SOC cache survives
         # sleeping devices and restarts; plug ownership implements the
@@ -386,6 +407,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_runtime_seconds = {
                 k: float(v) for k, v in data.get("load_runtime_seconds", {}).items()
             }
+            # F-PLANNER-HONESTY R3: restore the learned planning power; entries
+            # whose load subentry vanished are dropped (a re-created load must
+            # not inherit another device's power).
+            self._load_learned_power_w = {
+                k: float(v)
+                for k, v in data.get("load_learned_power", {}).items()
+                if k in self.entry.subentries
+            }
             # The tick cursor (_load_run_since) is intentionally not restored —
             # see _persistent_payload; the first tick re-arms it so a restart gap
             # is never credited as runtime.
@@ -447,6 +476,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # After a restart the first tick just re-arms the cursor (losing at
             # most the last sub-cycle partial, which is bounded and unobservable).
             "load_runtime_seconds": dict(self._load_runtime_seconds),
+            # F-PLANNER-HONESTY R3: the learned planning power (run-max of the
+            # accepted-sample EMA) survives restarts — unlike the live EMA
+            # (deliberately volatile, see async_load_persistent_state), the
+            # learned value is taper-proof by construction.
+            "load_learned_power": dict(self._load_learned_power_w),
             # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
             # does not re-latch at `now` and re-inject the full run energy.
             "appliance_started": {
@@ -1167,6 +1201,72 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._save_persistent_state()
         self.async_update_listeners()
 
+    def _update_soc_stale(
+        self,
+        subentry_id: str,
+        title: str,
+        live_soc: float | None,
+        raw_power: float | None,
+        sample_bar: float | None,
+    ) -> bool:
+        """Stale-SOC latch for one load (F-EXECUTOR-GUARDS G2, R5-R7).
+
+        The fossibot integration serves cached SOC values with FRESH
+        timestamps, so availability/age checks cannot catch a frozen reading
+        and the planner keeps re-booking run after run against a frozen
+        `remaining` (v0.8.1's executor cap only bounds a single run). While
+        the device DEMONSTRABLY charges — `_load_charging_active` and the raw
+        feedback above the v0.6.2 standby bar (the single threshold, reused) —
+        a SOC that stays EXACTLY unchanged for STALE_LOAD_SOC_MIN minutes is
+        latched as stale. The evidence clock measures continuous charging
+        against a frozen value, not wall time: it RESETS when charging stops
+        or the sample bar is not met (an end-of-charge taper never
+        accumulates false evidence), and loads without a SOC or power entity
+        never latch (no evidence, R7). Unlatch: any DIFFERENT live reading,
+        charging or not. Latch logs WARNING once, unlatch INFO once
+        (change-gated). Returns True while latched."""
+        frozen_value = self._load_soc_stale.get(subentry_id)
+        if frozen_value is not None:
+            if live_soc is not None and live_soc != frozen_value:
+                del self._load_soc_stale[subentry_id]
+                self._load_soc_frozen.pop(subentry_id, None)
+                _LOGGER.info(
+                    "Load %s: SOC reports %.1f%% again (was frozen at %.1f%%)"
+                    " — stale latch cleared",
+                    title,
+                    live_soc,
+                    frozen_value,
+                )
+            else:
+                return True  # still frozen (or no reading): stay latched
+        charging = self._load_charging_active.get(subentry_id, False)
+        if (
+            live_soc is None
+            or raw_power is None
+            or sample_bar is None
+            or not charging
+            or raw_power < sample_bar
+        ):
+            # No evidence this cycle: the clock resets (R7).
+            self._load_soc_frozen.pop(subentry_id, None)
+            return False
+        evidence = self._load_soc_frozen.get(subentry_id)
+        if evidence is None or evidence[0] != live_soc:
+            self._load_soc_frozen[subentry_id] = (live_soc, dt_util.utcnow())
+            return False
+        if dt_util.utcnow() - evidence[1] >= timedelta(minutes=STALE_LOAD_SOC_MIN):
+            self._load_soc_stale[subentry_id] = live_soc
+            _LOGGER.warning(
+                "Load %s: SOC frozen at %.1f%% for %d+ minutes while actively"
+                " charging — treating the reading as STALE and holding the"
+                " load unavailable until the sensor reports a different value",
+                title,
+                live_soc,
+                STALE_LOAD_SOC_MIN,
+            )
+            return True
+        return False
+
     def _get_load_states(self) -> tuple[SurplusLoadState, ...]:
         states = []
         for subentry_id, subentry in self.entry.subentries.items():
@@ -1184,6 +1284,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not self._load_bm_enabled.get(subentry_id, True):
                 available = False  # per-load "BM control" switch off (v0.7.17)
             soc = None
+            live_soc = None  # validated LIVE reading only (stale guard input)
             if data.get(CONF_LOAD_SOC_ENTITY):
                 soc_entity = data[CONF_LOAD_SOC_ENTITY]
                 raw_soc = self._read_float(soc_entity)
@@ -1205,6 +1306,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if changed:
                         self._save_persistent_state()
                     soc = raw_soc
+                    live_soc = raw_soc
                 else:
                     # Sleeping device (e.g. powerstation with its input off):
                     # keep planning with the last known SOC — but only if it
@@ -1222,6 +1324,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     ):
                         soc = cached["soc"]
             measured = None
+            raw = None
+            min_sample_w = None
             if data.get(CONF_LOAD_POWER_ENTITY):
                 raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
                 # Readings below a fraction of the nominal power are
@@ -1233,11 +1337,29 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 bm_active = self._bm_load_active(subentry_id)
                 if raw is not None and raw >= min_sample_w and bm_active:
+                    # R2a: the EMA seeds VERBATIM from the run's first accepted
+                    # sample (previous = raw), so only samples with a PRIOR
+                    # EMA entry may feed the learned run-max — a single
+                    # start-up spike must not be learned permanently.
+                    ema_seeded = subentry_id in self._load_power_ema
                     previous = self._load_power_ema.get(subentry_id, raw)
                     measured = (
                         _POWER_EMA_ALPHA * raw + (1 - _POWER_EMA_ALPHA) * previous
                     )
                     self._load_power_ema[subentry_id] = measured
+                    # F-PLANNER-HONESTY R2: learn the run-max of the accepted-
+                    # sample EMA; the store always holds the current run's max
+                    # once it has enough accepted samples (last run wins), so
+                    # an OFF load later plans at its real power, not nominal.
+                    if ema_seeded:
+                        run_max = max(
+                            self._load_run_power_max.get(subentry_id, measured),
+                            measured,
+                        )
+                        self._load_run_power_max[subentry_id] = run_max
+                        if self._load_learned_power_w.get(subentry_id) != run_max:
+                            self._load_learned_power_w[subentry_id] = run_max
+                            self._save_persistent_state()
                 elif subentry_id in self._load_power_ema:
                     if bm_active:
                         # Mid-run feedback gap (v0.5.1): keep planning
@@ -1246,14 +1368,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else:
                         # Run over (or the device is being used outside the
                         # manager's plan): a taper/standby/foreign value
-                        # must not stick as "measured" planning power.
+                        # must not stick as "measured" planning power. The
+                        # run-max tracker ends with the run; the LEARNED value
+                        # keeps serving (that is its point, R1/R2).
                         del self._load_power_ema[subentry_id]
+                        self._load_run_power_max.pop(subentry_id, None)
+            # F-EXECUTOR-GUARDS G2 (R6): a stale-latched load is held
+            # unavailable — the planner stops re-booking against the frozen
+            # `remaining`, and the plan-driven OFF runs through the normal
+            # executor path.
+            if self._update_soc_stale(
+                subentry_id, subentry.title, live_soc, raw, min_sample_w
+            ):
+                available = False
             states.append(
                 SurplusLoadState(
                     load_id=subentry_id,
                     available=available,
                     soc_percent=soc,
                     measured_power_w=measured,
+                    learned_power_w=self._load_learned_power_w.get(subentry_id),
                 )
             )
         return tuple(states)
@@ -1537,6 +1671,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for start, count, pass_no, _wh in load_plan.allocations:
                 for j in range(start, start + count):
                     pass_by_slot[j] = pass_no
+            # Explain-plan (F-PLANNER-HONESTY R14): the acceptance reason per
+            # covered slot. zip is deliberately non-strict — a legacy plan
+            # without reasons renders its schedule without the `why` key.
+            why_by_slot: dict[int, str] = {}
+            for (start, count, _p, _wh2), why in zip(
+                load_plan.allocations, load_plan.reasons, strict=False
+            ):
+                for j in range(start, start + count):
+                    why_by_slot[j] = why
             if load_plan.allocations:
                 _LOGGER.debug(
                     "Load %s planned: %s",
@@ -1560,6 +1703,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "power_warning": self._load_power_warning.get(load_plan.load_id, False),
                 "expected_power_w": diag.get("expected_w"),
                 "measured_power_w": diag.get("measured_w"),
+                # F-PLANNER-HONESTY R5: the run-max learned planning power an
+                # OFF load is evaluated with (None until the first learned run).
+                "learned_power_w": self._load_learned_power_w.get(load_plan.load_id),
+                # F-EXECUTOR-GUARDS R8: True while the stale-SOC guard holds
+                # the load unavailable (frozen reading during active charging).
+                "soc_stale": load_plan.load_id in self._load_soc_stale,
                 "deviating_since": since.isoformat() if since else None,
                 "schedule": [
                     {
@@ -1569,6 +1718,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ).isoformat(),
                         # 1 = direct surplus, 2 = preemptive ("zielbasiert")
                         "pass": pass_by_slot.get(slot.index),
+                        # Acceptance reason (R14); absent for legacy plans.
+                        **(
+                            {"why": why_by_slot[slot.index]}
+                            if slot.index in why_by_slot
+                            else {}
+                        ),
                     }
                     for slot, on in zip(inputs.slots, load_plan.schedule, strict=True)
                     if on
@@ -2524,6 +2679,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # latter protects compressor loads from short-cycling.
             if current:  # pending switch OFF
                 dwell_min = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+                # F-EXECUTOR-GUARDS G1 (R1-R3): a target-SOC stop of an
+                # energy-limited load with a charge-enable gate is dwell-
+                # EXEMPT. min_runtime protects relays/compressors from short
+                # cycling, but the enable gate switches no load current path
+                # mechanically worth protecting (the plug — if switched at
+                # all — switches currentless in the ordered OFF branch), while
+                # every dwell minute overshoots the target at real power
+                # (~250 Wh in 30 min at ~505 W, landing at ~95 % for a 90 %
+                # target). Plug-only loads keep the full dwell (the plug relay
+                # is exactly what min_runtime protects); an absent SOC reading
+                # keeps it too (conservative). The confirmed switch still
+                # stamps the dwell timestamp, so min_off fully gates a re-on:
+                # a SOC hovering at the target cannot flap the switch (R2).
+                if data.get(CONF_LOAD_ENERGY_LIMITED) and data.get(
+                    CONF_LOAD_CHARGE_ENABLE
+                ):
+                    soc = (
+                        self._read_float(data[CONF_LOAD_SOC_ENTITY])
+                        if data.get(CONF_LOAD_SOC_ENTITY)
+                        else None
+                    )
+                    target = float(data.get(CONF_LOAD_TARGET_SOC, 100.0))
+                    if soc is not None and soc >= target:
+                        dwell_min = 0
             else:  # pending switch ON
                 dwell_min = int(
                     data.get(

@@ -158,6 +158,30 @@ candidates).
   over the primary level-driven target-SOC stop, so a stale load-SOC sensor
   cannot stretch a ~150 Wh top-up into a full-hour night charge
   (docs/F-RESIDUAL-TOPUP.md).
+- **v5 — honest planning power, load-outer pass 1, explain-plan (operator:
+  "Setze alles um", 2026-07-10):** Three refinements
+  (docs/F-PLANNER-HONESTY.md, resolves the open decision O1 of
+  F-RESIDUAL-TOPUP):
+  1. **Learned planning power:** the coordinator learns per load the run-max
+     of the accepted-sample EMA (run-max so an end-of-charge taper cannot
+     erode it, EMA so a spike cannot inflate it, standby-barred samples never
+     feed it) and persists it, so an OFF load is planned at its real power
+     (F2400-B: ~505 W) instead of the configured nominal (300 W). Precedence:
+     live measured > learned > nominal.
+  2. **Pass 1 is load-outer** in config order (strict priority: a load books
+     its complete pass-1 allocation before the next load sees the horizon)
+     with per-class slot direction — **day-bounded latest-first for
+     energy-limited loads** (calendar days ascending, hours within each day
+     descending: lateness now also governs WHICH direct-surplus hours a
+     saturating residual takes, but never at the price of stranding an
+     earlier day's export — the principle's second clause "just early enough
+     to avoid export" bounds the first), ascending for continuous loads.
+     Each candidate reads the exactly re-simulated export of the current
+     trajectory instead of an intra-slot decrement.
+  3. **Explain-plan:** every accepted allocation records a terse reason
+     string at acceptance time (`LoadPlan.reasons`, surfaced as `why` in the
+     per-load schedule attribute), so "why is this load on NOW?" no longer
+     needs code archaeology.
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.

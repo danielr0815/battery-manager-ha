@@ -181,3 +181,39 @@ SOC (ground truth) anyway, not integrated over the power.
   so a manually started charge yields correct device data; the window is
   bounded by the minimum runtime. Entity outages (unavailable/unknown) never
   count as "off" here (otherwise the EMA would be discarded mid-charge).
+
+## 9. Target-SOC stop is dwell-exempt behind a charge-enable gate (v0.9.0)
+
+F-EXECUTOR-GUARDS G1: the plan-driven OFF of an **energy-limited** load whose
+SOC reading is at/above its target skips the ON→OFF minimum-runtime dwell —
+**iff a charge-enable entity is configured**. The dwell protects relays and
+compressors from short cycling, but the enable gate switches no load current
+path mechanically worth protecting (the plug — if switched at all — switches
+currentless afterwards, see the ordered OFF branch in §3), while every dwell
+minute overshoots the target at real power (~250 Wh in 30 min at ~505 W,
+landing at ~95 % for a 90 % target). Plug-only loads keep the full dwell (the
+plug relay is exactly what `min_runtime` protects), as does a load whose SOC
+reading is absent (conservative). The confirmed switch still stamps the dwell
+timestamp, so the OFF→ON dwell (`min_off`) fully gates a re-on: a SOC hovering
+at the target cannot flap the switch — re-on additionally requires the planner
+to book again (SOC below target first).
+
+## 10. Stale-SOC guard (v0.9.0)
+
+F-EXECUTOR-GUARDS G2: the F2400-B's integration is known to serve **cached SOC
+values with fresh timestamps** ("Poll timed out, returning cached data"), so
+availability/age checks cannot catch it and the planner would re-book run
+after run against a frozen `remaining` (the v0.8.1 executor cap only bounds a
+single run). While the device **demonstrably charges** — BM's charging state
+active AND the raw power feedback above the v0.6.2 standby bar (the single
+threshold, reused) — a SOC that stays EXACTLY unchanged for
+`STALE_LOAD_SOC_MIN` (12) minutes latches the reading as stale: the load is
+held **unavailable** (the planner drops it; the plan-driven OFF runs through
+the normal executor path) and a WARNING names the load and the frozen value
+(logged once, change-gated). The latch clears as soon as the SOC entity
+reports a **different** value (charging or not; INFO once). The evidence clock
+measures continuous charging against a frozen value, not wall time: it resets
+when charging stops or the sample bar is not met (an end-of-charge taper never
+accumulates false evidence), and loads without a SOC or power-feedback entity
+never latch. In-memory only — a restart re-detects within minutes. The
+per-load diagnostics expose `soc_stale`.

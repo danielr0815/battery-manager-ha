@@ -70,6 +70,7 @@ async def _setup(
     min_runtime_min=None,
     min_off_min=None,
     power_entity=POWER_FEEDBACK,
+    charge_enable=ENABLE,
 ):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
@@ -96,9 +97,10 @@ async def _setup(
     if with_control_switch:
         load_data |= {
             CONF_LOAD_CONTROL_SWITCH: PLUG,
-            CONF_LOAD_CHARGE_ENABLE: ENABLE,
             CONF_LOAD_INPUT_OFF_POLICY: policy,
         }
+        if charge_enable is not None:  # None -> plug-only load (G1 R3)
+            load_data[CONF_LOAD_CHARGE_ENABLE] = charge_enable
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=BASE_DATA,
@@ -1470,3 +1472,410 @@ async def test_plan_flap_does_not_switch_off_before_min_runtime(hass):
     await hass.async_block_till_done()
     assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
     coordinator._cancel_off_timer(sub_id)
+
+
+# ---------------------------------------------------------------------------
+# F-PLANNER-HONESTY F1: learned planning power (docs/F-PLANNER-HONESTY.md
+# R2/R3/R6). The run-max of the accepted-sample EMA survives the run (and
+# restarts), so an OFF load is planned at its real power instead of the
+# nominal; the v0.6.2 standby bar stays the single sample gate.
+# ---------------------------------------------------------------------------
+
+
+async def test_learned_power_is_run_max_of_ema(hass):
+    """R2: the learned value is the RUN-MAX of the accepted-sample EMA — an
+    end-of-charge taper cannot erode it — and it keeps serving after the run
+    ends (unlike the live EMA, which is deliberately discarded)."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True  # BM-initiated charge
+    hass.states.async_set(POWER_FEEDBACK, "505")
+
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w == 505.0
+    # R2a: the first accepted sample seeds the EMA only — nothing learned yet.
+    assert sub_id not in coordinator._load_learned_power_w
+    states = coordinator._get_load_states()  # second accepted sample
+    assert coordinator._load_learned_power_w[sub_id] == 505.0
+    assert states[0].learned_power_w == 505.0
+
+    # End-of-charge taper (still above the standby bar): the EMA sinks, the
+    # learned run-max does not.
+    hass.states.async_set(POWER_FEEDBACK, "320")
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w < 505.0
+    assert coordinator._load_learned_power_w[sub_id] == 505.0
+
+    # Run over: the live EMA is dropped (v0.5.1), the learned value serves —
+    # an OFF load now plans at its real 505 W, not the nominal 300 W.
+    coordinator._load_charging_active[sub_id] = False
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w is None
+    assert sub_id not in coordinator._load_run_power_max  # run tracker ends
+    assert states[0].learned_power_w == 505.0
+    from custom_components.battery_manager.core.model import SurplusLoad
+
+    load = SurplusLoad(
+        load_id=sub_id, name="t", nominal_power_w=300.0, energy_limited=True
+    )
+    assert states[0].planning_power_w(load) == 505.0
+
+
+async def test_learned_power_last_run_wins(hass):
+    """R2: the store holds the CURRENT run's max once it has enough accepted
+    samples — a later, genuinely lower-powered run replaces the old value."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    coordinator._get_load_states()
+    coordinator._get_load_states()  # second accepted sample (R2a)
+    assert coordinator._load_learned_power_w[sub_id] == 505.0
+
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._get_load_states()  # run 1 over
+
+    coordinator._load_charging_active[sub_id] = True  # run 2, lower power
+    hass.states.async_set(POWER_FEEDBACK, "400")
+    coordinator._get_load_states()
+    coordinator._get_load_states()  # second accepted sample (R2a)
+    assert coordinator._load_learned_power_w[sub_id] == 400.0  # last run wins
+
+
+async def test_first_sample_spike_is_not_learned(hass):
+    """R2a: the EMA seeds VERBATIM from a run's first accepted sample, so the
+    run-max tracker starts at the SECOND — a single start-up spike run learns
+    nothing, and a spike followed by settled samples learns the EMA-damped
+    band (a fresh settled run then replaces it entirely, last run wins)."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+
+    # A run consisting of ONE spiked sample learns nothing at all.
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "900")
+    coordinator._get_load_states()
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._get_load_states()  # run over after a single sample
+    assert sub_id not in coordinator._load_learned_power_w
+
+    # Spike + settled samples: the spike seeds the EMA but is never learned
+    # verbatim; the learned run-max is the EMA-damped second sample
+    # (0.3*505 + 0.7*900 = 781.5), decaying — not 900.
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "900")
+    coordinator._get_load_states()
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    for _ in range(3):
+        coordinator._get_load_states()
+    assert coordinator._load_learned_power_w[sub_id] < 900.0
+    assert abs(coordinator._load_learned_power_w[sub_id] - 781.5) < 0.1
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._get_load_states()  # run over
+
+    # The next clean settled run replaces the damped value: learned ~505.
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._get_load_states()
+    coordinator._get_load_states()
+    assert coordinator._load_learned_power_w[sub_id] == 505.0
+
+
+async def test_standby_sample_never_learns(hass):
+    """R2/R6: only samples past the v0.6.2 standby bar feed the learned value
+    (the single gate) — an idle 19.6 W of a 400 W load learns nothing, so
+    behaviour without accepted samples stays bit-identical to v0.8.2."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "19.6")
+
+    states = coordinator._get_load_states()
+    assert states[0].measured_power_w is None
+    assert sub_id not in coordinator._load_learned_power_w
+    assert states[0].learned_power_w is None
+
+    coordinator._load_charging_active[sub_id] = False
+    states = coordinator._get_load_states()
+    assert sub_id not in coordinator._load_learned_power_w
+
+
+async def test_learned_power_persists_and_prunes_vanished_loads(hass):
+    """R3: `load_learned_power` round-trips through the Store; entries whose
+    load subentry vanished are dropped on restore (a re-created load must not
+    inherit another device's power)."""
+    from homeassistant.helpers.storage import Store
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_learned_power_w = {sub_id: 505.4, "vanished_load": 300.0}
+
+    captured: dict = {}
+    coordinator._store.async_delay_save = lambda f, _d: captured.update(f())
+    coordinator._save_persistent_state()
+    assert captured["load_learned_power"] == {sub_id: 505.4, "vanished_load": 300.0}
+
+    await coordinator._store.async_save(captured)
+    coordinator._load_learned_power_w.clear()
+    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    await coordinator.async_load_persistent_state()
+    assert coordinator._load_learned_power_w == {sub_id: 505.4}  # ghost pruned
+
+
+# ---------------------------------------------------------------------------
+# F-EXECUTOR-GUARDS G1: dwell-exempt target-SOC stop (docs/F-EXECUTOR-GUARDS.md
+# R1-R4). min_runtime protects relays from short cycling; a charge-enable gate
+# switches no load current path, so the target stop must not overshoot through
+# the dwell. min_off stays fully armed afterwards.
+# ---------------------------------------------------------------------------
+
+
+def _inactive_result(sub_id):
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    return SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(False,),
+                planned_energy_wh=0.0,
+                run_hours=(0.0,),
+            )
+        ]
+    )
+
+
+async def test_target_soc_stop_is_dwell_exempt_with_enable_gate(hass):
+    """R1/R4a: energy-limited + charge-enable + soc >= target: the plan-driven
+    OFF executes although min_runtime has NOT elapsed."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, min_runtime_min=30, min_off_min=30
+    )
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set(FOSSI_SOC, "92")  # >= target 90
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=5)  # < 30
+    calls.clear()
+
+    await coordinator._apply_load_switching(_inactive_result(sub_id), now)
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls  # stopped despite the ON-dwell
+
+
+async def test_target_soc_stop_below_target_keeps_dwell(hass):
+    """R4b: the same load below its target keeps the full ON-dwell."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, min_runtime_min=30, min_off_min=30
+    )
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set(FOSSI_SOC, "40")  # < target 90
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=5)
+    calls.clear()
+
+    await coordinator._apply_load_switching(_inactive_result(sub_id), now)
+    await hass.async_block_till_done()
+    assert calls == []  # dwell still blocks the OFF
+
+
+async def test_target_soc_stop_plug_only_keeps_dwell(hass):
+    """R3/R4c: a plug-only energy-limited load (no charge-enable) keeps the
+    full dwell even at target — the plug relay is what min_runtime protects."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, min_runtime_min=30, min_off_min=30, charge_enable=None
+    )
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(FOSSI_SOC, "92")  # >= target 90
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=5)
+    calls.clear()
+
+    await coordinator._apply_load_switching(_inactive_result(sub_id), now)
+    await hass.async_block_till_done()
+    assert calls == []  # dwell still blocks
+
+
+async def test_target_soc_stop_min_off_still_gates_re_on(hass):
+    """R2/R4d: after a dwell-exempt target stop, the confirmed switch stamped
+    the dwell — an immediate plan-driven re-on is blocked by min_off."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, min_runtime_min=30, min_off_min=30
+    )
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set(FOSSI_SOC, "92")
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=5)
+    calls.clear()
+    await coordinator._apply_load_switching(_inactive_result(sub_id), now)
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls  # target stop executed
+
+    # SOC hovers at the target and the plan books again: min_off blocks.
+    active = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=150.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    calls.clear()
+    await coordinator._apply_load_switching(active, now + timedelta(minutes=5))
+    await hass.async_block_till_done()
+    assert calls == []  # min_off dwell gates the re-on (no flapping)
+
+
+# ---------------------------------------------------------------------------
+# F-EXECUTOR-GUARDS G2: stale-SOC guard (docs/F-EXECUTOR-GUARDS.md R5-R9).
+# The fossibot integration serves cached SOC with fresh timestamps; a SOC
+# frozen for STALE_LOAD_SOC_MIN minutes while demonstrably charging latches
+# the load unavailable until the sensor reports a different value.
+# ---------------------------------------------------------------------------
+
+
+async def test_stale_soc_latches_and_warns_once(hass, caplog):
+    """R5/R6/R9a: frozen SOC + active charging above the bar for the threshold
+    time -> available=False, WARNING exactly once (change-gated)."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    hass.states.async_set(FOSSI_SOC, "40")
+
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # evidence armed, not latched yet
+    # Backdate the evidence past the threshold (the established test pattern
+    # for dwell/timer clocks in this suite).
+    coordinator._load_soc_frozen[sub_id] = (
+        40.0,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    with caplog.at_level(logging.WARNING):
+        caplog.clear()
+        states = coordinator._get_load_states()
+        assert states[0].available is False  # latched -> planner drops it
+        warnings = [r for r in caplog.records if "STALE" in r.message]
+        assert len(warnings) == 1
+        states = coordinator._get_load_states()  # next cycle: still latched
+        assert states[0].available is False
+        warnings = [r for r in caplog.records if "STALE" in r.message]
+        assert len(warnings) == 1  # not logged again every cycle
+
+
+async def test_stale_soc_unlatches_on_changed_reading(hass, caplog):
+    """R6/R9b: a DIFFERENT SOC value unlatches (charging or not), logs INFO
+    once, and the load is schedulable again."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    hass.states.async_set(FOSSI_SOC, "40")
+    coordinator._get_load_states()
+    coordinator._load_soc_frozen[sub_id] = (
+        40.0,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    assert coordinator._get_load_states()[0].available is False  # latched
+
+    hass.states.async_set(FOSSI_SOC, "41")  # the sensor moves again
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        states = coordinator._get_load_states()
+        assert states[0].available is True
+        assert sub_id not in coordinator._load_soc_stale
+        infos = [r for r in caplog.records if "stale latch cleared" in r.message]
+        assert len(infos) == 1
+
+
+async def test_stale_soc_taper_and_idle_reset_evidence(hass):
+    """R7/R9c: a taper below the standby bar or a charging stop RESETS the
+    evidence clock — no false positive at the end of a charge."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    hass.states.async_set(FOSSI_SOC, "40")
+    coordinator._get_load_states()
+    backdated = (40.0, dt_util.utcnow() - timedelta(minutes=13))
+
+    # Taper below the bar: the (backdated) evidence is discarded, no latch.
+    coordinator._load_soc_frozen[sub_id] = backdated
+    hass.states.async_set(POWER_FEEDBACK, "19")  # < bar (75 W for 300 W load)
+    states = coordinator._get_load_states()
+    assert states[0].available is True
+    assert sub_id not in coordinator._load_soc_frozen  # clock reset
+
+    # Charging stopped: same reset, even at full feedback power.
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._load_soc_frozen[sub_id] = backdated
+    states = coordinator._get_load_states()
+    assert states[0].available is True
+    assert sub_id not in coordinator._load_soc_frozen
+
+
+async def test_stale_soc_needs_both_signals(hass):
+    """R7/R9d: without a power-feedback entity (or without a SOC reading) the
+    guard has no evidence and never latches."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_entity=None)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(FOSSI_SOC, "40")
+    coordinator._load_soc_frozen[sub_id] = (
+        40.0,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # no power signal -> no latch
+    assert sub_id not in coordinator._load_soc_frozen
+
+    # SOC reading absent (device dropout): equally no evidence, no latch.
+    calls2: list[tuple[str, str]] = []
+    coordinator2, sub_id2, _ = await _setup(hass, calls2)
+    coordinator2._load_charging_active[sub_id2] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    hass.states.async_set(FOSSI_SOC, "unavailable")
+    coordinator2._load_soc_frozen[sub_id2] = (
+        40.0,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    states = coordinator2._get_load_states()
+    assert states[0].available is True
+    assert sub_id2 not in coordinator2._load_soc_frozen

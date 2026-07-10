@@ -719,3 +719,68 @@ async def test_load_order_mixed_stored_wins_insertion_breaks_ties(hass):
         ],
     )
     assert _load_titles(coordinator, titles) == ["A", "C", "B"]
+
+
+# ---------------------------------------------------------------------------
+# F-PLANNER-HONESTY F3: explain-plan surfaced through the coordinator data
+# dict and the SOC-forecast sensor (docs/F-PLANNER-HONESTY.md R5/R14/R15).
+# ---------------------------------------------------------------------------
+
+
+async def test_load_plan_dict_carries_why_and_learned_power(hass):
+    """R14: every per-load schedule entry carries the acceptance reason as
+    `why` (matching its `pass`), and the dict exposes `learned_power_w` next
+    to the existing diagnostics (R5); the SOC-forecast sensor attribute
+    passes the schedule entries through verbatim.
+
+    Placement-agnostic on purpose: an EMPTY energy-limited load with a high
+    house SOC and strong PV on every horizon day books pass-1 surplus hours
+    at any wall-clock hour — the assertions iterate whatever entries exist
+    instead of pinning slots."""
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CAPACITY_WH,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_POWER_W,
+        ENTITY_SOC_FORECAST_CURVE,
+    )
+
+    coordinator, _titles = await _setup_entry_with_load_data(
+        hass,
+        [
+            (
+                "F1",
+                {
+                    CONF_LOAD_POWER_W: 300.0,
+                    CONF_LOAD_ENERGY_LIMITED: True,
+                    CONF_LOAD_CAPACITY_WH: 2000.0,
+                },
+            )
+        ],
+    )
+    entry = coordinator.entry
+    sub_id = next(iter(entry.subentries))
+    hass.states.async_set(
+        "sensor.test_soc", "93", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    coordinator._load_learned_power_w[sub_id] = 505.4
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    plan_dict = coordinator.data["load_plans"][sub_id]
+    assert plan_dict["learned_power_w"] == 505.4  # R5 diagnostics
+    schedule = plan_dict["schedule"]
+    assert schedule, "scenario must book at least one slot"
+    for entry_row in schedule:
+        assert entry_row["why"].startswith(f"pass {entry_row['pass']} @ ")
+
+    # The sensor's `loads` attribute carries the same schedule entries.
+    reg = er.async_get(hass)
+    eid = reg.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry.entry_id}_{ENTITY_SOC_FORECAST_CURVE}"
+    )
+    assert eid is not None
+    attrs = hass.states.get(eid).attributes
+    sensor_schedule = attrs["loads"][0]["schedule"]
+    assert sensor_schedule and all("why" in row for row in sensor_schedule)

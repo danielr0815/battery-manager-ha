@@ -490,21 +490,22 @@ def test_degenerate_slot0_never_triggers_min_runtime_charge():
 
 def test_activation_books_at_least_min_runtime_energy():
     """Whenever slot 0 is activated, the plan must have booked the energy the
-    executor's dwell will really deliver — never a sliver of the dying slot."""
+    executor's dwell will really deliver — never a sliver of the dying slot.
+
+    Since F-PLANNER-HONESTY R7 an energy-limited load walks pass 1 latest-
+    first, so a *now* activation only happens when slot 0 IS the latest
+    feasible surplus hour: end of the day's window, battery at the cap, the
+    last export dribble about to be lost."""
     config = SystemConfig(loads=(FOSSIBOT_1,))
     states = (SurplusLoadState(load_id="fossibot_1", soc_percent=0.0),)
-    # Midday, battery full, huge surplus: activation right now is correct.
-    now = datetime(2026, 7, 4, 11, 59)
-    result, inputs = make_plan(
-        config, now, 93.0, [12.0, 12.0, 12.0], load_states=states
-    )
+    now = datetime(2026, 7, 4, 17, 1)  # last export hour of the day
+    result, inputs = make_plan(config, now, 94.0, [12.0], load_states=states)
     load_plan = result.load_plans[0]
     assert load_plan.active_now
     min_commit_wh = FOSSIBOT_1.nominal_power_w * FOSSIBOT_1.min_runtime_min / 60.0
     slot0_alloc = [a for a in load_plan.allocations if a[0] == 0]
     assert slot0_alloc and slot0_alloc[0][3] >= min_commit_wh - 1e-6
-    # The commitment spills past the 1-minute slot into the next hour.
-    assert load_plan.schedule[0] and load_plan.schedule[1]
+    assert load_plan.run_hours[0] >= FOSSIBOT_1.min_runtime_min / 60.0 - 1e-9
 
 
 def test_pass2_places_preemptive_hours_latest_first():
@@ -816,6 +817,17 @@ def test_r4_live_scene_residual_books_next_day_not_slot0():
     assert len(covered) == 1
     assert abs(lp.run_hours[covered[0]] - 0.5) < 1e-9
     assert abs(lp.planned_energy_wh - 150.0) < 1.0
+    # F-PLANNER-HONESTY R7 v2/R11c: day-bounded lateness — the top-up lands on
+    # the first (and here only) exporting day, 07-11, at that day's LAST
+    # exporting slot, not merely past 06:00.
+    booked_day = inputs.slots[covered[0]].start.date()
+    assert booked_day == datetime(2026, 7, 11, 0, 0).date()
+    last_export_of_day = max(
+        i
+        for i, f in enumerate(result.trajectory.flows)
+        if f.grid_export_wh > 1e-9 and inputs.slots[i].start.date() == booked_day
+    )
+    assert covered[0] == last_export_of_day
 
 
 def test_pass2_residual_books_latest_of_two_feasible_slots():
@@ -860,9 +872,11 @@ def test_pass2_residual_books_latest_of_two_feasible_slots():
 
 def test_pass1_residual_capture_in_direct_surplus_hour():
     """Pass-1 residual capture (R6): midday, battery full, strong surplus. A
-    fossibot 156 Wh short of target books a single 0.5 h pass-1 run right now,
-    saturating within the sun window — a new capture class (before R1 the whole-
-    hour saturation gate rejected the residual and it booked nothing)."""
+    fossibot 156 Wh short of target books a single 0.5 h pass-1 quantum in a
+    direct-surplus hour — a capture class the whole-hour saturation gate used
+    to reject entirely. Since F-PLANNER-HONESTY R7 v2 the quantum sits at the
+    LATEST feasible surplus hour OF THE FIRST exporting day (day-bounded
+    lateness): today's export is rescued, just as late as possible."""
     config = SystemConfig(loads=(FOSSIBOT_B,))
     now = datetime(2026, 7, 4, 11, 0)
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
@@ -871,11 +885,112 @@ def test_pass1_residual_capture_in_direct_surplus_hour():
     )
     lp = result.load_plans[0]
     assert result.grid_export_kwh > 0.128  # a real direct surplus to capture
-    assert lp.active_now  # booked now, in the direct-surplus hour
-    slot0 = [a for a in lp.allocations if a[0] == 0]
-    assert slot0 and slot0[0][2] == 1, "expected a pass-1 booking at slot 0"
-    assert abs(lp.run_hours[0] - 0.5) < 1e-9
+    assert len(lp.allocations) == 1 and lp.allocations[0][2] == 1  # one pass-1 run
+    booked = lp.allocations[0][0]
+    assert abs(lp.run_hours[booked] - 0.5) < 1e-9
     assert abs(lp.planned_energy_wh - 150.0) < 1.0
+    # Day-bounded lateness (R7 v2): the booking stays on TODAY (the first day
+    # with rescuable export) and no surplus hour of that day after it is left
+    # unused — it is the day's last exporting slot in the final plan.
+    assert inputs.slots[booked].start.date() == now.date()
+    last_export_of_day = max(
+        i
+        for i, f in enumerate(result.trajectory.flows)
+        if f.grid_export_wh > 1e-9 and inputs.slots[i].start.date() == now.date()
+    )
+    assert booked == last_export_of_day, (
+        f"residual booked at slot {booked}, but its day still exports up to "
+        f"slot {last_export_of_day}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# F-PLANNER-HONESTY: learned planning power (F1), load-outer pass 1 with
+# per-class slot direction (F2, resolves O1 of F-RESIDUAL-TOPUP), explain-plan
+# (F3). docs/F-PLANNER-HONESTY.md.
+# ---------------------------------------------------------------------------
+
+
+def test_planning_power_precedence_measured_learned_nominal():
+    """R1/R6: measured (live) > learned (past runs) > nominal; a zero or absent
+    learned value never masks the nominal fallback (bit-identical to v0.8.2
+    when no learned value exists)."""
+    both = SurplusLoadState(
+        load_id="fossibot_1", measured_power_w=505.0, learned_power_w=480.0
+    )
+    assert both.planning_power_w(FOSSIBOT_1) == 505.0
+    learned_only = SurplusLoadState(load_id="fossibot_1", learned_power_w=480.0)
+    assert learned_only.planning_power_w(FOSSIBOT_1) == 480.0
+    neither = SurplusLoadState(load_id="fossibot_1")
+    assert neither.planning_power_w(FOSSIBOT_1) == FOSSIBOT_1.nominal_power_w
+    zeroed = SurplusLoadState(load_id="fossibot_1", learned_power_w=0.0)
+    assert zeroed.planning_power_w(FOSSIBOT_1) == FOSSIBOT_1.nominal_power_w
+
+
+def test_pass1_energy_limited_residual_books_later_of_two_hours():
+    """R7/R11a: two feasible direct-surplus hours, a residual that fits only
+    one 0.5 h quantum — the LATER hour hosts it. The earlier hour provably
+    stayed feasible: it still exports more than the quantum needs."""
+    config = SystemConfig(loads=(FOSSIBOT_B,))
+    now = datetime(2026, 7, 4, 16, 1)
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
+    result, inputs = make_plan(config, now, 94.0, [12.0], load_states=states)
+    lp = result.load_plans[0]
+    assert lp.allocations == ((1, 1, 1, 150.0),)  # one pass-1 quantum at 17:00
+    assert not lp.schedule[0], "booked the earlier hour despite a later feasible one"
+    # The skipped earlier hour still exports >= the quantum's energy.
+    assert result.trajectory.flows[0].grid_export_wh >= 150.0
+
+
+def test_pass1_load_outer_config_order_priority_scarce_surplus():
+    """R7/R11b: with scarce surplus the load-outer pass 1 gives strict
+    config-order priority — inverting the order shifts the surplus energy to
+    the (new) first load; total import stays identical."""
+    now = datetime(2026, 7, 4, 10, 0)
+    states = (
+        SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),
+        SurplusLoadState(load_id="dehumidifier"),
+    )
+
+    def planned(loads):
+        cfg = SystemConfig(loads=loads)
+        result, _ = make_plan(cfg, now, 93.0, [6.0], load_states=states)
+        by_id = {p.load_id: p.planned_energy_wh for p in result.load_plans}
+        return by_id, result.grid_import_kwh
+
+    fb_first, import_fb = planned((FOSSIBOT_B, DEHUMIDIFIER))
+    deh_first, import_deh = planned((DEHUMIDIFIER, FOSSIBOT_B))
+    assert fb_first["fossibot_b"] > deh_first["fossibot_b"]
+    assert deh_first["dehumidifier"] > fb_first["dehumidifier"]
+    assert abs(import_fb - import_deh) < 1e-6  # priority shifts energy, not import
+
+
+def test_reasons_align_one_to_one_with_allocations():
+    """R12/R13/R15: every allocation entry has exactly one reason, same order;
+    the pass number in the string matches the allocation's pass, and pass-2
+    reasons carry the structural lateness claim."""
+    result, _ = _s3_plan()
+    for lp in result.load_plans:
+        assert len(lp.reasons) == len(lp.allocations)
+        for (_start, _count, pass_no, _wh), why in zip(
+            lp.allocations, lp.reasons, strict=True
+        ):
+            assert why.startswith(f"pass {pass_no} @ ")
+            if pass_no == 1:
+                assert "direct surplus" in why
+            else:
+                assert "latest feasible slot" in why
+    # The scenario books at least one allocation, so the check is not vacuous.
+    assert any(lp.allocations for lp in result.load_plans)
+
+
+def test_legacy_load_plan_defaults_to_empty_reasons():
+    """R12: LoadPlan constructors without reasons stay valid (goldens and
+    legacy callers must not gain the field implicitly)."""
+    from core.model import LoadPlan
+
+    lp = LoadPlan(load_id="x", schedule=(True,), planned_energy_wh=1.0)
+    assert lp.reasons == ()
 
 
 # ---------------------------------------------------------------------------

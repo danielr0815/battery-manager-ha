@@ -97,6 +97,10 @@ class SurplusLoadState:
     available: bool = True  # False: unplugged/unavailable -> never scheduled
     soc_percent: float | None = None  # for energy_limited loads
     measured_power_w: float | None = None  # smoothed feedback power
+    # Run-max of the accepted-sample EMA from past runs (F-PLANNER-HONESTY R1):
+    # honest planning power for an OFF load whose configured nominal is wrong
+    # (F2400-B: 300 W configured vs ~505 W real — every gate ~40 % under).
+    learned_power_w: float | None = None
 
     def remaining_energy_wh(self, load: SurplusLoad) -> float | None:
         """Energy still absorbable, or None if unlimited."""
@@ -107,8 +111,12 @@ class SurplusLoadState:
         return max(0.0, remaining)
 
     def planning_power_w(self, load: SurplusLoad) -> float:
+        # Precedence (R1): live measured (present only during/around an active
+        # run) > learned from past runs > configured nominal.
         if self.measured_power_w is not None and self.measured_power_w > 0:
             return self.measured_power_w
+        if self.learned_power_w is not None and self.learned_power_w > 0:
+            return self.learned_power_w
         return load.nominal_power_w
 
 
@@ -356,6 +364,11 @@ class LoadPlan:
     # length/indexing as `schedule`; schedule[i] == (run_hours[i] > 0).
     # Empty () means "not populated" (legacy callers) -> treat as whole slots.
     run_hours: tuple[float, ...] = ()
+    # Explain-plan (F-PLANNER-HONESTY R12): one terse English string per entry
+    # of `allocations`, same order — why the planner accepted that booking.
+    # Empty default keeps every legacy constructor valid; consumers must not
+    # assume it is populated.
+    reasons: tuple[str, ...] = ()
 
     @property
     def active_now(self) -> bool:

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-10
+
+### Added
+- **Learned planning power (F-PLANNER-HONESTY F1).** The coordinator learns per
+  load the run-maximum of the accepted-sample power EMA (taper-proof,
+  spike-proof — the run-max starts at a run's second accepted sample so a
+  start-up spike is never learned verbatim — and standby samples never feed
+  it) and persists it across restarts, so an OFF load is planned at its real
+  power instead of the configured nominal (F2400-B: ~505 W real vs 300 W
+  configured — all gates and the booked energy were ~40 % under). Precedence:
+  live measured > learned > nominal; exposed as `learned_power_w` in the
+  per-load diagnostics.
+- **Explain-plan (F-PLANNER-HONESTY F3).** Every accepted booking records a
+  terse reason string at acceptance time ("pass 1 @ 07-11 17:00: direct
+  surplus, 30 min x 505 W, battery share 0%"), surfaced as `why` in the
+  per-load `schedule` attribute of the SOC-forecast sensor.
+- **Stale-SOC guard (F-EXECUTOR-GUARDS G2).** A load SOC that stays exactly
+  unchanged for 12 minutes while the device demonstrably charges (feedback
+  above the standby bar) is latched as stale: the load is held unavailable —
+  the planner stops re-booking against the frozen value — until the sensor
+  reports a different reading (the fossibot integration serves cached SOC with
+  fresh timestamps, invisible to age checks). Change-gated WARNING/INFO logs;
+  `soc_stale` in the per-load diagnostics.
+
+### Changed
+- **Pass 1 places energy-limited loads as late as possible within their day
+  (F-PLANNER-HONESTY F2, R7 v2).** The direct-surplus pass is now load-outer in
+  priority order (a load completes its pass-1 allocation before the next load
+  sees the horizon) and walks the slots day-bounded latest-first for
+  energy-limited loads — calendar days ascending, hours within each day
+  descending — so a saturating residual takes the LATEST export hours of the
+  FIRST day whose surplus it can rescue, never stranding an earlier day's
+  export ("as late as possible, just early enough to avoid export"; resolves
+  the open decision O1 of F-RESIDUAL-TOPUP). Continuous loads keep ascending
+  order. Candidate evaluation now reads the exactly re-simulated export
+  instead of an intra-slot approximation. Imports never rise; marginal
+  placements can shift (see regenerated goldens).
+- **Target-SOC stop is dwell-exempt behind a charge-enable gate
+  (F-EXECUTOR-GUARDS G1).** The plan-driven OFF of an energy-limited load at or
+  above its target SOC skips the ON->OFF minimum-runtime dwell when a
+  charge-enable entity is configured — the gate switches no load current path
+  worth protecting, while every dwell minute overshoots the target at real
+  power (~250 Wh in 30 min at ~505 W). Plug-only loads and loads without a SOC
+  reading keep the full dwell; `min_off` still gates a re-on, so a SOC at the
+  target cannot flap the switch.
+
+### Fixed
+- **Deprecated coordinator init (F-EXECUTOR-GUARDS G3).** The
+  `DataUpdateCoordinator` is now constructed with `config_entry=` — newer HA
+  cores hard-error on the implicit ContextVar lookup.
+
 ## [0.8.2] - 2026-07-10
 
 ### Added
