@@ -7,6 +7,8 @@ the battery. Emergency support paths (D-A9) can shift DC loads to the grid.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
 
 _EPS = 1e-9
@@ -230,19 +232,24 @@ def simulate(
     extra_ac_wh: tuple[float, ...] | None = None,
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
-    pv_scale: float = 1.0,
+    pv_scale: float | Sequence[float] = 1.0,
 ) -> Trajectory:
     """Simulate the whole horizon under the policy `inverter on <=> SOC > threshold`.
 
-    `pv_scale` multiplies every slot's PV forecast (F-PREDRAIN F3): the planner
-    re-runs the horizon pessimistically (alpha < 1.0) to protect the lower
-    buffer, or optimistically (beta > 1.0) to size the upper buffer. 1.0 is the
-    neutral default and keeps the result bit-identical to the unscaled run.
+    `pv_scale` multiplies each slot's PV forecast (F-PREDRAIN F3):
+    - a SCALAR applies the same factor to every slot — the planner re-runs the
+      horizon pessimistically (alpha < 1.0) or optimistically (beta > 1.0);
+    - a SEQUENCE is a per-slot factor, index-aligned with `inputs.slots`, so the
+      windowed lower-buffer stress gate (§3.3 v2) can stress only the bet's
+      recovery window and leave the rest of the horizon at nominal PV.
+    1.0 (scalar) is the neutral default and keeps the result bit-identical to the
+    unscaled run.
     """
     soc = inputs.start_soc_percent
     flows: list[HourFlows] = []
     total_import = 0.0
     total_export = 0.0
+    seq_scale = not isinstance(pv_scale, (int, float))
 
     for i, slot in enumerate(inputs.slots):
         flow = step_hour(
@@ -253,7 +260,7 @@ def simulate(
             extra_ac_wh=extra_ac_wh[i] if extra_ac_wh else 0.0,
             dc24_from_grid=bool(dc24_schedule[i]) if dc24_schedule else False,
             dc48_support=bool(dc48_schedule[i]) if dc48_schedule else False,
-            pv_scale=pv_scale,
+            pv_scale=pv_scale[i] if seq_scale else pv_scale,
         )
         flows.append(flow)
         soc = flow.soc_end_percent
