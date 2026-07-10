@@ -69,6 +69,7 @@ async def _setup(
     energy_limited=True,
     min_runtime_min=None,
     min_off_min=None,
+    power_entity=POWER_FEEDBACK,
 ):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
@@ -85,8 +86,9 @@ async def _setup(
         CONF_LOAD_CAPACITY_WH: 2000.0,
         CONF_LOAD_TARGET_SOC: 90.0,
         CONF_LOAD_SOC_ENTITY: FOSSI_SOC,
-        CONF_LOAD_POWER_ENTITY: POWER_FEEDBACK,
     }
+    if power_entity is not None:
+        load_data[CONF_LOAD_POWER_ENTITY] = power_entity
     if min_runtime_min is not None:
         load_data[CONF_LOAD_MIN_RUNTIME_MIN] = min_runtime_min
     if min_off_min is not None:
@@ -668,3 +670,304 @@ async def test_recommendation_only_load_active_flips_at_deadline(hass):
     coordinator._maintain_recommendation_deadline(sub_id, data, off_plan, after, (1.0,))
     assert sub_id not in coordinator._load_run_deadline
     coordinator._cancel_off_timer(sub_id)
+
+
+async def test_load_control_switch_gates_availability(hass):
+    """v0.7.17: the per-load 'BM control' switch off -> the load is held
+    unavailable (planner drops it), on -> available again; state is persisted."""
+    call_log = []
+    coordinator, sub_id, _ = await _setup(hass, call_log)
+
+    assert coordinator.load_bm_enabled(sub_id) is True  # default: BM controls it
+    states = {s.load_id: s for s in coordinator._get_load_states()}
+    assert states[sub_id].available is True
+
+    coordinator.set_load_enabled(sub_id, False)
+    assert coordinator.load_bm_enabled(sub_id) is False
+    states = {s.load_id: s for s in coordinator._get_load_states()}
+    assert states[sub_id].available is False  # held unavailable -> planner drops it
+    assert coordinator._persistent_payload()["load_bm_enabled"][sub_id] is False
+
+    coordinator.set_load_enabled(sub_id, True)
+    states = {s.load_id: s for s in coordinator._get_load_states()}
+    assert states[sub_id].available is True
+
+
+async def test_load_control_switch_entity_created_and_toggles(hass):
+    """The switch entity exists per load, defaults on, and toggling it drives
+    the coordinator flag."""
+    from homeassistant.helpers import entity_registry as er
+
+    call_log = []
+    coordinator, sub_id, _ = await _setup(hass, call_log)
+    entry_id = coordinator.entry.entry_id
+    eid = er.async_get(hass).async_get_entity_id(
+        "switch", DOMAIN, f"{entry_id}_load_control_{sub_id}"
+    )
+    assert eid is not None
+    assert hass.states.get(eid).state == "on"
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": eid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert coordinator.load_bm_enabled(sub_id) is False
+    assert hass.states.get(eid).state == "off"
+
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": eid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert coordinator.load_bm_enabled(sub_id) is True
+    assert hass.states.get(eid).state == "on"
+
+
+# ---------------------------------------------------------------------------
+# v0.7.18: real active-runtime counter + reset button
+# ---------------------------------------------------------------------------
+
+
+async def test_runtime_counter_accumulates_real_active_minutes(hass):
+    """The counter adds the elapsed time between ticks while the load really
+    draws power (> LOAD_RUNTIME_MIN_W), captures the final partial on the off
+    transition, and does not advance while idle (v0.7.18)."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+
+    t0 = dt_util.now()
+    hass.states.async_set(POWER_FEEDBACK, "300")  # > 5 W -> running
+    coordinator._update_load_runtime(t0)  # first tick only arms the cursor
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0
+
+    coordinator._update_load_runtime(t0 + timedelta(minutes=5))  # +5 min
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01
+
+    hass.states.async_set(POWER_FEEDBACK, "1")  # < 5 W -> stops
+    coordinator._update_load_runtime(t0 + timedelta(minutes=7))  # final +2 min
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 7.0) < 0.01
+
+    coordinator._update_load_runtime(t0 + timedelta(minutes=30))  # idle: no change
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 7.0) < 0.01
+
+
+async def test_runtime_counter_caps_restart_gap(hass):
+    """A gap longer than the tick cap (e.g. HA down mid-run) adds nothing, so
+    downtime can never inflate the counter; normal ticks resume after it."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+
+    t0 = dt_util.now()
+    hass.states.async_set(POWER_FEEDBACK, "300")
+    coordinator._update_load_runtime(t0)  # arm cursor
+    coordinator._update_load_runtime(t0 + timedelta(hours=2))  # > 900 s cap: dropped
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0
+    coordinator._update_load_runtime(t0 + timedelta(hours=2, minutes=5))  # +5 min
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01
+
+
+async def test_runtime_counter_reset(hass):
+    """Reset zeroes the counter and, for a run still in progress, restarts the
+    cursor so only post-reset time counts."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+
+    t0 = dt_util.now()
+    hass.states.async_set(POWER_FEEDBACK, "300")
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=10))
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 10.0) < 0.01
+
+    coordinator.reset_load_runtime(sub_id)
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0
+    # In-progress run kept its cursor -> resumes counting from the reset moment.
+    assert sub_id in coordinator._load_run_since
+    tr = coordinator._load_run_since[sub_id]
+    coordinator._update_load_runtime(tr + timedelta(minutes=3))
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 3.0) < 0.01
+
+
+async def test_runtime_counter_persists_across_restart(hass):
+    """Accumulated seconds and the in-progress cursor survive a restart."""
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+
+    t0 = dt_util.now()
+    hass.states.async_set(POWER_FEEDBACK, "300")
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=8))
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 8.0) < 0.01
+
+    captured: dict = {}
+    coordinator._store.async_delay_save = lambda f, _d: captured.update(f())
+    coordinator._save_persistent_state()
+    assert captured["load_runtime_seconds"][sub_id] > 470  # ~480 s
+    assert "load_run_since" not in captured  # cursor deliberately NOT persisted
+
+    await coordinator._store.async_save(captured)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    await coordinator.async_load_persistent_state()
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 8.0) < 0.01
+    assert sub_id not in coordinator._load_run_since  # cursor NOT restored
+
+
+async def test_runtime_counter_uses_charging_state_without_power_sensor(hass):
+    """When the power-feedback sensor is unavailable, the counter follows BM's
+    own charging state instead."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+
+    hass.states.async_set(POWER_FEEDBACK, "unavailable")  # feedback down -> fallback
+    coordinator._load_charging_active[sub_id] = True
+    t0 = dt_util.now()
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=6))
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 6.0) < 0.01
+
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._update_load_runtime(t0 + timedelta(minutes=9))  # final +3 min
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 9.0) < 0.01
+    coordinator._update_load_runtime(t0 + timedelta(minutes=20))  # idle: no change
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 9.0) < 0.01
+
+
+async def test_runtime_sensor_and_reset_button_entities(hass):
+    """A runtime sensor (minutes) and a reset button are created per load; the
+    sensor reflects the counter and the button zeroes it."""
+    from homeassistant.helpers import entity_registry as er
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+    entry_id = coordinator.entry.entry_id
+    reg = er.async_get(hass)
+    sensor_eid = reg.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry_id}_load_runtime_{sub_id}"
+    )
+    button_eid = reg.async_get_entity_id(
+        "button", DOMAIN, f"{entry_id}_load_runtime_reset_{sub_id}"
+    )
+    assert sensor_eid is not None
+    assert button_eid is not None
+
+    t0 = dt_util.now()
+    hass.states.async_set(POWER_FEEDBACK, "300")
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=12))
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    assert float(hass.states.get(sensor_eid).state) == 12.0
+
+    await hass.services.async_call(
+        "button", "press", {"entity_id": button_eid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0
+    assert float(hass.states.get(sensor_eid).state) == 0.0
+
+
+async def test_runtime_counter_recommendation_only_load_counts(hass):
+    """Fix: a recommendation-only load (no control switch, no power sensor) has
+    no charging state, so the counter must fall back to BM's published
+    plan-active recommendation instead of staying stuck at 0 forever."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(
+        hass, calls, with_control_switch=False, power_entity=None
+    )
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+    assert sub_id not in coordinator._load_charging_active  # recommendation-only
+
+    coordinator._load_plan_active[sub_id] = True  # BM recommends it active
+    t0 = dt_util.now()
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=7))
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 7.0) < 0.01
+
+    coordinator._load_plan_active[sub_id] = False  # recommendation ends
+    coordinator._update_load_runtime(t0 + timedelta(minutes=10))  # final +3 min
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 10.0) < 0.01
+
+
+async def test_runtime_counter_restart_does_not_credit_downtime(hass):
+    """A restart must not credit the downtime gap as runtime: the tick cursor is
+    not persisted, so the first post-restart tick only re-arms — even if the load
+    stopped while HA was down, no phantom minutes are added."""
+    from homeassistant.helpers.storage import Store
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, calls)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+
+    t0 = dt_util.now()
+    hass.states.async_set(POWER_FEEDBACK, "300")
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=5))  # 5 min banked
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01
+
+    # Persist and simulate a restart with a fresh Store.
+    captured: dict = {}
+    coordinator._store.async_delay_save = lambda f, _d: captured.update(f())
+    coordinator._save_persistent_state()
+    await coordinator._store.async_save(captured)
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    await coordinator.async_load_persistent_state()
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01
+    assert sub_id not in coordinator._load_run_since  # cursor not restored
+
+    # HA was down 8 min and the load is OFF now: the first tick must not add it.
+    hass.states.async_set(POWER_FEEDBACK, "1")  # < 5 W -> stopped
+    coordinator._update_load_runtime(t0 + timedelta(minutes=13))
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01  # no phantom
+
+
+async def test_load_control_switch_state_survives_restart(hass):
+    """v0.7.17: the BM-control flag round-trips through the Store, so a paused
+    load stays paused across a restart (the restore path is load-bearing — the
+    CHANGELOG promises the state is persisted)."""
+    from homeassistant.helpers.storage import Store
+
+    call_log: list[tuple[str, str]] = []
+    coordinator, sub_id, _ = await _setup(hass, call_log)
+    coordinator.set_load_enabled(sub_id, False)
+
+    captured: dict = {}
+    coordinator._store.async_delay_save = lambda f, _d: captured.update(f())
+    coordinator._save_persistent_state()
+    assert captured["load_bm_enabled"][sub_id] is False
+
+    await coordinator._store.async_save(captured)
+    coordinator._load_bm_enabled.clear()
+    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    await coordinator.async_load_persistent_state()
+    assert coordinator.load_bm_enabled(sub_id) is False  # restored, still paused

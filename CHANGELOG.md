@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.18] - 2026-07-10
+
+### Added
+- **Per-load active-runtime counter + reset.** Every surplus load now exposes a
+  **runtime sensor** (minutes) in the Battery Manager device that counts the time
+  the load **really runs** — measured from its power-feedback sensor when one is
+  configured (so manual runs count too), otherwise from BM's own charging state —
+  and a **reset button** to zero it. The counter accumulates with a capped
+  per-cycle tick, so a normal update is never clipped while an HA restart gap, a
+  stalled loop or a clock jump can never inflate it; the value is persisted across
+  restarts (`TOTAL_INCREASING`, so long-term statistics treat a reset as a new
+  period).
+
+## [0.7.17] - 2026-07-09
+
+### Added
+- **Per-load "BM control" switch.** Every surplus load now exposes a switch in
+  the Battery Manager device (on by default). Turning it **off** holds that load
+  **unavailable** — the planner drops it and the executor switches it off the
+  next cycle — so a device can be paused with one tap **without removing its
+  control switch**; turning it back **on** resumes. The state is persisted across
+  restarts. This is the same effect as wiring an `availability_entity`, but
+  built in and created automatically per load.
+
 ## [0.7.16] - 2026-07-09
 
 ### Changed

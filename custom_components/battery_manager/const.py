@@ -269,6 +269,16 @@ DEFAULT_CONFIG = {
     CONF_PSU48_CTRL_LOG_ONLY: True,  # arm only after a shakedown
 }
 
+# A load counts as "really running" for the runtime counter when its measured
+# power exceeds this (W) — above typical smart-plug/appliance standby, below any
+# real draw. Falls back to the BM charging state when no power sensor is set.
+LOAD_RUNTIME_MIN_W = 5.0
+# Max time a single runtime tick may add (s). Above the 300 s update interval so
+# a normal cycle is never clipped, but bounds any inflation from a stalled loop
+# or a clock jump within a session — a longer gap adds nothing. (A restart gap is
+# handled separately by not persisting the tick cursor.)
+LOAD_RUNTIME_TICK_MAX_S = 900.0
+
 DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_POWER_W: 300.0,
     CONF_LOAD_BATTERY_TOLERANCE: 15.0,

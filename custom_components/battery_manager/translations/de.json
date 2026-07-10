@@ -586,6 +586,9 @@
           "auto": "Automatik",
           "manual": "Manuell"
         }
+      },
+      "load_runtime": {
+        "name": "{name} aktive Laufzeit"
       }
     },
     "binary_sensor": {
@@ -617,6 +620,14 @@
       },
       "support_dc48_manual": {
         "name": "48-V-Stützung manuell"
+      },
+      "load_control": {
+        "name": "{name} BM-Steuerung"
+      }
+    },
+    "button": {
+      "load_runtime_reset": {
+        "name": "{name} Laufzeit zurücksetzen"
       }
     }
   },

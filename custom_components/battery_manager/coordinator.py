@@ -86,6 +86,8 @@ from .const import (
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
     INPUT_OFF_POLICY_KEEP,
+    LOAD_RUNTIME_MIN_W,
+    LOAD_RUNTIME_TICK_MAX_S,
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
@@ -258,6 +260,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # exactly (no ~250 Wh over-run). Persisted so a restart never uncaps a run.
         self._load_run_deadline: dict[str, datetime] = {}
         self._load_off_timer: dict[str, Any] = {}
+        # Per-load "BM control active" switch (v0.7.17). Missing/True = BM plans
+        # and actuates the load; False holds it UNAVAILABLE (planner drops it,
+        # executor switches it off) without touching the control-switch config.
+        self._load_bm_enabled: dict[str, bool] = {}
+        # Real active-runtime counter per load (v0.7.18): accumulated seconds the
+        # load really ran (persisted, so the count survives restarts), plus the
+        # last-tick cursor of an in-progress run (NOT persisted — a restored
+        # cursor would credit the restart gap; see _update_load_runtime).
+        self._load_runtime_seconds: dict[str, float] = {}
+        self._load_run_since: dict[str, datetime] = {}
 
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
         self.learner = ProfileLearner(hass, entry)
@@ -305,6 +317,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
                     self._load_run_deadline[k] = ts
+            self._load_bm_enabled = {
+                k: bool(v) for k, v in data.get("load_bm_enabled", {}).items()
+            }
+            self._load_runtime_seconds = {
+                k: float(v)
+                for k, v in data.get("load_runtime_seconds", {}).items()
+            }
+            # The tick cursor (_load_run_since) is intentionally not restored —
+            # see _persistent_payload; the first tick re-arms it so a restart gap
+            # is never credited as runtime.
             # F-SUBHOUR H1: restore appliance run starts (a still-running
             # appliance keeps its real elapsed; a finished one is popped on the
             # next _get_appliance_runs when detection reads not-running).
@@ -356,6 +378,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "load_run_deadline": {
                 k: v.isoformat() for k, v in self._load_run_deadline.items()
             },
+            "load_bm_enabled": dict(self._load_bm_enabled),
+            # Only the accumulated total is persisted; the in-progress tick cursor
+            # is deliberately NOT — restoring it would credit the whole restart
+            # gap (up to the tick cap) as runtime the device may never have run.
+            # After a restart the first tick just re-arms the cursor (losing at
+            # most the last sub-cycle partial, which is bounded and unobservable).
+            "load_runtime_seconds": dict(self._load_runtime_seconds),
             # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
             # does not re-latch at `now` and re-inject the full run energy.
             "appliance_started": {
@@ -792,6 +821,86 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return dt_util.now() - parsed > timedelta(hours=LOAD_SOC_CACHE_MAX_AGE_HOURS)
 
+    def load_bm_enabled(self, load_id: str) -> bool:
+        """Whether BM may plan/actuate this load (the per-load control switch)."""
+        return self._load_bm_enabled.get(load_id, True)
+
+    def set_load_enabled(self, load_id: str, enabled: bool) -> None:
+        """Enable/disable BM control of one load (v0.7.17 per-load switch).
+
+        Disabling holds the load UNAVAILABLE — the planner drops it and the
+        executor switches it off next cycle — WITHOUT touching the load's
+        control-switch config, so the operator can pause a device with one tap
+        and resume later. Persisted so it survives restarts."""
+        self._load_bm_enabled[load_id] = bool(enabled)
+        self._save_persistent_state()
+
+    def _load_is_running(self, load_id: str, data: dict[str, Any]) -> bool:
+        """True while the load REALLY draws power (runtime counter, v0.7.18).
+
+        Uses the configured power-feedback sensor when present (so any real run
+        counts, including manual ones). Without usable power feedback it falls
+        back to BM's own "load is on" signal: the real charging state for a
+        switched load, else the published plan recommendation for a
+        recommendation-only load (which has no charging state, so raw
+        _load_charging_active would leave its counter stuck at zero)."""
+        power_entity = data.get(CONF_LOAD_POWER_ENTITY)
+        if power_entity:
+            st = self.hass.states.get(power_entity)
+            if st is not None and st.state not in ("unknown", "unavailable"):
+                try:
+                    return float(st.state) > LOAD_RUNTIME_MIN_W
+                except (ValueError, TypeError):
+                    pass
+        if load_id in self._load_charging_active:
+            return bool(self._load_charging_active[load_id])
+        return bool(self._load_plan_active.get(load_id, False))
+
+    def _update_load_runtime(self, now: datetime) -> None:
+        """Accumulate real active runtime per load with a capped tick.
+
+        `_load_run_since` holds the timestamp of the last tick while running (a
+        live cursor, not the run start). Each cycle — and on the power-sensor
+        events that trigger a refresh — the elapsed time since that cursor is
+        added while the load runs, and the final partial is added on the off
+        transition. Any single tick is capped at ``LOAD_RUNTIME_TICK_MAX_S``, so a
+        normal 300 s cycle is never clipped while a stalled loop or a clock jump
+        within a session can never inflate the counter (a gap longer than the cap
+        adds nothing). A restart gap is handled separately by not persisting the
+        cursor, so the first post-restart tick only re-arms it."""
+        for subentry_id, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+                continue
+            running = self._load_is_running(subentry_id, subentry.data)
+            last = self._load_run_since.get(subentry_id)
+            if last is not None:
+                delta = (now - last).total_seconds()
+                if 0.0 < delta <= LOAD_RUNTIME_TICK_MAX_S:
+                    self._load_runtime_seconds[subentry_id] = (
+                        self._load_runtime_seconds.get(subentry_id, 0.0) + delta
+                    )
+            if running:
+                self._load_run_since[subentry_id] = now
+            else:
+                self._load_run_since.pop(subentry_id, None)
+
+    def load_runtime_minutes(self, load_id: str) -> float:
+        """Accumulated real runtime in minutes.
+
+        Current as of the last update cycle: ``_update_load_runtime`` runs at the
+        top of every refresh before entities read this, so the in-progress run is
+        already folded in."""
+        return self._load_runtime_seconds.get(load_id, 0.0) / 60.0
+
+    def reset_load_runtime(self, load_id: str) -> None:
+        """Reset a load's runtime counter to zero (reset button, v0.7.18). A run
+        in progress restarts its cursor from now so only post-reset time counts."""
+        self._load_runtime_seconds[load_id] = 0.0
+        if load_id in self._load_run_since:
+            self._load_run_since[load_id] = dt_util.utcnow()
+        self._save_persistent_state()
+        self.async_update_listeners()
+
     def _get_load_states(self) -> tuple[SurplusLoadState, ...]:
         states = []
         for subentry_id, subentry in self.entry.subentries.items():
@@ -806,6 +915,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "unknown",
                     "off",
                 )
+            if not self._load_bm_enabled.get(subentry_id, True):
+                available = False  # per-load "BM control" switch off (v0.7.17)
             soc = None
             if data.get(CONF_LOAD_SOC_ENTITY):
                 soc_entity = data[CONF_LOAD_SOC_ENTITY]
@@ -1077,6 +1188,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         now = dt_util.now()
+        # Runtime counter: accumulate real active minutes every cycle (and on the
+        # power-sensor state events that trigger a refresh), before any early-out
+        # so it tracks continuously (v0.7.18).
+        self._update_load_runtime(now)
         # Manual-override detection first: build_system_config feeds the
         # forced flags into the simulation (F-N2).
         self._update_support_modes()

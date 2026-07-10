@@ -30,6 +30,7 @@ from .const import (
     ENTITY_SOC_THRESHOLD,
     ENTITY_SUPPORT_DC24_MODE,
     ENTITY_SUPPORT_DC48_MODE,
+    SUBENTRY_TYPE_LOAD,
     SUPPORT_MODE_AUTO,
     SUPPORT_MODE_MANUAL,
 )
@@ -110,6 +111,12 @@ async def async_setup_entry(
             )
             if stale:
                 ent_reg.async_remove(stale)
+    # Real active-runtime counter per surplus load (v0.7.18).
+    for subentry_id, subentry in entry.subentries.items():
+        if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
+            entities.append(
+                SurplusLoadRuntimeSensor(coordinator, subentry_id, subentry.title)
+            )
     async_add_entities(entities)
 
 
@@ -241,3 +248,35 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "gate_calibration": data.get("gate_calibration") or {},
             **(data.get("plan_params") or {}),
         }
+
+
+class SurplusLoadRuntimeSensor(BatteryManagerEntity, SensorEntity):
+    """Real active runtime of a load in minutes (v0.7.18).
+
+    Counts the minutes the load ACTUALLY runs — measured from its power
+    feedback sensor when configured (so manual runs count too), otherwise from
+    BM's charging state. Resettable via the matching button. TOTAL_INCREASING so
+    long-term statistics treat a reset as a new period.
+    """
+
+    _attr_translation_key = "load_runtime"
+    _attr_icon = "mdi:timer-play-outline"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
+    ) -> None:
+        super().__init__(coordinator, f"load_runtime_{subentry_id}")
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    @property
+    def available(self) -> bool:
+        # Reflects the persisted counter — usable even without plan data.
+        return True
+
+    @property
+    def native_value(self) -> float:
+        return round(self.coordinator.load_runtime_minutes(self._subentry_id), 1)
