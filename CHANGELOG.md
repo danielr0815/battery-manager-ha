@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-10
+
+### Added
+- **Hourly PV forecast (F-PREDRAIN F1).** The planner now reads the hourly
+  `wh_period` attributes of the three configured forecast entities (Open-Meteo
+  hourly buckets and 15/30-minute buckets, timezone-normalized) and lays them
+  onto the slot grid; hours the attributes do not cover share the day's residual
+  via the legacy two-window model. New option **PV forecast mode**
+  (auto/hourly/daily); `daily` (or absent attributes) reproduces the previous
+  behavior bit-identically. The SOC-forecast sensor reports the per-day source
+  (`pv_source`).
+- **Night pre-drain with a two-buffer safety model (F-PREDRAIN F2-F4).**
+  Continuous surplus loads (e.g. a dehumidifier) can now be scheduled at night
+  or ahead of the battery filling up, deliberately spending stored energy that
+  the next PV window provably replaces from otherwise-lost export:
+  - **Import trade rule** replaces the absolute "no extra import" veto for
+    continuous loads: total plan import may exceed the no-loads baseline by at
+    most `import_trade_ratio` (default 10 %) of the export the plan rescues.
+    This unblocks bookings that a ~10 Wh charger-standby modeling artifact used
+    to veto while hundreds of Wh of surplus were lost. Energy-limited loads
+    (powerstations) keep the strict rule and are never night-charged from the
+    house battery.
+  - **Lower buffer (inverter reserve):** every pre-drain booking must survive a
+    pessimistic re-simulation of its bet window (PV x `predrain_pv_confidence`,
+    default 0.5, from the booking until the end of the next strong-PV window)
+    without dipping below the inverter cutoff + buffer. The reserve therefore
+    shrinks automatically toward the forecast solar onset.
+  - **Upper buffer (absorption headroom):** inside a day's strong-PV window,
+    hours are additionally booked when an optimistic re-simulation
+    (PV x `upper_pv_reserve`, default 1.2) shows they would prevent export —
+    keeping charge headroom free while significant production is still
+    expected. The window end ("sun behind the house") is derived from the
+    forecast via `strong_pv_cutoff_w` (default 200 W) with an optional fixed
+    `pv_window_end_hour` override for the installation.
+  - Pass 2 keeps its latest-first order, so pre-drain lands as late as the
+    constraints allow (pre-dawn before earlier night hours).
+- **Observability:** SOC-forecast sensor attributes `import_trade_used_wh`,
+  `stressed_min_soc`, `pv_window_ends`, `pv_source`; one INFO log line per
+  cycle while a night pre-drain booking is active.
+- All six new knobs live in the system options (planner tuning section, DE/EN),
+  with the recommended values active by default after the update; setting
+  `import_trade_ratio` to 0 (or mode `daily`, factors 1.0) restores the exact
+  v0.7.19 behavior without a downgrade.
+
 ## [0.7.19] - 2026-07-10
 
 ### Fixed
