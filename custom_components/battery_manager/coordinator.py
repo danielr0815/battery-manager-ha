@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -102,6 +103,7 @@ from .const import (
     PREDRAIN_PV_CONFIDENCE_DEFAULT,
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
+    PV_FORECAST_MODE_HOURLY,
     STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
     STORAGE_VERSION,
@@ -188,10 +190,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pv_forecast_mode = self.raw_config.get(
             CONF_PV_FORECAST_MODE, PV_FORECAST_MODE_AUTO
         )
-        self._last_valid_pv_hourly: dict[datetime, float] | None = None
-        self._last_pv_hourly_update: datetime | None = None
+        # PER-ENTITY stale-cache (FIX-4): a cycle where one forecast entity is
+        # unavailable must not clobber the merged map with a partial read. Each
+        # entity keeps its own last-good (map, timestamp); the merge reuses a
+        # cached entity map within MAX_HISTORICAL_FORECAST_AGE_HOURS.
+        self._pv_hourly_by_entity: dict[str, tuple[dict[datetime, float], datetime]] = {}
+        # FIX-10: state-change guard for the "hourly mode but no wh_period" warning.
+        self._pv_hourly_empty_warned = False
         # Per-day PV source label ("hourly"/"two_window") for WP4 sensor exposure.
         self._pv_source_by_day: dict[str, str] = {}
+        # FIX-11: last-logged set of night-booked (load, slot-start) pairs, so the
+        # F-PREDRAIN night-charge line is emitted only when the booking changes.
+        self._night_predrain_logged: frozenset[tuple[str, str]] = frozenset()
 
         # Hysteresis / switching state (docs/ALGORITHM.md D-A2)
         self._displayed_threshold: float | None = None
@@ -688,7 +698,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         Keys are parsed with dt_util.parse_datetime: naive keys are treated as
         LOCAL, aware keys are converted to local and made naive. 15/30-min buckets
-        are summed per hour by aggregate_hours. Malformed keys/values are skipped.
+        are summed per hour by aggregate_hours. Malformed keys/values are skipped;
+        non-finite (NaN/±inf) values are skipped and negative values clamped to 0
+        (FIX-9) so a bad forecast attribute can never poison the hourly map.
         """
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
@@ -698,6 +710,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return {}
         entries: list[tuple[datetime, float]] = []
         skipped = 0
+        clamped = 0
         for key, value in raw.items():
             ts = dt_util.parse_datetime(str(key))
             if ts is None:
@@ -710,11 +723,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (TypeError, ValueError):
                 skipped += 1
                 continue
+            if not math.isfinite(wh):  # NaN / ±inf
+                skipped += 1
+                continue
+            if wh < 0.0:  # a negative forecast bucket is physically meaningless
+                wh = 0.0
+                clamped += 1
             entries.append((ts, wh))
-        if skipped:
+        if skipped or clamped:
             _LOGGER.debug(
-                "battery_manager: skipped %d malformed wh_period entries on %s",
+                "battery_manager: %d skipped, %d clamped wh_period entries on %s",
                 skipped,
+                clamped,
                 entity_id,
             )
         return aggregate_hours(entries)
@@ -722,34 +742,53 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _get_pv_hourly(self, now: datetime) -> dict[datetime, float] | None:
         """Merged naive-local hourly PV map from the three forecast entities.
 
-        Mirrors _get_forecasts' stale-cache fallback: a good read is cached and,
-        when the entities go unavailable, the last good map is reused within the
-        same max-age window. In "daily" mode the hourly attributes are ignored
-        (None) so build_slots falls back to the two-window synthesis.
+        Stale-cache fallback is PER ENTITY (FIX-4): each cycle every entity uses
+        its fresh map when non-empty, else its own last-good map within the
+        max-age window — so a single unavailable entity no longer overwrites the
+        cached full map with a partial read. The per-entity results merge in the
+        existing (today, tomorrow, day-after) order; overlapping days are
+        last-writer-wins (the Open-Meteo family entities carry identical
+        overlapping data, so this is harmless). In "daily" mode the hourly
+        attributes are ignored (None) so build_slots uses the two-window model.
         """
         if self._pv_forecast_mode == PV_FORECAST_MODE_DAILY:
             return None
         cfg = self.raw_config
+        max_age = timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
         merged: dict[datetime, float] = {}
         for key in (
             CONF_PV_FORECAST_TODAY,
             CONF_PV_FORECAST_TOMORROW,
             CONF_PV_FORECAST_DAY_AFTER,
         ):
-            # Day-disjoint entities: last-writer-wins update is a plain union.
-            merged.update(self._read_wh_period(cfg[key]))
-        if merged:
-            self._last_valid_pv_hourly = merged
-            self._last_pv_hourly_update = now
-            return merged
-        if (
-            self._last_valid_pv_hourly is not None
-            and self._last_pv_hourly_update is not None
-            and now - self._last_pv_hourly_update
-            <= timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
-        ):
-            return self._last_valid_pv_hourly
-        return None
+            conf_key = cfg[key]
+            fresh = self._read_wh_period(conf_key)
+            if fresh:
+                self._pv_hourly_by_entity[conf_key] = (fresh, now)
+                merged.update(fresh)
+                continue
+            cached = self._pv_hourly_by_entity.get(conf_key)
+            if cached is not None and now - cached[1] <= max_age:
+                merged.update(cached[0])
+            # An entity that never provides wh_period simply contributes nothing.
+        self._maybe_warn_hourly_empty(bool(merged))
+        return merged if merged else None
+
+    def _maybe_warn_hourly_empty(self, has_data: bool) -> None:
+        """FIX-10: in explicit "hourly" mode, warn ONCE (state-change guarded, not
+        per cycle) when the merged hourly map is empty/expired and the planner
+        silently falls back to the two-window model. "auto"/"daily" stay quiet."""
+        if self._pv_forecast_mode != PV_FORECAST_MODE_HOURLY:
+            self._pv_hourly_empty_warned = False
+            return
+        if not has_data and not self._pv_hourly_empty_warned:
+            _LOGGER.warning(
+                "battery_manager: hourly PV mode active but no wh_period data —"
+                " falling back to the two-window model"
+            )
+            self._pv_hourly_empty_warned = True
+        elif has_data:
+            self._pv_hourly_empty_warned = False
 
     def _pv_day_sources(
         self, now: datetime, num_days: int, pv_hourly: dict[datetime, float] | None
@@ -767,16 +806,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return sources
 
     def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
-        """One INFO line per cycle when the plan books preemptive night charging.
+        """One INFO line when the plan books preemptive night charging.
 
         A pre-drain "make room" run (pass 2) for a CONTINUOUS load that lands
         OUTSIDE every PV absorption window is the F-PREDRAIN feature's headline
-        action (docs/F-PREDRAIN.md F4) — surface it once per cycle with the load
-        name, the booked slot times and the grid import the trade cost. Emitted
-        at most once per cycle (all loads aggregated into a single line).
+        action (docs/F-PREDRAIN.md F4) — surface it with the load name, the booked
+        slot times and the grid import the trade cost. Emitted only when the set of
+        night-booked (load, slot-start) pairs CHANGES vs the previous log (FIX-11):
+        the plan re-runs every 5 min, so an unchanged night booking would otherwise
+        spam an identical line every cycle.
         """
         ends = result.pv_window_ends  # {iso date -> last strong-PV hour}
         if not result.load_plans:
+            self._night_predrain_logged = frozenset()
             return
         cutoff = config.control.strong_pv_cutoff_w
         # First strong-PV slot index per day. The end-hour override only caps the
@@ -795,6 +837,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return slot.index >= first_idx[day] and slot.hour_of_day <= end_hour
 
         booked: list[str] = []
+        pairs: set[tuple[str, str]] = set()
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
             if load.energy_limited:
                 continue  # pre-drain is continuous-loads only (F-PREDRAIN L5)
@@ -808,13 +851,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if night:
                 times = ", ".join(s.start.strftime("%Y-%m-%d %H:%M") for s in night)
                 booked.append(f"{load.name} @ {times}")
-        if booked:
-            _LOGGER.info(
-                "F-PREDRAIN: preemptive night charging booked for %s"
-                " (import traded %.1f Wh)",
-                "; ".join(booked),
-                result.import_trade_used_wh,
-            )
+                pairs.update((load.load_id, s.start.isoformat()) for s in night)
+        current = frozenset(pairs)
+        if not current:
+            self._night_predrain_logged = frozenset()
+            return
+        if current == self._night_predrain_logged:
+            return  # identical booking already logged — do not spam every cycle
+        self._night_predrain_logged = current
+        _LOGGER.info(
+            "F-PREDRAIN: preemptive night charging booked for %s"
+            " (import traded %.1f Wh)",
+            "; ".join(booked),
+            result.import_trade_used_wh,
+        )
 
     def _update_power_warnings(self, result, now: datetime) -> None:
         """Per-load power-deviation warning (operator requirement F-L7).
@@ -1018,15 +1068,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_bm_enabled[load_id] = bool(enabled)
         self._save_persistent_state()
 
-    def _load_is_running(self, load_id: str, data: dict[str, Any]) -> bool:
+    def _load_is_running(self, load_id: str, data: dict[str, Any], now: datetime) -> bool:
         """True while the load REALLY draws power (runtime counter, v0.7.18).
 
         Uses the configured power-feedback sensor when present (so any real run
         counts, including manual ones). Without usable power feedback it falls
         back to BM's own "load is on" signal: the real charging state for a
-        switched load, else the published plan recommendation for a
-        recommendation-only load (which has no charging state, so raw
-        _load_charging_active would leave its counter stuck at zero)."""
+        switched load, else — for a recommendation-only load (no charging state) —
+        the DEADLINE-CAPPED published `active` (FIX-12), mirroring
+        `_effective_load_active`. The raw plan-active flag would over-credit
+        runtime across a night pre-drain block glued to the following day, where
+        the published `active` is capped off between the frozen deadline and its
+        re-anchor."""
         power_entity = data.get(CONF_LOAD_POWER_ENTITY)
         if power_entity:
             st = self.hass.states.get(power_entity)
@@ -1037,7 +1090,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     pass
         if load_id in self._load_charging_active:
             return bool(self._load_charging_active[load_id])
-        return bool(self._load_plan_active.get(load_id, False))
+        if not self._load_plan_active.get(load_id, False):
+            return False
+        deadline = self._load_run_deadline.get(load_id)
+        return deadline is None or now < deadline
 
     def _update_load_runtime(self, now: datetime) -> None:
         """Accumulate real active runtime per load with a capped tick.
@@ -1054,7 +1110,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
-            running = self._load_is_running(subentry_id, subentry.data)
+            running = self._load_is_running(subentry_id, subentry.data, now)
             last = self._load_run_since.get(subentry_id)
             if last is not None:
                 delta = (now - last).total_seconds()
@@ -2347,10 +2403,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Sub-hour cap for a recommendation-only load (no control switch;
         F-SUBHOUR R12). BM cannot switch the load, so the deadline only governs
         the published `active` flag the operator's automation follows: it is
-        anchored on the first cycle the plan is active and held (even once past)
-        until the plan goes inactive, so the sensor reads active from the run's
-        start to `run_start + max(min_runtime, run)` and off for the rest. A
-        later export window (the plan cycles inactive->active) re-anchors."""
+        anchored on the OFF->ON edge and held (even once past) so the sensor reads
+        active from the run's start to `run_start + max(min_runtime, run)` and off
+        for the rest. A later export window (plan cycles inactive->active)
+        re-anchors.
+
+        FIX-5: while the plan stays CONTINUOUSLY active (e.g. a night pre-drain
+        glued to the following day's block never lets it cycle inactive), the
+        frozen deadline used to wedge the published `active` False from expiry
+        until the whole block ended (hours). Once `now >= deadline + min_off`
+        (min_off falls back to min_runtime) we RE-ANCHOR a fresh run window —
+        mirroring a controlled load's force-off -> min_off dwell -> re-on cycle —
+        so the sensor duty-cycles instead of staying wedged off."""
         active = bool(plan and plan.active_now)
         energy_limited = bool(data.get(CONF_LOAD_ENERGY_LIMITED, False))
         if not active or energy_limited:
@@ -2358,14 +2422,24 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._load_run_deadline.pop(load_id, None)
                 self._cancel_off_timer(load_id)
             return
-        if load_id not in self._load_run_deadline:
-            off_min = max(
-                int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
-                round(plan.active_run_hours(slot_durations) * 60.0),
-            )
+        min_runtime = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+
+        def _anchor() -> None:
+            off_min = max(min_runtime, round(plan.active_run_hours(slot_durations) * 60.0))
             off_at = now + timedelta(minutes=off_min)
             self._load_run_deadline[load_id] = off_at
             self._arm_off_timer(load_id, off_at)
+
+        deadline = self._load_run_deadline.get(load_id)
+        if deadline is None:
+            _anchor()  # OFF->ON edge: freeze the first run window
+            return
+        # Still active past the deadline: re-anchor once the min_off dwell (since
+        # the deadline) has elapsed, so a continuously-active block does not wedge
+        # the published `active` off for the rest of the block.
+        min_off = int(data.get(CONF_LOAD_MIN_OFF_MIN, min_runtime))
+        if now >= deadline + timedelta(minutes=min_off):
+            _anchor()
 
     def _effective_load_active(self, load_plan, now: datetime) -> bool:
         """Published `active` for the load binary sensor: the whole-slot

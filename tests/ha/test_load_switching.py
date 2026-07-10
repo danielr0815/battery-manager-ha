@@ -672,6 +672,78 @@ async def test_recommendation_only_load_active_flips_at_deadline(hass):
     coordinator._cancel_off_timer(sub_id)
 
 
+async def test_rec_only_deadline_reanchors_and_is_not_wedged(hass):
+    """FIX-5: a recommendation-only load whose plan stays continuously active for a
+    long block (a night pre-drain glued to the following day) must not stay wedged
+    OFF after the first frozen deadline. The published `active` goes False at the
+    deadline, and once the min_off dwell elapses the deadline RE-ANCHORS so it goes
+    True again — a controlled load's force-off -> dwell -> re-on, published-only."""
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    coordinator, sub_id, data = await _setup(
+        hass, [], energy_limited=False, with_control_switch=False,
+        min_runtime_min=30, min_off_min=30,
+    )
+    # A 4 h contiguous block from slot 0 (deadline = run_start + 240 min).
+    plan = LoadPlan(
+        load_id=sub_id, schedule=(True,) * 4, planned_energy_wh=1600.0,
+        run_hours=(1.0,) * 4,
+    )
+    durations = (1.0,) * 4
+    now = dt_util.utcnow()
+
+    coordinator._maintain_recommendation_deadline(sub_id, data, plan, now, durations)
+    d0 = coordinator._load_run_deadline[sub_id]
+    assert coordinator._effective_load_active(plan, now) is True
+
+    # Just past the first deadline: published active is capped OFF.
+    t1 = d0 + timedelta(minutes=1)
+    assert coordinator._effective_load_active(plan, t1) is False
+    # Re-evaluated before min_off elapses: still wedged, deadline unchanged.
+    coordinator._maintain_recommendation_deadline(sub_id, data, plan, t1, durations)
+    assert coordinator._load_run_deadline[sub_id] == d0
+    assert coordinator._effective_load_active(plan, t1) is False
+
+    # Once min_off (30 min) has elapsed since the deadline: re-anchor -> active.
+    t2 = d0 + timedelta(minutes=31)
+    coordinator._maintain_recommendation_deadline(sub_id, data, plan, t2, durations)
+    d1 = coordinator._load_run_deadline[sub_id]
+    assert d1 > d0  # re-anchored (not wedged for the rest of the block)
+    assert coordinator._effective_load_active(plan, t2) is True
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_runtime_counter_rec_only_capped_by_deadline(hass):
+    """FIX-12: a recommendation-only load's runtime counter follows the
+    DEADLINE-CAPPED published active, not the raw plan flag — so a night block does
+    not over-credit runtime while the published active is capped off between the
+    deadline and its re-anchor."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _ = await _setup(
+        hass, [], energy_limited=False, with_control_switch=False, power_entity=None
+    )
+    coordinator._load_runtime_seconds.clear()
+    coordinator._load_run_since.clear()
+    assert sub_id not in coordinator._load_charging_active  # recommendation-only
+    coordinator._load_plan_active[sub_id] = True  # BM recommends it active
+
+    t0 = dt_util.now()
+    # Deadline already expired -> published active capped OFF -> NOT counted.
+    coordinator._load_run_deadline[sub_id] = t0 - timedelta(minutes=1)
+    coordinator._update_load_runtime(t0)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=5))
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0  # no over-credit
+
+    # Deadline in the future -> published active True -> counts normally.
+    coordinator._load_run_deadline[sub_id] = t0 + timedelta(hours=1)
+    coordinator._update_load_runtime(t0 + timedelta(minutes=6))  # arms the cursor
+    coordinator._update_load_runtime(t0 + timedelta(minutes=9))  # +3 min
+    assert abs(coordinator.load_runtime_minutes(sub_id) - 3.0) < 0.01
+
+
 async def test_load_control_switch_gates_availability(hass):
     """v0.7.17: the per-load 'BM control' switch off -> the load is held
     unavailable (planner drops it), on -> available again; state is persisted."""

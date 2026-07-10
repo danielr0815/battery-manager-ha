@@ -262,17 +262,24 @@ def allocate_loads(
     windows = pv_windows(inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour)
     current = base_trajectory
 
-    def import_ok(load, traj: Trajectory) -> bool:
+    def import_ok(load, traj: Trajectory, current_import: float) -> bool:
         """Z2' import gate. Energy-limited loads keep the strict no-extra-import
-        rule (L5 keeps them out of the pre-drain machinery); continuous loads use
-        the cumulative trade invariant against the no-loads base: a small import
-        is allowed only in exchange for rescued export at `import_trade_ratio`,
-        plus 1 Wh of slack so a lone standby artifact never vetoes a run (L1).
-        With ratio 0.0 the 1 Wh slack sits far below the ~10 Wh standby quantum,
-        so night pre-drains still need a positive ratio to book."""
+        rule (L5 keeps them out of the pre-drain machinery), but anchored at the
+        CURRENTLY ACCEPTED series rather than the no-loads base (FIX-2): a booking
+        must not ADD import over what is already accepted, so once a continuous
+        load has traded some import an energy-limited candidate on pure surplus is
+        no longer starved by that inherited delta. Continuous loads use the
+        cumulative trade invariant against the no-loads base: a small import is
+        allowed only in exchange for rescued export at `import_trade_ratio`, plus
+        1 Wh of slack ONLY when a positive ratio is configured (FIX-6) so a lone
+        standby artifact never vetoes a traded run (L1). At ratio 0.0 there is no
+        slack, so the continuous gate is `trial import <= base + _EPS` exactly as
+        v0.7.19 — night pre-drains still need a positive ratio to book."""
         if load.energy_limited:
-            return traj.total_import_wh <= base_import + _EPS
-        allowed = ratio * (base_export - traj.total_export_wh) + 1.0
+            return traj.total_import_wh <= current_import + _EPS
+        allowed = ratio * (base_export - traj.total_export_wh) + (
+            1.0 if ratio > 0.0 else 0.0
+        )
         return traj.total_import_wh - base_import <= allowed + _EPS
 
     def in_window(i: int) -> bool:
@@ -312,7 +319,7 @@ def allocate_loads(
                     continue
                 # Hard conditions via full re-simulation (Z2'/Z3).
                 traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-                if not import_ok(load, traj):
+                if not import_ok(load, traj, current.total_import_wh):
                     continue
                 if _degrades_min_soc(traj, current, buffer_floor):
                     continue
@@ -359,11 +366,11 @@ def allocate_loads(
             else None
         )
         # Z4 (v2) is WINDOWED, so it needs no whole-horizon stress baseline. For
-        # each bet slot `i` we cache the currently accepted series' windowed
-        # stressed min over [i, recovery]; the cache is invalidated whenever an
-        # acceptance changes `extra`. Keyed by `i`, and the outer scan visits each
-        # `i` once (latest-first), so a cleared cache is always rebuilt lazily.
-        stress_base: dict[int, float] = {}
+        # each bet window we cache the currently accepted series' windowed stressed
+        # min over [i, hi]; the cache is invalidated whenever an acceptance changes
+        # `extra`. Keyed by (i, hi) because the window end depends on the candidate
+        # duration's spill past recovery (FIX-7), and each (i, hi) is rebuilt lazily.
+        stress_base: dict[tuple[int, int], float] = {}
         last_export = max(
             (j for j, f in enumerate(current.flows) if f.grid_export_wh > _EPS),
             default=-1,
@@ -402,7 +409,7 @@ def allocate_loads(
                         continue
                     trial_tuple = tuple(trial)
                     traj = simulate(config, inputs, threshold, extra_ac_wh=trial_tuple)
-                    if not import_ok(load, traj):  # Z2'
+                    if not import_ok(load, traj, current.total_import_wh):  # Z2'
                         continue
                     if _degrades_min_soc(traj, current, buffer_floor):  # Z3
                         continue
@@ -434,25 +441,32 @@ def allocate_loads(
                         # windowed min on the currently accepted series — a dip the
                         # baseline already contains does not veto the bet.
                         if alpha != 1.0:
+                            # Extend the stress window past `recovery` when this
+                            # candidate's run spills beyond it (a min-runtime
+                            # commitment near the window end lands in later slots):
+                            # the spill drains the reserve too, so it must be
+                            # stressed and included in the windowed min (FIX-7).
+                            hi = max(recovery, covered[-1][0])
                             scale_vec = [
-                                alpha if i <= j <= recovery else 1.0 for j in range(n)
+                                alpha if i <= j <= hi else 1.0 for j in range(n)
                             ]
                             trial_stress = simulate(
                                 config, inputs, threshold,
                                 extra_ac_wh=trial_tuple, pv_scale=scale_vec,
                             )
-                            trial_wmin = _windowed_min_soc(trial_stress, i, recovery)
-                            if i not in stress_base:
+                            trial_wmin = _windowed_min_soc(trial_stress, i, hi)
+                            key = (i, hi)
+                            if key not in stress_base:
                                 base_stress = simulate(
                                     config, inputs, threshold,
                                     extra_ac_wh=tuple(extra), pv_scale=scale_vec,
                                 )
-                                stress_base[i] = _windowed_min_soc(
-                                    base_stress, i, recovery
+                                stress_base[key] = _windowed_min_soc(
+                                    base_stress, i, hi
                                 )
                             if (
                                 trial_wmin < stress_floor - _EPS
-                                and trial_wmin < stress_base[i] - _EPS
+                                and trial_wmin < stress_base[key] - _EPS
                             ):
                                 continue
                     extra = trial
@@ -677,10 +691,13 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         ]
         if booked:
             i0 = min(booked)
-            windows = pv_windows(
+            # Own local: reusing `windows` here would clobber the appliance
+            # advisory dict computed above, corrupting PlanResult.appliance_windows
+            # whenever a pre-drain books (FIX-1).
+            pv_win = pv_windows(
                 inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour
             )
-            recovery = _recovery_index(windows, i0, n)
+            recovery = _recovery_index(pv_win, i0, n)
             scale_vec = [alpha if i0 <= j <= recovery else 1.0 for j in range(n)]
             stressed = simulate(
                 config, inputs, threshold, extra_ac_wh=extra_ac, pv_scale=scale_vec

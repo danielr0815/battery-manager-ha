@@ -469,6 +469,50 @@ def test_pv_scale_above_one_boosts_export():
     assert optimistic.total_export_wh >= nominal.total_export_wh - 1e-9
 
 
+def test_beta_scale_clamped_at_physical_peak():
+    """FIX-8: an optimistic (beta > 1) PV scale must not conjure PV above the
+    array's physical peak. A slot already at the peak-power cap stays there under
+    scale 1.2 (peak * duration), not inflated 20 %."""
+    config = SystemConfig()  # peak 3200 W
+    peak = config.pv.peak_power_w
+    # Battery full so all PV must export -> exported Wh mirrors the slot PV.
+    at_cap = _slot(pv=peak, ac=0.0, dc=0.0)
+    boosted = step_hour(config, 95.0, at_cap, 20.0, pv_scale=1.2)
+    assert boosted.grid_export_wh <= peak + _EPS  # clamped, not 1.2 * peak
+
+    # Below the cap, beta still boosts (scaled value stays under the cap).
+    half = _slot(pv=peak / 2.0, ac=0.0, dc=0.0)
+    boosted_half = step_hour(config, 95.0, half, 20.0, pv_scale=1.2)
+    assert boosted_half.grid_export_wh > peak / 2.0
+    assert boosted_half.grid_export_wh <= peak + _EPS
+
+
+def test_beta_scale_clamp_respects_partial_slot_duration():
+    """The FIX-8 clamp is power-based: a partial slot is capped at peak * duration."""
+    config = SystemConfig()
+    peak = config.pv.peak_power_w
+    partial = _slot(pv=peak * 0.5, ac=0.0, dc=0.0, dur=0.5)  # already at the 0.5 h cap
+    boosted = step_hour(config, 95.0, partial, 20.0, pv_scale=1.4)
+    assert boosted.grid_export_wh <= peak * 0.5 + _EPS
+
+
+def test_pv_scale_below_one_never_clamped_bit_identical():
+    """Scales <= 1.0 keep the legacy path bit-identical (never clamped), even for
+    a slot at the peak cap: scaling the peak slot equals running a pre-scaled slot
+    unscaled (FIX-8 only touches the beta > 1 branch)."""
+    config = SystemConfig()
+    peak = config.pv.peak_power_w
+    for scale in (0.5, 0.9):
+        scaled = step_hour(
+            config, 95.0, _slot(pv=peak, ac=0.0, dc=0.0), 20.0, pv_scale=scale
+        )
+        prescaled = step_hour(
+            config, 95.0, _slot(pv=peak * scale, ac=0.0, dc=0.0), 20.0, pv_scale=1.0
+        )
+        assert scaled.grid_export_wh == prescaled.grid_export_wh
+        assert scaled.soc_end_percent == prescaled.soc_end_percent
+
+
 def test_pv_scale_per_slot_vector():
     """A SEQUENCE `pv_scale` applies a per-slot factor (F-PREDRAIN §3.3 v2): the
     windowed stress gate scales PV only inside the bet's recovery window and

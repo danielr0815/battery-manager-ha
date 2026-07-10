@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 
 from core.model import (
     Appliance,
+    BatteryParams,
     ControlParams,
+    ConverterParams,
     HourSlot,
     LoadProfile,
     PlanInputs,
@@ -20,6 +22,7 @@ from core.optimize import (
     _degrades_min_soc,
     _quantised_hours,
     _recovery_index,
+    _spread_energy,
     _windowed_min_soc,
     allocate_loads,
     appliance_windows,
@@ -1081,3 +1084,184 @@ def test_t4_windowed_gate_relief_when_base_window_already_below_floor():
 
 def daylight_h(hour):
     return 7 <= hour < 18
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review fixes (v0.8.0): FIX-1 (windows shadowing), FIX-2 (energy-
+# limited starvation), FIX-6 (ratio-0 slack), FIX-7 (Z4 spill past recovery).
+# ---------------------------------------------------------------------------
+
+
+def test_fix1_appliance_windows_survive_predrain_booking():
+    """FIX-1: the stressed_min_soc diagnostic must NOT clobber
+    PlanResult.appliance_windows. With an opportunistic appliance AND an accepted
+    pre-drain (pass-2 continuous booking; alpha < 1 so the diagnostic block runs),
+    appliance_windows must stay the advisor dict (appliance id -> bool), not the
+    pv_windows date->tuple dict the diagnostic builds internally."""
+    now = datetime(2026, 7, 3, 21, 0)
+    dishwasher = Appliance(
+        appliance_id="dishwasher", name="Dishwasher",
+        run_energy_wh=600.0, run_duration_h=2.0, opportunistic_start=True,
+    )
+    control = replace(
+        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=0.5,
+        upper_pv_reserve=1.0, strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), appliances=(dishwasher,))
+    result, _inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    # Premise: the scenario books a pre-drain (pass 2, continuous), so the
+    # diagnostic block that used to reassign `windows` runs.
+    lp = next(p for p in result.load_plans if p.load_id == "dehumidifier")
+    assert any(a[2] == 2 for a in lp.allocations), "scenario must book a pre-drain"
+    assert result.stressed_min_soc_percent is not None  # diagnostic path taken
+    # appliance_windows is the advisor dict: appliance id -> bool (NOT clobbered).
+    assert set(result.appliance_windows) == {"dishwasher"}
+    assert isinstance(result.appliance_windows["dishwasher"], bool)
+
+
+def test_fix2_energy_limited_books_surplus_after_continuous_trade():
+    """FIX-2: once a continuous load has traded a little import, the energy-limited
+    strict gate must anchor at the CURRENTLY ACCEPTED series, not the no-loads
+    base — otherwise the fossibot inherits the delta and is starved on a pure-
+    surplus slot it should still take. It must also never ADD import itself (L5).
+
+    Scenario: modest day-1 then a strong day-2. The dehumidifier pre-drains and
+    trades ~10 Wh; the fossibot has a large remaining budget. With the fix it
+    charges every surplus slot it can (incl. a pass-2 refill evaluated AFTER the
+    trade) and declines the rest; the buggy gate booked strictly fewer slots."""
+    now = datetime(2026, 7, 3, 21, 0)
+    fb = SurplusLoad(
+        load_id="fb", name="B", nominal_power_w=300.0, battery_tolerance=0.05,
+        min_runtime_min=30, energy_limited=True, capacity_wh=6000.0,
+        target_soc_percent=100.0,
+    )
+    control = replace(
+        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0, strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER, fb))
+    states = (
+        SurplusLoadState(load_id="dehumidifier"),
+        SurplusLoadState(load_id="fb", soc_percent=0.0),  # remaining 6000 Wh
+    )
+    inputs = build_slots(cfg, now, 60.0, [0.0, 5.0, 18.0], load_states=states)
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, extra, traj = allocate_loads(cfg, inputs, threshold, base)
+    fb_plan = next(p for p in load_plans if p.load_id == "fb")
+
+    # (a) A continuous trade fired AND the fossibot still books its full surplus
+    #     coverage (1800 Wh over six slots, incl. a pass-2 refill). The buggy gate
+    #     (anchored at base) starved the last slot -> only 1500 Wh.
+    assert traj.total_import_wh - base.total_import_wh > 1e-6  # deh traded
+    assert any(a[2] == 2 for a in fb_plan.allocations)  # a post-trade refill booked
+    assert abs(fb_plan.planned_energy_wh - 1800.0) < 1e-6
+
+    # (b) The fossibot adds NO grid import (L5): its remaining budget (6000 Wh)
+    #     far exceeds the surplus it took, so every further candidate WOULD have
+    #     added import and was rejected — the accepted import matches a re-sim
+    #     with the fossibot's own energy stripped out.
+    assert fb_plan.planned_energy_wh < 6000.0  # would-add-import top-up declined
+    deh_only = list(extra)
+    for a in fb_plan.allocations:
+        for j in range(a[0], a[0] + a[1]):
+            deh_only[j] = max(0.0, deh_only[j] - 300.0 * fb_plan.run_hours[j])
+    without_fb = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(deh_only))
+    assert abs(traj.total_import_wh - without_fb.total_import_wh) < 1e-6
+
+
+def test_fix6_ratio_zero_rejects_sub_wh_standby_trade():
+    """FIX-6: the +1 Wh import slack applies ONLY when a positive trade ratio is
+    configured. At ratio 0 even a sub-Wh charger standby (0.5 W) must NOT slip a
+    night pre-drain past the gate — the strict `trial import <= base` semantics of
+    v0.7.19 hold. The old unconditional +1 Wh slack wrongly admitted it."""
+    now = datetime(2026, 7, 3, 21, 0)
+    charger = ConverterParams(max_power_w=2300.0, eta=0.92, standby_power_w=0.5)
+    control = replace(
+        ControlParams(), import_trade_ratio=0.0, predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+    )
+    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), charger=charger)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    night = [h for h in _dehumid_hours(result, inputs) if not daylight_h(h)]
+    assert not night, "ratio 0 must reject the sub-Wh standby night pre-drain"
+    assert result.import_trade_used_wh <= 1e-6
+
+
+def test_fix7_stress_window_extends_over_spill_past_recovery():
+    """FIX-7: the Z4 windowed stress must cover a pre-drain run's SPILL past its
+    recovery slot. A 90-min run at the LAST slot of a PV window spills into the
+    post-window evening; the recovery-only window [i, recovery] never sees that
+    drain (its stressed reserve stays at the full in-window SOC, so the candidate
+    would pass), while the extended window [i, max(recovery, covered[-1][0])]
+    stresses the spill and finds it breaks the inverter floor — the reject the
+    gate now makes. Exercised with the gate's own primitives on a small battery
+    so the single spill slot alone can cross the floor."""
+    deh = SurplusLoad(
+        load_id="deh", name="E", nominal_power_w=400.0,
+        battery_tolerance=0.15, min_runtime_min=90,
+    )
+    control = replace(
+        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=0.5,
+        upper_pv_reserve=1.2, strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        control=control, loads=(deh,), battery=BatteryParams(capacity_wh=2000.0),
+        ac_profile=LoadProfile(0.0, 0.0), dc_profile=LoadProfile(0.0, 0.0),
+    )
+    start = datetime(2026, 7, 4, 6, 0)
+
+    def slot(i, hour, pv, ac=0.0, dc=0.0):
+        return HourSlot(
+            index=i, start=start + timedelta(hours=i), duration=1.0,
+            hour_of_day=hour, pv_wh=pv, ac_wh=ac, dc_wh=dc,
+        )
+
+    slots = (
+        slot(0, 6, 1500, ac=50),
+        slot(1, 7, 1500, ac=50),
+        slot(2, 8, 500, ac=250),
+        slot(3, 9, 300, ac=250),      # LAST window slot (pv/dur >= 200)
+        slot(4, 10, 60, dc=1400),     # post-window: heavy drain lands near the floor
+        slot(5, 11, 50, dc=1400),
+        slot(6, 12, 40, dc=1400),
+        slot(7, 13, 30, dc=1400),
+    )
+    inputs = PlanInputs(
+        now=start, start_soc_percent=55.0, slots=slots,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    n = len(slots)
+    threshold, _base = search_threshold(cfg, inputs)
+    alpha = 0.5
+    floor = cfg.control.inverter_min_soc_percent + cfg.control.soc_buffer_percent  # 25
+
+    windows = pv_windows(inputs, 200.0, None)
+    assert windows[start.date()] == (0, 3)  # window ends at slot 3
+    i = 3
+    # A 90-min (1.5 h) commitment at slot 3 spills 0.5 h into slot 4 (post-window).
+    trial, covered = _spread_energy([0.0] * n, slots, i, 400.0, 1.5)
+    recovery = _recovery_index(windows, i, n)
+    hi = max(recovery, covered[-1][0])
+    assert recovery == 3 and covered[-1][0] == 4 and hi == 4  # spills PAST recovery
+
+    def windowed(lo):
+        sv = [alpha if i <= j <= lo else 1.0 for j in range(n)]
+        t = _windowed_min_soc(
+            simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial), pv_scale=sv),
+            i, lo,
+        )
+        b = _windowed_min_soc(
+            simulate(cfg, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=sv),
+            i, lo,
+        )
+        return t, b
+
+    # Recovery-only window (the pre-FIX-7 scope) never sees the spill: the reserve
+    # stays at the full in-window SOC, so the candidate would be ACCEPTED.
+    t_rec, _b_rec = windowed(recovery)
+    assert t_rec >= floor
+    # The extended window stresses the spill: its reserve breaks the floor AND is
+    # worse than the base, so FIX-7 rejects the candidate.
+    t_hi, b_hi = windowed(hi)
+    assert t_hi < floor - 1e-6
+    assert t_hi < b_hi - 1e-6

@@ -51,10 +51,18 @@ def step_hour(
     # settled, so a same-slot PV surplus covers it instead of a phantom import.
     # F-PREDRAIN F3: the lower-buffer stress gate re-simulates the horizon with
     # a pessimistic PV multiplier. `pv_scale` scales THIS slot's PV inside the
-    # loop; the peak cap already applied to the unscaled input at build time, so
-    # scaling stays orthogonal to it. 1.0 leaves the value byte-identical
-    # (neutral default — the multiply is skipped so the plan is bit-for-bit).
-    pv_wh = slot.pv_wh if pv_scale == 1.0 else slot.pv_wh * pv_scale
+    # loop; the peak cap already applied to the unscaled input at build time.
+    # 1.0 leaves the value byte-identical (neutral default — the multiply is
+    # skipped so the plan is bit-for-bit). An OPTIMISTIC scale (beta > 1.0) is
+    # re-clamped at the physical peak (peak_power_w * duration) so the upper-buffer
+    # gate cannot conjure PV a real array could never deliver (FIX-8); scales <=
+    # 1.0 keep the legacy path bit-identical (never clamped).
+    if pv_scale == 1.0:
+        pv_wh = slot.pv_wh
+    else:
+        pv_wh = slot.pv_wh * pv_scale
+        if pv_scale > 1.0:
+            pv_wh = min(pv_wh, config.pv.peak_power_w * slot.duration)
     ac_total = slot.ac_wh + extra_ac_wh
     if inverter_on:
         ac_total += config.inverter.standby_power_w * slot.duration

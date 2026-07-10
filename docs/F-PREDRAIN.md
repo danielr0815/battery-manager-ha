@@ -63,14 +63,27 @@ integration, 15-min buckets) are ignored.
 - Coordinator (WP1 part): when reading each of the three PV entities, also read
   the `wh_period` attribute (dict[str, number]); parse keys with
   `homeassistant.util.dt.parse_datetime`; naive keys are LOCAL, aware keys are
-  converted to local then made naive. Malformed keys/values are skipped with a
-  single debug log. Result cached alongside the existing stale-state cache
-  (same fallback semantics: on entity unavailable, reuse last good map).
+  converted to local then made naive. Malformed keys/values are skipped; NaN/±inf
+  values are skipped and negatives clamped to 0 (FIX-9) with a single debug log.
+  The stale-state cache is PER ENTITY (FIX-4): each entity keeps its own last-good
+  `(map, timestamp)`, and each cycle the merge uses the entity's fresh map when
+  non-empty else its cached map within `MAX_HISTORICAL_FORECAST_AGE_HOURS`. A
+  cycle where one entity is unavailable therefore contributes that entity's cached
+  buckets rather than dropping them — a partial read never overwrites the cached
+  full map (the earlier single merged-map cache treated a partial read as a good
+  read and clobbered it).
 - `series.build_slots` gains `pv_hourly: dict[datetime, float] | None = None`
   (keys = naive local hour starts). Per slot: if the slot's hour is covered,
-  `pv_wh = hourly_value * slot.duration_fraction_of_that_hour`; uncovered hours
-  of a day share the day's RESIDUAL via the existing two-window weights
-  (renormalized over uncovered hours only, clamp >= 0). The existing
+  `pv_wh = hourly_value * slot.duration_fraction_of_that_hour`; an uncovered hour
+  of a day takes its two-window SHARE of that day's RESIDUAL:
+  `residual_wh * pv_hour_share(hour) * duration`. There is NO renormalization over
+  the uncovered/remaining slots (FIX-3): the two-window shares already sum to 1
+  over the FULL day, so a day with NO buckets reproduces the legacy two-window
+  values bit-for-bit — even when `now` is mid-morning and the elapsed hours are
+  absent from the horizon. (The earlier renormalization divided the FULL daily
+  residual by only the remaining-slot weight sum, inflating a partially-elapsed
+  day's afternoon PV 3-5x.) The trade-off is that a PARTIALLY covered day now
+  UNDER-fills its uncovered slots — conservative by design. The existing
   `pv.peak_power_w` cap continues to apply per slot AFTER this mapping.
 - Mode option `pv_forecast_mode` (WP3 wires config; core accepts the map or
   None): `auto` (default; hourly when a map is present) | `hourly` | `daily`
@@ -87,14 +100,28 @@ no-loads base trajectory:
 
 ```
 (trial.total_import_wh - base_import_wh)
-    <= import_trade_ratio * (base_export_wh - trial.total_export_wh) + 1.0 Wh
+    <= import_trade_ratio * (base_export_wh - trial.total_export_wh)
+       + (1.0 Wh if import_trade_ratio > 0 else 0.0)
 ```
 
 - `ControlParams.import_trade_ratio: float = 0.0` (NEUTRAL dataclass default —
-  0.0 reproduces today's behavior exactly; goldens unchanged).
+  0.0 reproduces v0.7.19 behavior EXACTLY; goldens unchanged).
+- The +1 Wh slack (so a lone ~10 Wh standby artifact can be traded, L1) applies
+  ONLY when a positive ratio is configured (FIX-6). At ratio 0 there is no slack,
+  so the gate is `trial import <= base + EPS` — bit-for-bit v0.7.19. (Earlier
+  drafts added the slack unconditionally, which contradicted the "0.0 reproduces
+  today's behavior exactly" guarantee; resolved here.)
 - Recommended live value 0.10 is applied as the coordinator absent-key fallback
   and config-flow default (WP3), NOT as the dataclass default.
-- Energy-limited loads keep the strict Z2 comparison unchanged (L5).
+- Energy-limited loads keep a STRICT no-extra-import comparison (L5), but anchored
+  at the CURRENTLY ACCEPTED series' import, not the no-loads base (FIX-2):
+  `trial.total_import_wh <= current.total_import_wh + EPS`. An energy-limited
+  booking must never add import (it stays out of the pre-drain trade machinery),
+  but once a continuous load has already traded a little import, anchoring at the
+  base would starve every LATER energy-limited candidate on pure surplus (it
+  inherits the delta it did not cause). Anchoring per-candidate at `current`
+  preserves L5 (the fossibot adds no import) while letting it still fill on
+  genuine surplus. `current`'s import is threaded into the gate in both passes.
 
 ### 3.3 F3 — Lower buffer: pessimistic stress gate Z4 (WP2; REVISED v2)
 
@@ -180,6 +207,22 @@ kWh, and (c) keep `import_trade_used_wh <= 0.10 x rescued export + 1 Wh`.
 Threshold search, grid-support escalation, appliance windows, executor
 (freeze-deadline / min_runtime / min_off), energy-limited level control,
 `_quantised_hours`, pass ordering (pass 1 ascending, pass 2 latest-first).
+
+### 3.7 Known / accepted semantics (by design, not bugs)
+
+- **Cumulative trade budget.** The Z2' trade allowance is minted by ALL rescued
+  export across the whole allocation, and the invariant bounds the CUMULATIVE
+  `import - base`, not each pre-drain individually. A single pre-drain's own
+  modeled import may therefore exceed the export IT alone rescues, as long as the
+  running total stays within `import_trade_ratio * total_rescued + slack`. This is
+  intended: the operator trades a small aggregate import for the aggregate rescued
+  export, and the per-cycle replan keeps the total bounded.
+- **Cross-entity `wh_period` merge.** The per-entity hourly maps merge in
+  (today, tomorrow, day-after) order with last-writer-wins over any overlapping
+  days (FIX-4). The three PV entities belong to the same Open-Meteo family and
+  carry identical data for the days they overlap, so last-writer-wins is harmless
+  (it never blends conflicting forecasts). Should genuinely disjoint providers be
+  wired later, this becomes a documented precedence rule rather than a merge bug.
 
 ## 4. Work-package boundaries (file ownership)
 

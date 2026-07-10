@@ -147,7 +147,7 @@
               "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
               "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
               "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
-              "pv_forecast_mode": "How the hourly PV shape is derived: Automatic uses the forecast's hourly wh_period attributes when present (else the two-window model), Hourly forces them, Daily ignores them (v0.7.19 behaviour).",
+              "pv_forecast_mode": "How the hourly PV shape is derived: Automatic uses the forecast's hourly wh_period attributes when present (else the two-window model), Hourly prefers the hourly values and warns when none are present (then falls back to the two-window model), Daily ignores them (v0.7.19 behaviour).",
               "import_trade_ratio": "How much extra grid import a pre-drain may cause per Wh of rescued export (0 = none). A small charger-standby cost can then buy back much larger export savings (recommendation: 0.10).",
               "predrain_pv_confidence": "Pessimism of the lower-buffer stress test: the next day's PV is de-rated by this factor and the run must still keep the inverter reserve above its floor. 1.0 = trust the forecast fully (recommendation: 0.5).",
               "upper_pv_reserve": "Optimism of the upper-buffer opportunity test: in-window pre-drains are justified against a PV forecast scaled up by this factor. 1.0 = gate off (recommendation: 1.2).",
@@ -427,7 +427,7 @@
               "hysteresis_percent": "Dead band around the SOC threshold: the inverter recommendation only changes once the SOC crosses the threshold by this amount — prevents rapid toggling.",
               "threshold_inertia_percent": "A new threshold is only adopted if it differs from the previous one by at least this amount — prevents jumping between equivalent plans.",
               "min_switch_interval_s": "Minimum time between two real switching actions (inverter recommendation and support paths).",
-              "pv_forecast_mode": "How the hourly PV shape is derived: Automatic uses the forecast's hourly wh_period attributes when present (else the two-window model), Hourly forces them, Daily ignores them (v0.7.19 behaviour).",
+              "pv_forecast_mode": "How the hourly PV shape is derived: Automatic uses the forecast's hourly wh_period attributes when present (else the two-window model), Hourly prefers the hourly values and warns when none are present (then falls back to the two-window model), Daily ignores them (v0.7.19 behaviour).",
               "import_trade_ratio": "How much extra grid import a pre-drain may cause per Wh of rescued export (0 = none). A small charger-standby cost can then buy back much larger export savings (recommendation: 0.10).",
               "predrain_pv_confidence": "Pessimism of the lower-buffer stress test: the next day's PV is de-rated by this factor and the run must still keep the inverter reserve above its floor. 1.0 = trust the forecast fully (recommendation: 0.5).",
               "upper_pv_reserve": "Optimism of the upper-buffer opportunity test: in-window pre-drains are justified against a PV forecast scaled up by this factor. 1.0 = gate off (recommendation: 1.2).",
@@ -576,7 +576,7 @@
     "pv_forecast_mode": {
       "options": {
         "auto": "Automatic (hourly when available)",
-        "hourly": "Hourly (force wh_period attributes)",
+        "hourly": "Hourly (prefer wh_period values; warn when none present)",
         "daily": "Daily only (ignore hourly attributes)"
       }
     }
