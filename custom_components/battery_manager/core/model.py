@@ -73,7 +73,9 @@ class SurplusLoad:
     """A switchable load meant to consume PV surplus (Fossibot, dehumidifier).
 
     Loads earlier in SystemConfig.loads have higher priority when surplus is
-    scarce; with enough surplus they run in parallel.
+    scarce; with enough surplus they run in parallel. (Order = the configured
+    per-load priority since v0.8.2, default creation order, F-LOAD-PRIORITY —
+    the core keeps no priority field, the order carries it.)
     """
 
     load_id: str

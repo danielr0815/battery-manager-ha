@@ -259,9 +259,10 @@
       "step": {
         "user": {
           "title": "Überschusslast",
-          "description": "Eine schaltbare Last, die PV-Überschuss verwerten soll (Powerstation, Entfeuchter, ...). Die Priorität folgt der Reihenfolge des Anlegens.",
+          "description": "Eine schaltbare Last, die PV-Überschuss verwerten soll (Powerstation, Entfeuchter, ...). Die anfängliche Priorität folgt der Reihenfolge des Anlegens; sie kann pro Last geändert werden (andere Lasten rücken auf).",
           "data": {
             "name": "Name",
+            "priority": "Priorität",
             "power_w": "Nennleistung (W)",
             "battery_tolerance_percent": "Erlaubter Batterieanteil (%)",
             "min_runtime_min": "Mindest-Einschaltdauer (min)",
@@ -276,6 +277,7 @@
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
+            "priority": "1 = höchste. Andere Lasten rücken entsprechend auf.",
             "power_w": "Typische Leistungsaufnahme, mit der die Last eingeplant wird. Bei Speicher-Lasten die (ggf. gedrosselte) Ladeleistung, z. B. 300 W.",
             "battery_tolerance_percent": "Wie viel der Lastenergie pro Stunde aus der Hausbatterie kommen darf (überbrückt z. B. Wolkenlücken). 0 = nur echter Überschuss. Zusätzlicher Netzbezug wird unabhängig davon nie verursacht.",
             "min_runtime_min": "Mindest-Einschaltdauer der realen Schaltung, bevor abgeschaltet werden darf — schont Gerät und Relais.",
@@ -293,6 +295,7 @@
           "title": "Überschusslast",
           "data": {
             "name": "Name",
+            "priority": "Priorität",
             "power_w": "Nennleistung (W)",
             "battery_tolerance_percent": "Erlaubter Batterieanteil (%)",
             "min_runtime_min": "Mindest-Einschaltdauer (min)",
@@ -307,6 +310,7 @@
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
+            "priority": "1 = höchste. Andere Lasten rücken entsprechend auf.",
             "power_w": "Typische Leistungsaufnahme, mit der die Last eingeplant wird. Bei Speicher-Lasten die (ggf. gedrosselte) Ladeleistung, z. B. 300 W.",
             "battery_tolerance_percent": "Wie viel der Lastenergie pro Stunde aus der Hausbatterie kommen darf (überbrückt z. B. Wolkenlücken). 0 = nur echter Überschuss. Zusätzlicher Netzbezug wird unabhängig davon nie verursacht.",
             "min_runtime_min": "Mindest-Einschaltdauer der realen Schaltung, bevor abgeschaltet werden darf — schont Gerät und Relais.",

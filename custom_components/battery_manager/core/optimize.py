@@ -232,8 +232,10 @@ def allocate_loads(
     nominal power so a decayed/empty feedback EMA can never weaken it.
 
     Loads run in parallel when surplus suffices; config order = priority when
-    it does not. Every assignment is validated by re-simulation over the FULL
-    horizon: no additional grid import (Z2) and the SOC buffer floor holds (Z3).
+    it does not (order = the configured per-load priority since v0.8.2, default
+    creation order, F-LOAD-PRIORITY). Every assignment is validated by
+    re-simulation over the FULL horizon: no additional grid import (Z2) and the
+    SOC buffer floor holds (Z3).
     """
     n = len(inputs.slots)
     states = {s.load_id: s for s in inputs.load_states}

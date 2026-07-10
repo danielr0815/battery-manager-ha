@@ -602,3 +602,94 @@ async def test_appliance_stale_start_reanchors_after_restart(hass):
     assert len(runs) == 1  # NOT omitted at 0 remaining
     assert runs[0].remaining_hours > 1.9  # re-anchored -> ~full 2 h run
     assert coordinator._appliance_started[sub_id] == now
+
+
+# ---------------------------------------------------------------------------
+# F-LOAD-PRIORITY R3/R7: SystemConfig.loads is built in effective priority
+# order (stored per-load priority; legacy fallback: insertion position).
+# ---------------------------------------------------------------------------
+
+
+async def _setup_entry_with_load_data(hass, loads):
+    """An entry with load subentries built from (title, data) pairs."""
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_LOAD
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data=data,
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title=title,
+                unique_id=None,
+            )
+            for title, data in loads
+        ],
+    )
+    entry.add_to_hass(hass)
+    _set_input_states(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    title_by_id = {sid: sub.title for sid, sub in entry.subentries.items()}
+    return coordinator, title_by_id
+
+
+def _load_titles(coordinator, title_by_id):
+    config = coordinator.build_system_config()
+    return [title_by_id[load.load_id] for load in config.loads]
+
+
+async def test_load_order_legacy_is_insertion_order(hass):
+    """R3 regression anchor: with NO stored priorities anywhere the loads sort
+    exactly like the raw insertion (creation) order — the pre-v0.8.2 behaviour."""
+    from custom_components.battery_manager.const import CONF_LOAD_POWER_W
+
+    coordinator, titles = await _setup_entry_with_load_data(
+        hass,
+        [(t, {CONF_LOAD_POWER_W: 300.0}) for t in ("A", "B", "C")],
+    )
+    assert _load_titles(coordinator, titles) == ["A", "B", "C"]
+
+
+async def test_load_order_explicit_priorities_reorder(hass):
+    """Planner effect smoke test: two loads with inverted stored priorities
+    produce config.loads in inverted order (1 = highest priority first)."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_POWER_W,
+        CONF_LOAD_PRIORITY,
+    )
+
+    coordinator, titles = await _setup_entry_with_load_data(
+        hass,
+        [
+            ("A", {CONF_LOAD_POWER_W: 300.0, CONF_LOAD_PRIORITY: 2}),
+            ("B", {CONF_LOAD_POWER_W: 400.0, CONF_LOAD_PRIORITY: 1}),
+        ],
+    )
+    assert _load_titles(coordinator, titles) == ["B", "A"]
+
+
+async def test_load_order_mixed_stored_wins_insertion_breaks_ties(hass):
+    """R7 (legacy mix): stored values win positions, ties broken by insertion —
+    a keyless A (pseudo-priority 1 by position) stays ahead of C's stored 1,
+    while C overtakes the keyless B (pseudo 2)."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_POWER_W,
+        CONF_LOAD_PRIORITY,
+    )
+
+    coordinator, titles = await _setup_entry_with_load_data(
+        hass,
+        [
+            ("A", {CONF_LOAD_POWER_W: 300.0}),  # legacy: pseudo (1, pos 0)
+            ("B", {CONF_LOAD_POWER_W: 300.0}),  # legacy: pseudo (2, pos 1)
+            ("C", {CONF_LOAD_POWER_W: 300.0, CONF_LOAD_PRIORITY: 1}),  # (1, pos 2)
+        ],
+    )
+    assert _load_titles(coordinator, titles) == ["A", "C", "B"]

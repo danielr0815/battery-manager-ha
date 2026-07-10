@@ -109,7 +109,9 @@ candidates).
   so the energy demonstrably comes, time-shifted through the battery, from
   otherwise-lost surplus. Energy-limited loads (Fossibots) enter
   pass 2 only with budget left over from pass 1 (saturating within the sun window has
-  priority, saving battery cycles). The harmful scenario "5 a.m., 50 % SOC"
+  priority, saving battery cycles). Among each other, loads compete in config
+  order = priority (order = the configured per-load priority since v0.8.2,
+  default creation order, F-LOAD-PRIORITY). The harmful scenario "5 a.m., 50 % SOC"
   is automatically discarded by (a) (the battery would breach the
   inverter minimum → import); the useful scenario "short
   sun window, high SOC" is automatically allowed.

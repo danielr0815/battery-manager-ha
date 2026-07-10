@@ -58,6 +58,7 @@ from .const import (
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_LOAD_POWER_WARNING_PCT,
+    CONF_LOAD_PRIORITY,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_NATIVE48_BASE_W,
@@ -100,6 +101,7 @@ from .const import (
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
 )
+from .coordinator import ordered_load_subentries
 
 # Collapsible section groups for the options flow (visual grouping only;
 # their fields are nested under the section key in the submitted data and
@@ -889,8 +891,22 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         def dv(key):
             return data.get(key, DEFAULT_LOAD_CONFIG.get(key))
 
+        # F-LOAD-PRIORITY R2: the selector range is honest — 1..N over all load
+        # subentries, counting the one this flow is about to create. Default:
+        # the CURRENT effective position (reconfigure, injected by
+        # async_step_reconfigure) or N (create — new loads append, exactly the
+        # pre-v0.8.2 semantics).
+        n_loads = sum(
+            1
+            for sub in self._get_entry().subentries.values()
+            if sub.subentry_type == SUBENTRY_TYPE_LOAD
+        ) + (0 if self._is_reconfigure else 1)
         schema: dict[Any, Any] = {
             vol.Required(CONF_LOAD_NAME, default=data.get(CONF_LOAD_NAME, "")): str,
+            vol.Required(
+                CONF_LOAD_PRIORITY,
+                default=int(data.get(CONF_LOAD_PRIORITY, n_loads)),
+            ): _number(1, max(n_loads, 1), 1),
             vol.Required(CONF_LOAD_POWER_W, default=dv(CONF_LOAD_POWER_W)): _number(
                 1, 10_000, 10, "W"
             ),
@@ -988,6 +1004,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         data.update(self._basic)
         data.update(storage_input)
         title = data.pop(CONF_LOAD_NAME)
+        data[CONF_LOAD_PRIORITY] = self._renumber_siblings(
+            int(data[CONF_LOAD_PRIORITY])
+        )
         if self._is_reconfigure:
             return self.async_update_and_abort(
                 self._get_entry(),
@@ -996,6 +1015,51 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                 data=data,
             )
         return self.async_create_entry(title=title, data=data)
+
+    def _renumber_siblings(self, priority: int) -> int:
+        """Insert-shift renumber (F-LOAD-PRIORITY R4): place the edited load at
+        `priority` within the effective order of its SIBLINGS, renumber all
+        loads densely 1..N, and return the edited load's clamped position.
+
+        Only siblings whose EFFECTIVE priority (stored value, else the R3
+        insertion fallback) actually changes are written: every sibling write
+        reloads the entry, and a create at the default position (R5) or an
+        untouched re-save of a dense state (R6) must stay write-free. The
+        flow's own update/create afterwards carries the edited load's value and
+        triggers the final reload that picks everything up.
+        """
+        entry = self._get_entry()
+        edited_id = (
+            self._get_reconfigure_subentry().subentry_id
+            if self._is_reconfigure
+            else None
+        )
+        # R3 insertion fallback per sibling: its position among ALL load
+        # subentries (a created load appends after them, so positions hold).
+        insertion_pos = {
+            subentry_id: pos
+            for pos, subentry_id in enumerate(
+                sid
+                for sid, sub in entry.subentries.items()
+                if sub.subentry_type == SUBENTRY_TYPE_LOAD
+            )
+        }
+        siblings = [
+            (subentry_id, sub)
+            for subentry_id, sub in ordered_load_subentries(entry)
+            if subentry_id != edited_id
+        ]
+        position = max(1, min(priority, len(siblings) + 1))
+        for index, (subentry_id, sub) in enumerate(siblings):
+            new_priority = index + 1 if index + 1 < position else index + 2
+            current = int(
+                sub.data.get(CONF_LOAD_PRIORITY, insertion_pos[subentry_id] + 1)
+            )
+            if current != new_priority:
+                self.hass.config_entries.async_update_subentry(
+                    entry, sub, data={**sub.data, CONF_LOAD_PRIORITY: new_priority}
+                )
+        return position
 
     async def _handle_basic(
         self, step_id: str, user_input: dict[str, Any] | None
@@ -1032,7 +1096,21 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         if not hasattr(self, "_existing"):
             subentry = self._get_reconfigure_subentry()
-            self._existing = {**subentry.data, CONF_LOAD_NAME: subentry.title}
+            # F-LOAD-PRIORITY R2: the form default is the CURRENT effective
+            # position — not the raw stored value, which can differ in a
+            # legacy/mixed state (R7) — so an untouched save keeps the order.
+            position = next(
+                index + 1
+                for index, (subentry_id, _sub) in enumerate(
+                    ordered_load_subentries(self._get_entry())
+                )
+                if subentry_id == subentry.subentry_id
+            )
+            self._existing = {
+                **subentry.data,
+                CONF_LOAD_NAME: subentry.title,
+                CONF_LOAD_PRIORITY: position,
+            }
             self._is_reconfigure = True
         return await self._handle_basic("reconfigure", user_input)
 

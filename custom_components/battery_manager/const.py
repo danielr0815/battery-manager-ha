@@ -136,6 +136,11 @@ DC48_CTRL_VOLTAGE_MAX = 60.0
 # --- Surplus load subentry keys ---
 SUBENTRY_TYPE_LOAD = "surplus_load"
 CONF_LOAD_NAME = "name"
+# Explicit per-load priority (int >= 1, 1 = highest; F-LOAD-PRIORITY R1).
+# Deliberately NOT in DEFAULT_LOAD_CONFIG: the effective order is resolved
+# centrally (ordered_load_subentries, R3) with the insertion position as the
+# legacy fallback, so a per-load default would shadow that fallback.
+CONF_LOAD_PRIORITY = "priority"
 CONF_LOAD_POWER_W = "power_w"
 CONF_LOAD_BATTERY_TOLERANCE = "battery_tolerance_percent"
 CONF_LOAD_MIN_RUNTIME_MIN = "min_runtime_min"

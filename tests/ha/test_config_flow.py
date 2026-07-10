@@ -808,3 +808,178 @@ async def test_continuous_load_keep_on_without_enable_rejected_on_basic(hass):
     assert result["type"] == "form"
     assert result["step_id"] == "user"
     assert result["errors"] == {"base": "keep_on_requires_enable"}
+
+
+# ---------------------------------------------------------------------------
+# F-LOAD-PRIORITY: explicit per-load priority with insert-shift renumbering
+# (docs/F-LOAD-PRIORITY.md R2/R4-R7). Priority materialises as the order of
+# SystemConfig.loads; the flow stores dense 1..N values and only writes the
+# siblings whose effective priority actually changes (every write reloads).
+# ---------------------------------------------------------------------------
+
+
+async def _setup_entry_with_loads(hass, titles):
+    """An entry with LEGACY load subentries (pre-v0.8.2: no priority key)."""
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_POWER_W,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={CONF_LOAD_POWER_W: 300.0},
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title=title,
+                unique_id=None,
+            )
+            for title in titles
+        ],
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_soc", "55", {"unit_of_measurement": "%"})
+    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(pv, "10.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    load_ids = [
+        sid
+        for sid, sub in entry.subentries.items()
+        if sub.subentry_type == SUBENTRY_TYPE_LOAD
+    ]
+    return entry, load_ids
+
+
+async def test_load_priority_create_default_leaves_siblings_untouched(hass):
+    """R5: adding a load at the default priority (N = append) is exactly the
+    old creation semantics — the new load stores priority N, and NO sibling is
+    written (no reloads, not even a priority key added to legacy loads)."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_PRIORITY,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry, (id_a, id_b) = await _setup_entry_with_loads(hass, ["A", "B"])
+    data_before = {sid: entry.subentries[sid].data for sid in (id_a, id_b)}
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    # Default priority is N (= 3 incl. the load being created).
+    marker = next(
+        k for k in result["data_schema"].schema if str(k) == CONF_LOAD_PRIORITY
+    )
+    assert marker.default() == 3
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**BASIC_CONTINUOUS, "name": "C"}
+    )
+    assert result["type"] == "create_entry"
+    await hass.async_block_till_done()
+
+    id_c = next(sid for sid, sub in entry.subentries.items() if sub.title == "C")
+    assert entry.subentries[id_c].data[CONF_LOAD_PRIORITY] == 3
+    for sid in (id_a, id_b):
+        assert entry.subentries[sid].data is data_before[sid]  # unwritten
+        assert CONF_LOAD_PRIORITY not in entry.subentries[sid].data
+
+
+async def test_load_priority_insert_shift_on_reconfigure(hass):
+    """R4/R7: legacy loads A,B,C (no stored keys) — setting C to priority 1
+    shifts the others and densifies every stored value: C=1, A=2, B=3."""
+    from custom_components.battery_manager.const import CONF_LOAD_PRIORITY
+
+    entry, (id_a, id_b, id_c) = await _setup_entry_with_loads(hass, ["A", "B", "C"])
+
+    result = await entry.start_subentry_reconfigure_flow(hass, id_c)
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_LOAD_PRIORITY: 1}
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    assert entry.subentries[id_c].data[CONF_LOAD_PRIORITY] == 1
+    assert entry.subentries[id_a].data[CONF_LOAD_PRIORITY] == 2
+    assert entry.subentries[id_b].data[CONF_LOAD_PRIORITY] == 3
+
+
+async def test_load_priority_clamps_and_resave_is_write_free(hass, monkeypatch):
+    """Clamp (R4): the selector already bounds the input to 1..N at render
+    time, so the server-side clamp guards the race where the load set SHRINKS
+    between form render and submit — the stale position lands on the last
+    valid slot. R6: re-saving the untouched form afterwards performs ZERO
+    sibling updates (dense values already match) — only the flow's own no-op
+    update runs."""
+    from custom_components.battery_manager.const import CONF_LOAD_PRIORITY
+
+    entry, (id_a, id_b, id_c) = await _setup_entry_with_loads(hass, ["A", "B", "C"])
+
+    # Render with N=3, then delete a sibling: the submitted position 3 is
+    # valid for the stale form but out of range for the 2 remaining loads.
+    result = await entry.start_subentry_reconfigure_flow(hass, id_a)
+    hass.config_entries.async_remove_subentry(entry, id_c)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {CONF_LOAD_PRIORITY: 3}
+    )
+    assert result["type"] == "abort"
+    await hass.async_block_till_done()
+    # Clamped to the last position (2); the remaining sibling densifies to 1.
+    assert entry.subentries[id_a].data[CONF_LOAD_PRIORITY] == 2
+    assert entry.subentries[id_b].data[CONF_LOAD_PRIORITY] == 1
+
+    # Idempotent re-save (R6): the rendered default is the effective position;
+    # submitting it unchanged must not write any sibling.
+    calls: list[str] = []
+    original = hass.config_entries.async_update_subentry
+
+    def spy(*args, **kwargs):
+        subentry = kwargs.get("subentry", args[1] if len(args) > 1 else None)
+        calls.append(subentry.subentry_id)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(hass.config_entries, "async_update_subentry", spy)
+    result = await entry.start_subentry_reconfigure_flow(hass, id_a)
+    marker = next(
+        k for k in result["data_schema"].schema if str(k) == CONF_LOAD_PRIORITY
+    )
+    assert marker.default() == 2  # current effective position
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {}
+    )
+    assert result["type"] == "abort"
+    await hass.async_block_till_done()
+    assert [sid for sid in calls if sid != id_a] == []  # zero sibling writes
+    assert entry.subentries[id_a].data[CONF_LOAD_PRIORITY] == 2  # unchanged
+
+
+async def test_load_priority_create_at_position_one_shifts_all(hass):
+    """R4 (create path): a new load at priority 1 takes the top spot and every
+    legacy sibling shifts down (and densifies)."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_PRIORITY,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry, (id_a, id_b) = await _setup_entry_with_loads(hass, ["A", "B"])
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**BASIC_CONTINUOUS, "name": "C", CONF_LOAD_PRIORITY: 1}
+    )
+    assert result["type"] == "create_entry"
+    await hass.async_block_till_done()
+
+    id_c = next(sid for sid, sub in entry.subentries.items() if sub.title == "C")
+    assert entry.subentries[id_c].data[CONF_LOAD_PRIORITY] == 1
+    assert entry.subentries[id_a].data[CONF_LOAD_PRIORITY] == 2
+    assert entry.subentries[id_b].data[CONF_LOAD_PRIORITY] == 3

@@ -259,9 +259,10 @@
       "step": {
         "user": {
           "title": "Surplus load",
-          "description": "A switchable load that should consume PV surplus (powerstation, dehumidifier, ...). Priority follows the order of creation.",
+          "description": "A switchable load that should consume PV surplus (powerstation, dehumidifier, ...). Initial priority follows the creation order; it can be changed per load (other loads shift).",
           "data": {
             "name": "Name",
+            "priority": "Priority",
             "power_w": "Nominal power (W)",
             "battery_tolerance_percent": "Allowed battery share (%)",
             "min_runtime_min": "Minimum on time (min)",
@@ -276,6 +277,7 @@
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
+            "priority": "1 = highest. Other loads shift accordingly.",
             "power_w": "Typical power draw used for planning. For storage loads use the (possibly throttled) charging power, e.g. 300 W.",
             "battery_tolerance_percent": "How much of the load's hourly energy may come from the home battery (bridges e.g. cloud gaps). 0 = genuine surplus only. Additional grid import is never caused regardless.",
             "min_runtime_min": "Minimum ON time of the real switch before it may turn off — protects the device and relays.",
@@ -293,6 +295,7 @@
           "title": "Surplus load",
           "data": {
             "name": "Name",
+            "priority": "Priority",
             "power_w": "Nominal power (W)",
             "battery_tolerance_percent": "Allowed battery share (%)",
             "min_runtime_min": "Minimum on time (min)",
@@ -307,6 +310,7 @@
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
+            "priority": "1 = highest. Other loads shift accordingly.",
             "power_w": "Typical power draw used for planning. For storage loads use the (possibly throttled) charging power, e.g. 300 W.",
             "battery_tolerance_percent": "How much of the load's hourly energy may come from the home battery (bridges e.g. cloud gaps). 0 = genuine surplus only. Additional grid import is never caused regardless.",
             "min_runtime_min": "Minimum ON time of the real switch before it may turn off — protects the device and relays.",

@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -51,6 +51,7 @@ from .const import (
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_LOAD_POWER_WARNING_PCT,
+    CONF_LOAD_PRIORITY,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_NATIVE48_BASE_W,
@@ -158,6 +159,31 @@ def _gate_soc(percent: Any) -> float | None:
     """48 V PSU gate SOC; >= 100 % means always open (no gate)."""
     value = float(percent)
     return value if value < 100.0 else None
+
+
+def ordered_load_subentries(entry: ConfigEntry) -> list[tuple[str, ConfigSubentry]]:
+    """Load subentries in effective priority order (F-LOAD-PRIORITY R3).
+
+    Single source of truth for load ordering: the planner core treats the
+    ORDER of `SystemConfig.loads` as priority (docs/ALGORITHM.md D-A4), so this
+    is where a stored per-load priority materialises. Sort key per load:
+    `(stored priority if present else insertion position + 1, insertion
+    position)` — an entry with NO stored priorities anywhere sorts exactly like
+    the raw insertion order (the pre-v0.8.2 behaviour, regression anchor), and
+    in a mixed legacy state stored values win positions with the insertion
+    order breaking ties (R7).
+    """
+    loads = [
+        (subentry_id, subentry)
+        for subentry_id, subentry in entry.subentries.items()
+        if subentry.subentry_type == SUBENTRY_TYPE_LOAD
+    ]
+
+    def sort_key(indexed: tuple[int, tuple[str, ConfigSubentry]]) -> tuple[int, int]:
+        position, (_subentry_id, subentry) = indexed
+        return (int(subentry.data.get(CONF_LOAD_PRIORITY, position + 1)), position)
+
+    return [pair for _, pair in sorted(enumerate(loads), key=sort_key)]
 
 
 class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -490,33 +516,35 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cfg = self.raw_config
         loads = []
         appliances = []
+        # F-LOAD-PRIORITY R3: the planner core reads priority from the ORDER of
+        # SystemConfig.loads, so the loads are built in effective priority order
+        # (stored per-load priority, legacy fallback: insertion position).
+        for subentry_id, subentry in ordered_load_subentries(self.entry):
+            data = subentry.data
+            loads.append(
+                SurplusLoad(
+                    load_id=subentry_id,
+                    name=subentry.title,
+                    nominal_power_w=float(data[CONF_LOAD_POWER_W]),
+                    battery_tolerance=float(data.get(CONF_LOAD_BATTERY_TOLERANCE, 15.0))
+                    / 100.0,
+                    min_runtime_min=int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
+                    # Back-compat: an existing load without the key keeps its
+                    # symmetric dwell (min_off == min_runtime), see F-SUBHOUR R14.
+                    min_off_min=int(
+                        data.get(
+                            CONF_LOAD_MIN_OFF_MIN,
+                            data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30),
+                        )
+                    ),
+                    energy_limited=bool(data.get(CONF_LOAD_ENERGY_LIMITED, False)),
+                    capacity_wh=float(data.get(CONF_LOAD_CAPACITY_WH, 0.0)),
+                    target_soc_percent=float(data.get(CONF_LOAD_TARGET_SOC, 100.0)),
+                )
+            )
         for subentry_id, subentry in self.entry.subentries.items():
             data = subentry.data
-            if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
-                loads.append(
-                    SurplusLoad(
-                        load_id=subentry_id,
-                        name=subentry.title,
-                        nominal_power_w=float(data[CONF_LOAD_POWER_W]),
-                        battery_tolerance=float(
-                            data.get(CONF_LOAD_BATTERY_TOLERANCE, 15.0)
-                        )
-                        / 100.0,
-                        min_runtime_min=int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
-                        # Back-compat: an existing load without the key keeps its
-                        # symmetric dwell (min_off == min_runtime), see F-SUBHOUR R14.
-                        min_off_min=int(
-                            data.get(
-                                CONF_LOAD_MIN_OFF_MIN,
-                                data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30),
-                            )
-                        ),
-                        energy_limited=bool(data.get(CONF_LOAD_ENERGY_LIMITED, False)),
-                        capacity_wh=float(data.get(CONF_LOAD_CAPACITY_WH, 0.0)),
-                        target_soc_percent=float(data.get(CONF_LOAD_TARGET_SOC, 100.0)),
-                    )
-                )
-            elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE:
+            if subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE:
                 appliances.append(
                     Appliance(
                         appliance_id=subentry_id,

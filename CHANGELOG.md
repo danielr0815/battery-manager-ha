@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-10
+
+### Added
+- **Configurable per-load priority (F-LOAD-PRIORITY).** The load dialog gets a
+  required "Priority" field (1 = highest) directly after the name, with
+  insert-shift semantics: assigning load X priority P moves it to position P
+  and renumbers all loads densely 1..N, so the other loads shift accordingly.
+  Initial/default priority follows the creation order (a new load appends,
+  exactly the previous behaviour), and existing installs keep their order
+  unchanged until a load is first saved. The planner core is untouched —
+  priority materialises purely as the order of `SystemConfig.loads`; the
+  SOC-forecast sensor's `loads` attribute therefore now lists loads in
+  priority order.
+
 ## [0.8.1] - 2026-07-10
 
 ### Fixed
