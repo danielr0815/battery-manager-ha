@@ -20,6 +20,7 @@ def step_hour(
     extra_ac_wh: float = 0.0,
     dc24_from_grid: bool = False,
     dc48_support: bool = False,
+    pv_scale: float = 1.0,
 ) -> HourFlows:
     """Simulate one slot; returns all flows. Never mutates anything."""
     battery = config.battery
@@ -46,10 +47,16 @@ def step_hour(
     # self-gates OFF and delivers nothing (docs/DC_TOPOLOGY.md §4, Jury-Gap #1).
     # It is also the single balance against which the residual DC bus load is
     # settled, so a same-slot PV surplus covers it instead of a phantom import.
+    # F-PREDRAIN F3: the lower-buffer stress gate re-simulates the horizon with
+    # a pessimistic PV multiplier. `pv_scale` scales THIS slot's PV inside the
+    # loop; the peak cap already applied to the unscaled input at build time, so
+    # scaling stays orthogonal to it. 1.0 leaves the value byte-identical
+    # (neutral default — the multiply is skipped so the plan is bit-for-bit).
+    pv_wh = slot.pv_wh if pv_scale == 1.0 else slot.pv_wh * pv_scale
     ac_total = slot.ac_wh + extra_ac_wh
     if inverter_on:
         ac_total += config.inverter.standby_power_w * slot.duration
-    balance = slot.pv_wh - ac_total
+    balance = pv_wh - ac_total
     net_charging = balance > _EPS
 
     # --- DC load split across the two buses (F-N3, docs/DC_TOPOLOGY.md) ---
@@ -223,8 +230,15 @@ def simulate(
     extra_ac_wh: tuple[float, ...] | None = None,
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
+    pv_scale: float = 1.0,
 ) -> Trajectory:
-    """Simulate the whole horizon under the policy `inverter on <=> SOC > threshold`."""
+    """Simulate the whole horizon under the policy `inverter on <=> SOC > threshold`.
+
+    `pv_scale` multiplies every slot's PV forecast (F-PREDRAIN F3): the planner
+    re-runs the horizon pessimistically (alpha < 1.0) to protect the lower
+    buffer, or optimistically (beta > 1.0) to size the upper buffer. 1.0 is the
+    neutral default and keeps the result bit-identical to the unscaled run.
+    """
     soc = inputs.start_soc_percent
     flows: list[HourFlows] = []
     total_import = 0.0
@@ -239,6 +253,7 @@ def simulate(
             extra_ac_wh=extra_ac_wh[i] if extra_ac_wh else 0.0,
             dc24_from_grid=bool(dc24_schedule[i]) if dc24_schedule else False,
             dc48_support=bool(dc48_schedule[i]) if dc48_schedule else False,
+            pv_scale=pv_scale,
         )
         flows.append(flow)
         soc = flow.soc_end_percent

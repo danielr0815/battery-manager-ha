@@ -37,6 +37,43 @@ def _degrades_min_soc(
     )
 
 
+def pv_windows(
+    inputs: PlanInputs, cutoff_w: float, end_hour: int | None
+) -> dict:
+    """Per calendar day, the [first, last] slot index of strong PV production.
+
+    A slot is "strong" when its average power (`pv_wh / duration`) reaches
+    `strong_pv_cutoff_w`. The window frames the hours during which the UPPER
+    buffer (absorption headroom near max SOC) must be preserved (F-PREDRAIN F4,
+    operator requirement L6): after the last strong slot the sun has moved
+    behind the house, so the reserve may be spent. Derived from the slot PV
+    series, so it works in both hourly and daily/two-window forecast modes.
+    `pv_window_end_hour` (site override) caps the end at the last slot starting
+    before that local hour. A day with no strong slot has no window — its
+    night/cloudy slots can only ever book via the nominal opportunity gate (c1).
+    """
+    windows: dict = {}
+    for i, slot in enumerate(inputs.slots):
+        if slot.duration <= 0.0:
+            continue
+        if slot.pv_wh / slot.duration >= cutoff_w:
+            day = slot.start.date()
+            first, last = windows.get(day, (i, i))
+            windows[day] = (min(first, i), max(last, i))
+    if end_hour is None:
+        return windows
+    capped: dict = {}
+    for day, (first, last) in windows.items():
+        cap_idx = None
+        for i, slot in enumerate(inputs.slots):
+            if slot.start.date() == day and slot.hour_of_day < end_hour:
+                cap_idx = i
+        if cap_idx is None or cap_idx < first:
+            continue  # the whole window sits at/after the override hour
+        capped[day] = (first, min(last, cap_idx))
+    return capped
+
+
 def search_threshold(
     config: SystemConfig, inputs: PlanInputs
 ) -> tuple[float, Trajectory]:
@@ -192,9 +229,35 @@ def allocate_loads(
         remaining[load.load_id] = state.remaining_energy_wh(load)
 
     extra = [0.0] * n
+    control = config.control
+    ratio = control.import_trade_ratio
+    alpha = control.predrain_pv_confidence
+    beta = control.upper_pv_reserve
     base_import = base_trajectory.total_import_wh
-    buffer_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
+    base_export = base_trajectory.total_export_wh
+    buffer_floor = config.battery.soc_min_percent + control.soc_buffer_percent
+    # Z4 protects the INVERTER cutoff (L2), not the storage minimum, so its
+    # floor differs from Z3's `soc_min + buffer` (F-PREDRAIN §3.3).
+    stress_floor = control.inverter_min_soc_percent + control.soc_buffer_percent
+    windows = pv_windows(inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour)
     current = base_trajectory
+
+    def import_ok(load, traj: Trajectory) -> bool:
+        """Z2' import gate. Energy-limited loads keep the strict no-extra-import
+        rule (L5 keeps them out of the pre-drain machinery); continuous loads use
+        the cumulative trade invariant against the no-loads base: a small import
+        is allowed only in exchange for rescued export at `import_trade_ratio`,
+        plus 1 Wh of slack so a lone standby artifact never vetoes a run (L1).
+        With ratio 0.0 the 1 Wh slack sits far below the ~10 Wh standby quantum,
+        so night pre-drains still need a positive ratio to book."""
+        if load.energy_limited:
+            return traj.total_import_wh <= base_import + _EPS
+        allowed = ratio * (base_export - traj.total_export_wh) + 1.0
+        return traj.total_import_wh - base_import <= allowed + _EPS
+
+    def in_window(i: int) -> bool:
+        w = windows.get(inputs.slots[i].start.date())
+        return w is not None and w[0] <= i <= w[1]
 
     for i, slot in enumerate(inputs.slots):
         surplus = current.flows[i].grid_export_wh
@@ -227,9 +290,9 @@ def allocate_loads(
                 battery_share = max(0.0, power_wh - surplus_cov) / power_wh
                 if battery_share > load.battery_tolerance + _EPS:
                     continue
-                # Hard conditions via full re-simulation (Z2/Z3).
+                # Hard conditions via full re-simulation (Z2'/Z3).
                 traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-                if traj.total_import_wh > base_import + _EPS:
+                if not import_ok(load, traj):
                     continue
                 if _degrades_min_soc(traj, current, buffer_floor):
                     continue
@@ -251,16 +314,34 @@ def allocate_loads(
                 surplus = max(0.0, surplus - power_w * covered[0][1])
                 break  # placed the largest feasible quantum; done with this slot
 
-    # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2).
-    # A load may run without direct surplus when the re-simulation proves:
-    # (a) grid import does not increase, (b) the buffer floor holds, and
-    # (c) lost surplus drops by >= (1 - tolerance) x the load's energy —
-    # i.e. the battery drain is provably refilled from would-be-lost export.
-    # Energy-limited loads only get here with budget left over from pass 1
-    # (saturating in the sun window is always preferred). Iterated latest-
-    # first; slots after the last export can never satisfy (c), so they are
-    # skipped outright, as is the whole pass on an export-free horizon.
+    # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2,
+    # two-buffer pre-drain F-PREDRAIN §3). A load may run without direct surplus
+    # when the re-simulation proves it is safe AND worthwhile:
+    #   Z2' import trade   — import stays within the trade invariant (F2),
+    #   Z3  buffer floor   — nominal min SOC not degraded below soc_min+buffer,
+    #   Z4  lower buffer   — even a pessimistic (alpha) PV run keeps the inverter
+    #                        reserve above its floor (continuous loads only, F3),
+    #   (c) opportunity    — (c1) the nominal drain is refilled from lost export,
+    #                        OR (c2) inside the day's PV window an optimistic
+    #                        (beta) run would be (upper-buffer insurance, F4).
+    # Energy-limited loads stay on the legacy nominal-only path (a1/c1) and never
+    # night-charge from the house battery (L5). Iterated latest-first (L4); slots
+    # after the last export can never satisfy the gate, so they are skipped, as
+    # is the whole pass on an export-free horizon.
     if current.total_export_wh > _EPS:
+        # Stress/opportunity baselines for the CURRENTLY accepted series. Kept in
+        # step with `current` and refreshed only on acceptance (cache per
+        # acceptance, not per candidate); skipped when the gate is neutral.
+        current_stress = (
+            simulate(config, inputs, threshold, extra_ac_wh=tuple(extra), pv_scale=alpha)
+            if alpha != 1.0
+            else None
+        )
+        current_beta = (
+            simulate(config, inputs, threshold, extra_ac_wh=tuple(extra), pv_scale=beta)
+            if beta != 1.0
+            else None
+        )
         last_export = max(
             (j for j, f in enumerate(current.flows) if f.grid_export_wh > _EPS),
             default=-1,
@@ -291,16 +372,65 @@ def allocate_loads(
                     )
                     if any(schedules[load.load_id][j] for j, _ in covered):
                         continue
-                    traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-                    if traj.total_import_wh > base_import + _EPS:
+                    trial_tuple = tuple(trial)
+                    traj = simulate(config, inputs, threshold, extra_ac_wh=trial_tuple)
+                    if not import_ok(load, traj):  # Z2'
                         continue
-                    if _degrades_min_soc(traj, current, buffer_floor):
+                    if _degrades_min_soc(traj, current, buffer_floor):  # Z3
                         continue
                     export_drop = current.total_export_wh - traj.total_export_wh
-                    if export_drop + _EPS < (1.0 - load.battery_tolerance) * power_wh:
-                        continue
+                    need = (1.0 - load.battery_tolerance) * power_wh
+                    trial_stress = None
+                    trial_beta = None
+                    if load.energy_limited:
+                        # Legacy nominal refill gate only (no two-buffer machinery).
+                        if export_drop + _EPS < need:
+                            continue
+                    else:
+                        # (c1) nominal refill OR (c2) optimistic in-window insurance.
+                        accept = export_drop + _EPS >= need
+                        if not accept and beta != 1.0 and in_window(i):
+                            trial_beta = simulate(
+                                config, inputs, threshold,
+                                extra_ac_wh=trial_tuple, pv_scale=beta,
+                            )
+                            drop_beta = (
+                                current_beta.total_export_wh - trial_beta.total_export_wh
+                            )
+                            accept = drop_beta + _EPS >= need
+                        if not accept:
+                            continue
+                        # Z4 lower-buffer stress gate: the pre-drain must not sink
+                        # the inverter reserve even if PV underperforms (alpha).
+                        if alpha != 1.0:
+                            trial_stress = simulate(
+                                config, inputs, threshold,
+                                extra_ac_wh=trial_tuple, pv_scale=alpha,
+                            )
+                            if _degrades_min_soc(
+                                trial_stress, current_stress, stress_floor
+                            ):
+                                continue
                     extra = trial
                     current = traj
+                    if alpha != 1.0:
+                        current_stress = (
+                            trial_stress
+                            if trial_stress is not None
+                            else simulate(
+                                config, inputs, threshold,
+                                extra_ac_wh=tuple(extra), pv_scale=alpha,
+                            )
+                        )
+                    if beta != 1.0:
+                        current_beta = (
+                            trial_beta
+                            if trial_beta is not None
+                            else simulate(
+                                config, inputs, threshold,
+                                extra_ac_wh=tuple(extra), pv_scale=beta,
+                            )
+                        )
                     for j, take in covered:
                         schedules[load.load_id][j] = True
                         run_h[load.load_id][j] = take
@@ -452,8 +582,12 @@ def support_escalation(
 
 def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2)."""
+    control = config.control
     threshold, base_traj = search_threshold(config, inputs)
     load_plans, extra_ac, traj = allocate_loads(config, inputs, threshold, base_traj)
+    # Capture the allocation trajectory BEFORE support escalation: the import
+    # trade is a property of the load allocation, not of the last-resort PSUs.
+    alloc_traj = traj
     dc24, dc48, traj = support_escalation(config, inputs, threshold, extra_ac, traj)
     windows = appliance_windows(
         config,
@@ -477,6 +611,26 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         hours_to_max = 0
         inverter_on = False
 
+    # F-PREDRAIN diagnostics (§3.5): the traded import, the stressed reserve, and
+    # the derived PV absorption windows (WP4 exposes these as sensor attributes).
+    import_trade_used_wh = max(0.0, alloc_traj.total_import_wh - base_traj.total_import_wh)
+    stressed_min_soc: float | None = None
+    if control.predrain_pv_confidence != 1.0 and alloc_traj.flows:
+        stressed = simulate(
+            config,
+            inputs,
+            threshold,
+            extra_ac_wh=extra_ac,
+            pv_scale=control.predrain_pv_confidence,
+        )
+        stressed_min_soc = stressed.min_soc_percent
+    window_ends = {
+        day.isoformat(): inputs.slots[last].hour_of_day
+        for day, (_first, last) in pv_windows(
+            inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour
+        ).items()
+    }
+
     return PlanResult(
         threshold_percent=threshold,
         inverter_on=inverter_on,
@@ -493,4 +647,7 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         else inputs.start_soc_percent,
         max_soc_percent=max_soc,
         hours_to_max_soc=hours_to_max,
+        import_trade_used_wh=import_trade_used_wh,
+        stressed_min_soc_percent=stressed_min_soc,
+        pv_window_ends=window_ends,
     )
