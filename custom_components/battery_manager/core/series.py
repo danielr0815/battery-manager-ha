@@ -120,11 +120,18 @@ def _pv_wh_hourly(
     """Map an hourly PV forecast onto the slot grid (docs/F-PREDRAIN.md F1).
 
     A slot whose hour is present in the map takes that hour's Wh, prorated by the
-    slot duration (the partial first slot gets its share of the hour). Hours a day
-    does not cover share that day's RESIDUAL (daily total minus the day's covered
-    buckets) via the two-window weights, renormalised over the day's uncovered
-    slots only and clamped at 0. The per-slot peak-power cap then applies exactly
-    as in the two-window path.
+    slot duration (the partial first slot gets its share of the hour). An
+    uncovered hour of a day takes its two-window SHARE of that day's RESIDUAL
+    (daily total minus the day's covered buckets): `residual_wh *
+    pv_hour_share(hour) * duration`. There is NO renormalisation over the
+    remaining/uncovered slots (FIX-3): the two-window shares already sum to 1
+    over the FULL day, so a day with NO buckets reproduces the legacy two-window
+    values bit-for-bit — even when `now` is mid-morning and the elapsed hours are
+    absent from the horizon (renormalising over only the remaining slots inflated
+    the afternoon PV 3-5x). A partially covered day therefore UNDER-fills its
+    uncovered slots (the covered hours' share of the residual is not
+    redistributed) rather than over-filling — conservative by design. The
+    per-slot peak-power cap then applies exactly as in the two-window path.
     """
     peak = config.pv.peak_power_w
     # Per-day residual from the daily forecast state vs. the day's covered buckets.
@@ -137,38 +144,16 @@ def _pv_wh_hourly(
         )
         residual_by_day[day] = residual_wh
 
-    # Two-window weight (share x duration) of every UNCOVERED slot, per day.
-    covered: list[bool] = []
-    weights: list[float] = []
-    weight_sum_by_day: dict[date, float] = {}
-    for index, slot_start in enumerate(starts):
-        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
-        if slot_start.replace(minute=0, second=0, microsecond=0) in pv_hourly:
-            covered.append(True)
-            weights.append(0.0)
-            continue
-        covered.append(False)
-        weight = pv_hour_share(config.pv, slot_start.hour) * duration
-        if weight < 0.0:
-            weight = 0.0
-        weights.append(weight)
-        day = slot_start.date()
-        weight_sum_by_day[day] = weight_sum_by_day.get(day, 0.0) + weight
-
     result: list[float] = []
     for index, slot_start in enumerate(starts):
         duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
         cap = peak * duration
-        if covered[index]:
-            hour_key = slot_start.replace(minute=0, second=0, microsecond=0)
+        hour_key = slot_start.replace(minute=0, second=0, microsecond=0)
+        if hour_key in pv_hourly:
             pv_wh = pv_hourly[hour_key] * duration
         else:
-            day = slot_start.date()
-            weight_sum = weight_sum_by_day.get(day, 0.0)
-            if weight_sum > 0.0:
-                pv_wh = residual_by_day.get(day, 0.0) * weights[index] / weight_sum
-            else:
-                pv_wh = 0.0
+            share = pv_hour_share(config.pv, slot_start.hour)
+            pv_wh = residual_by_day.get(slot_start.date(), 0.0) * share * duration
         result.append(min(pv_wh, cap))
     return result
 

@@ -147,7 +147,7 @@
               "hysteresis_percent": "Totband um die SOC-Schwelle: Die Wechselrichter-Empfehlung wechselt erst, wenn der SOC die Schwelle um diesen Wert über- oder unterschreitet — verhindert Flattern.",
               "threshold_inertia_percent": "Eine neue Schwelle wird erst übernommen, wenn sie sich um mindestens diesen Betrag von der bisherigen unterscheidet — verhindert Springen zwischen gleichwertigen Plänen.",
               "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade).",
-              "pv_forecast_mode": "Wie die stündliche PV-Form ermittelt wird: Automatisch nutzt die stündlichen wh_period-Attribute der Prognose, falls vorhanden (sonst das Zwei-Fenster-Modell), Stündlich erzwingt sie, Täglich ignoriert sie (Verhalten v0.7.19).",
+              "pv_forecast_mode": "Wie die stündliche PV-Form ermittelt wird: Automatisch nutzt die stündlichen wh_period-Attribute der Prognose, falls vorhanden (sonst das Zwei-Fenster-Modell), Stündlich bevorzugt Stundenwerte und warnt, wenn keine vorliegen (fällt dann auf das Zwei-Fenster-Modell zurück), Täglich ignoriert sie (Verhalten v0.7.19).",
               "import_trade_ratio": "Wie viel zusätzlichen Netzbezug eine Vorentladung je Wh geretteten Überschusses verursachen darf (0 = keiner). Geringe Ladegerät-Standby-Kosten können so durch weit größere Überschuss-Einsparungen aufgewogen werden (Empfehlung: 0,10).",
               "predrain_pv_confidence": "Pessimismus des Stresstests für den unteren Puffer: Die PV des Folgetages wird mit diesem Faktor gemindert, und der Lauf muss die Wechselrichter-Reserve über ihrem Boden halten. 1,0 = Prognose voll vertrauen (Empfehlung: 0,5).",
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
@@ -427,7 +427,7 @@
               "hysteresis_percent": "Totband um die SOC-Schwelle: Die Wechselrichter-Empfehlung wechselt erst, wenn der SOC die Schwelle um diesen Wert über- oder unterschreitet — verhindert Flattern.",
               "threshold_inertia_percent": "Eine neue Schwelle wird erst übernommen, wenn sie sich um mindestens diesen Betrag von der bisherigen unterscheidet — verhindert Springen zwischen gleichwertigen Plänen.",
               "min_switch_interval_s": "Mindestabstand zwischen zwei realen Schaltvorgängen (Wechselrichter-Empfehlung und Stützpfade).",
-              "pv_forecast_mode": "Wie die stündliche PV-Form ermittelt wird: Automatisch nutzt die stündlichen wh_period-Attribute der Prognose, falls vorhanden (sonst das Zwei-Fenster-Modell), Stündlich erzwingt sie, Täglich ignoriert sie (Verhalten v0.7.19).",
+              "pv_forecast_mode": "Wie die stündliche PV-Form ermittelt wird: Automatisch nutzt die stündlichen wh_period-Attribute der Prognose, falls vorhanden (sonst das Zwei-Fenster-Modell), Stündlich bevorzugt Stundenwerte und warnt, wenn keine vorliegen (fällt dann auf das Zwei-Fenster-Modell zurück), Täglich ignoriert sie (Verhalten v0.7.19).",
               "import_trade_ratio": "Wie viel zusätzlichen Netzbezug eine Vorentladung je Wh geretteten Überschusses verursachen darf (0 = keiner). Geringe Ladegerät-Standby-Kosten können so durch weit größere Überschuss-Einsparungen aufgewogen werden (Empfehlung: 0,10).",
               "predrain_pv_confidence": "Pessimismus des Stresstests für den unteren Puffer: Die PV des Folgetages wird mit diesem Faktor gemindert, und der Lauf muss die Wechselrichter-Reserve über ihrem Boden halten. 1,0 = Prognose voll vertrauen (Empfehlung: 0,5).",
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
@@ -576,7 +576,7 @@
     "pv_forecast_mode": {
       "options": {
         "auto": "Automatisch (stündlich, wenn verfügbar)",
-        "hourly": "Stündlich (wh_period-Attribute erzwingen)",
+        "hourly": "Stündlich (bevorzugt Stundenwerte; warnt, wenn keine vorliegen)",
         "daily": "Nur täglich (stündliche Attribute ignorieren)"
       }
     }

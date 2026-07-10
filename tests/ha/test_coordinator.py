@@ -399,6 +399,163 @@ async def test_coordinator_reads_wh_period_hourly_forecast(hass):
     }
 
 
+async def test_pv_hourly_per_entity_cache_survives_one_unavailable(hass):
+    """FIX-4: a cycle where ONE forecast entity goes unavailable must not clobber
+    the merged map with a partial read — each entity keeps its own last-good
+    buckets. After a full read, today's entity going unavailable still yields
+    today's buckets from the per-entity cache, alongside the still-fresh ones."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today", "10.0",
+        {"unit_of_measurement": "kWh", "wh_period": {"2026-07-10 10:00:00": 1000.0}},
+    )
+    hass.states.async_set(
+        "sensor.pv_tomorrow", "12.0",
+        {"unit_of_measurement": "kWh", "wh_period": {"2026-07-11 11:00:00": 700.0}},
+    )
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = dt_util.now()
+
+    full = coordinator._get_pv_hourly(now)
+    assert full[datetime(2026, 7, 10, 10, 0)] == 1000.0
+    assert full[datetime(2026, 7, 11, 11, 0)] == 700.0
+
+    # Today's entity drops out: the partial read must NOT overwrite the cached
+    # full map — today's buckets survive from the per-entity cache.
+    hass.states.async_set("sensor.pv_today", "unavailable")
+    merged = coordinator._get_pv_hourly(now)
+    assert merged[datetime(2026, 7, 10, 10, 0)] == 1000.0  # cached, not lost
+    assert merged[datetime(2026, 7, 11, 11, 0)] == 700.0  # still fresh
+
+
+async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
+    """FIX-9: NaN/±inf buckets are skipped and negative buckets clamped to 0, so a
+    bad forecast attribute yields a finite, non-negative hourly map."""
+    import math
+    from datetime import datetime
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today", "10.0",
+        {"unit_of_measurement": "kWh", "wh_period": {
+            "2026-07-10 10:00:00": float("nan"),
+            "2026-07-10 11:00:00": float("inf"),
+            "2026-07-10 12:00:00": -500.0,
+            "2026-07-10 13:00:00": 800.0,
+        }},
+    )
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    m = coordinator._read_wh_period("sensor.pv_today")
+    assert all(math.isfinite(v) and v >= 0.0 for v in m.values())  # finite, non-neg
+    assert m[datetime(2026, 7, 10, 12, 0)] == 0.0  # -500 clamped to 0
+    assert m[datetime(2026, 7, 10, 13, 0)] == 800.0  # good value kept
+    assert datetime(2026, 7, 10, 10, 0) not in m  # NaN skipped
+    assert datetime(2026, 7, 10, 11, 0) not in m  # inf skipped
+
+
+async def test_hourly_mode_warns_once_when_no_wh_period(hass, caplog):
+    """FIX-10: explicit "hourly" mode logs exactly ONE warning (state-change
+    guarded, not per cycle) when no wh_period data is available; it re-arms only
+    after data returns."""
+    import logging
+
+    import homeassistant.util.dt as dt_util
+
+    from custom_components.battery_manager.const import PV_FORECAST_MODE_HOURLY
+
+    entry = await _setup_entry(hass)  # entities carry no wh_period
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator._pv_forecast_mode = PV_FORECAST_MODE_HOURLY
+    coordinator._pv_hourly_empty_warned = False
+    now = dt_util.now()
+
+    def _warned():
+        return [
+            r for r in caplog.records
+            if "hourly PV mode active but no wh_period" in r.getMessage()
+        ]
+
+    with caplog.at_level(logging.WARNING):
+        assert coordinator._get_pv_hourly(now) is None
+        assert coordinator._get_pv_hourly(now) is None  # second cycle: no repeat
+    assert len(_warned()) == 1  # state-change guarded: emitted exactly once
+
+
+async def test_night_predrain_logs_only_on_change(hass, caplog):
+    """FIX-11: the F-PREDRAIN night-charge line is emitted only when the set of
+    night-booked (load, slot-start) pairs CHANGES, not every 5-min cycle."""
+    import logging
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        LoadPlan,
+        SurplusLoad,
+        SystemConfig,
+    )
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    load = SurplusLoad(load_id="deh", name="Entfeuchter", nominal_power_w=400.0)
+    config = SystemConfig(loads=(load,))
+    slots = tuple(
+        HourSlot(index=i, start=datetime(2026, 7, 10, 3 + i, 0), duration=1.0,
+                 hour_of_day=3 + i, pv_wh=0.0, ac_wh=0.0, dc_wh=0.0)
+        for i in range(3)
+    )
+    inputs = SimpleNamespace(slots=slots)
+
+    def result(start):
+        return SimpleNamespace(
+            load_plans=(
+                LoadPlan(load_id="deh", schedule=(True,) * 3, planned_energy_wh=400.0,
+                         allocations=((start, 1, 2, 400.0),), run_hours=(1.0,) * 3),
+            ),
+            pv_window_ends={},  # no PV window -> every pass-2 slot counts as night
+            import_trade_used_wh=10.0,
+        )
+
+    def _count():
+        return sum(
+            1 for r in caplog.records if "preemptive night charging" in r.getMessage()
+        )
+
+    with caplog.at_level(logging.INFO):
+        coordinator._log_night_predrain(result(0), inputs, config)
+        assert _count() == 1
+        coordinator._log_night_predrain(result(0), inputs, config)  # identical set
+        assert _count() == 1  # not repeated
+        coordinator._log_night_predrain(result(1), inputs, config)  # changed slot
+        assert _count() == 2
+
+
 async def test_appliance_stale_start_reanchors_after_restart(hass):
     """H1 restart edge: a persisted start whose run already fully elapsed (run
     finished during downtime while a NEW run is active) is re-anchored to now on

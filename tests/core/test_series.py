@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from core.model import ApplianceRun, LoadProfile, PVParams, SystemConfig
-from core.series import build_slots, insert_appliance_run, slot_starts
+from core.series import build_slots, insert_appliance_run, pv_hour_share, slot_starts
 
 
 def test_horizon_runs_until_midnight_of_last_forecast_day():
@@ -198,8 +198,10 @@ def test_pv_hourly_slot0_partial_gets_prorated_share():
 
 
 def test_pv_hourly_gap_spreads_residual_over_uncovered_hours():
-    """Uncovered hours share the day's residual (daily total minus covered
-    buckets) via the two-window weights; night hours carry no weight."""
+    """Uncovered hours take their two-window SHARE of the day's residual (daily
+    total minus covered buckets); night hours carry no share. There is NO
+    renormalisation over the uncovered slots (FIX-3), so a partially covered day
+    UNDER-fills — the covered hours' share of the residual is not redistributed."""
     config = SystemConfig()  # morning 7-13 ratio 0.8, afternoon 13-18, peak 3200
     now = datetime(2026, 7, 4, 0, 0)
     daily_kwh = 8.0
@@ -212,13 +214,40 @@ def test_pv_hourly_gap_spreads_residual_over_uncovered_hours():
     by_hour = {s.hour_of_day: s.pv_wh for s in inputs.slots}
     # Covered hours keep their bucket value exactly.
     assert by_hour[7] == 1000.0 and by_hour[8] == 1000.0 and by_hour[9] == 1000.0
-    # Residual (8000 - 3000) lands on the uncovered PV hours only.
-    assert by_hour[10] > 0.0  # uncovered morning hour
-    assert by_hour[13] > 0.0  # uncovered afternoon hour
-    assert by_hour[10] > by_hour[13]  # morning weight > afternoon weight
-    assert by_hour[2] == 0.0  # night hour has no two-window weight
+    residual = daily_kwh * 1000.0 - 3000.0  # 5000
+    # Each uncovered slot = residual * its two-window share (no renormalisation).
+    assert by_hour[10] == residual * pv_hour_share(config.pv, 10)
+    assert by_hour[13] == residual * pv_hour_share(config.pv, 13)
+    assert by_hour[10] > by_hour[13]  # morning share > afternoon share
+    assert by_hour[2] == 0.0  # night hour has no two-window share
     total = sum(s.pv_wh for s in inputs.slots)
-    assert abs(total - daily_kwh * 1000.0) < 1.0  # energy conserved
+    # Conservative under-fill: never inflated above the daily forecast, and here
+    # short by exactly the covered hours' share of the residual (0.4 * 5000).
+    assert total < daily_kwh * 1000.0
+    assert abs(total - (3000.0 + residual * 0.6)) < 1e-6
+
+
+def test_pv_hourly_day0_without_buckets_matches_two_window_bit_for_bit():
+    """FIX-3: a day with NO hourly buckets while OTHER days do (e.g. today's entity
+    lacks wh_period) must reproduce the legacy two-window PV bit-for-bit — even
+    when `now` is mid-morning and the elapsed hours are absent from the horizon.
+    The old renormalisation over only the remaining slots inflated the afternoon
+    3-5x; removing it restores exact parity for a fully-uncovered day."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 10, 12, 30)  # partial first slot; morning elapsed
+    daily = [8.0, 9.0]
+    # Non-empty map, but only DAY 1 carries buckets -> day 0 is fully uncovered.
+    pv_hourly = {datetime(2026, 7, 11, 11, 0): 700.0}
+    inputs = build_slots(config, now, 50.0, daily, pv_hourly=pv_hourly)
+    reference = build_slots(config, now, 50.0, daily)  # pure two-window path
+    day0 = [
+        (s.pv_wh, r.pv_wh)
+        for s, r in zip(inputs.slots, reference.slots, strict=True)
+        if s.start.date() == now.date()
+    ]
+    assert day0  # the afternoon-of-day-0 slots exist
+    for got, expected in day0:
+        assert got == expected  # bit-for-bit, no inflation
 
 
 def test_pv_hourly_residual_dropped_when_only_night_uncovered():
