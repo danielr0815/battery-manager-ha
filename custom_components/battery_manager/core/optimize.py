@@ -74,6 +74,26 @@ def pv_windows(
     return capped
 
 
+def _recovery_index(windows: dict, i: int, n: int) -> int:
+    """End slot of the pre-drain's "bet window" that starts at slot `i`.
+
+    A pre-drain at slot `i` is a bet that the battery refills from the NEXT
+    production before the reserve is exhausted (F-PREDRAIN §3.3 v2). The bet is
+    settled at the end of the first PV window whose end is at or after `i` — the
+    same-day window for an in-window slot, or the next morning's window for a
+    night slot. `pv_windows()` is index-based and its per-day windows are ordered
+    and non-overlapping, so the earliest such window is simply the smallest end
+    index that is >= `i`. With no strong-PV window ahead (e.g. a cloudy tail) the
+    bet only settles at the horizon end.
+    """
+    return min((last for (_first, last) in windows.values() if last >= i), default=n - 1)
+
+
+def _windowed_min_soc(traj: Trajectory, lo: int, hi: int) -> float:
+    """Lowest end-of-slot SOC over the inclusive slot range [lo, hi]."""
+    return min(traj.flows[j].soc_end_percent for j in range(lo, hi + 1))
+
+
 def search_threshold(
     config: SystemConfig, inputs: PlanInputs
 ) -> tuple[float, Trajectory]:
@@ -320,7 +340,8 @@ def allocate_loads(
     #   Z2' import trade   — import stays within the trade invariant (F2),
     #   Z3  buffer floor   — nominal min SOC not degraded below soc_min+buffer,
     #   Z4  lower buffer   — even a pessimistic (alpha) PV run keeps the inverter
-    #                        reserve above its floor (continuous loads only, F3),
+    #                        reserve above its floor across the bet's recovery
+    #                        window [i, recovery] (continuous loads only, F3 v2),
     #   (c) opportunity    — (c1) the nominal drain is refilled from lost export,
     #                        OR (c2) inside the day's PV window an optimistic
     #                        (beta) run would be (upper-buffer insurance, F4).
@@ -329,25 +350,32 @@ def allocate_loads(
     # after the last export can never satisfy the gate, so they are skipped, as
     # is the whole pass on an export-free horizon.
     if current.total_export_wh > _EPS:
-        # Stress/opportunity baselines for the CURRENTLY accepted series. Kept in
-        # step with `current` and refreshed only on acceptance (cache per
-        # acceptance, not per candidate); skipped when the gate is neutral.
-        current_stress = (
-            simulate(config, inputs, threshold, extra_ac_wh=tuple(extra), pv_scale=alpha)
-            if alpha != 1.0
-            else None
-        )
+        # Optimistic (beta) opportunity baseline for the CURRENTLY accepted
+        # series — whole-horizon, kept in step with `current` and refreshed only
+        # on acceptance; skipped when the (c2) gate is neutral.
         current_beta = (
             simulate(config, inputs, threshold, extra_ac_wh=tuple(extra), pv_scale=beta)
             if beta != 1.0
             else None
         )
+        # Z4 (v2) is WINDOWED, so it needs no whole-horizon stress baseline. For
+        # each bet slot `i` we cache the currently accepted series' windowed
+        # stressed min over [i, recovery]; the cache is invalidated whenever an
+        # acceptance changes `extra`. Keyed by `i`, and the outer scan visits each
+        # `i` once (latest-first), so a cleared cache is always rebuilt lazily.
+        stress_base: dict[int, float] = {}
         last_export = max(
             (j for j, f in enumerate(current.flows) if f.grid_export_wh > _EPS),
             default=-1,
         )
         for i in range(last_export, -1, -1):
             slot = inputs.slots[i]
+            # Bet window [i, recovery]: alpha stresses ONLY this stretch — the
+            # drain until the battery refills from the next production — so a night
+            # pre-drain is judged on its own recovery, not vetoed by an unrelated
+            # later dip, and a sound in-window pre-charge is not punished by a
+            # globally scaled-down horizon (the v1 whole-horizon failure).
+            recovery = _recovery_index(windows, i, n)
             for load in config.loads:
                 state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
                 if not state.available or schedules[load.load_id][i]:
@@ -380,7 +408,6 @@ def allocate_loads(
                         continue
                     export_drop = current.total_export_wh - traj.total_export_wh
                     need = (1.0 - load.battery_tolerance) * power_wh
-                    trial_stress = None
                     trial_beta = None
                     if load.energy_limited:
                         # Legacy nominal refill gate only (no two-buffer machinery).
@@ -400,28 +427,37 @@ def allocate_loads(
                             accept = drop_beta + _EPS >= need
                         if not accept:
                             continue
-                        # Z4 lower-buffer stress gate: the pre-drain must not sink
-                        # the inverter reserve even if PV underperforms (alpha).
+                        # Z4 windowed lower-buffer stress gate (§3.3 v2): stress
+                        # PV by alpha only across the bet window [i, recovery] and
+                        # take the windowed min. Reject iff that stressed reserve
+                        # both breaks the inverter floor AND is worse than the same
+                        # windowed min on the currently accepted series — a dip the
+                        # baseline already contains does not veto the bet.
                         if alpha != 1.0:
+                            scale_vec = [
+                                alpha if i <= j <= recovery else 1.0 for j in range(n)
+                            ]
                             trial_stress = simulate(
                                 config, inputs, threshold,
-                                extra_ac_wh=trial_tuple, pv_scale=alpha,
+                                extra_ac_wh=trial_tuple, pv_scale=scale_vec,
                             )
-                            if _degrades_min_soc(
-                                trial_stress, current_stress, stress_floor
+                            trial_wmin = _windowed_min_soc(trial_stress, i, recovery)
+                            if i not in stress_base:
+                                base_stress = simulate(
+                                    config, inputs, threshold,
+                                    extra_ac_wh=tuple(extra), pv_scale=scale_vec,
+                                )
+                                stress_base[i] = _windowed_min_soc(
+                                    base_stress, i, recovery
+                                )
+                            if (
+                                trial_wmin < stress_floor - _EPS
+                                and trial_wmin < stress_base[i] - _EPS
                             ):
                                 continue
                     extra = trial
                     current = traj
-                    if alpha != 1.0:
-                        current_stress = (
-                            trial_stress
-                            if trial_stress is not None
-                            else simulate(
-                                config, inputs, threshold,
-                                extra_ac_wh=tuple(extra), pv_scale=alpha,
-                            )
-                        )
+                    stress_base.clear()  # `extra` changed -> windowed baselines stale
                     if beta != 1.0:
                         current_beta = (
                             trial_beta
@@ -581,7 +617,16 @@ def support_escalation(
 
 
 def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
-    """One complete planning run — single consistent trajectory out (P2)."""
+    """One complete planning run — single consistent trajectory out (P2).
+
+    The `stressed_min_soc_percent` diagnostic (§3.5, v2) reports the WINDOWED
+    lower-buffer reserve that the Z4 gate actually protects: the earliest pass-2
+    slot booked for a CONTINUOUS load is treated as the deepest bet, and the
+    diagnostic is the stressed (alpha) windowed min SOC over that bet's recovery
+    window [i0, recovery] under the FINAL accepted series. It is None when the
+    stress gate is off (alpha == 1.0) or when no continuous load has a pass-2
+    booking (nothing was pre-drained, so there is no reserve bet to report).
+    """
     control = config.control
     threshold, base_traj = search_threshold(config, inputs)
     load_plans, extra_ac, traj = allocate_loads(config, inputs, threshold, base_traj)
@@ -615,15 +660,32 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     # the derived PV absorption windows (WP4 exposes these as sensor attributes).
     import_trade_used_wh = max(0.0, alloc_traj.total_import_wh - base_traj.total_import_wh)
     stressed_min_soc: float | None = None
-    if control.predrain_pv_confidence != 1.0 and alloc_traj.flows:
-        stressed = simulate(
-            config,
-            inputs,
-            threshold,
-            extra_ac_wh=extra_ac,
-            pv_scale=control.predrain_pv_confidence,
-        )
-        stressed_min_soc = stressed.min_soc_percent
+    alpha = control.predrain_pv_confidence
+    if alpha != 1.0 and alloc_traj.flows:
+        # Windowed stressed reserve of the deepest bet: the earliest pass-2 slot
+        # booked for a continuous (non-energy-limited) load, evaluated over its
+        # recovery window under the final series (§3.5 v2). None when nothing was
+        # pre-drained for a continuous load.
+        n = len(inputs.slots)
+        cont_ids = {ld.load_id for ld in config.loads if not ld.energy_limited}
+        booked = [
+            alloc[0]
+            for lp in load_plans
+            if lp.load_id in cont_ids
+            for alloc in lp.allocations
+            if alloc[2] == 2
+        ]
+        if booked:
+            i0 = min(booked)
+            windows = pv_windows(
+                inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour
+            )
+            recovery = _recovery_index(windows, i0, n)
+            scale_vec = [alpha if i0 <= j <= recovery else 1.0 for j in range(n)]
+            stressed = simulate(
+                config, inputs, threshold, extra_ac_wh=extra_ac, pv_scale=scale_vec
+            )
+            stressed_min_soc = _windowed_min_soc(stressed, i0, recovery)
     window_ends = {
         day.isoformat(): inputs.slots[last].hour_of_day
         for day, (_first, last) in pv_windows(

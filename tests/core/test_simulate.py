@@ -467,3 +467,36 @@ def test_pv_scale_above_one_boosts_export():
     nominal = simulate(config, inputs, 20.0)
     optimistic = simulate(config, inputs, 20.0, pv_scale=1.2)
     assert optimistic.total_export_wh >= nominal.total_export_wh - 1e-9
+
+
+def test_pv_scale_per_slot_vector():
+    """A SEQUENCE `pv_scale` applies a per-slot factor (F-PREDRAIN §3.3 v2): the
+    windowed stress gate scales PV only inside the bet's recovery window and
+    leaves the rest of the horizon at nominal PV."""
+    config = SystemConfig()
+    inputs = make_inputs(config, NOW_NOON, 50.0, [15.0, 15.0, 0.0])
+    n = len(inputs.slots)
+
+    # An all-ones vector is bit-identical to the scalar-1.0 (and default) run.
+    scalar = simulate(config, inputs, 40.0)
+    ones = simulate(config, inputs, 40.0, pv_scale=[1.0] * n)
+    assert [f.soc_end_percent for f in ones.flows] == [
+        f.soc_end_percent for f in scalar.flows
+    ]
+    assert ones.total_import_wh == scalar.total_import_wh
+    assert ones.total_export_wh == scalar.total_export_wh
+
+    # An all-alpha vector is bit-identical to the scalar-alpha run.
+    scalar_half = simulate(config, inputs, 40.0, pv_scale=0.5)
+    vec_half = simulate(config, inputs, 40.0, pv_scale=[0.5] * n)
+    assert [f.soc_end_percent for f in vec_half.flows] == [
+        f.soc_end_percent for f in scalar_half.flows
+    ]
+
+    # A vector that scales ONLY slot 0 leaves the other slots' PV untouched: the
+    # per-slot flows match the all-ones run everywhere except where alpha applies.
+    windowed = simulate(config, inputs, 40.0, pv_scale=[0.5] + [1.0] * (n - 1))
+    assert windowed.flows[0].soc_end_percent < scalar.flows[0].soc_end_percent
+    # Slot 0 sees exactly the alpha-scaled PV — same as a whole-horizon alpha run
+    # would produce for slot 0 (the first slot has no earlier history).
+    assert windowed.flows[0].soc_end_percent == scalar_half.flows[0].soc_end_percent

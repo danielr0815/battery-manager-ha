@@ -7,6 +7,7 @@ from core.model import (
     Appliance,
     ControlParams,
     HourSlot,
+    LoadProfile,
     PlanInputs,
     PVParams,
     SupportParams,
@@ -18,6 +19,8 @@ from core.optimize import (
     _committed_hours,
     _degrades_min_soc,
     _quantised_hours,
+    _recovery_index,
+    _windowed_min_soc,
     allocate_loads,
     appliance_windows,
     plan,
@@ -846,9 +849,12 @@ def test_t3_energy_limited_never_night_charged_with_ratio():
 
 
 def test_t4_alpha_stress_gate_protects_inverter_reserve():
-    """T4: the pessimistic stress gate (alpha) refuses the DEEPEST pre-dawn
-    hours a full-confidence run would take, holding the stressed reserve at the
-    inverter+buffer floor (NOT soc_min+buffer). alpha=1.0 disables it."""
+    """T4: the pessimistic WINDOWED stress gate (alpha, §3.3 v2) refuses the
+    DEEPEST pre-dawn hours a full-confidence run would take — a deep multi-hour
+    drain lengthens the bet window before the (stressed) morning refills, so it
+    is rejected, while the shallower pre-dawn block that hugs the window is
+    accepted. The stressed reserve holds at the inverter+buffer floor (NOT
+    soc_min+buffer). alpha=1.0 disables the gate."""
     now = datetime(2026, 7, 3, 21, 0)
 
     def run(alpha):
@@ -943,6 +949,134 @@ def test_t13_pv_window_derivation_and_override():
     # A cloudy day (all slots below the cutoff) has no window.
     cloudy = build_slots(east, datetime(2026, 7, 4, 0, 0), 50.0, [0.5])
     assert pv_windows(cloudy, 200.0, None) == {}
+
+
+def test_recovery_index_picks_first_window_ending_at_or_after_i():
+    """The bet window for a pre-drain at slot i ends at the first PV window whose
+    end is >= i (§3.3 v2). pv_windows() days are ordered and non-overlapping, so
+    that is the smallest window-end index >= i; with none ahead it is the horizon
+    end (n - 1)."""
+    from datetime import date
+
+    windows = {date(2026, 7, 4): (10, 20), date(2026, 7, 5): (34, 44)}
+    n = 50
+    assert _recovery_index(windows, 5, n) == 20  # night before day-1 window
+    assert _recovery_index(windows, 15, n) == 20  # inside day-1 window
+    assert _recovery_index(windows, 20, n) == 20  # at the day-1 window end
+    assert _recovery_index(windows, 21, n) == 44  # after day-1 -> day-2 window
+    assert _recovery_index(windows, 45, n) == n - 1  # past the last window
+    assert _recovery_index({}, 3, n) == n - 1  # no strong-PV window at all
+
+
+def test_t4_windowed_gate_scopes_stress_to_recovery_window():
+    """§3.3 v2: the stress gate is WINDOWED, not whole-horizon. A first-night
+    pre-drain is judged only on its own recovery window, so it is booked even
+    though the WHOLE-HORIZON alpha sim (which the failed v1 gate used) drops far
+    below the floor on a later, weaker day. The v1 whole-horizon gate would have
+    vetoed these bookings; the windowed gate does not."""
+    now = datetime(2026, 7, 3, 21, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=0.5, beta=1.0)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    n = len(inputs.slots)
+    lp = result.load_plans[0]
+
+    # A first-night pre-dawn block IS booked (windowed gate permits it).
+    day1 = now.date() + timedelta(days=1)
+    first_night = sorted(
+        inputs.slots[i].hour_of_day
+        for i, on in enumerate(lp.schedule)
+        if on and inputs.slots[i].start.date() == day1 and inputs.slots[i].hour_of_day < 7
+    )
+    assert first_night, "windowed gate must still book a first-night pre-drain"
+
+    # The WHOLE-HORIZON alpha sim of the final series breaks the inverter floor
+    # (a later, weaker day dominates it) — proving the gate is NOT whole-horizon.
+    threshold = result.threshold_percent
+    extra = tuple(f.extra_ac_wh for f in result.trajectory.flows)
+    whole_horizon = simulate(cfg, inputs, threshold, extra_ac_wh=extra, pv_scale=0.5)
+    floor = 20.0 + 5.0  # inverter_min_soc + buffer
+    assert whole_horizon.min_soc_percent < floor, (
+        "scenario must have a later whole-horizon stressed dip below the floor"
+    )
+
+    # Yet the WINDOWED reserve of the earliest pass-2 bet is held at the floor.
+    booked = [a[0] for a in lp.allocations if a[2] == 2]
+    i0 = min(booked)
+    windows = pv_windows(inputs, 200.0, None)
+    recovery = _recovery_index(windows, i0, n)
+    scale_vec = [0.5 if i0 <= j <= recovery else 1.0 for j in range(n)]
+    stressed = simulate(cfg, inputs, threshold, extra_ac_wh=extra, pv_scale=scale_vec)
+    windowed_min = _windowed_min_soc(stressed, i0, recovery)
+    assert windowed_min >= floor - 0.5
+    # The diagnostic reports exactly this windowed reserve.
+    assert result.stressed_min_soc_percent is not None
+    assert abs(result.stressed_min_soc_percent - windowed_min) < 1e-6
+
+
+def test_t4_windowed_gate_relief_when_base_window_already_below_floor():
+    """§3.3 v2 relief clause: a pre-drain whose bet window ALREADY dips below the
+    floor WITHOUT it must not be vetoed if it does not make the windowed min
+    worse (mirrors the nominal `_degrades_min_soc` relief). Engineered scenario:
+    a mid-window PV spike refills the pre-drain to the ceiling, so the deep tail
+    trough is identical with and without the load — the windowed stressed min is
+    already pinned at the hard floor by a heavy DC tail, so a strict floor test
+    would wrongly veto the (fully refilled, export-covered) pre-drain."""
+    deh = SurplusLoad(
+        load_id="deh", name="E", nominal_power_w=400.0,
+        battery_tolerance=0.15, min_runtime_min=60,
+    )
+    alpha = 0.5
+    control = replace(
+        ControlParams(), import_trade_ratio=0.1, predrain_pv_confidence=alpha,
+        upper_pv_reserve=1.0, strong_pv_cutoff_w=200.0,
+    )
+    config = SystemConfig(
+        control=control, loads=(deh,),
+        ac_profile=LoadProfile(0.0, 0.0), dc_profile=LoadProfile(0.0, 0.0),
+    )
+    start = datetime(2026, 7, 4, 8, 0)
+
+    def slot(i, hour, pv, ac=0.0, dc=0.0):
+        return HourSlot(
+            index=i, start=start + timedelta(hours=i), duration=1.0,
+            hour_of_day=hour, pv_wh=pv, ac_wh=ac, dc_wh=dc,
+        )
+
+    slots = (
+        slot(0, 8, 300, ac=500),   # little export -> pass 1 skips; pre-drain here
+        slot(1, 9, 5000, ac=50),   # spike -> refill to ceiling + big export
+        *(slot(2 + k, 10 + k, 300, dc=1100) for k in range(5)),  # heavy DC tail
+        slot(7, 15, 40, dc=80),
+        slot(8, 16, 20, dc=80),
+    )
+    inputs = PlanInputs(
+        now=start, start_soc_percent=70.0, slots=slots,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    n = len(inputs.slots)
+    threshold, base = search_threshold(config, inputs)
+    load_plans, extra, _ = allocate_loads(config, inputs, threshold, base)
+    lp = load_plans[0]
+
+    # The pre-drain at slot 0 (pass 2) IS booked.
+    assert any(a[0] == 0 and a[2] == 2 for a in lp.allocations)
+
+    windows = pv_windows(inputs, 200.0, None)
+    recovery = _recovery_index(windows, 0, n)
+    scale_vec = [alpha if 0 <= j <= recovery else 1.0 for j in range(n)]
+    floor = control.inverter_min_soc_percent + control.soc_buffer_percent  # 25
+    base_wmin = _windowed_min_soc(
+        simulate(config, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=scale_vec),
+        0, recovery,
+    )
+    trial_wmin = _windowed_min_soc(
+        simulate(config, inputs, threshold, extra_ac_wh=extra, pv_scale=scale_vec),
+        0, recovery,
+    )
+    # Premise: the bet window already breaks the floor WITHOUT the load ...
+    assert base_wmin < floor
+    # ... and the pre-drain does not make the windowed min worse (relief clause).
+    assert trial_wmin >= base_wmin - 1e-6
 
 
 def daylight_h(hour):
