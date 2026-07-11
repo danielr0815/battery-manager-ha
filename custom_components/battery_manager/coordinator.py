@@ -1913,30 +1913,39 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     def _daily_surplus_breakdown(self, inputs, result) -> list[dict[str, Any]]:
-        """Per-calendar-day lost-surplus / grid-import split (F-PERDAY-SURPLUS R1).
+        """Per-calendar-day lost-surplus / grid-import / load-energy split
+        (F-PERDAY-SURPLUS R1 + §5 v2).
 
         Grouped by ``slot.start.date()`` in planner-local time: a slot belongs to
         the day it STARTS in (hourly grid, D-A7), so a 23:00 slot counts on its
         start day even where it conceptually crosses midnight. lost_surplus mirrors
         grid export (core: lost_surplus_kwh == grid_export_kwh), so the sums over
         the returned entries equal the existing totals (rounding aside).
+        ``loads_kwh`` (v2, R-V2-1) sums the final trajectory's per-slot
+        ``extra_ac_wh`` — the SURPLUS-LOAD energy scheduled that day; appliances
+        are excluded by construction (they enter the AC forecast, never
+        ``extra_ac_wh``).
         """
         export_by_day: dict[str, float] = {}
         import_by_day: dict[str, float] = {}
+        loads_by_day: dict[str, float] = {}
         order: list[str] = []
         for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
             day = slot.start.date().isoformat()
             if day not in export_by_day:
                 export_by_day[day] = 0.0
                 import_by_day[day] = 0.0
+                loads_by_day[day] = 0.0
                 order.append(day)
             export_by_day[day] += flow.grid_export_wh
             import_by_day[day] += flow.grid_import_wh
+            loads_by_day[day] += flow.extra_ac_wh
         return [
             {
                 "date": day,
                 "lost_surplus_kwh": round(export_by_day[day] / 1000.0, 3),
                 "grid_import_kwh": round(import_by_day[day] / 1000.0, 3),
+                "loads_kwh": round(loads_by_day[day] / 1000.0, 3),
             }
             for day in order
         ]

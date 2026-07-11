@@ -50,3 +50,23 @@ NOT a code item: analysis (to be validated by repro) attributes it to the
 F-PREDRAIN F4 β-insurance gate (c2) — a config-philosophy question
 (`upper_pv_reserve`, `pv_window_end_hour`), handled as operator consultation,
 not as part of this change.
+
+## 5. v2 (v0.10.1): per-day LOAD energy (operator request 2026-07-11)
+
+The operator's tile shows today/tomorrow as `X/Y kWh`; besides lost surplus
+and grid import it must also show the energy planned FOR THE LOADS per day.
+
+- **R-V2-1** `_daily_surplus_breakdown` additionally sums each day's
+  `flow.extra_ac_wh` (the surplus-load energy the final trajectory schedules
+  in that slot — model.py SlotFlow) into a `loads_kwh` field (rounded 3
+  decimals) on every `daily` entry. Same slot-start-day attribution.
+- **R-V2-2** The SOC-forecast sensor additionally exposes convenience
+  attributes `loads_today_kwh` / `loads_tomorrow_kwh` (today = slot-0 day,
+  tomorrow = today+1, 0.0 fallback — exact same convention as the v0.9.1
+  today/tomorrow attrs on the two dedicated sensors).
+- **R-V2-3** Consistency invariant, asserted in a test: the sum of
+  `loads_kwh` over all `daily` entries equals the horizon total of
+  `extra_ac_wh` (rounding aside). Appliances are NOT included (they enter
+  the AC forecast, not `extra_ac_wh`) — document in the attribute comment.
+- **R-V2-4** No planner/core change; goldens byte-identical. CHANGELOG
+  `[0.10.1]`; manifest + pyproject → 0.10.1.

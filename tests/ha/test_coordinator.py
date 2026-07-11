@@ -826,10 +826,17 @@ async def test_daily_surplus_breakdown_splits_by_start_day(hass):
         )
         for i, s in enumerate(starts)
     )
-    # (export_wh, import_wh) per slot.
-    flows_wh = [(300.0, 0.0), (700.0, 50.0), (0.0, 200.0), (1000.0, 0.0)]
+    # (export_wh, import_wh, extra_ac_wh) per slot — extra_ac_wh is the
+    # surplus-load energy (F-PERDAY-SURPLUS §5 v2).
+    flows_wh = [
+        (300.0, 0.0, 150.0),
+        (700.0, 50.0, 0.0),
+        (0.0, 200.0, 400.0),
+        (1000.0, 0.0, 0.0),
+    ]
     flows = tuple(
-        SimpleNamespace(grid_export_wh=e, grid_import_wh=i) for e, i in flows_wh
+        SimpleNamespace(grid_export_wh=e, grid_import_wh=i, extra_ac_wh=x)
+        for e, i, x in flows_wh
     )
     inputs = SimpleNamespace(slots=slots)
     result = SimpleNamespace(trajectory=SimpleNamespace(flows=flows))
@@ -837,23 +844,28 @@ async def test_daily_surplus_breakdown_splits_by_start_day(hass):
     daily = coordinator._daily_surplus_breakdown(inputs, result)
 
     assert [d["date"] for d in daily] == ["2026-07-10", "2026-07-11"]  # chronological
-    # Day-1: export 300 + 700 = 1000 Wh (23:00 counts here), import 50 Wh.
+    # Day-1: export 300 + 700 = 1000 Wh (23:00 counts here), import 50 Wh,
+    # surplus-load energy 150 Wh.
     assert daily[0] == {
         "date": "2026-07-10",
         "lost_surplus_kwh": 1.0,
         "grid_import_kwh": 0.05,
+        "loads_kwh": 0.15,
     }
-    # Day-2: export 0 + 1000 = 1000 Wh, import 200 Wh.
+    # Day-2: export 0 + 1000 = 1000 Wh, import 200 Wh, loads 400 Wh.
     assert daily[1] == {
         "date": "2026-07-11",
         "lost_surplus_kwh": 1.0,
         "grid_import_kwh": 0.2,
+        "loads_kwh": 0.4,
     }
-    # R1 invariant: the sums equal the trajectory totals.
-    total_export = sum(e for e, _ in flows_wh) / 1000.0
-    total_import = sum(i for _, i in flows_wh) / 1000.0
+    # R1 / R-V2-3 invariant: the sums equal the trajectory totals.
+    total_export = sum(e for e, _i, _x in flows_wh) / 1000.0
+    total_import = sum(i for _e, i, _x in flows_wh) / 1000.0
+    total_loads = sum(x for _e, _i, x in flows_wh) / 1000.0
     assert sum(d["lost_surplus_kwh"] for d in daily) == total_export
     assert sum(d["grid_import_kwh"] for d in daily) == total_import
+    assert sum(d["loads_kwh"] for d in daily) == total_loads
 
 
 async def test_forecast_sensors_expose_per_day_attributes(hass):
@@ -872,7 +884,8 @@ async def test_forecast_sensors_expose_per_day_attributes(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     daily = coordinator.data["daily_surplus"]
     assert daily and all(
-        {"date", "lost_surplus_kwh", "grid_import_kwh"} <= d.keys() for d in daily
+        {"date", "lost_surplus_kwh", "grid_import_kwh", "loads_kwh"} <= d.keys()
+        for d in daily
     )
     today = daily[0]["date"]  # today = date of slot 0
 
@@ -902,7 +915,19 @@ async def test_forecast_sensors_expose_per_day_attributes(hass):
         assert today  # slot-0 day present
 
     # R3: the SOC-forecast sensor exposes the same daily list.
-    assert _attrs(ENTITY_SOC_FORECAST_CURVE)["daily"] == daily
+    soc_attrs = _attrs(ENTITY_SOC_FORECAST_CURVE)
+    assert soc_attrs["daily"] == daily
+    # §5 v2 (R-V2-2): loads_today/tomorrow follow the exact same slot-0-day
+    # convention; (R-V2-3) the per-day loads sum equals the horizon total of
+    # extra_ac_wh (surplus loads only — appliances enter the AC forecast).
+    assert soc_attrs["loads_today_kwh"] == daily[0]["loads_kwh"]
+    assert isinstance(soc_attrs["loads_tomorrow_kwh"], float)
+    total_loads_wh = sum(
+        h["surplus_load_wh"] for h in coordinator.data["hourly_details"]
+    )
+    assert abs(
+        sum(d["loads_kwh"] for d in daily) - total_loads_wh / 1000.0
+    ) <= 0.0005 * len(daily)
 
 
 def test_per_day_attrs_falls_back_to_zero_for_missing_day():

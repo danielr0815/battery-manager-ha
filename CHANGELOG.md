@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-11
+
+### Added
+- **Per-day surplus-load energy in the daily breakdown (F-PERDAY-SURPLUS §5
+  v2).** Every entry of the `daily` list now also carries `loads_kwh` — the
+  surplus-load energy the final plan schedules that calendar day (summed from
+  the trajectory's per-slot `extra_ac_wh`; appliances are not included, they
+  enter the AC forecast instead). The SOC-forecast sensor exposes the matching
+  `loads_today_kwh` / `loads_tomorrow_kwh` convenience attributes with the
+  same today/tomorrow convention as the v0.9.1 per-day sensors (slot-0 day,
+  +1 day, 0.0 when the horizon lacks the day) — so the operator's tile can
+  show lost surplus, grid import AND planned load energy per day from one
+  source.
+
 ## [0.10.0] - 2026-07-11
 
 ### Added

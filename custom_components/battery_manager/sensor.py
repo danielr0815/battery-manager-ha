@@ -90,8 +90,9 @@ def _per_day_attrs(daily: list[dict[str, Any]], value_key: str) -> dict[str, Any
 
     ``today`` is the date of slot 0 (the first, chronological entry); ``tomorrow``
     is that day + 1. A day the planning horizon lacks renders 0.0. ``value_key``
-    selects the metric ("lost_surplus_kwh" or "grid_import_kwh"); the full daily
-    list (both metrics) is exposed as the single dashboard source.
+    selects the metric ("lost_surplus_kwh", "grid_import_kwh" or — §5 v2 —
+    "loads_kwh"); the full daily list (all metrics) is exposed as the single
+    dashboard source.
     """
     by_date = {entry["date"]: entry[value_key] for entry in daily}
     today = date.fromisoformat(daily[0]["date"]) if daily else None
@@ -268,6 +269,8 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             }
             for plan in (data.get("load_plans") or {}).values()
         ]
+        daily = data.get("daily_surplus") or []
+        per_day_loads = _per_day_attrs(daily, "loads_kwh")
         return {
             "forecast": data.get("soc_forecast") or [],
             "soc_threshold_percent": data.get("soc_threshold_percent"),
@@ -275,7 +278,13 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "lost_surplus_kwh": data.get("lost_surplus_kwh"),
             # F-PERDAY-SURPLUS R3: the per-day lost-surplus / import list, the
             # single source dashboard cards read (totals above stay untouched).
-            "daily": data.get("daily_surplus") or [],
+            "daily": daily,
+            # F-PERDAY-SURPLUS §5 v2 (R-V2-2): per-day SURPLUS-LOAD energy as
+            # today/tomorrow convenience scalars (slot-0 day / +1, 0.0
+            # fallback — the exact v0.9.1 convention). Appliances are NOT
+            # included: they enter the AC forecast, not `extra_ac_wh`.
+            "loads_today_kwh": per_day_loads["today_kwh"],
+            "loads_tomorrow_kwh": per_day_loads["tomorrow_kwh"],
             "loads": loads,
             "consumption_profile": data.get("consumption_profile") or {},
             "gate_calibration": data.get("gate_calibration") or {},
