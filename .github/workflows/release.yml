@@ -10,7 +10,7 @@ jobs:
     name: Validate for release
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
         
       - name: HACS validation
         uses: "hacs/action@main"
@@ -29,7 +29,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
         # Check out the real branch, not the tag: the release event leaves the
         # runner in detached HEAD, from which a push to main cannot resolve
         # (the ad-m push action failed exactly here). `ref: main` puts us on a
