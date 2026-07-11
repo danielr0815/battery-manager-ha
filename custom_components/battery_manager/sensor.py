@@ -283,6 +283,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             # source, the import the pre-drain traded for rescued export, the
             # stressed lower-buffer reserve, and the per-day PV-window end hours.
             "pv_source": data.get("pv_source") or {},
+            # F-QUANTILE-BANDS R7: per-day P10/P90 band coverage of daylight
+            # slots ("p10/p90" | "scalar" | "mixed") — watch the bands mature.
+            "quantile_coverage": data.get("quantile_coverage") or {},
             "import_trade_used_wh": data.get("import_trade_used_wh"),
             "stressed_min_soc": data.get("stressed_min_soc"),
             "pv_window_ends": data.get("pv_window_ends") or {},

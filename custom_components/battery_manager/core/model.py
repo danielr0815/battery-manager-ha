@@ -292,6 +292,12 @@ class HourSlot:
     pv_wh: float
     ac_wh: float  # profile + appliance remainder, WITHOUT surplus loads
     dc_wh: float
+    # Empirical P10/P90 forecast band for this slot (F-QUANTILE-BANDS R2),
+    # present only where the balcony forecaster's quantile buckets covered the
+    # slot. Neutral None defaults keep every legacy constructor, all goldens
+    # and the whole test corpus bit-identical (R8).
+    pv_p10_wh: float | None = None
+    pv_p90_wh: float | None = None
 
 
 @dataclass(frozen=True)

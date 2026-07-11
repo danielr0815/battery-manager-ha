@@ -36,7 +36,7 @@ from .model import (
     SurplusLoadState,
     SystemConfig,
 )
-from .optimize import plan
+from .optimize import plan, quantile_band_slots
 from .series import build_slots, slot_starts
 from .simulate import simulate
 
@@ -70,6 +70,7 @@ __all__ = [
     "on_fractions",
     "plan",
     "profile_value",
+    "quantile_band_slots",
     "simulate",
     "slot_starts",
     "weighted_quantile",

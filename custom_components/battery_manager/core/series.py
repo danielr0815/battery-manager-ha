@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from .forecast_hours import coverage_and_residual
@@ -158,6 +159,21 @@ def _pv_wh_hourly(
     return result
 
 
+def _quantile_wh(
+    series: dict[datetime, float] | None, slot_start: datetime, duration: float
+) -> float | None:
+    """Per-slot P10/P90 Wh, or None where the quantile buckets do not cover
+    the slot (F-QUANTILE-BANDS R2: coverage is per-slot, never per-day; no
+    two-window fallback and no residual fill — a band exists only on
+    evidence). Prorated by the slot duration like the median buckets."""
+    if not series:
+        return None
+    hour_key = slot_start.replace(minute=0, second=0, microsecond=0)
+    if hour_key not in series:
+        return None
+    return series[hour_key] * duration
+
+
 def build_slots(
     config: SystemConfig,
     now: datetime,
@@ -168,6 +184,8 @@ def build_slots(
     ac_load_w: tuple[float | None, ...] | None = None,
     dc_load_w: tuple[float | None, ...] | None = None,
     pv_hourly: dict[datetime, float] | None = None,
+    pv_hourly_p10: dict[datetime, float] | None = None,
+    pv_hourly_p90: dict[datetime, float] | None = None,
 ) -> PlanInputs:
     """Assemble PlanInputs from daily forecasts and load profiles.
 
@@ -182,6 +200,11 @@ def build_slots(
     `pv_hourly` is an optional naive-local hour-start -> Wh map (docs/F-PREDRAIN.md
     F1). When non-empty it drives the per-slot PV instead of the two-window model;
     None or an empty map keeps the two-window synthesis bit-identical to before.
+
+    `pv_hourly_p10` / `pv_hourly_p90` are the matching empirical quantile maps
+    (F-QUANTILE-BANDS R2). They only ever annotate slots their buckets cover;
+    None/empty maps leave every slot's band fields None (the R8 bit-identity
+    anchor — the planner then falls back to the scalar alpha/beta dials).
     """
     slots: list[HourSlot] = []
 
@@ -214,6 +237,8 @@ def build_slots(
                 pv_wh=pv_wh_series[index],
                 ac_wh=ac_w * duration,
                 dc_wh=dc_w * duration,
+                pv_p10_wh=_quantile_wh(pv_hourly_p10, slot_start, duration),
+                pv_p90_wh=_quantile_wh(pv_hourly_p90, slot_start, duration),
             )
         )
 
@@ -248,18 +273,9 @@ def _apply_appliance_runs(
             extra_wh[i] += portion
             budget -= portion
 
-    return [
-        HourSlot(
-            index=s.index,
-            start=s.start,
-            duration=s.duration,
-            hour_of_day=s.hour_of_day,
-            pv_wh=s.pv_wh,
-            ac_wh=s.ac_wh + extra_wh[i],
-            dc_wh=s.dc_wh,
-        )
-        for i, s in enumerate(slots)
-    ]
+    # dataclasses.replace keeps every other slot field (incl. the optional
+    # P10/P90 band, F-QUANTILE-BANDS R2) instead of silently dropping it.
+    return [replace(s, ac_wh=s.ac_wh + extra_wh[i]) for i, s in enumerate(slots)]
 
 
 def insert_appliance_run(

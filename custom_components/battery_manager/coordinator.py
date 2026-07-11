@@ -132,6 +132,7 @@ from .core import (
     build_slots,
     plan,
     profile_value,
+    quantile_band_slots,
     slot_starts,
 )
 from .history_profile import ProfileLearner
@@ -224,10 +225,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         # PER-ENTITY stale-cache (FIX-4): a cycle where one forecast entity is
         # unavailable must not clobber the merged map with a partial read. Each
-        # entity keeps its own last-good (map, timestamp); the merge reuses a
-        # cached entity map within MAX_HISTORICAL_FORECAST_AGE_HOURS.
+        # entity keeps its own last-good (median, p10, p90, timestamp) — the
+        # quantile bands (F-QUANTILE-BANDS R1) ride in the SAME cache entry so
+        # a stale reuse can never pair fresh medians with other-day bands. The
+        # merge reuses a cached entry within MAX_HISTORICAL_FORECAST_AGE_HOURS.
         self._pv_hourly_by_entity: dict[
-            str, tuple[dict[datetime, float], datetime]
+            str,
+            tuple[
+                dict[datetime, float],
+                dict[datetime, float],
+                dict[datetime, float],
+                datetime,
+            ],
         ] = {}
         # FIX-10: state-change guard for the "hourly mode but no wh_period" warning.
         self._pv_hourly_empty_warned = False
@@ -757,9 +766,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return self._last_valid_forecasts
         return None
 
-    def _read_wh_period(self, entity_id: str) -> dict[datetime, float]:
-        """Parse an entity's hourly ``wh_period`` attribute into a naive-local
-        hour -> Wh map (docs/F-PREDRAIN.md F1).
+    def _read_wh_period(
+        self, entity_id: str, attr: str = "wh_period"
+    ) -> dict[datetime, float]:
+        """Parse an entity's hourly ``wh_period``-family attribute into a
+        naive-local hour -> Wh map (docs/F-PREDRAIN.md F1; the quantile
+        attributes ``wh_period_p10``/``wh_period_p90`` share the exact same
+        format and tolerance rules, F-QUANTILE-BANDS R1).
 
         Keys are parsed with dt_util.parse_datetime: naive keys are treated as
         LOCAL, aware keys are converted to local and made naive. 15/30-min buckets
@@ -770,7 +783,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
             return {}
-        raw = state.attributes.get("wh_period")
+        raw = state.attributes.get(attr)
         if not isinstance(raw, dict):
             return {}
         entries: list[tuple[datetime, float]] = []
@@ -797,30 +810,46 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entries.append((ts, wh))
         if skipped or clamped:
             _LOGGER.debug(
-                "battery_manager: %d skipped, %d clamped wh_period entries on %s",
+                "battery_manager: %d skipped, %d clamped %s entries on %s",
                 skipped,
                 clamped,
+                attr,
                 entity_id,
             )
         return aggregate_hours(entries)
 
-    def _get_pv_hourly(self, now: datetime) -> dict[datetime, float] | None:
-        """Merged naive-local hourly PV map from the three forecast entities.
+    def _get_pv_hourly(
+        self, now: datetime
+    ) -> tuple[
+        dict[datetime, float] | None,
+        dict[datetime, float] | None,
+        dict[datetime, float] | None,
+    ]:
+        """Merged naive-local hourly PV maps (median, p10, p90) from the three
+        forecast entities.
 
         Stale-cache fallback is PER ENTITY (FIX-4): each cycle every entity uses
-        its fresh map when non-empty, else its own last-good map within the
-        max-age window — so a single unavailable entity no longer overwrites the
-        cached full map with a partial read. The per-entity results merge in the
-        existing (today, tomorrow, day-after) order; overlapping days are
-        last-writer-wins (the Open-Meteo family entities carry identical
-        overlapping data, so this is harmless). In "daily" mode the hourly
-        attributes are ignored (None) so build_slots uses the two-window model.
+        its fresh maps when the MEDIAN map is non-empty, else its own last-good
+        entry within the max-age window — so a single unavailable entity no
+        longer overwrites the cached full map with a partial read. The quantile
+        maps (F-QUANTILE-BANDS R1) are parsed from ``wh_period_p10``/
+        ``wh_period_p90`` on the SAME entities and travel in the same cache
+        entry, so median and bands always come from the same read.
+        Absent/empty/garbage quantile attributes simply yield empty maps (never
+        an error). The per-entity results merge in the existing (today,
+        tomorrow, day-after) order; overlapping days are last-writer-wins (the
+        Open-Meteo family entities carry identical overlapping data, so this is
+        harmless). In "daily" mode the hourly attributes are ignored (None
+        everywhere) so build_slots uses the two-window model and no slot ever
+        carries a band.
         """
         if self._pv_forecast_mode == PV_FORECAST_MODE_DAILY:
-            return None
+            return None, None, None
         cfg = self.raw_config
         max_age = timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
         merged: dict[datetime, float] = {}
+        merged_p10: dict[datetime, float] = {}
+        merged_p90: dict[datetime, float] = {}
         for key in (
             CONF_PV_FORECAST_TODAY,
             CONF_PV_FORECAST_TOMORROW,
@@ -829,15 +858,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             conf_key = cfg[key]
             fresh = self._read_wh_period(conf_key)
             if fresh:
-                self._pv_hourly_by_entity[conf_key] = (fresh, now)
+                fresh_p10 = self._read_wh_period(conf_key, "wh_period_p10")
+                fresh_p90 = self._read_wh_period(conf_key, "wh_period_p90")
+                self._pv_hourly_by_entity[conf_key] = (
+                    fresh,
+                    fresh_p10,
+                    fresh_p90,
+                    now,
+                )
                 merged.update(fresh)
+                merged_p10.update(fresh_p10)
+                merged_p90.update(fresh_p90)
                 continue
             cached = self._pv_hourly_by_entity.get(conf_key)
-            if cached is not None and now - cached[1] <= max_age:
+            if cached is not None and now - cached[3] <= max_age:
                 merged.update(cached[0])
+                merged_p10.update(cached[1])
+                merged_p90.update(cached[2])
             # An entity that never provides wh_period simply contributes nothing.
         self._maybe_warn_hourly_empty(bool(merged))
-        return merged if merged else None
+        return (
+            merged if merged else None,
+            merged_p10 if merged_p10 else None,
+            merged_p90 if merged_p90 else None,
+        )
 
     def _maybe_warn_hourly_empty(self, has_data: bool) -> None:
         """FIX-10: in explicit "hourly" mode, warn ONCE (state-change guarded, not
@@ -867,6 +911,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             day = now.date() + timedelta(days=offset)
             sources[day.isoformat()] = "hourly" if day in covered_days else "two_window"
         return sources
+
+    def _quantile_coverage(self, inputs) -> dict[str, dict[str, Any]]:
+        """Per forecast day: fraction of DAYLIGHT slots (pv_wh > 0) carrying a
+        P10/P90 band, plus a source label (F-QUANTILE-BANDS R7). Computed from
+        the same D2 band predicate the planner gates with, so the operator can
+        literally watch the bands mature bin by bin."""
+        band = quantile_band_slots(inputs.slots)
+        daylight: dict[str, int] = {}
+        banded: dict[str, int] = {}
+        days: list[str] = []
+        for slot, has_band in zip(inputs.slots, band, strict=True):
+            day = slot.start.date().isoformat()
+            if day not in daylight:
+                days.append(day)
+                daylight[day] = 0
+                banded[day] = 0
+            if slot.pv_wh <= 0.0:
+                continue
+            daylight[day] += 1
+            if has_band:
+                banded[day] += 1
+        coverage: dict[str, dict[str, Any]] = {}
+        for day in days:
+            total, hits = daylight[day], banded[day]
+            source = "scalar" if hits == 0 else "p10/p90" if hits == total else "mixed"
+            coverage[day] = {
+                "coverage": round(hits / total, 2) if total else 0.0,
+                "source": source,
+            }
+        return coverage
 
     def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
         """One INFO line when the plan books preemptive night charging.
@@ -1615,7 +1689,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         # Hourly PV forecast (docs/F-PREDRAIN.md F1): None/empty -> two-window.
-        pv_hourly = self._get_pv_hourly(now)
+        # The p10/p90 quantile maps (F-QUANTILE-BANDS R1) ride along; without
+        # them no slot carries a band and the planner stays on the scalar dials.
+        pv_hourly, pv_hourly_p10, pv_hourly_p90 = self._get_pv_hourly(now)
         self._pv_source_by_day = self._pv_day_sources(now, len(forecasts), pv_hourly)
 
         inputs = build_slots(
@@ -1628,6 +1704,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ac_load_w=ac_series,
             dc_load_w=dc_series,
             pv_hourly=pv_hourly,
+            pv_hourly_p10=pv_hourly_p10,
+            pv_hourly_p90=pv_hourly_p90,
         )
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
         # soon as any learned quantiles exist. Only soc_buffer_percent is
@@ -1804,6 +1882,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # sensor (WP4): per-day PV source, the traded import, the stressed
             # reserve and the derived per-day PV-window end hours.
             "pv_source": dict(self._pv_source_by_day),
+            # F-QUANTILE-BANDS R7: per-day band coverage of daylight slots, so
+            # the maturing P10/P90 evidence is observable from the sensor.
+            "quantile_coverage": self._quantile_coverage(inputs),
             "import_trade_used_wh": round(result.import_trade_used_wh, 1),
             "stressed_min_soc": (
                 round(result.stressed_min_soc_percent, 2)

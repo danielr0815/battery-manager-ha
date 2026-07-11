@@ -49,6 +49,14 @@ integration, 15-min buckets) are ignored.
 
 ## 3. Design
 
+> **Cross-note (v0.10.0, docs/F-QUANTILE-BANDS.md):** the scalar dials α
+> (`predrain_pv_confidence`, §3.3) and β (`upper_pv_reserve`, §3.4) are now
+> the per-slot FALLBACKS: where the balcony forecaster publishes empirical
+> P10/P90 bands for a slot, the Z4 stress uses `p10/median` and the c2
+> insurance uses `p90/median` there instead. Slots without a band — and a
+> COLLAPSED band, the cold-start "no evidence" signature — keep the scalars,
+> so an entry without any band data behaves exactly as specified below.
+
 ### 3.1 F1 — Hourly PV forecast (WP1)
 
 - New pure-core module `core/forecast_hours.py` (no HA imports):

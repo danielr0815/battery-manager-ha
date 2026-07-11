@@ -26,6 +26,62 @@ _EPS = 1e-6
 # authoritative definition therefore lives here and const.py re-exports it.
 GATE_TOPUP_MIN_WH = 50.0
 
+# Quantile-band presence gate (F-QUANTILE-BANDS D2): ratios against ~zero PV
+# are noise, so a slot below this median PV never carries a band. A constant,
+# not a config key.
+QUANTILE_RATIO_MIN_WH = 25.0
+
+
+def quantile_band_slots(slots) -> list[bool]:
+    """Per-slot band presence per F-QUANTILE-BANDS D2 — THE cold-start rule.
+
+    A slot HAS a band iff p10/p90 data covers it, the median PV is at least
+    QUANTILE_RATIO_MIN_WH, and the spread `p90 - p10` exceeds
+    max(1.0 Wh, 1 % of pv_wh). A COLLAPSED band (p10 == p90, the balcony
+    forecaster's cold-start signature) counts as NO band: it means "no
+    evidence", NOT "no uncertainty" — treating it as certainty would make the
+    Z4 stress WEAKER than the scalar alpha on exactly the bins that have no
+    history yet. Single source of truth, shared by `_effective_uncertainty`
+    and the coordinator's `quantile_coverage` diagnostics (R7).
+    """
+    band: list[bool] = []
+    for slot in slots:
+        band.append(
+            slot.pv_p10_wh is not None
+            and slot.pv_p90_wh is not None
+            and slot.pv_wh >= QUANTILE_RATIO_MIN_WH
+            and (slot.pv_p90_wh - slot.pv_p10_wh) > max(1.0, 0.01 * slot.pv_wh)
+        )
+    return band
+
+
+def _effective_uncertainty(
+    inputs: PlanInputs, alpha: float, beta: float
+) -> tuple[list[float], list[float], list[bool]]:
+    """Per-slot stress/optimism vectors from the empirical P10/P90 bands
+    (F-QUANTILE-BANDS D1/D3), with per-slot scalar fallback.
+
+    Where a slot carries a band (D2), the ratios against the median replace
+    the scalar dials: `stress = clamp(p10/pv, 0.1, 1.0)` and
+    `optimism = clamp(p90/pv, 1.0, 2.0)` — the clamps guard junk ratios, and
+    simulate()'s FIX-8 physical peak clamp additionally bounds optimism
+    downstream. Everywhere else the scalars apply unchanged, so with no bands
+    anywhere the vectors are uniform and the plan is bit-identical to the
+    scalar-era behaviour at the same alpha/beta (R8); a partially covered day
+    mixes evidence and fallback IN THE SAME simulation vector (R9).
+    """
+    band = quantile_band_slots(inputs.slots)
+    stress: list[float] = []
+    optimism: list[float] = []
+    for slot, has_band in zip(inputs.slots, band, strict=True):
+        if has_band:
+            stress.append(min(1.0, max(0.1, slot.pv_p10_wh / slot.pv_wh)))
+            optimism.append(min(2.0, max(1.0, slot.pv_p90_wh / slot.pv_wh)))
+        else:
+            stress.append(alpha)
+            optimism.append(beta)
+    return stress, optimism, band
+
 
 def _degrades_min_soc(
     trial: Trajectory, reference: Trajectory, floor_percent: float
@@ -300,6 +356,14 @@ def allocate_loads(
     ratio = control.import_trade_ratio
     alpha = control.predrain_pv_confidence
     beta = control.upper_pv_reserve
+    # F-QUANTILE-BANDS R3/R4: per-slot stress/optimism vectors, composed ONCE.
+    # Band-covered slots run on empirical P10/P90 evidence; everything else on
+    # the scalar dials — the c2 machinery engages iff ANY slot is optimistic,
+    # the Z4 stress iff ANY slot is pessimistic (replaces the beta!=1/alpha!=1
+    # scalar guards; uniform fallback vectors keep both decisions identical).
+    stress_vec, optimism_vec, band_slots = _effective_uncertainty(inputs, alpha, beta)
+    c2_active = any(o > 1.0 + _EPS for o in optimism_vec)
+    z4_active = any(s < 1.0 - _EPS for s in stress_vec)
     base_import = base_trajectory.total_import_wh
     base_export = base_trajectory.total_export_wh
     buffer_floor = config.battery.soc_min_percent + control.soc_buffer_percent
@@ -440,12 +504,19 @@ def allocate_loads(
     # after the last export can never satisfy the gate, so they are skipped, as
     # is the whole pass on an export-free horizon.
     if current.total_export_wh > _EPS:
-        # Optimistic (beta) opportunity baseline for the CURRENTLY accepted
-        # series — whole-horizon, kept in step with `current` and refreshed only
-        # on acceptance; skipped when the (c2) gate is neutral.
+        # Optimistic opportunity baseline for the CURRENTLY accepted series —
+        # whole-horizon, kept in step with `current` and refreshed only on
+        # acceptance; skipped when the (c2) gate is neutral. Per-slot optimism
+        # (F-QUANTILE-BANDS R4): P90 evidence where bands exist, beta elsewhere.
         current_beta = (
-            simulate(config, inputs, threshold, extra_ac_wh=tuple(extra), pv_scale=beta)
-            if beta != 1.0
+            simulate(
+                config,
+                inputs,
+                threshold,
+                extra_ac_wh=tuple(extra),
+                pv_scale=optimism_vec,
+            )
+            if c2_active
             else None
         )
         # Z4 (v2) is WINDOWED, so it needs no whole-horizon stress baseline. For
@@ -508,13 +579,13 @@ def allocate_loads(
                     else:
                         # (c1) nominal refill OR (c2) optimistic in-window insurance.
                         accept = export_drop + _EPS >= need
-                        if not accept and beta != 1.0 and in_window(i):
+                        if not accept and c2_active and in_window(i):
                             trial_beta = simulate(
                                 config,
                                 inputs,
                                 threshold,
                                 extra_ac_wh=trial_tuple,
-                                pv_scale=beta,
+                                pv_scale=optimism_vec,
                             )
                             drop_beta = (
                                 current_beta.total_export_wh
@@ -525,12 +596,15 @@ def allocate_loads(
                         if not accept:
                             continue
                         # Z4 windowed lower-buffer stress gate (§3.3 v2): stress
-                        # PV by alpha only across the bet window [i, recovery] and
-                        # take the windowed min. Reject iff that stressed reserve
+                        # PV only across the bet window [i, recovery] and take
+                        # the windowed min. Reject iff that stressed reserve
                         # both breaks the inverter floor AND is worse than the same
                         # windowed min on the currently accepted series — a dip the
                         # baseline already contains does not veto the bet.
-                        if alpha != 1.0:
+                        # Per-slot stress (F-QUANTILE-BANDS R4): empirical P10
+                        # where a band exists, alpha elsewhere — Z4 protection
+                        # now varies with the weather-class history.
+                        if z4_active:
                             # Extend the stress window past `recovery` when this
                             # candidate's run spills beyond it (a min-runtime
                             # commitment near the window end lands in later slots):
@@ -538,7 +612,7 @@ def allocate_loads(
                             # stressed and included in the windowed min (FIX-7).
                             hi = max(recovery, covered[-1][0])
                             scale_vec = [
-                                alpha if i <= j <= hi else 1.0 for j in range(n)
+                                stress_vec[j] if i <= j <= hi else 1.0 for j in range(n)
                             ]
                             trial_stress = simulate(
                                 config,
@@ -566,7 +640,7 @@ def allocate_loads(
                     extra = trial
                     current = traj
                     stress_base.clear()  # `extra` changed -> windowed baselines stale
-                    if beta != 1.0:
+                    if c2_active:
                         current_beta = (
                             trial_beta
                             if trial_beta is not None
@@ -575,7 +649,7 @@ def allocate_loads(
                                 inputs,
                                 threshold,
                                 extra_ac_wh=tuple(extra),
-                                pv_scale=beta,
+                                pv_scale=optimism_vec,
                             )
                         )
                     for j, take in covered:
@@ -593,10 +667,14 @@ def allocate_loads(
                         if commit_h < load.min_runtime_min / 60.0 - _EPS
                         else ""
                     )
+                    # F-QUANTILE-BANDS R6: name the evidence — "(p90)" when the
+                    # accepted slot itself carried a band, "(beta)" otherwise.
+                    insurance_src = "p90" if band_slots[i] else "beta"
                     reasons[load.load_id].append(
                         f"pass 2 @ {slot.start.strftime('%m-%d %H:%M')}: "
                         + (
-                            "in-window insurance (beta), latest feasible slot"
+                            f"in-window insurance ({insurance_src}), "
+                            "latest feasible slot"
                             if via_beta
                             else (
                                 f"covered by otherwise-lost export "
@@ -755,10 +833,12 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     The `stressed_min_soc_percent` diagnostic (§3.5, v2) reports the WINDOWED
     lower-buffer reserve that the Z4 gate actually protects: the earliest pass-2
     slot booked for a CONTINUOUS load is treated as the deepest bet, and the
-    diagnostic is the stressed (alpha) windowed min SOC over that bet's recovery
-    window [i0, recovery] under the FINAL accepted series. It is None when the
-    stress gate is off (alpha == 1.0) or when no continuous load has a pass-2
-    booking (nothing was pre-drained, so there is no reserve bet to report).
+    diagnostic is the stressed windowed min SOC over that bet's recovery window
+    [i0, recovery] under the FINAL accepted series — stressed with the same
+    per-slot vector as the gate (P10 bands where present, alpha elsewhere;
+    F-QUANTILE-BANDS R5). It is None when no slot is stressed (alpha == 1.0
+    and no P10 evidence) or when no continuous load has a pass-2 booking
+    (nothing was pre-drained, so there is no reserve bet to report).
     """
     control = config.control
     threshold, base_traj = search_threshold(config, inputs)
@@ -796,7 +876,13 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     )
     stressed_min_soc: float | None = None
     alpha = control.predrain_pv_confidence
-    if alpha != 1.0 and alloc_traj.flows:
+    # F-QUANTILE-BANDS R5: the diagnostic stresses with the SAME per-slot
+    # vector as the Z4 gate (empirical P10 where bands exist, alpha elsewhere),
+    # so what the sensor reports is what the gate protected.
+    stress_vec, _optimism_vec, _band_slots = _effective_uncertainty(
+        inputs, alpha, control.upper_pv_reserve
+    )
+    if any(s < 1.0 - _EPS for s in stress_vec) and alloc_traj.flows:
         # Windowed stressed reserve of the deepest bet: the earliest pass-2 slot
         # booked for a continuous (non-energy-limited) load, evaluated over its
         # recovery window under the final series (§3.5 v2). None when nothing was
@@ -819,7 +905,9 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                 inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour
             )
             recovery = _recovery_index(pv_win, i0, n)
-            scale_vec = [alpha if i0 <= j <= recovery else 1.0 for j in range(n)]
+            scale_vec = [
+                stress_vec[j] if i0 <= j <= recovery else 1.0 for j in range(n)
+            ]
             stressed = simulate(
                 config, inputs, threshold, extra_ac_wh=extra_ac, pv_scale=scale_vec
             )

@@ -1675,3 +1675,220 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
     t_hi, b_hi = windowed(hi)
     assert t_hi < floor - 1e-6
     assert t_hi < b_hi - 1e-6
+
+
+# ---------------------------------------------------------------------------
+# F-QUANTILE-BANDS: per-slot P10/P90 bands replace scalar alpha/beta where
+# evidence exists (docs/F-QUANTILE-BANDS.md). THE safety rule (D2): a COLLAPSED
+# band (p10 == p90, the balcony cold-start signature) means "no evidence", NOT
+# "no uncertainty" — it must fall back to the scalars. THE regression anchor
+# (R8): with no band data anywhere, plans are bit-identical to the scalar era.
+# ---------------------------------------------------------------------------
+
+
+def _band_slot(pv, p10, p90):
+    return HourSlot(
+        index=0,
+        start=datetime(2026, 7, 4, 12, 0),
+        duration=1.0,
+        hour_of_day=12,
+        pv_wh=pv,
+        ac_wh=0.0,
+        dc_wh=0.0,
+        pv_p10_wh=p10,
+        pv_p90_wh=p90,
+    )
+
+
+def test_effective_uncertainty_band_detection_and_clamps():
+    """R11/R10: band presence per D2 (real spread, enough PV, data present),
+    COLLAPSED bands and low-PV/missing slots fall back to the scalars, ratios
+    are clamped, and a partially covered vector mixes evidence with scalars
+    (R9) in the same pass."""
+    from types import SimpleNamespace
+
+    from core.optimize import _effective_uncertainty
+
+    slots = (
+        _band_slot(1000.0, 700.0, 1300.0),  # real band: ratios 0.7 / 1.3
+        _band_slot(1000.0, 800.0, 800.0),  # COLLAPSED (p10==p90): no evidence
+        _band_slot(10.0, 5.0, 20.0),  # pv < QUANTILE_RATIO_MIN_WH: noise
+        _band_slot(1000.0, None, None),  # no data
+        _band_slot(1000.0, 50.0, 2500.0),  # junk ratios -> clamped
+        _band_slot(1000.0, 995.0, 1004.0),  # spread 9 Wh < 1% of pv: no band
+    )
+    inputs = SimpleNamespace(slots=slots)
+    stress, optimism, band = _effective_uncertainty(inputs, 0.5, 1.2)
+    assert band == [True, False, False, False, True, False]
+    assert abs(stress[0] - 0.7) < 1e-9 and abs(optimism[0] - 1.3) < 1e-9
+    # Collapsed / low-PV / missing / thin-spread slots keep the scalar dials.
+    for j in (1, 2, 3, 5):
+        assert stress[j] == 0.5 and optimism[j] == 1.2
+    # D3 clamps: stress floors at 0.1, optimism caps at 2.0.
+    assert stress[4] == 0.1 and optimism[4] == 2.0
+
+
+def _t12_band_plan(beta, r10=None, r90=None):
+    """The T12 c2 geometry (08:00, house 92 %, one 7 kWh day, dehumidifier)
+    with optional P10/P90 bands at the given ratios on every daylight slot."""
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=beta,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
+    now = datetime(2026, 7, 4, 8, 0)
+    base_inputs = build_slots(cfg, now, 92.0, [7.0])
+    if r10 is None:
+        return plan(cfg, base_inputs), base_inputs
+    p10: dict[datetime, float] = {}
+    p90: dict[datetime, float] = {}
+    for s in base_inputs.slots:
+        if s.pv_wh >= 25.0 and s.duration == 1.0:
+            p10[s.start] = s.pv_wh * r10
+            p90[s.start] = s.pv_wh * r90
+    inputs = build_slots(cfg, now, 92.0, [7.0], pv_hourly_p10=p10, pv_hourly_p90=p90)
+    return plan(cfg, inputs), inputs
+
+
+def _booked(result):
+    return {i for i, on in enumerate(result.load_plans[0].schedule) if on}
+
+
+def test_c2_insurance_follows_p90_evidence_not_the_dial():
+    """R12a/R12b/R6: with P90 evidence present, the c2 insurance follows the
+    band, not the beta dial — bookings that exist at beta=1.2 disappear when
+    the evidence says "no upside" (p90_ratio 1.0), and appear at beta=1.0
+    when the evidence says "real upside" (p90_ratio 1.3), with the "(p90)"
+    reason wording."""
+    scalar10, _ = _t12_band_plan(1.0)
+    scalar12, _ = _t12_band_plan(1.2)
+    beta_extras = _booked(scalar12) - _booked(scalar10)
+    assert beta_extras, "the base geometry must book beta-only insurance slots"
+
+    # (a) beta stays 1.2, but every band says p90 == median: no upside, no
+    # insurance — the dial no longer books runs the evidence cannot justify.
+    evidence_flat, _ = _t12_band_plan(1.2, 0.98, 1.0)
+    assert _booked(evidence_flat) - _booked(scalar10) == set()
+
+    # (b) beta 1.0 (dial says never), but the bands carry real 30 % upside:
+    # insurance appears FROM EVIDENCE, worded "(p90)" (R6).
+    evidence_up, _ = _t12_band_plan(1.0, 0.98, 1.3)
+    assert _booked(evidence_up) - _booked(scalar10), "evidence must open slots"
+    insurance = [
+        r for r in evidence_up.load_plans[0].reasons if "in-window insurance" in r
+    ]
+    assert insurance and all("(p90)" in r for r in insurance)
+
+
+def test_collapsed_bands_keep_the_scalar_plan():
+    """R10 (THE cold-start rule, dedicated): collapsed bands (p10 == p90 ==
+    median) on every daylight slot leave the plan IDENTICAL to the scalar run
+    — including the beta-only insurance bookings. If a collapsed band were
+    read as "no uncertainty" (optimism 1.0), those bookings would vanish and
+    Z4 would weaken below the scalar alpha on exactly the evidence-free bins."""
+    scalar12, _ = _t12_band_plan(1.2)
+    collapsed, _ = _t12_band_plan(1.2, 1.0, 1.0)  # p10 == p50 == p90
+    assert _booked(collapsed) == _booked(scalar12)
+    assert collapsed.load_plans[0].reasons == scalar12.load_plans[0].reasons
+    assert collapsed.grid_import_kwh == scalar12.grid_import_kwh
+    assert collapsed.grid_export_kwh == scalar12.grid_export_kwh
+
+
+def _predrain_band_plan(alpha, r10=None, r90=None):
+    """The T4 pre-drain geometry (21:00, house 90 %, one strong 15 kWh day)
+    with optional bands on the next day's daylight slots."""
+    cfg = _predrain_config(
+        ratio=0.1, alpha=alpha, beta=1.0, loads=(FOSSIBOT_B, DEHUMIDIFIER)
+    )
+    now = datetime(2026, 7, 3, 21, 0)
+    states = (FB_STATE, DEHUMID_STATE)
+    base_inputs = build_slots(cfg, now, 90.0, [0.0, 15.0], load_states=states)
+    if r10 is None:
+        return plan(cfg, base_inputs), base_inputs
+    day = now.date() + timedelta(days=1)
+    p10: dict[datetime, float] = {}
+    p90: dict[datetime, float] = {}
+    for s in base_inputs.slots:
+        if s.start.date() == day and s.pv_wh >= 25.0 and s.duration == 1.0:
+            p10[s.start] = s.pv_wh * r10
+            p90[s.start] = s.pv_wh * r90
+    inputs = build_slots(
+        cfg,
+        now,
+        90.0,
+        [0.0, 15.0],
+        load_states=states,
+        pv_hourly_p10=p10,
+        pv_hourly_p90=p90,
+    )
+    return plan(cfg, inputs), inputs
+
+
+def _predawn_hours(result, inputs):
+    lp = next(p for p in result.load_plans if p.load_id == "dehumidifier")
+    day1 = datetime(2026, 7, 4).date()
+    return sorted(
+        inputs.slots[i].hour_of_day
+        for i, on in enumerate(lp.schedule)
+        if on
+        and inputs.slots[i].start.date() == day1
+        and inputs.slots[i].hour_of_day < 7
+    )
+
+
+def test_z4_stress_follows_p10_evidence():
+    """R12c: the Z4 pre-drain stress follows P10 evidence in BOTH directions.
+    A stable-day band (p10_ratio 0.85 on the refill slots) admits a pre-dawn
+    hour the scalar alpha rejected; a volatile-day band (p10_ratio 0.4)
+    rejects hours the trusting alpha=1.0 accepted. (The milder direction is
+    demonstrated at scalar alpha 0.45 — at 0.5 this geometry's marginal hour
+    is rejected by both the scalar and the 0.85 evidence, so 0.45 is the
+    nearest scalar whose rejection the evidence overturns.)"""
+    # Milder-than-scalar: 0.45 rejects the 03:00 bet; 0.85 P10 evidence on the
+    # morning refill accepts it (stable day -> the reserve provably recovers).
+    scalar_mid, inputs = _predrain_band_plan(0.45)
+    evidence_mid, _ = _predrain_band_plan(0.45, 0.85, 1.0)
+    assert min(_predawn_hours(evidence_mid, inputs)) < min(
+        _predawn_hours(scalar_mid, inputs)
+    )
+
+    # Harsher-than-scalar: alpha=1.0 trusts and drains deep; 0.4 P10 evidence
+    # (volatile day) rejects most of the pre-dawn block despite the dial.
+    trusting, _ = _predrain_band_plan(1.0)
+    evidence_low, _ = _predrain_band_plan(1.0, 0.4, 1.0)
+    assert len(_predawn_hours(evidence_low, inputs)) < len(
+        _predawn_hours(trusting, inputs)
+    )
+    # The diagnostic reports the SAME stressed reserve the gate used (R5):
+    # engaged by evidence even though the alpha dial is 1.0.
+    assert evidence_low.stressed_min_soc_percent is not None
+    assert trusting.stressed_min_soc_percent is None
+
+
+def test_bit_identity_without_band_data():
+    """R12d/R8: passing empty/None band series produces a bit-identical plan
+    to not passing them at all — the whole existing corpus and the goldens
+    stay untouched by construction."""
+    plain, _ = _t12_band_plan(1.2)
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.2,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
+    now = datetime(2026, 7, 4, 8, 0)
+    inputs_empty = build_slots(
+        cfg, now, 92.0, [7.0], pv_hourly_p10={}, pv_hourly_p90=None
+    )
+    empty = plan(cfg, inputs_empty)
+    assert _booked(empty) == _booked(plain)
+    assert empty.load_plans[0].run_hours == plain.load_plans[0].run_hours
+    assert empty.load_plans[0].reasons == plain.load_plans[0].reasons
+    assert empty.threshold_percent == plain.threshold_percent
+    assert empty.grid_import_kwh == plain.grid_import_kwh
+    assert empty.grid_export_kwh == plain.grid_export_kwh

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-11
+
+### Added
+- **Per-slot P10/P90 forecast bands replace the scalar uncertainty dials where
+  evidence exists (F-QUANTILE-BANDS).** The balcony forecaster's empirical
+  quantile curves (`wh_period_p10`/`wh_period_p90` attributes on the same
+  three PV entities) now drive the planner's uncertainty handling per slot:
+  the Z4 pre-drain stress uses `p10/median` (clamped 0.1-1.0) and the c2
+  in-window insurance uses `p90/median` (clamped 1.0-2.0) on every slot with a
+  real band; slots without one keep the configured alpha/beta scalars — the
+  dials become per-slot fallbacks, no config changes. A COLLAPSED band
+  (p10 == p90, the cold-start "no evidence" signature), a median below 25 Wh
+  or a spread below max(1 Wh, 1 %) never counts as a band, so cold bins can
+  never weaken the Z4 stress below the scalar alpha. With no band data
+  anywhere plans are bit-identical to v0.9.3 (goldens unchanged, verified).
+  Insurance bookings backed by evidence read "in-window insurance (p90)" in
+  the explain-plan reasons, and the SOC-forecast sensor's new
+  `quantile_coverage` attribute shows the per-day daylight band coverage
+  ("p10/p90" | "mixed" | "scalar") as the bins mature. Recommended posture
+  once coverage settles: set the upper PV reserve (beta) to 1.0 — insurance
+  then fires only where P90 evidence exists.
+
 ## [0.9.3] - 2026-07-11
 
 ### Fixed

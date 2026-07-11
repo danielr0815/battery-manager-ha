@@ -379,7 +379,7 @@ async def test_coordinator_reads_wh_period_hourly_forecast(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     assert coordinator.last_update_success  # the map is plumbed into build_slots
 
-    pv_map = coordinator._get_pv_hourly(dt_util.now())
+    pv_map, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
     assert pv_map is not None
     # Naive-local keys parsed as local.
     assert pv_map[datetime(2026, 7, 10, 10, 0)] == 1000.0
@@ -434,14 +434,14 @@ async def test_pv_hourly_per_entity_cache_survives_one_unavailable(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     now = dt_util.now()
 
-    full = coordinator._get_pv_hourly(now)
+    full, _p10, _p90 = coordinator._get_pv_hourly(now)
     assert full[datetime(2026, 7, 10, 10, 0)] == 1000.0
     assert full[datetime(2026, 7, 11, 11, 0)] == 700.0
 
     # Today's entity drops out: the partial read must NOT overwrite the cached
     # full map — today's buckets survive from the per-entity cache.
     hass.states.async_set("sensor.pv_today", "unavailable")
-    merged = coordinator._get_pv_hourly(now)
+    merged, _p10, _p90 = coordinator._get_pv_hourly(now)
     assert merged[datetime(2026, 7, 10, 10, 0)] == 1000.0  # cached, not lost
     assert merged[datetime(2026, 7, 11, 11, 0)] == 700.0  # still fresh
 
@@ -511,8 +511,9 @@ async def test_hourly_mode_warns_once_when_no_wh_period(hass, caplog):
         ]
 
     with caplog.at_level(logging.WARNING):
-        assert coordinator._get_pv_hourly(now) is None
-        assert coordinator._get_pv_hourly(now) is None  # second cycle: no repeat
+        assert coordinator._get_pv_hourly(now) == (None, None, None)
+        # second cycle: no repeat
+        assert coordinator._get_pv_hourly(now) == (None, None, None)
     assert len(_warned()) == 1  # state-change guarded: emitted exactly once
 
 
@@ -920,3 +921,110 @@ def test_per_day_attrs_falls_back_to_zero_for_missing_day():
     empty = _per_day_attrs([], "grid_import_kwh")
     assert empty["today_kwh"] == 0.0 and empty["tomorrow_kwh"] == 0.0
     assert empty["daily"] == []
+
+
+# ---------------------------------------------------------------------------
+# F-QUANTILE-BANDS R13: quantile-attribute ingestion (same parse/cache path as
+# the median wh_period, docs/F-QUANTILE-BANDS.md R1) and the per-day coverage
+# diagnostics (R7).
+# ---------------------------------------------------------------------------
+
+
+async def test_pv_hourly_parses_quantile_attributes_with_stale_cache(hass):
+    """R1/R13: wh_period_p10/p90 are parsed from the SAME entities with the
+    same tolerance rules; garbage quantile attributes yield nothing (never an
+    error); a dropout serves median AND bands from the same per-entity cache
+    entry, so stale medians can never pair with other-day bands."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today",
+        "10.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {"2026-07-10 10:00:00": 1000.0},
+            "wh_period_p10": {"2026-07-10 10:00:00": 600.0},
+            "wh_period_p90": {"2026-07-10 10:00:00": 1400.0},
+        },
+    )
+    hass.states.async_set(
+        "sensor.pv_tomorrow",
+        "12.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {"2026-07-11 11:00:00": 700.0},
+            "wh_period_p10": "garbage, not a dict",  # tolerated -> no p10
+            # no wh_period_p90 at all -> no p90 for this day
+        },
+    )
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = dt_util.now()
+
+    median, p10, p90 = coordinator._get_pv_hourly(now)
+    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0
+    assert median[datetime(2026, 7, 11, 11, 0)] == 700.0
+    # Quantiles cover only where the attributes did (partial coverage is fine).
+    assert p10 == {datetime(2026, 7, 10, 10, 0): 600.0}
+    assert p90 == {datetime(2026, 7, 10, 10, 0): 1400.0}
+
+    # Dropout: median AND bands survive together from the same cache entry.
+    hass.states.async_set("sensor.pv_today", "unavailable")
+    median2, p10_2, p90_2 = coordinator._get_pv_hourly(now)
+    assert median2[datetime(2026, 7, 10, 10, 0)] == 1000.0
+    assert p10_2 == {datetime(2026, 7, 10, 10, 0): 600.0}
+    assert p90_2 == {datetime(2026, 7, 10, 10, 0): 1400.0}
+
+
+async def test_quantile_coverage_attribute_wiring(hass):
+    """R7/R13: the coordinator computes per-day daylight band coverage from
+    the planner's own D2 predicate, the data dict and the SOC-forecast sensor
+    carry it, and a partially banded day reads "mixed"."""
+    from datetime import datetime
+
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.battery_manager.const import ENTITY_SOC_FORECAST_CURVE
+    from custom_components.battery_manager.core import SystemConfig, build_slots
+
+    entry = await _setup_entry(hass)  # no band data anywhere
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    # Live wiring: without any p10/p90 data every day reads "scalar".
+    coverage = coordinator.data["quantile_coverage"]
+    assert coverage and all(day["source"] == "scalar" for day in coverage.values())
+    reg = er.async_get(hass)
+    eid = reg.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry.entry_id}_{ENTITY_SOC_FORECAST_CURVE}"
+    )
+    assert eid is not None
+    attrs = hass.states.get(eid).attributes
+    assert attrs["quantile_coverage"] == coverage
+
+    # Deterministic mixed-coverage computation on hand-built inputs: bands on
+    # two of the daylight hours of day 1 only.
+    cfg = SystemConfig()
+    now = datetime(2026, 7, 4, 8, 0)
+    base = build_slots(cfg, now, 55.0, [10.0, 12.0])
+    banded = [s for s in base.slots if s.pv_wh >= 25.0 and s.duration == 1.0][:2]
+    p10 = {s.start: s.pv_wh * 0.7 for s in banded}
+    p90 = {s.start: s.pv_wh * 1.3 for s in banded}
+    inputs = build_slots(
+        cfg, now, 55.0, [10.0, 12.0], pv_hourly_p10=p10, pv_hourly_p90=p90
+    )
+    mixed = coordinator._quantile_coverage(inputs)
+    assert mixed["2026-07-04"]["source"] == "mixed"
+    assert 0.0 < mixed["2026-07-04"]["coverage"] < 1.0
+    assert mixed["2026-07-05"] == {"coverage": 0.0, "source": "scalar"}

@@ -213,6 +213,27 @@ candidates).
   (the dwell really would overshoot there). The executor's frozen off-deadline
   stays `max(min_runtime, run)` — for a final quantum it is deliberately
   LONGER than the run: the stale-SOC upper bound only, G1 remains the stop.
+- **v8 — empirical P10/P90 bands replace the scalar α/β where evidence exists
+  (2026-07-11, docs/F-QUANTILE-BANDS.md):** the balcony forecaster publishes
+  per-15-min P10/P90 curves as attributes on the SAME three PV entities; the
+  planner composes per-slot vectors from them — `stress = clamp(p10/median,
+  0.1, 1.0)` for the Z4 lower-buffer gate, `optimism = clamp(p90/median, 1.0,
+  2.0)` for the c2 insurance — with per-slot fallback to the α/β dials
+  wherever no band exists. THE safety rule: a **collapsed** band (p10 == p90,
+  the cold-start signature) counts as NO band — it means "no evidence", not
+  "no uncertainty"; treating it as certainty would weaken Z4 below α on
+  exactly the history-free bins. A slot has a band only with real data, a
+  median ≥ 25 Wh and a real spread (> max(1 Wh, 1 %)). With no bands anywhere
+  the plan is bit-identical to v0.9.3 at the same dials; a partially covered
+  day mixes evidence and fallback in the same simulation vector. Consequences
+  the operator should know: Z4 protection now varies with weather-class
+  history (milder on provenly stable days — the yield intent), the c2 reasons
+  read "(p90)" on band-backed slots, the SOC-forecast sensor's
+  `quantile_coverage` shows the bands maturing per day, and with β later set
+  to 1.0 insurance fires only where P90 evidence exists (the recommended
+  posture once coverage settles — resolves the β=1.2 complaint without
+  forfeiting volatile-day yield). Placement policy is unchanged: the bands
+  change what the gates BELIEVE, not where bookings land.
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.
