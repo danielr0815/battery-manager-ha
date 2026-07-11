@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-07-11
+
+### Fixed
+- **Stall band: gate-equipped loads now reach their target SOC
+  (F-GATE-TOPUP).** An energy-limited load could never be re-booked once its
+  remaining energy fell below one min-runtime quantum's commitment
+  (`max(planning power, nominal) x min_runtime`): no smaller candidate existed
+  and the saturation gate rejected all others, so the F2400-B (learned ~600 W)
+  was unbookable above 75 % SOC and chronically parked at ~85-89 % instead of
+  90 % — learned power had widened the band. Loads WITH a charge-enable gate
+  now get ONE final candidate `rem / max(planning power, nominal)` appended
+  after the quantised list, offered exactly when every standard candidate
+  would fail the saturation gate — safe because the dwell-exempt target stop
+  (v0.9.0 G1) delivers exactly the remaining energy for this class. A 50 Wh
+  de-minimis floor prevents relay churn; all planner gates apply unchanged;
+  plug-only loads keep the old behaviour (their dwell really would overshoot).
+  Such bookings carry the explain-plan marker ", final top-up to target".
+
 ## [0.9.2] - 2026-07-11
 
 ### Changed

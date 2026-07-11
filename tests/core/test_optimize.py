@@ -721,8 +721,15 @@ def test_energy_limited_booking_is_quantised_and_consistent():
     # F-RESIDUAL-TOPUP R1: an energy-limited load may now book a sub-hour run,
     # but every booked run is a whole slot or a k*q multiple (>= one quantum, R2),
     # and schedule[i] == (run_hours[i] > 0) stays exact.
+    #
+    # DOCUMENTED relaxation (F-GATE-TOPUP R7): a load with `gate_stop_capable`
+    # may additionally book ONE final quantum BELOW q (rem / max(power,
+    # nominal) — the stall-band top-up), covered by the dedicated gate-topup
+    # tests. F1 here is plug-only (flag False), so the strict k*q form still
+    # holds for it verbatim.
     result, inputs = _s3_plan()
     f1 = next(lp for lp in result.load_plans if lp.load_id == "fossibot_1")
+    assert not FOSSIBOT_1.gate_stop_capable  # strict form applies to this load
     q = FOSSIBOT_1.min_runtime_min / 60.0
     for i, h in enumerate(f1.run_hours):
         assert bool(f1.schedule[i]) == (h > 0)
@@ -929,6 +936,99 @@ def test_pass1_rescues_present_export_before_a_later_feasible_slot():
     booked = [i for i, on in enumerate(lp.schedule) if on]
     assert min(booked) == exporting[0]  # earliest export slot, not a later one
     assert result.grid_import_kwh < 0.1  # rescue never causes import
+
+
+# ---------------------------------------------------------------------------
+# F-GATE-TOPUP: final partial quantum for gate-equipped energy-limited loads
+# (docs/F-GATE-TOPUP.md). The stall band: without it, a load can never be
+# re-booked once rem < max(planning_power, nominal) * min_runtime/60 and parks
+# below its target forever (live: F2400-B unbookable above 75 % SOC with a
+# learned ~600 W, parked at ~85-89 % instead of 90 %). The G1 dwell-exempt
+# target stop delivers exactly `rem` for gate-equipped loads, so the old
+# dwell-overshoot rejection (F-RESIDUAL-TOPUP §8 D2) no longer applies there.
+# ---------------------------------------------------------------------------
+
+GATED_FB = SurplusLoad(
+    load_id="fossibot_g",
+    name="Fossibot (gated)",
+    nominal_power_w=300.0,
+    energy_limited=True,
+    capacity_wh=2000.0,
+    target_soc_percent=90.0,
+    gate_stop_capable=True,
+)
+
+
+def test_gate_topup_books_final_quantum_in_stall_band():
+    """R7 live scene: 2000 Wh / target 90 % / learned 600 W / min_runtime 30 at
+    SOC 84.9 % -> rem 102 Wh sits below one quantum's commitment (300 Wh), so
+    every k*q candidate fails the saturation gate. The gate-equipped load books
+    the ONE final quantum 102/600 h (~0.17 h, ~102 Wh) with the explain-plan
+    marker; the plug-only twin books nothing (old behaviour, D2 intact)."""
+    now = datetime(2026, 7, 4, 11, 0)
+
+    def run(load):
+        cfg = SystemConfig(loads=(load,))
+        states = (
+            SurplusLoadState(
+                load_id=load.load_id, soc_percent=84.9, learned_power_w=600.0
+            ),
+        )
+        return make_plan(cfg, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
+
+    result, _inputs = run(GATED_FB)
+    lp = result.load_plans[0]
+    assert len(lp.allocations) == 1
+    assert abs(lp.planned_energy_wh - 102.0) < 1.0
+    booked = lp.allocations[0][0]
+    assert abs(lp.run_hours[booked] - 102.0 / 600.0) < 1e-3  # ~0.17 h
+    assert lp.reasons[0].endswith(", final top-up to target")
+
+    plug_only = replace(GATED_FB, load_id="fossibot_g", gate_stop_capable=False)
+    result_plug, _ = run(plug_only)
+    assert result_plug.load_plans[0].planned_energy_wh == 0.0  # stall band stays
+
+
+def test_gate_topup_de_minimis_floor_books_nothing():
+    """R3: no final candidate below GATE_TOPUP_MIN_WH committed energy — a
+    30 Wh residual (SOC 88.5 %) books nothing, sparing relay/gate churn."""
+    config = SystemConfig(loads=(GATED_FB,))
+    now = datetime(2026, 7, 4, 11, 0)
+    states = (
+        SurplusLoadState(load_id="fossibot_g", soc_percent=88.5, learned_power_w=600.0),
+    )
+    result, _ = make_plan(config, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
+    assert result.load_plans[0].planned_energy_wh == 0.0
+    assert not any(result.load_plans[0].schedule)
+
+
+def test_gate_topup_candidate_list_semantics():
+    """R2: the final candidate is appended LAST and ONLY when every k*q
+    candidate would fail the saturation gate; at rem >= one quantum's
+    commitment the list is unchanged (largest-first anchor preserved), and
+    plug-only / legacy 2-arg calls never see it."""
+    from core.optimize import GATE_TOPUP_MIN_WH
+
+    slot = _slot(1.0)
+    q = GATED_FB.min_runtime_min / 60.0
+    # Stall band: standard list + one final candidate < q, appended last.
+    cands = _quantised_hours(GATED_FB, slot, 102.0, 600.0)
+    assert cands[:2] == [1.0, 0.5]
+    assert len(cands) == 3 and 0.0 < cands[2] < q
+    assert abs(cands[2] - 102.0 / 600.0) < 1e-6
+    # The by-construction commitment passes the strict saturation comparison.
+    assert max(600.0, GATED_FB.nominal_power_w) * cands[2] <= 102.0
+    # rem covers a full quantum: unchanged standard list, no final candidate.
+    assert _quantised_hours(GATED_FB, slot, 600.0, 600.0) == [1.0, 0.5]
+    # De-minimis floor: below GATE_TOPUP_MIN_WH nothing is appended.
+    assert _quantised_hours(GATED_FB, slot, GATE_TOPUP_MIN_WH - 1.0, 600.0) == [
+        1.0,
+        0.5,
+    ]
+    # Plug-only and legacy call shapes stay bit-identical.
+    plug_only = replace(GATED_FB, gate_stop_capable=False)
+    assert _quantised_hours(plug_only, slot, 102.0, 600.0) == [1.0, 0.5]
+    assert _quantised_hours(GATED_FB, slot) == [1.0, 0.5]
 
 
 # ---------------------------------------------------------------------------

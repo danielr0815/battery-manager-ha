@@ -18,6 +18,14 @@ from .simulate import simulate
 
 _EPS = 1e-6
 
+# De-minimis floor for the gate-stop final top-up (F-GATE-TOPUP R3): no final
+# candidate below this committed energy, so relay/gate cycles are never spent
+# on negligible top-ups. A constant, not a config key (G2 style). R3 places it
+# "in const.py", but its consumer is the pure planner core, which the
+# standalone core test setup imports without the integration package — the
+# authoritative definition therefore lives here and const.py re-exports it.
+GATE_TOPUP_MIN_WH = 50.0
+
 
 def _degrades_min_soc(
     trial: Trajectory, reference: Trajectory, floor_percent: float
@@ -152,7 +160,9 @@ def _committed_hours(load, slot) -> float:
     return max(slot.duration, load.min_runtime_min / 60.0)
 
 
-def _quantised_hours(load, slot) -> list[float]:
+def _quantised_hours(
+    load, slot, rem: float | None = None, power_w: float | None = None
+) -> list[float]:
     """Candidate commit durations for one (load, slot), LARGEST first.
 
     The FIRST candidate is always `_committed_hours` — the whole-slot / dwell
@@ -167,6 +177,16 @@ def _quantised_hours(load, slot) -> list[float]:
     target-SOC stop stays primary, and the executor now caps a sub-hour booking
     with the same frozen off-deadline as a continuous load (F-RESIDUAL-TOPUP R7),
     so the removed "no sub-hour cap" carve-out no longer risks an over-run.
+
+    F-GATE-TOPUP R2: for an energy-limited load WITH a charge-enable gate
+    (`gate_stop_capable`), `rem`/`power_w` size ONE extra final candidate
+    `rem / max(power_w, nominal)` appended LAST — offered exactly when every
+    k*q candidate would fail the saturation gate (the stall band: the load
+    could otherwise never be re-booked once rem < one quantum's commitment
+    and would park below its target forever). The G1 dwell-exempt target stop
+    delivers exactly `rem` for this class, so F-RESIDUAL-TOPUP §8 D2's
+    dwell-overshoot rejection does not apply; plug-only loads keep the old
+    behaviour. No candidate below GATE_TOPUP_MIN_WH committed energy (R3).
     """
     whole = _committed_hours(load, slot)
     q = load.min_runtime_min / 60.0
@@ -179,6 +199,19 @@ def _quantised_hours(load, slot) -> list[float]:
         if d < whole - _EPS:
             candidates.append(d)
         k -= 1
+    if (
+        load.energy_limited
+        and load.gate_stop_capable
+        and rem is not None
+        and power_w is not None
+        and rem >= GATE_TOPUP_MIN_WH
+    ):
+        # The 1e-9 shave keeps max(power_w, nominal) * commit_final strictly
+        # below `rem`, so the saturation gate's exact `<` comparison can never
+        # trip on floating-point round-up of the by-construction equality.
+        commit_final = rem * (1.0 - 1e-9) / max(power_w, load.nominal_power_w)
+        if _EPS < commit_final < q:
+            candidates.append(commit_final)
     return candidates
 
 
@@ -330,7 +363,8 @@ def allocate_loads(
             # min_runtime multiples so a small battery-buffered surplus can still
             # be captured (F-SUBHOUR R1-R3). The whole-slot candidate is first,
             # so a full-hour placement stays bit-identical to the old behaviour.
-            for commit_h in _quantised_hours(load, slot):
+            # rem/power_w size the gate-stop final top-up (F-GATE-TOPUP R2).
+            for commit_h in _quantised_hours(load, slot, rem, power_w):
                 power_wh = power_w * commit_h
                 if power_wh <= _EPS:
                     continue
@@ -372,10 +406,19 @@ def allocate_loads(
                 placed_wh = power_w * placed_h
                 planned_wh[load.load_id] += placed_wh
                 allocations[load.load_id].append((i, len(covered), 1, placed_wh))
+                # Only the gate-stop final quantum sits below one min_runtime
+                # quantum — name it so a shorter-than-dwell booking is
+                # self-explaining (F-GATE-TOPUP R6).
+                final_note = (
+                    ", final top-up to target"
+                    if commit_h < load.min_runtime_min / 60.0 - _EPS
+                    else ""
+                )
                 reasons[load.load_id].append(
                     f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
                     f"direct surplus, {round(placed_h * 60)} min x "
                     f"{round(power_w)} W, battery share {round(battery_share * 100)}%"
+                    f"{final_note}"
                 )
                 if rem is not None:
                     remaining[load.load_id] = rem - placed_wh
@@ -432,8 +475,9 @@ def allocate_loads(
                 # Largest-first quantised search (F-SUBHOUR): a sub-hour
                 # preemptive run needs only export_drop >= (1-tol)*(k*q) energy,
                 # so a small afternoon dribble a whole hour cannot capture may
-                # still be soaked by a min_runtime chunk.
-                for commit_h in _quantised_hours(load, slot):
+                # still be soaked by a min_runtime chunk. rem/power_w size the
+                # gate-stop final top-up (F-GATE-TOPUP R2).
+                for commit_h in _quantised_hours(load, slot, rem, power_w):
                     power_wh = power_w * commit_h
                     if power_wh <= _EPS:
                         continue
@@ -542,6 +586,13 @@ def allocate_loads(
                     allocations[load.load_id].append((i, len(covered), 2, placed_wh))
                     # "latest feasible slot" is structurally true: pass 2 walks
                     # descending and accepts the first slot that passes (R13).
+                    # Only the gate-stop final quantum sits below one
+                    # min_runtime quantum (F-GATE-TOPUP R6).
+                    final_note = (
+                        ", final top-up to target"
+                        if commit_h < load.min_runtime_min / 60.0 - _EPS
+                        else ""
+                    )
                     reasons[load.load_id].append(
                         f"pass 2 @ {slot.start.strftime('%m-%d %H:%M')}: "
                         + (
@@ -552,6 +603,7 @@ def allocate_loads(
                                 f"({round(export_drop)} Wh), latest feasible slot"
                             )
                         )
+                        + final_note
                     )
                     if rem is not None:
                         remaining[load.load_id] = rem - placed_wh

@@ -575,6 +575,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     energy_limited=bool(data.get(CONF_LOAD_ENERGY_LIMITED, False)),
                     capacity_wh=float(data.get(CONF_LOAD_CAPACITY_WH, 0.0)),
                     target_soc_percent=float(data.get(CONF_LOAD_TARGET_SOC, 100.0)),
+                    # F-GATE-TOPUP R1: a configured charge-enable gate means the
+                    # G1 dwell-exempt target stop delivers exactly `rem`, so the
+                    # planner may book the final sub-quantum top-up.
+                    gate_stop_capable=bool(data.get(CONF_LOAD_CHARGE_ENABLE)),
                 )
             )
         for subentry_id, subentry in self.entry.subentries.items():
@@ -2796,7 +2800,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # are capped the same way — the deadline is an UPPER bound over
                     # their primary level-driven target-SOC stop, so a stale
                     # load-SOC sensor (R8) cannot stretch a ~150 Wh top-up into a
-                    # full real_power × 1 h night charge.
+                    # full real_power × 1 h night charge. For a gate-stop final
+                    # quantum SHORTER than min_runtime (F-GATE-TOPUP R5) the cap
+                    # is deliberately LONGER than the booked run: it stays the
+                    # stale-SOC upper bound only, while G1's dwell-exempt target
+                    # stop is the primary stop that ends the run at `rem`.
                     if run_h > 0.0:
                         off_min = max(
                             int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),

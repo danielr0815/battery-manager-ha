@@ -197,6 +197,22 @@ candidates).
   can (pass 2, defer the preemptive bet), rescue immediately once you cannot
   (pass 1, run as soon as export occurs).** Pass 2 stays latest-first,
   unchanged.
+- **v7 — gate-stop final top-up closes the stall band (2026-07-11,
+  docs/F-GATE-TOPUP.md):** an energy-limited load could never be re-booked
+  once `rem < max(planning_power, nominal) × min_runtime/60` — no candidate
+  below one quantum exists (F-SUBHOUR R2) and the saturation gate rejects all
+  of them — so the F2400-B (learned ~600 W) was unbookable above 75 % SOC and
+  parked at ~85-89 % instead of its 90 % target; learned power (v5) WIDENED
+  the band. For loads **with a charge-enable gate** the dwell-overshoot
+  rationale that forbade smaller bookings (F-RESIDUAL-TOPUP D2) no longer
+  holds: the G1 dwell-exempt target stop delivers exactly `rem`. Such loads
+  now get ONE final candidate `rem / max(planning_power, nominal)` appended
+  after the quantised list — offered exactly when every k·q candidate would
+  fail the saturation gate, subject to a 50 Wh de-minimis floor
+  (GATE_TOPUP_MIN_WH) and all the usual gates. Plug-only loads are unchanged
+  (the dwell really would overshoot there). The executor's frozen off-deadline
+  stays `max(min_runtime, run)` — for a final quantum it is deliberately
+  LONGER than the run: the stale-SOC upper bound only, G1 remains the stop.
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.

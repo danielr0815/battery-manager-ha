@@ -256,6 +256,11 @@ ruff clean.
 - **D2 (rejected)**: truncated-energy booking `min(rem, power·commit)` at
   whole slots — books energy the dwell cannot match when `rem/power <
   min_runtime` (reverse v0.6.1 bug), and `run_hours` would overstate the run.
+  *(Superseded for GATE-EQUIPPED loads by docs/F-GATE-TOPUP.md, v0.9.3: the
+  rejection is dwell-based, and since F-EXECUTOR-GUARDS G1 the target stop is
+  dwell-exempt behind a charge-enable gate — the executor delivers exactly
+  `rem`, so one final sub-quantum candidate is booked to close the stall band.
+  Plug-only loads keep this rejection verbatim.)*
 - **D3 (chosen)**: executor deadline as upper cap for energy-limited loads
   (R7–R10) — protective against the site's known stale-SOC failure mode; the
   level-driven stop stays primary.

@@ -1,5 +1,12 @@
 """Constants for the Battery Manager integration."""
 
+# De-minimis floor for the gate-stop final top-up (F-GATE-TOPUP R3): a
+# constant, not a config key. Its consumer is the PURE planner core, which the
+# standalone core test setup imports without this package — the authoritative
+# definition therefore lives in core/optimize.py; re-exported here per R3's
+# placement so HA-layer code has the canonical constants module to read.
+from .core.optimize import GATE_TOPUP_MIN_WH  # noqa: F401
+
 DOMAIN = "battery_manager"
 
 INTEGRATION_NAME = "Battery Manager"

@@ -87,6 +87,11 @@ class SurplusLoad:
     energy_limited: bool = False  # True: needs energy until "full" (powerstation)
     capacity_wh: float = 0.0  # storage size if energy_limited
     target_soc_percent: float = 100.0
+    # True iff a charge-enable gate is configured (F-GATE-TOPUP R1): the G1
+    # dwell-exempt target stop then delivers exactly `rem`, so the planner may
+    # book ONE final quantum below min_runtime (the stall band). Neutral
+    # default keeps every legacy constructor and all goldens bit-identical.
+    gate_stop_capable: bool = False
 
 
 @dataclass(frozen=True)
