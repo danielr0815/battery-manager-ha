@@ -483,6 +483,40 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         )
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Repoint the four base entities (SOC + the three PV forecast sources)
+        without re-adding the entry (F-RECONFIGURE-PV). Only these keys change;
+        every other data key (battery, control, support, DC) and all load
+        subentries — which live in `entry.subentries`, not `entry.data` — are
+        preserved, so a PV-source cutover keeps the loads' priorities, learned
+        power and runtime counters. Fields are pre-filled with the current pick
+        via `suggested_value` (not `default`, so the field stays clearable)."""
+        entry = self._get_reconfigure_entry()
+        if user_input is not None:
+            return self.async_update_reload_and_abort(
+                entry, data={**entry.data, **user_input}
+            )
+        current = entry.data
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        key,
+                        description={"suggested_value": current.get(key)},
+                    ): _entity("sensor")
+                    for key in (
+                        CONF_SOC_ENTITY,
+                        CONF_PV_FORECAST_TODAY,
+                        CONF_PV_FORECAST_TOMORROW,
+                        CONF_PV_FORECAST_DAY_AFTER,
+                    )
+                }
+            ),
+        )
+
     async def async_step_battery(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:

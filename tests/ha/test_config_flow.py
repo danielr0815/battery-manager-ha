@@ -981,3 +981,88 @@ async def test_load_priority_create_at_position_one_shifts_all(hass):
     assert entry.subentries[id_c].data[CONF_LOAD_PRIORITY] == 1
     assert entry.subentries[id_a].data[CONF_LOAD_PRIORITY] == 2
     assert entry.subentries[id_b].data[CONF_LOAD_PRIORITY] == 3
+
+
+# ---------------------------------------------------------------------------
+# F-RECONFIGURE-PV: base-entry reconfigure repoints SOC + the three PV forecast
+# sources without re-adding the entry (docs/F-RECONFIGURE-PV.md R1/R2/R5).
+# ---------------------------------------------------------------------------
+
+
+async def test_reconfigure_repoints_pv_and_preserves_everything_else(hass):
+    """R5: the reconfigure flow pre-fills the current SOC/PV entities, and a
+    submit with new PV sources rewrites only those keys — every other data key
+    and all load subentries survive (the whole point of the cutover path)."""
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_POWER_W,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    extra_data = {**ENTRY_DATA, "battery_min_soc_percent": 7.0, "soc_buffer_percent": 5}
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=extra_data,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={CONF_LOAD_POWER_W: 300.0},
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="Fossibot",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    load_ids = [
+        sid
+        for sid, sub in entry.subentries.items()
+        if sub.subentry_type == SUBENTRY_TYPE_LOAD
+    ]
+
+    assert entry.supports_reconfigure  # the flow exists -> HA offers Reconfigure
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+
+    # Fields are pre-filled with the CURRENT pick (suggested_value).
+    def _suggested(schema, key):
+        marker = next(k for k in schema if str(k) == key)
+        return (marker.description or {}).get("suggested_value")
+
+    assert (
+        _suggested(result["data_schema"].schema, CONF_SOC_ENTITY) == "sensor.test_soc"
+    )
+    assert (
+        _suggested(result["data_schema"].schema, CONF_PV_FORECAST_TODAY)
+        == "sensor.pv_today"
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_SOC_ENTITY: "sensor.test_soc",
+            CONF_PV_FORECAST_TODAY: "sensor.balcony_today",
+            CONF_PV_FORECAST_TOMORROW: "sensor.balcony_tomorrow",
+            CONF_PV_FORECAST_DAY_AFTER: "sensor.balcony_d2",
+        },
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    # PV keys repointed; SOC and every non-PV key preserved.
+    assert entry.data[CONF_PV_FORECAST_TODAY] == "sensor.balcony_today"
+    assert entry.data[CONF_PV_FORECAST_DAY_AFTER] == "sensor.balcony_d2"
+    assert entry.data[CONF_SOC_ENTITY] == "sensor.test_soc"
+    assert entry.data["battery_min_soc_percent"] == 7.0
+    assert entry.data["soc_buffer_percent"] == 5
+    # The load subentry is untouched by a base-entry reconfigure.
+    assert [
+        sid
+        for sid, sub in entry.subentries.items()
+        if sub.subentry_type == SUBENTRY_TYPE_LOAD
+    ] == load_ids
+    assert entry.subentries[load_ids[0]].data[CONF_LOAD_POWER_W] == 300.0

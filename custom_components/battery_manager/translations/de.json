@@ -17,6 +17,22 @@
           "pv_forecast_day_after_entity": "Erwartete PV-Energie für übermorgen in kWh — verlängert den Planungshorizont auf bis zu 3 Tage."
         }
       },
+      "reconfigure": {
+        "title": "Quellen neu konfigurieren",
+        "description": "Ändere den Batterie-SOC-Sensor und die drei PV-Prognose-Quellen. Lasten und alle anderen Einstellungen bleiben erhalten.",
+        "data": {
+          "soc_entity": "Batterie-SOC-Sensor (%)",
+          "pv_forecast_today_entity": "PV-Prognose heute (kWh)",
+          "pv_forecast_tomorrow_entity": "PV-Prognose morgen (kWh)",
+          "pv_forecast_day_after_entity": "PV-Prognose übermorgen (kWh)"
+        },
+        "data_description": {
+          "soc_entity": "Aktueller Ladezustand der Batterie in Prozent (0–100). Grundlage aller Berechnungen — sollte sich regelmäßig aktualisieren.",
+          "pv_forecast_today_entity": "Erwartete PV-Energie für heute in kWh, z. B. von Solcast oder Forecast.Solar.",
+          "pv_forecast_tomorrow_entity": "Erwartete PV-Energie für morgen in kWh.",
+          "pv_forecast_day_after_entity": "Erwartete PV-Energie für übermorgen in kWh — verlängert den Planungshorizont auf bis zu 3 Tage."
+        }
+      },
       "battery": {
         "title": "Batterie",
         "data": {
@@ -241,7 +257,8 @@
       "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen."
     },
     "abort": {
-      "already_configured": "Dieses System ist bereits konfiguriert."
+      "already_configured": "Dieses System ist bereits konfiguriert.",
+      "reconfigure_successful": "Quellen aktualisiert; die Integration wurde neu geladen."
     }
   },
   "config_subentries": {

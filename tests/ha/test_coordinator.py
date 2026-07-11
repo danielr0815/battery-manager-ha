@@ -784,3 +784,139 @@ async def test_load_plan_dict_carries_why_and_learned_power(hass):
     attrs = hass.states.get(eid).attributes
     sensor_schedule = attrs["loads"][0]["schedule"]
     assert sensor_schedule and all("why" in row for row in sensor_schedule)
+
+
+# ---------------------------------------------------------------------------
+# F-PERDAY-SURPLUS: per-calendar-day lost-surplus / grid-import breakdown
+# (docs/F-PERDAY-SURPLUS.md R1-R3).
+# ---------------------------------------------------------------------------
+
+
+async def test_daily_surplus_breakdown_splits_by_start_day(hass):
+    """R1: the trajectory is grouped by each slot's planner-local START day, so a
+    23:00 slot lands on its start day even where it conceptually crosses midnight
+    (D-A7); the per-day kWh match a hand computation and their sums equal the
+    existing totals (rounding aside)."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.core.model import HourSlot
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    # Two calendar days: day-1 22:00 + 23:00, day-2 00:00 + 01:00. The 23:00
+    # slot carries export and must be attributed to day-1, not day-2.
+    starts = [
+        datetime(2026, 7, 10, 22, 0),
+        datetime(2026, 7, 10, 23, 0),
+        datetime(2026, 7, 11, 0, 0),
+        datetime(2026, 7, 11, 1, 0),
+    ]
+    slots = tuple(
+        HourSlot(
+            index=i,
+            start=s,
+            duration=1.0,
+            hour_of_day=s.hour,
+            pv_wh=0.0,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
+        for i, s in enumerate(starts)
+    )
+    # (export_wh, import_wh) per slot.
+    flows_wh = [(300.0, 0.0), (700.0, 50.0), (0.0, 200.0), (1000.0, 0.0)]
+    flows = tuple(
+        SimpleNamespace(grid_export_wh=e, grid_import_wh=i) for e, i in flows_wh
+    )
+    inputs = SimpleNamespace(slots=slots)
+    result = SimpleNamespace(trajectory=SimpleNamespace(flows=flows))
+
+    daily = coordinator._daily_surplus_breakdown(inputs, result)
+
+    assert [d["date"] for d in daily] == ["2026-07-10", "2026-07-11"]  # chronological
+    # Day-1: export 300 + 700 = 1000 Wh (23:00 counts here), import 50 Wh.
+    assert daily[0] == {
+        "date": "2026-07-10",
+        "lost_surplus_kwh": 1.0,
+        "grid_import_kwh": 0.05,
+    }
+    # Day-2: export 0 + 1000 = 1000 Wh, import 200 Wh.
+    assert daily[1] == {
+        "date": "2026-07-11",
+        "lost_surplus_kwh": 1.0,
+        "grid_import_kwh": 0.2,
+    }
+    # R1 invariant: the sums equal the trajectory totals.
+    total_export = sum(e for e, _ in flows_wh) / 1000.0
+    total_import = sum(i for _, i in flows_wh) / 1000.0
+    assert sum(d["lost_surplus_kwh"] for d in daily) == total_export
+    assert sum(d["grid_import_kwh"] for d in daily) == total_import
+
+
+async def test_forecast_sensors_expose_per_day_attributes(hass):
+    """R2/R3: the lost-surplus and grid-import forecast sensors carry
+    today_kwh/tomorrow_kwh/daily and the SOC-forecast sensor carries the same
+    daily list; on real plan data the per-day sums equal the totals (R1)."""
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.battery_manager.const import (
+        ENTITY_GRID_IMPORT_FORECAST,
+        ENTITY_LOST_SURPLUS,
+        ENTITY_SOC_FORECAST_CURVE,
+    )
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    daily = coordinator.data["daily_surplus"]
+    assert daily and all(
+        {"date", "lost_surplus_kwh", "grid_import_kwh"} <= d.keys() for d in daily
+    )
+    today = daily[0]["date"]  # today = date of slot 0
+
+    reg = er.async_get(hass)
+
+    def _attrs(entity_key):
+        eid = reg.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}_{entity_key}"
+        )
+        assert eid is not None
+        return hass.states.get(eid).attributes
+
+    for entity_key, value_key in (
+        (ENTITY_LOST_SURPLUS, "lost_surplus_kwh"),
+        (ENTITY_GRID_IMPORT_FORECAST, "grid_import_kwh"),
+    ):
+        attrs = _attrs(entity_key)
+        assert attrs["daily"] == daily  # single source
+        # today_kwh is the value_key metric of the slot-0 day.
+        assert attrs["today_kwh"] == daily[0][value_key]
+        assert isinstance(attrs["tomorrow_kwh"], float)
+        # R1 invariant on real data: Σ daily == the sensor's own total, rounding
+        # aside — each day is rounded to 3 decimals independently of the total,
+        # so the sum can differ by up to half a milli-kWh per day.
+        total = coordinator.data[value_key]
+        assert abs(sum(d[value_key] for d in daily) - total) <= 0.0005 * len(daily)
+        assert today  # slot-0 day present
+
+    # R3: the SOC-forecast sensor exposes the same daily list.
+    assert _attrs(ENTITY_SOC_FORECAST_CURVE)["daily"] == daily
+
+
+def test_per_day_attrs_falls_back_to_zero_for_missing_day():
+    """R2: today_kwh/tomorrow_kwh fall back to 0.0 when the horizon lacks that
+    day; today is the date of slot 0 (the first entry) and tomorrow is today+1."""
+    from custom_components.battery_manager.sensor import _per_day_attrs
+
+    # Horizon covers only today (slot-0 day); tomorrow is absent.
+    daily = [{"date": "2026-07-11", "lost_surplus_kwh": 2.5, "grid_import_kwh": 0.4}]
+    attrs = _per_day_attrs(daily, "lost_surplus_kwh")
+    assert attrs["today_kwh"] == 2.5
+    assert attrs["tomorrow_kwh"] == 0.0  # day absent -> 0.0
+    assert attrs["daily"] == daily
+
+    # Empty horizon -> both scalars fall back to 0.0.
+    empty = _per_day_attrs([], "grid_import_kwh")
+    assert empty["today_kwh"] == 0.0 and empty["tomorrow_kwh"] == 0.0
+    assert empty["daily"] == []

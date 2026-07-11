@@ -17,6 +17,22 @@
           "pv_forecast_day_after_entity": "Expected PV energy for the day after tomorrow in kWh — extends the planning horizon to up to 3 days."
         }
       },
+      "reconfigure": {
+        "title": "Reconfigure sources",
+        "description": "Change the battery SOC sensor and the three PV forecast sources. Loads and all other settings are kept.",
+        "data": {
+          "soc_entity": "Battery SOC sensor (%)",
+          "pv_forecast_today_entity": "PV forecast today (kWh)",
+          "pv_forecast_tomorrow_entity": "PV forecast tomorrow (kWh)",
+          "pv_forecast_day_after_entity": "PV forecast day after tomorrow (kWh)"
+        },
+        "data_description": {
+          "soc_entity": "Current battery state of charge in percent (0–100). Basis of all calculations — should update regularly.",
+          "pv_forecast_today_entity": "Expected PV energy for today in kWh, e.g. from Solcast or Forecast.Solar.",
+          "pv_forecast_tomorrow_entity": "Expected PV energy for tomorrow in kWh.",
+          "pv_forecast_day_after_entity": "Expected PV energy for the day after tomorrow in kWh — extends the planning horizon to up to 3 days."
+        }
+      },
       "battery": {
         "title": "Battery",
         "data": {
@@ -241,7 +257,8 @@
       "support_dc48_recovery_above_dc24": "The 48 V support recover-SOC must be at or below the 24 V recover-SOC."
     },
     "abort": {
-      "already_configured": "This system is already configured."
+      "already_configured": "This system is already configured.",
+      "reconfigure_successful": "Sources updated; the integration was reloaded."
     }
   },
   "config_subentries": {

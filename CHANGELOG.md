@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-11
+
+### Added
+- **Per-day lost-surplus and grid-import breakdown (F-PERDAY-SURPLUS).** The
+  coordinator aggregates the final planned trajectory per calendar day (grouped
+  by each slot's planner-local start day) into a `daily` list of
+  `{date, lost_surplus_kwh, grid_import_kwh}`; the sums equal the existing
+  totals (rounding aside). The `lost_surplus_forecast` and `grid_import_forecast`
+  sensors gain `today_kwh` / `tomorrow_kwh` / `daily` attributes (today = date of
+  slot 0, tomorrow = today + 1, a missing day rendering 0.0), and the SOC-forecast
+  sensor exposes the same `daily` list as a single source for dashboard cards. No
+  planner or config change.
+- **Reconfigure flow (F-RECONFIGURE-PV).** The battery SOC sensor and the three
+  PV forecast sources can now be changed from the integration's Reconfigure
+  entry without re-adding it, so a PV-source cutover (e.g. to a more accurate
+  forecast) keeps every load subentry with its priority, learned power and
+  runtime counters. Only those four entities change; all other settings and the
+  loads are preserved, and the entry reloads onto the new sources.
+
 ## [0.9.0] - 2026-07-10
 
 ### Added

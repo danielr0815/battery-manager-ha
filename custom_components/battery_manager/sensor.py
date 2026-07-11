@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -84,6 +85,26 @@ SENSOR_DESCRIPTIONS: tuple[dict[str, Any], ...] = (
 )
 
 
+def _per_day_attrs(daily: list[dict[str, Any]], value_key: str) -> dict[str, Any]:
+    """today_kwh / tomorrow_kwh / daily for a forecast sensor (F-PERDAY-SURPLUS R2).
+
+    ``today`` is the date of slot 0 (the first, chronological entry); ``tomorrow``
+    is that day + 1. A day the planning horizon lacks renders 0.0. ``value_key``
+    selects the metric ("lost_surplus_kwh" or "grid_import_kwh"); the full daily
+    list (both metrics) is exposed as the single dashboard source.
+    """
+    by_date = {entry["date"]: entry[value_key] for entry in daily}
+    today = date.fromisoformat(daily[0]["date"]) if daily else None
+    tomorrow = today + timedelta(days=1) if today is not None else None
+    return {
+        "today_kwh": by_date.get(today.isoformat(), 0.0) if today is not None else 0.0,
+        "tomorrow_kwh": (
+            by_date.get(tomorrow.isoformat(), 0.0) if tomorrow is not None else 0.0
+        ),
+        "daily": daily,
+    }
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -154,6 +175,12 @@ class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
         attrs = {ATTR_LAST_UPDATE: str(data.get("last_update", ""))}
         if self._data_key == "grid_import_kwh":
             attrs[ATTR_GRID_EXPORT_KWH] = data.get("grid_export_kwh")
+        # F-PERDAY-SURPLUS R2: the today/tomorrow split and per-day list on the
+        # lost-surplus and grid-import forecast sensors.
+        if self._data_key in ("lost_surplus_kwh", "grid_import_kwh"):
+            attrs.update(
+                _per_day_attrs(data.get("daily_surplus") or [], self._data_key)
+            )
         return attrs
 
 
@@ -246,6 +273,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "soc_threshold_percent": data.get("soc_threshold_percent"),
             "grid_import_kwh": data.get("grid_import_kwh"),
             "lost_surplus_kwh": data.get("lost_surplus_kwh"),
+            # F-PERDAY-SURPLUS R3: the per-day lost-surplus / import list, the
+            # single source dashboard cards read (totals above stay untouched).
+            "daily": data.get("daily_surplus") or [],
             "loads": loads,
             "consumption_profile": data.get("consumption_profile") or {},
             "gate_calibration": data.get("gate_calibration") or {},
