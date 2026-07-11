@@ -43,6 +43,7 @@ const STRINGS = {
     import: "grid import",
     lost: "lost surplus",
     loads: "Surplus loads",
+    today_tomorrow: "(kWh · today/tomorrow)",
     nothing_planned: "nothing planned",
     active: "active",
     support_dc24: "24 V grid support",
@@ -58,6 +59,7 @@ const STRINGS = {
     import: "Netzimport",
     lost: "verlorener Überschuss",
     loads: "Überschusslasten",
+    today_tomorrow: "(kWh · heute/morgen)",
     nothing_planned: "nichts geplant",
     active: "aktiv",
     support_dc24: "24-V-Netzstützung",
@@ -291,6 +293,25 @@ class BatteryManagerForecastCard extends HTMLElement {
     if (a.soc_threshold_percent != null) {
       parts.push(`T* ${Math.round(a.soc_threshold_percent)} %`);
     }
+    // Per-day today/tomorrow figures from the `daily` breakdown (import +
+    // lost surplus since v0.9.1, load energy since v0.10.1). Shown as
+    // `today/tomorrow` with a single trailing legend so the slash format is
+    // explained once (operator request 2026-07-11).
+    const daily = Array.isArray(a.daily) ? a.daily : null;
+    if (daily && daily.length) {
+      const td = (key) => {
+        const today = Number(daily[0]?.[key] ?? 0);
+        const tomorrow = Number(daily[1]?.[key] ?? 0);
+        return `${today.toFixed(1)}/${tomorrow.toFixed(1)}`;
+      };
+      parts.push(`${t("import")} ${td("grid_import_kwh")}`);
+      parts.push(`${t("lost")} ${td("lost_surplus_kwh")}`);
+      parts.push(`${t("loads")} ${td("loads_kwh")}`);
+      parts.push(t("today_tomorrow"));
+      return parts.join(" · ");
+    }
+    // Fallback for a pre-0.9.1 backend without the per-day breakdown: the
+    // horizon totals, exactly as before.
     if (a.grid_import_kwh != null) {
       parts.push(`${t("import")} ${a.grid_import_kwh.toFixed(1)} kWh`);
     }

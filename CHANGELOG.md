@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-07-11
+
+### Changed
+- **Forecast card shows today/tomorrow per metric (bundled UI for
+  F-PERDAY-SURPLUS).** The card's subtitle now renders grid import, lost
+  surplus AND surplus-load energy as `today/tomorrow` (e.g.
+  `Netzimport 0.3/0.1 · verlorener Überschuss 4.6/0.0 · Überschusslasten
+  9.8/4.2`), reading the per-day `daily` breakdown, with a single trailing
+  legend `(kWh · today/tomorrow)` so the slash format is explained once. Falls
+  back to horizon totals on a pre-0.9.1 backend. The card ships with the
+  integration, so it refreshes on update (cache-busted by the version).
+
+
 ## [0.10.1] - 2026-07-11
 
 ### Added
