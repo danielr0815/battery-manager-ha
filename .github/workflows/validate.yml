@@ -13,7 +13,7 @@ jobs:
     name: HACS Validation
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
       - name: HACS validation
         uses: "hacs/action@main"
@@ -26,7 +26,7 @@ jobs:
     name: Hassfest Validation
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
       - name: Hassfest validation
         uses: "home-assistant/actions/hassfest@master"
@@ -36,7 +36,7 @@ jobs:
     name: Lint (ruff)
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
       - name: Set up Python
         uses: "actions/setup-python@v5"
@@ -69,7 +69,7 @@ jobs:
     name: Tests (pytest)
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
       - name: Set up Python
         uses: "actions/setup-python@v5"
