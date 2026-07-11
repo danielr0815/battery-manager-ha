@@ -817,17 +817,17 @@ def test_r4_live_scene_residual_books_next_day_not_slot0():
     assert len(covered) == 1
     assert abs(lp.run_hours[covered[0]] - 0.5) < 1e-9
     assert abs(lp.planned_energy_wh - 150.0) < 1.0
-    # F-PLANNER-HONESTY R7 v2/R11c: day-bounded lateness — the top-up lands on
-    # the first (and here only) exporting day, 07-11, at that day's LAST
-    # exporting slot, not merely past 06:00.
+    # F-RESCUE-EXPORT R6: pass-1 energy-limited placement is earliest-first —
+    # the top-up lands on the first (and here only) exporting day, 07-11, at
+    # that day's FIRST exporting slot (rescue export as soon as it occurs).
     booked_day = inputs.slots[covered[0]].start.date()
     assert booked_day == datetime(2026, 7, 11, 0, 0).date()
-    last_export_of_day = max(
+    first_export_of_day = min(
         i
         for i, f in enumerate(result.trajectory.flows)
         if f.grid_export_wh > 1e-9 and inputs.slots[i].start.date() == booked_day
     )
-    assert covered[0] == last_export_of_day
+    assert covered[0] == first_export_of_day
 
 
 def test_pass2_residual_books_latest_of_two_feasible_slots():
@@ -874,9 +874,9 @@ def test_pass1_residual_capture_in_direct_surplus_hour():
     """Pass-1 residual capture (R6): midday, battery full, strong surplus. A
     fossibot 156 Wh short of target books a single 0.5 h pass-1 quantum in a
     direct-surplus hour — a capture class the whole-hour saturation gate used
-    to reject entirely. Since F-PLANNER-HONESTY R7 v2 the quantum sits at the
-    LATEST feasible surplus hour OF THE FIRST exporting day (day-bounded
-    lateness): today's export is rescued, just as late as possible."""
+    to reject entirely. Since F-RESCUE-EXPORT the quantum sits at the FIRST
+    exporting slot of the day (earliest-export-first): rescue the surplus as
+    soon as it is being lost, not as late as possible."""
     config = SystemConfig(loads=(FOSSIBOT_B,))
     now = datetime(2026, 7, 4, 11, 0)
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
@@ -889,25 +889,52 @@ def test_pass1_residual_capture_in_direct_surplus_hour():
     booked = lp.allocations[0][0]
     assert abs(lp.run_hours[booked] - 0.5) < 1e-9
     assert abs(lp.planned_energy_wh - 150.0) < 1.0
-    # Day-bounded lateness (R7 v2): the booking stays on TODAY (the first day
-    # with rescuable export) and no surplus hour of that day after it is left
-    # unused — it is the day's last exporting slot in the final plan.
+    # Earliest-first (F-RESCUE-EXPORT): the booking stays on TODAY and takes
+    # that day's FIRST exporting slot — no earlier surplus hour is left unused.
     assert inputs.slots[booked].start.date() == now.date()
-    last_export_of_day = max(
+    first_export_of_day = min(
         i
         for i, f in enumerate(result.trajectory.flows)
         if f.grid_export_wh > 1e-9 and inputs.slots[i].start.date() == now.date()
     )
-    assert booked == last_export_of_day, (
-        f"residual booked at slot {booked}, but its day still exports up to "
-        f"slot {last_export_of_day}"
+    assert booked == first_export_of_day, (
+        f"residual booked at slot {booked}, but its day already exports from "
+        f"slot {first_export_of_day}"
     )
 
 
+def test_pass1_rescues_present_export_before_a_later_feasible_slot():
+    """F-RESCUE-EXPORT live scene (2026-07-11): the house battery is full and
+    exporting NOW while a Fossibot with room sits idle. The energy-limited
+    load must book the CURRENT/earliest export slot (run now), not a later
+    export slot — deferring past present, certain export to bet on a later
+    forecast one is the regression this feature fixes."""
+    config = SystemConfig(loads=(FOSSIBOT_B,))
+    now = datetime(2026, 7, 4, 12, 0)  # midday, export happening in slot 0
+    # House at 99 % (exporting now); Fossibot 73.9 % of a 90 % target -> ~322 Wh.
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=73.9),)
+    result, inputs = make_plan(
+        config, now, 99.0, [12.0, 12.0, 12.0], load_states=states
+    )
+    lp = result.load_plans[0]
+
+    exporting = [
+        i for i, f in enumerate(result.trajectory.flows) if f.grid_export_wh > 1e-9
+    ]
+    assert exporting and exporting[0] == 0, "slot 0 must be exporting in this scene"
+    assert len(exporting) > 1, "a later feasible export slot must also exist"
+    # The load runs NOW: slot 0 is booked, not a later export slot.
+    assert lp.active_now and lp.schedule[0]
+    assert lp.allocations[0][0] == 0  # first booking is at the current export slot
+    booked = [i for i, on in enumerate(lp.schedule) if on]
+    assert min(booked) == exporting[0]  # earliest export slot, not a later one
+    assert result.grid_import_kwh < 0.1  # rescue never causes import
+
+
 # ---------------------------------------------------------------------------
-# F-PLANNER-HONESTY: learned planning power (F1), load-outer pass 1 with
-# per-class slot direction (F2, resolves O1 of F-RESIDUAL-TOPUP), explain-plan
-# (F3). docs/F-PLANNER-HONESTY.md.
+# F-PLANNER-HONESTY: learned planning power (F1), load-outer priority pass 1
+# (F2 + F-RESCUE-EXPORT earliest-first), explain-plan (F3).
+# docs/F-PLANNER-HONESTY.md, docs/F-RESCUE-EXPORT.md.
 # ---------------------------------------------------------------------------
 
 
@@ -927,19 +954,20 @@ def test_planning_power_precedence_measured_learned_nominal():
     assert zeroed.planning_power_w(FOSSIBOT_1) == FOSSIBOT_1.nominal_power_w
 
 
-def test_pass1_energy_limited_residual_books_later_of_two_hours():
-    """R7/R11a: two feasible direct-surplus hours, a residual that fits only
-    one 0.5 h quantum — the LATER hour hosts it. The earlier hour provably
-    stayed feasible: it still exports more than the quantum needs."""
+def test_pass1_energy_limited_residual_books_earlier_of_two_hours():
+    """R11a, inverted by F-RESCUE-EXPORT: two feasible direct-surplus hours, a
+    residual that fits only one 0.5 h quantum — the EARLIER hour hosts it
+    (earliest-export-first). The later hour provably stays feasible: it still
+    exports after the booking."""
     config = SystemConfig(loads=(FOSSIBOT_B,))
     now = datetime(2026, 7, 4, 16, 1)
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=82.2),)  # 156 Wh
     result, inputs = make_plan(config, now, 94.0, [12.0], load_states=states)
     lp = result.load_plans[0]
-    assert lp.allocations == ((1, 1, 1, 150.0),)  # one pass-1 quantum at 17:00
-    assert not lp.schedule[0], "booked the earlier hour despite a later feasible one"
-    # The skipped earlier hour still exports >= the quantum's energy.
-    assert result.trajectory.flows[0].grid_export_wh >= 150.0
+    assert lp.allocations == ((0, 1, 1, 150.0),)  # one pass-1 quantum at slot 0
+    assert lp.active_now and lp.schedule[0]  # runs NOW, not the later hour
+    # The later hour (slot 1) stayed feasible — it still exports.
+    assert result.trajectory.flows[1].grid_export_wh > 1e-9
 
 
 def test_pass1_load_outer_config_order_priority_scarce_surplus():

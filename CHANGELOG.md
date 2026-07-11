@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-11
+
+### Changed
+- **Pass 1 rescues present export first (F-RESCUE-EXPORT).** Energy-limited
+  loads now place their direct-surplus (pass-1) hours **earliest-export-first**
+  (ascending), reverting the v0.9.0 day-bounded latest-first order for pass 1.
+  A pass-1 candidate only ever sits on a slot that is already full and
+  exporting, so deferring rescues no extra energy but loses the present,
+  certain surplus to a later forecast bet — observed live as a Fossibot with
+  room sitting idle at 73.9 % while the house battery was at 99 % and ~1.7 kW
+  was exported. The load now runs as soon as export occurs. Pass 2 (preemptive
+  bookings before saturation, where the battery can still buffer) stays
+  latest-first, unchanged. Load-outer priority, learned power, explain-plan and
+  the exact re-simulated surplus reads are unchanged.
+
 ## [0.9.1] - 2026-07-11
 
 ### Added

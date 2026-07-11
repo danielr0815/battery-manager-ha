@@ -209,28 +209,6 @@ def _spread_energy(
     return trial, covered
 
 
-def _daywise_latest_first(slots) -> list[int]:
-    """Pass-1 slot order for energy-limited loads (F-PLANNER-HONESTY R7 v2):
-    calendar days ASCENDING, the hours WITHIN each day DESCENDING.
-
-    The operator principle has two clauses — "as late as possible" AND "just
-    early enough to avoid export". A whole-horizon descending order (R7 v1)
-    deferred a saturating load past an exporting day and stranded that day's
-    real surplus while betting on the least certain forecast zone; the day
-    bound keeps lateness where it is free: the first day whose export the load
-    can rescue wins, latest hours of that day. Grouped by `slot.start.date()`
-    like `pv_windows`; slots are chronological, so the day dict preserves
-    calendar order.
-    """
-    by_day: dict = {}
-    for i, slot in enumerate(slots):
-        by_day.setdefault(slot.start.date(), []).append(i)
-    order: list[int] = []
-    for indices in by_day.values():
-        order.extend(reversed(indices))
-    return order
-
-
 def allocate_loads(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -241,18 +219,20 @@ def allocate_loads(
 
     Pass 1 fills hours with direct surplus (battery share within the load's
     tolerance across the committed runtime), LOAD-OUTER in config order
-    (F-PLANNER-HONESTY R7 v2): a load books its complete pass-1 allocation
-    before the next load sees the horizon, and energy-limited loads walk the
-    slots day-bounded latest-first — days ascending, hours within each day
-    descending (lateness where it is free, without stranding an earlier day's
-    export) — while continuous loads walk ascending. Pass 2 ("zielbasiert",
+    (F-PLANNER-HONESTY R7): a load books its complete pass-1 allocation before
+    the next load sees the horizon, and ALL loads walk the slots ascending
+    (earliest-export-first, F-RESCUE-EXPORT). A pass-1 candidate passes the
+    soft-surplus gate only where the battery is already full and exporting, so
+    lateness rescues no extra energy but loses the present, certain surplus to
+    a later forecast bet: run as soon as export occurs. Pass 2 ("zielbasiert",
     decision 2026-07-04) additionally allows
     hours WITHOUT direct surplus — e.g. pre-charging to make room before a
     strong production peak — but only when the full-horizon re-simulation
     proves the energy is, time-shifted through the battery, covered by
     otherwise-lost surplus. Pass 2 runs LATEST-FIRST (operator decision
-    2026-07-05): preemptive hours are placed as late as the constraints allow,
-    because catching up on better information always beats an early bet on the
+    2026-07-05): preemptive hours are placed as late as the constraints allow —
+    there the battery can still buffer, so deferring the bet is legitimate —
+    because catching up on better information beats an early bet on the
     forecast.
 
     Every candidate is evaluated with the energy the executor will really
@@ -321,27 +301,27 @@ def allocate_loads(
         return w is not None and w[0] <= i <= w[1]
 
     # Pass 1 — direct-surplus hours, LOAD-OUTER in config order (F-PLANNER-
-    # HONESTY R7 v2): strict priority — a load books its complete pass-1
+    # HONESTY R7): strict priority — a load books its complete pass-1
     # allocation before the next load sees the horizon. Slots are walked
-    # DAY-BOUNDED latest-first for energy-limited loads (days ascending,
-    # hours within each day descending: a residual that saturates before
-    # taking every export hour must take the LATEST hours of the FIRST day
-    # whose surplus it can rescue — resolves O1 of F-RESIDUAL-TOPUP without
-    # stranding an earlier day's export) and ASCENDING for continuous loads
-    # (they book every feasible export hour anyway; ascending keeps deltas
-    # minimal). Each candidate reads the CURRENT accepted trajectory's export
-    # (R8): earlier bookings — same load or a higher-priority one — are
-    # already re-simulated into `current`, so the old intra-slot decrement
-    # approximation is replaced by the exact value.
+    # ASCENDING (earliest-export-first) for ALL loads (F-RESCUE-EXPORT R1,
+    # supersedes the v0.9.0 day-bounded latest-first for energy-limited loads):
+    # a pass-1 candidate passes the soft-surplus gate only where the battery is
+    # already full and EXPORTING, so lateness buys nothing — surplus not
+    # consumed in a slot is lost irrevocably, and an energy-limited load
+    # charges its fixed remaining capacity either way. Deferring past a slot
+    # that already exports would lose that present, certain surplus to bet on a
+    # later forecast one; so a load must run as soon as export occurs. (Pass 2
+    # stays latest-first: there the battery can still buffer, so deferring the
+    # preemptive bet is legitimate.) Each candidate reads the CURRENT accepted
+    # trajectory's export (R8): earlier bookings — same load or a higher-
+    # priority one — are already re-simulated into `current`, so the old
+    # intra-slot decrement approximation is replaced by the exact value.
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
         if not state.available:
             continue
         power_w = state.planning_power_w(load)
-        slot_order = (
-            _daywise_latest_first(inputs.slots) if load.energy_limited else range(n)
-        )
-        for i in slot_order:
+        for i in range(n):
             slot = inputs.slots[i]
             if schedules[load.load_id][i]:
                 continue

@@ -182,6 +182,21 @@ candidates).
      string at acceptance time (`LoadPlan.reasons`, surfaced as `why` in the
      per-load schedule attribute), so "why is this load on NOW?" no longer
      needs code archaeology.
+- **v6 — pass-1 rescues present export first; the regime split (operator
+  decision, 2026-07-11):** the v5 day-bounded latest-first order for
+  energy-limited loads in **pass 1** is replaced by **earliest-export-first**
+  (ascending, like continuous loads; F-RESCUE-EXPORT). Live trigger: a
+  Fossibot with room sat idle at 73.9 % while the house battery was at 99 %
+  and ~1.7 kW was exported, because the plan had deferred its charge to the
+  day's last export hour. The insight is that pass 1 is **post-saturation** —
+  a candidate slot passes the soft-surplus gate only when the battery is
+  already full and exporting there, so deferring rescues no extra energy (an
+  energy-limited load charges its fixed remaining capacity either way) while
+  losing the present, certain export to bet on a later forecast one. The two
+  regimes are the faithful reading of the timing principle: **buffer while you
+  can (pass 2, defer the preemptive bet), rescue immediately once you cannot
+  (pass 1, run as soon as export occurs).** Pass 2 stays latest-first,
+  unchanged.
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.

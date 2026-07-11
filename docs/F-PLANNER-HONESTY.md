@@ -62,6 +62,16 @@ planner knows the answer at acceptance time and throws it away.
 
 ### F2 — pass-1 restructure: load-outer, per-class direction (P2, O1)
 
+> **Superseded (v0.9.2, docs/F-RESCUE-EXPORT.md):** the energy-limited pass-1
+> slot order below (day-bounded latest-first) is replaced by **earliest-
+> export-first** — pass 1 walks `range(n)` ascending for ALL loads. A pass-1
+> candidate only ever sits on a slot that is already exporting (battery full),
+> so lateness rescues no extra energy but loses the present, certain surplus;
+> the load must run as soon as export occurs. The load-outer strict-priority
+> structure and everything else in R7 is unchanged. **Pass 2 (R2 there /
+> latest-first) is unchanged** — there the battery can still buffer, so
+> deferring the preemptive bet remains correct.
+
 - **R7 (v2, amended after mission-A review)** Pass 1 becomes **load-outer**
   in config order (strict priority: a load books its complete pass-1
   allocation before the next load sees the horizon), slots inner: for
