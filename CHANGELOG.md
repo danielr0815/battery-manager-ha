@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-12
+
+### Fixed
+- **Midday T\*=95 hoard on clipping days (F-NIGHT-RESCUE F2 v2).** With the
+  v0.11.0 merge-bounded threshold search, a clipping day whose truncated scan
+  window carried a substantial DC load could pin the discharge threshold at the
+  maximum SOC (95 %), hoarding the battery across the whole forecast instead of
+  draining it to make room for the clipping. On a merge-truncated window the
+  battery is full at the merge point by construction, so the cost function's
+  terminal-value credit is meaningless there — and a DC load breaks its exact
+  cancellation with import (DC is served from the battery without the inverter,
+  while the credit assumes the inverter's discharge efficiency), turning the
+  threshold into an ill-conditioned knife-edge. The credit is now dropped on
+  truncated windows, leaving a cost that is monotonic in the threshold, so the
+  scan deterministically drains ahead of the clip. Full-horizon threshold
+  choice, the night pre-drain, and all goldens are unchanged.
+
 ## [0.11.1] - 2026-07-12
 
 ### Added

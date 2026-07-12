@@ -2047,6 +2047,37 @@ def test_merge_bounded_threshold_ignores_post_clip_hoarding():
     assert control_run.threshold_percent > 40.0  # hoarding still allowed
 
 
+def test_merge_bounded_threshold_drains_not_hoards_with_dc_load():
+    """F-NIGHT-RESCUE F2 v2 (live 2026-07-12 midday T*=95 regression): on a
+    merge-truncated window the terminal-value credit is DROPPED, so the cost is
+    monotonic in the threshold and the scan deterministically drains to `lo`
+    before the clip.
+
+    Without that, a substantial DC load breaks the terminal/import cancellation
+    — DC is served from the battery at `eta_discharge` WITHOUT the inverter,
+    while the terminal value credits retained energy at
+    `eta_discharge * eta_inverter` — so hoarding looked artificially good and the
+    scan pinned T* at soc_max (95), hoarding the battery across the whole
+    forecast on a clipping day (~1.5 SOC-point knife-edge)."""
+    from core.optimize import _search_lo, _threshold_merge_bound
+
+    config = SystemConfig(
+        control=replace(
+            ControlParams(),
+            predrain_pv_confidence=0.5,
+            upper_pv_reserve=1.0,
+            strong_pv_cutoff_w=200.0,
+        ),
+        dc_profile=LoadProfile(300.0, 40.0, 6, 22),  # substantial DC base load
+    )
+    # Midday, battery high, strong clipping today: the merge bound truncates the
+    # scan to an all-surplus window.
+    inputs = build_slots(config, datetime(2026, 7, 12, 10, 0), 92.0, [11.4, 11.6, 4.7])
+    assert _threshold_merge_bound(config, inputs) is not None  # scan IS truncated
+    thr, _base = search_threshold(config, inputs)
+    assert thr == float(_search_lo(config))  # drains before the clip, not hoard@95
+
+
 def test_threshold_merge_bound_floor_and_absence():
     """R4/R5 unit: no stressed clip -> None (full horizon); a clip within the
     first slots still leaves at least 6 scan slots; a merge at the horizon end

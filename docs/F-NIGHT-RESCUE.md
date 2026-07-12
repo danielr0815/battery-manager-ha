@@ -82,6 +82,18 @@ removal. All planner gates keep applying.
   economics (e.g. hoarding for a weak final day) must not leak into the
   pre-merge choice. The receding replan re-decides the threshold when the
   post-merge night actually approaches.
+- **R4a (v2, amended after the 2026-07-12 midday T\*=95 incident)** On a
+  merge-truncated window the terminal-value credit `terminal_factor · end_wh`
+  is **dropped** (set `terminal_factor = 0`): the battery is full at the merge
+  point by construction, so crediting the truncated end SOC is meaningless, and
+  a DC load breaks its exact cancellation with import (DC is served from the
+  battery at `eta_discharge` without the inverter, while the credit assumes
+  `eta_discharge · eta_inverter`), which turned the threshold into an
+  ill-conditioned knife-edge that pinned a full-day hoard at `soc_max`. With the
+  credit gone the truncated cost `import + tiebreak · export` is MONOTONIC in the
+  threshold, so the scan deterministically drains to `lo` ahead of the
+  stress-confirmed clip. The full-horizon scan (merge = None) keeps the terminal
+  value unchanged.
 - **R5** Floor: never truncate below 6 slots (a degenerate 1–2 h window would
   make the threshold jumpy); if merge < 6 slots away, use 6.
 - **R6** `allocate_loads`/pass gates keep operating on the FULL horizon and

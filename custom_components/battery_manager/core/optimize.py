@@ -262,23 +262,40 @@ def search_threshold(
     MERGE-BOUNDED (F-NIGHT-RESCUE R4-R6): when a pessimistic sim shows the
     battery full and clipping at some slot, the candidate costs are evaluated
     on the horizon truncated there — the scalar T* must not couple tonight to
-    post-merge regimes it cannot influence. The returned base trajectory is
-    ALWAYS full-horizon at the chosen threshold (the allocation gates keep
-    differencing complete horizons, R6).
+    post-merge regimes it cannot influence. On the truncated window the
+    terminal-value credit is DROPPED (F2 v2): the battery is full at the merge
+    point by construction, so crediting its end SOC is meaningless and, with a
+    DC load breaking the terminal/import cancellation, made the threshold an
+    ill-conditioned knife-edge that hoarded at soc_max (live 2026-07-12). The
+    returned base trajectory is ALWAYS full-horizon at the chosen threshold (the
+    allocation gates keep differencing complete horizons, R6).
     """
     battery = config.battery
     control = config.control
-    terminal_factor = battery.eta_discharge * config.inverter.eta
 
     lo = _search_lo(config)
     hi = int(math.floor(battery.soc_max_percent))
 
     merge_end = _threshold_merge_bound(config, inputs)
-    scan_inputs = (
-        replace(inputs, slots=inputs.slots[: merge_end + 1])
-        if merge_end is not None
-        else inputs
-    )
+    if merge_end is not None:
+        scan_inputs = replace(inputs, slots=inputs.slots[: merge_end + 1])
+        # F-NIGHT-RESCUE F2 v2 (fix for the 2026-07-12 midday T*=95): on a
+        # merge-truncated window the battery is FULL at the merge point by
+        # construction, so the terminal-value credit for the truncated end SOC
+        # is meaningless — it double-credits energy the imminent, stress-
+        # confirmed clip is guaranteed to refill. Worse, a DC load breaks the
+        # exact terminal/import cancellation (DC is served from the battery at
+        # eta_discharge WITHOUT the inverter, but the terminal credits at
+        # eta_discharge*eta_inverter), so the credit turned T* into an
+        # ILL-CONDITIONED knife-edge that pinned a full-day hoard at soc_max
+        # live. Dropping it leaves cost = import + tiebreak*export, which is
+        # MONOTONIC in the threshold (higher T* never lowers import, never lowers
+        # export), so the scan deterministically drains to `lo` before the clip —
+        # the operator's principle exactly (drain just early enough to clip).
+        terminal_factor = 0.0
+    else:
+        scan_inputs = inputs
+        terminal_factor = battery.eta_discharge * config.inverter.eta
 
     best_threshold = float(hi)
     best_cost = math.inf
