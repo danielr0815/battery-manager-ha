@@ -1748,6 +1748,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.update_interval = timedelta(seconds=UPDATE_INTERVAL_SECONDS)
 
         load_plans: dict[str, dict[str, Any]] = {}
+        # Anchor for the per-load today/tomorrow split: the plan's slot-0 day
+        # (same convention as the aggregate _daily_surplus_breakdown / the
+        # sensor's _per_day_attrs) — NOT each load's own first booking day, so a
+        # load that only runs tomorrow correctly reads today=0.0.
+        day_anchor = inputs.slots[0].start.date() if inputs.slots else None
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
             pass_by_slot: dict[int, int] = {}
             for start, count, pass_no, _wh in load_plan.allocations:
@@ -1781,6 +1786,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "active": self._effective_load_active(load_plan, now),
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
+                # Per-load today/tomorrow planned energy (analogous to the
+                # aggregate loads_today/tomorrow_kwh) so the card can show a
+                # per-load heute/morgen split; `daily` sums to
+                # planned_energy_kwh (rounding aside).
+                **self._load_per_day_kwh(load_plan, inputs, day_anchor),
                 "charging_active": self._load_charging_active.get(load_plan.load_id),
                 "power_warning": self._load_power_warning.get(load_plan.load_id, False),
                 "expected_power_w": diag.get("expected_w"),
@@ -1956,6 +1966,44 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             for day in order
         ]
+
+    def _load_per_day_kwh(self, load_plan, inputs, anchor) -> dict[str, Any]:
+        """Per-day planned energy for ONE surplus load — the per-load analogue
+        of _daily_surplus_breakdown's loads_kwh. The load's planned energy is
+        partitioned over the days its run hours START in (planner-local
+        slot.start.date), so the entries sum to planned_energy_kwh (rounding
+        aside); the planning power is constant per cycle, so
+        `planned_energy_wh / Σ run_hours` recovers it exactly.
+
+        Returns `{today_kwh, tomorrow_kwh, daily}` with `today` = the plan's
+        slot-0 day (`anchor`) and `tomorrow` = anchor + 1 — a day the load does
+        not run on renders 0.0, matching the aggregate convention.
+        """
+        run_hours = load_plan.run_hours
+        total_h = sum(run_hours)
+        by_day: dict[str, float] = {}
+        order: list[str] = []
+        if total_h > 0.0:
+            power_w = load_plan.planned_energy_wh / total_h
+            for i, hours in enumerate(run_hours):
+                if hours <= 0.0 or i >= len(inputs.slots):
+                    continue
+                day = inputs.slots[i].start.date().isoformat()
+                if day not in by_day:
+                    by_day[day] = 0.0
+                    order.append(day)
+                by_day[day] += power_w * hours
+        daily = [{"date": day, "kwh": round(by_day[day] / 1000.0, 3)} for day in order]
+        by_date = {e["date"]: e["kwh"] for e in daily}
+        today = anchor.isoformat() if anchor is not None else None
+        tomorrow = (
+            (anchor + timedelta(days=1)).isoformat() if anchor is not None else None
+        )
+        return {
+            "today_kwh": by_date.get(today, 0.0),
+            "tomorrow_kwh": by_date.get(tomorrow, 0.0),
+            "daily": daily,
+        }
 
     # ------------------------------------------------------------------
     # Output post-processing (D-A2, D-A9/F-N1)

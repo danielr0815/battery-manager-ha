@@ -868,6 +868,67 @@ async def test_daily_surplus_breakdown_splits_by_start_day(hass):
     assert sum(d["loads_kwh"] for d in daily) == total_loads
 
 
+async def test_load_per_day_kwh_splits_by_start_day(hass):
+    """Per-load today/tomorrow: the load's planned energy is partitioned over
+    the days its run hours START in, anchored on the plan's slot-0 day (a load
+    that skips a day reads 0.0 there), and the partition sums to
+    planned_energy_kwh. Synthetic LoadPlan so a concrete split is asserted."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.core.model import HourSlot, LoadPlan
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    starts = [
+        datetime(2026, 7, 10, 22, 0),  # today
+        datetime(2026, 7, 10, 23, 0),  # today
+        datetime(2026, 7, 11, 0, 0),  # tomorrow
+        datetime(2026, 7, 12, 10, 0),  # day 3 (neither today nor tomorrow)
+    ]
+    slots = tuple(
+        HourSlot(
+            index=i,
+            start=s,
+            duration=1.0,
+            hour_of_day=s.hour,
+            pv_wh=0.0,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
+        for i, s in enumerate(starts)
+    )
+    inputs = SimpleNamespace(slots=slots)
+    # 400 W, run 1.0 + 0.5 today, 1.0 tomorrow, 0.5 on day 3 → planned
+    # 400*(1+0.5+1+0.5)=1200 Wh; power recovered as planned/Σh = 1200/3 = 400.
+    lp = LoadPlan(
+        load_id="x",
+        schedule=(True, True, True, True),
+        planned_energy_wh=1200.0,
+        run_hours=(1.0, 0.5, 1.0, 0.5),
+    )
+    anchor = starts[0].date()  # plan slot-0 day
+    out = coordinator._load_per_day_kwh(lp, inputs, anchor)
+
+    assert out["today_kwh"] == 0.6  # (1.0+0.5)*400 = 600 Wh
+    assert out["tomorrow_kwh"] == 0.4  # 1.0*400 = 400 Wh
+    assert out["daily"] == [
+        {"date": "2026-07-10", "kwh": 0.6},
+        {"date": "2026-07-11", "kwh": 0.4},
+        {"date": "2026-07-12", "kwh": 0.2},
+    ]
+    # Partition sums to the load's planned energy.
+    assert sum(d["kwh"] for d in out["daily"]) == 1.2
+    # A load that booked nothing: empty daily, both days 0.0.
+    empty = coordinator._load_per_day_kwh(
+        LoadPlan(load_id="y", schedule=(), planned_energy_wh=0.0, run_hours=()),
+        inputs,
+        anchor,
+    )
+    assert empty == {"today_kwh": 0.0, "tomorrow_kwh": 0.0, "daily": []}
+
+
 async def test_forecast_sensors_expose_per_day_attributes(hass):
     """R2/R3: the lost-surplus and grid-import forecast sensors carry
     today_kwh/tomorrow_kwh/daily and the SOC-forecast sensor carries the same
@@ -928,6 +989,13 @@ async def test_forecast_sensors_expose_per_day_attributes(hass):
     assert abs(
         sum(d["loads_kwh"] for d in daily) - total_loads_wh / 1000.0
     ) <= 0.0005 * len(daily)
+    # Per-load today/tomorrow planned energy (operator request 2026-07-12): the
+    # SOC-forecast `loads` entries each carry the split (correctness of the
+    # partition is exercised on synthetic data in
+    # test_load_per_day_kwh_splits_by_start_day).
+    for load in soc_attrs["loads"]:
+        assert "today_kwh" in load and "tomorrow_kwh" in load
+
     # F-NIGHT-RESCUE R7: the merge-bound diagnostic is wired through (ISO
     # string when the T* scan was truncated, None on a full-horizon scan).
     assert "threshold_horizon_end" in soc_attrs

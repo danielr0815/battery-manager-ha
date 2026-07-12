@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-12
+
+### Added
+- **Per-load today/tomorrow planned energy on the forecast card.** Each surplus
+  load in the SOC-forecast sensor's `loads` attribute now also carries
+  `today_kwh` / `tomorrow_kwh` (the load's planned energy partitioned over the
+  days its run hours start in, anchored on the plan's slot-0 day exactly like
+  the aggregate figures), and the card's legend shows each load as
+  `heute/morgen` (e.g. `Entfeuchter Keller (2.5/4.0 kWh)`) — the slash format
+  is already explained once by the subtitle's trailing legend. Falls back to
+  the horizon total for a pre-0.11.1 backend or a load that only runs on day 3+.
+
 ## [0.11.0] - 2026-07-12
 
 ### Fixed

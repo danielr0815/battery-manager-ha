@@ -14,6 +14,7 @@
  *   grid_import_kwh             expected grid import over the horizon
  *   lost_surplus_kwh            surplus that will still be lost/exported
  *   loads                       [{name, active, planned_energy_kwh,
+ *                                 today_kwh, tomorrow_kwh,
  *                                 schedule: [{start, end}]}]
  *
  * Vanilla web component (no build step, no external dependencies); theming
@@ -541,7 +542,19 @@ class BatteryManagerForecastCard extends HTMLElement {
     const legend = loads
       .map((load) => {
         const planned = Number(load.planned_energy_kwh || 0);
-        const detail = planned
+        // Per-load heute/morgen split when the backend supplies it (the slash
+        // format is explained once by the subtitle's `today_tomorrow` legend);
+        // fall back to the horizon total for a pre-0.11.1 backend, or when the
+        // load only runs on day 3+ (both today and tomorrow zero).
+        const today = load.today_kwh;
+        const tomorrow = load.tomorrow_kwh;
+        const hasPerDay =
+          typeof today === "number" &&
+          typeof tomorrow === "number" &&
+          (today > 0 || tomorrow > 0);
+        const detail = hasPerDay
+          ? `${today.toFixed(1)}/${tomorrow.toFixed(1)} kWh`
+          : planned
           ? `${planned.toFixed(1)} kWh`
           : t("nothing_planned");
         const active = load.active

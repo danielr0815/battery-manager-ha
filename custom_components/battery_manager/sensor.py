@@ -265,6 +265,11 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                 "name": plan.get("name"),
                 "active": plan.get("active"),
                 "planned_energy_kwh": plan.get("planned_energy_kwh"),
+                # Per-load today/tomorrow planned energy (coordinator, plan
+                # slot-0 anchored) so the card renders a per-load heute/morgen
+                # split just like the aggregate surplus figures.
+                "today_kwh": plan.get("today_kwh"),
+                "tomorrow_kwh": plan.get("tomorrow_kwh"),
                 "schedule": plan.get("schedule") or [],
             }
             for plan in (data.get("load_plans") or {}).values()
