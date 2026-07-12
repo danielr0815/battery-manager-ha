@@ -234,6 +234,28 @@ candidates).
   posture once coverage settles — resolves the β=1.2 complaint without
   forfeiting volatile-day yield). Placement policy is unchanged: the bands
   change what the gates BELIEVE, not where bookings land.
+- **v9 — night rescue: rt-honest c1, merge-bounded T\*, crossover buffer ramp
+  (2026-07-12, docs/F-NIGHT-RESCUE.md; incident: no night pre-drain before a
+  known ~3.3 kWh clipping day, then a 04:13 threshold jump 20→58):**
+  1. **Round-trip-honest c1:** the refill gate demanded
+     `export_drop ≥ (1−tol)·energy`, but a pure AC→battery→AC detour
+     physically returns only `rt ≈ 0.82` of the energy — night bookings could
+     NEVER pass, regardless of forecast clipping. The need is now
+     `(1−tol)·energy·rt` (rt from the config's own efficiency chain, clamped
+     (0, 1]); direct-PV runs drop export ~1:1 and are unaffected, and
+     Z2'/Z3/Z4 still bound how deep the drain may go.
+  2. **Merge-bounded threshold:** beyond a slot where the battery is full and
+     clipping even under the stressed PV (the same per-slot vector Z4 uses),
+     the trajectory is independent of today's T\* (merge principle) — so the
+     candidate scan is truncated there (min 6 slots) and post-merge economics
+     (hoarding for a weak final day) can no longer strangle tonight. No
+     stressed clip → full horizon, unchanged. Exposed as
+     `threshold_horizon_end` (PlanResult + SOC-forecast attribute).
+  3. **Crossover buffer ramp:** the Z4 stress floor's BUFFER component ramps
+     with the remaining stressed deficit until the stressed PV crossover —
+     the closer the crossover, the less forecast-error buffer the inverter
+     reserve needs (operator principle). Z3's absolute battery floor stays
+     static.
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.

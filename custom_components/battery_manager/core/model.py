@@ -446,3 +446,7 @@ class PlanResult:
     # Per calendar day (ISO date -> local hour): the last "strong PV" slot of
     # that day's absorption window (F4). Empty when no day has strong PV.
     pv_window_ends: dict[str, int] = field(default_factory=dict)
+    # End of the merge-bounded threshold horizon (F-NIGHT-RESCUE R7): the T*
+    # scan was truncated at this time because the battery is provably full and
+    # clipping there even under the stressed PV. None = full-horizon scan.
+    threshold_horizon_end: datetime | None = None

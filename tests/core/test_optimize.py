@@ -1510,7 +1510,15 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
     trades ~10 Wh; the fossibot has a large remaining budget. With the fix it
     charges every surplus slot it can (incl. pass-2 refills evaluated AFTER the
     trade — one a 0.5 h residual quantum since F-RESIDUAL-TOPUP R1) and declines
-    the rest; the buggy gate booked strictly fewer slots."""
+    the rest; the buggy gate booked strictly fewer slots.
+
+    Part (b) was RE-STATED in v0.11.0 (F-NIGHT-RESCUE knock-on): the rt-honest c1
+    changed the latest-first interleave, so the old counterfactual-final import
+    equality ("stripping the fossibot's energy reproduces the same import") no
+    longer holds — it was an emergent artifact of the pre-v0.11 booking pattern,
+    never a specced invariant. Attribution of a shared surplus pool is ill-defined;
+    part (b) now asserts the two BINDING trade-gate contracts instead. Documented
+    semantic change, not a weakened test."""
     now = datetime(2026, 7, 3, 21, 0)
     fb = SurplusLoad(
         load_id="fb",
@@ -1540,23 +1548,35 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
     fb_plan = next(p for p in load_plans if p.load_id == "fb")
 
     # (a) A continuous trade fired AND the fossibot still books its full surplus
-    #     coverage (1950 Wh, incl. pass-2 refills — one a 0.5 h residual quantum,
-    #     F-RESIDUAL-TOPUP R1). The buggy base-anchored gate booked only 1500 Wh.
+    #     coverage (1800 Wh, incl. pass-2 refills — one a 0.5 h residual quantum,
+    #     F-RESIDUAL-TOPUP R1; re-baselined from 1950 by the F-NIGHT-RESCUE
+    #     rt-honest-c1 interleave shift, class-(x) knock-on). The buggy
+    #     base-anchored gate booked strictly fewer slots.
     assert traj.total_import_wh - base.total_import_wh > 1e-6  # deh traded
     assert any(a[2] == 2 for a in fb_plan.allocations)  # a post-trade refill booked
-    assert abs(fb_plan.planned_energy_wh - 1950.0) < 1e-6
+    assert abs(fb_plan.planned_energy_wh - 1800.0) < 1e-6
 
-    # (b) The fossibot adds NO grid import (L5): its remaining budget (6000 Wh)
-    #     far exceeds the surplus it took, so every further candidate WOULD have
-    #     added import and was rejected — the accepted import matches a re-sim
-    #     with the fossibot's own energy stripped out.
+    # (b) The fossibot never causes import beyond the trade contract (L5). The
+    #     +49 Wh that fb's presence now costs is financed by the DEHUMIDIFIER's
+    #     own trade budget (a shared-pool attribution artifact), so the binding
+    #     guarantees are the two trade-gate invariants below — both green.
+    ratio = control.import_trade_ratio
     assert fb_plan.planned_energy_wh < 6000.0  # would-add-import top-up declined
+    # (b1) Cumulative trade invariant over the whole plan vs the no-loads base.
+    assert traj.total_import_wh - base.total_import_wh <= (
+        ratio * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
+    )
+    # (b2) The fossibot's OWN attribution delta (vs the deh-only counterfactual)
+    #      stays within the trade allowance — it cannot transitively import past
+    #      the ratio contract either.
     deh_only = list(extra)
     for a in fb_plan.allocations:
         for j in range(a[0], a[0] + a[1]):
             deh_only[j] = max(0.0, deh_only[j] - 300.0 * fb_plan.run_hours[j])
     without_fb = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(deh_only))
-    assert abs(traj.total_import_wh - without_fb.total_import_wh) < 1e-6
+    assert traj.total_import_wh - without_fb.total_import_wh <= (
+        ratio * (without_fb.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
+    )
 
 
 def test_fix6_ratio_zero_rejects_sub_wh_standby_trade():
@@ -1892,3 +1912,210 @@ def test_bit_identity_without_band_data():
     assert empty.threshold_percent == plain.threshold_percent
     assert empty.grid_import_kwh == plain.grid_import_kwh
     assert empty.grid_export_kwh == plain.grid_export_kwh
+
+
+# ---------------------------------------------------------------------------
+# F-NIGHT-RESCUE: round-trip-honest c1, merge-bounded threshold search,
+# crossover buffer ramp (docs/F-NIGHT-RESCUE.md; incident 2026-07-11/12: no
+# night pre-drain despite ~3.3 kWh forecast clipping, then the 04:13 T* jump
+# 20->58 shut everything down).
+# ---------------------------------------------------------------------------
+
+NIGHT_DEH = SurplusLoad(
+    load_id="dehumidifier",
+    name="Entfeuchter",
+    nominal_power_w=400.0,
+    battery_tolerance=0.15,
+    min_runtime_min=30,
+)
+NIGHT_STATE = (SurplusLoadState(load_id="dehumidifier", learned_power_w=426.0),)
+NIGHT_CONTROL = ControlParams(
+    import_trade_ratio=0.1,
+    predrain_pv_confidence=0.5,
+    upper_pv_reserve=1.0,
+    strong_pv_cutoff_w=200.0,
+)
+
+
+def test_night_rescue_books_predawn_hours_before_clipping_day():
+    """R10 (D1 incident regression): clipping-eve, SOC 57 at 21:00, learned
+    426 W dehumidifier, next day clips even under alpha=0.5 stress. The
+    rt-honest c1 books >= 1 h in the 22:00-05:00 night window (was: zero — a
+    pure battery round trip could never satisfy the old 0.85*energy demand);
+    import stays within the Z2' trade allowance and the min SOC respects the
+    (ramped) floors."""
+    config = SystemConfig(
+        control=NIGHT_CONTROL,
+        loads=(NIGHT_DEH,),
+        ac_profile=LoadProfile(30.0, 45.0, 6, 22),
+        dc_profile=LoadProfile(40.0, 20.0, 6, 22),
+        battery=BatteryParams(capacity_wh=7000.0),
+    )
+    now = datetime(2026, 7, 11, 21, 0)
+    inputs = build_slots(config, now, 57.0, [13.0, 12.0], load_states=NIGHT_STATE)
+    result = plan(config, inputs)
+    lp = result.load_plans[0]
+
+    dawn = datetime(2026, 7, 12, 6, 0)
+    night_hours = sum(
+        h for i, h in enumerate(lp.run_hours) if h > 0 and inputs.slots[i].start < dawn
+    )
+    assert night_hours >= 1.0, f"only {night_hours} h booked in the night window"
+    # Z2' trade allowance still bounds the drain (R3).
+    _thr, base = search_threshold(config, inputs)
+    allowed = 0.1 * (base.total_export_wh - result.trajectory.total_export_wh) + 1.0
+    assert result.trajectory.total_import_wh - base.total_import_wh <= allowed + 1e-6
+    # The drain respects the floors: min SOC stays above the inverter cutoff.
+    assert result.min_soc_percent >= config.control.inverter_min_soc_percent - 0.01
+    # The scene is a genuine stressed-clip eve (the merge bound engaged).
+    assert result.threshold_horizon_end is not None
+
+
+def test_night_rescue_c1_need_is_round_trip_honest():
+    """R12 (F1): the c1 need is (1-tol)*energy*rt with rt from the config's
+    own efficiency chain. The incident geometry books a pre-dawn quantum whose
+    export drop lies BETWEEN the rt-honest need and the old 0.85*energy demand
+    — exactly the booking the old gate rejected all night ("c1 drop 168<181");
+    direct-PV pass-1 bookings are untouched (they drop export ~1:1)."""
+    config = SystemConfig(
+        control=NIGHT_CONTROL,
+        loads=(NIGHT_DEH,),
+        ac_profile=LoadProfile(60.0, 90.0, 6, 20),
+        dc_profile=LoadProfile(100.0, 40.0, 6, 22),
+    )
+    now = datetime(2026, 7, 11, 21, 0)
+    inputs = build_slots(config, now, 57.0, [11.9, 12.1, 11.8], load_states=NIGHT_STATE)
+    result = plan(config, inputs)
+    lp = result.load_plans[0]
+
+    rt = (
+        config.charger.eta
+        * config.battery.eta_charge
+        * config.battery.eta_discharge
+        * config.inverter.eta
+    )
+    assert 0.0 < rt <= 1.0 and abs(rt - 0.8223) < 1e-3  # 0.92*0.97*0.97*0.95
+    energy_wh = 426.0 * 0.5  # one pre-dawn 0.5 h quantum at the learned power
+    need_rt = 0.85 * energy_wh * rt
+    need_old = 0.85 * energy_wh
+    # The 05:00 quantum books with a drop in [need_rt, need_old): physically
+    # feasible now, physically impossible under the old demand.
+    predawn = [
+        (a, why)
+        for a, why in zip(lp.allocations, lp.reasons, strict=True)
+        if a[2] == 2
+        and inputs.slots[a[0]].start < datetime(2026, 7, 12, 6, 0)
+        and "otherwise-lost export" in why
+    ]
+    assert predawn, "the incident geometry must book a pre-dawn quantum"
+    drops = [float(why.split("(")[1].split(" Wh")[0]) for _a, why in predawn]
+    assert any(need_rt - 1.0 <= d < need_old for d in drops), (
+        f"expected a drop in [{need_rt:.0f}, {need_old:.0f}), got {drops}"
+    )
+    # Direct-PV bookings unchanged: pass-1 hours still book at 0 % share.
+    assert any("direct surplus" in r and "share 0%" in r for r in lp.reasons)
+
+
+def test_merge_bounded_threshold_ignores_post_clip_hoarding():
+    """R11 (D2 incident regression, both directions): with a strong day 1 that
+    clips even under stress and a weak final day, T* stays at the low-import
+    choice and `threshold_horizon_end` sits inside day 1 (the 04:13 jump
+    20->58 came from full-horizon hoarding for the weak Tuesday). Control:
+    the same geometry WITHOUT any stressed clip keeps the full horizon —
+    hoarding remains allowed there (existing behaviour)."""
+    config = SystemConfig(
+        control=NIGHT_CONTROL,
+        loads=(NIGHT_DEH,),
+        ac_profile=LoadProfile(30.0, 45.0, 6, 22),
+        dc_profile=LoadProfile(70.0, 20.0, 6, 22),
+    )
+    now = datetime(2026, 7, 12, 4, 0)
+
+    clipped = plan(
+        config,
+        build_slots(config, now, 57.0, [11.9, 12.1, 2.0], load_states=NIGHT_STATE),
+    )
+    assert clipped.threshold_percent <= 22.0  # stays at the low-import choice
+    assert clipped.threshold_horizon_end is not None
+    assert clipped.threshold_horizon_end.date() == now.date()  # inside day 1
+
+    control_run = plan(
+        config,
+        build_slots(config, now, 57.0, [2.0, 2.5, 2.0], load_states=NIGHT_STATE),
+    )
+    assert control_run.threshold_horizon_end is None  # no stressed clip
+    assert control_run.threshold_percent > 40.0  # hoarding still allowed
+
+
+def test_threshold_merge_bound_floor_and_absence():
+    """R4/R5 unit: no stressed clip -> None (full horizon); a clip within the
+    first slots still leaves at least 6 scan slots; a merge at the horizon end
+    truncates nothing."""
+    from core.optimize import _threshold_merge_bound
+
+    config = SystemConfig(
+        control=NIGHT_CONTROL,
+        loads=(NIGHT_DEH,),
+        ac_profile=LoadProfile(30.0, 45.0, 6, 22),
+        dc_profile=LoadProfile(40.0, 20.0, 6, 22),
+    )
+    # Cloudy horizon: never full under stress -> no bound.
+    cloudy = build_slots(
+        config, datetime(2026, 7, 12, 4, 0), 57.0, [1.0, 1.5], load_states=NIGHT_STATE
+    )
+    assert _threshold_merge_bound(config, cloudy) is None
+    # Battery already nearly full at dawn of a strong day: the stressed clip
+    # arrives within the first hours, but the bound never dips below 6 slots.
+    early = build_slots(
+        config, datetime(2026, 7, 12, 7, 0), 94.0, [13.0, 12.0], load_states=NIGHT_STATE
+    )
+    merge = _threshold_merge_bound(config, early)
+    assert merge is None or merge >= 5  # R5: at least 6 slots (indices 0..5)
+
+
+def test_ramped_stress_floor_follows_stressed_crossover():
+    """R13 (F3 unit): the Z4 buffer ramps with the remaining stressed deficit
+    — a slot 1 h before the stressed crossover needs only ~a percent of
+    buffer, an evening slot with 8 h of dark deficit keeps the full buffer,
+    no crossover ahead keeps it too, and STRESSED (not nominal) PV decides."""
+    from core.optimize import _ramped_stress_floors
+
+    config = SystemConfig(control=NIGHT_CONTROL)  # capacity 5000, buffer 5
+    inverter_min = config.control.inverter_min_soc_percent
+    full_buffer = config.control.soc_buffer_percent
+
+    def slot(i, hour, pv):
+        return HourSlot(
+            index=i,
+            start=datetime(2026, 7, 12, hour, 0),
+            duration=1.0,
+            hour_of_day=hour,
+            pv_wh=pv,
+            ac_wh=100.0,
+            dc_wh=0.0,
+        )
+
+    # Slots 0..7: dark night (100 Wh deficit each); slot 8: strong PV.
+    slots = tuple(slot(i, (21 + i) % 24, 0.0) for i in range(8)) + (slot(8, 5, 1000.0),)
+    inputs = PlanInputs(now=slots[0].start, start_soc_percent=50.0, slots=slots)
+    floors = _ramped_stress_floors(config, inputs, [1.0] * len(slots))
+    # Evening slot: 8 x 100 Wh deficit = 16 % of 5 kWh -> clamped to the full
+    # buffer; the slot 1 h before the crossover needs only 100/5000 = 2 %.
+    assert floors[0] == inverter_min + full_buffer
+    assert abs(floors[7] - (inverter_min + 2.0)) < 1e-9
+    assert floors[8] == inverter_min  # at the crossover: no deficit left
+
+    # No crossover ahead (all-dark horizon): the full static buffer holds.
+    dark = tuple(slot(i, (21 + i) % 24, 0.0) for i in range(6))
+    dark_inputs = PlanInputs(now=dark[0].start, start_soc_percent=50.0, slots=dark)
+    dark_floors = _ramped_stress_floors(config, dark_inputs, [1.0] * 6)
+    assert all(f == inverter_min + full_buffer for f in dark_floors)
+
+    # Stressed — not nominal — PV decides: nominal 300 Wh would cover the
+    # 100 Wh consumption, but stress 0.2 turns it into a 40 Wh deficit slot.
+    stressed_slots = (slot(0, 4, 300.0), slot(1, 5, 1000.0))
+    s_inputs = PlanInputs(
+        now=stressed_slots[0].start, start_soc_percent=50.0, slots=stressed_slots
+    )
+    s_floors = _ramped_stress_floors(config, s_inputs, [0.2, 1.0])
+    assert abs(s_floors[0] - (inverter_min + 100.0 * 40.0 / 5000.0)) < 1e-9

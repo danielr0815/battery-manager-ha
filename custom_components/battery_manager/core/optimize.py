@@ -4,6 +4,8 @@ escalation. Implements docs/ALGORITHM.md §1 with decisions D-A1..D-A9."""
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from datetime import timedelta
 
 from .model import (
     LoadPlan,
@@ -83,6 +85,45 @@ def _effective_uncertainty(
     return stress, optimism, band
 
 
+def _ramped_stress_floors(
+    config: SystemConfig, inputs: PlanInputs, stress_vec: list[float]
+) -> list[float]:
+    """Per-slot Z4 stress floor with a crossover-ramped buffer (F-NIGHT-RESCUE
+    R8): the closer the (stressed) PV crossover, the less buffer is needed.
+
+    The buffer's purpose is to survive forecast error across the REMAINING
+    dark deficit; for a candidate slot `i` it therefore ramps with
+    `min(soc_buffer, 100 * stressed_deficit_wh(i) / capacity)`, where the
+    deficit sums `max(0, consumption - stressed_pv)` from `i` up to the first
+    slot whose stressed PV covers consumption. No crossover ahead (cloudy
+    tail) -> the full static buffer. Stressed — not nominal — PV drives both
+    the deficit and the crossover, using the SAME vector Z4 stresses with.
+    Only the inverter-reserve floor ramps; Z3's `soc_min + buffer` (absolute
+    battery protection) stays static.
+    """
+    control = config.control
+    inverter_min = control.inverter_min_soc_percent
+    full_buffer = control.soc_buffer_percent
+    capacity = config.battery.capacity_wh
+    n = len(inputs.slots)
+    consumption = [slot.ac_wh + slot.dc_wh for slot in inputs.slots]
+    stressed_pv = [slot.pv_wh * stress_vec[j] for j, slot in enumerate(inputs.slots)]
+    floors: list[float] = []
+    for i in range(n):
+        deficit = 0.0
+        crossed = False
+        for j in range(i, n):
+            if stressed_pv[j] >= consumption[j]:
+                crossed = True
+                break
+            deficit += consumption[j] - stressed_pv[j]
+        buffer_eff = (
+            min(full_buffer, 100.0 * deficit / capacity) if crossed else full_buffer
+        )
+        floors.append(inverter_min + buffer_eff)
+    return floors
+
+
 def _degrades_min_soc(
     trial: Trajectory, reference: Trajectory, floor_percent: float
 ) -> bool:
@@ -158,6 +199,58 @@ def _windowed_min_soc(traj: Trajectory, lo: int, hi: int) -> float:
     return min(traj.flows[j].soc_end_percent for j in range(lo, hi + 1))
 
 
+def _search_lo(config: SystemConfig) -> int:
+    """Lower bound of the threshold scan (shared with the merge probe)."""
+    return int(
+        math.ceil(
+            max(
+                config.control.inverter_min_soc_percent,
+                config.battery.soc_min_percent + config.control.soc_buffer_percent,
+            )
+        )
+    )
+
+
+def _threshold_merge_bound(config: SystemConfig, inputs: PlanInputs) -> int | None:
+    """Merge bound of the threshold scan (F-NIGHT-RESCUE R4/R5), or None.
+
+    One pessimistic no-loads sim (threshold at the scan's lower bound, PV
+    stressed with the SAME per-slot vector Z4 uses — P10 where banded, alpha
+    elsewhere) finds the first slot where the battery is FULL and clipping
+    even under stress. Beyond that slot the trajectory is independent of
+    today's threshold (merge principle, D-A4): post-merge economics — e.g.
+    hoarding for a weak final day — must not leak into the pre-merge choice
+    (live 2026-07-12 04:13: T* jumped 20->58 because weak Tuesday entered the
+    horizon, although Sunday's guaranteed clip decoupled the night). Never
+    truncates below 6 slots (R5: a 1-2 h window would make T* jumpy); returns
+    None when no stressed clip exists (full-horizon behaviour unchanged) or
+    the merge sits at the horizon end anyway.
+    """
+    n = len(inputs.slots)
+    if n == 0:
+        return None
+    control = config.control
+    stress_vec, _optimism, _band = _effective_uncertainty(
+        inputs, control.predrain_pv_confidence, control.upper_pv_reserve
+    )
+    base = simulate(config, inputs, float(_search_lo(config)), pv_scale=stress_vec)
+    soc_full = config.battery.soc_max_percent - 0.1
+    merge = next(
+        (
+            j
+            for j, flow in enumerate(base.flows)
+            if flow.soc_end_percent >= soc_full and flow.grid_export_wh > _EPS
+        ),
+        None,
+    )
+    if merge is None:
+        return None
+    end = max(merge, 5)  # R5 floor: at least 6 slots (indices 0..5)
+    if end >= n - 1:
+        return None  # nothing to truncate
+    return end
+
+
 def search_threshold(
     config: SystemConfig, inputs: PlanInputs
 ) -> tuple[float, Trajectory]:
@@ -165,27 +258,34 @@ def search_threshold(
 
     Ties prefer the LOWER threshold ("Nutzen", D-A1b): drain the battery ahead
     of the next surplus rather than hoarding charge.
+
+    MERGE-BOUNDED (F-NIGHT-RESCUE R4-R6): when a pessimistic sim shows the
+    battery full and clipping at some slot, the candidate costs are evaluated
+    on the horizon truncated there — the scalar T* must not couple tonight to
+    post-merge regimes it cannot influence. The returned base trajectory is
+    ALWAYS full-horizon at the chosen threshold (the allocation gates keep
+    differencing complete horizons, R6).
     """
     battery = config.battery
     control = config.control
     terminal_factor = battery.eta_discharge * config.inverter.eta
 
-    lo = int(
-        math.ceil(
-            max(
-                control.inverter_min_soc_percent,
-                battery.soc_min_percent + control.soc_buffer_percent,
-            )
-        )
-    )
+    lo = _search_lo(config)
     hi = int(math.floor(battery.soc_max_percent))
+
+    merge_end = _threshold_merge_bound(config, inputs)
+    scan_inputs = (
+        replace(inputs, slots=inputs.slots[: merge_end + 1])
+        if merge_end is not None
+        else inputs
+    )
 
     best_threshold = float(hi)
     best_cost = math.inf
     best_traj: Trajectory | None = None
 
     for candidate in range(lo, hi + 1):
-        traj = simulate(config, inputs, float(candidate))
+        traj = simulate(config, scan_inputs, float(candidate))
         end_wh = battery.energy_wh(traj.end_soc_percent)
         cost = (
             traj.total_import_wh
@@ -197,7 +297,9 @@ def search_threshold(
             best_threshold = float(candidate)
             best_traj = traj
 
-    if best_traj is None:  # no slots — degenerate but valid
+    if merge_end is not None or best_traj is None:
+        # Truncated scan (or degenerate empty horizon): the caller needs the
+        # FULL-horizon no-loads base at the chosen threshold.
         best_traj = simulate(config, inputs, best_threshold)
     return best_threshold, best_traj
 
@@ -367,9 +469,25 @@ def allocate_loads(
     base_import = base_trajectory.total_import_wh
     base_export = base_trajectory.total_export_wh
     buffer_floor = config.battery.soc_min_percent + control.soc_buffer_percent
+    # AC->battery->AC round-trip factor (F-NIGHT-RESCUE R1): the efficiency a
+    # pure battery detour physically has in the simulator's own chain
+    # (charger in, battery in/out, inverter out; live ~0.822). Clamped (0, 1].
+    rt = min(
+        1.0,
+        max(
+            _EPS,
+            config.charger.eta
+            * config.battery.eta_charge
+            * config.battery.eta_discharge
+            * config.inverter.eta,
+        ),
+    )
     # Z4 protects the INVERTER cutoff (L2), not the storage minimum, so its
-    # floor differs from Z3's `soc_min + buffer` (F-PREDRAIN §3.3).
-    stress_floor = control.inverter_min_soc_percent + control.soc_buffer_percent
+    # floor differs from Z3's `soc_min + buffer` (F-PREDRAIN §3.3). Since
+    # F-NIGHT-RESCUE R8 the BUFFER component ramps per candidate slot with the
+    # remaining stressed deficit until the stressed PV crossover; Z3 stays
+    # static (absolute battery protection).
+    stress_floor_by_slot = _ramped_stress_floors(config, inputs, stress_vec)
     windows = pv_windows(inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour)
     current = base_trajectory
 
@@ -569,7 +687,18 @@ def allocate_loads(
                     if _degrades_min_soc(traj, current, buffer_floor):  # Z3
                         continue
                     export_drop = current.total_export_wh - traj.total_export_wh
-                    need = (1.0 - load.battery_tolerance) * power_wh
+                    # F-NIGHT-RESCUE R2: the c1 need is judged at the physical
+                    # AC->battery->AC round trip. A pure battery detour can only
+                    # ever return `rt * energy` as rescued export (live ~0.82),
+                    # so the old `(1-tol)*energy` demand was PHYSICALLY
+                    # unsatisfiable for night runs — every 22:00-05:00 slot of
+                    # the 2026-07-11 incident failed exactly there while
+                    # ~3.3 kWh of next-day clipping was forecast. A direct-PV
+                    # run drops export ~1:1 and passes even more easily; the
+                    # factor only stops billing the detour's losses twice.
+                    # Z2'/Z3/Z4 still bound how deep the drain may go (R3).
+                    need = (1.0 - load.battery_tolerance) * power_wh * rt
+                    need_c2 = (1.0 - load.battery_tolerance) * power_wh
                     trial_beta = None
                     via_beta = False  # which gate accepted -> reason string (R13)
                     if load.energy_limited:
@@ -591,7 +720,9 @@ def allocate_loads(
                                 current_beta.total_export_wh
                                 - trial_beta.total_export_wh
                             )
-                            accept = drop_beta + _EPS >= need
+                            # c2 judges an optimistic direct-PV absorption, not
+                            # a battery detour: the unscaled need applies.
+                            accept = drop_beta + _EPS >= need_c2
                             via_beta = accept
                         if not accept:
                             continue
@@ -633,7 +764,7 @@ def allocate_loads(
                                 )
                                 stress_base[key] = _windowed_min_soc(base_stress, i, hi)
                             if (
-                                trial_wmin < stress_floor - _EPS
+                                trial_wmin < stress_floor_by_slot[i] - _EPS
                                 and trial_wmin < stress_base[key] - _EPS
                             ):
                                 continue
@@ -918,6 +1049,13 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour
         ).items()
     }
+    # F-NIGHT-RESCUE R7: surface the merge bound the T* scan used, so the
+    # 04:13-class events ("why did the threshold jump?") are visible.
+    merge_end = _threshold_merge_bound(config, inputs)
+    threshold_horizon_end = None
+    if merge_end is not None:
+        merge_slot = inputs.slots[merge_end]
+        threshold_horizon_end = merge_slot.start + timedelta(hours=merge_slot.duration)
 
     return PlanResult(
         threshold_percent=threshold,
@@ -938,4 +1076,5 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         import_trade_used_wh=import_trade_used_wh,
         stressed_min_soc_percent=stressed_min_soc,
         pv_window_ends=window_ends,
+        threshold_horizon_end=threshold_horizon_end,
     )

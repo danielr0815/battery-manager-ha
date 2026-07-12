@@ -1891,6 +1891,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if result.stressed_min_soc_percent is not None
                 else None
             ),
+            # F-NIGHT-RESCUE R7: end of the merge-bounded T* horizon (null =
+            # full-horizon scan) — makes 04:13-class threshold jumps explicable.
+            "threshold_horizon_end": (
+                result.threshold_horizon_end.isoformat()
+                if result.threshold_horizon_end is not None
+                else None
+            ),
             "pv_window_ends": dict(result.pv_window_ends),
             "load_plans": load_plans,
             "soc_forecast": soc_forecast,

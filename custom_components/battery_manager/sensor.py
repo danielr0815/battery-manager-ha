@@ -297,6 +297,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "quantile_coverage": data.get("quantile_coverage") or {},
             "import_trade_used_wh": data.get("import_trade_used_wh"),
             "stressed_min_soc": data.get("stressed_min_soc"),
+            # F-NIGHT-RESCUE R7: end of the merge-bounded threshold horizon
+            # (null = full-horizon scan).
+            "threshold_horizon_end": data.get("threshold_horizon_end"),
             "pv_window_ends": data.get("pv_window_ends") or {},
             **(data.get("plan_params") or {}),
         }

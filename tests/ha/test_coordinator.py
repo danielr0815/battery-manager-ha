@@ -928,6 +928,12 @@ async def test_forecast_sensors_expose_per_day_attributes(hass):
     assert abs(
         sum(d["loads_kwh"] for d in daily) - total_loads_wh / 1000.0
     ) <= 0.0005 * len(daily)
+    # F-NIGHT-RESCUE R7: the merge-bound diagnostic is wired through (ISO
+    # string when the T* scan was truncated, None on a full-horizon scan).
+    assert "threshold_horizon_end" in soc_attrs
+    assert (
+        soc_attrs["threshold_horizon_end"] == coordinator.data["threshold_horizon_end"]
+    )
 
 
 def test_per_day_attrs_falls_back_to_zero_for_missing_day():

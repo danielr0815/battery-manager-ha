@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-12
+
+### Fixed
+- **Night pre-drain physically possible again: round-trip-honest c1
+  (F-NIGHT-RESCUE F1).** The refill gate demanded that a booking's export drop
+  reach `(1-tol) x energy`, but a pure AC->battery->AC detour can only return
+  ~82 % of the energy as rescued export — so every 22:00-05:00 booking failed
+  by construction, and the planner left the battery full at dawn while a
+  known ~3.3 kWh of next-day clipping was lost (incident 2026-07-11/12). The
+  need is now `(1-tol) x energy x rt` with rt derived from the configured
+  charger/battery/inverter efficiencies; direct-PV runs are unaffected and
+  the import-trade/floor gates still bound how deep the drain may go.
+- **The 04:13 threshold jump: merge-bounded T* search (F-NIGHT-RESCUE F2).**
+  A weak final forecast day made the full-horizon optimiser hoard battery for
+  the post-clip night and apply that hoarding to TONIGHT as well (live: T*
+  20->58 at 04:13, inverter off, pre-drain dead). The candidate scan is now
+  truncated at the first slot where the battery is provably full and clipping
+  even under the stressed PV (merge principle: beyond that slot the
+  trajectory is independent of today's threshold; minimum 6 slots, full
+  horizon when no stressed clip exists). New `threshold_horizon_end`
+  diagnostic on the SOC-forecast sensor shows when the bound is active.
+
+### Changed
+- **Crossover buffer ramp for the Z4 stress floor (F-NIGHT-RESCUE F3).** The
+  buffer component of the pre-drain stress floor now ramps with the remaining
+  stressed deficit until the stressed PV crossover — the closer the (stressed)
+  sunrise, the less forecast-error buffer the inverter reserve needs
+  (operator principle). The absolute battery floor (Z3) stays static.
+
 ## [0.10.2] - 2026-07-11
 
 ### Changed

@@ -57,6 +57,16 @@ integration, 15-min buckets) are ignored.
 > COLLAPSED band, the cold-start "no evidence" signature — keep the scalars,
 > so an entry without any band data behaves exactly as specified below.
 
+> **Cross-note (v0.11.0, docs/F-NIGHT-RESCUE.md):** the (c1) refill need is
+> now EFFICIENCY-AWARE: `(1−tol)·energy·rt` with rt the AC→battery→AC
+> round-trip factor of the configured chain (live ≈ 0.82). The old
+> `(1−tol)·energy` demand was physically unsatisfiable for pure-battery
+> night runs (a detour can only ever return rt of the energy as rescued
+> export), which silently confined pre-drains to the morning shoulder. The
+> Z4 stress floor's buffer component additionally ramps down toward the
+> stressed PV crossover (F-NIGHT-RESCUE F3), and the T\* scan is
+> merge-bounded at a stressed-clip slot (F2).
+
 ### 3.1 F1 — Hourly PV forecast (WP1)
 
 - New pure-core module `core/forecast_hours.py` (no HA imports):
