@@ -136,6 +136,7 @@ async def test_options_flow_flattens_sections_on_submit(hass):
                 "battery_cells_series": 15,
                 "gate_soc_percent": 100.0,
             },
+            "notifications": {},
         },
     )
     assert result["type"] == "create_entry"
@@ -202,6 +203,7 @@ async def test_options_flow_rejects_inverted_controller_band(hass):
                 "psu48_off_voltage_v": 49.56,
                 "psu48_controller_log_only": False,
             },
+            "notifications": {},
         },
     )
     assert result["type"] == "form"
@@ -258,6 +260,7 @@ async def test_options_flow_rejects_bad_support_hysteresis(hass):
                 "battery_cells_series": 15,
                 "gate_soc_percent": 100.0,
             },
+            "notifications": {},
         }
 
     async def submit(support_extra):
@@ -1066,3 +1069,63 @@ async def test_reconfigure_repoints_pv_and_preserves_everything_else(hass):
         if sub.subentry_type == SUBENTRY_TYPE_LOAD
     ] == load_ids
     assert entry.subentries[load_ids[0]].data[CONF_LOAD_POWER_W] == 300.0
+
+
+def test_notify_services_filters_non_targets(hass):
+    """The notify-target picker offers push services (mobile_app_*) but hides
+    the non-target dispatchers (send_message needs an entity_id; the
+    persistent_notification service is not a phone)."""
+    from custom_components.battery_manager.config_flow import _notify_services
+
+    async def _noop(call):
+        return None
+
+    for name in ("mobile_app_pixel", "send_message", "persistent_notification"):
+        hass.services.async_register("notify", name, _noop)
+
+    offered = _notify_services(hass)
+    assert "mobile_app_pixel" in offered
+    assert "send_message" not in offered
+    assert "persistent_notification" not in offered
+
+
+async def test_options_flow_renders_notifications_section(hass):
+    """The new notifications section renders (schema construction must not
+    raise) and carries the notify-targets + resolve-toggle fields."""
+    from custom_components.battery_manager.const import (
+        CONF_WARNING_NOTIFY_ON_RESOLVE,
+        CONF_WARNING_NOTIFY_TARGETS,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    fields = {
+        str(k) for k in _section_fields(result["data_schema"].schema, "notifications")
+    }
+    assert CONF_WARNING_NOTIFY_TARGETS in fields
+    assert CONF_WARNING_NOTIFY_ON_RESOLVE in fields
+
+
+async def test_options_flow_stores_notify_targets(hass):
+    """The notify targets + resolve toggle round-trip and are stored flat
+    (the coordinator reads them from a flat raw_config)."""
+    from custom_components.battery_manager.const import (
+        CONF_WARNING_NOTIFY_ON_RESOLVE,
+        CONF_WARNING_NOTIFY_TARGETS,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["notifications"] = {
+        CONF_WARNING_NOTIFY_TARGETS: ["mobile_app_alice", "mobile_app_bob"],
+        CONF_WARNING_NOTIFY_ON_RESOLVE: False,
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    opts = result["data"]
+    assert opts[CONF_WARNING_NOTIFY_TARGETS] == ["mobile_app_alice", "mobile_app_bob"]
+    assert opts[CONF_WARNING_NOTIFY_ON_RESOLVE] is False
+    assert "notifications" not in opts  # section wrapper flattened away

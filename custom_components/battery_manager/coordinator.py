@@ -50,6 +50,7 @@ from .const import (
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_LOAD_POWER_WARNING_DWELL_MIN,
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
     CONF_LOAD_SOC_ENTITY,
@@ -81,6 +82,8 @@ from .const import (
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
     CONF_UPPER_PV_RESERVE,
+    CONF_WARNING_NOTIFY_ON_RESOLVE,
+    CONF_WARNING_NOTIFY_TARGETS,
     DC48_CTRL_DWELL_OFF_S,
     DC48_CTRL_DWELL_ON_S,
     DC48_CTRL_FAILSAFE_MIN,
@@ -100,7 +103,6 @@ from .const import (
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
-    POWER_WARNING_DWELL_MIN,
     PREDRAIN_PV_CONFIDENCE_DEFAULT,
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
@@ -424,6 +426,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for k, v in data.get("load_learned_power", {}).items()
                 if k in self.entry.subentries
             }
+            # F-L7 latched power warning: restore per-load, dropping entries
+            # whose subentry vanished (a re-created load must not inherit a
+            # stale warning). The dwell timer is intentionally NOT restored.
+            self._load_power_warning = {
+                k: bool(v)
+                for k, v in data.get("load_power_warning", {}).items()
+                if k in self.entry.subentries
+            }
             # The tick cursor (_load_run_since) is intentionally not restored —
             # see _persistent_payload; the first tick re-arms it so a restart gap
             # is never credited as runtime.
@@ -498,6 +508,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "support_manual": dict(self._support_manual),
             "support_state": dict(self._support_state),
             "dc48_ctrl_caused_off": self._dc48_ctrl_caused_off,
+            # F-L7: the latched power warning survives reloads/restarts so an
+            # options save (which reloads the coordinator) does not silently
+            # drop a raised warning. Only the bool is persisted; the dwell
+            # timer re-arms after a restart (a not-yet-tripped deviation is
+            # deliberately not credited across downtime).
+            "load_power_warning": dict(self._load_power_warning),
         }
 
     def _save_persistent_state(self) -> None:
@@ -1003,23 +1019,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result.import_trade_used_wh,
         )
 
-    def _update_power_warnings(self, result, now: datetime) -> None:
+    async def _update_power_warnings(self, result, now: datetime) -> None:
         """Per-load power-deviation warning (operator requirement F-L7).
 
         While a load runs at the integration's request but its real draw
         deviates from the CONFIGURED power by more than the per-load
-        percentage for POWER_WARNING_DWELL_MIN sustained minutes, the
-        load's warning binary sensor turns on — full water tank (draw near
-        0 W), wrong nominal power or a foreign consumer on the measured
-        outlet. Short defrost pauses reset the timer before the dwell
-        elapses. A missing reading freezes the current state.
+        percentage for the per-load dwell in sustained minutes, the load's
+        warning binary sensor turns on — full water tank (draw near 0 W),
+        wrong nominal power or a foreign consumer on the measured outlet.
+        Short defrost pauses reset the timer before the dwell elapses. A
+        missing reading freezes the current state.
+
+        The warning LATCHES: once on, it clears only when the load runs at
+        its configured power again (active + measured back within band), not
+        merely because BM stopped requesting it — a full tank is still full
+        while the load is off (operator wish 2026-07-12). On the on/off edge
+        it pushes a notification to the configured targets.
         """
         active_by_id = {lp.load_id: lp.active_now for lp in result.load_plans}
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
             data = subentry.data
-            # Subentries created before v0.6.3 lack the key: default 50 %.
+            # Subentries created before the warning existed lack the key:
+            # default 0 % (off) — the operator opts a load in per device.
             pct = float(
                 data.get(
                     CONF_LOAD_POWER_WARNING_PCT,
@@ -1028,14 +1051,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             power_entity = data.get(CONF_LOAD_POWER_ENTITY)
             if pct <= 0 or not power_entity:
-                continue  # disabled or nothing to measure
+                # Warning disabled (0 %) or no feedback sensor: drop any
+                # lingering latch/timer so the feature turns fully off (and a
+                # latch can never get stuck once recovery is unobservable).
+                self._load_deviation_since.pop(subentry_id, None)
+                if self._load_power_warning.pop(subentry_id, None):
+                    self._save_persistent_state()
+                continue
+            dwell = float(
+                data.get(
+                    CONF_LOAD_POWER_WARNING_DWELL_MIN,
+                    DEFAULT_LOAD_CONFIG[CONF_LOAD_POWER_WARNING_DWELL_MIN],
+                )
+            )
             if subentry_id in self._load_charging_active:
                 active = self._load_charging_active[subentry_id]
             else:
                 active = active_by_id.get(subentry_id, False)
             if not active:
+                # Reset the dwell timer, but keep a latched warning on: it
+                # clears only when the load demonstrably runs again.
                 self._load_deviation_since.pop(subentry_id, None)
-                self._set_power_warning(subentry_id, subentry.title, False)
                 continue
             raw = self._read_float(power_entity)
             if raw is None:
@@ -1047,39 +1083,98 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "since": self._load_deviation_since.get(subentry_id),
             }
             if abs(raw - nominal) <= pct / 100.0 * nominal:
+                # Demonstrably running at its configured power again -> clear.
                 self._load_deviation_since.pop(subentry_id, None)
-                self._set_power_warning(subentry_id, subentry.title, False)
+                await self._set_power_warning(subentry_id, subentry.title, False)
                 continue
             since = self._load_deviation_since.setdefault(subentry_id, now)
             self._load_warning_diag[subentry_id]["since"] = since
-            if now - since >= timedelta(minutes=POWER_WARNING_DWELL_MIN):
-                self._set_power_warning(
-                    subentry_id, subentry.title, True, raw=raw, nominal=nominal
+            if now - since >= timedelta(minutes=dwell):
+                await self._set_power_warning(
+                    subentry_id,
+                    subentry.title,
+                    True,
+                    raw=raw,
+                    nominal=nominal,
+                    dwell=dwell,
                 )
 
-    def _set_power_warning(
+    async def _set_power_warning(
         self,
         subentry_id: str,
         title: str,
         on: bool,
         raw: float | None = None,
         nominal: float | None = None,
+        dwell: float | None = None,
     ) -> None:
         if self._load_power_warning.get(subentry_id, False) == on:
             return
         self._load_power_warning[subentry_id] = on
+        # Persist the latch so a coordinator reload (any options save) or a
+        # restart does not silently drop a raised warning (operator wish
+        # 2026-07-12); async_flush_persistent_state writes it before a reload.
+        self._save_persistent_state()
         if on:
             _LOGGER.warning(
                 "Load %s draws %.0f W while %.0f W are configured"
-                " (sustained > %d min) — full tank, wrong configured power"
+                " (sustained > %g min) — full tank, wrong configured power"
                 " or a foreign consumer?",
                 title,
                 raw,
                 nominal,
-                POWER_WARNING_DWELL_MIN,
+                dwell,
+            )
+            await self._notify_power_warning(
+                title, on=True, raw=raw, nominal=nominal, dwell=dwell
             )
         else:
             _LOGGER.info("Load %s: power warning cleared", title)
+            await self._notify_power_warning(title, on=False)
+
+    async def _notify_power_warning(
+        self,
+        title: str,
+        on: bool,
+        raw: float | None = None,
+        nominal: float | None = None,
+        dwell: float | None = None,
+    ) -> None:
+        """Push the power warning to the configured global notify targets.
+
+        Targets are `notify` service names (e.g. "mobile_app_pixel"); each is
+        called independently so one stale/removed target (ServiceNotFound)
+        neither stalls the update nor blocks the others. No targets -> no-op.
+        """
+        targets = self.raw_config.get(CONF_WARNING_NOTIFY_TARGETS) or []
+        if not targets:
+            return
+        if on:
+            msg_title = f"⚠️ {title}: power warning"
+            message = (
+                f"{title} draws {raw:.0f} W but {nominal:.0f} W are configured"
+                f" (sustained over {dwell:g} min). Check the device — full"
+                " water tank, wrong configured power, or a foreign consumer."
+            )
+        else:
+            if not self.raw_config.get(CONF_WARNING_NOTIFY_ON_RESOLVE, True):
+                return
+            msg_title = f"✅ {title}: power warning cleared"
+            message = f"{title} draws its configured power again."
+        for service in targets:
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service,
+                    {"title": msg_title, "message": message},
+                    blocking=False,
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Power-warning notification to notify.%s failed: %s",
+                    service,
+                    err,
+                )
 
     def _update_plan_active(self, result) -> None:
         """Track each load's plan activation and its learning permission.
@@ -1736,7 +1831,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._apply_load_switching(
             result, now, tuple(s.duration for s in inputs.slots)
         )
-        self._update_power_warnings(result, now)
+        await self._update_power_warnings(result, now)
         self._update_gate_calibration(config, soc)
 
         self._successful_updates += 1
