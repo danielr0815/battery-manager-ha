@@ -290,7 +290,8 @@
             "in_house_measurement": "In Hauslast-Messung enthalten",
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
             "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
-            "input_off_policy": "Steckdose beim Abschalten"
+            "input_off_policy": "Steckdose beim Abschalten",
+            "power_warning_dwell_min": "Verzögerung Leistungswarnung (Min.)"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -303,9 +304,10 @@
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
-            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus.",
+            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
-            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird."
+            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird.",
+            "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15."
           }
         },
         "reconfigure": {
@@ -323,7 +325,8 @@
             "in_house_measurement": "In Hauslast-Messung enthalten",
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
             "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
-            "input_off_policy": "Steckdose beim Abschalten"
+            "input_off_policy": "Steckdose beim Abschalten",
+            "power_warning_dwell_min": "Verzögerung Leistungswarnung (Min.)"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -336,9 +339,10 @@
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
-            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als 30 Minuten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“. 0 = deaktiviert. Kurze Abtau-Pausen bleiben unterhalb der 30 Minuten und lösen nicht aus.",
+            "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
-            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird."
+            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird.",
+            "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15."
           }
         },
         "storage": {
@@ -580,6 +584,18 @@
               "psu48_on_voltage_v": "Bei manuellem 48-V-Betrieb: unterhalb dieser Batteriespannung schaltet der Regler das Netzteil EIN. Benötigt den Batteriespannungs-Sensor.",
               "psu48_off_voltage_v": "Bei manuellem 48-V-Betrieb: ab dieser Batteriespannung schaltet der Regler das Netzteil AUS. Muss über der Einschalt-Spannung liegen (Hysterese).",
               "psu48_controller_log_only": "An = Regler protokolliert nur seine Entscheidungen, schaltet aber nicht (Testlauf). Aus = Regler schaltet das 48-V-Netzteil aktiv."
+            }
+          },
+          "notifications": {
+            "name": "Benachrichtigungen bei Leistungswarnung",
+            "description": "Sende eine Smartphone-Benachrichtigung, wenn die Leistungswarnung einer Last angeht (und, sofern nicht abgeschaltet, wenn sie sich löst).",
+            "data": {
+              "power_warning_notify_targets": "Benachrichtigungsziele",
+              "power_warning_notify_on_resolve": "Auch bei Behebung benachrichtigen"
+            },
+            "data_description": {
+              "power_warning_notify_targets": "Die Smartphones/Notify-Dienste, die alarmiert werden (z. B. eure Home-Assistant-Companion-Apps). Ein Ziel pro Person hinzufügen, die benachrichtigt werden soll. Leer = keine Push-Nachricht.",
+              "power_warning_notify_on_resolve": "Sende eine weitere Benachrichtigung, sobald die Last wieder mit ihrer Nennleistung läuft."
             }
           }
         }

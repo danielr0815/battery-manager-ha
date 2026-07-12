@@ -290,7 +290,8 @@
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)",
             "control_switch_entity": "Control switch / plug (optional — BM switches it directly)",
-            "input_off_policy": "Plug when switching off"
+            "input_off_policy": "Plug when switching off",
+            "power_warning_dwell_min": "Power warning dwell (min)"
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
@@ -303,9 +304,10 @@
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice.",
-            "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists for more than 30 minutes (e.g. full water tank: near 0 W), the load's warning sensor turns on. 0 = disabled. Short defrost pauses stay below the 30 minutes and do not trigger.",
+            "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
             "control_switch_entity": "Switchable plug/relay that powers the load; if set, BM turns the load on and off itself and a separate switching automation becomes redundant. For a powerstation this is the charging input.",
-            "input_off_policy": "What happens to the plug when BM stops the load. \"Automatic\" = only switch off if BM switched it on itself — recommended when the plug is also used for passthrough."
+            "input_off_policy": "What happens to the plug when BM stops the load. \"Automatic\" = only switch off if BM switched it on itself — recommended when the plug is also used for passthrough.",
+            "power_warning_dwell_min": "How long the deviation must persist before the warning turns on. Rides through short defrost pauses; a shorter value warns sooner. Default 15."
           }
         },
         "reconfigure": {
@@ -323,7 +325,8 @@
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)",
             "control_switch_entity": "Control switch / plug (optional — BM switches it directly)",
-            "input_off_policy": "Plug when switching off"
+            "input_off_policy": "Plug when switching off",
+            "power_warning_dwell_min": "Power warning dwell (min)"
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
@@ -336,9 +339,10 @@
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice.",
-            "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists for more than 30 minutes (e.g. full water tank: near 0 W), the load's warning sensor turns on. 0 = disabled. Short defrost pauses stay below the 30 minutes and do not trigger.",
+            "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
             "control_switch_entity": "Switchable plug/relay that powers the load; if set, BM turns the load on and off itself and a separate switching automation becomes redundant. For a powerstation this is the charging input.",
-            "input_off_policy": "What happens to the plug when BM stops the load. \"Automatic\" = only switch off if BM switched it on itself — recommended when the plug is also used for passthrough."
+            "input_off_policy": "What happens to the plug when BM stops the load. \"Automatic\" = only switch off if BM switched it on itself — recommended when the plug is also used for passthrough.",
+            "power_warning_dwell_min": "How long the deviation must persist before the warning turns on. Rides through short defrost pauses; a shorter value warns sooner. Default 15."
           }
         },
         "storage": {
@@ -580,6 +584,18 @@
               "psu48_on_voltage_v": "In manual 48 V mode: below this battery voltage the controller switches the PSU ON. Requires the battery voltage sensor.",
               "psu48_off_voltage_v": "In manual 48 V mode: at or above this battery voltage the controller switches the PSU OFF. Must be above the turn-on voltage (hysteresis).",
               "psu48_controller_log_only": "On = controller only logs its decisions without switching (dry run). Off = controller actively switches the 48 V PSU."
+            }
+          },
+          "notifications": {
+            "name": "Power-warning notifications",
+            "description": "Push a smartphone notification when any load's power warning turns on (and, unless silenced, when it clears).",
+            "data": {
+              "power_warning_notify_targets": "Notify targets",
+              "power_warning_notify_on_resolve": "Also notify when resolved"
+            },
+            "data_description": {
+              "power_warning_notify_targets": "The phones/notify services to alert (e.g. your Home Assistant companion apps). Add one per person who should be notified. Empty = no push.",
+              "power_warning_notify_on_resolve": "Send a follow-up notification when the load runs at its configured power again."
             }
           }
         }

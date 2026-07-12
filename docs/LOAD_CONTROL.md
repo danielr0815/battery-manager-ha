@@ -148,20 +148,32 @@ SOC (ground truth) anyway, not integrated over the power.
   charging — after charge end, the taper residual (10–40 W) would otherwise
   permanently weaken all gates as "measured" planning power. The log lines
   "Charging started/stopped" name the plain-text load name.
-- **F-L7 (2026-07-05): power-deviation warning per load.** The dehumidifier
-  periodically defrosts briefly (power drops for minutes) and stops entirely
-  when the water tank is full (power near 0 W despite an active
+- **F-L7 (2026-07-05, extended 2026-07-12): power-deviation warning per load.**
+  The dehumidifier periodically defrosts briefly (power drops for minutes) and
+  stops entirely when the water tank is full (power near 0 W despite an active
   recommendation). Defrost cycles may enter the power average (samples between
   the standby threshold and the rated power average the EMA; below that the
   sample is discarded and the EMA is frozen — "totally ruining it" is
   precluded by the 25 % threshold). But if the real power deviates for **longer
-  than 30 minutes** by more than the configured percentage (field "power-
-  deviation warning", default 50 %, 0 = off) from the rated power while the
-  load is running at the integration's instigation, the load's new warning
-  sensor (`binary_sensor … power warning`, device class `problem`) goes on —
-  as a trigger for user notifications (empty the tank, correct the rated power,
-  foreign load). Short defrost pauses reset the timer and do not fire; manual
-  operation never fires (F-L6 logic).
+  than the per-load dwell** (field "power warning dwell", default 15 min) by
+  more than the configured percentage (field "power-deviation warning", default
+  **0 % = off**; the operator opts a load in per device — an existing load keeps
+  its stored value) from the rated power while the load is running at the
+  integration's instigation, the load's warning sensor (`binary_sensor … power
+  warning`, device class `problem`) goes on. Short defrost pauses reset the
+  timer and do not fire; manual operation never fires (F-L6 logic).
+  - **Latching (operator wish 2026-07-12).** Once on, the warning stays on
+    until the load runs at its configured power **again at the integration's
+    request** — it does NOT clear merely because BM stops requesting the load
+    (a full tank is still full while the load is off). The latch is persisted,
+    so an options save (which reloads the coordinator) or a restart does not
+    silently drop it; only the bool is persisted, so a not-yet-tripped dwell
+    re-arms after a restart.
+  - **Push notifications (operator wish 2026-07-12).** A single global list of
+    `notify` targets (integration Options → *Power-warning notifications*, e.g.
+    each person's companion app) is pushed to when any load's warning trips,
+    and — unless silenced — when it clears. Empty list = no push; the
+    `binary_sensor` remains available for custom automations either way.
 - **F-L6 (2026-07-05): manual activations do not influence planning.** The
   operator occasionally switches loads (or rather their metered socket) by
   hand — e.g. the dehumidifier, or a foreign load on the same socket. Feedback

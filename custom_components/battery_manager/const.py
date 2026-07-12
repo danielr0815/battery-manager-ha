@@ -184,11 +184,13 @@ STALE_LOAD_SOC_MIN = 12
 # Power-deviation warning (operator requirement F-L7, 2026-07-05): while a
 # load runs at the integration's request but its real draw deviates from the
 # configured power by more than this percentage (per-load setting, 0 =
-# disabled) for POWER_WARNING_DWELL_MIN sustained minutes, a per-load
-# warning binary sensor turns on (full water tank, wrong nominal power,
-# foreign consumer). Short defrost pauses stay below the dwell.
+# disabled, the default) for the per-load dwell in sustained minutes, a
+# per-load warning binary sensor turns on (full water tank, wrong nominal
+# power, foreign consumer). Short defrost pauses stay below the dwell. The
+# warning latches once on and clears only when the load runs at its configured
+# power again (coordinator._update_power_warnings).
 CONF_LOAD_POWER_WARNING_PCT = "power_warning_percent"
-POWER_WARNING_DWELL_MIN = 30
+CONF_LOAD_POWER_WARNING_DWELL_MIN = "power_warning_dwell_min"
 
 # End-of-charge policies for the load's input plug (docs/LOAD_CONTROL.md §3)
 INPUT_OFF_POLICY_AUTO = "auto"
@@ -199,6 +201,13 @@ INPUT_OFF_POLICIES = [
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_KEEP,
 ]
+
+# Power-warning push notifications (operator wish 2026-07-12): a single global
+# list of `notify` service names (e.g. "mobile_app_pixel") the coordinator
+# pushes to when ANY load's power warning trips (and, unless silenced, when it
+# clears). Empty list = no push. Stored in the integration options.
+CONF_WARNING_NOTIFY_TARGETS = "power_warning_notify_targets"
+CONF_WARNING_NOTIFY_ON_RESOLVE = "power_warning_notify_on_resolve"
 
 # Persistent state (SOC cache, plug ownership) survives HA restarts
 STORAGE_VERSION = 1
@@ -332,6 +341,9 @@ DEFAULT_CONFIG = {
     CONF_PSU48_ON_VOLTAGE_V: 49.56,
     CONF_PSU48_OFF_VOLTAGE_V: 49.8,
     CONF_PSU48_CTRL_LOG_ONLY: True,  # arm only after a shakedown
+    # Power-warning push notifications (operator wish 2026-07-12)
+    CONF_WARNING_NOTIFY_TARGETS: [],
+    CONF_WARNING_NOTIFY_ON_RESOLVE: True,
 }
 
 # A load counts as "really running" for the runtime counter when its measured
@@ -354,7 +366,10 @@ DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_TARGET_SOC: 100.0,
     CONF_LOAD_INPUT_OFF_POLICY: INPUT_OFF_POLICY_AUTO,
     CONF_LOAD_IN_HOUSE: True,
-    CONF_LOAD_POWER_WARNING_PCT: 50.0,
+    # Off by default (0 %); the operator opts a load in per device. Existing
+    # loads keep their stored value, so a load already warning stays on.
+    CONF_LOAD_POWER_WARNING_PCT: 0.0,
+    CONF_LOAD_POWER_WARNING_DWELL_MIN: 15,
 }
 
 DEFAULT_APPLIANCE_CONFIG = {

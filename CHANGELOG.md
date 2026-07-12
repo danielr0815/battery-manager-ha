@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-12
+
+### Added
+- **Per-load power-warning dwell + off by default (operator wish).** The 30-min
+  dwell before a load's power-deviation warning fires is now a per-load setting
+  ("power warning dwell", default **15 min**), so the delay is tunable per
+  device. The warning itself now defaults to **off** for new loads (deviation %
+  default `50 → 0`); the operator opts each device in. Existing loads keep their
+  stored percentage, so a load that was already warning stays on — and now also
+  gets the shorter default dwell.
+- **Built-in push notifications for power warnings (operator wish).** A new
+  *Power-warning notifications* section in the integration Options lets you pick
+  a global list of `notify` targets (e.g. each person's companion app). When any
+  load's power warning trips a push is sent to every target, and — unless the
+  "Also notify when resolved" toggle is off — another when it clears. No targets
+  configured = no push; the `binary_sensor` stays available for custom
+  automations regardless.
+
+### Changed
+- **The power warning now latches (operator report).** Once on, it stays on
+  until the load runs at its configured power again *at the integration's
+  request* — it no longer self-clears the moment BM stops requesting the load (a
+  full water tank is still full while the load is off). The latch is persisted,
+  so saving the integration options (which reloads the coordinator) or a restart
+  no longer silently drops a raised warning.
+
 ## [0.11.2] - 2026-07-12
 
 ### Fixed

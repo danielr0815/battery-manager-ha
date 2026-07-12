@@ -787,6 +787,28 @@ async def test_load_plan_dict_carries_why_and_learned_power(hass):
     assert sensor_schedule and all("why" in row for row in sensor_schedule)
 
 
+async def test_refresh_awaits_power_warning_update(hass):
+    """Async-seam guard (0.12.0): _async_update_data must AWAIT the now-async
+    _update_power_warnings. A dropped `await` would leave the coroutine
+    unscheduled — power warnings, the persisted latch and push notifications
+    would silently stop — yet the unit tests that call the method directly
+    stay green. Drive a real refresh and assert the method actually ran."""
+    coordinator, _titles = await _setup_entry_with_load_data(
+        hass, [("F1", {"power_w": 300.0})]
+    )
+    ran: list[bool] = []
+    real = coordinator._update_power_warnings
+
+    async def _wrapped(result, now):
+        ran.append(True)
+        return await real(result, now)
+
+    coordinator._update_power_warnings = _wrapped
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert ran, "_async_update_data must await _update_power_warnings"
+
+
 # ---------------------------------------------------------------------------
 # F-PERDAY-SURPLUS: per-calendar-day lost-surplus / grid-import breakdown
 # (docs/F-PERDAY-SURPLUS.md R1-R3).

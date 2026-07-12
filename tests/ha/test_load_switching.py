@@ -19,12 +19,16 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_LOAD_POWER_WARNING_DWELL_MIN,
+    CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TARGET_SOC,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    CONF_WARNING_NOTIFY_ON_RESOLVE,
+    CONF_WARNING_NOTIFY_TARGETS,
     DOMAIN,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
@@ -71,6 +75,8 @@ async def _setup(
     min_off_min=None,
     power_entity=POWER_FEEDBACK,
     charge_enable=ENABLE,
+    power_warning_pct=50.0,
+    power_warning_dwell_min=30,
 ):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
@@ -87,6 +93,8 @@ async def _setup(
         CONF_LOAD_CAPACITY_WH: 2000.0,
         CONF_LOAD_TARGET_SOC: 90.0,
         CONF_LOAD_SOC_ENTITY: FOSSI_SOC,
+        CONF_LOAD_POWER_WARNING_PCT: power_warning_pct,
+        CONF_LOAD_POWER_WARNING_DWELL_MIN: power_warning_dwell_min,
     }
     if power_entity is not None:
         load_data[CONF_LOAD_POWER_ENTITY] = power_entity
@@ -449,14 +457,14 @@ async def test_power_warning_after_sustained_deviation(hass):
     t0 = dt_util.utcnow()
 
     hass.states.async_set(POWER_FEEDBACK, "2")  # tank full
-    coordinator._update_power_warnings(result, t0)
+    await coordinator._update_power_warnings(result, t0)
     assert coordinator._load_power_warning.get(sub_id, False) is False
 
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=31))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=31))
     assert coordinator._load_power_warning[sub_id] is True
 
     hass.states.async_set(POWER_FEEDBACK, "395")  # back to normal
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=40))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=40))
     assert coordinator._load_power_warning[sub_id] is False
 
 
@@ -474,12 +482,12 @@ async def test_power_warning_defrost_dip_resets_timer(hass):
     t0 = dt_util.utcnow()
 
     hass.states.async_set(POWER_FEEDBACK, "150")  # defrost: fan + heater
-    coordinator._update_power_warnings(result, t0)
+    await coordinator._update_power_warnings(result, t0)
     hass.states.async_set(POWER_FEEDBACK, "400")  # compressor back on
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=10))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=10))
     hass.states.async_set(POWER_FEEDBACK, "150")  # next defrost
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=45))
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=60))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=45))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=60))
     # Second dip lasted only 15 min since its own start: no warning.
     assert coordinator._load_power_warning.get(sub_id, False) is False
 
@@ -499,16 +507,308 @@ async def test_power_warning_ignores_manual_runs(hass):
     t0 = dt_util.utcnow()
 
     hass.states.async_set(POWER_FEEDBACK, "800")  # foreign consumer
-    coordinator._update_power_warnings(result, t0)
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=45))
+    await coordinator._update_power_warnings(result, t0)
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=45))
     assert coordinator._load_power_warning.get(sub_id, False) is False
 
     # With an active recommendation the same deviation IS a problem.
     active_plan = SimpleNamespace(load_id=sub_id, active_now=True)
     result = SimpleNamespace(load_plans=[active_plan])
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=50))
-    coordinator._update_power_warnings(result, t0 + timedelta(minutes=81))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=50))
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=81))
     assert coordinator._load_power_warning[sub_id] is True
+
+
+async def test_power_warning_dwell_is_per_load_configurable(hass):
+    """The dwell is a per-load setting: a 15-min dwell trips after 15 min,
+    not after the old fixed 30 (operator wish 2026-07-12)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, power_warning_dwell_min=15
+    )
+    result = SimpleNamespace(load_plans=[])
+    coordinator._load_charging_active[sub_id] = True
+    t0 = dt_util.utcnow()
+
+    hass.states.async_set(POWER_FEEDBACK, "2")  # tank full
+    await coordinator._update_power_warnings(result, t0)
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=14))
+    assert coordinator._load_power_warning.get(sub_id, False) is False  # < 15
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=16))
+    assert coordinator._load_power_warning[sub_id] is True  # >= 15
+
+
+async def test_power_warning_disabled_at_zero_percent(hass):
+    """0 % = off: a sustained deviation never trips (the new default for a
+    freshly added load)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, power_warning_pct=0.0
+    )
+    result = SimpleNamespace(load_plans=[])
+    coordinator._load_charging_active[sub_id] = True
+    t0 = dt_util.utcnow()
+
+    hass.states.async_set(POWER_FEEDBACK, "2")  # tank full
+    await coordinator._update_power_warnings(result, t0)
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=60))
+    assert coordinator._load_power_warning.get(sub_id, False) is False
+
+
+async def test_power_warning_latches_when_deactivated(hass):
+    """Regression (operator report 2026-07-12): once tripped, the warning
+    stays on when the load is deactivated (BM stops requesting it) — a full
+    tank is still full while the load is off — and clears only when the load
+    runs at its configured power again."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    result = SimpleNamespace(load_plans=[])
+    coordinator._load_charging_active[sub_id] = True
+    t0 = dt_util.utcnow()
+
+    # Trip the warning while active.
+    hass.states.async_set(POWER_FEEDBACK, "2")  # tank full
+    await coordinator._update_power_warnings(result, t0)
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=31))
+    assert coordinator._load_power_warning[sub_id] is True
+
+    # Deactivate the load (BM no longer requests it): the OLD behaviour cleared
+    # the warning here — it must now LATCH on.
+    coordinator._load_charging_active[sub_id] = False
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=40))
+    assert coordinator._load_power_warning[sub_id] is True
+
+    # Even a normal reading while inactive must NOT clear it (not BM-driven).
+    hass.states.async_set(POWER_FEEDBACK, "400")
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=50))
+    assert coordinator._load_power_warning[sub_id] is True
+
+    # Only running at configured power AT BM'S REQUEST clears it.
+    coordinator._load_charging_active[sub_id] = True
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=60))
+    assert coordinator._load_power_warning[sub_id] is False
+
+
+async def test_power_warning_latch_survives_reload(hass):
+    """The latch is persisted so an options save (coordinator reload) or a
+    restart does not silently drop a raised warning; a vanished subentry is
+    dropped on restore."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+
+    coordinator._load_power_warning = {sub_id: True, "vanished_sub": True}
+    payload = coordinator._persistent_payload()
+    assert payload["load_power_warning"] == {sub_id: True, "vanished_sub": True}
+
+    await coordinator._store.async_save(payload)
+    coordinator._load_power_warning = {}
+    await coordinator.async_load_persistent_state()
+    # Restored for the live subentry, dropped for the vanished one.
+    assert coordinator._load_power_warning == {sub_id: True}
+
+
+async def test_power_warning_latch_cleared_when_disabled(hass):
+    """Turning the warning off (0 %) drops a lingering latch and dwell timer,
+    so it can never get stuck invisibly once the feature is disabled."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, power_warning_pct=0.0
+    )
+    coordinator._load_power_warning[sub_id] = True
+    coordinator._load_deviation_since[sub_id] = dt_util.utcnow()
+    result = SimpleNamespace(load_plans=[])
+    coordinator._load_charging_active[sub_id] = True
+
+    await coordinator._update_power_warnings(result, dt_util.utcnow())
+    assert coordinator._load_power_warning.get(sub_id, False) is False
+    assert sub_id not in coordinator._load_deviation_since
+
+
+async def test_power_warning_pushes_notifications(hass):
+    """The trip edge pushes a 'problem' notification to every configured
+    target (with load name + measured/expected W); the clear edge pushes a
+    'resolved' notification. Driven through _set_power_warning to keep the
+    edge->notify wiring deterministic (the coordinator's refresh machinery
+    resets manual _load_charging_active across async_block_till_done)."""
+    captured: list[dict] = []
+
+    async def _fake_notify(call):
+        captured.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_test", _fake_notify)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = ["mobile_app_test"]
+    coordinator.raw_config[CONF_WARNING_NOTIFY_ON_RESOLVE] = True
+
+    # Trip edge.
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    await hass.async_block_till_done()
+    assert len(captured) == 1
+    assert "power warning" in captured[0]["title"].lower()
+    assert "Fossibot Test" in captured[0]["message"]
+    assert "400 W" in captured[0]["message"]
+
+    # Clear edge.
+    await coordinator._set_power_warning(sub_id, "Fossibot Test", False)
+    await hass.async_block_till_done()
+    assert len(captured) == 2
+    assert "cleared" in captured[1]["title"].lower()
+
+
+async def test_power_warning_notifies_all_targets(hass):
+    """A global list with several targets pushes to each (arbitrary users)."""
+    captured: list[tuple[str, dict]] = []
+
+    def _make(name):
+        async def _fake_notify(call):
+            captured.append((name, dict(call.data)))
+
+        return _fake_notify
+
+    for name in ("mobile_app_a", "mobile_app_b"):
+        hass.services.async_register("notify", name, _make(name))
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = [
+        "mobile_app_a",
+        "mobile_app_b",
+    ]
+
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    await hass.async_block_till_done()
+    assert {name for name, _ in captured} == {"mobile_app_a", "mobile_app_b"}
+
+
+async def test_power_warning_resolve_notification_can_be_silenced(hass):
+    """With the resolve toggle off, the clear edge sends no push (the trip
+    still does)."""
+    captured: list[dict] = []
+
+    async def _fake_notify(call):
+        captured.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_test", _fake_notify)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = ["mobile_app_test"]
+    coordinator.raw_config[CONF_WARNING_NOTIFY_ON_RESOLVE] = False
+
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    await coordinator._set_power_warning(sub_id, "Fossibot Test", False)
+    await hass.async_block_till_done()
+    assert len(captured) == 1  # trip only, no resolve push
+
+
+async def test_power_warning_no_targets_no_push(hass):
+    """No configured targets -> no service call attempted (no-op), even though
+    a notify service exists."""
+    seen: list[dict] = []
+
+    async def _spy(call):
+        seen.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_spy", _spy)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = []
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    await hass.async_block_till_done()
+    assert coordinator._load_power_warning[sub_id] is True
+    assert seen == []  # the registered service was NOT invoked
+
+
+async def test_power_warning_notify_isolates_bad_target(hass):
+    """A stale/removed target (ServiceNotFound is raised synchronously even
+    with blocking=False) must neither escape into the update cycle nor block
+    the remaining good targets — the per-target try/except is load-bearing."""
+    captured: list[dict] = []
+
+    async def _ok(call):
+        captured.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_good", _ok)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    # 'mobile_app_deleted' is not registered (e.g. a since-removed phone) and
+    # is listed FIRST — it must not stop the good target that follows.
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = [
+        "mobile_app_deleted",
+        "mobile_app_good",
+    ]
+    # Awaited directly: an un-caught ServiceNotFound would raise HERE (which is
+    # exactly how it would break _async_update_data in production).
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    await hass.async_block_till_done()
+    assert len(captured) == 1  # the good target still received the push
+
+
+async def test_power_warning_notifies_through_update_cycle(hass):
+    """The trip push also fires when reached through the production method
+    _update_power_warnings (not just _set_power_warning directly), and the
+    real raw/nominal/dwell values flow into the message. No block_till_done
+    between the two updates, so the coordinator machinery cannot reset the
+    manually-driven active state mid-test."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    captured: list[dict] = []
+
+    async def _fake_notify(call):
+        captured.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_test", _fake_notify)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, power_warning_dwell_min=15
+    )
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = ["mobile_app_test"]
+    result = SimpleNamespace(load_plans=[])
+    t0 = dt_util.utcnow()
+
+    hass.states.async_set(POWER_FEEDBACK, "2")  # tank full
+    coordinator._load_charging_active[sub_id] = True
+    await coordinator._update_power_warnings(result, t0)
+    coordinator._load_charging_active[sub_id] = True
+    await coordinator._update_power_warnings(result, t0 + timedelta(minutes=16))
+    await hass.async_block_till_done()
+    assert len(captured) == 1
+    assert "Fossibot Test" in captured[0]["message"]
+    assert "400 W" in captured[0]["message"]
+    assert "15 min" in captured[0]["message"]  # per-load dwell in the text
 
 
 # ---------------------------------------------------------------------------

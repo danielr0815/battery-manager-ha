@@ -57,6 +57,7 @@ from .const import (
     CONF_LOAD_NAME,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_LOAD_POWER_WARNING_DWELL_MIN,
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
     CONF_LOAD_SOC_ENTITY,
@@ -90,6 +91,8 @@ from .const import (
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_SWITCH_DELAY_S,
     CONF_UPPER_PV_RESERVE,
+    CONF_WARNING_NOTIFY_ON_RESOLVE,
+    CONF_WARNING_NOTIFY_TARGETS,
     CONF_WORKDAY_ENTITY,
     DEFAULT_APPLIANCE_CONFIG,
     DEFAULT_CONFIG,
@@ -111,12 +114,14 @@ SECTION_PROFILE = "consumption_profile"
 SECTION_LEARNING = "consumption_learning"
 SECTION_SUPPORT = "support_paths"
 SECTION_DEVICES = "dc_devices"
+SECTION_NOTIFY = "notifications"
 _OPTION_SECTIONS = (
     SECTION_TUNING,
     SECTION_PROFILE,
     SECTION_LEARNING,
     SECTION_SUPPORT,
     SECTION_DEVICES,
+    SECTION_NOTIFY,
 )
 
 
@@ -154,6 +159,34 @@ def _entity(domain: str | list[str] | None = None, multiple: bool = False):
     if domain:
         config["domain"] = domain
     return selector.EntitySelector(config)
+
+
+def _notify_services(hass) -> list[str]:
+    """Registered `notify` service names, minus the ones that are not push
+    targets: `send_message` needs an entity_id (would raise) and the
+    persistent_notification dispatcher is not a phone."""
+    try:
+        services = hass.services.async_services_for_domain("notify")
+    except AttributeError:  # pre-2024.7 fallback
+        services = hass.services.async_services().get("notify", {})
+    return sorted(
+        name
+        for name in services
+        if name not in ("send_message", "persistent_notification")
+    )
+
+
+def _notify_targets(options: list[str]):
+    """Multi-select of notify service names. custom_value keeps a stored
+    target that isn't registered right now (e.g. a phone offline at setup)."""
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options,
+            multiple=True,
+            custom_value=True,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
 
 
 def _d(config: dict[str, Any], key: str) -> Any:
@@ -774,7 +807,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     CONF_WORKDAY_ENTITY,
                 ):
                     data.setdefault(key, None)
-                for key in _LEARNING_MULTI_KEYS:
+                for key in (*_LEARNING_MULTI_KEYS, CONF_WARNING_NOTIFY_TARGETS):
                     data.setdefault(key, [])
                 return self.async_create_entry(title="", data=data)
             errors["base"] = error
@@ -873,6 +906,21 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             )
         ] = _number(5, 30, 0.5, "%")
 
+        # Push notifications for load power warnings (operator wish 2026-07-12):
+        # a single global list of notify targets + a resolve-ping toggle.
+        notify = {
+            vol.Optional(
+                CONF_WARNING_NOTIFY_TARGETS,
+                description={
+                    "suggested_value": current.get(CONF_WARNING_NOTIFY_TARGETS)
+                },
+            ): _notify_targets(_notify_services(self.hass)),
+            vol.Required(
+                CONF_WARNING_NOTIFY_ON_RESOLVE,
+                default=_d(current, CONF_WARNING_NOTIFY_ON_RESOLVE),
+            ): selector.BooleanSelector(),
+        }
+
         # Grouped into collapsible sections for readability (F-N UX request).
         schema = {
             vol.Required(SECTION_TUNING): section(
@@ -889,6 +937,9 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             ),
             vol.Required(SECTION_DEVICES): section(
                 vol.Schema(_device_param_fields(current)), {"collapsed": True}
+            ),
+            vol.Required(SECTION_NOTIFY): section(
+                vol.Schema(notify), {"collapsed": True}
             ),
         }
         return self.async_show_form(
@@ -972,6 +1023,10 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             vol.Required(
                 CONF_LOAD_POWER_WARNING_PCT, default=dv(CONF_LOAD_POWER_WARNING_PCT)
             ): _number(0, 200, 5, "%"),
+            vol.Required(
+                CONF_LOAD_POWER_WARNING_DWELL_MIN,
+                default=dv(CONF_LOAD_POWER_WARNING_DWELL_MIN),
+            ): _number(0, 240, 5, "min"),
         }
         for key, domain in (
             (CONF_LOAD_POWER_ENTITY, "sensor"),
