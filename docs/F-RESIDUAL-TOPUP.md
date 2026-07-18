@@ -122,11 +122,16 @@ known limitations). No simulator changes.
 - **R9** `_maintain_recommendation_deadline` (recommendation-only loads) drops
   its `energy_limited` early-return for the same reason: the published `active`
   flag flips off at the deadline; the FIX-5 re-anchor cycle applies unchanged.
-- **R10 (accepted consequence, document)** If a plan EXTENDS a running
+- **R10 (accepted consequence, document)** ~~If a plan EXTENDS a running
   contiguous block, the frozen cap force-offs at the old `D`; after the
   `min_off` dwell the still-active plan re-ons with a fresh deadline
-  (duty-cycle gap ≤ `min_off`, default 30 min). Harmless for charging
-  powerstations; symmetric with existing non-energy-limited behaviour.
+  (duty-cycle gap ≤ `min_off`, default 30 min).~~ **Superseded (v0.14.0,
+  docs/F-SEAMLESS-RUNS.md):** a G2-supervisable energy-limited load whose
+  fresh plan re-booked a contiguous run at the expired deadline now EXTENDS
+  seamlessly (no OFF/dwell gap). The R7/R8 duty-cycle cap remains exactly
+  for G2-UNSUPERVISABLE loads (no control switch, SOC or power entity, or
+  stale-latched) — including recommendation-only energy-limited loads (R9,
+  FIX-5 cycle unchanged there).
 
 ### Docs / housekeeping
 

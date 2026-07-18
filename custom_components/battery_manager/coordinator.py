@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import math
+from collections import deque
 from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -133,6 +134,7 @@ from .core import (
     aggregate_hours,
     build_slots,
     plan,
+    power_learning,
     profile_value,
     quantile_band_slots,
     slot_starts,
@@ -140,8 +142,6 @@ from .core import (
 from .history_profile import ProfileLearner
 
 _LOGGER = logging.getLogger(__name__)
-
-_POWER_EMA_ALPHA = 0.3
 
 
 def _series_source(series: tuple[float | None, ...] | None, index: int) -> str:
@@ -311,15 +311,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # check in _get_appliance_runs, so a run that finished during downtime
         # cannot pin a genuinely-new run at 0 remaining.
         self._appliance_started_restored: set[str] = set()
-        self._load_power_ema: dict[str, float] = {}
-        # Learned planning power (F-PLANNER-HONESTY R2): per load the run-max
-        # of the accepted-sample EMA — run-max so an end-of-charge taper cannot
-        # erode it, EMA so a spike cannot inflate it, and only samples past the
-        # v0.6.2 standby bar feed it (the single gate; standby poisoning stays
-        # impossible). `_load_run_power_max` tracks the CURRENT run (same
-        # lifecycle as `_load_power_ema`); `_load_learned_power_w` is the
-        # persisted last-run-wins store an OFF load plans with.
-        self._load_run_power_max: dict[str, float] = {}
+        # Robust planning-power estimation (docs/F-ROBUST-POWER.md): per load
+        # a rolling buffer of ACCEPTED (timestamp, watts) samples — only
+        # readings past the v0.6.2 standby bar while the load runs at BM's
+        # request (the single gate; standby poisoning stays impossible). The
+        # time-weighted windowed median in core/power_learning.py replaces
+        # the former EMA/run-max pair after the 2026-07-18 818 W incident (a
+        # 60 s compressor-restart transient was EMA-blended and frozen by the
+        # run-max). Buffer lifecycle = the run; `_load_learned_power_w` is
+        # the persisted write-through of the estimate an OFF load plans with.
+        self._load_power_samples: dict[str, deque[tuple[datetime, float]]] = {}
+        # Change-gated 3x-nominal estimate warning (sensor-lie observability;
+        # deliberately no clamp — levels above nominal can be legitimate).
+        self._load_power_overrun_warned: set[str] = set()
         self._load_learned_power_w: dict[str, float] = {}
         # Stale-SOC guard (F-EXECUTOR-GUARDS G2): evidence tuple (frozen value,
         # since) while actively charging above the standby bar, and the latch
@@ -403,9 +407,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
             # The switch dwell survives restarts: a wiped timestamp allowed
             # switching right after boot (co-factor of the 2026-07-05
-            # night-charge incident). The power EMA is deliberately NOT
-            # persisted — a taper-decayed value (last reading of a finished
-            # charge) would otherwise become permanent planning power.
+            # night-charge incident). The live power-sample buffer is
+            # deliberately NOT persisted — a stale window (last readings of a
+            # finished charge) would otherwise serve as fresh measurement;
+            # the LEARNED write-through value below carries across restarts.
             for k, v in data.get("last_load_switch", {}).items():
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
@@ -500,10 +505,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # After a restart the first tick just re-arms the cursor (losing at
             # most the last sub-cycle partial, which is bounded and unobservable).
             "load_runtime_seconds": dict(self._load_runtime_seconds),
-            # F-PLANNER-HONESTY R3: the learned planning power (run-max of the
-            # accepted-sample EMA) survives restarts — unlike the live EMA
-            # (deliberately volatile, see async_load_persistent_state), the
-            # learned value is taper-proof by construction.
+            # F-PLANNER-HONESTY R3 / F-ROBUST-POWER: the learned planning
+            # power (write-through of the robust windowed estimate) survives
+            # restarts — unlike the live sample buffer (deliberately
+            # volatile, see async_load_persistent_state); spike-proof by the
+            # estimator's median + warm-up construction.
             "load_learned_power": dict(self._load_learned_power_w),
             # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
             # does not re-latch at `now` and re-inject the full run energy.
@@ -1464,7 +1470,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return True
         return False
 
-    def _get_load_states(self) -> tuple[SurplusLoadState, ...]:
+    def _warn_estimate_overrun(
+        self, subentry_id: str, title: str, learned: float, data
+    ) -> None:
+        """Sensor-lie observability (F-ROBUST-POWER): warn ONCE per run when
+        the robust estimate exceeds 3x the configured nominal power. The
+        median cannot detect a plausible frozen sensor value, and levels
+        above nominal are legitimate (operator-raised charge rates), so this
+        deliberately observes instead of clamping."""
+        nominal = float(data[CONF_LOAD_POWER_W])
+        if learned > 3.0 * nominal:
+            if subentry_id not in self._load_power_overrun_warned:
+                self._load_power_overrun_warned.add(subentry_id)
+                _LOGGER.warning(
+                    "Load %s: robust power estimate %.0f W exceeds 3x the"
+                    " configured %.0f W — check the power sensor (frozen/"
+                    "cached value?) or the configured nominal power",
+                    title,
+                    learned,
+                    nominal,
+                )
+        else:
+            self._load_power_overrun_warned.discard(subentry_id)
+
+    def _get_load_states(
+        self, now: datetime | None = None
+    ) -> tuple[SurplusLoadState, ...]:
+        if now is None:
+            now = dt_util.utcnow()
         states = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
@@ -1533,43 +1566,52 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W])
                 )
                 bm_active = self._bm_load_active(subentry_id)
+                buf = self._load_power_samples.get(subentry_id)
                 if raw is not None and raw >= min_sample_w and bm_active:
-                    # R2a: the EMA seeds VERBATIM from the run's first accepted
-                    # sample (previous = raw), so only samples with a PRIOR
-                    # EMA entry may feed the learned run-max — a single
-                    # start-up spike must not be learned permanently.
-                    ema_seeded = subentry_id in self._load_power_ema
-                    previous = self._load_power_ema.get(subentry_id, raw)
-                    measured = (
-                        _POWER_EMA_ALPHA * raw + (1 - _POWER_EMA_ALPHA) * previous
-                    )
-                    self._load_power_ema[subentry_id] = measured
-                    # F-PLANNER-HONESTY R2: learn the run-max of the accepted-
-                    # sample EMA; the store always holds the current run's max
-                    # once it has enough accepted samples (last run wins), so
-                    # an OFF load later plans at its real power, not nominal.
-                    if ema_seeded:
-                        run_max = max(
-                            self._load_run_power_max.get(subentry_id, measured),
-                            measured,
+                    # F-ROBUST-POWER: append the accepted sample and serve the
+                    # time-weighted windowed median. During warm-up (< 5 min
+                    # accepted coverage) the estimate is None — start-up
+                    # inrush can never be served or learned (supersedes the
+                    # F-PLANNER-HONESTY R2a seed rule); planning falls back
+                    # to learned/nominal via planning_power_w.
+                    if buf is None:
+                        buf = self._load_power_samples[subentry_id] = deque(
+                            maxlen=power_learning.MAX_SAMPLES
                         )
-                        self._load_run_power_max[subentry_id] = run_max
-                        if self._load_learned_power_w.get(subentry_id) != run_max:
-                            self._load_learned_power_w[subentry_id] = run_max
+                    buf.append((now, raw))
+                    est = power_learning.robust_power_estimate(buf, now)
+                    measured = est.watts
+                    if measured is not None:
+                        # Write-through: the persisted learned value always
+                        # holds the run's CURRENT robust estimate ("last
+                        # stable estimate wins"), so an OFF load later plans
+                        # at its real level — sustained changes included,
+                        # spikes excluded by construction. Persist only on
+                        # >= 1 W movement: sub-watt jitter would otherwise
+                        # re-trigger the delayed save every cycle (~dozens
+                        # of .storage writes per run-hour, review finding).
+                        learned = round(measured, 1)
+                        prev_learned = self._load_learned_power_w.get(subentry_id)
+                        if prev_learned is None or abs(learned - prev_learned) >= 1.0:
+                            self._load_learned_power_w[subentry_id] = learned
                             self._save_persistent_state()
-                elif subentry_id in self._load_power_ema:
+                        self._warn_estimate_overrun(
+                            subentry_id, subentry.title, learned, data
+                        )
+                elif buf is not None:
                     if bm_active:
-                        # Mid-run feedback gap (v0.5.1): keep planning
-                        # with the last smoothed value.
-                        measured = self._load_power_ema[subentry_id]
+                        # Mid-run feedback gap (v0.5.1 semantics): keep
+                        # serving the buffer's estimate; the last sample
+                        # covers at most GAP_CAP_S, so a long outage decays
+                        # into warm-up (None) rather than a stale value.
+                        measured = power_learning.robust_power_estimate(buf, now).watts
                     else:
                         # Run over (or the device is being used outside the
-                        # manager's plan): a taper/standby/foreign value
+                        # manager's plan): a taper/standby/foreign window
                         # must not stick as "measured" planning power. The
-                        # run-max tracker ends with the run; the LEARNED value
-                        # keeps serving (that is its point, R1/R2).
-                        del self._load_power_ema[subentry_id]
-                        self._load_run_power_max.pop(subentry_id, None)
+                        # LEARNED write-through value keeps serving.
+                        del self._load_power_samples[subentry_id]
+                        self._load_power_overrun_warned.discard(subentry_id)
             # F-EXECUTOR-GUARDS G2 (R6): a stale-latched load is held
             # unavailable — the planner stops re-booking against the frozen
             # `remaining`, and the plan-driven OFF runs through the normal
@@ -1801,7 +1843,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(f"No valid input data available ({missing})")
 
         config = self.build_system_config()
-        load_states = self._get_load_states()
+        load_states = self._get_load_states(now)
         appliance_runs = self._get_appliance_runs(now)
         ac_series, dc_series, band, quantiles_active, profile_diag = (
             self._learned_series(now, config, len(forecasts))
@@ -2890,6 +2932,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return True
         return self._entity_tristate(enable)
 
+    def _seamless_extension_ok(self, load_id: str, data) -> bool:
+        """F-SEAMLESS-RUNS: may an expired run deadline be extended instead
+        of force-switching OFF?
+
+        Non-energy-limited loads: always — the deadline is pure quantum
+        bookkeeping for them. Energy-limited loads: only while the G2
+        stale-SOC guard CAN supervise the load RIGHT NOW — control switch
+        configured AND the SOC and power-feedback entities currently
+        READABLE (not merely configured: during a sensor outage G2 gathers
+        no evidence, so an extension would reopen the unbounded-charge
+        hole; review finding 2026-07-18) AND not stale-latched. Anything
+        G2 cannot supervise keeps the F-RESIDUAL-TOPUP R7/R8 duty-cycle
+        cap (recommendation-only energy-limited loads included), because
+        for those the cap is the ONLY defence against a stale `remaining`
+        stretching a small top-up into an unbounded charge."""
+        if not data.get(CONF_LOAD_ENERGY_LIMITED):
+            return True
+        if not data.get(CONF_LOAD_CONTROL_SWITCH):
+            return False
+        if load_id in self._load_soc_stale:
+            return False
+        soc_entity = data.get(CONF_LOAD_SOC_ENTITY)
+        power_entity = data.get(CONF_LOAD_POWER_ENTITY)
+        if not soc_entity or not power_entity:
+            return False
+        return (
+            self._read_float(soc_entity) is not None
+            and self._read_float(power_entity) is not None
+        )
+
     def _maintain_recommendation_deadline(
         self, load_id, data, plan, now: datetime, slot_durations
     ) -> None:
@@ -2901,13 +2973,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         run's start to `run_start + max(min_runtime, run)` and off for the rest. A
         later export window (plan cycles inactive->active) re-anchors.
 
-        FIX-5: while the plan stays CONTINUOUSLY active (e.g. a night pre-drain
-        glued to the following day's block never lets it cycle inactive), the
-        frozen deadline used to wedge the published `active` False from expiry
-        until the whole block ended (hours). Once `now >= deadline + min_off`
-        (min_off falls back to min_runtime) we RE-ANCHOR a fresh run window —
-        mirroring a controlled load's force-off -> min_off dwell -> re-on cycle —
-        so the sensor duty-cycles instead of staying wedged off."""
+        F-SEAMLESS-RUNS: when the plan is STILL active at the expired
+        deadline and the load is extension-eligible, the window re-anchors
+        IMMEDIATELY (without the min_runtime floor — it was already served)
+        so the published `active` never dips at a quantum boundary — the
+        operator's automation keeps the device running seamlessly.
+
+        FIX-5 (fallback for extension-INELIGIBLE loads, i.e. energy-limited
+        recommendation-only loads keeping the F-RESIDUAL-TOPUP R9 cap):
+        while the plan stays CONTINUOUSLY active, the frozen deadline used
+        to wedge the published `active` False from expiry until the whole
+        block ended (hours). Once `now >= deadline + min_off` (min_off
+        falls back to min_runtime) we RE-ANCHOR a fresh run window —
+        mirroring a controlled load's force-off -> min_off dwell -> re-on
+        cycle — so the sensor duty-cycles instead of staying wedged off."""
         active = bool(plan and plan.active_now)
         if not active:
             if load_id in self._load_run_deadline:
@@ -2916,24 +2995,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         min_runtime = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
 
-        def _anchor() -> None:
+        def _anchor(floor_min: int) -> None:
             off_min = max(
-                min_runtime, round(plan.active_run_hours(slot_durations) * 60.0)
+                floor_min, round(plan.active_run_hours(slot_durations) * 60.0)
             )
-            off_at = now + timedelta(minutes=off_min)
+            off_at = now + timedelta(minutes=max(1, off_min))
             self._load_run_deadline[load_id] = off_at
             self._arm_off_timer(load_id, off_at)
 
         deadline = self._load_run_deadline.get(load_id)
         if deadline is None:
-            _anchor()  # OFF->ON edge: freeze the first run window
+            _anchor(min_runtime)  # OFF->ON edge: freeze the first run window
             return
-        # Still active past the deadline: re-anchor once the min_off dwell (since
-        # the deadline) has elapsed, so a continuously-active block does not wedge
-        # the published `active` off for the rest of the block.
+        if now >= deadline and self._seamless_extension_ok(load_id, data):
+            # F-SEAMLESS-RUNS: still booked at the boundary — re-anchor now,
+            # no min_runtime floor (already served), `active` never dips.
+            _anchor(1)
+            return
+        # Extension-ineligible fallback (FIX-5): re-anchor once the min_off
+        # dwell (since the deadline) has elapsed.
         min_off = int(data.get(CONF_LOAD_MIN_OFF_MIN, min_runtime))
         if now >= deadline + timedelta(minutes=min_off):
-            _anchor()
+            _anchor(min_runtime)
 
     def _update_floor_guard(self, soc: float, config: SystemConfig) -> bool:
         """G4 floor guard (F-EXECUTOR-GUARDS, operator rule 2026-07-18):
@@ -3044,6 +3127,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # G4: grid-fed operation is forbidden — force OFF, block ON.
                 desired = False
             elif current and deadline is not None and now >= deadline:
+                # F-SEAMLESS-RUNS: THIS refresh's plan was recomputed with
+                # fresh remaining/SOC data BEFORE switching runs. If it
+                # re-booked a contiguous run starting now and the load is
+                # extension-eligible, continue seamlessly — no OFF/ON relay
+                # cycle, no compressor restart, no min_off pause. min_off is
+                # thereby armed only by DELIBERATE deactivations (plan-off,
+                # target stop, floor guard, deadline without re-booking) —
+                # the operator's min_off semantics (2026-07-18).
+                run_h = plan.active_run_hours(slot_durations) if plan else 0.0
+                if (
+                    active_now
+                    and run_h > 0.0
+                    and self._seamless_extension_ok(subentry_id, data)
+                ):
+                    off_at = now + timedelta(minutes=max(1, round(run_h * 60.0)))
+                    self._load_run_deadline[subentry_id] = off_at
+                    self._arm_off_timer(subentry_id, off_at)
+                    # Persist the extended deadline in THIS cycle so a
+                    # restart right after the boundary restores it.
+                    self._save_persistent_state()
+                    _LOGGER.info(
+                        "Load %s: plan re-booked %.2f h at the run deadline —"
+                        " extending seamlessly to %s",
+                        subentry.title,
+                        run_h,
+                        off_at,
+                    )
+                    continue  # no OFF, no dwell stamp
                 desired = False
             else:
                 desired = active_now

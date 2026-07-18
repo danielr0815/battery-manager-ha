@@ -49,6 +49,11 @@ eventually break (observed locally on the venv314 HA).
 
 ### G2 — stale-SOC guard (P2)
 
+> **v0.14.0 note:** G2's supervisability additionally GATES the
+> F-SEAMLESS-RUNS deadline extension for energy-limited loads — a load G2
+> cannot watch (or has latched) never extends and keeps the R7/R8
+> duty-cycle cap (docs/F-SEAMLESS-RUNS.md).
+
 - **R5** New per-load runtime tracking (in-memory, not persisted): while
   `_load_charging_active[id]` is true AND the power feedback's RAW reading
   passes the existing standby bar (`min_sample_w` — reuse it; do not invent a

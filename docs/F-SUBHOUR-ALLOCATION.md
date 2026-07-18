@@ -91,6 +91,10 @@ simulator (already energy‑ and duration‑exact). No sub‑`min_runtime` runs
 - **R8** Force the load **OFF at `off_at`** via an explicit one‑shot timer
   (`async_track_point_in_time`); the 300 s poll is too coarse to stop mid‑hour.
   The force‑off uses the existing OFF path and stamps `_last_load_switch` (dwell).
+  **Amended (v0.14.0, docs/F-SEAMLESS-RUNS.md):** when THIS refresh's plan
+  re-booked a contiguous run at the expired deadline and the load is
+  extension-eligible, the deadline EXTENDS seamlessly instead (no OFF, no
+  dwell stamp) — the force-off applies only without a re-booking.
 - **R9** The load is also switched off earlier if a later plan makes it inactive
   once past the dwell (surplus vanished), and **never** off before `min_runtime`.
   (Since v0.13.1 ONE exception overrides this: the G4 floor guard forces an

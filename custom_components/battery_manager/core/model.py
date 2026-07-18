@@ -101,10 +101,13 @@ class SurplusLoadState:
     load_id: str
     available: bool = True  # False: unplugged/unavailable -> never scheduled
     soc_percent: float | None = None  # for energy_limited loads
-    measured_power_w: float | None = None  # smoothed feedback power
-    # Run-max of the accepted-sample EMA from past runs (F-PLANNER-HONESTY R1):
-    # honest planning power for an OFF load whose configured nominal is wrong
-    # (F2400-B: 300 W configured vs ~505 W real — every gate ~40 % under).
+    # Robust windowed estimate while the load runs at BM's request
+    # (F-ROBUST-POWER; None during warm-up and while off).
+    measured_power_w: float | None = None
+    # Last run's robust estimate, persisted (F-PLANNER-HONESTY R1 intent,
+    # estimator per F-ROBUST-POWER): honest planning power for an OFF load
+    # whose configured nominal is wrong (F2400-B: 300 W configured vs ~505 W
+    # real — every gate ~40 % under).
     learned_power_w: float | None = None
 
     def remaining_energy_wh(self, load: SurplusLoad) -> float | None:

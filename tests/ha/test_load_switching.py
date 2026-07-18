@@ -282,16 +282,18 @@ async def test_soc_cache_survives_sleeping_device(hass):
 async def test_switch_dwell_survives_restart(hass):
     """The per-load switch dwell must not reset on restart: a wiped
     timestamp allowed switching right after boot (co-factor of the
-    2026-07-05 degenerate-slot-0 night charge). The power EMA is
-    deliberately NOT persisted (a taper-decayed value must not become
-    permanent planning power)."""
+    2026-07-05 degenerate-slot-0 night charge). The live power-sample
+    buffer is deliberately NOT persisted (a stale window must not serve
+    as fresh measurement after a restart)."""
+    from collections import deque
+
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
 
     from homeassistant.util import dt as dt_util
 
     ts = dt_util.utcnow().replace(microsecond=0)
-    coordinator._load_power_ema[sub_id] = 505.4
+    coordinator._load_power_samples[sub_id] = deque([(ts, 505.4)])
     coordinator._last_load_switch[sub_id] = ts
 
     captured: dict = {}
@@ -308,36 +310,54 @@ async def test_switch_dwell_survives_restart(hass):
     from homeassistant.helpers.storage import Store
 
     await coordinator._store.async_save(captured)
-    coordinator._load_power_ema.clear()
+    coordinator._load_power_samples.clear()
     coordinator._last_load_switch.clear()
     coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
     await coordinator.async_load_persistent_state()
     assert coordinator._last_load_switch == {sub_id: ts}
-    assert coordinator._load_power_ema == {}
+    assert coordinator._load_power_samples == {}
 
 
-async def test_power_ema_serves_only_while_charging(hass):
-    """A feedback gap keeps the EMA only DURING an active charge (v0.5.1
-    rule); after the charge the taper-decayed value is discarded so the
-    planner falls back to the nominal power."""
+def _warm_power(hass, coordinator, watts, *, start=None, minutes=6.0, step_s=30.0):
+    """Feed an accepted-sample stream (F-ROBUST-POWER warm-up helper).
+
+    Sets the feedback sensor to `watts` and drives `_get_load_states` with
+    synthetic advancing timestamps until `minutes` of coverage exist —
+    past the 5-min warm-up the robust estimate serves. Returns (states,
+    now) of the last cycle."""
+    from homeassistant.util import dt as dt_util
+
+    now = start or dt_util.utcnow()
+    hass.states.async_set(POWER_FEEDBACK, str(watts))
+    states = None
+    end = now + timedelta(minutes=minutes)
+    while now <= end:
+        states = coordinator._get_load_states(now)
+        now += timedelta(seconds=step_s)
+    return states, now
+
+
+async def test_power_estimate_serves_only_while_charging(hass):
+    """A feedback gap keeps the estimate only DURING an active charge
+    (v0.5.1 rule); after the charge the buffer is discarded so the planner
+    falls back to the learned/nominal power."""
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
     coordinator._load_charging_active[sub_id] = True  # BM-initiated charge
-    hass.states.async_set(POWER_FEEDBACK, "505")
 
-    states = coordinator._get_load_states()
+    states, now = _warm_power(hass, coordinator, 505)
     assert states[0].measured_power_w == 505.0
 
-    # Feedback drops out mid-charge: last smoothed value keeps serving.
+    # Feedback drops out mid-charge: the buffer estimate keeps serving.
     hass.states.async_set(POWER_FEEDBACK, "0")
-    states = coordinator._get_load_states()
+    states = coordinator._get_load_states(now + timedelta(seconds=60))
     assert states[0].measured_power_w == 505.0
 
-    # Charge over: the EMA is dropped, planning returns to nominal power.
+    # Charge over: the buffer is dropped, planning returns to learned.
     coordinator._load_charging_active[sub_id] = False
-    states = coordinator._get_load_states()
+    states = coordinator._get_load_states(now + timedelta(seconds=120))
     assert states[0].measured_power_w is None
-    assert sub_id not in coordinator._load_power_ema
+    assert sub_id not in coordinator._load_power_samples
 
 
 async def test_standby_power_never_seeds_ema(hass):
@@ -353,35 +373,34 @@ async def test_standby_power_never_seeds_ema(hass):
 
     states = coordinator._get_load_states()
     assert states[0].measured_power_w is None  # planner uses nominal 400 W
-    assert sub_id not in coordinator._load_power_ema
+    assert sub_id not in coordinator._load_power_samples
 
 
 async def test_operating_power_above_standby_threshold_is_learned(hass):
     """A real operating value (350 W of 400 W nominal) is above the
-    standby threshold and seeds the EMA; when the device drops back to
-    standby without an active charge, the EMA is discarded again."""
+    standby threshold and feeds the estimator; when the device drops back
+    to standby without an active charge, the buffer is discarded again."""
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
     coordinator._load_charging_active[sub_id] = True  # BM-initiated charge
-    hass.states.async_set(POWER_FEEDBACK, "350")
 
-    states = coordinator._get_load_states()
+    states, now = _warm_power(hass, coordinator, 350)
     assert states[0].measured_power_w == 350.0
 
-    # Back to standby draw, run over: the learned value must not linger.
+    # Back to standby draw, run over: the measured value must not linger.
     coordinator._load_charging_active[sub_id] = False
     hass.states.async_set(POWER_FEEDBACK, "19.6")
-    states = coordinator._get_load_states()
+    states = coordinator._get_load_states(now)
     assert states[0].measured_power_w is None
-    assert sub_id not in coordinator._load_power_ema
+    assert sub_id not in coordinator._load_power_samples
 
 
 async def test_manual_run_never_trains_planning_power(hass):
     """Operator decision F-L6 (2026-07-05): a manual activation (or a
     foreign consumer on the measured outlet) must not influence future
-    planning. For a recommendation-only load, samples train the EMA only
-    during an activation that started with an idle outlet — the draw then
-    provably happened in response to the plan."""
+    planning. For a recommendation-only load, samples feed the estimator
+    only during an activation that started with an idle outlet — the draw
+    then provably happened in response to the plan."""
     from types import SimpleNamespace
 
     calls: list[tuple[str, str]] = []
@@ -398,7 +417,7 @@ async def test_manual_run_never_trains_planning_power(hass):
     coordinator._update_plan_active(off)
     states = coordinator._get_load_states()
     assert states[0].measured_power_w is None
-    assert sub_id not in coordinator._load_power_ema
+    assert sub_id not in coordinator._load_power_samples
 
     # Plan activates WHILE the manual draw is ongoing (dirty edge): the
     # pre-existing draw still must not train — repeatedly (stability!).
@@ -406,23 +425,22 @@ async def test_manual_run_never_trains_planning_power(hass):
     for _ in range(3):
         states = coordinator._get_load_states()
         assert states[0].measured_power_w is None
-        assert sub_id not in coordinator._load_power_ema
+        assert sub_id not in coordinator._load_power_samples
 
     # Clean cycle: recommendation off, outlet idle, then a fresh edge —
-    # now the draw follows the plan and is a legitimate sample.
+    # now the draw follows the plan and is a legitimate warmed stream.
     coordinator._update_plan_active(off)
     hass.states.async_set(POWER_FEEDBACK, "5")
     coordinator._update_plan_active(on)
-    hass.states.async_set(POWER_FEEDBACK, "400")
-    states = coordinator._get_load_states()
+    states, now = _warm_power(hass, coordinator, 400)
     assert states[0].measured_power_w == 400.0
 
-    # Recommendation ends, device back to standby: EMA is discarded.
+    # Recommendation ends, device back to standby: the buffer is discarded.
     coordinator._update_plan_active(off)
     hass.states.async_set(POWER_FEEDBACK, "19.6")
-    states = coordinator._get_load_states()
+    states = coordinator._get_load_states(now)
     assert states[0].measured_power_w is None
-    assert sub_id not in coordinator._load_power_ema
+    assert sub_id not in coordinator._load_power_samples
 
 
 async def test_charging_state_survives_entity_dropout(hass):
@@ -882,11 +900,14 @@ async def test_energy_limited_on_arms_deadline_and_forces_off_when_stale(hass):
     assert 29.0 <= (off_at - t0).total_seconds() / 60.0 <= 31.0
     assert sub_id in coordinator._load_off_timer  # one-shot timer armed
 
-    # Stale SOC: the plan still shows the load active past the deadline. The cap
-    # must force it OFF regardless (the level-driven stop never fired).
+    # Stale SOC: the plan still shows the load active past the deadline.
+    # F-SEAMLESS-RUNS: a G2-LATCHED energy-limited load is extension-
+    # ineligible, so the R7/R8 cap must force it OFF regardless (the
+    # level-driven stop never fired).
     hass.states.async_set(PLUG, "on")
     hass.states.async_set(ENABLE, "on")
     coordinator._load_charging_active[sub_id] = True
+    coordinator._load_soc_stale[sub_id] = 40.0  # G2 latched -> no extension
     calls.clear()
     result = SimpleNamespace(
         load_plans=[
@@ -961,9 +982,10 @@ async def test_off_clears_deadline_and_timer(hass):
     assert sub_id not in coordinator._load_off_timer
 
 
-async def test_deadline_forces_off_even_when_plan_wants_on(hass):
-    """Once the frozen deadline passes, the load is switched OFF even though the
-    plan still wants it on (F-SUBHOUR R8)."""
+async def test_deadline_forces_off_when_plan_not_rebooked(hass):
+    """Once the frozen deadline passes and THIS refresh's plan did NOT
+    re-book the load, it is switched OFF (F-SUBHOUR R8; the re-booked case
+    extends seamlessly instead — F-SEAMLESS-RUNS)."""
     from types import SimpleNamespace
 
     from homeassistant.util import dt as dt_util
@@ -972,6 +994,11 @@ async def test_deadline_forces_off_even_when_plan_wants_on(hass):
 
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, data = await _setup(hass, calls, energy_limited=False)
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
     hass.states.async_set(PLUG, "on")
     hass.states.async_set(ENABLE, "on")
     coordinator._load_charging_active[sub_id] = True
@@ -981,9 +1008,9 @@ async def test_deadline_forces_off_even_when_plan_wants_on(hass):
         load_plans=[
             LoadPlan(
                 load_id=sub_id,
-                schedule=(True,),
+                schedule=(False,),
                 planned_energy_wh=0.0,
-                run_hours=(0.5,),
+                run_hours=(0.0,),
             )
         ]
     )
@@ -991,6 +1018,263 @@ async def test_deadline_forces_off_even_when_plan_wants_on(hass):
     await hass.async_block_till_done()
     assert ("turn_off", ENABLE) in calls or ("turn_off", PLUG) in calls
     assert sub_id not in coordinator._load_run_deadline
+
+
+async def test_deadline_extends_seamlessly_when_plan_rebooks(hass):
+    """F-SEAMLESS-RUNS: at an expired deadline with a freshly re-booked
+    contiguous run, the load keeps running — no OFF call, the deadline
+    re-freezes at now + booked run, and NO dwell is stamped (min_off arms
+    only on deliberate deactivations)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls, energy_limited=False)
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    await hass.async_block_till_done()  # drain the debounced background refresh
+    coordinator._load_charging_active[sub_id] = True
+    now = dt_util.utcnow()
+    coordinator._load_run_deadline[sub_id] = now - timedelta(minutes=1)
+    calls.clear()
+    rebooked = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(rebooked, now, (0.5,))
+    await hass.async_block_till_done()
+    assert calls == []  # no OFF/ON cycle at the boundary
+    assert coordinator._load_charging_active[sub_id] is True
+    new_deadline = coordinator._load_run_deadline[sub_id]
+    assert 29.0 <= (new_deadline - now).total_seconds() / 60.0 <= 31.0
+    assert sub_id not in coordinator._last_load_switch  # no dwell stamp
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_extension_uses_booked_run_not_min_runtime(hass):
+    """F-SEAMLESS-RUNS: the extension covers exactly the newly booked run —
+    min_runtime is NOT re-applied as a floor (it was already served by the
+    original run)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30
+    )
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    await hass.async_block_till_done()  # drain the debounced background refresh
+    coordinator._load_charging_active[sub_id] = True
+    now = dt_util.utcnow()
+    coordinator._load_run_deadline[sub_id] = now - timedelta(seconds=10)
+    rebooked = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.2,),
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(rebooked, now, (1.0,))
+    await hass.async_block_till_done()
+    new_deadline = coordinator._load_run_deadline[sub_id]
+    assert 11.0 <= (new_deadline - now).total_seconds() / 60.0 <= 13.0  # 0.2 h
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_energy_limited_supervisable_extends_seamlessly(hass):
+    """F-SEAMLESS-RUNS headline case: an ENERGY-LIMITED load with control
+    switch + readable SOC + readable power feedback and no G2 latch DOES
+    extend seamlessly at the boundary — the fossibot charges through
+    back-to-back quanta without the 30-min pauses."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls, energy_limited=True)
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set(FOSSI_SOC, "40", {"unit_of_measurement": "%"})
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    await hass.async_block_till_done()  # drain the debounced background refresh
+    coordinator._load_charging_active[sub_id] = True
+    now = dt_util.utcnow()
+    coordinator._load_run_deadline[sub_id] = now - timedelta(minutes=1)
+    calls.clear()
+    rebooked = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(rebooked, now, (0.5,))
+    await hass.async_block_till_done()
+    assert calls == []  # no OFF/ON cycle
+    assert coordinator._load_charging_active[sub_id] is True
+    assert coordinator._load_run_deadline[sub_id] > now
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_energy_limited_unreadable_sensor_never_extends(hass):
+    """F-SEAMLESS-RUNS eligibility (review hardening): entities merely
+    CONFIGURED are not enough — during a sensor outage G2 gathers no
+    evidence, so the extension must be denied and the R7/R8 cap forces
+    the OFF."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls, energy_limited=True)
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set(FOSSI_SOC, "unavailable")  # sensor outage
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    await hass.async_block_till_done()  # drain the debounced background refresh
+    coordinator._load_charging_active[sub_id] = True
+    now = dt_util.utcnow()
+    coordinator._load_run_deadline[sub_id] = now - timedelta(minutes=1)
+    calls.clear()
+    rebooked = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(rebooked, now, (0.5,))
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls or ("turn_off", PLUG) in calls
+    assert sub_id not in coordinator._load_run_deadline
+
+
+async def test_energy_limited_without_power_sensor_never_extends(hass):
+    """F-SEAMLESS-RUNS eligibility: an energy-limited load WITHOUT a power
+    feedback sensor is G2-unsupervisable — the R7/R8 cap stays, no
+    extension, forced OFF at the deadline."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(
+        hass, calls, energy_limited=True, power_entity=None
+    )
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    await hass.async_block_till_done()  # drain the debounced background refresh
+    coordinator._load_charging_active[sub_id] = True
+    now = dt_util.utcnow()
+    coordinator._load_run_deadline[sub_id] = now - timedelta(minutes=1)
+    calls.clear()
+    rebooked = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(rebooked, now, (0.5,))
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls or ("turn_off", PLUG) in calls
+    assert sub_id not in coordinator._load_run_deadline
+
+
+async def test_g4_wins_over_extension(hass):
+    """G4 ordering: an active floor guard forces OFF even when the plan
+    re-booked a contiguous run at the expired deadline."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls, energy_limited=False)
+    # Hermetic executor test: detach the entity listener so no debounced
+    # background refresh (real plan) interferes with the primed state.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set("sensor.test_soc", "19", {"unit_of_measurement": "%"})
+    await hass.async_block_till_done()  # drain the debounced background refresh
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._floor_guard_active = True
+    now = dt_util.utcnow()
+    coordinator._load_run_deadline[sub_id] = now - timedelta(minutes=1)
+    calls.clear()
+    rebooked = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    await coordinator._apply_load_switching(rebooked, now, (0.5,))
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls or ("turn_off", PLUG) in calls
 
 
 async def test_min_off_dwell_blocks_re_on(hass):
@@ -1062,12 +1346,11 @@ async def test_recommendation_only_load_active_flips_at_deadline(hass):
     coordinator._cancel_off_timer(sub_id)
 
 
-async def test_rec_only_deadline_reanchors_and_is_not_wedged(hass):
-    """FIX-5: a recommendation-only load whose plan stays continuously active for a
-    long block (a night pre-drain glued to the following day) must not stay wedged
-    OFF after the first frozen deadline. The published `active` goes False at the
-    deadline, and once the min_off dwell elapses the deadline RE-ANCHORS so it goes
-    True again — a controlled load's force-off -> dwell -> re-on, published-only."""
+async def test_rec_only_seamless_published_active_never_dips(hass):
+    """F-SEAMLESS-RUNS (supersedes the FIX-5 duty-cycle for eligible loads):
+    a recommendation-only CONTINUOUS load whose plan stays active across a
+    quantum boundary re-anchors IMMEDIATELY at the expired deadline — the
+    published `active` the operator's automation follows never dips."""
     from homeassistant.util import dt as dt_util
 
     from custom_components.battery_manager.core.model import LoadPlan
@@ -1080,7 +1363,6 @@ async def test_rec_only_deadline_reanchors_and_is_not_wedged(hass):
         min_runtime_min=30,
         min_off_min=30,
     )
-    # A 4 h contiguous block from slot 0 (deadline = run_start + 240 min).
     plan = LoadPlan(
         load_id=sub_id,
         schedule=(True,) * 4,
@@ -1094,19 +1376,55 @@ async def test_rec_only_deadline_reanchors_and_is_not_wedged(hass):
     d0 = coordinator._load_run_deadline[sub_id]
     assert coordinator._effective_load_active(plan, now) is True
 
-    # Just past the first deadline: published active is capped OFF.
+    # At the expired boundary the maintain call re-anchors right away —
+    # after the cycle the published active reads True again (no dip).
+    t1 = d0 + timedelta(seconds=30)
+    coordinator._maintain_recommendation_deadline(sub_id, data, plan, t1, durations)
+    assert coordinator._load_run_deadline[sub_id] > d0
+    assert coordinator._effective_load_active(plan, t1) is True
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_rec_only_energy_limited_keeps_duty_cycle(hass):
+    """FIX-5 fallback preserved: a recommendation-only ENERGY-LIMITED load is
+    G2-unsupervisable and extension-INELIGIBLE — at the expired deadline the
+    published `active` dips and re-anchors only after the min_off dwell
+    (the F-RESIDUAL-TOPUP R9 duty-cycle cap)."""
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    coordinator, sub_id, data = await _setup(
+        hass,
+        [],
+        energy_limited=True,
+        with_control_switch=False,
+        min_runtime_min=30,
+        min_off_min=30,
+    )
+    plan = LoadPlan(
+        load_id=sub_id,
+        schedule=(True,) * 4,
+        planned_energy_wh=1600.0,
+        run_hours=(1.0,) * 4,
+    )
+    durations = (1.0,) * 4
+    now = dt_util.utcnow()
+
+    coordinator._maintain_recommendation_deadline(sub_id, data, plan, now, durations)
+    d0 = coordinator._load_run_deadline[sub_id]
+    assert coordinator._effective_load_active(plan, now) is True
+
+    # Past the deadline, before min_off: wedged OFF, deadline unchanged.
     t1 = d0 + timedelta(minutes=1)
-    assert coordinator._effective_load_active(plan, t1) is False
-    # Re-evaluated before min_off elapses: still wedged, deadline unchanged.
     coordinator._maintain_recommendation_deadline(sub_id, data, plan, t1, durations)
     assert coordinator._load_run_deadline[sub_id] == d0
     assert coordinator._effective_load_active(plan, t1) is False
 
-    # Once min_off (30 min) has elapsed since the deadline: re-anchor -> active.
+    # After min_off: re-anchored (duty cycle, not a permanent wedge).
     t2 = d0 + timedelta(minutes=31)
     coordinator._maintain_recommendation_deadline(sub_id, data, plan, t2, durations)
-    d1 = coordinator._load_run_deadline[sub_id]
-    assert d1 > d0  # re-anchored (not wedged for the rest of the block)
+    assert coordinator._load_run_deadline[sub_id] > d0
     assert coordinator._effective_load_active(plan, t2) is True
     coordinator._cancel_off_timer(sub_id)
 
@@ -1645,21 +1963,32 @@ async def test_night_block_runs_exactly_planned_hours_then_force_off(hass):
     assert calls == []
     assert coordinator._load_charging_active[sub_id] is True
 
-    # Past the deadline: force off despite the plan still wanting it on.
+    # Past the deadline with the plan STILL booking a contiguous run: the
+    # run extends seamlessly (F-SEAMLESS-RUNS) — no OFF, fresh deadline.
     calls.clear()
-    await coordinator._apply_load_switching(
-        result, off_at + timedelta(minutes=1), durations
-    )
+    t_ext = off_at + timedelta(minutes=1)
+    await coordinator._apply_load_switching(result, t_ext, durations)
+    await hass.async_block_till_done()
+    assert calls == []
+    assert coordinator._load_run_deadline[sub_id] > off_at
+
+    # Past the deadline WITHOUT a re-booked run: forced off (R8 kept).
+    inactive = _inactive_result(sub_id)
+    calls.clear()
+    t_off = coordinator._load_run_deadline[sub_id] + timedelta(minutes=1)
+    await coordinator._apply_load_switching(inactive, t_off, durations)
     await hass.async_block_till_done()
     assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
     assert sub_id not in coordinator._load_run_deadline
     coordinator._cancel_off_timer(sub_id)
 
 
-async def test_extended_plan_still_force_offs_and_min_off_gates_re_on(hass):
-    """(b) If the plan EXTENDS mid-run, the frozen deadline must not move (no
-    endless run); at the ORIGINAL deadline the load force-offs, and the min_off
-    dwell then blocks the immediate re-on (F-PREDRAIN §5 T9b)."""
+async def test_extended_plan_extends_at_deadline_and_min_off_after_real_off(hass):
+    """(b, F-SEAMLESS-RUNS revision of F-PREDRAIN §5 T9b) A mid-run plan
+    extension must not move the frozen deadline (no endless run) — but AT
+    the deadline a still-booked plan now extends seamlessly instead of
+    force-offing. A real deactivation then switches off and arms min_off,
+    which blocks the immediate re-on."""
     from types import SimpleNamespace
 
     from homeassistant.util import dt as dt_util
@@ -1681,7 +2010,7 @@ async def test_extended_plan_still_force_offs_and_min_off_gates_re_on(hass):
     off_at = coordinator._load_run_deadline[sub_id]
     assert 119.0 <= (off_at - now).total_seconds() / 60.0 <= 121.0
 
-    # Plan extends to 4 h mid-run: the frozen deadline must NOT move.
+    # Plan extends to 4 h MID-RUN: the frozen deadline must NOT move.
     extended = SimpleNamespace(load_plans=[_night_plan(sub_id, 4)])
     calls.clear()
     await coordinator._apply_load_switching(
@@ -1691,18 +2020,32 @@ async def test_extended_plan_still_force_offs_and_min_off_gates_re_on(hass):
     assert coordinator._load_run_deadline[sub_id] == off_at  # unchanged
     assert calls == []  # still running, no switch
 
-    # Past the ORIGINAL deadline: force off despite the extended plan.
+    # AT the (expired) deadline the extended plan is a re-booking: the run
+    # continues seamlessly with a fresh deadline, no OFF, and no NEW dwell
+    # stamp (the ON-edge stamp from the run start stays untouched).
+    stamp_before = coordinator._last_load_switch.get(sub_id)
     off_now = off_at + timedelta(minutes=1)
     calls.clear()
     await coordinator._apply_load_switching(extended, off_now, durations)
     await hass.async_block_till_done()
-    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
-    assert sub_id not in coordinator._load_run_deadline
+    assert calls == []
+    assert coordinator._load_run_deadline[sub_id] > off_at
+    assert coordinator._last_load_switch.get(sub_id) == stamp_before
 
-    # min_off (45) blocks the immediate re-on even though the plan wants it on.
+    # A REAL deactivation (plan off) switches off and stamps the dwell.
+    inactive = _inactive_result(sub_id)
     calls.clear()
     await coordinator._apply_load_switching(
-        extended, off_now + timedelta(minutes=10), durations
+        inactive, off_now + timedelta(minutes=5), durations
+    )
+    await hass.async_block_till_done()
+    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
+
+    # min_off (45) blocks the immediate re-on even though the plan wants on.
+    t_off = off_now + timedelta(minutes=5)
+    calls.clear()
+    await coordinator._apply_load_switching(
+        extended, t_off + timedelta(minutes=10), durations
     )
     await hass.async_block_till_done()
     assert calls == []
@@ -1710,7 +2053,7 @@ async def test_extended_plan_still_force_offs_and_min_off_gates_re_on(hass):
     # After the min_off dwell elapses the re-on is allowed.
     calls.clear()
     await coordinator._apply_load_switching(
-        extended, off_now + timedelta(minutes=46), durations
+        extended, t_off + timedelta(minutes=46), durations
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) in calls or ("turn_on", ENABLE) in calls
@@ -1830,6 +2173,11 @@ async def test_floor_guard_blocks_switch_on(hass):
     coordinator, sub_id, _data = await _setup(hass, calls, energy_limited=False)
     hass.states.async_set(PLUG, "off")
     hass.states.async_set(ENABLE, "off")
+    # Pin the house SOC below the floor so any BACKGROUND refresh triggered
+    # by the entity events above keeps the guard tripped too (hermetic).
+    hass.states.async_set("sensor.test_soc", "19", {"unit_of_measurement": "%"})
+    await hass.async_block_till_done()  # drain setup-cycle actuations
+    calls.clear()  # assert only THIS test's switching below
     config = coordinator.build_system_config()
     assert coordinator._update_floor_guard(19.0, config) is True
 
@@ -1894,6 +2242,11 @@ async def test_floor_guard_drops_queued_switch_on(hass):
     coordinator, sub_id, data = await _setup(hass, calls, energy_limited=False)
     hass.states.async_set(PLUG, "off")
     hass.states.async_set(ENABLE, "off")
+    # Pin the house SOC below the floor: the drop-path's catch-up refresh
+    # runs a REAL cycle, which must keep the guard tripped (hermetic).
+    hass.states.async_set("sensor.test_soc", "19", {"unit_of_measurement": "%"})
+    await hass.async_block_till_done()  # drain setup-cycle actuations
+    calls.clear()  # assert only the drop path below
     coordinator._floor_guard_active = True  # tripped after the action was queued
     await coordinator._execute_load_switching(
         [(sub_id, data, True, False, 1.0)], dt_util.utcnow()
@@ -1967,43 +2320,40 @@ async def test_floor_guard_caps_published_active(hass):
 
 
 # ---------------------------------------------------------------------------
-# F-PLANNER-HONESTY F1: learned planning power (docs/F-PLANNER-HONESTY.md
-# R2/R3/R6). The run-max of the accepted-sample EMA survives the run (and
-# restarts), so an OFF load is planned at its real power instead of the
-# nominal; the v0.6.2 standby bar stays the single sample gate.
+# Learned planning power (docs/F-ROBUST-POWER.md, supersedes the
+# F-PLANNER-HONESTY R2 run-max-of-EMA): the write-through of the robust
+# windowed estimate survives the run (and restarts), so an OFF load is
+# planned at its real power instead of the nominal; the v0.6.2 standby bar
+# stays the single sample gate.
 # ---------------------------------------------------------------------------
 
 
-async def test_learned_power_is_run_max_of_ema(hass):
-    """R2: the learned value is the RUN-MAX of the accepted-sample EMA — an
-    end-of-charge taper cannot erode it — and it keeps serving after the run
-    ends (unlike the live EMA, which is deliberately discarded)."""
+async def test_learned_power_is_robust_estimate(hass):
+    """F-ROBUST-POWER (supersedes R2 run-max): the learned value is the
+    write-through of the robust windowed estimate — a SHORT end-of-charge
+    taper is a window minority and cannot erode it — and it keeps serving
+    after the run ends (the live buffer is discarded)."""
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
     coordinator._load_charging_active[sub_id] = True  # BM-initiated charge
-    hass.states.async_set(POWER_FEEDBACK, "505")
 
-    states = coordinator._get_load_states()
+    states, now = _warm_power(hass, coordinator, 505)
     assert states[0].measured_power_w == 505.0
-    # R2a: the first accepted sample seeds the EMA only — nothing learned yet.
-    assert sub_id not in coordinator._load_learned_power_w
-    states = coordinator._get_load_states()  # second accepted sample
     assert coordinator._load_learned_power_w[sub_id] == 505.0
     assert states[0].learned_power_w == 505.0
 
-    # End-of-charge taper (still above the standby bar): the EMA sinks, the
-    # learned run-max does not.
-    hass.states.async_set(POWER_FEEDBACK, "320")
-    states = coordinator._get_load_states()
-    assert states[0].measured_power_w < 505.0
+    # Short end-of-charge taper (3 min, still above the standby bar): a
+    # window minority — measured and learned both hold the run level.
+    states, now = _warm_power(hass, coordinator, 320, start=now, minutes=3.0)
+    assert states[0].measured_power_w == 505.0
     assert coordinator._load_learned_power_w[sub_id] == 505.0
 
-    # Run over: the live EMA is dropped (v0.5.1), the learned value serves —
-    # an OFF load now plans at its real 505 W, not the nominal 300 W.
+    # Run over: the buffer is dropped, the learned value serves — an OFF
+    # load now plans at its real 505 W, not the nominal 300 W.
     coordinator._load_charging_active[sub_id] = False
-    states = coordinator._get_load_states()
+    states = coordinator._get_load_states(now)
     assert states[0].measured_power_w is None
-    assert sub_id not in coordinator._load_run_power_max  # run tracker ends
+    assert sub_id not in coordinator._load_power_samples
     assert states[0].learned_power_w == 505.0
     from custom_components.battery_manager.core.model import SurplusLoad
 
@@ -2014,60 +2364,47 @@ async def test_learned_power_is_run_max_of_ema(hass):
 
 
 async def test_learned_power_last_run_wins(hass):
-    """R2: the store holds the CURRENT run's max once it has enough accepted
-    samples — a later, genuinely lower-powered run replaces the old value."""
+    """The store holds the CURRENT run's robust estimate — a later,
+    genuinely lower-powered run replaces the old value once warmed."""
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
     coordinator._load_charging_active[sub_id] = True
-    hass.states.async_set(POWER_FEEDBACK, "505")
-    coordinator._get_load_states()
-    coordinator._get_load_states()  # second accepted sample (R2a)
+    _states, now = _warm_power(hass, coordinator, 505)
     assert coordinator._load_learned_power_w[sub_id] == 505.0
 
     coordinator._load_charging_active[sub_id] = False
-    coordinator._get_load_states()  # run 1 over
+    coordinator._get_load_states(now)  # run 1 over
 
     coordinator._load_charging_active[sub_id] = True  # run 2, lower power
-    hass.states.async_set(POWER_FEEDBACK, "400")
-    coordinator._get_load_states()
-    coordinator._get_load_states()  # second accepted sample (R2a)
+    _states, now = _warm_power(hass, coordinator, 400, start=now)
     assert coordinator._load_learned_power_w[sub_id] == 400.0  # last run wins
 
 
-async def test_first_sample_spike_is_not_learned(hass):
-    """R2a: the EMA seeds VERBATIM from a run's first accepted sample, so the
-    run-max tracker starts at the SECOND — a single start-up spike run learns
-    nothing, and a spike followed by settled samples learns the EMA-damped
-    band (a fresh settled run then replaces it entirely, last run wins)."""
+async def test_startup_spike_never_learned(hass):
+    """F-ROBUST-POWER (supersedes R2a): a run start consisting only of a
+    spike stays inside the 5-min warm-up and learns NOTHING; a spike
+    followed by settled samples learns exactly the settled level (the
+    median never blends the spike in — the old EMA landed at 781.5)."""
+    from homeassistant.util import dt as dt_util
+
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
 
-    # A run consisting of ONE spiked sample learns nothing at all.
+    # A short spike-only run (2 min < warm-up) learns nothing at all.
     coordinator._load_charging_active[sub_id] = True
-    hass.states.async_set(POWER_FEEDBACK, "900")
-    coordinator._get_load_states()
+    t0 = dt_util.utcnow()
+    _states, now = _warm_power(hass, coordinator, 900, start=t0, minutes=2.0)
+    assert sub_id not in coordinator._load_learned_power_w
     coordinator._load_charging_active[sub_id] = False
-    coordinator._get_load_states()  # run over after a single sample
+    coordinator._get_load_states(now)  # run over
     assert sub_id not in coordinator._load_learned_power_w
 
-    # Spike + settled samples: the spike seeds the EMA but is never learned
-    # verbatim; the learned run-max is the EMA-damped second sample
-    # (0.3*505 + 0.7*900 = 781.5), decaying — not 900.
+    # Spike (2 min) + settled 505 (6 min): the estimate is the settled
+    # median from the first served value on — never a spike blend.
     coordinator._load_charging_active[sub_id] = True
-    hass.states.async_set(POWER_FEEDBACK, "900")
-    coordinator._get_load_states()
-    hass.states.async_set(POWER_FEEDBACK, "505")
-    for _ in range(3):
-        coordinator._get_load_states()
-    assert coordinator._load_learned_power_w[sub_id] < 900.0
-    assert abs(coordinator._load_learned_power_w[sub_id] - 781.5) < 0.1
-    coordinator._load_charging_active[sub_id] = False
-    coordinator._get_load_states()  # run over
-
-    # The next clean settled run replaces the damped value: learned ~505.
-    coordinator._load_charging_active[sub_id] = True
-    coordinator._get_load_states()
-    coordinator._get_load_states()
+    _states, now = _warm_power(hass, coordinator, 900, start=now, minutes=2.0)
+    states, now = _warm_power(hass, coordinator, 505, start=now)
+    assert states[0].measured_power_w == 505.0
     assert coordinator._load_learned_power_w[sub_id] == 505.0
 
 
@@ -2110,6 +2447,43 @@ async def test_learned_power_persists_and_prunes_vanished_loads(hass):
     coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
     await coordinator.async_load_persistent_state()
     assert coordinator._load_learned_power_w == {sub_id: 505.4}  # ghost pruned
+
+
+async def test_818_incident_transient_never_learned(hass):
+    """THE 2026-07-18 regression, HA-level twin: a stable 426 W run with one
+    1711 W transient held ~60 s (inverter-transfer compressor restart) must
+    keep estimate AND learned value in the 426 W band — no 818-class blend."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=400.0)
+    coordinator._load_charging_active[sub_id] = True
+
+    _states, now = _warm_power(hass, coordinator, 426, minutes=10.0)
+    # The transient: two 30 s cycles at 1711 W (sensor holds the spike).
+    states, now = _warm_power(hass, coordinator, 1711, start=now, minutes=1.0)
+    assert states[0].measured_power_w is not None
+    assert states[0].measured_power_w <= 470.0
+    states, now = _warm_power(hass, coordinator, 426, start=now, minutes=5.0)
+    assert states[0].measured_power_w == 426.0
+    assert 420.0 <= coordinator._load_learned_power_w[sub_id] <= 470.0
+
+
+async def test_estimate_overrun_warns_at_3x_nominal(hass, caplog):
+    """A sustained estimate above 3x nominal logs ONE change-gated warning
+    (sensor-lie observability) but is still served — deliberately no clamp
+    (levels above nominal are legitimate, e.g. raised charge rates)."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, power_w=300.0)
+    coordinator._load_charging_active[sub_id] = True
+
+    states, _now = _warm_power(hass, coordinator, 1000)
+    assert states[0].measured_power_w == 1000.0  # served, not clamped
+    assert coordinator._load_learned_power_w[sub_id] == 1000.0
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "exceeds 3x" in r.message
+    ]
+    assert len(warnings) == 1  # change-gated: once per run, not per cycle
 
 
 # ---------------------------------------------------------------------------

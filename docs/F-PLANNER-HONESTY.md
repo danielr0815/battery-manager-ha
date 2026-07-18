@@ -30,7 +30,13 @@ planner knows the answer at acceptance time and throws it away.
 - **R1** New core field `SurplusLoadState.learned_power_w: float | None = None`.
   `planning_power_w()` precedence: `measured_power_w` (live, present only
   during/around an active run) > `learned_power_w` > `nominal_power_w`.
-- **R2** The coordinator learns per load the **run-maximum of the accepted-
+- **R2** **Superseded (v0.14.0, docs/F-ROBUST-POWER.md):** the run-max-of-EMA
+  learner below was replaced by a time-weighted windowed MEDIAN estimator
+  after a 60 s compressor-restart transient was EMA-blended and frozen at
+  818 W for a 426 W device (2026-07-18 incident). R1's `planning_power_w`
+  precedence and R3's persistence are unchanged; R2a's seed rule is
+  superseded by the estimator's 5-min warm-up. Original text (historical):
+  the coordinator learns per load the **run-maximum of the accepted-
   sample EMA**: while a run is active and a sample passes the existing
   standby bar (`min_sample_w`, unchanged v0.6.2 semantics), after updating
   `_load_power_ema` set

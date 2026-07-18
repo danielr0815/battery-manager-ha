@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-18
+
+### Fixed
+- **818 W phantom planning power (F-ROBUST-POWER).** At the 06:21 inverter
+  cutoff a 1711 W compressor-restart transient (held ~60 s by the measuring
+  plug) was blended into the power EMA (0.3·1711 + 0.7·433 ≈ 818) and frozen
+  by the run-max rule — a 426 W dehumidifier was planned at 818 W all
+  morning, squeezing the fossibot into 30-min scraps. The EMA/run-max
+  learner is replaced by a robust TIME-WEIGHTED MEDIAN over the run's last
+  ~30 min: short spikes/dips (inrush, defrost, transfer transients) can
+  never move it, sustained changes are adopted (~15 min, or ~10 min via the
+  stable fast-adopt window — operator-changed charge rates included), and
+  the first 5 min of a run never learn (inrush kill). No nominal clamp
+  (levels above nominal are legitimate); estimates above 3× nominal log a
+  change-gated warning. Old persisted values self-heal on the first run.
+- **50 % duty-cycling at quantum boundaries (F-SEAMLESS-RUNS).** The
+  executor force-offed at every booked-quantum end while the replan re-booked
+  seconds later, and min_off then enforced a pointless 30-min pause (relay
+  cycles, compressor restarts — which also fed the 818 W incident). Per the
+  operator's min_off model ("mindestens die konfigurierte Zeit aus, wenn
+  ABSICHTLICH deaktiviert"), an expired deadline with a freshly re-booked
+  contiguous run now EXTENDS seamlessly: no OFF, no dwell stamp. min_off
+  arms only on deliberate stops (surplus gone, target reached, floor guard,
+  no re-booking). Energy-limited loads extend only while the G2 stale-SOC
+  guard can supervise them — everything G2-unsupervisable keeps the R7/R8
+  duty-cycle cap.
+
+### Changed
+- Runs shorter than ~5 min no longer produce or learn a measured power
+  (warm-up). Appliance planning is explicitly unaffected by learning — it
+  always uses the declared run energy/duration (documented clarification).
+
 ## [0.13.1] - 2026-07-18
 
 ### Fixed
