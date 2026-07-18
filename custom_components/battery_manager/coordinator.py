@@ -961,13 +961,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
         """One INFO line when the plan books preemptive night charging.
 
-        A pre-drain "make room" run (pass 2) for a CONTINUOUS load that lands
-        OUTSIDE every PV absorption window is the F-PREDRAIN feature's headline
-        action (docs/F-PREDRAIN.md F4) — surface it with the load name, the booked
-        slot times and the grid import the trade cost. Emitted only when the set of
-        night-booked (load, slot-start) pairs CHANGES vs the previous log (FIX-11):
-        the plan re-runs every 5 min, so an unchanged night booking would otherwise
-        spam an identical line every cycle.
+        A pre-drain "make room" run (pass 2) that lands OUTSIDE every PV
+        absorption window is the F-PREDRAIN feature's headline action
+        (docs/F-PREDRAIN.md F4) — surface it with the load name, the booked
+        slot times and the grid import the trade cost. Only continuous loads
+        can appear here: energy-limited loads are barred from zero-PV pass-2
+        slots by construction (F-GATE-PARITY daylight rule), and their allowed
+        pre-window DAYLIGHT bookings would be misread as "night" by this log's
+        strong-PV window test — the class skip below keeps the line honest.
+        Emitted only when the set of night-booked (load, slot-start) pairs
+        CHANGES vs the previous log (FIX-11): the plan re-runs every 5 min, so
+        an unchanged night booking would otherwise spam an identical line
+        every cycle.
         """
         ends = result.pv_window_ends  # {iso date -> last strong-PV hour}
         if not result.load_plans:
@@ -993,7 +998,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         pairs: set[tuple[str, str]] = set()
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
             if load.energy_limited:
-                continue  # pre-drain is continuous-loads only (F-PREDRAIN L5)
+                # Cannot book night slots (F-GATE-PARITY daylight rule); their
+                # pre-window daylight bookings are not night pre-drains.
+                continue
             night = [
                 inputs.slots[j]
                 for start, count, pass_no, _wh in load_plan.allocations

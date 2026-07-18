@@ -115,6 +115,12 @@ candidates).
   is automatically discarded by (a) (the battery would breach the
   inverter minimum → import); the useful scenario "short
   sun window, high SOC" is automatically allowed.
+  **v0.13.0 (F-GATE-PARITY):** both load classes face the IDENTICAL pass-2
+  gate set (one Z2' trade invariant, c1-rt, c2-beta insurance, Z4 stress),
+  so priority alone decides contested bet energy — the former
+  energy-limited c1-only/strict-import carve-out silently overrode the
+  priority order. Single remaining class rule: energy-limited loads never
+  book zero-PV (night) slots.
 - **Merge principle (operator insight, 2026-07-04):** All gate conditions
   are **difference comparisons** of two complete trajectories. As soon as
   both variants (with/without the load hour) reach the max SOC, they are

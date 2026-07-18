@@ -386,10 +386,25 @@ def test_dc48_activate_soc_configurable():
     assert any(dc48_wide)
 
 
+def _twilight(day: datetime, *hours: int) -> dict[datetime, float]:
+    """A few Wh of dawn shoulder light for the given hours (F-GATE-PARITY).
+
+    The synthetic two-window PV model leaves pre-window hours at EXACTLY
+    0 Wh, which the daylight rule reads as night. Real hourly forecasts
+    never do that — any morning hour carries a little light — so the
+    short-peak scenarios model it explicitly: 5 Wh per hour is far below
+    the 200 W strong-PV cutoff (the window stays short) and energetically
+    negligible, but marks the hours as daylight. The uncovered rest of the
+    day keeps its two-window shape via the residual spread."""
+    return {day.replace(hour=h, minute=0): 5.0 for h in hours}
+
+
 def test_pass2_preemptive_charging_when_sun_window_too_short():
     """Short, strong production peak: a powerstation cannot saturate within
     the window, so pass 2 pre-charges it from the battery — provably refilled
-    from otherwise-lost surplus, without any grid import."""
+    from otherwise-lost surplus, without any grid import. Since F-GATE-PARITY
+    the pre-charge may only sit in DAYLIGHT hours (dawn shoulder light before
+    the window); zero-PV night hours are barred for energy-limited loads."""
     from core.model import PVParams
 
     short_peak = PVParams(
@@ -403,7 +418,15 @@ def test_pass2_preemptive_charging_when_sun_window_too_short():
     now = datetime(2026, 7, 5, 5, 0)
     states = (SurplusLoadState(load_id="fossibot_1", soc_percent=0.0),)
     # Single-day horizon: only 3 window hours exist — not enough for 2 kWh.
-    result, inputs = make_plan(config, now, 85.0, [8.0], load_states=states)
+    inputs = build_slots(
+        config,
+        now,
+        85.0,
+        [8.0],
+        load_states=states,
+        pv_hourly=_twilight(now, 8, 9, 10),
+    )
+    result = plan(config, inputs)
 
     window_hours = sum(
         1
@@ -413,6 +436,12 @@ def test_pass2_preemptive_charging_when_sun_window_too_short():
     preemptive_hours = sum(result.load_plans[0].schedule) - window_hours
     # More energy than the window alone could deliver, thanks to pass 2 ...
     assert preemptive_hours > 0
+    # ... never in a zero-PV (night) slot (F-GATE-PARITY daylight rule) ...
+    assert all(
+        inputs.slots[i].pv_wh > 0.0
+        for i, on in enumerate(result.load_plans[0].schedule)
+        if on
+    )
     # ... without increasing grid import over the no-load baseline (Z2) ...
     _, baseline = search_threshold(config, inputs)
     assert result.grid_import_kwh <= baseline.total_import_wh / 1000.0 + 1e-6
@@ -525,7 +554,17 @@ def test_pass2_places_preemptive_hours_latest_first():
     config = SystemConfig(pv=short_peak, loads=(FOSSIBOT_1,))
     now = datetime(2026, 7, 4, 20, 0)
     states = (SurplusLoadState(load_id="fossibot_1", soc_percent=0.0),)
-    result, inputs = make_plan(config, now, 90.0, [0.0, 8.0], load_states=states)
+    # Dawn shoulder light marks 8-10 as daylight (F-GATE-PARITY: an
+    # energy-limited pre-charge may not sit in zero-PV night slots).
+    inputs = build_slots(
+        config,
+        now,
+        90.0,
+        [0.0, 8.0],
+        load_states=states,
+        pv_hourly=_twilight(datetime(2026, 7, 5, 0, 0), 8, 9, 10),
+    )
+    result = plan(config, inputs)
 
     preemptive = [
         inputs.slots[i].hour_of_day
@@ -855,7 +894,17 @@ def test_pass2_residual_books_latest_of_two_feasible_slots():
 
     def pass2(soc):
         states = (SurplusLoadState(load_id="fossibot_1", soc_percent=soc),)
-        result, inputs = make_plan(config, now, 90.0, [0.0, 8.0], load_states=states)
+        # Dawn shoulder light: hours 9/10 must be daylight for the
+        # energy-limited overflow to be placeable at all (F-GATE-PARITY).
+        inputs = build_slots(
+            config,
+            now,
+            90.0,
+            [0.0, 8.0],
+            load_states=states,
+            pv_hourly=_twilight(datetime(2026, 7, 5, 0, 0), 8, 9, 10),
+        )
+        result = plan(config, inputs)
         lp = result.load_plans[0]
         hours = sorted(
             inputs.slots[s].hour_of_day for (s, _c, p, _wh) in lp.allocations if p == 2
@@ -1187,8 +1236,12 @@ def test_t2_cumulative_import_trade_invariant():
 
 
 def test_t3_energy_limited_never_night_charged_with_ratio():
-    """T3: even with a generous ratio, an energy-limited powerstation keeps the
-    strict no-extra-import rule and never night-charges (L5)."""
+    """T3: even with a generous ratio, full c2/Z4 machinery access and maximum
+    temptation, an energy-limited powerstation never night-charges. Since
+    F-GATE-PARITY the mechanism is the DAYLIGHT rule (zero-PV pass-2 slots are
+    barred for the class), no longer the strict import gate — the gates
+    themselves are shared with continuous loads and trading import for
+    in-daylight bookings is allowed."""
     now = datetime(2026, 7, 3, 21, 0)
     cfg = _predrain_config(ratio=0.5, alpha=0.5, beta=1.2, loads=(FOSSIBOT_B,))
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
@@ -1197,6 +1250,10 @@ def test_t3_energy_limited_never_night_charged_with_ratio():
         if on:
             assert daylight(inputs.slots[i]), (
                 f"fossibot night-charged at {inputs.slots[i].hour_of_day}:00"
+            )
+            # The binding predicate is PV, not the clock (F-GATE-PARITY).
+            assert inputs.slots[i].pv_wh > 0.0, (
+                f"fossibot booked a zero-PV slot at {inputs.slots[i].hour_of_day}:00"
             )
 
 
@@ -1500,25 +1557,19 @@ def test_fix1_appliance_windows_survive_predrain_booking():
     assert isinstance(result.appliance_windows["dishwasher"], bool)
 
 
-def test_fix2_energy_limited_books_surplus_after_continuous_trade():
-    """FIX-2: once a continuous load has traded a little import, the energy-limited
-    strict gate must anchor at the CURRENTLY ACCEPTED series, not the no-loads
-    base — otherwise the fossibot inherits the delta and is starved on a pure-
-    surplus slot it should still take. It must also never ADD import itself (L5).
+def test_gate_parity_shared_trade_budget_across_classes():
+    """F-GATE-PARITY R1 (rewrites FIX-2): both classes share ONE Z2' trade
+    invariant anchored at the no-loads base. The former energy-limited strict
+    gate (current-anchored, FIX-2) is superseded — under a single shared
+    budget there is no per-class anchor left to inherit, and the fossibot may
+    now trade import for daylight bookings exactly like the dehumidifier.
 
-    Scenario: modest day-1 then a strong day-2. The dehumidifier pre-drains and
-    trades ~10 Wh; the fossibot has a large remaining budget. With the fix it
-    charges every surplus slot it can (incl. pass-2 refills evaluated AFTER the
-    trade — one a 0.5 h residual quantum since F-RESIDUAL-TOPUP R1) and declines
-    the rest; the buggy gate booked strictly fewer slots.
-
-    Part (b) was RE-STATED in v0.11.0 (F-NIGHT-RESCUE knock-on): the rt-honest c1
-    changed the latest-first interleave, so the old counterfactual-final import
-    equality ("stripping the fossibot's energy reproduces the same import") no
-    longer holds — it was an emergent artifact of the pre-v0.11 booking pattern,
-    never a specced invariant. Attribution of a shared surplus pool is ill-defined;
-    part (b) now asserts the two BINDING trade-gate contracts instead. Documented
-    semantic change, not a weakened test."""
+    Scenario (unchanged from FIX-2): modest day-1 then a strong day-2. The
+    dehumidifier pre-drains and trades ~10 Wh; the fossibot has a large
+    remaining budget. Under parity the fossibot books MORE than the old
+    strict gate allowed (2250 Wh vs 1800 — parity can only add opportunities
+    here) while the cumulative trade invariant (b1) and the attribution
+    bound (b2) keep holding — they are the binding contracts."""
     now = datetime(2026, 7, 3, 21, 0)
     fb = SurplusLoad(
         load_id="fb",
@@ -1547,21 +1598,23 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
     load_plans, extra, traj = allocate_loads(cfg, inputs, threshold, base)
     fb_plan = next(p for p in load_plans if p.load_id == "fb")
 
-    # (a) A continuous trade fired AND the fossibot still books its full surplus
-    #     coverage (1800 Wh, incl. pass-2 refills — one a 0.5 h residual quantum,
-    #     F-RESIDUAL-TOPUP R1; re-baselined from 1950 by the F-NIGHT-RESCUE
-    #     rt-honest-c1 interleave shift, class-(x) knock-on). The buggy
-    #     base-anchored gate booked strictly fewer slots.
+    # (a) A continuous trade fired AND the fossibot books its parity coverage:
+    #     2250 Wh, 450 Wh MORE than the old strict gate's 1800 (pass-2 refills
+    #     incl. a 0.5 h residual quantum, F-RESIDUAL-TOPUP R1) — the shared
+    #     trade budget now finances fossibot bookings too.
     assert traj.total_import_wh - base.total_import_wh > 1e-6  # deh traded
     assert any(a[2] == 2 for a in fb_plan.allocations)  # a post-trade refill booked
-    assert abs(fb_plan.planned_energy_wh - 1800.0) < 1e-6
+    assert fb_plan.planned_energy_wh >= 1800.0 - 1e-6  # parity only ever adds
+    assert abs(fb_plan.planned_energy_wh - 2250.0) < 1e-6
+    # Daylight rule: every fossibot slot carries PV (never a night booking).
+    assert all(
+        inputs.slots[i].pv_wh > 0.0 for i, on in enumerate(fb_plan.schedule) if on
+    )
 
-    # (b) The fossibot never causes import beyond the trade contract (L5). The
-    #     +49 Wh that fb's presence now costs is financed by the DEHUMIDIFIER's
-    #     own trade budget (a shared-pool attribution artifact), so the binding
-    #     guarantees are the two trade-gate invariants below — both green.
+    # (b) Import stays bounded by the trade contract for the WHOLE plan. The
+    #     binding guarantees are the two trade-gate invariants below.
     ratio = control.import_trade_ratio
-    assert fb_plan.planned_energy_wh < 6000.0  # would-add-import top-up declined
+    assert fb_plan.planned_energy_wh < 6000.0  # gates still bound the top-up
     # (b1) Cumulative trade invariant over the whole plan vs the no-loads base.
     assert traj.total_import_wh - base.total_import_wh <= (
         ratio * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
@@ -1576,6 +1629,227 @@ def test_fix2_energy_limited_books_surplus_after_continuous_trade():
     without_fb = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(deh_only))
     assert traj.total_import_wh - without_fb.total_import_wh <= (
         ratio * (without_fb.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
+    )
+
+
+# ---------------------------------------------------------------------------
+# F-GATE-PARITY (operator decision 2026-07-17): both load classes face the
+# identical pass-2 gate set (shared Z2' trade, c1-rt, c2-beta, Z4 stress);
+# the priority order (config order) alone decides contested bet energy.
+# Single remaining class rule: energy-limited loads never book zero-PV
+# (night) slots — nights stay reserved for continuous loads.
+# ---------------------------------------------------------------------------
+
+
+def _parity_scene(start_soc_wh: float, loads):
+    """Two-slot bet scene: a weakly lit make-room slot (06:00, 10 Wh dawn
+    light) ahead of one big clipping slot (07:00). The c1 refill pool is
+    huge; bet depth is scarce because the simulator's inverter cutoff at
+    T*=20 % (400 Wh of the 2000 Wh battery) turns any deeper drain into
+    grid import, which the Z2' trade budget cannot finance — at 800 Wh
+    start there is room for exactly ONE ~326 Wh battery drain (one 300 Wh
+    AC booking), and a second booking of ANY quantum falls through the
+    cutoff and is rejected. Who gets the one booking is purely a question
+    of config order."""
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=0.5,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        control=control,
+        loads=loads,
+        battery=BatteryParams(capacity_wh=2000.0),
+        ac_profile=LoadProfile(0.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
+    )
+    start = datetime(2026, 7, 4, 6, 0)
+
+    def slot(i, hour, pv):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=hour,
+            pv_wh=pv,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
+
+    slots = (slot(0, 6, 10.0), slot(1, 7, 2500.0), slot(2, 8, 100.0))
+    states = tuple(
+        SurplusLoadState(load_id=ld.load_id, soc_percent=0.0)
+        if ld.energy_limited
+        else SurplusLoadState(load_id=ld.load_id)
+        for ld in loads
+    )
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=start_soc_wh / 2000.0 * 100.0,
+        slots=slots,
+        load_states=states,
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    plans, _extra, _traj = allocate_loads(cfg, inputs, threshold, base)
+    return plans
+
+
+_DEH300 = SurplusLoad(
+    load_id="deh300",
+    name="Entfeuchter 300",
+    nominal_power_w=300.0,
+    battery_tolerance=0.05,
+)
+
+
+def _books_slot0_pass2(plans, load_id):
+    lp = next(p for p in plans if p.load_id == load_id)
+    return any(a[0] == 0 and a[2] == 2 for a in lp.allocations)
+
+
+def test_gate_parity_contested_bet_goes_to_priority_one():
+    """The depth-capped bet slot (room for ONE 300 Wh booking above the
+    inverter cutoff) goes to whichever load is FIRST in config order — the
+    energy-limited powerstation wins it when it holds priority 1, the
+    continuous load wins it when the order is swapped. Priority, not load
+    class, decides."""
+    fb = replace(FOSSIBOT_B, target_soc_percent=100.0)
+    # 800 Wh start: one ~326 Wh drain lands at ~474 Wh (above the 400 Wh
+    # cutoff); any second quantum would fall through it — room for one bet.
+    # Powerstation first: it takes the bet, the dehumidifier is floor-blocked.
+    plans = _parity_scene(800.0, (fb, _DEH300))
+    assert _books_slot0_pass2(plans, "fossibot_b")
+    assert not _books_slot0_pass2(plans, "deh300")
+    # Swapped order: the same slot goes to the dehumidifier instead.
+    plans = _parity_scene(800.0, (_DEH300, fb))
+    assert _books_slot0_pass2(plans, "deh300")
+    assert not _books_slot0_pass2(plans, "fossibot_b")
+
+
+def test_gate_parity_z4_stress_binds_energy_limited_bets():
+    """Z4 now gates energy-limited bets too. The bet must end in the gap
+    between the inverter cutoff (20 % = 400 Wh) and the RAMPED stress floor
+    (20 % + 5 % buffer = 500 Wh; the buffer ramps with the slot's stressed
+    house deficit, so the bet slot carries 200 Wh of house load): a 950 Wh
+    start minus ~217 Wh house minus ~326 Wh bet lands at ~407 Wh — above
+    the cutoff (no import, c1/Z2'/Z3 all pass) but below the stressed
+    floor. alpha=0.5 rejects the full quantum (the half-quantum, landing
+    at ~570 Wh, may still book); alpha=1.0 disables the gate and books the
+    full quantum — Z4 is the only discriminating constraint."""
+    fb = replace(FOSSIBOT_B, target_soc_percent=100.0)
+
+    def run(alpha):
+        control = replace(
+            ControlParams(),
+            import_trade_ratio=0.1,
+            predrain_pv_confidence=alpha,
+            upper_pv_reserve=1.0,
+            strong_pv_cutoff_w=200.0,
+        )
+        cfg = SystemConfig(
+            control=control,
+            loads=(fb,),
+            battery=BatteryParams(capacity_wh=2000.0),
+            ac_profile=LoadProfile(0.0, 0.0),
+            dc_profile=LoadProfile(0.0, 0.0),
+        )
+        start = datetime(2026, 7, 4, 6, 0)
+        slots = tuple(
+            HourSlot(
+                index=i,
+                start=start + timedelta(hours=i),
+                duration=1.0,
+                hour_of_day=6 + i,
+                pv_wh=pv,
+                ac_wh=ac,
+                dc_wh=0.0,
+            )
+            for i, (pv, ac) in enumerate(((10.0, 200.0), (2500.0, 0.0), (100.0, 0.0)))
+        )
+        inputs = PlanInputs(
+            now=start,
+            start_soc_percent=47.5,  # 950 Wh
+            slots=slots,
+            load_states=(SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),),
+        )
+        threshold, base = search_threshold(cfg, inputs)
+        plans, _extra, _traj = allocate_loads(cfg, inputs, threshold, base)
+        return sum(
+            a[3]
+            for p in plans
+            if p.load_id == "fossibot_b"
+            for a in p.allocations
+            if a[0] == 0 and a[2] == 2
+        )
+
+    stressed_p2 = run(0.5)
+    trusting_p2 = run(1.0)
+    assert trusting_p2 >= 300.0 - 1e-6, (
+        f"alpha=1.0 must book the full quantum, got {trusting_p2}"
+    )
+    assert stressed_p2 <= 150.0 + 1e-6, (
+        f"alpha=0.5 must cap the slot-0 bet below the full quantum, got {stressed_p2}"
+    )
+    assert stressed_p2 < trusting_p2  # the stress gate visibly bound
+
+
+def test_gate_parity_daylight_rule_blocks_fb_night_predrain():
+    """Maximum temptation (generous ratio, hungry powerstation, T1-shaped
+    horizon whose night pre-drain a continuous load DOES book): the
+    energy-limited load never books a zero-PV slot — only the daylight rule
+    separates the classes now."""
+    now = datetime(2026, 7, 3, 21, 0)
+    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    cfg = _predrain_config(ratio=0.5, alpha=1.0, beta=1.0, loads=(fb_hungry,))
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0], load_states=states)
+    # Guard against a vacuous pass: the hungry fossibot must book SOMETHING
+    # (its daylight hours) — only then does the night exclusion mean anything.
+    assert result.load_plans[0].planned_energy_wh > 0.0
+    for i, on in enumerate(result.load_plans[0].schedule):
+        if on:
+            assert inputs.slots[i].pv_wh > 0.0, (
+                f"fossibot booked zero-PV slot at {inputs.slots[i].hour_of_day}:00"
+            )
+    # Contrast: the SAME horizon books night hours for a continuous load —
+    # the c1/Z2' gates admit them, so only the daylight rule blocked fb.
+    deh_cfg = _predrain_config(ratio=0.5, alpha=1.0, beta=1.0)
+    deh_res, deh_in = make_plan(deh_cfg, now, 84.0, [0.0, 13.0, 11.0])
+    night = [h for h in _dehumid_hours(deh_res, deh_in) if not daylight_h(h)]
+    assert night, "contrast: the continuous load must book the night pre-drain"
+
+
+def test_gate_parity_c2_beta_books_energy_limited_in_window():
+    """T12 parity: the optimistic c2 gate now opens extra in-window slots for
+    an energy-limited load exactly as it does for the dehumidifier — reason
+    string included — while the trade invariant keeps holding."""
+    now = datetime(2026, 7, 4, 8, 0)
+    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
+
+    def run(beta):
+        cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=beta, loads=(fb_hungry,))
+        return make_plan(cfg, now, 92.0, [7.0], load_states=states)
+
+    r10, inputs = run(1.0)
+    r12, _ = run(1.2)
+    booked10 = {i for i, on in enumerate(r10.load_plans[0].schedule) if on}
+    booked12 = {i for i, on in enumerate(r12.load_plans[0].schedule) if on}
+    extra = booked12 - booked10
+    assert extra, "beta=1.2 must open extra in-window slots for the fossibot"
+    windows = pv_windows(inputs, 200.0, None)
+    for i in extra:
+        w = windows[inputs.slots[i].start.date()]
+        assert w[0] <= i <= w[1], f"c2 slot {i} not inside its PV window {w}"
+        assert inputs.slots[i].pv_wh > 0.0
+    assert any("in-window insurance" in r for r in r12.load_plans[0].reasons)
+    cfg12 = _predrain_config(ratio=0.1, alpha=1.0, beta=1.2, loads=(fb_hungry,))
+    _, base = search_threshold(cfg12, inputs)
+    traj = r12.trajectory
+    assert traj.total_import_wh - base.total_import_wh <= (
+        0.1 * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
     )
 
 

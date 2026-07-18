@@ -54,9 +54,11 @@ cached values with fresh timestamps).
 **Non-goals.** No new config. No change to pass-1's ascending slot order
 (each direct-surplus hour is use-it-or-lose-it *in place*; see open decision
 O1 in §8 for within-window micro-ordering). No change to Z2'/Z3/Z4 gate
-formulas, to the c1/c2 opportunity gates, or to L5 (energy-limited loads stay
+formulas, to the c1/c2 opportunity gates, or to L5 ~~(energy-limited loads stay
 out of the two-buffer pre-drain machinery: no α-stress, no β-insurance, strict
-import gate). No planner modelling of `min_off` spacing between two disjoint
+import gate)~~ — **the parenthesised L5 semantics are superseded (v0.13.0,
+docs/F-GATE-PARITY.md): full gate parity; only the zero-PV night exclusion
+remains**. No planner modelling of `min_off` spacing between two disjoint
 sub-hour activations (pre-existing F-SUBHOUR limitation, unchanged — see §6
 known limitations). No simulator changes.
 

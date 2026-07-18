@@ -452,6 +452,14 @@ def allocate_loads(
     creation order, F-LOAD-PRIORITY). Every assignment is validated by
     re-simulation over the FULL horizon: no additional grid import (Z2) and the
     SOC buffer floor holds (Z3).
+
+    GATE PARITY (F-GATE-PARITY, operator decision 2026-07-17): both load
+    classes face the IDENTICAL gate set — one Z2' trade invariant, c1-rt/c2
+    opportunity gates and the Z4 stress floor — so the priority order alone
+    decides who gets contested energy ("lieber den Fossibot laden, als den
+    Luftentfeuchter betreiben, wenn die Wahl besteht"). The single remaining
+    class rule: energy-limited loads never book zero-PV (night) slots in
+    pass 2 — nights stay reserved for continuous loads.
     """
     n = len(inputs.slots)
     states = {s.load_id: s for s in inputs.load_states}
@@ -508,21 +516,20 @@ def allocate_loads(
     windows = pv_windows(inputs, control.strong_pv_cutoff_w, control.pv_window_end_hour)
     current = base_trajectory
 
-    def import_ok(load, traj: Trajectory, current_import: float) -> bool:
-        """Z2' import gate. Energy-limited loads keep the strict no-extra-import
-        rule (L5 keeps them out of the pre-drain machinery), but anchored at the
-        CURRENTLY ACCEPTED series rather than the no-loads base (FIX-2): a booking
-        must not ADD import over what is already accepted, so once a continuous
-        load has traded some import an energy-limited candidate on pure surplus is
-        no longer starved by that inherited delta. Continuous loads use the
-        cumulative trade invariant against the no-loads base: a small import is
-        allowed only in exchange for rescued export at `import_trade_ratio`, plus
-        1 Wh of slack ONLY when a positive ratio is configured (FIX-6) so a lone
-        standby artifact never vetoes a traded run (L1). At ratio 0.0 there is no
-        slack, so the continuous gate is `trial import <= base + _EPS` exactly as
-        v0.7.19 — night pre-drains still need a positive ratio to book."""
-        if load.energy_limited:
-            return traj.total_import_wh <= current_import + _EPS
+    def import_ok(traj: Trajectory) -> bool:
+        """Z2' import gate — ONE cumulative trade invariant for ALL load
+        classes (F-GATE-PARITY R1). A small import is allowed only in exchange
+        for rescued export at `import_trade_ratio`, plus 1 Wh of slack ONLY
+        when a positive ratio is configured (FIX-6) so a lone standby artifact
+        never vetoes a traded run (L1). At ratio 0.0 there is no slack, so the
+        gate is `trial import <= base + _EPS` exactly as v0.7.19 — night
+        pre-drains still need a positive ratio to book. The former
+        energy-limited strict branch (anchored at the currently accepted
+        series, FIX-2) is superseded: its anchor existed only to shield
+        energy-limited candidates from inheriting continuous trade deltas,
+        and under one shared base-anchored budget there is no per-class
+        anchor left to inherit — class asymmetry here silently overrode the
+        operator's load priority order."""
         allowed = ratio * (base_export - traj.total_export_wh) + (
             1.0 if ratio > 0.0 else 0.0
         )
@@ -589,7 +596,7 @@ def allocate_loads(
                     continue
                 # Hard conditions via full re-simulation (Z2'/Z3).
                 traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-                if not import_ok(load, traj, current.total_import_wh):
+                if not import_ok(traj):
                     continue
                 if _degrades_min_soc(traj, current, buffer_floor):
                     continue
@@ -630,14 +637,19 @@ def allocate_loads(
     #   Z3  buffer floor   — nominal min SOC not degraded below soc_min+buffer,
     #   Z4  lower buffer   — even a pessimistic (alpha) PV run keeps the inverter
     #                        reserve above its floor across the bet's recovery
-    #                        window [i, recovery] (continuous loads only, F3 v2),
+    #                        window [i, recovery] (F3 v2),
     #   (c) opportunity    — (c1) the nominal drain is refilled from lost export,
     #                        OR (c2) inside the day's PV window an optimistic
     #                        (beta) run would be (upper-buffer insurance, F4).
-    # Energy-limited loads stay on the legacy nominal-only path (a1/c1) and never
-    # night-charge from the house battery (L5). Iterated latest-first (L4); slots
-    # after the last export can never satisfy the gate, so they are skipped, as
-    # is the whole pass on an export-free horizon.
+    # All gates apply to ALL load classes (F-GATE-PARITY: the former
+    # energy-limited c1-only carve-out let a lower-priority continuous load take
+    # bet energy a higher-priority powerstation was forbidden, silently
+    # overriding the operator's priority order). The one remaining class rule is
+    # the DAYLIGHT restriction: energy-limited loads never book zero-PV (night)
+    # slots — nights stay reserved for continuous loads (operator refinement 2,
+    # 2026-07-17). Iterated latest-first (L4); slots after the last export can
+    # never satisfy the gate, so they are skipped, as is the whole pass on an
+    # export-free horizon.
     if current.total_export_wh > _EPS:
         # Optimistic opportunity baseline for the CURRENTLY accepted series —
         # whole-horizon, kept in step with `current` and refreshed only on
@@ -676,6 +688,14 @@ def allocate_loads(
                 state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
                 if not state.available or schedules[load.load_id][i]:
                     continue
+                # Daylight rule (F-GATE-PARITY refinement 2): energy-limited
+                # loads never open a bet in a zero-PV (night) slot. Deliberately
+                # `pv_wh > 0` and NOT `in_window` — pre-window daylight
+                # pre-charges before a short peak stay allowed (they were a
+                # pinned capability before parity, and forbidding them would
+                # re-introduce a class asymmetry in daylight).
+                if load.energy_limited and slot.pv_wh <= 0.0:
+                    continue
                 power_w = state.planning_power_w(load)
                 rem = remaining[load.load_id]
                 # Largest-first quantised search (F-SUBHOUR): a sub-hour
@@ -697,9 +717,17 @@ def allocate_loads(
                     )
                     if any(schedules[load.load_id][j] for j, _ in covered):
                         continue
+                    if load.energy_limited and any(
+                        inputs.slots[j].pv_wh <= 0.0 for j, _ in covered
+                    ):
+                        # Daylight rule, spill guard: a min-runtime commitment
+                        # near the day's edge must not spill into night slots;
+                        # shorter quantised candidates (incl. the gate-stop
+                        # final quantum) still get their chance below.
+                        continue
                     trial_tuple = tuple(trial)
                     traj = simulate(config, inputs, threshold, extra_ac_wh=trial_tuple)
-                    if not import_ok(load, traj, current.total_import_wh):  # Z2'
+                    if not import_ok(traj):  # Z2'
                         continue
                     if _degrades_min_soc(traj, current, buffer_floor):  # Z3
                         continue
@@ -718,73 +746,71 @@ def allocate_loads(
                     need_c2 = (1.0 - load.battery_tolerance) * power_wh
                     trial_beta = None
                     via_beta = False  # which gate accepted -> reason string (R13)
-                    if load.energy_limited:
-                        # Legacy nominal refill gate only (no two-buffer machinery).
-                        if export_drop + _EPS < need:
-                            continue
-                    else:
-                        # (c1) nominal refill OR (c2) optimistic in-window insurance.
-                        accept = export_drop + _EPS >= need
-                        if not accept and c2_active and in_window(i):
-                            trial_beta = simulate(
+                    # (c1) nominal refill OR (c2) optimistic in-window insurance
+                    # — identical for BOTH load classes (F-GATE-PARITY R2; the
+                    # former energy-limited c1-only path is superseded).
+                    accept = export_drop + _EPS >= need
+                    if not accept and c2_active and in_window(i):
+                        trial_beta = simulate(
+                            config,
+                            inputs,
+                            threshold,
+                            extra_ac_wh=trial_tuple,
+                            pv_scale=optimism_vec,
+                        )
+                        drop_beta = (
+                            current_beta.total_export_wh - trial_beta.total_export_wh
+                        )
+                        # c2 judges an optimistic direct-PV absorption, not
+                        # a battery detour: the unscaled need applies.
+                        accept = drop_beta + _EPS >= need_c2
+                        via_beta = accept
+                    if not accept:
+                        continue
+                    # Z4 windowed lower-buffer stress gate (§3.3 v2): stress
+                    # PV only across the bet window [i, recovery] and take
+                    # the windowed min. Reject iff that stressed reserve
+                    # both breaks the inverter floor AND is worse than the same
+                    # windowed min on the currently accepted series — a dip the
+                    # baseline already contains does not veto the bet.
+                    # Per-slot stress (F-QUANTILE-BANDS R4): empirical P10
+                    # where a band exists, alpha elsewhere — Z4 protection
+                    # now varies with the weather-class history. Since
+                    # F-GATE-PARITY the stress gate also binds energy-limited
+                    # bets: whoever takes bet energy respects the floors.
+                    if z4_active:
+                        # Extend the stress window past `recovery` when this
+                        # candidate's run spills beyond it (a min-runtime
+                        # commitment near the window end lands in later slots):
+                        # the spill drains the reserve too, so it must be
+                        # stressed and included in the windowed min (FIX-7).
+                        hi = max(recovery, covered[-1][0])
+                        scale_vec = [
+                            stress_vec[j] if i <= j <= hi else 1.0 for j in range(n)
+                        ]
+                        trial_stress = simulate(
+                            config,
+                            inputs,
+                            threshold,
+                            extra_ac_wh=trial_tuple,
+                            pv_scale=scale_vec,
+                        )
+                        trial_wmin = _windowed_min_soc(trial_stress, i, hi)
+                        key = (i, hi)
+                        if key not in stress_base:
+                            base_stress = simulate(
                                 config,
                                 inputs,
                                 threshold,
-                                extra_ac_wh=trial_tuple,
-                                pv_scale=optimism_vec,
-                            )
-                            drop_beta = (
-                                current_beta.total_export_wh
-                                - trial_beta.total_export_wh
-                            )
-                            # c2 judges an optimistic direct-PV absorption, not
-                            # a battery detour: the unscaled need applies.
-                            accept = drop_beta + _EPS >= need_c2
-                            via_beta = accept
-                        if not accept:
-                            continue
-                        # Z4 windowed lower-buffer stress gate (§3.3 v2): stress
-                        # PV only across the bet window [i, recovery] and take
-                        # the windowed min. Reject iff that stressed reserve
-                        # both breaks the inverter floor AND is worse than the same
-                        # windowed min on the currently accepted series — a dip the
-                        # baseline already contains does not veto the bet.
-                        # Per-slot stress (F-QUANTILE-BANDS R4): empirical P10
-                        # where a band exists, alpha elsewhere — Z4 protection
-                        # now varies with the weather-class history.
-                        if z4_active:
-                            # Extend the stress window past `recovery` when this
-                            # candidate's run spills beyond it (a min-runtime
-                            # commitment near the window end lands in later slots):
-                            # the spill drains the reserve too, so it must be
-                            # stressed and included in the windowed min (FIX-7).
-                            hi = max(recovery, covered[-1][0])
-                            scale_vec = [
-                                stress_vec[j] if i <= j <= hi else 1.0 for j in range(n)
-                            ]
-                            trial_stress = simulate(
-                                config,
-                                inputs,
-                                threshold,
-                                extra_ac_wh=trial_tuple,
+                                extra_ac_wh=tuple(extra),
                                 pv_scale=scale_vec,
                             )
-                            trial_wmin = _windowed_min_soc(trial_stress, i, hi)
-                            key = (i, hi)
-                            if key not in stress_base:
-                                base_stress = simulate(
-                                    config,
-                                    inputs,
-                                    threshold,
-                                    extra_ac_wh=tuple(extra),
-                                    pv_scale=scale_vec,
-                                )
-                                stress_base[key] = _windowed_min_soc(base_stress, i, hi)
-                            if (
-                                trial_wmin < stress_floor_by_slot[i] - _EPS
-                                and trial_wmin < stress_base[key] - _EPS
-                            ):
-                                continue
+                            stress_base[key] = _windowed_min_soc(base_stress, i, hi)
+                        if (
+                            trial_wmin < stress_floor_by_slot[i] - _EPS
+                            and trial_wmin < stress_base[key] - _EPS
+                        ):
+                            continue
                     extra = trial
                     current = traj
                     stress_base.clear()  # `extra` changed -> windowed baselines stale
@@ -979,14 +1005,15 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2).
 
     The `stressed_min_soc_percent` diagnostic (§3.5, v2) reports the WINDOWED
-    lower-buffer reserve that the Z4 gate actually protects: the earliest pass-2
-    slot booked for a CONTINUOUS load is treated as the deepest bet, and the
-    diagnostic is the stressed windowed min SOC over that bet's recovery window
-    [i0, recovery] under the FINAL accepted series — stressed with the same
-    per-slot vector as the gate (P10 bands where present, alpha elsewhere;
-    F-QUANTILE-BANDS R5). It is None when no slot is stressed (alpha == 1.0
-    and no P10 evidence) or when no continuous load has a pass-2 booking
-    (nothing was pre-drained, so there is no reserve bet to report).
+    lower-buffer reserve that the Z4 gate actually protects: the earliest
+    pass-2 slot booked for ANY load is treated as the deepest bet
+    (F-GATE-PARITY GP-R4 — the stress gate binds energy-limited bets too),
+    and the diagnostic is the stressed windowed min SOC over that bet's
+    recovery window [i0, recovery] under the FINAL accepted series — stressed
+    with the same per-slot vector as the gate (P10 bands where present, alpha
+    elsewhere; F-QUANTILE-BANDS R5). It is None when no slot is stressed
+    (alpha == 1.0 and no P10 evidence) or when no load at all has a pass-2
+    booking (nothing was bet, so there is no reserve to report).
     """
     control = config.control
     threshold, base_traj = search_threshold(config, inputs)
@@ -1032,17 +1059,14 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     )
     if any(s < 1.0 - _EPS for s in stress_vec) and alloc_traj.flows:
         # Windowed stressed reserve of the deepest bet: the earliest pass-2 slot
-        # booked for a continuous (non-energy-limited) load, evaluated over its
-        # recovery window under the final series (§3.5 v2). None when nothing was
-        # pre-drained for a continuous load.
+        # booked for ANY load, evaluated over its recovery window under the
+        # final series (§3.5 v2). Since F-GATE-PARITY the Z4 stress gate binds
+        # energy-limited bets too, so their bookings belong in the diagnostic —
+        # what the sensor reports is what the gate protected. None when no
+        # pass-2 booking exists at all.
         n = len(inputs.slots)
-        cont_ids = {ld.load_id for ld in config.loads if not ld.energy_limited}
         booked = [
-            alloc[0]
-            for lp in load_plans
-            if lp.load_id in cont_ids
-            for alloc in lp.allocations
-            if alloc[2] == 2
+            alloc[0] for lp in load_plans for alloc in lp.allocations if alloc[2] == 2
         ]
         if booked:
             i0 = min(booked)
