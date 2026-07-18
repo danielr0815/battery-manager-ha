@@ -1775,6 +1775,198 @@ async def test_plan_flap_does_not_switch_off_before_min_runtime(hass):
 
 
 # ---------------------------------------------------------------------------
+# F-EXECUTOR-GUARDS G4 — floor guard (operator rule 2026-07-18): "Wenn der
+# Inverter aus ist oder der SOC 20 % erreicht, dürfen Zusatzlasten nicht mehr
+# angesteuert werden." Incident: a booked dehumidifier run stayed grid-fed
+# for ~10 min at the 20 % floor because only the min_runtime dwell timed the
+# OFF and no executor path checked SOC/inverter state.
+# ---------------------------------------------------------------------------
+
+
+async def test_floor_guard_forces_off_despite_min_runtime(hass):
+    """G4: at the inverter floor a RUNNING load is forced off immediately —
+    dwell-exempt — even while the plan still wants it on (inverts the
+    plan-flap min_runtime hold for the guard case)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=30
+    )
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    now = dt_util.utcnow()
+    durations = (1.0, 1.0, 1.0)
+    active = SimpleNamespace(load_plans=[_night_plan(sub_id, 3)])
+
+    await coordinator._apply_load_switching(active, now, durations)
+    await hass.async_block_till_done()
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # SOC hits the 20 % floor 10 min in (far below min_runtime 30): the
+    # guard trips and the SAME still-active plan must now force the OFF.
+    config = coordinator.build_system_config()
+    assert coordinator._update_floor_guard(20.0, config) is True
+    calls.clear()
+    await coordinator._apply_load_switching(
+        active, now + timedelta(minutes=10), durations
+    )
+    await hass.async_block_till_done()
+    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
+    assert coordinator._load_charging_active[sub_id] is False
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_floor_guard_blocks_switch_on(hass):
+    """G4: while the guard is active no load is switched ON, however active
+    the plan is."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, energy_limited=False)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    config = coordinator.build_system_config()
+    assert coordinator._update_floor_guard(19.0, config) is True
+
+    await coordinator._apply_load_switching(
+        SimpleNamespace(load_plans=[_night_plan(sub_id, 3)]),
+        dt_util.utcnow(),
+        (1.0, 1.0, 1.0),
+    )
+    await hass.async_block_till_done()
+    assert calls == []
+    assert coordinator._load_charging_active.get(sub_id, False) is False
+
+
+async def test_floor_guard_latch_and_release_hysteresis(hass):
+    """G4 latch: trips AT the floor (20), holds through the release band
+    (20.5), releases only at floor + hysteresis (21); once released it does
+    not re-trip above the floor."""
+    calls: list[tuple[str, str]] = []
+    coordinator, _sub_id, _data = await _setup(hass, calls)
+    config = coordinator.build_system_config()
+    coordinator._inverter_recommendation = True
+    coordinator._floor_guard_active = False  # released state
+
+    assert coordinator._update_floor_guard(20.0, config) is True  # trip
+    assert coordinator._update_floor_guard(20.5, config) is True  # latched
+    assert coordinator._update_floor_guard(21.0, config) is False  # release
+    assert coordinator._update_floor_guard(20.5, config) is False  # no re-trip
+    assert coordinator._update_floor_guard(20.0, config) is True  # trip again
+
+
+async def test_floor_guard_restart_inside_band_starts_latched(hass):
+    """G4: after a restart (member None) a SOC inside the release band counts
+    as latched — conservative until the SOC provably recovered."""
+    calls: list[tuple[str, str]] = []
+    coordinator, _sub_id, _data = await _setup(hass, calls)
+    config = coordinator.build_system_config()
+    coordinator._inverter_recommendation = True
+    coordinator._floor_guard_active = None  # simulate the fresh-restart state
+    assert coordinator._update_floor_guard(20.5, config) is True
+
+
+async def test_floor_guard_trips_on_inverter_recommendation_off(hass):
+    """G4: an inverter-recommendation OFF trips the guard at ANY SOC (a
+    T*-driven shutdown routes the house to grid); recommendation back on
+    with healthy SOC releases it."""
+    calls: list[tuple[str, str]] = []
+    coordinator, _sub_id, _data = await _setup(hass, calls)
+    config = coordinator.build_system_config()
+    coordinator._floor_guard_active = False
+    coordinator._inverter_recommendation = False
+    assert coordinator._update_floor_guard(50.0, config) is True
+    coordinator._inverter_recommendation = True
+    assert coordinator._update_floor_guard(50.0, config) is False
+
+
+async def test_floor_guard_drops_queued_switch_on(hass):
+    """G4 in-flight race: an ON action queued BEFORE the trip must not fire —
+    _execute_load_switching re-checks the guard per action and drops it."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls, energy_limited=False)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._floor_guard_active = True  # tripped after the action was queued
+    await coordinator._execute_load_switching(
+        [(sub_id, data, True, False, 1.0)], dt_util.utcnow()
+    )
+    await hass.async_block_till_done()
+    assert not any(c[0] == "turn_on" for c in calls)
+    assert coordinator._load_charging_active.get(sub_id, False) is False
+
+
+async def test_floor_guard_off_stamps_dwell_min_off_gates_re_on(hass):
+    """G4: the guard-forced OFF stamps the dwell, so after the guard releases
+    a re-ON stays blocked for min_off and succeeds afterwards (compressor
+    protection survives the safety off)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=15
+    )
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    now = dt_util.utcnow()
+    durations = (1.0, 1.0, 1.0)
+    active = SimpleNamespace(load_plans=[_night_plan(sub_id, 3)])
+
+    await coordinator._apply_load_switching(active, now, durations)
+    await hass.async_block_till_done()
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # Guard trips 5 min in: forced OFF (dwell-exempt) stamps the dwell.
+    config = coordinator.build_system_config()
+    assert coordinator._update_floor_guard(20.0, config) is True
+    off_at = now + timedelta(minutes=5)
+    await coordinator._apply_load_switching(active, off_at, durations)
+    await hass.async_block_till_done()
+    assert coordinator._load_charging_active[sub_id] is False
+
+    # Guard releases; plan still active: min_off (15) blocks the re-ON ...
+    assert coordinator._update_floor_guard(25.0, config) is False
+    calls.clear()
+    await coordinator._apply_load_switching(
+        active, off_at + timedelta(minutes=10), durations
+    )
+    await hass.async_block_till_done()
+    assert not any(c[0] == "turn_on" for c in calls)
+    # ... and admits it once min_off has elapsed.
+    await coordinator._apply_load_switching(
+        active, off_at + timedelta(minutes=16), durations
+    )
+    await hass.async_block_till_done()
+    assert any(c[0] == "turn_on" for c in calls)
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_floor_guard_caps_published_active(hass):
+    """G4: the published per-load `active` (which operator automations and
+    recommendation-only loads follow) reads False while the guard is active,
+    for an otherwise fully active plan."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    plan = _night_plan(sub_id, 3)
+    now = dt_util.utcnow()
+    coordinator._floor_guard_active = False
+    assert coordinator._effective_load_active(plan, now) is True
+    coordinator._floor_guard_active = True
+    assert coordinator._effective_load_active(plan, now) is False
+
+
+# ---------------------------------------------------------------------------
 # F-PLANNER-HONESTY F1: learned planning power (docs/F-PLANNER-HONESTY.md
 # R2/R3/R6). The run-max of the accepted-sample EMA survives the run (and
 # restarts), so an OFF load is planned at its real power instead of the

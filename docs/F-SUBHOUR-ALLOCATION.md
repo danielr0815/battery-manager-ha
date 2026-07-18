@@ -93,6 +93,10 @@ simulator (already energy‑ and duration‑exact). No sub‑`min_runtime` runs
   The force‑off uses the existing OFF path and stamps `_last_load_switch` (dwell).
 - **R9** The load is also switched off earlier if a later plan makes it inactive
   once past the dwell (surplus vanished), and **never** off before `min_runtime`.
+  (Since v0.13.1 ONE exception overrides this: the G4 floor guard forces an
+  immediate dwell-exempt OFF when the battery hits the inverter floor or the
+  inverter recommendation is off — a grid-fed run is forbidden,
+  docs/F-EXECUTOR-GUARDS.md G4.)
 - **R10** After a forced off the `min_runtime` dwell blocks immediate re‑on; a
   later surplus window re‑activates the load (duty‑cycling across export windows,
   e.g. dehumidifier 16:00–16:30 and 17:00–17:30).

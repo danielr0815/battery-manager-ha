@@ -125,7 +125,13 @@ class InverterRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
-        return {ATTR_THRESHOLD: data.get("soc_threshold_percent")}
+        return {
+            ATTR_THRESHOLD: data.get("soc_threshold_percent"),
+            # G4: True while surplus loads are forced off/blocked because
+            # they would run grid-fed (SOC at the inverter floor or
+            # recommendation off) — for diagnostics and operator automations.
+            "floor_guard_active": data.get("floor_guard_active"),
+        }
 
 
 class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):

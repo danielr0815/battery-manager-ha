@@ -34,6 +34,11 @@ integration, 15-min buckets) are ignored.
 - **L1** Small modeling artifacts (10 Wh standby) must never veto sensible
   battery use.
 - **L2** Always keep enough energy above the 20 % inverter-cutoff SOC.
+  Since v0.13.1 the executor additionally enforces this as a hard backstop:
+  at the cutoff (or with the inverter recommendation off) all surplus loads
+  are forced off dwell-exempt and blocked — a pre-drain bet that loses to
+  forecast error can no longer run grid-fed (F-EXECUTOR-GUARDS G4,
+  docs/LOAD_CONTROL.md §11).
 - **L3** The LOWER buffer (inverter reserve) is time-of-day dependent: it may
   shrink toward the forecast solar onset.
 - **L4** "As late as possible" stands: preemptive runs as late as the

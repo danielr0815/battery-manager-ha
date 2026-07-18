@@ -809,6 +809,88 @@ async def test_refresh_awaits_power_warning_update(hass):
     assert ran, "_async_update_data must await _update_power_warnings"
 
 
+async def test_refresh_at_floor_soc_activates_guard_end_to_end(hass):
+    """G4 end-to-end: a real refresh at SOC 19 % (below the 20 % inverter
+    floor) trips the floor guard inside the cycle — the published
+    diagnostics and the per-load `active` all read guarded, so operator
+    automations stop with the executor."""
+    coordinator, _titles = await _setup_entry_with_load_data(
+        hass, [("F1", {"power_w": 300.0})]
+    )
+    hass.states.async_set(
+        "sensor.test_soc", "19", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    data = coordinator.data
+    assert data["floor_guard_active"] is True
+    assert coordinator._floor_guard_active is True
+    for lp in data["load_plans"].values():
+        assert lp["active"] is False
+    # appliance advisory gating is pinned load-bearingly (baseline True ->
+    # guarded False) in test_floor_guard_gates_appliance_advisory_end_to_end.
+
+
+async def test_floor_guard_gates_appliance_advisory_end_to_end(hass):
+    """G4: the appliance start-window advisory flips to False under the
+    guard — pinned load-bearingly against a baseline where the SAME
+    appliance advisory is True (high SOC, strong PV)."""
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_NAME,
+        CONF_APPLIANCE_OPPORTUNISTIC,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_NAME: "DW",
+                    CONF_APPLIANCE_OPPORTUNISTIC: True,
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 500.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 1.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="DW",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    _set_input_states(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "93", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    baseline = coordinator.data["appliance_windows"]
+    assert baseline and any(baseline.values()), (
+        f"scenario must produce a True advisory as baseline, got {baseline}"
+    )
+
+    hass.states.async_set(
+        "sensor.test_soc", "19", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data
+    assert data["floor_guard_active"] is True
+    assert data["appliance_windows"] and all(
+        v is False for v in data["appliance_windows"].values()
+    )
+
+
 # ---------------------------------------------------------------------------
 # F-PERDAY-SURPLUS: per-calendar-day lost-surplus / grid-import breakdown
 # (docs/F-PERDAY-SURPLUS.md R1-R3).
