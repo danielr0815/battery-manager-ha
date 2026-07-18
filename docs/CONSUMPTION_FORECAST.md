@@ -165,7 +165,7 @@ OR at least one `*_balance_in_entities` entity is set. No separate toggle
 counter → validation error in the flow.
 
 **Deliberately hardcoded** (documented constants, consistent with
-`_POWER_EMA_ALPHA`): learning time 03:00 local, `min_samples` = 10 per bin
+the former `_POWER_EMA_ALPHA`, retired in v0.14.0 by F-ROBUST-POWER): learning time 03:00 local, `min_samples` = 10 per bin
 (absence: 5), plausibility clamps (AC 3 000 W, DC 1 000 W per hourly mean),
 change rate limit ±20 %/night, median as the aggregate (Stage 1), bin scheme.
 

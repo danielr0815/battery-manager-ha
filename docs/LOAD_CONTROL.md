@@ -89,9 +89,11 @@ Previously: an energy-limited load with an unreadable SOC ⇒ unavailable.
 
 `total_input` (IN Total) measures input = charging **+** passthrough output.
 From the point of view of the house's AC balance this is correctly the power
-that the load draws while the input is active — it is still used (smoothed)
-as the planning power. The energy progress of the charge is tracked over the
-SOC (ground truth) anyway, not integrated over the power.
+that the load draws while the input is active — since v0.14.0 it feeds the
+ROBUST windowed estimator (docs/F-ROBUST-POWER.md: time-weighted median,
+5-min warm-up, spike/dip immunity) instead of the former EMA. The energy
+progress of the charge is tracked over the SOC (ground truth) anyway, not
+integrated over the power.
 
 ## 6. Further points from the operator's wish list
 
@@ -152,7 +154,7 @@ SOC (ground truth) anyway, not integrated over the power.
   rule is that energy-limited loads never book zero-PV (night) slots. See
   docs/F-GATE-PARITY.md.
 - Alongside this, the coordinator persists the switch dwell across restarts
-  (the loss was a contributing cause). The power EMA is deliberately NOT
+  (the loss was a contributing cause). The live power-sample window is deliberately NOT
   persisted, and on feedback gaps is only served while the load is really
   charging — after charge end, the taper residual (10–40 W) would otherwise
   permanently weaken all gates as "measured" planning power. The log lines
@@ -161,8 +163,9 @@ SOC (ground truth) anyway, not integrated over the power.
   The dehumidifier periodically defrosts briefly (power drops for minutes) and
   stops entirely when the water tank is full (power near 0 W despite an active
   recommendation). Defrost cycles may enter the power average (samples between
-  the standby threshold and the rated power average the EMA; below that the
-  sample is discarded and the EMA is frozen — "totally ruining it" is
+  the standby threshold and the rated power feed the windowed estimator
+  (v0.14.0; the median ignores them as a minority anyway); below the bar the
+  sample is discarded entirely — "totally ruining it" is
   precluded by the 25 % threshold). But if the real power deviates for **longer
   than the per-load dwell** (field "power warning dwell", default 15 min) by
   more than the configured percentage (field "power-deviation warning", default
@@ -193,7 +196,7 @@ SOC (ground truth) anyway, not integrated over the power.
   recommendation is switched on, the metered socket must not yet be drawing,
   otherwise an already-running hand/foreign load would be learned and could
   tip over the next plan via the learned value (flutter loop, review finding).
-  Outside these windows measurements are ignored and any existing EMA is
+  Outside these windows measurements are ignored and the live sample window is
   discarded (planning falls back to the rated power). Together with the standby
   filter (v0.6.2: samples only ≥ max(10 W, 25 % × rated power)) the learned
   power is thus shielded against hand and foreign use.
@@ -201,7 +204,7 @@ SOC (ground truth) anyway, not integrated over the power.
   deliberately counts — the feedback ("IN Total") measures the device itself,
   so a manually started charge yields correct device data; the window is
   bounded by the minimum runtime. Entity outages (unavailable/unknown) never
-  count as "off" here (otherwise the EMA would be discarded mid-charge).
+  count as "off" here (otherwise the sample window would be discarded mid-charge).
 
 ## 9. Target-SOC stop is dwell-exempt behind a charge-enable gate (v0.9.0)
 
@@ -274,3 +277,27 @@ time is the SOC entity's debounced refresh (~5 s), not the dwell. In-memory
 only; surfaced as `floor_guard_active` on the inverter-recommendation
 binary sensor. The planner is deliberately unchanged — G4 is the hard
 executor backstop against forecast error, not a planning rule.
+
+## 12. Robust power learning (v0.14.0)
+
+docs/F-ROBUST-POWER.md, operator spec 2026-07-18 after the 818 W incident
+(a 60 s compressor-restart transient EMA-blended and frozen for a 426 W
+dehumidifier): the planning power of a surplus load is now a TIME-WEIGHTED
+MEDIAN over the run's last ~30 min — short spikes and dips (inrush,
+defrost, transfer transients) can never move it; sustained level changes
+are adopted (~15 min, or ~10 min via the stable fast-adopt window, e.g. an
+operator-changed fossibot charge rate); the first 5 min of a run never
+learn at all. No nominal clamp (levels above nominal are legitimate); a
+3×-nominal estimate logs a change-gated WARNING instead. **Appliances are
+untouched by all of this: their planning always uses the DECLARED run
+energy/duration — measured power only feeds their on/off detection.**
+
+## 13. Seamless quantum boundaries (v0.14.0)
+
+docs/F-SEAMLESS-RUNS.md, operator min_off model 2026-07-18: min_off arms
+ONLY on deliberate deactivations. When a booked quantum ends and THIS
+refresh's plan re-booked a contiguous run, the executor extends the frozen
+deadline seamlessly — no OFF/ON relay cycle, no compressor restart, no
+min_off pause (the observed 50 % duty cycle is gone). Energy-limited loads
+extend only while the G2 stale-SOC guard can supervise them; everything
+G2-unsupervisable keeps the R7/R8 duty-cycle cap. G4 always wins.

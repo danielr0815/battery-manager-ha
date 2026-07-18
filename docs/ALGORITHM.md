@@ -168,12 +168,14 @@ candidates).
   "Setze alles um", 2026-07-10):** Three refinements
   (docs/F-PLANNER-HONESTY.md, resolves the open decision O1 of
   F-RESIDUAL-TOPUP):
-  1. **Learned planning power:** the coordinator learns per load the run-max
-     of the accepted-sample EMA (run-max so an end-of-charge taper cannot
-     erode it, EMA so a spike cannot inflate it, standby-barred samples never
-     feed it) and persists it, so an OFF load is planned at its real power
-     (F2400-B: ~505 W) instead of the configured nominal (300 W). Precedence:
-     live measured > learned > nominal.
+  1. **Learned planning power:** the coordinator learns per load a robust
+     estimate of the real draw (since v0.14.0 the time-weighted windowed
+     MEDIAN of accepted samples, docs/F-ROBUST-POWER.md — spikes/dips are
+     majority-immune, 5-min warm-up; historically the run-max-of-EMA, which
+     the 2026-07-18 818 W transient incident retired) and persists it, so an
+     OFF load is planned at its real power (F2400-B: ~505 W) instead of the
+     configured nominal (300 W). Precedence: live measured > learned >
+     nominal (unchanged).
   2. **Pass 1 is load-outer** in config order (strict priority: a load books
      its complete pass-1 allocation before the next load sees the horizon)
      with per-class slot direction — **day-bounded latest-first for
