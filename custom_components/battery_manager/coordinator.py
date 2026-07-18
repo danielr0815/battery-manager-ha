@@ -336,6 +336,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_plug_owned: dict[str, bool] = {}
         self._last_load_switch: dict[str, datetime] = {}
         self._load_charging_active: dict[str, bool] = {}
+        # G4 floor guard (operator rule 2026-07-18): True while surplus loads
+        # are barred from running because they would be grid-fed. None until
+        # the first update cycle computed it (treated as inactive by readers;
+        # the first computation itself initialises conservatively).
+        self._floor_guard_active: bool | None = None
         # Last plan's slot-0 activation per load: the learning gate for
         # recommendation-only loads (no control switch), see _bm_load_active.
         # _load_learn_ok snapshots at each activation edge whether the
@@ -1071,7 +1076,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     DEFAULT_LOAD_CONFIG[CONF_LOAD_POWER_WARNING_DWELL_MIN],
                 )
             )
-            if subentry_id in self._load_charging_active:
+            if self._floor_guard_active:
+                # G4: under the floor guard no load runs at BM's request —
+                # a recommendation-only load stopped by the operator's
+                # automation must not trip a 0 W "full tank" warning while
+                # its plan flag is nominally still active.
+                active = False
+            elif subentry_id in self._load_charging_active:
                 active = self._load_charging_active[subentry_id]
             else:
                 active = active_by_id.get(subentry_id, False)
@@ -1331,6 +1342,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     pass
         if load_id in self._load_charging_active:
             return bool(self._load_charging_active[load_id])
+        # G4: the plan-based fallback (recommendation-only loads without a
+        # power reading) must not accrue runtime while the floor guard holds
+        # everything off — the published `active` the operator follows is
+        # False, so the device is not running at BM's request.
+        if self._floor_guard_active:
+            return False
         if not self._load_plan_active.get(load_id, False):
             return False
         deadline = self._load_run_deadline.get(load_id)
@@ -1833,6 +1850,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
+        # G4 floor guard: needs the just-updated recommendation; must run
+        # BEFORE load switching so this cycle already enforces it.
+        floor_guard = self._update_floor_guard(soc, config)
         await self._apply_support_switching(result, config, now)
         self._run_dc48_controller(now)
         await self._apply_load_switching(
@@ -1980,6 +2000,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "input_forecasts_kwh": forecasts,
             "soc_threshold_percent": threshold,
             "inverter_recommendation": recommendation,
+            # G4 floor guard: surfaced for diagnostics and operator automations.
+            "floor_guard_active": floor_guard,
             "min_soc_forecast_percent": result.min_soc_percent,
             "max_soc_forecast_percent": result.max_soc_percent,
             "hours_to_max_soc": result.hours_to_max_soc,
@@ -2020,7 +2042,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "inverter_min_soc_percent": config.control.inverter_min_soc_percent,
                 "soc_buffer_percent": config.control.soc_buffer_percent,
             },
-            "appliance_windows": dict(result.appliance_windows),
+            # G4: while the floor guard is active an appliance start would run
+            # grid-fed too — the advisory must not invite one.
+            "appliance_windows": {
+                k: (bool(v) and not floor_guard)
+                for k, v in result.appliance_windows.items()
+            },
             "support_dc24": self._support_state["dc24"],
             "support_dc48": self._support_state["dc48"],
             "support_dc24_mode": "manual" if self._support_manual["dc24"] else "auto",
@@ -2908,19 +2935,80 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if now >= deadline + timedelta(minutes=min_off):
             _anchor()
 
+    def _update_floor_guard(self, soc: float, config: SystemConfig) -> bool:
+        """G4 floor guard (F-EXECUTOR-GUARDS, operator rule 2026-07-18):
+        surplus loads must NEVER run grid-fed — "Wenn der Inverter aus ist
+        oder der SOC 20 % erreicht, dürfen Zusatzlasten nicht mehr
+        angesteuert werden."
+
+        Trips when the battery SOC reaches the inverter-cutoff floor
+        (`inverter_min_soc_percent`; the real inverter shuts down there, so
+        any still-running load falls onto the grid — the 2026-07-18 06:21
+        incident: 432 W dehumidifier grid-fed for ~10 min because only the
+        min_runtime dwell timed the OFF) OR while the inverter
+        recommendation is off (a T*-driven shutdown routes the house — and
+        any load — to grid). The SOC branch LATCHES: it releases only at
+        `floor + hysteresis_percent`, so a SOC hovering at the floor cannot
+        flap the loads. A restart inside the release band starts latched
+        (conservative). Must run AFTER `_apply_hysteresis` so the
+        recommendation member is fresh for this cycle.
+        """
+        floor = config.control.inverter_min_soc_percent
+        hyst = max(0.0, config.control.hysteresis_percent)
+        prev = self._floor_guard_active
+        if prev is None or prev:
+            # Release threshold (and restart init): strictly ABOVE the floor
+            # even at hysteresis 0 — otherwise trip (<= floor) and release
+            # (< floor + 0) would overlap at exactly the floor SOC (a
+            # persistent state: the inverter cuts off there) and the guard
+            # would flap every cycle, re-enabling loads at the floor.
+            soc_low = soc <= floor or soc < floor + hyst
+        else:
+            soc_low = soc <= floor  # trip threshold
+        guard = soc_low or not self._inverter_recommendation
+        if guard and not prev:
+            _LOGGER.warning(
+                "Floor guard TRIPPED (%s): surplus loads are forced off and"
+                " blocked until SOC recovers above %.1f %% with the inverter"
+                " recommendation on (G4)",
+                f"SOC {soc:.1f} % at the {floor:.0f} % inverter floor"
+                if soc_low
+                else "inverter recommendation off",
+                floor + hyst,
+            )
+        elif prev and not guard:
+            _LOGGER.info(
+                "Floor guard released at SOC %.1f %% — surplus loads may run again",
+                soc,
+            )
+        self._floor_guard_active = guard
+        return guard
+
     def _effective_load_active(self, load_plan, now: datetime) -> bool:
         """Published `active` for the load binary sensor: the whole-slot
-        `active_now` capped by the frozen sub-hour deadline (F-SUBHOUR)."""
+        `active_now` capped by the frozen sub-hour deadline (F-SUBHOUR) and
+        forced off entirely while the G4 floor guard is active — the
+        operator's own automations follow this flag, and they must stop
+        with the executor (a grid-fed run is forbidden either way)."""
+        if self._floor_guard_active:
+            return False
         deadline = self._load_run_deadline.get(load_plan.load_id)
         return bool(load_plan.active_now) and (deadline is None or now < deadline)
 
     async def _apply_load_switching(
         self, result, now: datetime, slot_durations: tuple[float, ...] | None = None
     ) -> None:
-        """Evaluate controlled loads and start switching where needed."""
+        """Evaluate controlled loads and start switching where needed.
+
+        While the G4 floor guard is active (SOC at the inverter floor or
+        inverter recommendation off, `_update_floor_guard`), every controlled
+        load is forced OFF dwell-exempt and nothing switches ON — a surplus
+        load must never run grid-fed (operator rule 2026-07-18).
+        """
         if self._load_switch_task is not None and not self._load_switch_task.done():
             return
 
+        floor_guard = bool(self._floor_guard_active)
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
         actions: list[tuple[str, dict[str, Any], bool, bool, float]] = []
         for subentry_id, subentry in self.entry.subentries.items():
@@ -2952,7 +3040,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # against ~150 Wh of validated energy. The min_off dwell then blocks
             # an immediate re-on (duty-cycling).
             deadline = self._load_run_deadline.get(subentry_id)
-            if current and deadline is not None and now >= deadline:
+            if floor_guard:
+                # G4: grid-fed operation is forbidden — force OFF, block ON.
+                desired = False
+            elif current and deadline is not None and now >= deadline:
                 desired = False
             else:
                 desired = active_now
@@ -2963,6 +3054,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # latter protects compressor loads from short-cycling.
             if current:  # pending switch OFF
                 dwell_min = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+                if floor_guard:
+                    # G4: the floor-guard OFF is dwell-EXEMPT — every dwell
+                    # minute runs the load grid-fed (the 06:21 incident lost
+                    # ~10 min × 432 W exactly to this hold). The confirmed
+                    # switch still stamps the dwell timestamp, so min_off
+                    # fully gates the later re-on (compressor protection).
+                    dwell_min = 0
                 # F-EXECUTOR-GUARDS G1 (R1-R3): a target-SOC stop of an
                 # energy-limited load with a charge-enable gate is dwell-
                 # EXEMPT. min_runtime protects relays/compressors from short
@@ -3029,6 +3127,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
                 subentry = self.entry.subentries.get(subentry_id)
                 label = subentry.title if subentry else subentry_id
+                if activate and self._floor_guard_active:
+                    # G4 floor guard, in-flight race: the guard may have
+                    # tripped AFTER this ON was queued (a debounced SOC
+                    # refresh returns early while this task is still
+                    # running). A queued ON must never fire at/below the
+                    # floor — that is exactly the grid-fed start the guard
+                    # exists to prevent.
+                    _LOGGER.info(
+                        "Floor guard active: dropping queued switch-ON for %s",
+                        label,
+                    )
+                    continue
                 if activate:
                     if enable and not await self._switch_entity(enable, True):
                         continue
@@ -3113,6 +3223,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if load_id in plans:
                     plans[load_id]["charging_active"] = active
             self.async_update_listeners()
+        if self._floor_guard_active:
+            # G4, in-flight race (part 2): a refresh that tripped the guard
+            # while this task was running returned early and could not queue
+            # its forced OFFs. Re-run the cycle now so any load that this
+            # task just switched on (or that is still running) is forced off
+            # immediately instead of waiting for the next poll.
+            await self.async_request_refresh()
 
     # ------------------------------------------------------------------
     # Entity listeners

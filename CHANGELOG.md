@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-18
+
+### Fixed
+- **Surplus loads could run grid-fed at the inverter floor (G4 floor
+  guard).** Incident 2026-07-18 06:20-06:30: the plan deactivated a booked
+  dehumidifier run, but the min_runtime ON→OFF dwell held the switch for
+  another 10 minutes while the battery hit the 20 % inverter cutoff — the
+  real inverter shut down and the 432 W load drew from the GRID. New binding
+  operator rule: when the inverter is off or the SOC reaches the inverter
+  floor, surplus loads must not be actuated. The executor now computes a
+  floor guard every cycle (SOC at/below `inverter_min_soc_percent` OR
+  inverter recommendation off): running controlled loads are forced off
+  dwell-exempt (min_off still gates the re-on), nothing switches on, the
+  published per-load `active` and the appliance start-window advisory read
+  False (operator automations stop too). The SOC branch latches and releases
+  only at floor + `hysteresis_percent` (no flapping at the floor); reaction
+  time is the ~5 s debounced SOC refresh instead of up to a full dwell.
+  Surfaced as `floor_guard_active` on the inverter-recommendation sensor.
+  Planner unchanged — G4 is the hard executor backstop against forecast
+  error (docs/LOAD_CONTROL.md §11, spec docs/F-EXECUTOR-GUARDS.md G4; named
+  G4 — G1-G3 were taken). Review hardening: queued switch-ONs are dropped
+  when the guard trips while a switch task is in flight (plus a catch-up
+  refresh for the deferred forced OFF); trip/release stay disjoint even at
+  `hysteresis_percent` 0; runtime accrual and the power warning treat loads
+  as inactive during a guard episode (no false 0 W "full tank" warning).
+
 ## [0.13.0] - 2026-07-18
 
 ### Changed
@@ -270,7 +296,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target cannot flap the switch.
 
 ### Fixed
-- **Deprecated coordinator init (F-EXECUTOR-GUARDS G3).** The
+- **Deprecated coordinator init (F-EXECUTOR-GUARDS G4).** The
   `DataUpdateCoordinator` is now constructed with `config_entry=` — newer HA
   cores hard-error on the implicit ContextVar lookup.
 

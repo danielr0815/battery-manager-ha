@@ -95,3 +95,43 @@ Full suite green on `.venv314` (winshim), ruff check AND format check (0.15.21).
 Goldens MUST be byte-identical (coordinator-only change). docs/LOAD_CONTROL.md:
 short sections for the target-stop dwell exemption and the stale-SOC guard.
 CHANGELOG under [Unreleased]; release cut as v0.9.0 together with part 1.
+
+## G4 — Floor guard: surplus loads never run grid-fed (v0.13.1)
+
+Binding operator rule (2026-07-18, after the 06:20-06:30 incident — a booked
+dehumidifier run stayed grid-fed for ~10 min at the 20 % inverter cutoff
+because only the min_runtime dwell timed the OFF): **"Wenn der Inverter aus
+ist oder der SOC 20 % erreicht, dürfen Zusatzlasten nicht mehr angesteuert
+werden."**
+
+- **R12** `_update_floor_guard(soc, config)` runs every cycle directly after
+  `_apply_hysteresis`. Trip: `soc <= inverter_min_soc_percent` OR inverter
+  recommendation off ("Inverter aus" is deliberately implemented as the
+  RECOMMENDATION, not the physical inverter state — BM has no inverter state
+  entity; the SOC branch catches the physical cutoff case, the recommendation
+  branch the T*-driven one). The WHOLE guard latches: release requires the
+  SOC strictly above the floor AND `>= floor + hysteresis_percent` (the
+  strict-floor clause keeps trip/release disjoint even at hysteresis 0) AND
+  the recommendation on. Restart inside the release band starts latched.
+- **R13** Enforcement in `_apply_load_switching`: `desired = False` for every
+  controlled load, ON->OFF dwell-exempt (G1 precedent; the confirmed OFF
+  stamps the dwell so min_off gates the re-on). `_execute_load_switching`
+  re-checks the guard per action and DROPS queued switch-ONs (in-flight race:
+  a trip during a running switch task must not let a pre-trip ON fire), and
+  requests a refresh after the task when the guard is active (the early
+  in-flight return in the tripping cycle could not queue its forced OFFs).
+- **R14** Published state follows: `_effective_load_active` returns False
+  (operator automations and recommendation-only loads stop; note: for
+  recommendation-only loads there is no BM-side min_off after a guard stop —
+  the release hysteresis is the only flap brake, documented semantics), the
+  appliance start-window advisory reads False, runtime accrual's plan-based
+  fallback stops, and `_update_power_warnings` treats all loads as inactive
+  (no 0 W "full tank" false positive during a guard episode). Surfaced as
+  `floor_guard_active` (coordinator data + inverter-recommendation sensor
+  attribute).
+- **R15 (tests)** Force-off despite min_runtime; no ON under guard; latch
+  trip/hold/release incl. hysteresis-0 disjointness; recommendation-off trip;
+  restart-in-band latched; published active capped; end-to-end refresh at
+  SOC below floor -> guard active + appliance advisory False; queued-ON drop.
+
+Supersedes F-SUBHOUR R9's "never off before min_runtime" for the guard case.

@@ -238,3 +238,39 @@ when charging stops or the sample bar is not met (an end-of-charge taper never
 accumulates false evidence), and loads without a SOC or power-feedback entity
 never latch. In-memory only — a restart re-detects within minutes. The
 per-load diagnostics expose `soc_stale`.
+
+## 11. Floor guard — surplus loads never run grid-fed (v0.13.1)
+
+F-EXECUTOR-GUARDS G4, binding operator rule (2026-07-18): **"Wenn der
+Inverter aus ist oder der SOC 20 % erreicht, dürfen Zusatzlasten nicht mehr
+angesteuert werden."** Incident that forced it: on 2026-07-18 06:20 the plan
+deactivated a booked dehumidifier run, but the min_runtime ON→OFF dwell held
+the switch until 06:30 while the battery hit the 20 % inverter cutoff at
+06:21 — the real inverter shut down and the 432 W load ran ~10 min on GRID.
+No executor path checked SOC or inverter state; the recommendation itself
+stayed ON at SOC 20.0 (its ±1 % hysteresis flips only at 19).
+
+Mechanics (`_update_floor_guard`, computed each cycle right after
+`_apply_hysteresis`): the guard trips when the battery SOC is at/below
+`inverter_min_soc_percent` OR the inverter RECOMMENDATION is off ("Inverter
+aus" is deliberately the recommendation, not the physical inverter state —
+BM has no inverter state entity; the SOC branch catches the physical cutoff,
+the recommendation branch the T*-driven shutdowns). While active,
+`_apply_load_switching` forces every controlled load OFF **dwell-exempt**
+(the G1 precedent: safety overrides min_runtime; the confirmed switch still
+stamps the dwell so min_off fully gates the re-on), never switches one ON,
+and the executor drops even already-QUEUED switch-ONs (in-flight race); the
+published per-load `active` reads False (operators' own automations and
+recommendation-only loads stop too — note that recommendation-only loads
+have no BM-side min_off after a guard stop, the release hysteresis is their
+only flap brake), the appliance start-window advisory reads False (a start
+would import), runtime accrual's plan-based fallback pauses and the power
+warning treats all loads as inactive (no 0 W false positive). The WHOLE
+guard LATCHES: release requires the SOC strictly above the floor and at
+`inverter_min + hysteresis_percent` (default +1 %; strictly-above keeps
+trip/release disjoint even at hysteresis 0) with the recommendation on; a
+restart inside the release band starts latched (conservative). Reaction
+time is the SOC entity's debounced refresh (~5 s), not the dwell. In-memory
+only; surfaced as `floor_guard_active` on the inverter-recommendation
+binary sensor. The planner is deliberately unchanged — G4 is the hard
+executor backstop against forecast error, not a planning rule.
