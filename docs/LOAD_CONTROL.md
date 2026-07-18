@@ -142,6 +142,15 @@ SOC (ground truth) anyway, not integrated over the power.
   minimum-runtime-honest evaluation (ALGORITHM.md D-A4 v3). The trigger was the
   night-charge incident of 05.07 (degenerate-slot-0 bug: three starts each at
   minute :59, really ~250 Wh per "5 Wh plan").
+- **F-GATE-PARITY (2026-07-17, v0.13.0): priority always wins over load
+  class.** The former class asymmetry — continuous loads could take
+  make-room/battery-share bet energy (Z2' trade slack, c2, Z4) that
+  energy-limited powerstations were denied — let a lower-priority
+  dehumidifier out-book a higher-priority Fossibot ("lieber den Fossibot
+  laden, als den Luftentfeuchter betreiben, wenn die Wahl besteht"). Both
+  classes now face the identical pass-2 gate set; the single remaining class
+  rule is that energy-limited loads never book zero-PV (night) slots. See
+  docs/F-GATE-PARITY.md.
 - Alongside this, the coordinator persists the switch dwell across restarts
   (the loss was a contributing cause). The power EMA is deliberately NOT
   persisted, and on feedback gaps is only served while the load is really

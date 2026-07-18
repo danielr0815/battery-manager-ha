@@ -106,7 +106,9 @@ removal. All planner gates keep applying.
 
 ### F3 — crossover buffer ramp (D3)
 
-- **R8** For the Z4 stress floor ONLY (continuous-load pre-drain bets), the
+- **R8** For the Z4 stress floor ONLY (pre-drain bets; ~~continuous-load~~
+  class scoping superseded v0.13.0, docs/F-GATE-PARITY.md — Z4 binds
+  energy-limited bets too), the
   BUFFER component ramps with the remaining stressed deficit: for a candidate
   slot `i`, `buffer_eff(i) = min(soc_buffer_percent,
   100 · stressed_deficit_wh(i) / battery.capacity_wh)` where
@@ -155,9 +157,13 @@ removal. All planner gates keep applying.
 No executor changes. No new config keys (rt derives from existing
 efficiencies; ramp uses existing buffer/inverter_min; merge bound is
 structural). No change to pass ordering, saturation/gate-topup, quantile
-ingestion. The energy-limited L5 restrictions stay (strict import, no
+ingestion. ~~The energy-limited L5 restrictions stay (strict import, no
 β/c2) — but they GET the rt-honest c1 (R2 covers both branches) so fossibot
-pre-dawn top-ups before a clipping day become feasible too.
+pre-dawn top-ups before a clipping day become feasible too.~~
+**Superseded (v0.13.0, docs/F-GATE-PARITY.md):** full gate parity for
+energy-limited loads (shared Z2' trade, c2, Z4); only the zero-PV night
+exclusion remains, so the pre-dawn top-up this line anticipated is now
+explicitly barred while all DAYLIGHT bets are open to them.
 
 ## Verify
 

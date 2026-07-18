@@ -874,13 +874,13 @@
  "short_peak_preempt": {
   "dc24_now": false,
   "dc48_now": false,
-  "export_kwh": 2.305269,
+  "export_kwh": 3.399698,
   "hours_to_max": 17,
   "import_kwh": 0.0,
   "inverter_on": true,
   "loads": {
    "f1": [
-    1800.0,
+    900.0,
     [
      false,
      false,
@@ -894,9 +894,9 @@
      false,
      false,
      false,
-     true,
-     true,
-     true,
+     false,
+     false,
+     false,
      true,
      true,
      true,
@@ -914,7 +914,7 @@
    ]
   },
   "max_soc": 95.0,
-  "min_soc": 22.0944,
+  "min_soc": 41.6278,
   "soc_curve": [
    87.043,
    84.086,
@@ -928,10 +928,10 @@
    64.552,
    59.967,
    55.383,
-   44.286,
-   33.19,
-   22.094,
-   61.598,
+   50.798,
+   46.213,
+   41.628,
+   81.132,
    95.0,
    95.0,
    90.415,

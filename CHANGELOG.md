@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-18
+
+### Changed
+- **Gate parity: priority always wins over load class (F-GATE-PARITY,
+  operator decision 2026-07-17).** Energy-limited loads (Fossibot
+  powerstations) now face the IDENTICAL pass-2 gate set as continuous
+  loads — the shared Z2' import-trade invariant (anchored at the no-loads
+  base), the rt-honest c1 refill gate, the optimistic c2 (beta) in-window
+  insurance and the Z4 windowed stress floor. The former class carve-out
+  (strict no-extra-import, c1-only) let a lower-priority dehumidifier take
+  make-room/battery-share bet energy a higher-priority powerstation was
+  forbidden, silently overriding the configured load priority. Now the
+  priority (config order) alone decides contested energy. The single
+  remaining class rule: energy-limited loads never book zero-PV (night)
+  slots — nights stay reserved for continuous loads.
+  Consequences to expect live: a hungry powerstation may now consume the
+  trade/c2 budget ahead of the dehumidifier (its make-room and night
+  pre-drain hours can shrink accordingly — intended), and powerstation
+  charging may cause small traded grid import within the shared
+  `import_trade_ratio` budget.
+- **`stressed_min_soc` diagnostic covers all loads.** The SOC-forecast
+  attribute now reports the stressed reserve of the earliest pass-2 booking
+  of ANY load (previously continuous-only); the value may shift after the
+  update — observability only.
+- Golden `short_peak_preempt`: the powerstation's pre-window pass-2 hours
+  sat in zero-PV (two-window model) morning hours and are now barred by the
+  night rule (planned energy 1800 → 900 Wh in that synthetic scenario;
+  import unchanged). With real hourly forecasts, morning hours carry light
+  and pre-window pre-charges remain available — the adapted tests model
+  this with a 5 Wh dawn-shoulder (`_twilight`).
+
 ## [0.12.0] - 2026-07-12
 
 ### Added

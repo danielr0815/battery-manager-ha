@@ -38,9 +38,12 @@ integration, 15-min buckets) are ignored.
   shrink toward the forecast solar onset.
 - **L4** "As late as possible" stands: preemptive runs as late as the
   constraints allow, just early enough that nothing must be exported.
-- **L5** Energy-limited loads (Fossibot powerstations) are NEVER night-charged
+- **L5** ~~Energy-limited loads (Fossibot powerstations) are NEVER night-charged
   from the house battery (operator decisions 2026-07-04/05). Pre-drain applies
-  to continuous loads only.
+  to continuous loads only.~~ **Superseded (v0.13.0, docs/F-GATE-PARITY.md):**
+  both classes now share the full pass-2 gate set (Z2' trade, c1-rt, c2, Z4)
+  and priority decides contested energy; L5 survives only as "energy-limited
+  loads never book zero-PV (night) slots".
 - **L6** There are TWO buffers. The UPPER buffer (absorption headroom near max
   SOC) must be preserved while significant solar power is still expected for
   this specific installation; it may shrink from the moment the sun moves
@@ -112,9 +115,10 @@ integration, 15-min buckets) are ignored.
 
 ### 3.2 F2 — Import trade rule Z2' (WP2)
 
-For candidates of **continuous** (non-energy-limited) loads, in BOTH passes,
-replace the absolute Z2 check with the cumulative invariant against the
-no-loads base trajectory:
+For candidates of ~~**continuous** (non-energy-limited)~~ **ALL** loads
+(class scoping superseded v0.13.0, docs/F-GATE-PARITY.md GP-R1), in BOTH
+passes, replace the absolute Z2 check with the cumulative invariant against
+the no-loads base trajectory:
 
 ```
 (trial.total_import_wh - base_import_wh)
@@ -131,15 +135,13 @@ no-loads base trajectory:
   today's behavior exactly" guarantee; resolved here.)
 - Recommended live value 0.10 is applied as the coordinator absent-key fallback
   and config-flow default (WP3), NOT as the dataclass default.
-- Energy-limited loads keep a STRICT no-extra-import comparison (L5), but anchored
-  at the CURRENTLY ACCEPTED series' import, not the no-loads base (FIX-2):
-  `trial.total_import_wh <= current.total_import_wh + EPS`. An energy-limited
-  booking must never add import (it stays out of the pre-drain trade machinery),
-  but once a continuous load has already traded a little import, anchoring at the
-  base would starve every LATER energy-limited candidate on pure surplus (it
-  inherits the delta it did not cause). Anchoring per-candidate at `current`
-  preserves L5 (the fossibot adds no import) while letting it still fill on
-  genuine surplus. `current`'s import is threaded into the gate in both passes.
+- ~~Energy-limited loads keep a STRICT no-extra-import comparison (L5), but
+  anchored at the CURRENTLY ACCEPTED series' import, not the no-loads base
+  (FIX-2).~~ **Superseded (v0.13.0, docs/F-GATE-PARITY.md GP-R1):** one Z2'
+  trade invariant for ALL load classes, anchored at the no-loads base. The
+  FIX-2 current-anchor only existed to shield energy-limited candidates from
+  inheriting continuous trade deltas; under one shared budget there is no
+  per-class anchor left to inherit.
 
 ### 3.3 F3 — Lower buffer: pessimistic stress gate Z4 (WP2; REVISED v2)
 
@@ -194,7 +196,9 @@ kWh, and (c) keep `import_trade_used_wh <= 0.10 x rescued export + 1 Wh`.
   `pv_wh / duration >= strong_pv_cutoff_w`. If `pv_window_end_hour` is set
   (site override), `last` is capped at the last slot starting before that local
   hour. "Sun behind the house" = after `last`.
-- **Gate (c) generalized** for pass-2 candidates of continuous loads. Accept if
+- **Gate (c) generalized** for pass-2 candidates of ~~continuous~~ ALL loads
+  (class scoping superseded v0.13.0, docs/F-GATE-PARITY.md GP-R2;
+  energy-limited candidates are additionally daylight-restricted). Accept if
   EITHER:
   - (c1) nominal `export_drop >= (1 - battery_tolerance) * power_wh` (existing), OR
   - (c2) the candidate slot lies INSIDE its day's PV window AND, in the
@@ -266,6 +270,8 @@ Core (fast, `.venv/Scripts/python.exe -m pytest tests/core/`):
 - T2 cumulative invariant: over a multi-candidate scenario, final
   `import - base <= 0.1 * (base_export - export)`.
 - T3 energy-limited load never gets a no-surplus slot even with ratio > 0.
+  (Since v0.13.0 / F-GATE-PARITY: never a ZERO-PV slot — in-daylight
+  no-surplus slots are full-parity bet candidates.)
 - T4 alpha stress: deep 22:00 multi-hour run rejected, same-energy pre-dawn run
   accepted; alpha=1.0 disables; floor is inverter_min_soc + buffer.
 - T5 latest-first tie: of two equally feasible night slots the later books.

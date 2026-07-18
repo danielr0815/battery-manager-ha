@@ -193,6 +193,11 @@ grid import/export for the forecast period.
 
 - **D1 Priority:** Loads may run **in parallel** when the surplus is enough for
   several; the priority order only decides in case of scarcity.
+  **Extended 2026-07-17 (F-GATE-PARITY):** priority decides ALL contested
+  energy, including pass-2 make-room/battery-share bets — load-class rules
+  must never override it ("lieber den Fossibot laden, als den
+  Luftentfeuchter betreiben, wenn die Wahl besteht"). Energy-limited loads
+  keep exactly one class rule: no zero-PV (night) slots.
 - **D2 Fossibots:** Charge only, throttled to **300 W**. The energy supplies
   directly connected loads (e.g. PC) — no feed-back into the house grid. The
   **actual charging power should be read from the feedback of the HA entities**
