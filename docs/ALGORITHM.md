@@ -121,6 +121,15 @@ candidates).
   energy-limited c1-only/strict-import carve-out silently overrode the
   priority order. Single remaining class rule: energy-limited loads never
   book zero-PV (night) slots.
+  **v0.15.0 (F-STRICT-SURPLUS, operator decision 2026-07-19):** the Z2'
+  proportional trade is retired — the import gate is the absolute
+  `IMPORT_ARTIFACT_SLACK_WH` (Z2'', R1); no booking may cover a slot the
+  trial serves inverter-off or at/below the 20 % cutoff, all accepted
+  bookings re-validated per trial (planner-G4, R2); and the Z4 bet window
+  ends at the first slot where the TRIAL refills to soc_max instead of the
+  same-day PV window end (R3) — daytime and night bets face the same
+  overnight stress, restoring the operator's lateness order.
+  See docs/F-STRICT-SURPLUS.md.
 - **Merge principle (operator insight, 2026-07-04):** All gate conditions
   are **difference comparisons** of two complete trajectories. As soon as
   both variants (with/without the load hour) reach the max SOC, they are

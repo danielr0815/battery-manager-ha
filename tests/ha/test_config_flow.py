@@ -313,13 +313,11 @@ async def test_predrain_options_no_change_reconfigure_is_behaviour_preserving(ha
     no-change reconfigure — so re-saving the untouched form never alters
     behaviour."""
     from custom_components.battery_manager.const import (
-        CONF_IMPORT_TRADE_RATIO,
         CONF_PREDRAIN_PV_CONFIDENCE,
         CONF_PV_FORECAST_MODE,
         CONF_PV_WINDOW_END_HOUR,
         CONF_STRONG_PV_CUTOFF_W,
         CONF_UPPER_PV_RESERVE,
-        IMPORT_TRADE_RATIO_DEFAULT,
         PREDRAIN_PV_CONFIDENCE_DEFAULT,
         PV_FORECAST_MODE_AUTO,
         STRONG_PV_CUTOFF_W_DEFAULT,
@@ -330,9 +328,11 @@ async def test_predrain_options_no_change_reconfigure_is_behaviour_preserving(ha
     coord = hass.data[DOMAIN][entry.entry_id]
 
     # (a) The coordinator's absent-key fallback = the recommended live values,
-    # so the feature is active right after the update.
+    # so the feature is active right after the update. The retired
+    # import_trade_ratio (F-STRICT-SURPLUS R1) stays at the neutral dataclass
+    # default — the planner ignores it either way.
     ctrl = coord.build_system_config().control
-    assert ctrl.import_trade_ratio == IMPORT_TRADE_RATIO_DEFAULT
+    assert ctrl.import_trade_ratio == 0.0
     assert ctrl.predrain_pv_confidence == PREDRAIN_PV_CONFIDENCE_DEFAULT
     assert ctrl.upper_pv_reserve == UPPER_PV_RESERVE_DEFAULT
     assert ctrl.strong_pv_cutoff_w == STRONG_PV_CUTOFF_W_DEFAULT
@@ -348,7 +348,7 @@ async def test_predrain_options_no_change_reconfigure_is_behaviour_preserving(ha
         if _marker_default(m) is not vol.UNDEFINED
     }
     assert defaults[CONF_PV_FORECAST_MODE] == PV_FORECAST_MODE_AUTO
-    assert defaults[CONF_IMPORT_TRADE_RATIO] == IMPORT_TRADE_RATIO_DEFAULT
+    assert "import_trade_ratio" not in defaults  # retired field left the form
     assert defaults[CONF_PREDRAIN_PV_CONFIDENCE] == PREDRAIN_PV_CONFIDENCE_DEFAULT
     assert defaults[CONF_UPPER_PV_RESERVE] == UPPER_PV_RESERVE_DEFAULT
     assert defaults[CONF_STRONG_PV_CUTOFF_W] == STRONG_PV_CUTOFF_W_DEFAULT
@@ -362,7 +362,7 @@ async def test_predrain_options_no_change_reconfigure_is_behaviour_preserving(ha
     )
     assert result["type"] == "create_entry"
     opts = result["data"]
-    assert opts[CONF_IMPORT_TRADE_RATIO] == IMPORT_TRADE_RATIO_DEFAULT
+    assert "import_trade_ratio" not in opts  # retired field never re-persists
     assert CONF_PV_WINDOW_END_HOUR not in opts or opts[CONF_PV_WINDOW_END_HOUR] is None
 
     entry2 = MockConfigEntry(

@@ -119,5 +119,8 @@ the spec error this feature removes.
 2. `stressed_min_soc_percent` may jump between releases (now covers
    energy-limited bets).
 3. Fossibot charging may now cause small traded grid import (bounded by the
-   shared `import_trade_ratio` budget, live 0.1).
+   shared `import_trade_ratio` budget, live 0.1). *Superseded (v0.15.0,
+   docs/F-STRICT-SURPLUS.md R1): the trade budget is retired; the shared
+   import gate is now the absolute `IMPORT_ARTIFACT_SLACK_WH` — the parity
+   principle (ONE gate for all classes) is unchanged.*
 4. Dawn-shoulder slots (minimal PV) count as daylight — deliberate.

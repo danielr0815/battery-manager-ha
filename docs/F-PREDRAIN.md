@@ -120,6 +120,14 @@ integration, 15-min buckets) are ignored.
 
 ### 3.2 F2 — Import trade rule Z2' (WP2)
 
+> **Superseded (v0.15.0, docs/F-STRICT-SURPLUS.md R1, operator decision
+> 2026-07-19):** the proportional trade is retired. On clip-eve days the
+> ratio budget minted hundreds of Wh of REAL planned pre-dawn import
+> (live 2026-07-19: `import_trade_used_wh = 1028.9`), far beyond the ~10 Wh
+> artifact class L1 was sanctioned for. The gate is now the absolute
+> `IMPORT_ARTIFACT_SLACK_WH` (50 Wh over the horizon); `import_trade_ratio`
+> is ignored and removed from the options UI. L1 itself stays satisfied.
+
 For candidates of ~~**continuous** (non-energy-limited)~~ **ALL** loads
 (class scoping superseded v0.13.0, docs/F-GATE-PARITY.md GP-R1), in BOTH
 passes, replace the absolute Z2 check with the cumulative invariant against
@@ -160,12 +168,21 @@ philosophy (the plan re-runs every 5 min; catch-up on better information).
 
 **v2 semantics — the stress is LOCAL to the candidate's bet window:**
 
+> **Superseded (v0.15.0, docs/F-STRICT-SURPLUS.md R3):** the bet window no
+> longer ends at the first PV-window end; it ends at the first slot where the
+> TRIAL trajectory actually reaches `soc_max - 0.1` (`_refill_index`), horizon
+> end if it never refills. The same-day-window-end premise ("refilled by this
+> window's end") is false on a day that never fills and let daytime bets escape
+> the overnight stress test. Everything else below (scale vector, floor,
+> relief clause, caching) is unchanged; read `recovery` as the refill index.
+
 - `simulate(..., pv_scale: float | Sequence[float] = 1.0)` — scalar as before;
   a sequence gives a PER-SLOT scale factor (same length as slots).
-- **Bet window** of a candidate starting at slot `i`:
-  `recovery = end index of the first PV window (per pv_windows()) whose end
-  is >= i` (the next full recharge opportunity), capped at the last slot. If
-  no window ends at/after `i`, use the last slot.
+- **Bet window** of a candidate starting at slot `i`: ~~`recovery = end index
+  of the first PV window (per pv_windows()) whose end is >= i`~~ **(v0.15.0)**
+  `recovery = _refill_index(trial, i)` = the first slot at/after `i` where the
+  trial refills to `soc_max`, else the horizon end; the stress window may spill
+  past it to the candidate's last covered slot (FIX-7).
 - **Gate:** build the scale vector `s[k] = alpha for i <= k <= recovery, else
   1.0`; run the stress sim on the TRIAL series with that vector; let
   `m_trial = min(soc_end over slots i..recovery)`. Reject iff
@@ -188,10 +205,13 @@ philosophy (the plan re-runs every 5 min; catch-up on better information).
   keep it simple and document the exact choice).
 
 **Acceptance criterion (binding):** on the 2026-07-10 repro scenario
-(scratchpad `repro_v080.py`), the recommended config (ratio 0.10 / alpha 0.5 /
+(scratchpad `repro_v080.py`), the recommended config (~~ratio 0.10~~ / alpha 0.5 /
 beta 1.2) must (a) book night slots in the FIRST two nights, (b) achieve
 lost_surplus strictly below the neutral config's value (3.12 kWh) minus 1.0
-kWh, and (c) keep `import_trade_used_wh <= 0.10 x rescued export + 1 Wh`.
+kWh, and (c) keep grid import within the artifact slack.
+**(v0.15.0, F-STRICT-SURPLUS R1):** the ratio is retired — criterion (c) is
+now `import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH` (50 Wh absolute), and
+(a)/(b) hold under the fixed slack (night pre-drains book at any config).
 
 ### 3.4 F4 — Upper buffer: optimistic opportunity gate (c2) + PV window (WP2)
 
@@ -237,13 +257,18 @@ Threshold search, grid-support escalation, appliance windows, executor
 
 ### 3.7 Known / accepted semantics (by design, not bugs)
 
-- **Cumulative trade budget.** The Z2' trade allowance is minted by ALL rescued
+- ~~**Cumulative trade budget.** The Z2' trade allowance is minted by ALL rescued
   export across the whole allocation, and the invariant bounds the CUMULATIVE
   `import - base`, not each pre-drain individually. A single pre-drain's own
   modeled import may therefore exceed the export IT alone rescues, as long as the
   running total stays within `import_trade_ratio * total_rescued + slack`. This is
   intended: the operator trades a small aggregate import for the aggregate rescued
-  export, and the per-cycle replan keeps the total bounded.
+  export, and the per-cycle replan keeps the total bounded.~~
+  **RETIRED (v0.15.0, F-STRICT-SURPLUS R1).** The proportional trade budget is
+  gone: on clip-eve days it minted hundreds of Wh of REAL planned import (live
+  2026-07-19). The import gate is now the absolute `IMPORT_ARTIFACT_SLACK_WH`
+  (50 Wh over the whole horizon) — surplus loads must never cause grid import;
+  the slack only prevents ~10 Wh modelling artifacts from vetoing a booking.
 - **Cross-entity `wh_period` merge.** The per-entity hourly maps merge in
   (today, tomorrow, day-after) order with last-writer-wins over any overlapping
   days (FIX-4). The three PV entities belong to the same Open-Meteo family and

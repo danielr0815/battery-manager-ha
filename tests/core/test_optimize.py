@@ -21,9 +21,11 @@ from core.optimize import (
     _committed_hours,
     _degrades_min_soc,
     _quantised_hours,
-    _recovery_index,
+    _refill_index,
+    _slot_serviceable,
     _spread_energy,
     _windowed_min_soc,
+    _z4_reject,
     allocate_loads,
     appliance_windows,
     plan,
@@ -1139,7 +1141,19 @@ def test_pass1_load_outer_config_order_priority_scarce_surplus():
     deh_first, import_deh = planned((DEHUMIDIFIER, FOSSIBOT_B))
     assert fb_first["fossibot_b"] > deh_first["fossibot_b"]
     assert deh_first["dehumidifier"] > fb_first["dehumidifier"]
-    assert abs(import_fb - import_deh) < 1e-6  # priority shifts energy, not import
+    # Total booked ENERGY is order-invariant — priority only reassigns WHICH
+    # load gets the scarce surplus, never how much is absorbed (this is the
+    # discriminating assertion; the import bound below is implied by R1 and
+    # would not catch a priority bug on its own).
+    total_fb = sum(fb_first.values())
+    total_deh = sum(deh_first.values())
+    assert abs(total_fb - total_deh) < 1e-6
+    # Import may differ only within the artifact slack (F-STRICT-SURPLUS R1: a
+    # booking's ~10 Wh standby artifact may ride the slack in one order and not
+    # the other — never more).
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    assert abs(import_fb - import_deh) <= IMPORT_ARTIFACT_SLACK_WH / 1000.0 + 1e-9
 
 
 def test_reasons_align_one_to_one_with_allocations():
@@ -1200,10 +1214,12 @@ def _dehumid_hours(result, inputs):
     return [inputs.slots[i].hour_of_day for i, on in enumerate(lp.schedule) if on]
 
 
-def test_t1_night_predrain_needs_import_trade():
-    """T1: with the 10 W charger standby a night pre-drain adds ~10 Wh of
-    modeled import — vetoed at ratio=0, but rescued once a small import may be
-    traded for the export it saves."""
+def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
+    """T1 (F-STRICT-SURPLUS R1): the ~10 Wh charger-standby artifact of a night
+    pre-drain rides the ABSOLUTE artifact slack — the pre-drain books without
+    any trade ratio, and the retired `import_trade_ratio` field changes
+    nothing (0.0 and 0.1 produce the identical plan). The used import stays
+    bounded by the slack, never by a rescued-export budget."""
     now = datetime(2026, 7, 3, 21, 0)
 
     def run(ratio):
@@ -1214,10 +1230,12 @@ def test_t1_night_predrain_needs_import_trade():
     r1, _ = run(0.1)
     night0 = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
     night1 = [h for h in _dehumid_hours(r1, inputs) if not daylight_h(h)]
-    assert not night0, "ratio=0 must keep the standby veto (no night predrain)"
-    assert night1, "ratio=0.1 must rescue the night predrain"
-    assert r0.import_trade_used_wh <= 1e-6
-    assert r1.import_trade_used_wh > 0.0
+    assert night0, "the standby artifact must not veto the night predrain (L1)"
+    assert night0 == night1, "the retired ratio must not change the plan"
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    assert 0.0 < r0.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    assert r0.import_trade_used_wh == r1.import_trade_used_wh
 
 
 def test_t2_cumulative_import_trade_invariant():
@@ -1367,21 +1385,25 @@ def test_t13_pv_window_derivation_and_override():
     assert pv_windows(cloudy, 200.0, None) == {}
 
 
-def test_recovery_index_picks_first_window_ending_at_or_after_i():
-    """The bet window for a pre-drain at slot i ends at the first PV window whose
-    end is >= i (§3.3 v2). pv_windows() days are ordered and non-overlapping, so
-    that is the smallest window-end index >= i; with none ahead it is the horizon
-    end (n - 1)."""
-    from datetime import date
+def test_refill_index_settles_at_first_actual_refill():
+    """F-STRICT-SURPLUS R3: the bet window for a pre-drain at slot i ends at the
+    first slot at/after i whose TRIAL trajectory reaches soc_max — not at the
+    same-day PV window end (whose "refilled by then" premise is false on a day
+    that never fills; live 2026-07-19 that blind spot let daytime bets escape
+    the overnight stress test). No refill ahead -> horizon end."""
+    from types import SimpleNamespace
 
-    windows = {date(2026, 7, 4): (10, 20), date(2026, 7, 5): (34, 44)}
-    n = 50
-    assert _recovery_index(windows, 5, n) == 20  # night before day-1 window
-    assert _recovery_index(windows, 15, n) == 20  # inside day-1 window
-    assert _recovery_index(windows, 20, n) == 20  # at the day-1 window end
-    assert _recovery_index(windows, 21, n) == 44  # after day-1 -> day-2 window
-    assert _recovery_index(windows, 45, n) == n - 1  # past the last window
-    assert _recovery_index({}, 3, n) == n - 1  # no strong-PV window at all
+    def traj(socs):
+        return SimpleNamespace(flows=[SimpleNamespace(soc_end_percent=s) for s in socs])
+
+    full = 94.9
+    socs = [50, 60, 95, 95, 40, 30, 20, 60, 95, 70]
+    t = traj(socs)
+    assert _refill_index(t, 0, full) == 2  # first refill ahead
+    assert _refill_index(t, 2, full) == 2  # already full at i
+    assert _refill_index(t, 4, full) == 8  # next refill only next day
+    assert _refill_index(t, 9, full) == 9  # no refill ahead -> horizon end
+    assert _refill_index(traj([50, 60, 70]), 0, full) == 2  # never full
 
 
 def test_t4_windowed_gate_scopes_stress_to_recovery_window():
@@ -1420,8 +1442,7 @@ def test_t4_windowed_gate_scopes_stress_to_recovery_window():
     # Yet the WINDOWED reserve of the earliest pass-2 bet is held at the floor.
     booked = [a[0] for a in lp.allocations if a[2] == 2]
     i0 = min(booked)
-    windows = pv_windows(inputs, 200.0, None)
-    recovery = _recovery_index(windows, i0, n)
+    recovery = _refill_index(result.trajectory, i0, cfg.battery.soc_max_percent - 0.1)
     scale_vec = [0.5 if i0 <= j <= recovery else 1.0 for j in range(n)]
     stressed = simulate(cfg, inputs, threshold, extra_ac_wh=extra, pv_scale=scale_vec)
     windowed_min = _windowed_min_soc(stressed, i0, recovery)
@@ -1431,14 +1452,14 @@ def test_t4_windowed_gate_scopes_stress_to_recovery_window():
     assert abs(result.stressed_min_soc_percent - windowed_min) < 1e-6
 
 
-def test_t4_windowed_gate_relief_when_base_window_already_below_floor():
-    """§3.3 v2 relief clause: a pre-drain whose bet window ALREADY dips below the
-    floor WITHOUT it must not be vetoed if it does not make the windowed min
-    worse (mirrors the nominal `_degrades_min_soc` relief). Engineered scenario:
-    a mid-window PV spike refills the pre-drain to the ceiling, so the deep tail
-    trough is identical with and without the load — the windowed stressed min is
-    already pinned at the hard floor by a heavy DC tail, so a strict floor test
-    would wrongly veto the (fully refilled, export-covered) pre-drain."""
+def test_t4_bet_settles_at_refill_so_unrelated_tail_dip_cannot_veto():
+    """F-STRICT-SURPLUS R3 settlement: a pre-drain whose trial refills to the
+    ceiling at the very next slot has its bet window END there — the deep,
+    unrelated DC-tail trough AFTER the refill is structurally outside the
+    stressed window and cannot veto the (fully refilled, export-covered)
+    pre-drain. (Pre-R3 this scenario needed the Z4 relief clause to survive a
+    window that ran to the same-day PV window end; the relief clause remains
+    in force for base dips INSIDE [i, refill].)"""
     deh = SurplusLoad(
         load_id="deh",
         name="E",
@@ -1494,24 +1515,24 @@ def test_t4_windowed_gate_relief_when_base_window_already_below_floor():
     # The pre-drain at slot 0 (pass 2) IS booked.
     assert any(a[0] == 0 and a[2] == 2 for a in lp.allocations)
 
-    windows = pv_windows(inputs, 200.0, None)
-    recovery = _recovery_index(windows, 0, n)
+    # Settlement: the trial refills to the ceiling at the spike slot, so the
+    # bet window is [0, 1] — the heavy DC tail (slots 2+) sits OUTSIDE it.
+    trial = simulate(config, inputs, threshold, extra_ac_wh=extra)
+    recovery = _refill_index(trial, 0, config.battery.soc_max_percent - 0.1)
+    assert recovery == 1
+    # Inside the settled window the stressed reserve holds the floor, while
+    # the whole-horizon stressed min (dominated by the tail) breaks it — the
+    # tail dip is provably outside what the gate judges.
     scale_vec = [alpha if 0 <= j <= recovery else 1.0 for j in range(n)]
     floor = control.inverter_min_soc_percent + control.soc_buffer_percent  # 25
-    base_wmin = _windowed_min_soc(
-        simulate(config, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=scale_vec),
-        0,
-        recovery,
-    )
     trial_wmin = _windowed_min_soc(
         simulate(config, inputs, threshold, extra_ac_wh=extra, pv_scale=scale_vec),
         0,
         recovery,
     )
-    # Premise: the bet window already breaks the floor WITHOUT the load ...
-    assert base_wmin < floor
-    # ... and the pre-drain does not make the windowed min worse (relief clause).
-    assert trial_wmin >= base_wmin - 1e-6
+    assert trial_wmin >= floor - 0.5
+    whole = simulate(config, inputs, threshold, extra_ac_wh=extra, pv_scale=alpha)
+    assert whole.min_soc_percent < floor
 
 
 def daylight_h(hour):
@@ -1853,11 +1874,16 @@ def test_gate_parity_c2_beta_books_energy_limited_in_window():
     )
 
 
-def test_fix6_ratio_zero_rejects_sub_wh_standby_trade():
-    """FIX-6: the +1 Wh import slack applies ONLY when a positive trade ratio is
-    configured. At ratio 0 even a sub-Wh charger standby (0.5 W) must NOT slip a
-    night pre-drain past the gate — the strict `trial import <= base` semantics of
-    v0.7.19 hold. The old unconditional +1 Wh slack wrongly admitted it."""
+def test_r1_import_capped_at_slack_never_scales_with_rescue():
+    """F-STRICT-SURPLUS R1 (supersedes FIX-6): the import gate is the absolute
+    IMPORT_ARTIFACT_SLACK_WH, in BOTH directions. (a) A sub-Wh standby artifact
+    (0.5 W charger) no longer vetoes the night pre-drain — L1 is solved by the
+    slack, not by a trade ratio. (b) On a heavy clip-eve with kWh of rescuable
+    export, the whole allocation still may not add import beyond the slack —
+    the retired proportional budget (0.1 * rescued + 1) would have minted
+    hundreds of Wh here."""
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
     now = datetime(2026, 7, 3, 21, 0)
     charger = ConverterParams(max_power_w=2300.0, eta=0.92, standby_power_w=0.5)
     control = replace(
@@ -1869,36 +1895,38 @@ def test_fix6_ratio_zero_rejects_sub_wh_standby_trade():
     cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), charger=charger)
     result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
     night = [h for h in _dehumid_hours(result, inputs) if not daylight_h(h)]
-    assert not night, "ratio 0 must reject the sub-Wh standby night pre-drain"
-    assert result.import_trade_used_wh <= 1e-6
+    assert night, "a sub-Wh standby artifact must not veto the night pre-drain"
+    assert result.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+
+    # (b) the hard cap: rescued export is huge, yet added import <= slack.
+    _thr, base = search_threshold(cfg, inputs)
+    rescued = base.total_export_wh - result.trajectory.total_export_wh
+    assert rescued > 1000.0  # kWh-class rescue on this clip-eve
+    added = result.trajectory.total_import_wh - base.total_import_wh
+    assert added <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    assert added < 0.1 * rescued  # the retired budget would have allowed more
 
 
 def test_fix7_stress_window_extends_over_spill_past_recovery():
-    """FIX-7: the Z4 windowed stress must cover a pre-drain run's SPILL past its
-    recovery slot. A 90-min run at the LAST slot of a PV window spills into the
-    post-window evening; the recovery-only window [i, recovery] never sees that
-    drain (its stressed reserve stays at the full in-window SOC, so the candidate
-    would pass), while the extended window [i, max(recovery, covered[-1][0])]
-    stresses the spill and finds it breaks the inverter floor — the reject the
-    gate now makes. Exercised with the gate's own primitives on a small battery
-    so the single spill slot alone can cross the floor."""
-    deh = SurplusLoad(
-        load_id="deh",
-        name="E",
-        nominal_power_w=400.0,
-        battery_tolerance=0.15,
-        min_runtime_min=90,
-    )
+    """FIX-7 under F-STRICT-SURPLUS R3: the Z4 stress window must cover a run's
+    SPILL past its settlement slot. A 150-min commitment at the bet slot rides
+    through the refill spike (recovery = the spike slot, where the trial hits
+    soc_max) and spills into a heavy-drain slot AFTER it; the settlement-only
+    window [i, recovery] never sees that drain (its stressed reserve stays at
+    the refilled SOC, so the candidate would pass), while the extended window
+    [i, max(recovery, covered[-1][0])] stresses the spill and finds it breaks
+    the inverter floor — the reject the gate now makes. Exercised with the
+    gate's own primitives on a small battery so the single spill slot alone
+    can cross the floor."""
     control = replace(
         ControlParams(),
-        import_trade_ratio=0.1,
         predrain_pv_confidence=0.5,
         upper_pv_reserve=1.2,
         strong_pv_cutoff_w=200.0,
     )
     cfg = SystemConfig(
         control=control,
-        loads=(deh,),
+        loads=(),
         battery=BatteryParams(capacity_wh=2000.0),
         ac_profile=LoadProfile(0.0, 0.0),
         dc_profile=LoadProfile(0.0, 0.0),
@@ -1917,34 +1945,24 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
         )
 
     slots = (
-        slot(0, 6, 1500, ac=50),
-        slot(1, 7, 1500, ac=50),
-        slot(2, 8, 500, ac=250),
-        slot(3, 9, 300, ac=250),  # LAST window slot (pv/dur >= 200)
-        slot(4, 10, 60, dc=1400),  # post-window: heavy drain lands near the floor
-        slot(5, 11, 50, dc=1400),
-        slot(6, 12, 40, dc=1400),
-        slot(7, 13, 30, dc=1400),
+        slot(0, 6, 300, ac=0),  # bet slot
+        slot(1, 7, 3000, ac=0),  # refill spike -> trial reaches soc_max here
+        slot(2, 8, 60, dc=1400),  # post-refill: heavy drain near the floor
+        slot(3, 9, 50, dc=200),
     )
-    inputs = PlanInputs(
-        now=start,
-        start_soc_percent=55.0,
-        slots=slots,
-        load_states=(SurplusLoadState(load_id="deh"),),
-    )
+    inputs = PlanInputs(now=start, start_soc_percent=55.0, slots=slots)
     n = len(slots)
     threshold, _base = search_threshold(cfg, inputs)
     alpha = 0.5
     floor = cfg.control.inverter_min_soc_percent + cfg.control.soc_buffer_percent  # 25
 
-    windows = pv_windows(inputs, 200.0, None)
-    assert windows[start.date()] == (0, 3)  # window ends at slot 3
-    i = 3
-    # A 90-min (1.5 h) commitment at slot 3 spills 0.5 h into slot 4 (post-window).
-    trial, covered = _spread_energy([0.0] * n, slots, i, 400.0, 1.5)
-    recovery = _recovery_index(windows, i, n)
+    i = 0
+    # A 150-min (2.5 h) commitment at slot 0 spills 0.5 h into slot 2.
+    trial, covered = _spread_energy([0.0] * n, slots, i, 400.0, 2.5)
+    traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    recovery = _refill_index(traj, i, cfg.battery.soc_max_percent - 0.1)
     hi = max(recovery, covered[-1][0])
-    assert recovery == 3 and covered[-1][0] == 4 and hi == 4  # spills PAST recovery
+    assert recovery == 1 and covered[-1][0] == 2 and hi == 2  # spills PAST refill
 
     def windowed(lo):
         sv = [alpha if i <= j <= lo else 1.0 for j in range(n)]
@@ -1960,8 +1978,8 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
         )
         return t, b
 
-    # Recovery-only window (the pre-FIX-7 scope) never sees the spill: the reserve
-    # stays at the full in-window SOC, so the candidate would be ACCEPTED.
+    # Settlement-only window (the pre-FIX-7 scope) never sees the spill: the
+    # reserve stays at the refilled SOC, so the candidate would be ACCEPTED.
     t_rec, _b_rec = windowed(recovery)
     assert t_rec >= floor
     # The extended window stresses the spill: its reserve breaks the floor AND is
@@ -2138,13 +2156,14 @@ def test_z4_stress_follows_p10_evidence():
     A stable-day band (p10_ratio 0.85 on the refill slots) admits a pre-dawn
     hour the scalar alpha rejected; a volatile-day band (p10_ratio 0.4)
     rejects hours the trusting alpha=1.0 accepted. (The milder direction is
-    demonstrated at scalar alpha 0.45 — at 0.5 this geometry's marginal hour
-    is rejected by both the scalar and the 0.85 evidence, so 0.45 is the
-    nearest scalar whose rejection the evidence overturns.)"""
-    # Milder-than-scalar: 0.45 rejects the 03:00 bet; 0.85 P10 evidence on the
+    demonstrated at scalar alpha 0.35 — under F-STRICT-SURPLUS R3 the bet
+    window ends at the actual refill, so this geometry's marginal 03:00 hour
+    is already accepted by scalars >= 0.4; 0.35 is the nearest scalar whose
+    rejection the evidence overturns.)"""
+    # Milder-than-scalar: 0.35 rejects the 03:00 bet; 0.85 P10 evidence on the
     # morning refill accepts it (stable day -> the reserve provably recovers).
-    scalar_mid, inputs = _predrain_band_plan(0.45)
-    evidence_mid, _ = _predrain_band_plan(0.45, 0.85, 1.0)
+    scalar_mid, inputs = _predrain_band_plan(0.35)
+    evidence_mid, _ = _predrain_band_plan(0.35, 0.85, 1.0)
     assert min(_predawn_hours(evidence_mid, inputs)) < min(
         _predawn_hours(scalar_mid, inputs)
     )
@@ -2245,12 +2264,23 @@ def test_night_rescue_books_predawn_hours_before_clipping_day():
     assert result.threshold_horizon_end is not None
 
 
-def test_night_rescue_c1_need_is_round_trip_honest():
-    """R12 (F1): the c1 need is (1-tol)*energy*rt with rt from the config's
-    own efficiency chain. The incident geometry books a pre-dawn quantum whose
-    export drop lies BETWEEN the rt-honest need and the old 0.85*energy demand
-    — exactly the booking the old gate rejected all night ("c1 drop 168<181");
-    direct-PV pass-1 bookings are untouched (they drop export ~1:1)."""
+def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
+    """F-STRICT-SURPLUS regression lock on the old c1-honesty geometry (small
+    5 kWh battery, deep drain): the marginal 05:00 half-quantum the retired
+    trade budget used to finance is now refused by ALL THREE new/tightened
+    gates — it would end the slot AT the 20 % cutoff (R2), push the house onto
+    grid pre-dawn for ~76 Wh > IMPORT_ARTIFACT_SLACK_WH (R1), and break the
+    stressed windowed floor over its refill-settled bet window (R3/Z4). The
+    plan keeps rescuing via floor-safe morning pre-charges instead; the
+    rescue-capable geometry (7 kWh battery) still books true pre-dawn quanta
+    — see test_night_rescue_books_predawn_hours_before_clipping_day."""
+    from core.optimize import (
+        IMPORT_ARTIFACT_SLACK_WH,
+        _effective_uncertainty,
+        _ramped_stress_floors,
+        _refill_index,
+    )
+
     config = SystemConfig(
         control=NIGHT_CONTROL,
         loads=(NIGHT_DEH,),
@@ -2262,32 +2292,49 @@ def test_night_rescue_c1_need_is_round_trip_honest():
     result = plan(config, inputs)
     lp = result.load_plans[0]
 
-    rt = (
-        config.charger.eta
-        * config.battery.eta_charge
-        * config.battery.eta_discharge
-        * config.inverter.eta
+    # No booking before 06:00 on day 1 anymore (the old plan booked 05:00).
+    dawn = datetime(2026, 7, 12, 6, 0)
+    assert not any(
+        h > 0 and inputs.slots[i].start < dawn for i, h in enumerate(lp.run_hours)
     )
-    assert 0.0 < rt <= 1.0 and abs(rt - 0.8223) < 1e-3  # 0.92*0.97*0.97*0.95
-    energy_wh = 426.0 * 0.5  # one pre-dawn 0.5 h quantum at the learned power
-    need_rt = 0.85 * energy_wh * rt
-    need_old = 0.85 * energy_wh
-    # The 05:00 quantum books with a drop in [need_rt, need_old): physically
-    # feasible now, physically impossible under the old demand.
-    predawn = [
-        (a, why)
-        for a, why in zip(lp.allocations, lp.reasons, strict=True)
-        if a[2] == 2
-        and inputs.slots[a[0]].start < datetime(2026, 7, 12, 6, 0)
-        and "otherwise-lost export" in why
-    ]
-    assert predawn, "the incident geometry must book a pre-dawn quantum"
-    drops = [float(why.split("(")[1].split(" Wh")[0]) for _a, why in predawn]
-    assert any(need_rt - 1.0 <= d < need_old for d in drops), (
-        f"expected a drop in [{need_rt:.0f}, {need_old:.0f}), got {drops}"
+    # The allocation's import stays within the artifact slack.
+    assert result.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    # Rescue continues floor-safe: pass-2 pre-charges book in the morning.
+    assert any(a[2] == 2 for a in lp.allocations)
+
+    # Gate-by-gate: evaluate the old 05:00 half-quantum against the no-loads
+    # base exactly as pass 2 would.
+    n = len(inputs.slots)
+    threshold, base = search_threshold(config, inputs)
+    i = next(
+        k for k, s in enumerate(inputs.slots) if s.start == datetime(2026, 7, 12, 5, 0)
     )
-    # Direct-PV bookings unchanged: pass-1 hours still book at 0 % share.
-    assert any("direct surplus" in r and "share 0%" in r for r in lp.reasons)
+    trial, covered = _spread_energy([0.0] * n, inputs.slots, i, 426.0, 0.5)
+    traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
+    # R1: real pre-dawn import beyond the artifact slack.
+    assert traj.total_import_wh - base.total_import_wh > IMPORT_ARTIFACT_SLACK_WH
+    # R2: the covered slot ends AT the cutoff (would ride it).
+    floor20 = config.control.inverter_min_soc_percent
+    assert any(traj.flows[j].soc_end_percent <= floor20 + 1e-6 for j, _t in covered)
+    # R3/Z4: the stressed refill-settled window breaks the ramped floor and is
+    # worse than the base's own window.
+    alpha = config.control.predrain_pv_confidence
+    stress_vec, _o, _b = _effective_uncertainty(inputs, alpha, 1.0)
+    recovery = _refill_index(traj, i, config.battery.soc_max_percent - 0.1)
+    hi = max(recovery, covered[-1][0])
+    sv = [stress_vec[j] if i <= j <= hi else 1.0 for j in range(n)]
+    t_w = _windowed_min_soc(
+        simulate(config, inputs, threshold, extra_ac_wh=tuple(trial), pv_scale=sv),
+        i,
+        hi,
+    )
+    b_w = _windowed_min_soc(
+        simulate(config, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=sv),
+        i,
+        hi,
+    )
+    floors = _ramped_stress_floors(config, inputs, stress_vec)
+    assert t_w < floors[i] - 1e-6 and t_w < b_w - 1e-6
 
 
 def test_merge_bounded_threshold_ignores_post_clip_hoarding():
@@ -2424,3 +2471,557 @@ def test_ramped_stress_floor_follows_stressed_crossover():
     )
     s_floors = _ramped_stress_floors(config, s_inputs, [0.2, 1.0])
     assert abs(s_floors[0] - (inverter_min + 100.0 * 40.0 / 5000.0)) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# F-STRICT-SURPLUS (operator decision 2026-07-19): loads never buy import
+# (R1, absolute artifact slack), never book planned-grid-fed / cutoff-riding
+# slots (R2, planner-G4), and bets settle at the true refill (R3).
+# docs/F-STRICT-SURPLUS.md; live incident: the 2026-07-19 card.
+# ---------------------------------------------------------------------------
+
+
+def test_r2_pv_served_inverter_off_allowed_grid_fed_and_cutoff_refused():
+    """R2 (with the HIGH-fix, gates review 2026-07-19): a booking is refused
+    iff its slot is GRID-FED (inverter off AND PV cannot cover the AC load) or
+    touches the cutoff (either slot endpoint <= inverter_min). A PV-covered
+    inverter-off slot — the full-battery hoard regime, where T*=soc_max makes
+    inverter_on False on EVERY slot — is PV-served with zero import and MUST be
+    allowed: the earlier inverter_on-only R2 vetoed it and thereby disabled the
+    whole allocator on hoard days, re-exporting multi-kWh."""
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    cfg = SystemConfig(
+        control=ControlParams(),
+        loads=(deh,),
+        battery=BatteryParams(capacity_wh=5000.0, soc_max_percent=95.0),
+        ac_profile=LoadProfile(100.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
+    )
+    start = datetime(2026, 7, 20, 8, 0)
+
+    def slot(i, hour, pv, ac=100.0):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=0.0,
+        )
+
+    # (A) HOARD: battery pinned at soc_max, T*=soc_max -> inverter OFF on every
+    # slot, yet strong PV exports. The load is PV-served; R2 must allow it.
+    slots = tuple(slot(i, 8 + i, 2500) for i in range(5))
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=95.0,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    base = simulate(cfg, inputs, 95.0)
+    assert all(not f.inverter_on for f in base.flows)  # hoard: inverter off
+    assert base.total_export_wh > 1000.0  # real surplus to absorb
+    plans, _extra, traj = allocate_loads(cfg, inputs, 95.0, base)
+    assert plans[0].planned_energy_wh > 100.0, (
+        "R2 must not disable the allocator when PV serves an inverter-off slot"
+    )
+    inv_min = cfg.control.inverter_min_soc_percent
+    for j, on in enumerate(plans[0].schedule):
+        if on:
+            f, s = traj.flows[j], inputs.slots[j]
+            assert f.soc_end_percent > inv_min and f.soc_start_percent > inv_min
+            assert s.pv_wh + 1e-6 >= s.ac_wh + f.extra_ac_wh  # PV-served, not grid-fed
+
+    # (B) CUTOFF: a slot the battery ENTERS below the cutoff (soc_start < 20)
+    # must be refused even though its PV covers the load and it ends above 20 —
+    # the executor's G4 would not actuate a load at SOC <= 20 (phantom energy).
+    cut = (
+        slot(0, 5, 0, ac=200),  # night: drains toward the floor
+        slot(1, 6, 0, ac=200),
+        slot(2, 7, 3000),  # dawn clip: refills from below cutoff, would export
+        slot(3, 8, 3000),
+    )
+    cut_inputs = PlanInputs(
+        now=start,
+        start_soc_percent=22.0,
+        slots=cut,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    cbase = simulate(cfg, cut_inputs, 20.0)
+    assert (
+        cbase.flows[2].soc_start_percent <= inv_min + 1e-6
+    )  # enters slot 2 sub-cutoff
+    cplans, _e, ctraj = allocate_loads(cfg, cut_inputs, 20.0, cbase)
+    assert not cplans[0].schedule[2], "R2 must refuse a slot entered below the cutoff"
+
+
+def test_r4_prevented_export_reports_the_no_loads_counterfactual():
+    """R4: PlanResult.prevented_export_by_day_wh = max(0, base - alloc) per day,
+    both PRE support-escalation — the export the loads prevented that day, the
+    counterfactual behind the dashboard's prevented_export_kwh. It must be
+    non-negative, positive where loads absorbed, and never exceed the base's
+    own per-day export."""
+    now = datetime(2026, 7, 3, 21, 0)
+    cfg = _predrain_config(ratio=0.0, alpha=1.0, beta=1.0)
+    inputs = build_slots(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    result = plan(cfg, inputs)
+    _thr, base = search_threshold(cfg, inputs)
+
+    base_by_day: dict[str, float] = {}
+    for slot, flow in zip(inputs.slots, base.flows, strict=True):
+        day = slot.start.date().isoformat()
+        base_by_day[day] = base_by_day.get(day, 0.0) + flow.grid_export_wh
+    prevented = result.prevented_export_by_day_wh
+    assert set(prevented) == set(base_by_day)
+    for day, wh in prevented.items():
+        assert 0.0 <= wh <= base_by_day[day] + 1e-6  # bounded by base export
+    assert sum(prevented.values()) > 0.0  # loads absorbed some export
+
+    # It equals base minus the ALLOCATION (pre-escalation) export, not the
+    # final trajectory — with no support configured the two coincide here.
+    final: dict[str, float] = {}
+    for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
+        day = slot.start.date().isoformat()
+        final[day] = final.get(day, 0.0) + flow.grid_export_wh
+    for day in base_by_day:
+        assert abs(prevented[day] - max(0.0, base_by_day[day] - final[day])) < 1e-6
+
+
+def test_r4_prevented_export_uses_pre_escalation_alloc_not_final():
+    """R4 discriminator (re-review finding: the pre-escalation capture was
+    unpinned). With a forced 48 V support PSU active, the FINAL trajectory
+    exports more than the pre-escalation allocation (the PSU lifts SOC and
+    fills sooner), so `prevented_export_by_day_wh` computed from `alloc_traj`
+    (pre-escalation) must DIFFER from the post-escalation `base - final` — a
+    maintainer swapping `alloc_traj` for the final trajectory would deflate the
+    counterfactual and this test would catch it."""
+    from core.model import SupportParams
+
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    cfg = SystemConfig(
+        control=replace(
+            ControlParams(),
+            predrain_pv_confidence=0.7,
+            upper_pv_reserve=1.2,
+            strong_pv_cutoff_w=200.0,
+        ),
+        loads=(deh,),
+        battery=BatteryParams(capacity_wh=5000.0, soc_max_percent=95.0),
+        support=SupportParams(configured=True, dc48_forced_on=True, dc48_power_w=300.0),
+        ac_profile=LoadProfile(200.0, 100.0, 6, 22),
+        dc_profile=LoadProfile(300.0, 0.0, 0, 0),
+    )
+    now = datetime(2026, 7, 19, 8, 0)
+    pv = {
+        datetime(2026, 7, 19, h, 0): float(w)
+        for h, w in {
+            9: 1600,
+            10: 1800,
+            11: 1900,
+            12: 1800,
+            13: 1500,
+            14: 900,
+            15: 400,
+        }.items()
+    }
+    inputs = build_slots(
+        cfg,
+        now,
+        50.0,
+        [sum(pv.values()) / 1000.0],
+        load_states=(SurplusLoadState(load_id="deh"),),
+        pv_hourly=pv,
+    )
+    result = plan(cfg, inputs)
+    _thr, base = search_threshold(cfg, inputs)
+
+    # The forced PSU is actually active in the final trajectory (else vacuous).
+    assert any(f.support_dc48 for f in result.trajectory.flows)
+    day = "2026-07-19"
+    base_exp = sum(f.grid_export_wh for f in base.flows)
+    final_exp = sum(f.grid_export_wh for f in result.trajectory.flows)
+    post_would_be = max(0.0, base_exp - final_exp)
+    # The reported (pre-escalation) prevented export is strictly larger than
+    # the post-escalation figure the swap would yield.
+    assert result.prevented_export_by_day_wh[day] > post_would_be + 100.0
+
+
+def _card_20260719_plan():
+    """Compact reconstruction of the 2026-07-19 operator-card geometry (the
+    F-STRICT-SURPLUS motivating incident): Sunday clips midday WITHOUT loads,
+    Monday clips ~2 kWh even WITH loads, Tuesday moderate; Victron 5 kWh,
+    T* 20, alpha 0.7 / beta 1.2 scalar fallback, learned powers 505/433 W."""
+    fossibot = SurplusLoad(
+        load_id="fossibot",
+        name="F",
+        nominal_power_w=300.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+        energy_limited=True,
+        capacity_wh=2000.0,
+        target_soc_percent=90.0,
+    )
+    deh = SurplusLoad(
+        load_id="dehumidifier",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    control = ControlParams(
+        inverter_min_soc_percent=20.0,
+        soc_buffer_percent=5.0,
+        hysteresis_percent=1.0,
+        predrain_pv_confidence=0.7,
+        upper_pv_reserve=1.2,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        battery=BatteryParams(
+            capacity_wh=5000.0, soc_min_percent=5.0, soc_max_percent=95.0
+        ),
+        control=control,
+        ac_profile=LoadProfile(200.0, 100.0, 6, 22),
+        dc_profile=LoadProfile(35.0, 0.0, 0, 0),
+        loads=(fossibot, deh),
+    )
+    states = (
+        SurplusLoadState(load_id="fossibot", soc_percent=50.0, learned_power_w=505.0),
+        SurplusLoadState(load_id="dehumidifier", learned_power_w=433.0),
+    )
+    sun = {
+        9: 1300,
+        10: 1500,
+        11: 1450,
+        12: 1300,
+        13: 800,
+        14: 300,
+        15: 150,
+        16: 80,
+        17: 40,
+    }
+    mon = {
+        5: 80,
+        6: 400,
+        7: 900,
+        8: 1400,
+        9: 1750,
+        10: 1900,
+        11: 1950,
+        12: 1850,
+        13: 1500,
+        14: 900,
+        15: 400,
+        16: 180,
+        17: 70,
+    }
+    tue = {
+        6: 100,
+        7: 300,
+        8: 600,
+        9: 800,
+        10: 900,
+        11: 950,
+        12: 900,
+        13: 700,
+        14: 400,
+        15: 200,
+        16: 100,
+    }
+    pv_hourly = {}
+    for day, shape in ((19, sun), (20, mon), (21, tue)):
+        for hour, wh in shape.items():
+            pv_hourly[datetime(2026, 7, day, hour, 0)] = float(wh)
+    daily = [sum(sun.values()) / 1e3, sum(mon.values()) / 1e3, sum(tue.values()) / 1e3]
+    now = datetime(2026, 7, 19, 9, 0)
+    inputs = build_slots(cfg, now, 44.0, daily, load_states=states, pv_hourly=pv_hourly)
+    return cfg, inputs, plan(cfg, inputs)
+
+
+def test_card_20260719_strict_invariants_hold_end_to_end():
+    """The incident card under F-STRICT-SURPLUS, end to end: (a) R1 — the
+    whole allocation adds at most the artifact slack of import over the
+    no-loads base; (b) R2 — no slot carrying booked load energy is GRID-FED
+    (inverter off AND PV below the AC load) or touches the 20 % cutoff at
+    either endpoint; (c) the SOC touches soc_max on Sunday (the operator's
+    expectation: battery first), with Sunday hosting only direct-surplus
+    pass-1 runs — the 08:00-12:00 beta-insurance morning bets and the pre-dawn
+    cutoff-riding bookings of the v0.14.0 live plan are gone; (d) Monday's clip
+    is still absorbed by pass-1 runs (rescue not suppressed)."""
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    cfg, inputs, result = _card_20260719_plan()
+    assert result.threshold_percent == 20.0
+
+    _thr, base = search_threshold(cfg, inputs)
+    added = result.trajectory.total_import_wh - base.total_import_wh
+    assert added <= IMPORT_ARTIFACT_SLACK_WH + 1e-6  # (a)
+
+    inv_min = cfg.control.inverter_min_soc_percent
+    for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):  # (b)
+        if flow.extra_ac_wh > 0.0:
+            assert flow.soc_start_percent > inv_min and flow.soc_end_percent > inv_min
+            # not grid-fed: inverter on, or PV covers the AC load in that slot
+            assert (
+                flow.inverter_on or slot.pv_wh + 1e-6 >= slot.ac_wh + flow.extra_ac_wh
+            )
+
+    sunday = datetime(2026, 7, 19).date()
+    sunday_max = max(
+        f.soc_end_percent
+        for s, f in zip(inputs.slots, result.trajectory.flows, strict=True)
+        if s.start.date() == sunday
+    )
+    assert sunday_max >= cfg.battery.soc_max_percent - 0.1  # (c) battery first
+    for lp in result.load_plans:
+        for alloc, reason in zip(lp.allocations, lp.reasons, strict=True):
+            if inputs.slots[alloc[0]].start.date() == sunday:
+                assert alloc[2] == 1 and "direct surplus" in reason
+
+    monday = datetime(2026, 7, 20).date()
+    deh_plan = next(p for p in result.load_plans if p.load_id == "dehumidifier")
+    mon_pass1 = [
+        a
+        for a in deh_plan.allocations
+        if a[2] == 1 and inputs.slots[a[0]].start.date() == monday
+    ]
+    assert mon_pass1, "Monday's clip must still be absorbed by pass-1 runs"  # (d)
+
+
+def test_slot_serviceable_grid_fed_and_both_cutoff_endpoints():
+    """R2 per-slot rule pinned directly (re-review finding: the soc_end cutoff
+    endpoint was untested — a floor-only-on-entry mutation passed the suite).
+    Reject iff grid-fed (inverter off AND PV below the AC load) OR EITHER SOC
+    endpoint touches the cutoff."""
+    from types import SimpleNamespace
+
+    def flow(start, end, inv, extra=400.0):
+        return SimpleNamespace(
+            soc_start_percent=start,
+            soc_end_percent=end,
+            inverter_on=inv,
+            extra_ac_wh=extra,
+        )
+
+    def slot(pv, ac=100.0):
+        return SimpleNamespace(pv_wh=pv, ac_wh=ac)
+
+    fl = 20.0
+    # Healthy: inverter on, both endpoints well above cutoff -> serviceable.
+    assert _slot_serviceable(flow(60, 55, True), slot(0), fl)
+    # Hoard: inverter OFF but PV covers the load -> PV-served, serviceable.
+    assert _slot_serviceable(flow(95, 95, False), slot(2000), fl)
+    # Grid-fed: inverter off AND PV below the AC load -> reject.
+    assert not _slot_serviceable(flow(60, 55, False), slot(100), fl)
+    # Cutoff ENTRY: soc_start at/below the cutoff (even if it recovers) -> reject.
+    assert not _slot_serviceable(flow(19, 30, False), slot(2000), fl)
+    assert not _slot_serviceable(flow(20, 40, True), slot(0), fl)
+    # Cutoff EXIT: inverter ON, battery-served discharge rides soc_end to the
+    # floor (soc_start > cutoff) -> reject. THIS is the endpoint the re-review
+    # found unpinned; a floor-only-on-entry mutation returns True here.
+    assert not _slot_serviceable(flow(30, 19, True), slot(0), fl)
+    assert not _slot_serviceable(flow(30, 20, True), slot(0), fl)
+
+
+def test_z4_reject_relief_clause():
+    """The Z4 veto's relief conjunct pinned directly (medium review finding: the
+    rewrite left it untested, so a floor-only mutation passed the suite). Reject
+    iff the stressed windowed reserve breaks the floor AND is worse than the
+    accepted-series windowed min."""
+    floor = 25.0
+    # Above the floor -> never a veto, regardless of the baseline.
+    assert not _z4_reject(30.0, floor, 22.0)
+    assert not _z4_reject(30.0, floor, 40.0)
+    # Below the floor AND worse than the base -> veto (the bet deepened the dip).
+    assert _z4_reject(19.0, floor, 22.0)
+    # Below the floor but NOT worse than the base -> RELIEF, must NOT veto.
+    # (A floor-only gate — the mutant — would return True here and wrongly veto.)
+    assert not _z4_reject(19.0, floor, 19.0)
+    assert not _z4_reject(19.0, floor, 18.0)
+
+
+def test_r5_plan_reaches_soc_max_on_every_day_the_base_does():
+    """F-STRICT-SURPLUS R5 (operator 2026-07-19): pre-conditioning is welcome,
+    but the plan must still reach soc_max on every day the no-loads base
+    reaches it — a bet that stops the fill (the card's 77 % peak) is refused.
+    Contract check over the incident geometry (the DISCRIMINATING pin — a
+    geometry where R5 alone protects the fill — is
+    test_r5_vetoes_a_max_robbing_bet_via_the_gate_directly): every base-max day
+    is a plan-max day."""
+    cfg, inputs, result = _card_20260719_plan()
+    _thr, base = search_threshold(cfg, inputs)
+    soc_full = cfg.battery.soc_max_percent - 0.1
+
+    def max_days(traj):
+        days = set()
+        for slot, flow in zip(inputs.slots, traj.flows, strict=True):
+            if flow.soc_end_percent >= soc_full:
+                days.add(slot.start.date())
+        return days
+
+    base_max = max_days(base)
+    plan_max = max_days(result.trajectory)
+    assert base_max, "geometry must have at least one base-max day to protect"
+    assert base_max <= plan_max, (
+        f"R5 violated: base reaches max on {base_max}, plan only on {plan_max}"
+    )
+
+
+def test_r5_vetoes_a_max_robbing_bet_via_the_gate_directly():
+    """R5 unit: preserves_daily_max is the discriminant. A single-day clip
+    geometry where the no-loads base reaches soc_max; a hypothetical extra-AC
+    series that drains the morning so the battery never reaches max that day
+    must be rejected by the gate, while the no-loads (all-zero) series passes.
+    Exercised by building the two trial trajectories and the gate's own rule."""
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=2000.0,
+        battery_tolerance=1.0,
+        min_runtime_min=60,
+    )
+    cfg = SystemConfig(
+        control=replace(
+            ControlParams(), predrain_pv_confidence=1.0, upper_pv_reserve=1.0
+        ),
+        loads=(deh,),
+        battery=BatteryParams(capacity_wh=5000.0, soc_max_percent=95.0),
+        ac_profile=LoadProfile(0.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
+    )
+    start = datetime(2026, 7, 4, 8, 0)
+
+    def slot(i, hour, pv):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=hour,
+            pv_wh=pv,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
+
+    # A day that reaches soc_max at midday then declines (surplus margin small
+    # enough that a heavy morning drain prevents the fill).
+    slots = tuple(
+        slot(i, 8 + i, pv) for i, pv in enumerate([1200, 1100, 700, 200, 100, 50])
+    )
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=50.0,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    n = len(slots)
+    threshold, base = search_threshold(cfg, inputs)
+    soc_full = cfg.battery.soc_max_percent - 0.1
+    assert base.max_soc_percent >= soc_full  # base reaches max
+
+    # Drain the morning heavily (3 kWh over slots 0-1) so the battery never maxes.
+    robbing = [0.0] * n
+    robbing[0], robbing[1] = 2000.0, 1000.0
+    robbed = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(robbing))
+    assert robbed.max_soc_percent < soc_full  # the bet robs the fill
+
+    # The gate's rule (base_max_days must all still reach soc_full) rejects it.
+    assert any(f.soc_end_percent >= soc_full for f in base.flows)  # base maxes that day
+    assert not any(
+        f.soc_end_percent >= soc_full for f in robbed.flows
+    )  # trial does not
+    # -> preserves_daily_max would return False for `robbed`, True for the base.
+    plans, _extra, traj = allocate_loads(cfg, inputs, threshold, base)
+    assert traj.max_soc_percent >= soc_full  # the real plan preserves the fill
+
+
+def test_energy_limited_priority_load_reaches_target_when_surplus_permits():
+    """Operator 2026-07-19: the controllable battery storages (energy-limited,
+    priority over the dehumidifier) must ALSO reach their target SOC — from
+    surplus, never grid. With a gate-stop-capable powerstation (live: a
+    charge-enable input_boolean) and ample surplus, it charges to its exact
+    target via the final top-up quantum, BEFORE the dehumidifier, while the
+    house battery still reaches its own max (R5)."""
+    fossibot = SurplusLoad(
+        load_id="fb",
+        name="Fossibot",
+        nominal_power_w=300.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+        energy_limited=True,
+        capacity_wh=2000.0,
+        target_soc_percent=90.0,
+        gate_stop_capable=True,
+    )
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    cfg = SystemConfig(
+        control=replace(
+            ControlParams(),
+            predrain_pv_confidence=0.7,
+            upper_pv_reserve=1.2,
+            strong_pv_cutoff_w=200.0,
+        ),
+        loads=(fossibot, deh),  # fossibot first = priority
+        battery=BatteryParams(capacity_wh=5000.0, soc_max_percent=95.0),
+        ac_profile=LoadProfile(200.0, 100.0, 6, 22),
+        dc_profile=LoadProfile(35.0, 0.0, 0, 0),
+    )
+    now = datetime(2026, 7, 19, 8, 0)
+    pv = {
+        datetime(2026, 7, 19, h, 0): float(wh)
+        for h, wh in {
+            9: 1600,
+            10: 1800,
+            11: 1900,
+            12: 1800,
+            13: 1500,
+            14: 900,
+            15: 400,
+        }.items()
+    }
+    states = (
+        SurplusLoadState(
+            load_id="fb", soc_percent=40.0
+        ),  # needs (90-40)%*2000 = 1000 Wh
+        SurplusLoadState(load_id="deh"),
+    )
+    inputs = build_slots(
+        cfg, now, 50.0, [sum(pv.values()) / 1000.0], load_states=states, pv_hourly=pv
+    )
+    result = plan(cfg, inputs)
+    fb_plan = next(p for p in result.load_plans if p.load_id == "fb")
+    deh_plan = next(p for p in result.load_plans if p.load_id == "deh")
+    _thr, base = search_threshold(cfg, inputs)
+
+    remaining = SurplusLoadState(load_id="fb", soc_percent=40.0).remaining_energy_wh(
+        fossibot
+    )
+    assert base.total_export_wh > 2000.0  # ample surplus for both
+    assert fb_plan.planned_energy_wh >= remaining - 1.0  # fossibot REACHES target
+    assert any("final top-up to target" in r for r in fb_plan.reasons)
+    assert deh_plan.planned_energy_wh > 0.0  # dehumidifier gets the rest, after
+    # house battery still reaches its own max (R5) and no grid import beyond slack
+    assert result.max_soc_percent >= cfg.battery.soc_max_percent - 0.1
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    assert result.trajectory.total_import_wh - base.total_import_wh <= (
+        IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    )

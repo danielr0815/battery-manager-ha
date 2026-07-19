@@ -232,7 +232,9 @@ APPLIANCE_RUNNING_STATES = {"on", "run", "running", "washing", "active", "wash"}
 # DEFAULT_CONFIG below), so an un-reconfigured install activates the feature
 # after the update (F-PREDRAIN §3.2 note).
 CONF_PV_FORECAST_MODE = "pv_forecast_mode"
-CONF_IMPORT_TRADE_RATIO = "import_trade_ratio"
+# "import_trade_ratio" was retired by F-STRICT-SURPLUS R1 (2026-07-19): loads
+# may never buy grid import, the planner uses a fixed artifact slack instead
+# (core/optimize.py IMPORT_ARTIFACT_SLACK_WH). A stored key is ignored.
 CONF_PREDRAIN_PV_CONFIDENCE = "predrain_pv_confidence"
 CONF_UPPER_PV_RESERVE = "upper_pv_reserve"
 CONF_STRONG_PV_CUTOFF_W = "strong_pv_cutoff_w"
@@ -257,7 +259,6 @@ PV_FORECAST_MODES = [
 # Recommended live fallbacks (NOT the neutral core dataclass defaults). Used as
 # the coordinator absent-key fallback AND the config-flow form default so a
 # no-change reconfigure keeps the pre-drain behaviour unchanged.
-IMPORT_TRADE_RATIO_DEFAULT = 0.10
 PREDRAIN_PV_CONFIDENCE_DEFAULT = 0.5
 UPPER_PV_RESERVE_DEFAULT = 1.2
 STRONG_PV_CUTOFF_W_DEFAULT = 200.0
@@ -312,7 +313,6 @@ DEFAULT_CONFIG = {
     # an un-reconfigured install runs with the feature active. pv_window_end_hour
     # is intentionally omitted (no default = unset/derive from the forecast).
     CONF_PV_FORECAST_MODE: PV_FORECAST_MODE_AUTO,
-    CONF_IMPORT_TRADE_RATIO: IMPORT_TRADE_RATIO_DEFAULT,
     CONF_PREDRAIN_PV_CONFIDENCE: PREDRAIN_PV_CONFIDENCE_DEFAULT,
     CONF_UPPER_PV_RESERVE: UPPER_PV_RESERVE_DEFAULT,
     CONF_STRONG_PV_CUTOFF_W: STRONG_PV_CUTOFF_W_DEFAULT,
