@@ -2803,21 +2803,146 @@ def test_card_20260719_strict_invariants_hold_end_to_end():
 
 
 def test_crossday_daytime_bet_predicate():
-    """R6 (operator 2026-07-19): a DAYTIME (in-window) pass-2 bet whose refill
+    """R6 (operator 2026-07-19): a DAYLIGHT (pv_wh > 0) pass-2 bet whose refill
     lands on a LATER calendar day is a forbidden cross-day daytime pre-drain;
-    night slots (not in-window) keep the F-NIGHT-RESCUE cross-day carve-out and
-    a same-day refill is always fine."""
+    night slots (pv_wh == 0) keep the F-NIGHT-RESCUE cross-day carve-out and a
+    same-day refill is always fine."""
     from datetime import date
 
     sun, mon = date(2026, 7, 19), date(2026, 7, 20)
-    # Daytime + refill next day -> forbidden (the Sunday-14:00-for-Monday case).
-    assert _crossday_daytime_bet(sun, mon, in_window=True)
-    # Daytime + same-day refill -> allowed (pre-charge before a same-day peak).
-    assert not _crossday_daytime_bet(sun, sun, in_window=True)
-    # Night/pre-dawn slot (not in-window) + next-day refill -> allowed
+    # Daylight + refill next day -> forbidden (the Sunday-14:00-for-Monday case).
+    assert _crossday_daytime_bet(sun, mon, is_daylight=True)
+    # Daylight + same-day refill -> allowed (pre-charge before a same-day peak).
+    assert not _crossday_daytime_bet(sun, sun, is_daylight=True)
+    # Night/pre-dawn slot (pv == 0) + next-day refill -> allowed
     # (F-NIGHT-RESCUE night pre-drain before a clip day).
-    assert not _crossday_daytime_bet(sun, mon, in_window=False)
-    assert not _crossday_daytime_bet(sun, sun, in_window=False)
+    assert not _crossday_daytime_bet(sun, mon, is_daylight=False)
+    assert not _crossday_daytime_bet(sun, sun, is_daylight=False)
+
+
+def test_r6_suppresses_daylight_afternoon_crossday_below_strong_cutoff():
+    """R6 keys on DAYLIGHT (pv_wh > 0), NOT the strong-PV window (re-review
+    finding: keying on `in_window` let the afternoon taper below
+    strong_pv_cutoff_w leak the cross-day bet one slot past the window edge —
+    exactly where the live 14:00 slot sits). Geometry: Sunday tops off midday
+    then tapers below the 200 W cutoff (14:00-19:00 = 180..20 W), Monday clips
+    enormously (saturated), so the latest-first walk reaches back to Sunday's
+    afternoon-taper slots. Those slots are DAYLIGHT (pv > 0) but NOT in-window;
+    R6 must still suppress them. Discriminating (mutation-tight at plan level):
+    with R6 disabled the same afternoon bets book. Night slots (pv == 0) keep
+    the F-NIGHT-RESCUE cross-day carve-out."""
+    import core.optimize as opt
+
+    deh = SurplusLoad(
+        load_id="deh",
+        name="Deh",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    cfg = SystemConfig(
+        control=replace(
+            ControlParams(),
+            predrain_pv_confidence=0.7,
+            upper_pv_reserve=1.2,
+            strong_pv_cutoff_w=200.0,
+        ),
+        loads=(deh,),
+        battery=BatteryParams(
+            capacity_wh=18000.0, soc_min_percent=5.0, soc_max_percent=95.0
+        ),
+        ac_profile=LoadProfile(300.0, 100.0, 6, 22),
+        dc_profile=LoadProfile(35.0, 0.0, 0, 0),
+    )
+    now = datetime(2026, 7, 19, 8, 0)
+    sun_pv = {
+        9: 1500,
+        10: 1900,
+        11: 2000,
+        12: 1800,
+        13: 1200,
+        14: 180,
+        15: 150,
+        16: 120,
+        17: 90,
+        18: 50,
+        19: 20,
+    }  # afternoon taper < 200 W
+    mon_pv = {
+        3: 150,
+        4: 400,
+        5: 900,
+        6: 1800,
+        7: 3000,
+        8: 4200,
+        9: 5000,
+        10: 5000,
+        11: 5000,
+        12: 5000,
+        13: 4500,
+        14: 3400,
+        15: 1800,
+        16: 800,
+        17: 300,
+    }
+    pv = {}
+    for day, shape in ((19, sun_pv), (20, mon_pv)):
+        for h, w in shape.items():
+            pv[datetime(2026, 7, day, h, 0)] = float(w)
+    inputs = build_slots(
+        cfg,
+        now,
+        78.0,
+        [sum(sun_pv.values()) / 1e3, sum(mon_pv.values()) / 1e3],
+        load_states=(SurplusLoadState(load_id="deh", learned_power_w=422.0),),
+        pv_hourly=pv,
+    )
+    sunday = datetime(2026, 7, 19).date()
+
+    def daylight_afternoon_crossday(result):
+        return [
+            inputs.slots[a[0]].start.hour
+            for lp in result.load_plans
+            for a, r in zip(lp.allocations, lp.reasons, strict=True)
+            if inputs.slots[a[0]].start.date() == sunday
+            and 14 <= inputs.slots[a[0]].start.hour <= 19
+            and inputs.slots[a[0]].pv_wh > 0.0
+            and "otherwise-lost export" in r
+        ]
+
+    def night_crossday(result):
+        return [
+            inputs.slots[a[0]].start.hour
+            for lp in result.load_plans
+            for a, r in zip(lp.allocations, lp.reasons, strict=True)
+            if inputs.slots[a[0]].start.date() == sunday
+            and inputs.slots[a[0]].pv_wh == 0.0
+            and "otherwise-lost export" in r
+        ]
+
+    # R6 ON (current code): no daylight afternoon-taper cross-day bet ...
+    result = plan(cfg, inputs)
+    assert not daylight_afternoon_crossday(result), (
+        "R6 must suppress the daylight afternoon-taper cross-day pre-drain"
+    )
+    # ... but night pre-drain (pv == 0) survives (F-NIGHT-RESCUE carve-out).
+    assert night_crossday(result), "night cross-day pre-drain must still book"
+    # The afternoon-taper slots are below the strong cutoff (NOT in-window), so
+    # only the daylight-based R6 catches them — an in_window-based R6 would not.
+    for s in inputs.slots:
+        if s.start.date() == sunday and 14 <= s.start.hour <= 19:
+            assert 0.0 < s.pv_wh < 200.0  # daylight yet sub-cutoff
+
+    # Discriminating: disable R6 -> the daylight afternoon bets reappear.
+    orig = opt._crossday_daytime_bet
+    opt._crossday_daytime_bet = lambda *a, **k: False
+    try:
+        result_off = plan(cfg, inputs)
+    finally:
+        opt._crossday_daytime_bet = orig
+    assert daylight_afternoon_crossday(result_off), (
+        "geometry must produce the daylight afternoon cross-day bet without R6"
+    )
 
 
 def test_slot_serviceable_grid_fed_and_both_cutoff_endpoints():

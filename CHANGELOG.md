@@ -17,10 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (dehumidifier ~8 h + Fossibot, Monday still lost 1.09 kWh). It is import-free,
   floor-safe and reduces export by ~175 Wh, but it is a marginal "early bet on
   tomorrow's forecast" a full day ahead while the plan already rides the stress
-  cutoff — which the operator rejected. R6 forbids it: a DAYTIME (in-window)
-  pass-2 bet must refill the same calendar day; only night/pre-dawn slots may
-  pre-drain for a next-day clip (F-NIGHT-RESCUE keeps its carve-out). Rare edge
-  case — goldens and the F-NIGHT-RESCUE regressions are unchanged.
+  cutoff — which the operator rejected. R6 forbids it: a DAYLIGHT (`pv_wh > 0`)
+  pass-2 bet must refill the same calendar day; only night/pre-dawn slots
+  (`pv_wh == 0`) may pre-drain for a next-day clip (F-NIGHT-RESCUE keeps its
+  carve-out). Keying on daylight rather than the strong-PV window is deliberate
+  — an adversarial review showed a strong-window test leaked the bet one slot
+  past the window edge (the afternoon taper, where the live 14:00 slot sits).
+  Rare edge case — goldens and the F-NIGHT-RESCUE regressions are unchanged.
 
 ## [0.15.0] - 2026-07-19
 
