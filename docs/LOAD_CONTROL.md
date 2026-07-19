@@ -275,8 +275,14 @@ trip/release disjoint even at hysteresis 0) with the recommendation on; a
 restart inside the release band starts latched (conservative). Reaction
 time is the SOC entity's debounced refresh (~5 s), not the dwell. In-memory
 only; surfaced as `floor_guard_active` on the inverter-recommendation
-binary sensor. The planner is deliberately unchanged — G4 is the hard
-executor backstop against forecast error, not a planning rule.
+binary sensor. ~~The planner is deliberately unchanged — G4 is the hard
+executor backstop against forecast error, not a planning rule.~~
+**Superseded (v0.15.0, docs/F-STRICT-SURPLUS.md R2):** the same rule now
+also binds the PLANNER (no booking covers a slot whose trial trajectory has
+the inverter off or SOC at/below the cutoff, all accepted bookings
+re-validated per trial) — the planner used to book pre-dawn runs its own
+simulation served from the grid and that G4 would refuse at runtime. G4
+stays as the executor backstop against forecast error.
 
 ## 12. Robust power learning (v0.14.0)
 

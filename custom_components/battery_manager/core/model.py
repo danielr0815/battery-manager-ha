@@ -232,16 +232,17 @@ class ControlParams:
     min_switch_interval_s: int = 60
 
     # --- F-PREDRAIN two-buffer pre-drain (docs/F-PREDRAIN.md, WP2) ---
-    # All NEUTRAL defaults: ratio 0.0, confidences 1.0, cutoff/end unused, so
-    # the planner is bit-for-bit identical to v0.7.19 until WP3 wires the
-    # recommended live values (ratio 0.10 / alpha 0.5 / beta 1.2) via the
-    # coordinator/config-flow fallbacks. The recommended values are NOT the
-    # dataclass defaults on purpose (goldens must stay frozen).
+    # All NEUTRAL defaults: confidences 1.0, cutoff/end unused, so the planner
+    # matches the pre-feature behaviour until the coordinator/config-flow
+    # fallbacks wire the recommended live values (alpha 0.5 / beta 1.2). The
+    # recommended values are NOT the dataclass defaults on purpose (goldens
+    # must stay frozen).
     #
-    # Z2' import-trade ratio: a continuous load's pre-drain may add a little
-    # grid import (e.g. the charger standby of an extended morning charge) as
-    # long as it is bought back by rescued export at this exchange rate. 0.0 =
-    # today's "no extra import" rule.
+    # RETIRED (F-STRICT-SURPLUS R1, 2026-07-19): the Z2' import-trade ratio.
+    # Loads may never buy grid import; the planner applies a fixed absolute
+    # artifact slack (optimize.IMPORT_ARTIFACT_SLACK_WH) instead. The field
+    # stays so older callers/tests construct without error; the planner
+    # ignores it.
     import_trade_ratio: float = 0.0
     # Lower-buffer stress confidence (alpha): PV multiplier of the pessimistic
     # re-simulation that must still keep the inverter reserve above its floor.
@@ -439,9 +440,11 @@ class PlanResult:
     max_soc_percent: float
     hours_to_max_soc: int
     # --- F-PREDRAIN diagnostics (docs/F-PREDRAIN.md §3.5, WP2) ---
-    # Grid import the load allocation traded for rescued export, i.e. the final
-    # allocation trajectory's import above the no-loads base (>= 0 clamp). 0.0
-    # under neutral params.
+    # Simulated grid import the load allocation added over the no-loads base
+    # (>= 0 clamp). Since F-STRICT-SURPLUS R1 this is NOT a trade for rescued
+    # export — it is bounded by the absolute IMPORT_ARTIFACT_SLACK_WH (50 Wh),
+    # so a default-param night pre-drain reads up to ~50 Wh here (the standby
+    # artifact riding the slack), NOT 0.0.
     import_trade_used_wh: float = 0.0
     # Min SOC of the final accepted series under the alpha stress sim, or None
     # when alpha == 1.0 (stress gate off).
@@ -453,3 +456,10 @@ class PlanResult:
     # scan was truncated at this time because the battery is provably full and
     # clipping there even under the stressed PV. None = full-horizon scan.
     threshold_horizon_end: datetime | None = None
+    # Per calendar day (ISO date -> Wh): the export the load allocation
+    # PREVENTED that day (F-STRICT-SURPLUS R4) — max(0, base_export -
+    # alloc_export), both taken PRE support-escalation so a winter support PSU
+    # cannot deflate the figure (base = no loads / no PSUs; alloc = with loads,
+    # before support_escalation). The counterfactual that makes "why is a load
+    # running although SOC never reaches max?" answerable on the dashboard.
+    prevented_export_by_day_wh: dict[str, float] = field(default_factory=dict)

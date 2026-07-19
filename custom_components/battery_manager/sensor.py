@@ -294,7 +294,8 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "consumption_profile": data.get("consumption_profile") or {},
             "gate_calibration": data.get("gate_calibration") or {},
             # F-PREDRAIN observability (docs/F-PREDRAIN.md §3.5): per-day PV
-            # source, the import the pre-drain traded for rescued export, the
+            # source, the import the allocation added over base (bounded by the
+            # 50 Wh artifact slack since F-STRICT-SURPLUS R1, not a trade), the
             # stressed lower-buffer reserve, and the per-day PV-window end hours.
             "pv_source": data.get("pv_source") or {},
             # F-QUANTILE-BANDS R7: per-day P10/P90 band coverage of daylight

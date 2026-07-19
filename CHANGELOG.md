@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-19
+
+### Fixed
+- **Loads bought grid import and ran on optimism (F-STRICT-SURPLUS).** The
+  2026-07-19 card made it visible: morning "in-window insurance" bets
+  (scalar beta on empty forecast bands) kept the battery from ever reaching
+  soc_max, cross-day bets financed today's runs from tomorrow's forecast
+  clip, and the Z2' proportional trade budget (ratio 0.1 × rescued export,
+  cumulative, no absolute cap) paid for ~1 kWh/day of REAL planned pre-dawn
+  import — including load slots the planner's own simulation served from
+  the grid below the 20 % cutoff (which the executor's G4 guard would have
+  refused at runtime). Per the operator's lexicographic objective (1. loads
+  never cause import, 2. SOC as high as possible, 3. absorb export as late
+  as possible; lost surplus is the acceptable price):
+  - **R1** the import gate is now the absolute `IMPORT_ARTIFACT_SLACK_WH`
+    (50 Wh/horizon — ~10 Wh standby artifacts never veto a booking, rescued
+    export never mints an import budget). `import_trade_ratio` is retired:
+    ignored, removed from the options UI; stored entries keep parsing.
+  - **R2** planner floor-guard parity: no booking covers a slot that, in the
+    trial, is grid-fed (inverter off AND PV below the AC load) or touches the
+    cutoff at either endpoint (soc_start or soc_end ≤ 20); every accepted
+    booking is re-validated on each trial (closes the latest-first re-drain
+    ratchet and the PV-eating below-cutoff case). A PV-served inverter-off
+    slot (the full-battery hoard regime) is explicitly allowed — an
+    inverter_on-only draft disabled the allocator on hoard days.
+  - **R3** Z4 bets settle at the first slot where the TRIAL refills to
+    soc_max, not at the same-day PV window end — daytime bets now face the
+    same overnight stress as evening bets, so surviving bets land at the
+    genuinely latest feasible slot.
+  - **R5** the plan must still reach soc_max on every day the no-loads base
+    reaches it (`preserves_daily_max`, both passes) — pre-conditioning
+    (pre-drain to make room) stays welcome, but a bet that stops the battery
+    filling to max (the card's 77 % peak) is refused. Objective 2 becomes a
+    hard planner invariant, not an emergent stress-gate property. The
+    priority powerstations reach their own target SOC as a consequence
+    (house max first, then the priority load's target from the remaining
+    export via the F-GATE-TOPUP final quantum, then the dehumidifier).
+  Night pre-drain before stress-confirmed clip days keeps working (floors
+  ramped at the crossover, artifact slack instead of trade); pass-1 direct
+  surplus absorption is untouched. Expected price: more lost surplus on
+  clip-eve days.
+
+### Added
+- Per-day `prevented_export_kwh` in the `daily` breakdown and card stats line
+  (R4): the export the day's load runs prevent vs the no-loads base (both pre
+  support-escalation) — the counterfactual that answers "why is a load
+  running although SOC never reaches max?" directly on the card.
+
+### Changed
+- Golden `s3_loads_night`, `s3_low_soc_5am`, `s4_midday_full` re-blessed:
+  with the artifact slack, night pre-drains book at ratio 0 (the ~10 Wh
+  standby veto is gone) — export drops 2.7-4.0 kWh per scenario, import
+  rises only by the ≤50 Wh artifact slack, and drain depth is bounded by
+  R2 exactly above the cutoff (min SOC 21.1) instead of accidentally by
+  the standby artifact.
+
 ## [0.14.0] - 2026-07-18
 
 ### Fixed

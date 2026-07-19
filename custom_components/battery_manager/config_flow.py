@@ -41,7 +41,6 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
-    CONF_IMPORT_TRADE_RATIO,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_AVAILABILITY_ENTITY,
@@ -390,9 +389,8 @@ def _predrain_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
                 mode=selector.SelectSelectorMode.DROPDOWN,
             )
         ),
-        vol.Required(
-            CONF_IMPORT_TRADE_RATIO, default=_d(current, CONF_IMPORT_TRADE_RATIO)
-        ): _number(0, 0.5, 0.01),
+        # import_trade_ratio was retired by F-STRICT-SURPLUS R1 (2026-07-19):
+        # loads may never buy grid import, so there is nothing left to tune.
         vol.Required(
             CONF_PREDRAIN_PV_CONFIDENCE,
             default=_d(current, CONF_PREDRAIN_PV_CONFIDENCE),

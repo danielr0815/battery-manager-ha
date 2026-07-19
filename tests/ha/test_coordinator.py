@@ -1,5 +1,8 @@
 """Tests for the Battery Manager coordinator wiring."""
 
+from datetime import UTC
+from unittest.mock import patch
+
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
@@ -835,8 +838,19 @@ async def test_refresh_at_floor_soc_activates_guard_end_to_end(hass):
 async def test_floor_guard_gates_appliance_advisory_end_to_end(hass):
     """G4: the appliance start-window advisory flips to False under the
     guard — pinned load-bearingly against a baseline where the SAME
-    appliance advisory is True (high SOC, strong PV)."""
+    appliance advisory is True (high SOC, strong PV). The planner's `now`
+    is PINNED to an early morning with the whole 10 kWh PV day ahead: the
+    plan is built from wall-clock `dt_util.now()`, and at some afternoon/
+    evening times the baseline advisory is legitimately False (too little
+    PV left for an import-free appliance run) — unpinned, this test flaked
+    with the time of day. (A blanket freeze_time hangs the HA event loop —
+    it freezes the monotonic clock — so only dt_util.now is patched.)"""
+    from datetime import datetime
+
     from homeassistant.config_entries import ConfigSubentryData
+    from homeassistant.util import dt as dt_util
+
+    pinned = dt_util.as_local(datetime(2026, 7, 19, 5, 30, tzinfo=UTC))
 
     from custom_components.battery_manager.const import (
         CONF_APPLIANCE_NAME,
@@ -870,25 +884,28 @@ async def test_floor_guard_gates_appliance_advisory_end_to_end(hass):
     hass.states.async_set(
         "sensor.test_soc", "93", {"unit_of_measurement": "%", "device_class": "battery"}
     )
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    with patch.object(dt_util, "now", return_value=pinned):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    baseline = coordinator.data["appliance_windows"]
-    assert baseline and any(baseline.values()), (
-        f"scenario must produce a True advisory as baseline, got {baseline}"
-    )
+        baseline = coordinator.data["appliance_windows"]
+        assert baseline and any(baseline.values()), (
+            f"scenario must produce a True advisory as baseline, got {baseline}"
+        )
 
-    hass.states.async_set(
-        "sensor.test_soc", "19", {"unit_of_measurement": "%", "device_class": "battery"}
-    )
-    await coordinator.async_refresh()
-    await hass.async_block_till_done()
-    data = coordinator.data
-    assert data["floor_guard_active"] is True
-    assert data["appliance_windows"] and all(
-        v is False for v in data["appliance_windows"].values()
-    )
+        hass.states.async_set(
+            "sensor.test_soc",
+            "19",
+            {"unit_of_measurement": "%", "device_class": "battery"},
+        )
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        data = coordinator.data
+        assert data["floor_guard_active"] is True
+        assert data["appliance_windows"] and all(
+            v is False for v in data["appliance_windows"].values()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -943,25 +960,33 @@ async def test_daily_surplus_breakdown_splits_by_start_day(hass):
         for e, i, x in flows_wh
     )
     inputs = SimpleNamespace(slots=slots)
-    result = SimpleNamespace(trajectory=SimpleNamespace(flows=flows))
+    # Per-day prevented export (F-STRICT-SURPLUS R4) comes straight from the
+    # PlanResult (already max(0, base - alloc), pre-escalation): day-1 200 Wh,
+    # day-2 0 Wh.
+    result = SimpleNamespace(
+        trajectory=SimpleNamespace(flows=flows),
+        prevented_export_by_day_wh={"2026-07-10": 200.0, "2026-07-11": 0.0},
+    )
 
     daily = coordinator._daily_surplus_breakdown(inputs, result)
 
     assert [d["date"] for d in daily] == ["2026-07-10", "2026-07-11"]  # chronological
     # Day-1: export 300 + 700 = 1000 Wh (23:00 counts here), import 50 Wh,
-    # surplus-load energy 150 Wh.
+    # surplus-load energy 150 Wh, prevented export 200 Wh from the PlanResult.
     assert daily[0] == {
         "date": "2026-07-10",
         "lost_surplus_kwh": 1.0,
         "grid_import_kwh": 0.05,
         "loads_kwh": 0.15,
+        "prevented_export_kwh": 0.2,
     }
-    # Day-2: export 0 + 1000 = 1000 Wh, import 200 Wh, loads 400 Wh.
+    # Day-2: export 0 + 1000 = 1000 Wh, import 200 Wh, loads 400 Wh, prevented 0.
     assert daily[1] == {
         "date": "2026-07-11",
         "lost_surplus_kwh": 1.0,
         "grid_import_kwh": 0.2,
         "loads_kwh": 0.4,
+        "prevented_export_kwh": 0.0,
     }
     # R1 / R-V2-3 invariant: the sums equal the trajectory totals.
     total_export = sum(e for e, _i, _x in flows_wh) / 1000.0

@@ -39,7 +39,6 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
-    CONF_IMPORT_TRADE_RATIO,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
@@ -94,7 +93,6 @@ from .const import (
     DEFAULT_CONFIG,
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
-    IMPORT_TRADE_RATIO_DEFAULT,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
@@ -691,9 +689,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # neutral core defaults), so an un-reconfigured install runs with
                 # the feature active. pv_window_end_hour has no default: absent =
                 # unset (None), deriving the window purely from the forecast.
-                import_trade_ratio=float(
-                    cfg.get(CONF_IMPORT_TRADE_RATIO, IMPORT_TRADE_RATIO_DEFAULT)
-                ),
+                # A stored import_trade_ratio key is deliberately ignored —
+                # retired by F-STRICT-SURPLUS R1 (loads never buy import).
                 predrain_pv_confidence=float(
                     cfg.get(CONF_PREDRAIN_PV_CONFIDENCE, PREDRAIN_PV_CONFIDENCE_DEFAULT)
                 ),
@@ -2113,6 +2110,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ``extra_ac_wh`` — the SURPLUS-LOAD energy scheduled that day; appliances
         are excluded by construction (they enter the AC forecast, never
         ``extra_ac_wh``).
+
+        ``prevented_export_kwh`` (F-STRICT-SURPLUS R4) is the counterfactual:
+        the export the load runs prevented that day, taken straight from
+        ``result.prevented_export_by_day_wh`` (base minus alloc, both PRE
+        support-escalation so support PSUs never deflate it). It answers "why
+        is a load running although SOC never reaches max?" on the dashboard.
         """
         export_by_day: dict[str, float] = {}
         import_by_day: dict[str, float] = {}
@@ -2128,12 +2131,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             export_by_day[day] += flow.grid_export_wh
             import_by_day[day] += flow.grid_import_wh
             loads_by_day[day] += flow.extra_ac_wh
+        prevented = result.prevented_export_by_day_wh
         return [
             {
                 "date": day,
                 "lost_surplus_kwh": round(export_by_day[day] / 1000.0, 3),
                 "grid_import_kwh": round(import_by_day[day] / 1000.0, 3),
                 "loads_kwh": round(loads_by_day[day] / 1000.0, 3),
+                "prevented_export_kwh": round(prevented.get(day, 0.0) / 1000.0, 3),
             }
             for day in order
         ]

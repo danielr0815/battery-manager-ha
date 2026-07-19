@@ -43,6 +43,7 @@ const STRINGS = {
     threshold: "threshold",
     import: "grid import",
     lost: "lost surplus",
+    prevented: "prevented export",
     loads: "Surplus loads",
     today_tomorrow: "(kWh · today/tomorrow)",
     nothing_planned: "nothing planned",
@@ -59,6 +60,7 @@ const STRINGS = {
     threshold: "Schwelle",
     import: "Netzimport",
     lost: "verlorener Überschuss",
+    prevented: "verhinderter Export",
     loads: "Überschusslasten",
     today_tomorrow: "(kWh · heute/morgen)",
     nothing_planned: "nichts geplant",
@@ -307,6 +309,13 @@ class BatteryManagerForecastCard extends HTMLElement {
       };
       parts.push(`${t("import")} ${td("grid_import_kwh")}`);
       parts.push(`${t("lost")} ${td("lost_surplus_kwh")}`);
+      // F-STRICT-SURPLUS R4: the no-loads counterfactual — the export the
+      // day's load runs prevent. Answers "why is a load running although
+      // the SOC never reaches max?" right on the card. Only rendered when
+      // the backend (>= 0.15.0) delivers the field.
+      if (daily[0]?.prevented_export_kwh != null) {
+        parts.push(`${t("prevented")} ${td("prevented_export_kwh")}`);
+      }
       parts.push(`${t("loads")} ${td("loads_kwh")}`);
       parts.push(t("today_tomorrow"));
       return parts.join(" · ");
