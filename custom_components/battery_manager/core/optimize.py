@@ -133,6 +133,35 @@ def _ramped_stress_floors(
     return floors
 
 
+def _slot_serviceable(flow, slot, inverter_floor: float) -> bool:
+    """One slot's R2 planner-G4 rule (F-STRICT-SURPLUS R2). A booked slot is
+    serviceable iff it is neither cutoff-touching nor grid-fed:
+
+    - **cutoff (G4 parity):** reject if EITHER endpoint sits at/below the
+      inverter cutoff (`soc_start` OR `soc_end` <= inverter_floor). A slot
+      ENTERED below the cutoff is one the executor's real-time G4 (SOC <= 20
+      -> no additional loads) would refuse to actuate — booking it plans
+      phantom rescue energy and slows the recovery above 20 %; a slot that
+      ENDS at the cutoff rode it down (a battery-served discharge slot whose
+      inverter is ON escapes the grid-fed test, so this endpoint is its sole
+      guard — pinned by test_slot_serviceable).
+    - **grid-fed:** reject if the inverter is off AND PV cannot cover the AC
+      load (`pv_wh < ac_wh + extra_ac_wh`), so the deficit imports. When the
+      inverter is off but PV covers the load — the full-battery hoard regime
+      (T* = soc_max makes `inverter_on` False on every slot) or any export
+      slot — the load is PV-served with zero import and is NOT grid-fed.
+    """
+    if (
+        flow.soc_start_percent <= inverter_floor + _EPS
+        or flow.soc_end_percent <= inverter_floor + _EPS
+    ):
+        return False
+    grid_fed = not flow.inverter_on and (
+        slot.pv_wh + _EPS < slot.ac_wh + flow.extra_ac_wh
+    )
+    return not grid_fed
+
+
 def _z4_reject(trial_wmin: float, floor: float, base_wmin: float) -> bool:
     """Z4 windowed lower-buffer veto (F-PREDRAIN §3.3 v2 relief clause).
 
@@ -583,46 +612,19 @@ def allocate_loads(
     def slots_serviceable(traj: Trajectory, covered) -> bool:
         """Planner floor-guard parity (F-STRICT-SURPLUS R2, planner-G4): no
         booked slot — this candidate's covered slots OR any previously accepted
-        booking — may, in the trial trajectory, be GRID-FED or ride at/below
-        the inverter cutoff.
-
-        A slot is grid-fed for the load iff its inverter is off AND its PV
-        cannot cover the AC load there (`pv_wh < ac_wh + extra_ac_wh`): the AC
-        deficit then imports. When the inverter is off but PV DOES cover the AC
-        load — the full-battery hoard regime (T* = soc_max makes `inverter_on`
-        False on every slot) or any export slot — the load is PV-served with
-        zero import, so it is NOT grid-fed and must not be vetoed (else pass-1
-        clip absorption is disabled and real export returns; the inverter_on-
-        only check did exactly that). The cutoff clause additionally forbids
-        running a load while the battery sits at/under the 20 % floor even when
-        PV-served, so the PV refills the battery instead. Re-checking ALL booked
-        slots closes the latest-first re-drain ratchet: a later acceptance at an
+        booking — may, in the trial trajectory, be grid-fed or touch the cutoff
+        (per-slot rule in `_slot_serviceable`). Re-checking ALL booked slots
+        closes the latest-first re-drain ratchet: a later acceptance at an
         earlier hour must not silently degrade an accepted run into a grid-fed
         or cutoff-riding one."""
         inverter_floor = control.inverter_min_soc_percent
-
-        def serviceable(j: int) -> bool:
-            flow = traj.flows[j]
-            # Cutoff clause (G4 parity): the battery must stay strictly above
-            # the inverter cutoff across the whole slot — reject if EITHER
-            # endpoint sits at/below it. A slot ENTERED below the cutoff is one
-            # the executor's real-time G4 (SOC <= 20 -> no additional loads)
-            # would refuse to actuate, so booking it plans phantom rescue
-            # energy and slows the battery's recovery above 20 %; a slot that
-            # ENDS at the cutoff rode it down.
-            if (
-                flow.soc_start_percent <= inverter_floor + _EPS
-                or flow.soc_end_percent <= inverter_floor + _EPS
-            ):
-                return False
-            if not flow.inverter_on:
-                slot = inputs.slots[j]
-                if slot.pv_wh + _EPS < slot.ac_wh + flow.extra_ac_wh:
-                    return False  # inverter off AND PV can't cover the load -> grid-fed
-            return True
-
-        return all(serviceable(j) for j, _take in covered) and all(
-            serviceable(j) for j in range(n) if booked_any[j]
+        return all(
+            _slot_serviceable(traj.flows[j], inputs.slots[j], inverter_floor)
+            for j, _take in covered
+        ) and all(
+            _slot_serviceable(traj.flows[j], inputs.slots[j], inverter_floor)
+            for j in range(n)
+            if booked_any[j]
         )
 
     def preserves_daily_max(traj: Trajectory) -> bool:

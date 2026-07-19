@@ -22,6 +22,7 @@ from core.optimize import (
     _degrades_min_soc,
     _quantised_hours,
     _refill_index,
+    _slot_serviceable,
     _spread_energy,
     _windowed_min_soc,
     _z4_reject,
@@ -2593,6 +2594,71 @@ def test_r4_prevented_export_reports_the_no_loads_counterfactual():
         assert abs(prevented[day] - max(0.0, base_by_day[day] - final[day])) < 1e-6
 
 
+def test_r4_prevented_export_uses_pre_escalation_alloc_not_final():
+    """R4 discriminator (re-review finding: the pre-escalation capture was
+    unpinned). With a forced 48 V support PSU active, the FINAL trajectory
+    exports more than the pre-escalation allocation (the PSU lifts SOC and
+    fills sooner), so `prevented_export_by_day_wh` computed from `alloc_traj`
+    (pre-escalation) must DIFFER from the post-escalation `base - final` — a
+    maintainer swapping `alloc_traj` for the final trajectory would deflate the
+    counterfactual and this test would catch it."""
+    from core.model import SupportParams
+
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    cfg = SystemConfig(
+        control=replace(
+            ControlParams(),
+            predrain_pv_confidence=0.7,
+            upper_pv_reserve=1.2,
+            strong_pv_cutoff_w=200.0,
+        ),
+        loads=(deh,),
+        battery=BatteryParams(capacity_wh=5000.0, soc_max_percent=95.0),
+        support=SupportParams(configured=True, dc48_forced_on=True, dc48_power_w=300.0),
+        ac_profile=LoadProfile(200.0, 100.0, 6, 22),
+        dc_profile=LoadProfile(300.0, 0.0, 0, 0),
+    )
+    now = datetime(2026, 7, 19, 8, 0)
+    pv = {
+        datetime(2026, 7, 19, h, 0): float(w)
+        for h, w in {
+            9: 1600,
+            10: 1800,
+            11: 1900,
+            12: 1800,
+            13: 1500,
+            14: 900,
+            15: 400,
+        }.items()
+    }
+    inputs = build_slots(
+        cfg,
+        now,
+        50.0,
+        [sum(pv.values()) / 1000.0],
+        load_states=(SurplusLoadState(load_id="deh"),),
+        pv_hourly=pv,
+    )
+    result = plan(cfg, inputs)
+    _thr, base = search_threshold(cfg, inputs)
+
+    # The forced PSU is actually active in the final trajectory (else vacuous).
+    assert any(f.support_dc48 for f in result.trajectory.flows)
+    day = "2026-07-19"
+    base_exp = sum(f.grid_export_wh for f in base.flows)
+    final_exp = sum(f.grid_export_wh for f in result.trajectory.flows)
+    post_would_be = max(0.0, base_exp - final_exp)
+    # The reported (pre-escalation) prevented export is strictly larger than
+    # the post-escalation figure the swap would yield.
+    assert result.prevented_export_by_day_wh[day] > post_would_be + 100.0
+
+
 def _card_20260719_plan():
     """Compact reconstruction of the 2026-07-19 operator-card geometry (the
     F-STRICT-SURPLUS motivating incident): Sunday clips midday WITHOUT loads,
@@ -2735,6 +2801,41 @@ def test_card_20260719_strict_invariants_hold_end_to_end():
     assert mon_pass1, "Monday's clip must still be absorbed by pass-1 runs"  # (d)
 
 
+def test_slot_serviceable_grid_fed_and_both_cutoff_endpoints():
+    """R2 per-slot rule pinned directly (re-review finding: the soc_end cutoff
+    endpoint was untested — a floor-only-on-entry mutation passed the suite).
+    Reject iff grid-fed (inverter off AND PV below the AC load) OR EITHER SOC
+    endpoint touches the cutoff."""
+    from types import SimpleNamespace
+
+    def flow(start, end, inv, extra=400.0):
+        return SimpleNamespace(
+            soc_start_percent=start,
+            soc_end_percent=end,
+            inverter_on=inv,
+            extra_ac_wh=extra,
+        )
+
+    def slot(pv, ac=100.0):
+        return SimpleNamespace(pv_wh=pv, ac_wh=ac)
+
+    fl = 20.0
+    # Healthy: inverter on, both endpoints well above cutoff -> serviceable.
+    assert _slot_serviceable(flow(60, 55, True), slot(0), fl)
+    # Hoard: inverter OFF but PV covers the load -> PV-served, serviceable.
+    assert _slot_serviceable(flow(95, 95, False), slot(2000), fl)
+    # Grid-fed: inverter off AND PV below the AC load -> reject.
+    assert not _slot_serviceable(flow(60, 55, False), slot(100), fl)
+    # Cutoff ENTRY: soc_start at/below the cutoff (even if it recovers) -> reject.
+    assert not _slot_serviceable(flow(19, 30, False), slot(2000), fl)
+    assert not _slot_serviceable(flow(20, 40, True), slot(0), fl)
+    # Cutoff EXIT: inverter ON, battery-served discharge rides soc_end to the
+    # floor (soc_start > cutoff) -> reject. THIS is the endpoint the re-review
+    # found unpinned; a floor-only-on-entry mutation returns True here.
+    assert not _slot_serviceable(flow(30, 19, True), slot(0), fl)
+    assert not _slot_serviceable(flow(30, 20, True), slot(0), fl)
+
+
 def test_z4_reject_relief_clause():
     """The Z4 veto's relief conjunct pinned directly (medium review finding: the
     rewrite left it untested, so a floor-only mutation passed the suite). Reject
@@ -2756,9 +2857,10 @@ def test_r5_plan_reaches_soc_max_on_every_day_the_base_does():
     """F-STRICT-SURPLUS R5 (operator 2026-07-19): pre-conditioning is welcome,
     but the plan must still reach soc_max on every day the no-loads base
     reaches it — a bet that stops the fill (the card's 77 % peak) is refused.
-    Contract test over the incident geometry: every base-max day is a plan-max
-    day, and the days the base maxes are a strict superset of none (there IS a
-    fill to protect)."""
+    Contract check over the incident geometry (the DISCRIMINATING pin — a
+    geometry where R5 alone protects the fill — is
+    test_r5_vetoes_a_max_robbing_bet_via_the_gate_directly): every base-max day
+    is a plan-max day."""
     cfg, inputs, result = _card_20260719_plan()
     _thr, base = search_threshold(cfg, inputs)
     soc_full = cfg.battery.soc_max_percent - 0.1
