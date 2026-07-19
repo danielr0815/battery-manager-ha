@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-19
+
+### Fixed
+- **Cross-day daytime pre-drain (F-STRICT-SURPLUS R6).** A live v0.15.0 plan
+  booked a single Sunday-14:00 dehumidifier run "covered by otherwise-lost
+  export (215 Wh)" — a battery pre-drain in Sunday's own PV window to absorb
+  MONDAY's clip, because Monday's absorption window was power-saturated
+  (dehumidifier ~8 h + Fossibot, Monday still lost 1.09 kWh). It is import-free,
+  floor-safe and reduces export by ~175 Wh, but it is a marginal "early bet on
+  tomorrow's forecast" a full day ahead while the plan already rides the stress
+  cutoff — which the operator rejected. R6 forbids it: a DAYLIGHT (`pv_wh > 0`)
+  pass-2 bet must refill the same calendar day; only night/pre-dawn slots
+  (`pv_wh == 0`) may pre-drain for a next-day clip (F-NIGHT-RESCUE keeps its
+  carve-out). Keying on daylight rather than the strong-PV window is deliberate
+  — an adversarial review showed a strong-window test leaked the bet one slot
+  past the window edge (the afternoon taper, where the live 14:00 slot sits).
+  Rare edge case — goldens and the F-NIGHT-RESCUE regressions are unchanged.
+
 ## [0.15.0] - 2026-07-19
 
 ### Fixed

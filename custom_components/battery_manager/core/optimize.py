@@ -133,6 +133,26 @@ def _ramped_stress_floors(
     return floors
 
 
+def _crossday_daytime_bet(slot_date, refill_date, is_daylight: bool) -> bool:
+    """R6 (F-STRICT-SURPLUS, operator 2026-07-19): is this pass-2 candidate a
+    forbidden cross-day DAYTIME pre-drain?
+
+    A DAYLIGHT bet (the slot produces PV, `pv_wh > 0`) whose battery only
+    refills to soc_max on a LATER calendar day is draining today to absorb a
+    NEXT-day clip. The operator rejected that marginal bet (the live 2026-07-19
+    Sunday-14:00-for-Monday run): a daytime load belongs in its own day's
+    surplus, not a day early. "Daylight" keys on `pv_wh > 0`, NOT on the
+    strong-PV window — the afternoon taper below `strong_pv_cutoff_w`
+    (e.g. 15:00-17:00) is still genuine daylight, and keying on the strong
+    window let the identical bet escape one slot past the window edge (the
+    live 14:00 slot sits right there). Night / pre-dawn slots (`pv_wh == 0`)
+    keep the F-NIGHT-RESCUE cross-day carve-out — pre-draining overnight
+    immediately before a clip day stays allowed — and a same-day refill is
+    always fine, matching the energy-limited daylight rule's `pv_wh > 0` test.
+    """
+    return is_daylight and refill_date > slot_date
+
+
 def _slot_serviceable(flow, slot, inverter_floor: float) -> bool:
     """One slot's R2 planner-G4 rule (F-STRICT-SURPLUS R2). A booked slot is
     serviceable iff it is neither cutoff-touching nor grid-fed:
@@ -846,6 +866,22 @@ def allocate_loads(
                         continue
                     # Bet settlement (R3): where the trial actually refills.
                     recovery = _refill_index(traj, i, soc_full)
+                    # R6 (operator 2026-07-19): no cross-day DAYTIME pre-drain.
+                    # A DAYLIGHT bet (pv_wh > 0 — any production, NOT just the
+                    # strong-PV window, else the afternoon taper leaks the bet
+                    # one slot past the window edge) must refill soc_max the same
+                    # calendar day it runs; only night/pre-dawn slots (pv_wh == 0)
+                    # may pre-drain for a next-day clip (F-NIGHT-RESCUE keeps its
+                    # carve-out). Stops a load draining the battery TODAY, in
+                    # today's own daylight, to absorb TOMORROW's clip when today
+                    # does not clip — the marginal cross-day daytime bet the
+                    # operator rejected (Sunday 14:00 for Monday, live 2026-07-19).
+                    if _crossday_daytime_bet(
+                        slot.start.date(),
+                        inputs.slots[recovery].start.date(),
+                        slot.pv_wh > 0.0,
+                    ):
+                        continue
                     export_drop = current.total_export_wh - traj.total_export_wh
                     # F-NIGHT-RESCUE R2: the c1 need is judged at the physical
                     # AC->battery->AC round trip. A pure battery detour can only
