@@ -133,6 +133,21 @@ def _ramped_stress_floors(
     return floors
 
 
+def _crossday_daytime_bet(slot_date, refill_date, in_window: bool) -> bool:
+    """R6 (F-STRICT-SURPLUS, operator 2026-07-19): is this pass-2 candidate a
+    forbidden cross-day DAYTIME pre-drain?
+
+    A daytime (in-window, strong-PV) bet whose battery only refills to soc_max
+    on a LATER calendar day is draining today — in today's own surplus window —
+    to absorb a NEXT-day clip. The operator rejected that marginal bet (the live
+    2026-07-19 Sunday-14:00-for-Monday run): a daytime load belongs in its own
+    day's surplus, not a day early. Night / pre-dawn slots (NOT in-window) keep
+    the F-NIGHT-RESCUE cross-day carve-out — pre-draining overnight immediately
+    before a clip day stays allowed — and a same-day refill is always fine.
+    """
+    return in_window and refill_date > slot_date
+
+
 def _slot_serviceable(flow, slot, inverter_floor: float) -> bool:
     """One slot's R2 planner-G4 rule (F-STRICT-SURPLUS R2). A booked slot is
     serviceable iff it is neither cutoff-touching nor grid-fed:
@@ -846,6 +861,20 @@ def allocate_loads(
                         continue
                     # Bet settlement (R3): where the trial actually refills.
                     recovery = _refill_index(traj, i, soc_full)
+                    # R6 (operator 2026-07-19): no cross-day DAYTIME pre-drain.
+                    # A daytime (in-window) bet must refill the same calendar
+                    # day it runs; only night/pre-dawn slots may pre-drain for a
+                    # next-day clip (F-NIGHT-RESCUE keeps its carve-out). Stops a
+                    # load draining the battery TODAY (in today's own surplus
+                    # window) to absorb TOMORROW's clip when today does not clip
+                    # — the marginal cross-day daytime bet the operator rejected
+                    # (Sunday 14:00 for Monday, live 2026-07-19).
+                    if _crossday_daytime_bet(
+                        slot.start.date(),
+                        inputs.slots[recovery].start.date(),
+                        in_window(i),
+                    ):
+                        continue
                     export_drop = current.total_export_wh - traj.total_export_wh
                     # F-NIGHT-RESCUE R2: the c1 need is judged at the physical
                     # AC->battery->AC round trip. A pure battery detour can only

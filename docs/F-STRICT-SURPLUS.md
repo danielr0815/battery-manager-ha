@@ -153,6 +153,24 @@ F-GATE-TOPUP final quantum), then the dehumidifier; all three are surplus-only
 (objective 1), so a genuinely surplus-poor day charges them partially, never
 from the grid.
 
+**R6 — no cross-day DAYTIME pre-drain (operator decision 2026-07-19, v0.15.1).**
+A pass-2 bet at a DAYTIME slot (`in_window(i)` — inside its day's strong-PV
+window) is rejected if its refill (`_refill_index`) lands on a LATER calendar
+day (`_crossday_daytime_bet`). A daytime load belongs in its own day's surplus,
+not a day early: the live 2026-07-19 plan booked a single Sunday-14:00 run
+"covered by otherwise-lost export (215 Wh)" — a battery pre-drain in Sunday's
+own PV window to absorb MONDAY's clip, because Monday's absorption window was
+power-saturated (dehumidifier 8 h + Fossibot, Monday still lost 1.09 kWh). It
+is import-free and floor-safe and genuinely reduces export by ~175 Wh, but it
+is the marginal "early bet on tomorrow's forecast" the operator rejected —
+running while the plan already sits at the stress cutoff (`stressed_min = 20`).
+NIGHT / pre-dawn slots (not in-window) keep the F-NIGHT-RESCUE cross-day
+carve-out (pre-draining overnight immediately before a clip day), and a
+same-day refill is always fine, so R6 removes only the day-early daytime bet.
+The behaviour is rare (it needs an extreme same-day-saturated clip) — goldens
+and the F-NIGHT-RESCUE regressions are unchanged. Price: a little more lost
+surplus on such saturated days, the operator's chosen trade-off.
+
 ## 3. What deliberately does NOT change
 
 - Pass-1 direct-surplus absorption (F-RESCUE-EXPORT regime split): runs as

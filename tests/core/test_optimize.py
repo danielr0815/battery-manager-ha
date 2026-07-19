@@ -19,6 +19,7 @@ from core.model import (
 )
 from core.optimize import (
     _committed_hours,
+    _crossday_daytime_bet,
     _degrades_min_soc,
     _quantised_hours,
     _refill_index,
@@ -2799,6 +2800,24 @@ def test_card_20260719_strict_invariants_hold_end_to_end():
         if a[2] == 1 and inputs.slots[a[0]].start.date() == monday
     ]
     assert mon_pass1, "Monday's clip must still be absorbed by pass-1 runs"  # (d)
+
+
+def test_crossday_daytime_bet_predicate():
+    """R6 (operator 2026-07-19): a DAYTIME (in-window) pass-2 bet whose refill
+    lands on a LATER calendar day is a forbidden cross-day daytime pre-drain;
+    night slots (not in-window) keep the F-NIGHT-RESCUE cross-day carve-out and
+    a same-day refill is always fine."""
+    from datetime import date
+
+    sun, mon = date(2026, 7, 19), date(2026, 7, 20)
+    # Daytime + refill next day -> forbidden (the Sunday-14:00-for-Monday case).
+    assert _crossday_daytime_bet(sun, mon, in_window=True)
+    # Daytime + same-day refill -> allowed (pre-charge before a same-day peak).
+    assert not _crossday_daytime_bet(sun, sun, in_window=True)
+    # Night/pre-dawn slot (not in-window) + next-day refill -> allowed
+    # (F-NIGHT-RESCUE night pre-drain before a clip day).
+    assert not _crossday_daytime_bet(sun, mon, in_window=False)
+    assert not _crossday_daytime_bet(sun, sun, in_window=False)
 
 
 def test_slot_serviceable_grid_fed_and_both_cutoff_endpoints():
