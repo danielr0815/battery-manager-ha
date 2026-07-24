@@ -289,7 +289,8 @@
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
             "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
             "input_off_policy": "Steckdose beim Abschalten",
-            "power_warning_dwell_min": "Verzögerung Leistungswarnung (Min.)"
+            "power_warning_dwell_min": "Verzögerung Leistungswarnung (Min.)",
+            "tank_full_runtime_min": "Laufzeit bis Behälter voll (Min., 0 = aus)"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -301,11 +302,12 @@
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
-            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
+            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
             "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird.",
-            "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15."
+            "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15.",
+            "tank_full_runtime_min": "Für ein Gerät mit Leistungsmessung, das intern stoppt, wenn ein Verbrauchsbehälter voll ist (z. B. Entfeuchter: Wassertank voll -> ~2 W). Startschätzung der Laufzeit bis der Behälter voll ist; sobald ein Tank-Zyklus beobachtet wurde, übernimmt der gelernte Median. Der Planer bucht dann nie über die verbleibende Tank-Laufzeit hinaus, sodass ein gesättigtes Gerät die Prognose nicht mehr verzerrt. Mit dem Laufzeit-Reset-Knopf (oder automatisch, sobald das Gerät wieder mit voller Leistung läuft) den Behälter als geleert markieren. 0 = aus; nur sinnvoll mit Leistungssensor."
           }
         },
         "reconfigure": {
@@ -324,7 +326,8 @@
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
             "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
             "input_off_policy": "Steckdose beim Abschalten",
-            "power_warning_dwell_min": "Verzögerung Leistungswarnung (Min.)"
+            "power_warning_dwell_min": "Verzögerung Leistungswarnung (Min.)",
+            "tank_full_runtime_min": "Laufzeit bis Behälter voll (Min., 0 = aus)"
           },
           "data_description": {
             "name": "Anzeigename der Last — erscheint im Untereintrag und im Namen der Empfehlungs-Entität.",
@@ -336,11 +339,12 @@
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
-            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird (z. B. über einen Einspeise-Sollwert): Sonst würde sie doppelt abgezogen.",
+            "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
             "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird.",
-            "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15."
+            "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15.",
+            "tank_full_runtime_min": "Für ein Gerät mit Leistungsmessung, das intern stoppt, wenn ein Verbrauchsbehälter voll ist (z. B. Entfeuchter: Wassertank voll -> ~2 W). Startschätzung der Laufzeit bis der Behälter voll ist; sobald ein Tank-Zyklus beobachtet wurde, übernimmt der gelernte Median. Der Planer bucht dann nie über die verbleibende Tank-Laufzeit hinaus, sodass ein gesättigtes Gerät die Prognose nicht mehr verzerrt. Mit dem Laufzeit-Reset-Knopf (oder automatisch, sobald das Gerät wieder mit voller Leistung läuft) den Behälter als geleert markieren. 0 = aus; nur sinnvoll mit Leistungssensor."
           }
         },
         "storage": {

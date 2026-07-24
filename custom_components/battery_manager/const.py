@@ -25,6 +25,14 @@ UPDATE_INTERVAL_SECONDS = 300
 INITIAL_UPDATE_INTERVAL_SECONDS = 30
 DEBOUNCE_SECONDS = 5
 STARTUP_RETRY_ATTEMPTS = 5
+# V8 (2026-07-23 incident): grace window after the first refresh during which a
+# not-yet-available SOC source (e.g. the Victron sensor still booting after an
+# HA restart) does NOT escalate to an ERROR + UpdateFailed. Within it the
+# coordinator waits quietly (DEBUG) and retries at the short startup interval,
+# holding any prior valid state; only after it does the normal error path run.
+# A SOC dropout AFTER the first successful cycle is the steady-state failure
+# (the _get_soc cache + stale-SOC guard own it) and keeps the old behaviour.
+STARTUP_SOC_GRACE_S = 120
 
 # Data validity limits
 MAX_PV_FORECAST_AGE_HOURS = 24
@@ -167,9 +175,26 @@ CONF_LOAD_AVAILABILITY_ENTITY = "availability_entity"
 CONF_LOAD_CONTROL_SWITCH = "control_switch_entity"
 CONF_LOAD_CHARGE_ENABLE = "charge_enable_entity"
 CONF_LOAD_INPUT_OFF_POLICY = "input_off_policy"
-# Load is included in the consumption measurement point (§2.3): True means
-# the learner subtracts it from the measured load; False (load fed outside
-# the measured node, e.g. via a feed-in setpoint) means no subtraction.
+# Load location relative to the grid-consumption measurement point (§2.3;
+# V3 semantics, 2026-07-24). This flag governs ONLY the baseline (Grundlast)
+# learning in history_profile.py — it decides whether the load's own draw is
+# already contained in the measured house load and must be subtracted out:
+#   True  (default): the load sits BEHIND the measuring node (EM540 / grid
+#          meter), so its draw IS in the measured house load and the learner
+#          subtracts it while learning the AC baseline.
+#   False: the load is supplied OUTSIDE the measured node — via a feed-in
+#          setpoint, OR simply on a circuit/socket the grid meter does not
+#          see (e.g. the cellar dehumidifier whose supply shows up 1:1 as
+#          "export" on an EM540). It is NEVER in the measured house load, so
+#          the learner must NOT subtract it; subtracting it would double-count
+#          the removal and bias the learned baseline low.
+# The flag deliberately does NOT touch surplus planning: a surplus load is
+# modelled as ADDITIONAL AC consumption (extra_ac_wh in optimize.allocate_loads)
+# for BOTH values, so it is counted exactly once — subtracted in learning AND
+# re-added in planning for an in-house load; neither subtracted nor in the
+# baseline but added in planning for an out-of-house load. The G4 PV-coverage
+# comparison and the learned/measured per-load power are topology-independent
+# (raw watts of the load itself) and need no adjustment either.
 CONF_LOAD_IN_HOUSE = "in_house_measurement"
 
 # Power-feedback samples below this fraction of the load's nominal power
@@ -229,6 +254,26 @@ REC_FLICKER_PINGPONG_WINDOW_MIN = 30
 # power again (coordinator._update_power_warnings).
 CONF_LOAD_POWER_WARNING_PCT = "power_warning_percent"
 CONF_LOAD_POWER_WARNING_DWELL_MIN = "power_warning_dwell_min"
+
+# V6 (F-TANK, operator design 2026-07-24): opt-in per-load "consumable tank"
+# model for a load with power feedback that stops internally when a tank fills
+# (dehumidifier: full water tank -> ~2 W despite an active recommendation). The
+# configured value (minutes) is the STARTING estimate of the full-tank run
+# time; once at least one tank cycle is observed the learned median (last
+# TANK_LEARN_SAMPLES samples) supersedes it. 0 = feature OFF (default) — the
+# planner never caps the load's runtime and behaviour is exactly as before. The
+# planner books at most (learned full runtime - runtime since last emptying)
+# minutes; the reset-runtime button means "tank emptied" (auto-detected on the
+# power-warning latch release). Only meaningful for a load with power feedback.
+CONF_LOAD_TANK_FULL_RUNTIME_MIN = "tank_full_runtime_min"
+# Number of most recent tank-full runtime samples the learned full-tank runtime
+# is the median of (odd, small — the tank fills at a slowly drifting rate).
+TANK_LEARN_SAMPLES = 5
+# Push a "tank nearly full — please empty" notification once per tank cycle when
+# the predicted remaining tank RUN time (learned full runtime minus runtime
+# since the last emptying) drops below this many minutes AND the load is planned
+# to keep running. Runtime minutes, not wall-clock: an idle device never warns.
+TANK_WARN_LEAD_MIN = 60.0
 
 # End-of-charge policies for the load's input plug (docs/LOAD_CONTROL.md §3)
 INPUT_OFF_POLICY_AUTO = "auto"
@@ -408,6 +453,10 @@ DEFAULT_LOAD_CONFIG = {
     # loads keep their stored value, so a load already warning stays on.
     CONF_LOAD_POWER_WARNING_PCT: 0.0,
     CONF_LOAD_POWER_WARNING_DWELL_MIN: 15,
+    # V6 (F-TANK): 0 = tank model off (default). A missing key on an existing
+    # load therefore reads as off — the safety anchor: no behaviour change until
+    # the operator enters a runtime for a device with power feedback.
+    CONF_LOAD_TANK_FULL_RUNTIME_MIN: 0,
 }
 
 DEFAULT_APPLIANCE_CONFIG = {

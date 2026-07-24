@@ -177,7 +177,11 @@ class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
         if self._data_key == "grid_import_kwh":
             attrs[ATTR_GRID_EXPORT_KWH] = data.get("grid_export_kwh")
         # F-PERDAY-SURPLUS R2: the today/tomorrow split and per-day list on the
-        # lost-surplus and grid-import forecast sensors.
+        # lost-surplus and grid-import forecast sensors. NB (V10): the sensor
+        # STATE is the whole-horizon sum (all forecast days), NOT a "today"
+        # figure — e.g. 7.9 kWh at 05:00 spans every forecast day while that one
+        # day realised 0.58 kWh. `daily` / today_kwh / tomorrow_kwh carry the
+        # per-calendar-day breakdown (mirrored on the soc_forecast sensor).
         if self._data_key in ("lost_surplus_kwh", "grid_import_kwh"):
             attrs.update(
                 _per_day_attrs(data.get("daily_surplus") or [], self._data_key)
@@ -341,3 +345,10 @@ class SurplusLoadRuntimeSensor(BatteryManagerEntity, SensorEntity):
     @property
     def native_value(self) -> float:
         return round(self.coordinator.load_runtime_minutes(self._subentry_id), 1)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        # V6 (F-TANK): remaining tank runtime prognosis, learned full-tank
+        # runtime and the sample count — present only when the tank model is
+        # opted in for this load (else None, no attributes).
+        return self.coordinator.tank_diagnostics(self._subentry_id)

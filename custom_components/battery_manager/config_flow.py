@@ -60,6 +60,7 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
     CONF_LOAD_SOC_ENTITY,
+    CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
     CONF_NATIVE48_BASE_W,
     CONF_PREDRAIN_PV_CONFIDENCE,
@@ -1025,6 +1026,13 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                 CONF_LOAD_POWER_WARNING_DWELL_MIN,
                 default=dv(CONF_LOAD_POWER_WARNING_DWELL_MIN),
             ): _number(0, 240, 5, "min"),
+            # V6 (F-TANK): opt-in consumable-tank runtime. 0 = off (default);
+            # only meaningful for a load with power feedback. A generous upper
+            # bound (a large dehumidifier tank can be many hours of runtime).
+            vol.Required(
+                CONF_LOAD_TANK_FULL_RUNTIME_MIN,
+                default=dv(CONF_LOAD_TANK_FULL_RUNTIME_MIN),
+            ): _number(0, 6000, 15, "min"),
         }
         for key, domain in (
             (CONF_LOAD_POWER_ENTITY, "sensor"),

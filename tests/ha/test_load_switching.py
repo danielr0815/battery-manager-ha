@@ -22,6 +22,7 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_POWER_WARNING_DWELL_MIN,
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_SOC_ENTITY,
+    CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
@@ -77,6 +78,7 @@ async def _setup(
     charge_enable=ENABLE,
     power_warning_pct=50.0,
     power_warning_dwell_min=30,
+    tank_full_runtime_min=0,
 ):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
@@ -95,6 +97,7 @@ async def _setup(
         CONF_LOAD_SOC_ENTITY: FOSSI_SOC,
         CONF_LOAD_POWER_WARNING_PCT: power_warning_pct,
         CONF_LOAD_POWER_WARNING_DWELL_MIN: power_warning_dwell_min,
+        CONF_LOAD_TANK_FULL_RUNTIME_MIN: tank_full_runtime_min,
     }
     if power_entity is not None:
         load_data[CONF_LOAD_POWER_ENTITY] = power_entity
@@ -827,6 +830,186 @@ async def test_power_warning_notifies_through_update_cycle(hass):
     assert "Fossibot Test" in captured[0]["message"]
     assert "400 W" in captured[0]["message"]
     assert "15 min" in captured[0]["message"]  # per-load dwell in the text
+
+
+# ---------------------------------------------------------------------------
+# F5 + V6 (F-TANK): latched power warning feeds planning; consumable-tank model
+# (docs/F-TANK.md)
+# ---------------------------------------------------------------------------
+
+
+async def test_f5_latched_warning_plans_measured_power(hass):
+    """F5: while the power warning is latched, the load is planned at the
+    MEASURED draw (~2 W) instead of the learned/nominal power — so the planner
+    stops booking phantom full-power slots against a saturated (full-tank)
+    device. The release restores the normal planning power in the same read."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False
+    )
+    load = coordinator.build_system_config().loads[0]
+    coordinator._load_learned_power_w[sub_id] = 409.0
+    now = dt_util.utcnow()
+
+    # Not latched: plans at the learned power.
+    hass.states.async_set(POWER_FEEDBACK, "2")
+    state = coordinator._get_load_states(now)[0]
+    assert state.saturated_power_w is None
+    assert state.planning_power_w(load) == 409.0
+
+    # Latched (full tank): plans at the ~2 W measured draw.
+    coordinator._load_power_warning[sub_id] = True
+    state = coordinator._get_load_states(now)[0]
+    assert state.saturated_power_w == 2.0
+    assert state.planning_power_w(load) == 2.0
+    # The learned power is NOT poisoned by the 2 W phase (below the standby bar,
+    # never sampled) — so the release restores it.
+    assert coordinator._load_learned_power_w[sub_id] == 409.0
+    assert sub_id not in coordinator._load_power_samples
+
+    # Release: normal planning power again.
+    coordinator._load_power_warning[sub_id] = False
+    state = coordinator._get_load_states(now)[0]
+    assert state.saturated_power_w is None
+    assert state.planning_power_w(load) == 409.0
+
+
+async def test_v6_tank_auto_reset_and_learning(hass):
+    """V6: the power-warning latch edges drive the tank model. Latch ENTRY
+    captures the runtime reached (tank-full runtime); the RELEASE (device runs
+    again -> tank emptied) commits it as a learning sample, resets the runtime
+    counter, and the learned full-tank runtime is the median of the samples."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=120
+    )
+
+    # Cycle 1: tank fills after 100 min of runtime.
+    coordinator._load_runtime_seconds[sub_id] = 100 * 60
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    assert coordinator._load_tank_full_min[sub_id] == 100.0
+    await coordinator._set_power_warning(sub_id, "Fossibot Test", False)
+    assert coordinator._load_tank_samples[sub_id] == [100.0]
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0  # auto-reset
+    assert sub_id not in coordinator._load_tank_full_min
+
+    # Cycle 2: tank fills after 80 min -> learned = median(100, 80) = 90.
+    coordinator._load_runtime_seconds[sub_id] = 80 * 60
+    await coordinator._set_power_warning(
+        sub_id, "Fossibot Test", True, raw=2, nominal=400, dwell=30
+    )
+    await coordinator._set_power_warning(sub_id, "Fossibot Test", False)
+    assert coordinator._load_tank_samples[sub_id] == [100.0, 80.0]
+    assert coordinator._tank_learned_full_min(sub_id, _data) == 90.0
+
+
+async def test_v6_tank_remaining_caps_state_and_off_is_neutral(hass):
+    """V6: the state carries the remaining tank runtime (learned/configured
+    minus runtime since reset); with the feature off it is None (no cap,
+    exactly today's behaviour) and no diagnostics are exposed."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    # Feature ON: configured 120 min, 90 min already run -> 30 min remaining.
+    coordinator, sub_id, data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=120
+    )
+    coordinator._load_runtime_seconds[sub_id] = 90 * 60
+    state = coordinator._get_load_states(dt_util.utcnow())[0]
+    assert state.tank_remaining_min == 30.0
+
+    # Feature OFF (0 = default): no cap, no diagnostics (regression anchor).
+    calls2: list[tuple[str, str]] = []
+    coord2, sub2, data2 = await _setup(
+        hass, calls2, power_w=400.0, energy_limited=False, tank_full_runtime_min=0
+    )
+    coord2._load_runtime_seconds[sub2] = 90 * 60
+    state2 = coord2._get_load_states(dt_util.utcnow())[0]
+    assert state2.tank_remaining_min is None
+    assert coord2.tank_diagnostics(sub2) is None
+
+
+async def test_v6_tank_notification_once_below_lead(hass):
+    """V6: a single 'tank nearly full' push per tank cycle when the predicted
+    remaining tank runtime drops below the lead time AND the load is planned to
+    run; a latched (already full) or idle-planned load does not warn."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    captured: list[dict] = []
+
+    async def _fake_notify(call):
+        captured.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_test", _fake_notify)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=100
+    )
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = ["mobile_app_test"]
+    coordinator._load_runtime_seconds[sub_id] = 50 * 60  # remaining 50 < 60 lead
+    now = dt_util.utcnow()
+    planned = SimpleNamespace(
+        load_plans=[SimpleNamespace(load_id=sub_id, schedule=(True, True))]
+    )
+
+    await coordinator._update_tank_forecast(planned, now)
+    await hass.async_block_till_done()
+    assert len(captured) == 1
+    assert "tank" in captured[0]["title"].lower()
+    assert "Fossibot Test" in captured[0]["message"]
+    assert "50 min" in captured[0]["message"]
+    # Diagnostics are exposed on the runtime sensor.
+    diag = coordinator.tank_diagnostics(sub_id)
+    assert diag["tank_remaining_min"] == 50.0
+    assert diag["tank_learned_full_min"] == 100.0
+    assert diag["tank_samples"] == 0
+
+    # Same tank cycle: no second push (no spam).
+    await coordinator._update_tank_forecast(planned, now + timedelta(minutes=5))
+    await hass.async_block_till_done()
+    assert len(captured) == 1
+
+    # A NEW tank cycle (runtime reset = tank emptied) re-arms the push.
+    coordinator.reset_load_runtime(sub_id)
+    coordinator._load_runtime_seconds[sub_id] = 55 * 60  # remaining 45 < 60
+    await coordinator._update_tank_forecast(planned, now + timedelta(minutes=10))
+    await hass.async_block_till_done()
+    assert len(captured) == 2
+
+
+async def test_v6_tank_no_notification_when_not_planned(hass):
+    """V6: an idle device (not planned to run) never warns, even below the lead
+    time — the lead is grounded in planned runtime, not wall-clock time."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    captured: list[dict] = []
+
+    async def _fake_notify(call):
+        captured.append(dict(call.data))
+
+    hass.services.async_register("notify", "mobile_app_test", _fake_notify)
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=100
+    )
+    coordinator.raw_config[CONF_WARNING_NOTIFY_TARGETS] = ["mobile_app_test"]
+    coordinator._load_runtime_seconds[sub_id] = 50 * 60  # remaining 50 < 60
+    idle = SimpleNamespace(
+        load_plans=[SimpleNamespace(load_id=sub_id, schedule=(False, False))]
+    )
+    await coordinator._update_tank_forecast(idle, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert captured == []
 
 
 # ---------------------------------------------------------------------------
@@ -3140,3 +3323,66 @@ async def test_flicker_pingpong_cap_restores_min_off(hass):
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) in calls or ("turn_on", ENABLE) in calls
     coordinator._cancel_off_timer(sub_id)
+
+
+async def test_switch_action_logs_reason_on_confirmed_switch(hass, caplog):
+    """V9a: each confirmed switch action emits exactly one INFO line carrying
+    the anlass reason derived at the decision point."""
+    import logging
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    calls.clear()
+
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        await coordinator._execute_load_switching(
+            [(sub_id, data, True, False, 0.0, False, "plan slot")]
+        )
+    on_lines = [r for r in caplog.records if "-> ON (plan slot)" in r.getMessage()]
+    assert len(on_lines) == 1
+    assert "Fossibot Test" in on_lines[0].getMessage()
+
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        await coordinator._execute_load_switching(
+            [(sub_id, data, False, True, 0.0, False, "G4 floor guard")]
+        )
+    off_lines = [
+        r for r in caplog.records if "-> OFF (G4 floor guard" in r.getMessage()
+    ]
+    assert len(off_lines) == 1
+
+
+async def test_noop_cycle_logs_no_switch_line(hass, caplog):
+    """V9a: a cycle that changes nothing (desired == current) queues no action
+    and therefore logs no switch line."""
+    import logging
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    _detach_listener(coordinator)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._load_charging_active.clear()
+    calls.clear()
+
+    inactive = SimpleNamespace(
+        load_plans=[SimpleNamespace(load_id=sub_id, active_now=False)]
+    )
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        await coordinator._apply_load_switching(inactive, dt_util.now())
+        await hass.async_block_till_done()
+
+    assert calls == []
+    assert not [
+        r
+        for r in caplog.records
+        if "-> ON (" in r.getMessage() or "-> OFF (" in r.getMessage()
+    ]

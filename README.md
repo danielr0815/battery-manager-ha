@@ -59,8 +59,8 @@ Every ~5 minutes (and on input changes, debounced) the planner runs:
 | `sensor.…_soc_threshold` | Optimal SOC threshold (%) from the search |
 | `sensor.…_min/max_soc_forecast` | SOC range over the horizon |
 | `sensor.…_hours_to_max_soc` | Hours until the maximum SOC is reached |
-| `sensor.…_grid_import_forecast` | Expected grid import over the horizon (kWh) |
-| `sensor.…_lost_surplus` | Surplus that will still be exported/wasted (kWh) |
+| `sensor.…_grid_import_forecast` | Expected grid import over the **whole planning horizon** (kWh, not just today; per-day split in the `daily` / `today_kwh` / `tomorrow_kwh` attributes) |
+| `sensor.…_lost_surplus` | Surplus that will still be exported/wasted over the **whole planning horizon** (kWh) — a horizon sum, **not** a "today" figure. E.g. `7.9 kWh` at 05:00 covers all forecast days, while that single day realised `0.58 kWh`. The per-day breakdown is in the `daily` attribute (and `today_kwh` / `tomorrow_kwh`), mirrored on the `soc_forecast` sensor's `daily` attribute. |
 | `sensor.…_soc_forecast` | Planned SOC curve (state: SOC in one hour; attributes: full plan for the bundled dashboard card) |
 | `binary_sensor.<load>_recommendation` | Per surplus load: switch it on now (attributes: planned hours/energy) |
 | `binary_sensor.<appliance>_start_window` | Per appliance: a full run fits into the surplus right now |

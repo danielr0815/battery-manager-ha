@@ -645,7 +645,19 @@ def allocate_loads(
     remaining: dict[str, float | None] = {}
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-        remaining[load.load_id] = state.remaining_energy_wh(load)
+        rem = state.remaining_energy_wh(load)
+        # V6 (F-TANK): cap a tank-modelled load at its remaining tank RUN time,
+        # converted to Wh with the exact planning power the allocator books at
+        # (so the Wh budget corresponds to precisely tank_remaining_min minutes
+        # of booked runtime). Reuses the energy-limited `remaining` machinery —
+        # the saturation gate then skips a load whose tank is (nearly) full,
+        # just as it skips a full powerstation. None = feature off (no cap).
+        if state.tank_remaining_min is not None:
+            tank_wh = (
+                max(0.0, state.tank_remaining_min) / 60.0 * state.planning_power_w(load)
+            )
+            rem = tank_wh if rem is None else min(rem, tank_wh)
+        remaining[load.load_id] = rem
 
     extra = [0.0] * n
     # Slots carrying ANY accepted booking (any load) — the set slots_serviceable

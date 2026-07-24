@@ -109,6 +109,24 @@ class SurplusLoadState:
     # whose configured nominal is wrong (F2400-B: 300 W configured vs ~505 W
     # real — every gate ~40 % under).
     learned_power_w: float | None = None
+    # F5 (2026-07-24 forensics): the load's power-deviation warning (F-L7) is
+    # LATCHED — its real draw has been near 0 W for the dwell despite an active
+    # recommendation (full water tank). While latched the coordinator overrides
+    # the planning power with the MEASURED Ist-Leistung (~2 W) so the planner
+    # stops booking phantom full-power slots against a saturated device
+    # (24.07: 5.4 kWh phantom plan vs 2 W reality). Highest precedence in
+    # planning_power_w; clamped >= 0. None = not latched (normal precedence).
+    # The learned/measured fields stay untouched, so the release restores the
+    # normal planning power in the same cycle.
+    saturated_power_w: float | None = None
+    # V6 (F-TANK, operator design 2026-07-24): remaining consumable-tank RUN
+    # time in minutes for a tank-modelled load (learned full-tank runtime minus
+    # the runtime since the last emptying, clamped >= 0). The planner caps the
+    # load's booked energy at this budget (converted to Wh with the load's
+    # planning power) the same way an energy-limited load is capped at its
+    # remaining capacity. None = the tank feature is off for this load (the
+    # neutral default: no cap, exactly today's behaviour).
+    tank_remaining_min: float | None = None
 
     def remaining_energy_wh(self, load: SurplusLoad) -> float | None:
         """Energy still absorbable, or None if unlimited."""
@@ -119,6 +137,11 @@ class SurplusLoadState:
         return max(0.0, remaining)
 
     def planning_power_w(self, load: SurplusLoad) -> float:
+        # F5: a latched power warning (full tank) overrides everything — plan
+        # the load at its measured saturated draw (~0 W) so it books no phantom
+        # energy. The learned/measured values are preserved for the release.
+        if self.saturated_power_w is not None:
+            return max(0.0, self.saturated_power_w)
         # Precedence (R1): live measured (present only during/around an active
         # run) > learned from past runs > configured nominal.
         if self.measured_power_w is not None and self.measured_power_w > 0:

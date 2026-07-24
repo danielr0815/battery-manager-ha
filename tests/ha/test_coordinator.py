@@ -1,6 +1,7 @@
 """Tests for the Battery Manager coordinator wiring."""
 
-from datetime import UTC
+import logging
+from datetime import UTC, timedelta
 from unittest.mock import patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -11,6 +12,7 @@ from custom_components.battery_manager.const import (
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
     DOMAIN,
+    STARTUP_SOC_GRACE_S,
 )
 
 ENTRY_DATA = {
@@ -1256,3 +1258,121 @@ async def test_quantile_coverage_attribute_wiring(hass):
     assert mixed["2026-07-04"]["source"] == "mixed"
     assert 0.0 < mixed["2026-07-04"]["coverage"] < 1.0
     assert mixed["2026-07-05"] == {"coverage": 0.0, "source": "scalar"}
+
+
+# ---------------------------------------------------------------------------
+# V8: startup grace for an unavailable SOC source
+# ---------------------------------------------------------------------------
+
+
+async def _setup_with_unavailable_soc(hass):
+    """Entry setup with a valid PV forecast but an unavailable SOC source."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_soc", "unavailable")
+    hass.states.async_set("sensor.pv_today", "10.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry, hass.data[DOMAIN][entry.entry_id]
+
+
+async def test_startup_grace_holds_unavailable_soc(hass, caplog):
+    """Within the startup grace, an unavailable SOC source does NOT escalate to
+    an ERROR + UpdateFailed: the coordinator stays successful with a not-ready
+    placeholder (entities read unavailable via valid=False) and logs no error."""
+    with caplog.at_level(logging.ERROR):
+        _entry, coordinator = await _setup_with_unavailable_soc(hass)
+
+    assert coordinator.last_update_success is True
+    assert coordinator.data.get("valid") is False
+    assert coordinator.data.get("startup_pending") is True
+    assert not [r for r in caplog.records if "No valid input data" in r.getMessage()]
+
+
+async def test_startup_grace_expires_to_update_failed(hass, caplog):
+    """After the grace window elapses, the same unavailable SOC source escalates
+    to the normal UpdateFailed path (last_update_success False, error logged)."""
+    _entry, coordinator = await _setup_with_unavailable_soc(hass)
+    assert coordinator.last_update_success is True  # still in grace
+
+    # Push the grace anchor past the window and refresh again.
+    coordinator._startup_at = coordinator._startup_at - timedelta(
+        seconds=STARTUP_SOC_GRACE_S + 1
+    )
+    with caplog.at_level(logging.ERROR):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+    assert coordinator.last_update_success is False
+    assert [r for r in caplog.records if "No valid input data" in r.getMessage()]
+
+
+async def test_soc_dropout_after_first_success_still_fails(hass):
+    """Steady state is unchanged: once a first cycle has succeeded, a genuine SOC
+    dropout (source unavailable AND cache expired) fails immediately even inside
+    the grace time window — the grace only covers the pre-first-success start."""
+    entry = await _setup_entry(hass)  # valid SOC -> first success
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert coordinator.last_update_success and coordinator.data.get("valid")
+    assert coordinator._successful_updates >= 1
+
+    # Simulate the SOC source dropping with no usable cached value.
+    coordinator._last_valid_soc = None
+    coordinator._last_soc_update = None
+    # The grace time window is still open, but the first-success latch is set —
+    # a post-success dropout must fail regardless.
+    hass.states.async_set("sensor.test_soc", "unavailable")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert coordinator.last_update_success is False
+
+
+# ---------------------------------------------------------------------------
+# V7: config-entry diagnostics
+# ---------------------------------------------------------------------------
+
+
+async def test_diagnostics_snapshot_has_core_blocks(hass):
+    """The diagnostics dump carries the entry, subentries, core config, learned
+    state and last-plan-metric blocks without raising."""
+    from custom_components.battery_manager.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    entry = await _setup_entry(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert set(diag) >= {
+        "entry",
+        "subentries",
+        "core_config",
+        "learned_state",
+        "last_plan_metrics",
+    }
+    assert diag["entry"]["version"] == 2
+    assert "battery" in diag["core_config"]
+    learned = diag["learned_state"]
+    assert {"startup", "floor_guard", "learned_power_w", "tank"} <= set(learned)
+    assert diag["last_plan_metrics"]["valid"] is True
+
+
+async def test_diagnostics_no_coordinator_still_dumps_entry(hass):
+    """If the coordinator is absent (setup failed / unloaded), diagnostics still
+    return the entry snapshot instead of raising."""
+    from custom_components.battery_manager.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    assert diag["coordinator"] is None
+    assert diag["entry"]["title"] == "Battery Manager"
+    assert diag["subentries"] == []

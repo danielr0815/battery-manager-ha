@@ -186,6 +186,18 @@ integrated over the power.
     each person's companion app) is pushed to when any load's warning trips,
     and — unless silenced — when it clears. Empty list = no push; the
     `binary_sensor` remains available for custom automations either way.
+  - **Planner feed-back (F5, 2026-07-24; see [F-TANK.md](F-TANK.md)).** While
+    the warning is latched, the planner plans the load with its **measured**
+    draw (~2 W) instead of the learned/nominal power — otherwise it books
+    phantom full-power slots against a saturated device (24.07: 5.4 kWh phantom
+    plan vs 2 W reality), skewing T\*, the import/lost-surplus forecast and
+    displacing other loads. Only the planning power changes; the recommendation
+    and switch stay ON-capable so the tank-emptied restart (which alone clears
+    the latch) stays observable, and the learned power is untouched, so the
+    release restores normal planning power in the same cycle. The latch edges
+    also drive the optional per-load **tank model** (V6): learning the full-tank
+    runtime, auto-resetting the runtime counter on emptying, and the
+    "tank nearly full" push — see [F-TANK.md](F-TANK.md).
 - **F-L6 (2026-07-05): manual activations do not influence planning.** The
   operator occasionally switches loads (or rather their metered socket) by
   hand — e.g. the dehumidifier, or a foreign load on the same socket. Feedback
@@ -307,3 +319,46 @@ deadline seamlessly — no OFF/ON relay cycle, no compressor restart, no
 min_off pause (the observed 50 % duty cycle is gone). Energy-limited loads
 extend only while the G2 stale-SOC guard can supervise them; everything
 G2-unsupervisable keeps the R7/R8 duty-cycle cap. G4 always wins.
+
+## 14. Load location — `in_house_measurement` (V3, 2026-07-24)
+
+The per-load `in_house_measurement` flag (default **on**) records where the
+load sits **relative to the grid-consumption measuring point** (the EM540 /
+grid meter). It governs exactly one thing — the baseline (Grundlast) learning
+in `history_profile.py` — and nothing else.
+
+- **On (behind the meter).** The load's own draw IS contained in the measured
+  house load, so the learner subtracts it while learning the AC baseline (else
+  its runs would inflate the learned base load).
+- **Off (outside the meter).** The load is supplied outside the measured node —
+  via a feed-in setpoint, OR simply on a circuit/socket the grid meter never
+  sees. The cellar dehumidifier is the concrete case: its supply appeared 1:1
+  as "export" on the EM540 (~11.3 kWh over the forensics week). Such a load is
+  never part of the measured house load, so the learner must **not** subtract
+  it — subtracting a draw that is not in the measurement double-counts the
+  removal and biases the learned baseline low.
+
+**Soll-Verhalten — counted exactly once.** Surplus planning is deliberately
+*independent* of this flag. Every surplus load is modelled as **additional AC
+consumption** (`extra_ac_wh` in `optimize.allocate_loads`) when its run is
+booked, for both flag values. So the two halves always match:
+
+| Location | Subtracted in learning? | Added in planning? | Net counting |
+|---|---|---|---|
+| in-house (`on`) | yes (removed from baseline) | yes (`extra_ac_wh`) | once |
+| out-of-house (`off`) | no (never in baseline) | yes (`extra_ac_wh`) | once |
+
+An out-of-house load is therefore neither double-counted nor invisible: its
+consumption reduces surplus/export in the plan exactly once. The remaining
+places that combine measured aggregates with load power are topology-neutral
+and need no adjustment: the **G4 PV-coverage** check compares forecast PV power
+against the running loads' *own* nominal/learned watts (raw magnitudes, not the
+metered aggregate), and the **learned/measured per-load power** is read from the
+load's own feedback sensor. `prevented_export` / `lost_surplus` are planner
+simulation outputs derived from `extra_ac_wh`, so they inherit the correct
+once-only accounting.
+
+**Operator recommendation for the cellar dehumidifier:** set
+`in_house_measurement = **off**`. It is fed outside the EM540 grid-meter
+circuit, so leaving it on would make the learner subtract a draw that is not in
+the measured house load and skew the AC baseline.

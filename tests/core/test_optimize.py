@@ -1107,6 +1107,42 @@ def test_planning_power_precedence_measured_learned_nominal():
     assert neither.planning_power_w(FOSSIBOT_1) == FOSSIBOT_1.nominal_power_w
     zeroed = SurplusLoadState(load_id="fossibot_1", learned_power_w=0.0)
     assert zeroed.planning_power_w(FOSSIBOT_1) == FOSSIBOT_1.nominal_power_w
+    # F5: a latched power warning (saturated_power_w) overrides everything —
+    # the load plans at its measured ~0 W draw (full tank), clamped >= 0.
+    saturated = SurplusLoadState(
+        load_id="fossibot_1",
+        saturated_power_w=2.0,
+        measured_power_w=505.0,
+        learned_power_w=480.0,
+    )
+    assert saturated.planning_power_w(FOSSIBOT_1) == 2.0
+    saturated_zero = SurplusLoadState(load_id="fossibot_1", saturated_power_w=0.0)
+    assert saturated_zero.planning_power_w(FOSSIBOT_1) == 0.0
+
+
+def test_tank_remaining_min_caps_booked_energy():
+    """V6 (F-TANK): tank_remaining_min caps a load's booked energy at its
+    remaining tank runtime (converted to Wh with the planning power), reusing
+    the energy-limited `remaining` machinery. None = uncapped (feature off, the
+    neutral default), 0 = full tank books nothing, a partial budget books at
+    most that many runtime minutes."""
+    config = SystemConfig(loads=(DEHUMIDIFIER,))  # 400 W, min_runtime 30 min
+    now = datetime(2026, 7, 4, 9, 0)
+    forecasts = [14.0]  # strong all-day surplus
+
+    def planned(tank_min):
+        states = (
+            SurplusLoadState(load_id="dehumidifier", tank_remaining_min=tank_min),
+        )
+        result, _ = make_plan(config, now, 95.0, forecasts, load_states=states)
+        return result.load_plans[0].planned_energy_wh
+
+    uncapped = planned(None)
+    capped = planned(30.0)  # 30 min budget -> 200 Wh (one 30-min quantum)
+    empty = planned(0.0)  # full tank -> books nothing
+    assert uncapped > 200.0  # without the cap it runs many hours
+    assert 0.0 < capped <= 200.0 + 1e-6
+    assert empty == 0.0
 
 
 def test_pass1_energy_limited_residual_books_earlier_of_two_hours():

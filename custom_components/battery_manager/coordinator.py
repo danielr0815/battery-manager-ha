@@ -9,6 +9,7 @@ import math
 from collections import deque
 from dataclasses import replace
 from datetime import datetime, timedelta
+from statistics import median
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
@@ -54,6 +55,7 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
     CONF_LOAD_SOC_ENTITY,
+    CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
     CONF_NATIVE48_BASE_W,
     CONF_PREDRAIN_PV_CONFIDENCE,
@@ -113,10 +115,13 @@ from .const import (
     STALE_LOAD_SOC_MIN,
     STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
+    STARTUP_SOC_GRACE_S,
     STORAGE_VERSION,
     STRONG_PV_CUTOFF_W_DEFAULT,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
+    TANK_LEARN_SAMPLES,
+    TANK_WARN_LEAD_MIN,
     UPDATE_INTERVAL_SECONDS,
     UPPER_PV_RESERVE_DEFAULT,
 )
@@ -395,12 +400,33 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # cursor would credit the restart gap; see _update_load_runtime).
         self._load_runtime_seconds: dict[str, float] = {}
         self._load_run_since: dict[str, datetime] = {}
+        # V6 (F-TANK, operator design 2026-07-24): the consumable-tank model.
+        # `_load_tank_samples` holds the last TANK_LEARN_SAMPLES observed
+        # full-tank runtimes (minutes); their median is the learned full-tank
+        # runtime, persisted like the power-warning latch. `_load_tank_full_min`
+        # is the runtime captured at the power-warning latch ENTRY (the tank-full
+        # event), committed as a sample and cleared at the latch RELEASE (the
+        # tank-emptied event) — persisted so a restart mid-tank-cycle still
+        # learns. `_load_tank_notified` (in-memory, one per tank cycle) gates the
+        # single "tank nearly full" push. `_load_tank_diag` carries the sensor
+        # attributes computed each cycle.
+        self._load_tank_samples: dict[str, list[float]] = {}
+        self._load_tank_full_min: dict[str, float] = {}
+        self._load_tank_notified: set[str] = set()
+        self._load_tank_diag: dict[str, dict[str, Any]] = {}
 
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
         self.learner = ProfileLearner(hass, entry)
 
         self._startup_complete = False
         self._successful_updates = 0
+        # V8: anchor of the SOC startup grace window, stamped on the first
+        # refresh (None until then) — see _async_update_data.
+        self._startup_at: datetime | None = None
+        # V8: latches True on the FIRST successful cycle and never resets, so a
+        # genuine SOC dropout after a good cycle (which zeroes _successful_updates)
+        # cannot re-enter the startup grace even if it happens inside the window.
+        self._first_success_done = False
 
         self._debounce_task: asyncio.Task | None = None
         self._listeners_setup: bool = False
@@ -463,6 +489,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_power_warning = {
                 k: bool(v)
                 for k, v in data.get("load_power_warning", {}).items()
+                if k in self.entry.subentries
+            }
+            # V6 (F-TANK): restore the learned tank samples and the pending
+            # tank-full runtime capture, dropping entries whose subentry vanished
+            # (a re-created load must not inherit another device's tank model).
+            self._load_tank_samples = {
+                k: [float(x) for x in v]
+                for k, v in data.get("load_tank_samples", {}).items()
+                if k in self.entry.subentries and isinstance(v, list)
+            }
+            self._load_tank_full_min = {
+                k: float(v)
+                for k, v in data.get("load_tank_full_min", {}).items()
                 if k in self.entry.subentries
             }
             # The tick cursor (_load_run_since) is intentionally not restored —
@@ -546,6 +585,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # timer re-arms after a restart (a not-yet-tripped deviation is
             # deliberately not credited across downtime).
             "load_power_warning": dict(self._load_power_warning),
+            # V6 (F-TANK): the learned tank samples (median = learned full-tank
+            # runtime) and the pending tank-full runtime capture survive
+            # restarts, like the power-warning latch. The per-cycle notified set
+            # is deliberately volatile (a rare duplicate push after a restart is
+            # acceptable; persisting it would over-suppress after a real reset).
+            "load_tank_samples": {
+                k: list(v) for k, v in self._load_tank_samples.items()
+            },
+            "load_tank_full_min": dict(self._load_tank_full_min),
         }
 
     def _save_persistent_state(self) -> None:
@@ -1155,6 +1203,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._load_power_warning.get(subentry_id, False) == on:
             return
         self._load_power_warning[subentry_id] = on
+        # V6 (F-TANK): the power-warning latch edges ARE the tank events.
+        subentry = self.entry.subentries.get(subentry_id)
+        if subentry is not None and self._tank_enabled(subentry.data):
+            if on:
+                # Latch ENTRY = tank full: capture the runtime achieved this
+                # cycle (the runtime it took to fill the tank). The counter has
+                # frozen at the fill point — the ~2 W standby stays below the
+                # runtime bar — so this is the true full-tank runtime. Committed
+                # as a learning sample only at the release, once the emptying is
+                # confirmed (a latch that never releases must not learn).
+                self._load_tank_full_min[subentry_id] = self.load_runtime_minutes(
+                    subentry_id
+                )
+            else:
+                # Latch RELEASE = the device runs at full power again -> the tank
+                # was emptied. Learn the captured full-tank runtime, then reset
+                # the runtime counter (a fresh tank cycle) and re-arm the push.
+                full_min = self._load_tank_full_min.pop(subentry_id, None)
+                if full_min is not None:
+                    self._tank_record_sample(subentry_id, full_min)
+                self._load_runtime_seconds[subentry_id] = 0.0
+                if subentry_id in self._load_run_since:
+                    self._load_run_since[subentry_id] = dt_util.utcnow()
+                self._load_tank_notified.discard(subentry_id)
         # Persist the latch so a coordinator reload (any options save) or a
         # restart does not silently drop a raised warning (operator wish
         # 2026-07-12); async_flush_persistent_state writes it before a reload.
@@ -1216,6 +1288,71 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception as err:
                 _LOGGER.warning(
                     "Power-warning notification to notify.%s failed: %s",
+                    service,
+                    err,
+                )
+
+    async def _update_tank_forecast(self, result, now: datetime) -> None:
+        """V6 (F-TANK): refresh per-tank-load runtime diagnostics and push the
+        single "tank nearly full" notification per tank cycle.
+
+        The push fires ONCE per tank cycle (latch -> reset) when the predicted
+        remaining tank RUN time drops below TANK_WARN_LEAD_MIN AND the load is
+        still planned to run in the current plan — so an idle device never warns
+        and the lead time is grounded in planned runtime, not wall-clock time
+        (operator design point 4). A load already latched full is skipped: the
+        F-L7 power warning has already fired for it."""
+        planned_upcoming = {
+            lp.load_id: bool(lp.schedule) and any(lp.schedule)
+            for lp in result.load_plans
+        }
+        for subentry_id, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+                continue
+            data = subentry.data
+            if not self._tank_enabled(data):
+                self._load_tank_diag.pop(subentry_id, None)
+                continue
+            learned = self._tank_learned_full_min(subentry_id, data)
+            remaining = self._tank_remaining_min(subentry_id, data) or 0.0
+            self._load_tank_diag[subentry_id] = {
+                "tank_remaining_min": round(remaining, 1),
+                "tank_learned_full_min": round(learned, 1),
+                "tank_samples": len(self._load_tank_samples.get(subentry_id, [])),
+            }
+            if self._load_power_warning.get(subentry_id, False):
+                continue  # already latched full — F-L7 warning covers it
+            if (
+                planned_upcoming.get(subentry_id, False)
+                and remaining < TANK_WARN_LEAD_MIN
+                and subentry_id not in self._load_tank_notified
+            ):
+                self._load_tank_notified.add(subentry_id)
+                await self._notify_tank_full_soon(subentry.title, remaining)
+
+    async def _notify_tank_full_soon(self, title: str, remaining_min: float) -> None:
+        """Push the "tank nearly full" warning to the global notify targets
+        (V6), reusing the power-warning target list. No targets -> no-op; each
+        target is called independently so one stale service cannot block."""
+        targets = self.raw_config.get(CONF_WARNING_NOTIFY_TARGETS) or []
+        if not targets:
+            return
+        msg_title = f"🪣 {title}: tank nearly full"
+        message = (
+            f"{title}: tank likely full within {max(0, round(remaining_min))} min"
+            " of runtime — please empty it."
+        )
+        for service in targets:
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service,
+                    {"title": msg_title, "message": message},
+                    blocking=False,
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Tank notification to notify.%s failed: %s",
                     service,
                     err,
                 )
@@ -1425,12 +1562,66 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def reset_load_runtime(self, load_id: str) -> None:
         """Reset a load's runtime counter to zero (reset button, v0.7.18). A run
-        in progress restarts its cursor from now so only post-reset time counts."""
+        in progress restarts its cursor from now so only post-reset time counts.
+
+        V6 (F-TANK): the reset button also means "tank emptied" — start a fresh
+        tank cycle. Any pending tank-full capture is dropped (a manual reset
+        precedes the auto-detected latch release and would otherwise learn a
+        premature sample) and the one-per-cycle notification gate is re-armed."""
         self._load_runtime_seconds[load_id] = 0.0
         if load_id in self._load_run_since:
             self._load_run_since[load_id] = dt_util.utcnow()
+        self._load_tank_full_min.pop(load_id, None)
+        self._load_tank_notified.discard(load_id)
         self._save_persistent_state()
         self.async_update_listeners()
+
+    def _tank_enabled(self, data: dict[str, Any]) -> bool:
+        """True iff the consumable-tank model is opted in for this load (V6).
+
+        Requires a configured full-tank runtime > 0 AND a power-feedback sensor
+        (the tank-full / tank-emptied events are detected via the power-warning
+        latch, which needs feedback). 0 = off is the safety anchor: exactly the
+        pre-feature behaviour, no runtime cap."""
+        return float(data.get(CONF_LOAD_TANK_FULL_RUNTIME_MIN, 0) or 0) > 0.0 and bool(
+            data.get(CONF_LOAD_POWER_ENTITY)
+        )
+
+    def _tank_learned_full_min(self, subentry_id: str, data: dict[str, Any]) -> float:
+        """Learned full-tank runtime in minutes (V6): the median of the last
+        observed tank-full samples, or the configured starting estimate while no
+        sample exists yet."""
+        samples = self._load_tank_samples.get(subentry_id)
+        if samples:
+            return float(median(samples))
+        return float(data.get(CONF_LOAD_TANK_FULL_RUNTIME_MIN, 0) or 0)
+
+    def _tank_remaining_min(
+        self, subentry_id: str, data: dict[str, Any]
+    ) -> float | None:
+        """Remaining tank RUN time in minutes (V6), or None when the feature is
+        off for this load. learned full-tank runtime minus the runtime since the
+        last emptying, clamped >= 0 — the planner's per-load runtime budget."""
+        if not self._tank_enabled(data):
+            return None
+        learned = self._tank_learned_full_min(subentry_id, data)
+        used = self.load_runtime_minutes(subentry_id)
+        return max(0.0, learned - used)
+
+    def _tank_record_sample(self, subentry_id: str, runtime_min: float) -> None:
+        """Append a tank-full runtime sample (V6), keeping the last
+        TANK_LEARN_SAMPLES. A non-positive sample is ignored (a spurious latch
+        right after a reset must not poison the median)."""
+        if runtime_min <= 0.0:
+            return
+        samples = self._load_tank_samples.setdefault(subentry_id, [])
+        samples.append(round(runtime_min, 1))
+        del samples[:-TANK_LEARN_SAMPLES]
+
+    def tank_diagnostics(self, load_id: str) -> dict[str, Any] | None:
+        """Tank model diagnostics for the runtime sensor (V6), or None when the
+        feature is off for this load."""
+        return self._load_tank_diag.get(load_id)
 
     def _update_soc_stale(
         self,
@@ -1751,6 +1942,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._load_plan_active.get(subentry_id, False),
             ):
                 available = False
+            # F5 (2026-07-24): a LATCHED power warning (full tank — real draw
+            # near 0 W despite an active recommendation) feeds the MEASURED
+            # Ist-Leistung into planning so the planner stops booking phantom
+            # full-power slots (24.07: 5.4 kWh phantom plan vs 2 W reality). The
+            # latch is one cycle old here (_update_power_warnings runs at the end
+            # of the cycle), exactly like the other coordinator-computed latches.
+            # The learned/measured values stay untouched, so the release restores
+            # normal planning power the same cycle. `raw` is the current feedback
+            # reading (None -> 0 W: a full tank books nothing either way).
+            saturated_power_w = None
+            if self._load_power_warning.get(subentry_id, False):
+                saturated_power_w = max(0.0, raw if raw is not None else 0.0)
+            # V6 (F-TANK): the per-load runtime budget (learned full-tank runtime
+            # minus runtime since the last emptying), or None when the feature is
+            # off — the planner then caps this load's booked energy at it.
+            tank_remaining_min = self._tank_remaining_min(subentry_id, data)
             states.append(
                 SurplusLoadState(
                     load_id=subentry_id,
@@ -1758,6 +1965,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     soc_percent=soc,
                     measured_power_w=measured,
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
+                    saturated_power_w=saturated_power_w,
+                    tank_remaining_min=tank_remaining_min,
                 )
             )
         return tuple(states)
@@ -1958,6 +2167,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         now = dt_util.now()
+        if self._startup_at is None:
+            self._startup_at = now  # V8: anchor the SOC startup grace window
         # Runtime counter: accumulate real active minutes every cycle (and on the
         # power-sensor state events that trigger a refresh), before any early-out
         # so it tracks continuously (v0.7.18).
@@ -1969,8 +2180,32 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         forecasts = self._get_forecasts(now)
 
         if soc is None or forecasts is None:
-            self._successful_updates = 0
             missing = "SOC" if soc is None else "PV forecasts"
+            # V8 startup grace: within STARTUP_SOC_GRACE_S of the first refresh
+            # and before any successful cycle, a not-yet-available SOC source
+            # (Victron sensor still booting after an HA restart) waits quietly
+            # instead of escalating to an ERROR + UpdateFailed. Retry runs at
+            # the short startup interval; a prior valid state (a re-setup that
+            # already had a good cycle) is held, else a not-ready placeholder
+            # keeps the entities unavailable WITHOUT a logged error. Only SOC is
+            # graced — the Victron dropout is the observed startup case; a
+            # missing forecast keeps the normal path. After the grace window,
+            # or after the first success (steady state), the old path runs.
+            if (
+                soc is None
+                and not self._first_success_done
+                and now - self._startup_at < timedelta(seconds=STARTUP_SOC_GRACE_S)
+            ):
+                _LOGGER.debug(
+                    "SOC source %s not ready yet; waiting out the startup grace"
+                    " (%.0f s) before failing",
+                    self.raw_config[CONF_SOC_ENTITY],
+                    STARTUP_SOC_GRACE_S,
+                )
+                if self.data is not None and self.data.get("valid"):
+                    return self.data
+                return {"valid": False, "startup_pending": True, "last_update": now}
+            self._successful_updates = 0
             raise UpdateFailed(f"No valid input data available ({missing})")
 
         config = self.build_system_config()
@@ -2049,9 +2284,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result, now, tuple(s.duration for s in inputs.slots)
         )
         await self._update_power_warnings(result, now)
+        # V6 (F-TANK): after the power warnings settle (their latch edges drive
+        # the tank learning/auto-reset), refresh the tank diagnostics and fire
+        # the one-per-cycle "tank nearly full" push.
+        await self._update_tank_forecast(result, now)
         self._update_gate_calibration(config, soc)
 
         self._successful_updates += 1
+        self._first_success_done = True  # V8: latch — grace never re-arms
         if not self._startup_complete and (
             self._successful_updates >= 2
             or self._successful_updates >= STARTUP_RETRY_ATTEMPTS
@@ -2785,6 +3025,49 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         shakedown and the live regulation are observable in the UI."""
         return dict(self._dc48_ctrl_diag)
 
+    def learned_state_snapshot(self) -> dict[str, Any]:
+        """V7: a JSON-serialisable snapshot of the coordinator's learned and
+        latched runtime state for the config-entry diagnostics endpoint.
+
+        Everything a forensic pass previously had to guess at: the learned
+        planning power and consumable-tank model per load, the power-warning /
+        stale-SOC / telemetry-freeze latches, the T*-inertia value, the
+        floor-guard state and the startup/SOC-cache bookkeeping. Sets are
+        rendered as sorted lists and timestamps as ISO strings so the standard
+        diagnostics JSON serialiser handles them."""
+
+        def _iso(value: datetime | None) -> str | None:
+            return value.isoformat() if value is not None else None
+
+        return {
+            "startup": {
+                "startup_complete": self._startup_complete,
+                "successful_updates": self._successful_updates,
+                "startup_at": _iso(self._startup_at),
+                "last_valid_soc_percent": self._last_valid_soc,
+                "last_soc_update": _iso(self._last_soc_update),
+            },
+            "threshold_inertia": {
+                "displayed_threshold_percent": self._displayed_threshold
+            },
+            "floor_guard": {"active": self._floor_guard_active},
+            "learned_power_w": dict(self._load_learned_power_w),
+            "load_runtime_seconds": dict(self._load_runtime_seconds),
+            "power_warning_latched": dict(self._load_power_warning),
+            "soc_stale_frozen_soc": dict(self._load_soc_stale),
+            "telemetry_freeze_stale": sorted(self._load_freeze_stale),
+            "tank": {
+                "diag": {k: dict(v) for k, v in self._load_tank_diag.items()},
+                "samples": {k: list(v) for k, v in self._load_tank_samples.items()},
+                "pending_full_min": dict(self._load_tank_full_min),
+            },
+            "support": {
+                "state": dict(self._support_state),
+                "manual": dict(self._support_manual),
+                "dc48_controller": dict(self._dc48_ctrl_diag),
+            },
+        }
+
     def support_active(self, key: str) -> bool:
         """Public accessor for a support PSU's current on/off state.
 
@@ -3328,7 +3611,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         floor_guard = bool(self._floor_guard_active)
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
-        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool]] = []
+        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool, str]] = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
@@ -3358,9 +3641,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # against ~150 Wh of validated energy. The min_off dwell then blocks
             # an immediate re-on (duty-cycling).
             deadline = self._load_run_deadline.get(subentry_id)
+            # V9a: the switch-action reason, derived from the anlass at the
+            # decision point (the one INFO line the executor logs per confirmed
+            # switch). Refined below for target-SOC / flicker-continuation.
             if floor_guard:
                 # G4: grid-fed operation is forbidden — force OFF, block ON.
                 desired = False
+                reason = "G4 floor guard"
             elif current and deadline is not None and now >= deadline:
                 # F-SEAMLESS-RUNS: THIS refresh's plan was recomputed with
                 # fresh remaining/SOC data BEFORE switching runs. If it
@@ -3391,8 +3678,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                     continue  # no OFF, no dwell stamp
                 desired = False
+                reason = "quantum end"
             else:
                 desired = active_now
+                reason = "plan slot" if active_now else "plan off"
             if desired == current:
                 continue
             # Split dwell (R14): ON->OFF is gated by the minimum ON time
@@ -3440,6 +3729,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if soc is not None and soc >= target:
                         dwell_min = 0
                         flicker_eligible = False
+                        if reason == "plan off":
+                            reason = "target SOC reached"
             else:  # pending switch ON
                 flicker_eligible = False
                 dwell_min = int(
@@ -3464,6 +3755,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and self._flicker_continuation_ok(subentry_id, now, off_info[0])
                 ):
                     dwell_min = 0
+                    reason = f"{reason} (flicker continuation)"
             last = self._last_load_switch.get(subentry_id)
             if last is not None and now - last < timedelta(minutes=dwell_min):
                 continue
@@ -3474,7 +3766,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # The planned contiguous run (h) lets the ON path freeze a deadline.
             run_h = plan.active_run_hours(slot_durations) if plan else 0.0
             actions.append(
-                (subentry_id, dict(data), desired, plug_was_on, run_h, flicker_eligible)
+                (
+                    subentry_id,
+                    dict(data),
+                    desired,
+                    plug_was_on,
+                    run_h,
+                    flicker_eligible,
+                    reason,
+                )
             )
 
         if actions:
@@ -3486,7 +3786,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _execute_load_switching(
         self,
-        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool]],
+        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool, str]],
         now: datetime | None = None,
     ) -> None:
         if now is None:
@@ -3500,6 +3800,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 subentry_id, data, activate, plug_was_on = action[:4]
                 run_h = action[4] if len(action) > 4 else 0.0
                 flicker_eligible = action[5] if len(action) > 5 else False
+                # V9a: the switch reason (7th element). A legacy short tuple
+                # (test/back-compat) falls back to a generic anlass string.
+                reason = (
+                    action[6]
+                    if len(action) > 6
+                    else ("plan slot" if activate else "plan off")
+                )
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
                 subentry = self.entry.subentries.get(subentry_id)
@@ -3553,7 +3860,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else:
                         self._load_run_deadline.pop(subentry_id, None)
                         self._cancel_off_timer(subentry_id)
-                    _LOGGER.info("Charging started for load %s", label)
+                    # V9a: exactly one INFO line per confirmed switch action,
+                    # carrying the anlass derived at the decision point.
+                    _LOGGER.info("Load %s -> ON (%s)", label, reason)
                 else:
                     policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
                     if not enable and policy == INPUT_OFF_POLICY_KEEP:
@@ -3596,9 +3905,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # F-SUBHOUR: run finished — clear the frozen deadline + timer.
                     self._load_run_deadline.pop(subentry_id, None)
                     self._cancel_off_timer(subentry_id)
+                    # V9a: exactly one INFO line per confirmed switch action.
                     _LOGGER.info(
-                        "Charging stopped for load %s (input %s)",
+                        "Load %s -> OFF (%s; input %s)",
                         label,
+                        reason,
                         "off" if turn_plug_off else "stays on",
                     )
         self._save_persistent_state()

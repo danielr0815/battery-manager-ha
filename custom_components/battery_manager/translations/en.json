@@ -289,7 +289,8 @@
             "power_warning_percent": "Power deviation warning (%)",
             "control_switch_entity": "Control switch / plug (optional — BM switches it directly)",
             "input_off_policy": "Plug when switching off",
-            "power_warning_dwell_min": "Power warning dwell (min)"
+            "power_warning_dwell_min": "Power warning dwell (min)",
+            "tank_full_runtime_min": "Consumable-tank runtime (min, 0 = off)"
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
@@ -301,11 +302,12 @@
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
-            "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice.",
+            "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it, whether via a feed-in setpoint OR simply on a circuit the grid meter does not see (e.g. a cellar dehumidifier whose supply shows up 1:1 as export on an EM540): otherwise it would be subtracted twice and bias the learned baseline low.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
             "control_switch_entity": "Switchable plug/relay that powers the load; if set, BM turns the load on and off itself and a separate switching automation becomes redundant. For a powerstation this is the charging input.",
             "input_off_policy": "What happens to the plug when BM stops the load. \"Automatic\" = only switch off if BM switched it on itself — recommended when the plug is also used for passthrough.",
-            "power_warning_dwell_min": "How long the deviation must persist before the warning turns on. Rides through short defrost pauses; a shorter value warns sooner. Default 15."
+            "power_warning_dwell_min": "How long the deviation must persist before the warning turns on. Rides through short defrost pauses; a shorter value warns sooner. Default 15.",
+            "tank_full_runtime_min": "For a device with power feedback that stops internally when a consumable tank fills (e.g. a dehumidifier: full water tank -> ~2 W). Starting estimate of the runtime a full tank takes; once a tank cycle is observed the learned median takes over. The planner then never books beyond the remaining tank runtime, so a saturated device stops distorting the forecast. Use the reset-runtime button (or the auto-reset when the device runs at full power again) to mark the tank emptied. 0 = off; only meaningful with a power feedback sensor."
           }
         },
         "reconfigure": {
@@ -324,7 +326,8 @@
             "power_warning_percent": "Power deviation warning (%)",
             "control_switch_entity": "Control switch / plug (optional — BM switches it directly)",
             "input_off_policy": "Plug when switching off",
-            "power_warning_dwell_min": "Power warning dwell (min)"
+            "power_warning_dwell_min": "Power warning dwell (min)",
+            "tank_full_runtime_min": "Consumable-tank runtime (min, 0 = off)"
           },
           "data_description": {
             "name": "Display name of the load — appears in the sub-entry and in the recommendation entity's name.",
@@ -336,11 +339,12 @@
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
-            "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it (e.g. via a feed-in setpoint): otherwise it would be subtracted twice.",
+            "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it, whether via a feed-in setpoint OR simply on a circuit the grid meter does not see (e.g. a cellar dehumidifier whose supply shows up 1:1 as export on an EM540): otherwise it would be subtracted twice and bias the learned baseline low.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
             "control_switch_entity": "Switchable plug/relay that powers the load; if set, BM turns the load on and off itself and a separate switching automation becomes redundant. For a powerstation this is the charging input.",
             "input_off_policy": "What happens to the plug when BM stops the load. \"Automatic\" = only switch off if BM switched it on itself — recommended when the plug is also used for passthrough.",
-            "power_warning_dwell_min": "How long the deviation must persist before the warning turns on. Rides through short defrost pauses; a shorter value warns sooner. Default 15."
+            "power_warning_dwell_min": "How long the deviation must persist before the warning turns on. Rides through short defrost pauses; a shorter value warns sooner. Default 15.",
+            "tank_full_runtime_min": "For a device with power feedback that stops internally when a consumable tank fills (e.g. a dehumidifier: full water tank -> ~2 W). Starting estimate of the runtime a full tank takes; once a tank cycle is observed the learned median takes over. The planner then never books beyond the remaining tank runtime, so a saturated device stops distorting the forecast. Use the reset-runtime button (or the auto-reset when the device runs at full power again) to mark the tank emptied. 0 = off; only meaningful with a power feedback sensor."
           }
         },
         "storage": {
