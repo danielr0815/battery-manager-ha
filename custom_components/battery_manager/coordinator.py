@@ -1600,8 +1600,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, subentry_id: str, data: dict[str, Any]
     ) -> float | None:
         """Remaining tank RUN time in minutes (V6), or None when the feature is
-        off for this load. learned full-tank runtime minus the runtime since the
-        last emptying, clamped >= 0 — the planner's per-load runtime budget."""
+        off for this load. Learned full-tank runtime minus the runtime since the
+        last emptying, clamped >= 0. Drives ONLY the emptying notification and
+        diagnostics — never the planner (operator rule 2026-07-24: no preemptive
+        curtailment; a really-full tank surfaces via the F5 power collapse)."""
         if not self._tank_enabled(data):
             return None
         learned = self._tank_learned_full_min(subentry_id, data)
@@ -1954,10 +1956,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             saturated_power_w = None
             if self._load_power_warning.get(subentry_id, False):
                 saturated_power_w = max(0.0, raw if raw is not None else 0.0)
-            # V6 (F-TANK): the per-load runtime budget (learned full-tank runtime
-            # minus runtime since the last emptying), or None when the feature is
-            # off — the planner then caps this load's booked energy at it.
-            tank_remaining_min = self._tank_remaining_min(subentry_id, data)
+            # V6 (F-TANK) is deliberately NOT fed into the planner: the tank
+            # prediction only drives the emptying notification and diagnostics
+            # (operator rule 2026-07-24: a dehumidifier is NEVER switched off
+            # preemptively because the tank MIGHT be full — the device stops
+            # itself when it really is, and THAT is detected via the power
+            # collapse -> power-warning latch -> saturated_power_w above).
             states.append(
                 SurplusLoadState(
                     load_id=subentry_id,
@@ -1966,7 +1970,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     measured_power_w=measured,
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
                     saturated_power_w=saturated_power_w,
-                    tank_remaining_min=tank_remaining_min,
                 )
             )
         return tuple(states)

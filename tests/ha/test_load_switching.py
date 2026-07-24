@@ -907,29 +907,33 @@ async def test_v6_tank_auto_reset_and_learning(hass):
     assert coordinator._tank_learned_full_min(sub_id, _data) == 90.0
 
 
-async def test_v6_tank_remaining_caps_state_and_off_is_neutral(hass):
-    """V6: the state carries the remaining tank runtime (learned/configured
-    minus runtime since reset); with the feature off it is None (no cap,
-    exactly today's behaviour) and no diagnostics are exposed."""
+async def test_v6_tank_prediction_never_caps_planner_state(hass):
+    """V6 (operator rule 2026-07-24): the tank prediction is notification/
+    diagnostics ONLY — the planner state carries no tank budget, so a load is
+    never preemptively curtailed because the tank MIGHT be full (the device
+    stops itself; F5 handles the real full-tank via the power collapse).
+    Feature off (0 = default) additionally exposes no diagnostics."""
     from homeassistant.util import dt as dt_util
 
     calls: list[tuple[str, str]] = []
-    # Feature ON: configured 120 min, 90 min already run -> 30 min remaining.
+    # Feature ON: configured 120 min, 90 min already run -> prediction 30 min,
+    # visible in diagnostics but ABSENT from the planner state.
     coordinator, sub_id, data = await _setup(
         hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=120
     )
     coordinator._load_runtime_seconds[sub_id] = 90 * 60
     state = coordinator._get_load_states(dt_util.utcnow())[0]
-    assert state.tank_remaining_min == 30.0
+    assert not hasattr(state, "tank_remaining_min")
+    assert coordinator._tank_remaining_min(sub_id, data) == 30.0
 
-    # Feature OFF (0 = default): no cap, no diagnostics (regression anchor).
+    # Feature OFF (0 = default): no diagnostics either (regression anchor).
     calls2: list[tuple[str, str]] = []
     coord2, sub2, data2 = await _setup(
         hass, calls2, power_w=400.0, energy_limited=False, tank_full_runtime_min=0
     )
     coord2._load_runtime_seconds[sub2] = 90 * 60
     state2 = coord2._get_load_states(dt_util.utcnow())[0]
-    assert state2.tank_remaining_min is None
+    assert not hasattr(state2, "tank_remaining_min")
     assert coord2.tank_diagnostics(sub2) is None
 
 

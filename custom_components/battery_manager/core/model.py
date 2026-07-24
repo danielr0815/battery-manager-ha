@@ -119,14 +119,6 @@ class SurplusLoadState:
     # The learned/measured fields stay untouched, so the release restores the
     # normal planning power in the same cycle.
     saturated_power_w: float | None = None
-    # V6 (F-TANK, operator design 2026-07-24): remaining consumable-tank RUN
-    # time in minutes for a tank-modelled load (learned full-tank runtime minus
-    # the runtime since the last emptying, clamped >= 0). The planner caps the
-    # load's booked energy at this budget (converted to Wh with the load's
-    # planning power) the same way an energy-limited load is capped at its
-    # remaining capacity. None = the tank feature is off for this load (the
-    # neutral default: no cap, exactly today's behaviour).
-    tank_remaining_min: float | None = None
 
     def remaining_energy_wh(self, load: SurplusLoad) -> float | None:
         """Energy still absorbable, or None if unlimited."""

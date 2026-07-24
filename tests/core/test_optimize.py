@@ -762,6 +762,129 @@ def test_run_hours_and_schedule_stay_consistent():
         )
 
 
+# --- F-SEAMLESS-PLAN (F9): raster-edge continuation of a running load --------
+# A running surplus load lost its slot-0 recommendation whenever the partial
+# first slot dipped below one min_runtime quantum: `_committed_hours` floors the
+# commit at the dwell, the forced quantum then spilled past the slot boundary,
+# and the overlap guard dropped slot 0 because the spill collided with the
+# already-booked next slot. Live symptom: the dehumidifier recommendation was
+# retracted at ~:31 every morning hour (slot 0 shorter than 30 min) though the
+# surplus was unchanged, then re-booked one replan later. The fix trims such a
+# spill to slot 0's own duration — the min_runtime dwell is met by the booked
+# continuation — so the recommendation survives the raster edge.
+
+
+def _f9_pv_hourly(day):
+    """A strong sunny profile that fills the battery mid-morning and clips."""
+    shape = {
+        5: 200,
+        6: 700,
+        7: 1400,
+        8: 2100,
+        9: 2700,
+        10: 3100,
+        11: 3400,
+        12: 3500,
+        13: 3400,
+        14: 3000,
+        15: 2400,
+        16: 1700,
+        17: 1000,
+        18: 400,
+        19: 80,
+    }
+    return {
+        datetime(day.year, day.month, day.day, h): float(w) for h, w in shape.items()
+    }
+
+
+def _f9_plan(minute, soc=70.0):
+    cfg = SystemConfig(loads=(DEHUMIDIFIER,))
+    now = datetime(2026, 7, 24, 7, minute)
+    pv = {}
+    for off in range(3):
+        pv.update(_f9_pv_hourly(now.date() + timedelta(days=off)))
+    states = (
+        SurplusLoadState(
+            load_id="dehumidifier", available=True, measured_power_w=400.0
+        ),
+    )
+    inputs = build_slots(
+        cfg, now, soc, [28.0, 28.0, 28.0], load_states=states, pv_hourly=pv
+    )
+    return plan(cfg, inputs).load_plans[0]
+
+
+def test_f9_running_load_keeps_slot0_across_raster_edge():
+    # At :30 the partial slot 0 is exactly one 30-min quantum (fits inside the
+    # slot); at :31 it is shorter, so the forced quantum would spill into the
+    # already-booked slot 1. Pre-fix that collision dropped slot 0; now the
+    # slot-0 booking is trimmed to its own duration and the recommendation holds.
+    before = _f9_plan(30)
+    after = _f9_plan(31)
+    assert before.active_now, "slot 0 booked at :30 (quantum fits the slot)"
+    assert after.active_now, "slot 0 must stay booked at :31 (seamless raster edge)"
+    # The continuation the trim relies on: slot 1 also runs (contiguous block).
+    assert after.schedule[0] and after.schedule[1]
+    # And it is labelled for what it is, not misreported as a gate top-up.
+    assert any("seamless continuation" in r for r in after.reasons)
+
+
+def test_f9_no_edge_flip_across_the_whole_partial_hour():
+    # The recommendation must not toggle off at ANY minute of the partial hour
+    # while the surplus is unchanged (the live ~:31 retraction).
+    assert all(_f9_plan(m).active_now for m in range(20, 60))
+
+
+def test_f9_no_phantom_booking_when_surplus_absent():
+    # Guard: the trim only rescues a GENUINE continuation (next slot already
+    # this load's). With no surplus (weak PV) nothing is booked, so slot 0 has
+    # no booked successor and the recommendation correctly stays off — the fix
+    # never fabricates a booking.
+    cfg = SystemConfig(loads=(DEHUMIDIFIER,))
+    now = datetime(2026, 7, 24, 7, 31)
+    pv = {}
+    for off in range(3):
+        d = now.date() + timedelta(days=off)
+        pv.update(
+            {
+                datetime(d.year, d.month, d.day, h): float(w)
+                for h, w in {7: 300, 8: 300, 9: 200, 10: 100}.items()
+            }
+        )
+    states = (
+        SurplusLoadState(
+            load_id="dehumidifier", available=True, measured_power_w=400.0
+        ),
+    )
+    inputs = build_slots(
+        cfg, now, 30.0, [8.0, 8.0, 8.0], load_states=states, pv_hourly=pv
+    )
+    assert not plan(cfg, inputs).load_plans[0].active_now
+
+
+def test_f9_seamless_spill_is_same_load_scoped():
+    # The primitive only continues a spill into a slot the SAME load already
+    # owns; a slot booked by another (e.g. higher-priority) load is a genuine
+    # conflict -> None (rejected), so cross-load displacement is untouched.
+    from core.optimize import _seamless_spill
+
+    slots = [_slot(0.4833), _slot(1.0), _slot(1.0)]
+    extra = [0.0, 0.0, 0.0]
+    _, covered = _spread_energy(extra, slots, 0, 400.0, 0.5)  # 0.5h spills into slot 1
+    assert covered[1][0] == 1
+    # slot 1 is THIS load's booking -> trim to slot 0's own duration, no spill
+    trimmed = _seamless_spill(covered, slots, 0, 400.0, extra, [False, True, False])
+    assert trimmed is not None
+    _, tcov = trimmed
+    assert [j for j, _ in tcov] == [0]
+    assert abs(tcov[0][1] - slots[0].duration) < 1e-9
+    # slot 1 NOT this load's -> genuine double-booking, reject
+    assert (
+        _seamless_spill(covered, slots, 0, 400.0, extra, [False, False, False]) is None
+    )
+
+
 def test_energy_limited_booking_is_quantised_and_consistent():
     # F-RESIDUAL-TOPUP R1: an energy-limited load may now book a sub-hour run,
     # but every booked run is a whole slot or a k*q multiple (>= one quantum, R2),
@@ -1120,29 +1243,14 @@ def test_planning_power_precedence_measured_learned_nominal():
     assert saturated_zero.planning_power_w(FOSSIBOT_1) == 0.0
 
 
-def test_tank_remaining_min_caps_booked_energy():
-    """V6 (F-TANK): tank_remaining_min caps a load's booked energy at its
-    remaining tank runtime (converted to Wh with the planning power), reusing
-    the energy-limited `remaining` machinery. None = uncapped (feature off, the
-    neutral default), 0 = full tank books nothing, a partial budget books at
-    most that many runtime minutes."""
-    config = SystemConfig(loads=(DEHUMIDIFIER,))  # 400 W, min_runtime 30 min
-    now = datetime(2026, 7, 4, 9, 0)
-    forecasts = [14.0]  # strong all-day surplus
-
-    def planned(tank_min):
-        states = (
-            SurplusLoadState(load_id="dehumidifier", tank_remaining_min=tank_min),
-        )
-        result, _ = make_plan(config, now, 95.0, forecasts, load_states=states)
-        return result.load_plans[0].planned_energy_wh
-
-    uncapped = planned(None)
-    capped = planned(30.0)  # 30 min budget -> 200 Wh (one 30-min quantum)
-    empty = planned(0.0)  # full tank -> books nothing
-    assert uncapped > 200.0  # without the cap it runs many hours
-    assert 0.0 < capped <= 200.0 + 1e-6
-    assert empty == 0.0
+def test_tank_prediction_has_no_planner_field():
+    """V6 (F-TANK, operator rule 2026-07-24): the tank prediction must NEVER
+    preemptively curtail planning — a dehumidifier stops ITSELF when the tank
+    really is full, and that is detected via the power collapse (F5
+    saturated_power_w). The core state therefore carries no tank budget field
+    at all; the prediction lives coordinator-side (notification + diagnostics
+    only)."""
+    assert not hasattr(SurplusLoadState(load_id="dehumidifier"), "tank_remaining_min")
 
 
 def test_pass1_energy_limited_residual_books_earlier_of_two_hours():

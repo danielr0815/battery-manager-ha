@@ -586,6 +586,41 @@ def _spread_energy(
     return trial, covered
 
 
+def _seamless_spill(
+    covered: list[tuple[int, float]],
+    slots,
+    i: int,
+    power_w: float,
+    extra: list[float],
+    scheduled: list[bool],
+) -> tuple[list[float], list[tuple[int, float]]] | None:
+    """Re-place a min-runtime commitment that spills into a slot ALREADY booked
+    for THIS load as a slot-local booking (F-SEAMLESS-PLAN, F9).
+
+    A partial first slot shorter than one min_runtime quantum can only offer a
+    full-quantum candidate (`_committed_hours` floors the commit at the dwell),
+    which then spills past the slot boundary into slot i+1. When slot i+1 is
+    ALREADY this load's booking, that spill is not a real conflict: the load
+    runs contiguously across the boundary, so the min_runtime dwell is met by
+    the booked continuation and slot i needs to commit only its OWN remaining
+    duration. Without this, the spill collides with the booked next slot, the
+    overlap guard drops slot i, and the recommendation of a genuinely RUNNING
+    load is retracted at every raster edge (live: ~:31 each morning hour, the
+    partial slot dips below the 30-min quantum) even though the surplus is
+    unchanged — the plan-level analog of the executor's F-SEAMLESS-RUNS.
+
+    Books exactly slot i's remaining duration (no phantom over-fill of the next
+    slot, which would exceed one hour of the load in a one-hour slot). Returns
+    the trimmed ``(trial, covered)``, or None when the overlap is a genuine
+    double-booking — the next covered slot is NOT this load's, so trimming to
+    slot i alone would strand the run below its dwell with no continuation; the
+    caller then rejects the candidate as before.
+    """
+    if len(covered) >= 2 and scheduled[covered[1][0]]:
+        return _spread_energy(extra, slots, i, power_w, slots[i].duration)
+    return None
+
+
 def allocate_loads(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -645,19 +680,7 @@ def allocate_loads(
     remaining: dict[str, float | None] = {}
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-        rem = state.remaining_energy_wh(load)
-        # V6 (F-TANK): cap a tank-modelled load at its remaining tank RUN time,
-        # converted to Wh with the exact planning power the allocator books at
-        # (so the Wh budget corresponds to precisely tank_remaining_min minutes
-        # of booked runtime). Reuses the energy-limited `remaining` machinery —
-        # the saturation gate then skips a load whose tank is (nearly) full,
-        # just as it skips a full powerstation. None = feature off (no cap).
-        if state.tank_remaining_min is not None:
-            tank_wh = (
-                max(0.0, state.tank_remaining_min) / 60.0 * state.planning_power_w(load)
-            )
-            rem = tank_wh if rem is None else min(rem, tank_wh)
-        remaining[load.load_id] = rem
+        remaining[load.load_id] = state.remaining_energy_wh(load)
 
     extra = [0.0] * n
     # Slots carrying ANY accepted booking (any load) — the set slots_serviceable
@@ -807,8 +830,26 @@ def allocate_loads(
                 trial, covered = _spread_energy(
                     extra, inputs.slots, i, power_w, commit_h
                 )
+                seamless = False
                 if any(schedules[load.load_id][j] for j, _ in covered):
-                    continue  # commitment overlaps an already-scheduled slot
+                    # A min-runtime spill that lands in a slot already running
+                    # THIS load is a seamless continuation, not a conflict
+                    # (F-SEAMLESS-PLAN): book slot i's own duration instead of
+                    # dropping it. Any other overlap is a real double-booking.
+                    trimmed = _seamless_spill(
+                        covered,
+                        inputs.slots,
+                        i,
+                        power_w,
+                        extra,
+                        schedules[load.load_id],
+                    )
+                    if trimmed is None:
+                        continue  # commitment overlaps an already-scheduled slot
+                    trial, covered = trimmed
+                    commit_h = inputs.slots[i].duration
+                    power_wh = power_w * commit_h
+                    seamless = True
                 # Soft surplus condition (D-A4): battery may cover at most
                 # `battery_tolerance` of the committed energy. Spilled slots
                 # contribute their export prorated by the occupied share.
@@ -844,9 +885,13 @@ def allocate_loads(
                 allocations[load.load_id].append((i, len(covered), 1, placed_wh))
                 # Only the gate-stop final quantum sits below one min_runtime
                 # quantum — name it so a shorter-than-dwell booking is
-                # self-explaining (F-GATE-TOPUP R6).
+                # self-explaining (F-GATE-TOPUP R6). A seamless raster-edge
+                # continuation (F-SEAMLESS-PLAN) is also sub-quantum but is named
+                # for what it is, not a top-up.
                 final_note = (
-                    ", final top-up to target"
+                    ", seamless continuation"
+                    if seamless
+                    else ", final top-up to target"
                     if commit_h < load.min_runtime_min / 60.0 - _EPS
                     else ""
                 )
@@ -946,8 +991,26 @@ def allocate_loads(
                     trial, covered = _spread_energy(
                         extra, inputs.slots, i, power_w, commit_h
                     )
+                    seamless = False
                     if any(schedules[load.load_id][j] for j, _ in covered):
-                        continue
+                        # Seamless raster-edge continuation into a slot already
+                        # running THIS load (F-SEAMLESS-PLAN, F9): book slot i's
+                        # own duration rather than dropping the current
+                        # recommendation. Any other overlap is a real conflict.
+                        trimmed = _seamless_spill(
+                            covered,
+                            inputs.slots,
+                            i,
+                            power_w,
+                            extra,
+                            schedules[load.load_id],
+                        )
+                        if trimmed is None:
+                            continue
+                        trial, covered = trimmed
+                        commit_h = inputs.slots[i].duration
+                        power_wh = power_w * commit_h
+                        seamless = True
                     if load.energy_limited and any(
                         inputs.slots[j].pv_wh <= 0.0 for j, _ in covered
                     ):
@@ -1088,9 +1151,13 @@ def allocate_loads(
                     # "latest feasible slot" is structurally true: pass 2 walks
                     # descending and accepts the first slot that passes (R13).
                     # Only the gate-stop final quantum sits below one
-                    # min_runtime quantum (F-GATE-TOPUP R6).
+                    # min_runtime quantum (F-GATE-TOPUP R6); a seamless
+                    # raster-edge continuation (F-SEAMLESS-PLAN) is also
+                    # sub-quantum but named for what it is.
                     final_note = (
-                        ", final top-up to target"
+                        ", seamless continuation"
+                        if seamless
+                        else ", final top-up to target"
                         if commit_h < load.min_runtime_min / 60.0 - _EPS
                         else ""
                     )

@@ -62,13 +62,13 @@ starting estimate; the feature then refines it by learning.
    60 min (based on the load's planned upcoming run, not wall-clock time) a
    single push "tank nearly full — please empty it" is sent via the existing
    power-warning notify targets. Once per tank cycle (latch → reset); no spam.
-5. **Planning.** The planner books at most the remaining tank runtime
-   (`learned_full − runtime_since_reset`, minutes → a Wh budget via the load's
-   planning power) using the **same `remaining` mechanism** that caps an
-   energy-limited load at its remaining capacity (`SurplusLoadState.tank_remaining_min`).
-   Remaining ≤ 0 → the load plans 0, but is **not hard-switched off** (F5: the
-   2 W restart-detection path stays open — the executor may keep the device
-   running in reality; the planner simply books no energy).
+5. **NO planner curtailment** (operator rule, 2026-07-24): the tank prediction
+   is deliberately **not** fed into the planner. A dehumidifier is NEVER
+   switched off — or booked shorter — preemptively because the tank *might* be
+   full. The device stops **itself** when the tank really is full, and that
+   real event is what the BM reacts to: power collapse → F-L7 latch → F5 plans
+   at the measured ~0 W. Prediction informs the human (notification), reality
+   informs the planner (F5).
 6. **Diagnostics.** Remaining-runtime prognosis, learned full-tank runtime and
    the sample count are exposed as attributes on the per-load `active_runtime`
    sensor (present only while the feature is opted in).
@@ -76,5 +76,6 @@ starting estimate; the feature then refines it by learning.
 ### Safety anchor
 
 A misconfiguration (`tank_full_runtime_min = 0` / feature off) reproduces
-**exactly today's behaviour** — no runtime cap, `tank_remaining_min = None`.
+**exactly today's behaviour** — no notification, no diagnostics; planning is
+identical in BOTH cases because the prediction never touches the planner.
 Loads without the tank option (Fossibots and others) are unaffected.
