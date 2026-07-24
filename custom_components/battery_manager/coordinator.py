@@ -93,6 +93,7 @@ from .const import (
     DEFAULT_CONFIG,
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
+    FREEZE_STALE_HOURS,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
@@ -106,6 +107,9 @@ from .const import (
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
     PV_FORECAST_MODE_HOURLY,
+    REC_FLICKER_CONTINUATION_MIN,
+    REC_FLICKER_MAX_CONTINUATIONS,
+    REC_FLICKER_PINGPONG_WINDOW_MIN,
     STALE_LOAD_SOC_MIN,
     STANDBY_FRACTION,
     STARTUP_RETRY_ATTEMPTS,
@@ -329,6 +333,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # restart re-detects within STALE_LOAD_SOC_MIN minutes.
         self._load_soc_frozen: dict[str, tuple[float, datetime]] = {}
         self._load_soc_stale: dict[str, float] = {}
+        # Telemetry-freeze watchdog (F4): per energy-limited load a reference
+        # (soc, power, window_start, rec_seen) while SOC AND power sit EXACTLY
+        # still, and the resulting stale latch. In-memory only — a restart
+        # re-accumulates within FREEZE_STALE_HOURS.
+        self._load_freeze_ref: dict[str, tuple[float, float, datetime, bool]] = {}
+        self._load_freeze_stale: set[str] = set()
 
         # Charging-path control (docs/LOAD_CONTROL.md): SOC cache survives
         # sleeping devices and restarts; plug ownership implements the
@@ -338,6 +348,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_plug_owned: dict[str, bool] = {}
         self._last_load_switch: dict[str, datetime] = {}
         self._load_charging_active: dict[str, bool] = {}
+        # Dwell x replan flicker continuation (F8): the last CONFIRMED OFF per
+        # load as (timestamp, flicker_eligible) — eligible only for a
+        # recommendation (plan/deadline) stop, NOT a G4/G1 safety stop — and the
+        # off-episode timestamps of recently GRANTED continuations for the
+        # ping-pong cap. In-memory only (a fresh flicker re-detects instantly).
+        self._load_last_off: dict[str, tuple[datetime, bool]] = {}
+        self._load_flicker_hist: dict[str, list[datetime]] = {}
         # G4 floor guard (operator rule 2026-07-18): True while surplus loads
         # are barred from running because they would be grid-fed. None until
         # the first update cycle computed it (treated as inactive by readers;
@@ -1224,6 +1241,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._load_learn_ok.pop(load_plan.load_id, None)
             self._load_plan_active[load_plan.load_id] = load_plan.active_now
 
+    def _load_standby_bar(self, data: dict[str, Any]) -> float:
+        """The single standby threshold, reused by the median learner, the G2
+        stale-SOC evidence path, and the F4 rec-only evidence check: readings
+        below max(10 W, STANDBY_FRACTION * nominal) are standby/idle draw, not a
+        charge sample (2026-07-05 live incident: a 400 W dehumidifier idling at
+        ~20 W cleared the old flat 10 W bar and got planned at 22 W)."""
+        return max(10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W]))
+
     def _draw_above_standby(self, subentry_id: str) -> bool:
         """True when the load's feedback currently reads above the standby
         threshold — i.e. something is already drawing on the measured
@@ -1237,7 +1262,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
         if raw is None:
             return False
-        return raw >= max(10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W]))
+        return raw >= self._load_standby_bar(data)
 
     def _update_gate_calibration(self, config: SystemConfig, soc: float) -> None:
         """Track the SOC bracket where the real battery voltage crosses the
@@ -1414,6 +1439,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         live_soc: float | None,
         raw_power: float | None,
         sample_bar: float | None,
+        charging: bool,
     ) -> bool:
         """Stale-SOC latch for one load (F-EXECUTOR-GUARDS G2, R5-R7).
 
@@ -1421,16 +1447,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         timestamps, so availability/age checks cannot catch a frozen reading
         and the planner keeps re-booking run after run against a frozen
         `remaining` (v0.8.1's executor cap only bounds a single run). While
-        the device DEMONSTRABLY charges — `_load_charging_active` and the raw
-        feedback above the v0.6.2 standby bar (the single threshold, reused) —
-        a SOC that stays EXACTLY unchanged for STALE_LOAD_SOC_MIN minutes is
-        latched as stale. The evidence clock measures continuous charging
-        against a frozen value, not wall time: it RESETS when charging stops
-        or the sample bar is not met (an end-of-charge taper never
-        accumulates false evidence), and loads without a SOC or power entity
-        never latch (no evidence, R7). Unlatch: any DIFFERENT live reading,
-        charging or not. Latch logs WARNING once, unlatch INFO once
-        (change-gated). Returns True while latched."""
+        the device DEMONSTRABLY charges — `charging` (the real charging state
+        for a switched load; the active recommendation for a rec-only load,
+        F4) AND the raw feedback above the v0.6.2 standby bar (the single
+        threshold, reused) — a SOC that stays EXACTLY unchanged for
+        STALE_LOAD_SOC_MIN minutes is latched as stale. The evidence clock
+        measures continuous charging against a frozen value, not wall time: it
+        RESETS when charging stops or the sample bar is not met (an
+        end-of-charge taper never accumulates false evidence), and loads
+        without a SOC or power entity never latch (no evidence, R7). Unlatch:
+        any DIFFERENT live reading, charging or not. Latch logs WARNING once,
+        unlatch INFO once (change-gated). Returns True while latched."""
         frozen_value = self._load_soc_stale.get(subentry_id)
         if frozen_value is not None:
             if live_soc is not None and live_soc != frozen_value:
@@ -1445,7 +1472,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             else:
                 return True  # still frozen (or no reading): stay latched
-        charging = self._load_charging_active.get(subentry_id, False)
         if (
             live_soc is None
             or raw_power is None
@@ -1469,6 +1495,82 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 title,
                 live_soc,
                 STALE_LOAD_SOC_MIN,
+            )
+            return True
+        return False
+
+    def _update_telemetry_freeze(
+        self,
+        subentry_id: str,
+        title: str,
+        live_soc: float | None,
+        raw_power: float | None,
+        rec_active: bool,
+    ) -> bool:
+        """Telemetry-freeze watchdog for energy-limited loads (F4, 2026-07-24
+        forensics), independent of the switching path AND the G2 latch.
+
+        The Fossibot B2 (recommendation-only) froze SOC AND input at 87.5 % /
+        144 W for 95 h while the planner kept re-booking the same ~50 Wh top-up
+        and the recommendation duty-cycled in the 15-min raster — displacing
+        ~0.4 kWh of dehumidifier slots, with no warning. When BOTH the SOC and
+        the measured power stay EXACTLY unchanged for FREEZE_STALE_HOURS while
+        the recommendation was active at least once in the window, the
+        telemetry is frozen: latch stale (WARNING once) and hold the load
+        unavailable — the SAME consequence as the G2 stale-SOC guard. Recovery:
+        any change in SOC or power releases the latch (INFO once). A plain
+        last_changed watchdog is deliberately avoided (cached values carry
+        fresh timestamps, so a legitimately idle device would false-positive);
+        the key is EXACT stasis DESPITE an active recommendation over hours.
+        Returns True while latched."""
+        ref = self._load_freeze_ref.get(subentry_id)
+        if subentry_id in self._load_freeze_stale:
+            if (
+                live_soc is not None
+                and raw_power is not None
+                and ref is not None
+                and (live_soc != ref[0] or raw_power != ref[1])
+            ):
+                self._load_freeze_stale.discard(subentry_id)
+                self._load_freeze_ref.pop(subentry_id, None)
+                _LOGGER.info(
+                    "Load %s: telemetry moving again (SOC %.1f%%, %.0f W) —"
+                    " freeze latch cleared",
+                    title,
+                    live_soc,
+                    raw_power,
+                )
+                return False
+            return True  # still frozen (or no reading): stay latched
+        if live_soc is None or raw_power is None:
+            # No usable telemetry this cycle: reset the freeze window.
+            self._load_freeze_ref.pop(subentry_id, None)
+            return False
+        if ref is None or ref[0] != live_soc or ref[1] != raw_power:
+            # First sample, or telemetry moved: (re)start the window here.
+            self._load_freeze_ref[subentry_id] = (
+                live_soc,
+                raw_power,
+                dt_util.utcnow(),
+                rec_active,
+            )
+            return False
+        # SOC AND power both EXACTLY unchanged since the window start.
+        rec_seen = ref[3] or rec_active
+        if rec_seen != ref[3]:
+            self._load_freeze_ref[subentry_id] = (ref[0], ref[1], ref[2], rec_seen)
+        if rec_seen and dt_util.utcnow() - ref[2] >= timedelta(
+            hours=FREEZE_STALE_HOURS
+        ):
+            self._load_freeze_stale.add(subentry_id)
+            _LOGGER.warning(
+                "Load %s: SOC %.1f%% and power %.0f W frozen for %d+ h while the"
+                " recommendation was active — treating the telemetry as STALE"
+                " and holding the load unavailable until either value changes",
+                title,
+                live_soc,
+                raw_power,
+                FREEZE_STALE_HOURS,
             )
             return True
         return False
@@ -1565,9 +1667,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # standby draw, not a charge sample (a 400 W dehumidifier
                 # idling at ~20 W cleared the old flat 10 W bar and got
                 # planned at 22 W — 2026-07-05 live incident).
-                min_sample_w = max(
-                    10.0, STANDBY_FRACTION * float(data[CONF_LOAD_POWER_W])
-                )
+                min_sample_w = self._load_standby_bar(data)
                 bm_active = self._bm_load_active(subentry_id)
                 buf = self._load_power_samples.get(subentry_id)
                 if raw is not None and raw >= min_sample_w and bm_active:
@@ -1619,8 +1719,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # unavailable — the planner stops re-booking against the frozen
             # `remaining`, and the plan-driven OFF runs through the normal
             # executor path.
+            #
+            # G2 evidence signal. A switched load uses its real charging state
+            # (plug+enable). A recommendation-only load has no charging state,
+            # but the recommendation drives the operator's manual plug-in — so
+            # while it is active AND the raw feedback clears the standby bar
+            # (checked inside _update_soc_stale) the device is demonstrably
+            # charging, and the SOC-frozen latch can supervise it too (F4: the
+            # Fossibot B2 rec-only telemetry-freeze was previously invisible to
+            # G2 because _load_charging_active is never set for a rec-only
+            # load). `_load_plan_active` holds the last published recommendation
+            # — the very signal the operator acted on — a one-cycle lag the
+            # 12-min G2 clock absorbs, exactly like the switched-load path.
+            charging = (
+                self._load_charging_active.get(subentry_id, False)
+                if data.get(CONF_LOAD_CONTROL_SWITCH)
+                else self._load_plan_active.get(subentry_id, False)
+            )
             if self._update_soc_stale(
-                subentry_id, subentry.title, live_soc, raw, min_sample_w
+                subentry_id, subentry.title, live_soc, raw, min_sample_w, charging
+            ):
+                available = False
+            # F4 telemetry-freeze watchdog: a redundant guard for energy-limited
+            # loads independent of the switching path — SOC AND power frozen
+            # EXACTLY for FREEZE_STALE_HOURS while the recommendation was active.
+            if data.get(CONF_LOAD_ENERGY_LIMITED) and self._update_telemetry_freeze(
+                subentry_id,
+                subentry.title,
+                live_soc,
+                raw,
+                self._load_plan_active.get(subentry_id, False),
             ):
                 available = False
             states.append(
@@ -1982,9 +2110,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # F-PLANNER-HONESTY R5: the run-max learned planning power an
                 # OFF load is evaluated with (None until the first learned run).
                 "learned_power_w": self._load_learned_power_w.get(load_plan.load_id),
-                # F-EXECUTOR-GUARDS R8: True while the stale-SOC guard holds
-                # the load unavailable (frozen reading during active charging).
-                "soc_stale": load_plan.load_id in self._load_soc_stale,
+                # F-EXECUTOR-GUARDS R8: True while a stale guard holds the load
+                # unavailable — the G2 stale-SOC latch (frozen reading during
+                # active charging) OR the F4 telemetry-freeze watchdog (SOC and
+                # power frozen for hours despite an active recommendation).
+                "soc_stale": (
+                    load_plan.load_id in self._load_soc_stale
+                    or load_plan.load_id in self._load_freeze_stale
+                ),
                 "deviating_since": since.isoformat() if since else None,
                 "schedule": [
                     {
@@ -3148,6 +3281,38 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         deadline = self._load_run_deadline.get(load_plan.load_id)
         return bool(load_plan.active_now) and (deadline is None or now < deadline)
 
+    def _flicker_continuation_ok(
+        self, load_id: str, now: datetime, off_time: datetime
+    ) -> bool:
+        """F8: may an OFF->ON within REC_FLICKER_CONTINUATION_MIN of a
+        recommendation-driven stop waive min_off as a run continuation?
+
+        True only within the window AND while the load has not exhausted its
+        ping-pong budget: after REC_FLICKER_MAX_CONTINUATIONS waived
+        continuations within REC_FLICKER_PINGPONG_WINDOW_MIN minutes, the
+        normal min_off applies again, so a genuinely flapping plan can never
+        short-cycle a compressor. Each distinct off episode (keyed by its
+        timestamp) counts once, so a retried ON in the same episode — e.g. a
+        failed actuation re-attempted next cycle — is not double-charged."""
+        if now - off_time > timedelta(minutes=REC_FLICKER_CONTINUATION_MIN):
+            return False
+        recent = [
+            t
+            for t in self._load_flicker_hist.get(load_id, [])
+            if now - t < timedelta(minutes=REC_FLICKER_PINGPONG_WINDOW_MIN)
+        ]
+        if off_time in recent:
+            # Same off episode retried within the window: already granted.
+            self._load_flicker_hist[load_id] = recent
+            return True
+        if len(recent) >= REC_FLICKER_MAX_CONTINUATIONS:
+            # Ping-pong budget spent: fall back to the normal min_off.
+            self._load_flicker_hist[load_id] = recent
+            return False
+        recent.append(off_time)
+        self._load_flicker_hist[load_id] = recent
+        return True
+
     async def _apply_load_switching(
         self, result, now: datetime, slot_durations: tuple[float, ...] | None = None
     ) -> None:
@@ -3163,7 +3328,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         floor_guard = bool(self._floor_guard_active)
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
-        actions: list[tuple[str, dict[str, Any], bool, bool, float]] = []
+        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool]] = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
@@ -3235,6 +3400,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # latter protects compressor loads from short-cycling.
             if current:  # pending switch OFF
                 dwell_min = int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+                # F8: only a RECOMMENDATION-driven stop (the plan flickered /
+                # the deadline expired without a re-booking) is a flicker
+                # continuation candidate. A G4 floor-guard or G1 target-SOC
+                # stop is deliberate — it keeps the full min_off, and the
+                # continuation window must NOT undercut it (a G4 stop resuming
+                # within 5 min would else re-run the load grid-fed).
+                flicker_eligible = True
                 if floor_guard:
                     # G4: the floor-guard OFF is dwell-EXEMPT — every dwell
                     # minute runs the load grid-fed (the 06:21 incident lost
@@ -3242,6 +3414,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # switch still stamps the dwell timestamp, so min_off
                     # fully gates the later re-on (compressor protection).
                     dwell_min = 0
+                    flicker_eligible = False
                 # F-EXECUTOR-GUARDS G1 (R1-R3): a target-SOC stop of an
                 # energy-limited load with a charge-enable gate is dwell-
                 # EXEMPT. min_runtime protects relays/compressors from short
@@ -3266,13 +3439,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     target = float(data.get(CONF_LOAD_TARGET_SOC, 100.0))
                     if soc is not None and soc >= target:
                         dwell_min = 0
+                        flicker_eligible = False
             else:  # pending switch ON
+                flicker_eligible = False
                 dwell_min = int(
                     data.get(
                         CONF_LOAD_MIN_OFF_MIN,
                         data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30),
                     )
                 )
+                # F8 flicker continuation: a short plan flicker at a slot/
+                # quantum boundary (the recommendation drops for seconds-to-
+                # minutes and returns) would else be amplified into a full
+                # min_off pause. If the last stop was a recommendation-driven
+                # off (flicker_eligible, tracked in _load_last_off) and the
+                # recommendation returned within REC_FLICKER_CONTINUATION_MIN,
+                # treat this ON as a continuation of the same run and waive
+                # min_off — subject to a ping-pong cap so min_off still guards
+                # a genuinely flapping plan from short-cycling a compressor.
+                off_info = self._load_last_off.get(subentry_id)
+                if (
+                    off_info is not None
+                    and off_info[1]
+                    and self._flicker_continuation_ok(subentry_id, now, off_info[0])
+                ):
+                    dwell_min = 0
             last = self._last_load_switch.get(subentry_id)
             if last is not None and now - last < timedelta(minutes=dwell_min):
                 continue
@@ -3282,7 +3473,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             plug_was_on = self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH])
             # The planned contiguous run (h) lets the ON path freeze a deadline.
             run_h = plan.active_run_hours(slot_durations) if plan else 0.0
-            actions.append((subentry_id, dict(data), desired, plug_was_on, run_h))
+            actions.append(
+                (subentry_id, dict(data), desired, plug_was_on, run_h, flicker_eligible)
+            )
 
         if actions:
             self._load_switch_task = self.entry.async_create_background_task(
@@ -3293,7 +3486,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _execute_load_switching(
         self,
-        actions: list[tuple[str, dict[str, Any], bool, bool, float]],
+        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool]],
         now: datetime | None = None,
     ) -> None:
         if now is None:
@@ -3301,9 +3494,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async with self._switch_lock:
             for action in actions:
                 # Tolerate the legacy 4-tuple (no planned run) so any caller
-                # that does not carry a sub-hour run just gets no deadline.
+                # that does not carry a sub-hour run just gets no deadline. The
+                # 6th element (F8 flicker_eligible, OFF actions only) defaults
+                # False — an unmarked OFF is never a flicker continuation seed.
                 subentry_id, data, activate, plug_was_on = action[:4]
                 run_h = action[4] if len(action) > 4 else 0.0
+                flicker_eligible = action[5] if len(action) > 5 else False
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
                 subentry = self.entry.subentries.get(subentry_id)
@@ -3331,6 +3527,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._load_plug_owned[subentry_id] = True
                     self._load_charging_active[subentry_id] = True
                     self._last_load_switch[subentry_id] = now
+                    # F8: a fresh run started — close the previous off episode
+                    # so a later stop opens a new flicker window from scratch.
+                    self._load_last_off.pop(subentry_id, None)
                     # F-SUBHOUR (approach A) + F-RESIDUAL-TOPUP R7: freeze the
                     # planned contiguous run and arm an active OFF at
                     # run_start + max(min_runtime, run_h) so a sub-hour booking is
@@ -3389,6 +3588,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._load_plug_owned[subentry_id] = False
                     self._load_charging_active[subentry_id] = False
                     self._last_load_switch[subentry_id] = now
+                    # F8: record this confirmed OFF and whether it is a flicker
+                    # continuation candidate (a recommendation stop, not a
+                    # G4/G1 safety stop) so a re-on within the window can waive
+                    # min_off.
+                    self._load_last_off[subentry_id] = (now, flicker_eligible)
                     # F-SUBHOUR: run finished — clear the frozen deadline + timer.
                     self._load_run_deadline.pop(subentry_id, None)
                     self._cancel_off_timer(subentry_id)

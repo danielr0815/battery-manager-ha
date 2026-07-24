@@ -2814,3 +2814,329 @@ async def test_stale_soc_needs_both_signals(hass):
     states = coordinator2._get_load_states()
     assert states[0].available is True
     assert sub_id2 not in coordinator2._load_soc_frozen
+
+
+# ---------------------------------------------------------------------------
+# F4: recommendation-only loads reach the G2 stale-SOC latch through the
+# recommendation evidence path, plus a telemetry-freeze watchdog for
+# energy-limited loads (SOC AND power frozen for hours despite an active
+# recommendation). Fossibot B2 froze SOC 87.5 % / input 144 W for 95 h.
+# ---------------------------------------------------------------------------
+
+
+async def test_rec_only_stale_soc_latches_via_recommendation(hass, caplog):
+    """F4 part 1: a recommendation-only load has no charging state, but while
+    its recommendation is active AND the raw feedback clears the standby bar it
+    is demonstrably charging — so a SOC frozen for STALE_LOAD_SOC_MIN minutes
+    latches G2 stale (available=False, WARNING once), exactly like a switched
+    load. Previously G2 was structurally blind to rec-only loads."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = True  # recommendation active
+    hass.states.async_set(POWER_FEEDBACK, "144")  # over the 75 W bar
+    hass.states.async_set(FOSSI_SOC, "87.5")
+
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # evidence armed, not latched yet
+    coordinator._load_soc_frozen[sub_id] = (
+        87.5,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    with caplog.at_level(logging.WARNING):
+        caplog.clear()
+        states = coordinator._get_load_states()
+        assert states[0].available is False  # latched -> planner drops it
+        assert sub_id in coordinator._load_soc_stale
+        warnings = [r for r in caplog.records if "STALE" in r.message]
+        assert len(warnings) == 1
+
+
+async def test_rec_only_stale_needs_active_recommendation(hass):
+    """F4 part 1 negative: with the recommendation INACTIVE (the operator has
+    not been told to plug the device in), a frozen SOC gathers no charging
+    evidence and never latches — the rec-only path mirrors the switched
+    `charging` gate, not a blanket 'always charging'."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = False  # recommendation OFF
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._load_soc_frozen[sub_id] = (
+        87.5,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # no evidence -> no latch
+    assert sub_id not in coordinator._load_soc_stale
+
+
+async def test_telemetry_freeze_latches_after_hours(hass, caplog):
+    """F4 part 2: SOC AND power frozen EXACTLY for FREEZE_STALE_HOURS while the
+    recommendation was active -> stale latch (available=False), WARNING once."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # freeze window just opened
+    ref = coordinator._load_freeze_ref[sub_id]
+    # Backdate the window start past the threshold (the established pattern).
+    coordinator._load_freeze_ref[sub_id] = (
+        ref[0],
+        ref[1],
+        dt_util.utcnow() - timedelta(hours=6, minutes=1),
+        True,
+    )
+    with caplog.at_level(logging.WARNING):
+        caplog.clear()
+        states = coordinator._get_load_states()
+        assert states[0].available is False  # frozen -> planner drops it
+        assert sub_id in coordinator._load_freeze_stale
+        warnings = [
+            r
+            for r in caplog.records
+            if "while the recommendation was active" in r.message
+        ]
+        assert len(warnings) == 1
+        states = coordinator._get_load_states()  # next cycle: still latched
+        assert states[0].available is False
+        warnings = [
+            r
+            for r in caplog.records
+            if "while the recommendation was active" in r.message
+        ]
+        assert len(warnings) == 1  # not re-logged every cycle
+
+
+async def test_telemetry_freeze_needs_active_recommendation(hass):
+    """F4 part 2 guard: a legitimately idle device (recommendation never active
+    in the window) whose SOC and power sit still is NOT flagged — the key is
+    stasis DESPITE an active recommendation, not stasis alone."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = False  # never recommended
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+
+    coordinator._get_load_states()
+    ref = coordinator._load_freeze_ref[sub_id]
+    coordinator._load_freeze_ref[sub_id] = (
+        ref[0],
+        ref[1],
+        dt_util.utcnow() - timedelta(hours=6, minutes=1),
+        False,
+    )
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # no active recommendation -> no latch
+    assert sub_id not in coordinator._load_freeze_stale
+
+
+async def test_telemetry_freeze_recovers_on_change(hass, caplog):
+    """F4 part 3: once SOC or power moves again the freeze latch releases with
+    an INFO log and the load is schedulable again."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._get_load_states()
+    ref = coordinator._load_freeze_ref[sub_id]
+    coordinator._load_freeze_ref[sub_id] = (
+        ref[0],
+        ref[1],
+        dt_util.utcnow() - timedelta(hours=6, minutes=1),
+        True,
+    )
+    assert coordinator._get_load_states()[0].available is False  # latched
+
+    hass.states.async_set(FOSSI_SOC, "88.0")  # telemetry moves again
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        states = coordinator._get_load_states()
+        assert states[0].available is True
+        assert sub_id not in coordinator._load_freeze_stale
+        infos = [r for r in caplog.records if "freeze latch cleared" in r.message]
+        assert len(infos) == 1
+
+
+# ---------------------------------------------------------------------------
+# F8: a short recommendation flicker at a slot/quantum boundary must not be
+# amplified by min_off into a 15+ min forced pause. A recommendation-driven
+# stop whose recommendation returns within REC_FLICKER_CONTINUATION_MIN is a
+# run continuation (min_off waived), capped against ping-pong; a G4/G1 safety
+# stop is never a flicker candidate.
+# ---------------------------------------------------------------------------
+
+
+def _active_plan(sub_id):
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    return SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=0.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+
+
+def _detach_listener(coordinator):
+    # Hermetic executor test: cap the entity listener so no debounced
+    # background refresh (a real plan) pollutes the recorded switch calls.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+
+
+async def test_flicker_continuation_waives_min_off(hass):
+    """F8: the recommendation returned 2 min after a recommendation-driven stop
+    (well within the 5-min window) and only 2 min after the switch — min_off
+    (45) would else block it, but the continuation waiver switches it on."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=45
+    )
+    _detach_listener(coordinator)
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=2)  # < 45
+    coordinator._load_last_off[sub_id] = (now - timedelta(minutes=2), True)
+    calls.clear()
+    await coordinator._apply_load_switching(_active_plan(sub_id), now)
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls or ("turn_on", ENABLE) in calls
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_flicker_after_window_keeps_min_off(hass):
+    """F8: the recommendation returned 6 min after the stop — past the 5-min
+    continuation window — so min_off (still within its 45 min) gates the re-on
+    exactly as before."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=45
+    )
+    _detach_listener(coordinator)
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=6)  # < 45
+    coordinator._load_last_off[sub_id] = (now - timedelta(minutes=6), True)  # > 5
+    calls.clear()
+    await coordinator._apply_load_switching(_active_plan(sub_id), now)
+    await hass.async_block_till_done()
+    assert calls == []  # window elapsed -> min_off blocks the re-on
+
+
+async def test_g4_stop_is_not_a_flicker_continuation(hass):
+    """F8 x G4: a floor-guard forced OFF is a deliberate safety stop, not a
+    flicker. Even when the recommendation returns 2 min later, min_off must
+    still gate the re-on (a G4 stop resuming inside the window would else re-run
+    the load grid-fed)."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=45
+    )
+    _detach_listener(coordinator)
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._floor_guard_active = True
+    now = dt_util.utcnow()
+    calls.clear()
+    # G4 forces the running load OFF (dwell-exempt), recording an INELIGIBLE off.
+    await coordinator._apply_load_switching(_active_plan(sub_id), now)
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls or ("turn_off", PLUG) in calls
+    assert coordinator._load_last_off[sub_id][1] is False  # not a flicker seed
+
+    # Guard releases, recommendation still on, only 2 min after the stop.
+    coordinator._floor_guard_active = False
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _active_plan(sub_id), now + timedelta(minutes=2)
+    )
+    await hass.async_block_till_done()
+    assert calls == []  # min_off applies — a G4 stop is never a continuation
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_flicker_pingpong_cap_restores_min_off(hass):
+    """F8 ping-pong guard: after REC_FLICKER_MAX_CONTINUATIONS waived
+    continuations within the 30-min window, the next in-window flicker falls
+    back to the normal min_off — a genuinely flapping plan cannot short-cycle
+    the compressor."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=False, min_runtime_min=30, min_off_min=45
+    )
+    _detach_listener(coordinator)
+    now = dt_util.utcnow()
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._load_charging_active[sub_id] = False
+    coordinator._last_load_switch[sub_id] = now - timedelta(minutes=2)
+    coordinator._load_last_off[sub_id] = (now - timedelta(minutes=2), True)
+    # Budget already spent: two granted continuations in the last 30 min.
+    coordinator._load_flicker_hist[sub_id] = [
+        now - timedelta(minutes=20),
+        now - timedelta(minutes=10),
+    ]
+    calls.clear()
+    await coordinator._apply_load_switching(_active_plan(sub_id), now)
+    await hass.async_block_till_done()
+    assert calls == []  # 3rd continuation denied -> min_off gates the re-on
+
+    # A fresh episode after the ping-pong window reopens the budget.
+    later = now + timedelta(minutes=40)
+    coordinator._last_load_switch[sub_id] = later - timedelta(minutes=2)
+    coordinator._load_last_off[sub_id] = (later - timedelta(minutes=2), True)
+    calls.clear()
+    await coordinator._apply_load_switching(_active_plan(sub_id), later)
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls or ("turn_on", ENABLE) in calls
+    coordinator._cancel_off_timer(sub_id)

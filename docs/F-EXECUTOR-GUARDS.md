@@ -78,6 +78,35 @@ eventually break (observed locally on the venv314 HA).
   and re-schedules; (c) taper/inactive periods do not accumulate evidence;
   (d) load without SOC or power entity never latches.
 
+#### F4 (2026-07-24) — rec-only evidence + telemetry-freeze watchdog
+
+The 20.07 Fossibot B2 incident exposed two blind spots (7-day forensics).
+B2 is a recommendation-only load (no control switch — the operator plugs it
+in by hand, by design); its SOC + total_input froze (87.5 % / 144 W) for 95 h
+while the planner re-booked the same ~50 Wh top-up for 4 days and the
+recommendation duty-cycled — with NO warning.
+
+- **R10 — rec-only G2 evidence**: G2 required `_load_charging_active=True`,
+  which is never set for a rec-only load (it `continue`s before the switching
+  path). Now the G2 `charging` signal is the real charging state for a switched
+  load and the ACTIVE RECOMMENDATION (`_load_plan_active`) for a rec-only load;
+  combined with the unchanged raw-power-over-the-standby-bar check this makes a
+  rec-only load "demonstrably charging", so the existing SOC-frozen latch (R5)
+  supervises it too. Same bar (`_load_standby_bar`, the single threshold), same
+  consequence (`available=False`).
+- **R11 — telemetry-freeze watchdog** (`_update_telemetry_freeze`, energy-
+  limited loads, independent of the switching path): when SOC AND measured
+  power sit EXACTLY unchanged for `FREEZE_STALE_HOURS = 6` (const.py) while the
+  recommendation was active at least once in the window, latch the load stale
+  (WARNING once) with the SAME consequence as R6. NOT a `last_changed`
+  watchdog — cached values carry fresh timestamps, so a legitimately idle
+  device (no active recommendation) is never flagged. Recovery: any SOC/power
+  change releases the latch (INFO once). `soc_stale` (R8) reflects both latches.
+- **R12 (tests)** rec-only + power over bar + SOC frozen ≥ 12 min → latch +
+  WARNING once (and NOT while the recommendation is inactive); freeze watchdog
+  6 h → `available=False` + WARNING once (and NOT without an active
+  recommendation); a SOC/power change releases the freeze latch (INFO once).
+
 ### G3 — `config_entry` deprecation (P3)
 
 - **R10** Pass `config_entry=entry` to `DataUpdateCoordinator.__init__`

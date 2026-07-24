@@ -187,6 +187,38 @@ STANDBY_FRACTION = 0.25
 # constant, not a config key.
 STALE_LOAD_SOC_MIN = 12
 
+# Telemetry-freeze watchdog (F4, 2026-07-24 forensics): a redundant guard for
+# ENERGY-LIMITED loads, independent of the switching path AND the G2 latch. The
+# Fossibot B2 (a recommendation-only load) froze SOC AND input power for 95 h
+# (SOC 87.5 %, input EXACTLY 144 W) yet the planner re-booked the same ~50 Wh
+# top-up for 4 days, the recommendation duty-cycled in the 15-min raster, and it
+# displaced ~0.4 kWh of dehumidifier slots — all without a single warning. When
+# BOTH the SOC and the measured power stay EXACTLY unchanged for this many hours
+# WHILE the recommendation was active at least once in the window, the telemetry
+# is treated as frozen and the load is held unavailable (the same consequence as
+# the G2 stale-SOC guard). A plain last_changed watchdog is deliberately avoided:
+# cached values carry fresh timestamps, so a legitimately idle device would
+# false-positive. In-memory only (a restart re-accumulates). A constant, not a
+# config key.
+FREEZE_STALE_HOURS = 6
+
+# Dwell x replan flicker continuation (F8, 2026-07-24 forensics): a short plan
+# flicker at a slot/quantum boundary (the recommendation drops for seconds to a
+# few minutes and returns) would else be amplified by min_off into a 15+ min
+# forced pause (23.07: ~0.3-0.4 kWh export at SOC 97-99 %; 24.07: two ~15-min
+# pauses at PV 1.7-1.8 kW, lost_surplus 6.71->7.11 kWh). When a load's
+# recommendation returns within this window after a RECOMMENDATION-driven stop
+# (NOT a G4 floor-guard or G1 target-SOC stop), the restart is treated as a
+# continuation of the same run and min_off is waived, so the device resumes as
+# soon as the other gates allow. A constant, not a config key.
+REC_FLICKER_CONTINUATION_MIN = 5
+# Ping-pong guard: min_off exists to protect compressors from short cycling, so
+# the continuation waiver is capped. After this many waived continuations within
+# REC_FLICKER_PINGPONG_WINDOW_MIN minutes, the normal min_off applies again — a
+# genuinely flapping plan can never short-cycle the device.
+REC_FLICKER_MAX_CONTINUATIONS = 2
+REC_FLICKER_PINGPONG_WINDOW_MIN = 30
+
 # Power-deviation warning (operator requirement F-L7, 2026-07-05): while a
 # load runs at the integration's request but its real draw deviates from the
 # configured power by more than this percentage (per-load setting, 0 =

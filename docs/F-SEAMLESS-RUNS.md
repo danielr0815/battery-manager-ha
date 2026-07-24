@@ -93,6 +93,35 @@ fallback remains for extension-INELIGIBLE loads.
   restart in the sub-second between set and save falls back to the previous
   deadline (conservative: earlier force-off path).
 
+## 4c. Flicker continuation (F8, 2026-07-24)
+
+Seamless extension covers a boundary where the load never stopped. The
+COMPLEMENTARY case is a boundary where a short plan flicker DID stop it: the
+recommendation drops for seconds-to-minutes (a slot/quantum replan artefact,
+observed repeatedly at ~:31 past the hour) and returns — but by then the OFF
+already armed min_off, so the re-on was blocked 15+ min (23.07: ~0.3-0.4 kWh
+export at SOC 97-99 %; 24.07: two ~15-min pauses at PV 1.7-1.8 kW).
+
+When a load's recommendation returns within `REC_FLICKER_CONTINUATION_MIN`
+(5 min, const.py) of a RECOMMENDATION-driven stop, the re-on is treated as a
+continuation of the same run and min_off is waived (`_flicker_continuation_ok`,
+the `dwell_min = 0` branch of the ON path in `_apply_load_switching`). The
+executor records every confirmed OFF as `_load_last_off = (time, eligible)`;
+only a plan/deadline stop is eligible.
+
+- **G4/G1 win**: a floor-guard OFF or a target-SOC stop is a DELIBERATE
+  deactivation (`flicker_eligible = False`) — min_off stays its full intent, so
+  a stop resuming inside the window never re-runs the load grid-fed or flaps at
+  the target SOC. Same precedence as §4 (G4 checked first, extension second).
+- **Ping-pong cap**: min_off protects compressors from short cycling, so after
+  `REC_FLICKER_MAX_CONTINUATIONS` (2) waived continuations within
+  `REC_FLICKER_PINGPONG_WINDOW_MIN` (30 min) the normal min_off applies again.
+  Each off episode counts once (keyed by its timestamp), so a retried ON after a
+  failed actuation is not double-charged.
+- **In-memory only**: `_load_last_off` / `_load_flicker_hist` are not persisted;
+  a fresh flicker re-detects instantly and a restart conservatively re-arms
+  min_off.
+
 ## 5. Tests
 
 `tests/ha/test_load_switching.py`: seamless extension (no OFF call, fresh
@@ -102,4 +131,6 @@ the re-on), G2-latched energy-limited never extends, energy-limited without
 a power sensor never extends, G4 wins over extension, rec-only seamless
 published `active` never dips, rec-only ENERGY-LIMITED keeps the FIX-5 duty
 cycle, night-block extend/off phases, mid-run extension never moves the
-deadline.
+deadline. F8 flicker continuation: return within the window waives min_off,
+return after the window keeps it, a G4 stop is never a continuation, and the
+ping-pong cap restores min_off after two waivers.
