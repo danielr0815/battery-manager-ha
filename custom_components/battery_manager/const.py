@@ -5,7 +5,13 @@
 # standalone core test setup imports without this package — the authoritative
 # definition therefore lives in core/optimize.py; re-exported here per R3's
 # placement so HA-layer code has the canonical constants module to read.
-from .core.optimize import GATE_TOPUP_MIN_WH  # noqa: F401
+# MERGE_TERMINAL_RAMP_WH (F-MERGE-HYSTERESIS) rides along for the same reason:
+# it is consumed by the pure planner core, so it is defined next to its consumer
+# in core/optimize.py and re-exported here as the canonical constants module.
+from .core.optimize import (  # noqa: F401
+    GATE_TOPUP_MIN_WH,
+    MERGE_TERMINAL_RAMP_WH,
+)
 
 DOMAIN = "battery_manager"
 

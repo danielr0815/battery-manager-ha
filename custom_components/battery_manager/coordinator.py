@@ -343,6 +343,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the first update cycle computed it (treated as inactive by readers;
         # the first computation itself initialises conservatively).
         self._floor_guard_active: bool | None = None
+        # Per-reason timestamp of the last emitted floor-guard TRIPPED WARNING
+        # (keys: "soc", "rec"). Rate-limits the WARNING to one per 15 min per
+        # reason (further trips log at DEBUG), so a flapping guard cannot spam
+        # the log (live 2026-07-24: 9 WARN in 37 min). In-memory only — a
+        # restart legitimately re-announces the current state once.
+        self._floor_guard_warn_at: dict[str, datetime] = {}
         # Last plan's slot-0 activation per load: the learning gate for
         # recommendation-only loads (no control switch), see _bm_load_active.
         # _load_learn_ok snapshots at each activation edge whether the
@@ -1890,8 +1896,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
         # G4 floor guard: needs the just-updated recommendation; must run
-        # BEFORE load switching so this cycle already enforces it.
-        floor_guard = self._update_floor_guard(soc, config)
+        # BEFORE load switching so this cycle already enforces it. The rec-off
+        # branch is gated on PV coverage (planner-G4 parity): the current slot's
+        # forecast PV power (the only PV the coordinator ingests) vs the running
+        # surplus loads' learned power (nominal fallback), matching
+        # `_slot_serviceable`'s `pv_wh` vs load-power test.
+        slot0 = inputs.slots[0] if inputs.slots else None
+        pv_power_w = (
+            slot0.pv_wh / slot0.duration
+            if slot0 is not None and slot0.duration > 0.0
+            else 0.0
+        )
+        running_load_power_w = sum(
+            self._load_learned_power_w.get(lp.load_id) or load.nominal_power_w
+            for lp, load in zip(result.load_plans, config.loads, strict=True)
+            if lp.active_now
+        )
+        floor_guard = self._update_floor_guard(
+            soc, config, pv_power_w, running_load_power_w, now
+        )
         await self._apply_support_switching(result, config, now)
         self._run_dc48_controller(now)
         await self._apply_load_switching(
@@ -3023,7 +3046,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if now >= deadline + timedelta(minutes=min_off):
             _anchor(min_runtime)
 
-    def _update_floor_guard(self, soc: float, config: SystemConfig) -> bool:
+    def _update_floor_guard(
+        self,
+        soc: float,
+        config: SystemConfig,
+        pv_power_w: float = 0.0,
+        running_load_power_w: float = 0.0,
+        now: datetime | None = None,
+    ) -> bool:
         """G4 floor guard (F-EXECUTOR-GUARDS, operator rule 2026-07-18):
         surplus loads must NEVER run grid-fed — "Wenn der Inverter aus ist
         oder der SOC 20 % erreicht, dürfen Zusatzlasten nicht mehr
@@ -3033,13 +3063,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         (`inverter_min_soc_percent`; the real inverter shuts down there, so
         any still-running load falls onto the grid — the 2026-07-18 06:21
         incident: 432 W dehumidifier grid-fed for ~10 min because only the
-        min_runtime dwell timed the OFF) OR while the inverter
-        recommendation is off (a T*-driven shutdown routes the house — and
-        any load — to grid). The SOC branch LATCHES: it releases only at
-        `floor + hysteresis_percent`, so a SOC hovering at the floor cannot
-        flap the loads. A restart inside the release band starts latched
-        (conservative). Must run AFTER `_apply_hysteresis` so the
-        recommendation member is fresh for this cycle.
+        min_runtime dwell timed the OFF). The SOC branch LATCHES: it releases
+        only at `floor + hysteresis_percent`, so a SOC hovering at the floor
+        cannot flap the loads, and it is UNCONDITIONAL (PV cannot rescue a
+        cut-off inverter). A restart inside the release band starts latched
+        (conservative).
+
+        The inverter-recommendation-off branch is GATED on PV coverage to match
+        the planner-G4 definition (F-STRICT-SURPLUS R2, `_slot_serviceable`):
+        grid-fed = inverter off AND PV below the running surplus loads' power.
+        A T*-driven inverter shutdown only routes the loads to the grid when PV
+        cannot cover them; while PV >= the running loads' (learned) power the
+        loads ran demonstrably PV-fed and must NOT be tripped off (live
+        2026-07-24 flap window: PV 1391-1680 W vs a ~410 W dehumidifier, yet the
+        old unconditional branch forced it off for ~67 min in the PV-richest
+        morning). Must run AFTER `_apply_hysteresis` so the recommendation
+        member is fresh for this cycle.
         """
         floor = config.control.inverter_min_soc_percent
         hyst = max(0.0, config.control.hysteresis_percent)
@@ -3053,15 +3092,41 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc_low = soc <= floor or soc < floor + hyst
         else:
             soc_low = soc <= floor  # trip threshold
-        guard = soc_low or not self._inverter_recommendation
+        # Planner-G4 parity: rec-off only grid-feeds the loads when PV cannot
+        # cover them. Strict `<` (PV exactly equal counts as covered) mirrors
+        # `_slot_serviceable`'s `pv_wh + _EPS < ac_wh`.
+        rec_off_grid_fed = (not self._inverter_recommendation) and (
+            pv_power_w < running_load_power_w
+        )
+        guard = soc_low or rec_off_grid_fed
         if guard and not prev:
-            _LOGGER.warning(
+            reason_key = "soc" if soc_low else "rec"
+            reason_text = (
+                f"SOC {soc:.1f} % at the {floor:.0f} % inverter floor"
+                if soc_low
+                else (
+                    "inverter recommendation off and PV"
+                    f" {pv_power_w:.0f} W below the {running_load_power_w:.0f} W"
+                    " running surplus loads"
+                )
+            )
+            # Part C rate limit: one WARNING per reason per 15 min; further trips
+            # of the same reason log at DEBUG so a flapping guard cannot spam.
+            stamp = now or dt_util.utcnow()
+            last = self._floor_guard_warn_at.get(reason_key)
+            level = (
+                logging.WARNING
+                if last is None or stamp - last >= timedelta(minutes=15)
+                else logging.DEBUG
+            )
+            if level == logging.WARNING:
+                self._floor_guard_warn_at[reason_key] = stamp
+            _LOGGER.log(
+                level,
                 "Floor guard TRIPPED (%s): surplus loads are forced off and"
                 " blocked until SOC recovers above %.1f %% with the inverter"
                 " recommendation on (G4)",
-                f"SOC {soc:.1f} % at the {floor:.0f} % inverter floor"
-                if soc_low
-                else "inverter recommendation off",
+                reason_text,
                 floor + hyst,
             )
         elif prev and not guard:

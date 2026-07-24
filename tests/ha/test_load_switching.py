@@ -2220,17 +2220,86 @@ async def test_floor_guard_restart_inside_band_starts_latched(hass):
 
 
 async def test_floor_guard_trips_on_inverter_recommendation_off(hass):
-    """G4: an inverter-recommendation OFF trips the guard at ANY SOC (a
-    T*-driven shutdown routes the house to grid); recommendation back on
-    with healthy SOC releases it."""
+    """G4 (F-MERGE-HYSTERESIS Part B): an inverter-recommendation OFF trips the
+    guard when PV cannot cover the running surplus loads (a T*-driven shutdown
+    then routes them to grid); recommendation back on with healthy SOC releases
+    it. PV-gating matches the planner-G4 `_slot_serviceable` definition."""
     calls: list[tuple[str, str]] = []
     coordinator, _sub_id, _data = await _setup(hass, calls)
     config = coordinator.build_system_config()
     coordinator._floor_guard_active = False
     coordinator._inverter_recommendation = False
-    assert coordinator._update_floor_guard(50.0, config) is True
+    # PV (100 W) below the running 410 W load -> grid-fed -> trips.
+    assert coordinator._update_floor_guard(50.0, config, 100.0, 410.0) is True
     coordinator._inverter_recommendation = True
-    assert coordinator._update_floor_guard(50.0, config) is False
+    assert coordinator._update_floor_guard(50.0, config, 100.0, 410.0) is False
+
+
+async def test_floor_guard_rec_off_pv_covers_load_does_not_trip(hass):
+    """G4 Part B: rec off but PV comfortably above the running surplus loads —
+    the loads run PV-fed, so the rec-off branch must NOT trip (live 2026-07-24:
+    PV ~1500 W vs a 410 W dehumidifier, forced off ~67 min by the old
+    unconditional branch). The SOC floor branch stays sharp regardless of PV."""
+    calls: list[tuple[str, str]] = []
+    coordinator, _sub_id, _data = await _setup(hass, calls)
+    config = coordinator.build_system_config()
+    coordinator._floor_guard_active = False
+    coordinator._inverter_recommendation = False
+    # PV covers the running load -> not grid-fed -> no trip.
+    assert coordinator._update_floor_guard(50.0, config, 1500.0, 410.0) is False
+    # PV exactly equal counts as covered (strict `<`, planner-G4 parity).
+    assert coordinator._update_floor_guard(50.0, config, 410.0, 410.0) is False
+    # But at/below the inverter floor the guard trips regardless of PV.
+    assert coordinator._update_floor_guard(20.0, config, 1500.0, 410.0) is True
+
+
+async def test_floor_guard_warn_rate_limited(hass, caplog):
+    """G4 Part C: the TRIPPED WARNING fires at most once per reason per 15 min;
+    repeated same-reason trips within the window log at DEBUG so a flapping
+    guard cannot spam the log (live 2026-07-24: 9 WARN in 37 min)."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, _sub_id, _data = await _setup(hass, calls)
+    config = coordinator.build_system_config()
+    coordinator._inverter_recommendation = True
+
+    def _tripped(level):
+        return [
+            r
+            for r in caplog.records
+            if r.levelno == level and "TRIPPED" in r.getMessage()
+        ]
+
+    t0 = dt_util.utcnow()
+    with caplog.at_level(logging.DEBUG):
+        # First trip (reason "soc") -> WARNING.
+        coordinator._floor_guard_active = False
+        assert coordinator._update_floor_guard(20.0, config, now=t0) is True
+        assert len(_tripped(logging.WARNING)) == 1
+
+        # Release, then re-trip 5 min later (same reason) -> DEBUG, no WARNING.
+        caplog.clear()
+        coordinator._update_floor_guard(30.0, config, now=t0 + timedelta(minutes=1))
+        assert (
+            coordinator._update_floor_guard(20.0, config, now=t0 + timedelta(minutes=5))
+            is True
+        )
+        assert _tripped(logging.WARNING) == []
+        assert len(_tripped(logging.DEBUG)) == 1
+
+        # 16 min after the first WARNING the window has elapsed -> WARNING again.
+        caplog.clear()
+        coordinator._update_floor_guard(30.0, config, now=t0 + timedelta(minutes=6))
+        assert (
+            coordinator._update_floor_guard(
+                20.0, config, now=t0 + timedelta(minutes=16)
+            )
+            is True
+        )
+        assert len(_tripped(logging.WARNING)) == 1
 
 
 async def test_floor_guard_drops_queued_switch_on(hass):

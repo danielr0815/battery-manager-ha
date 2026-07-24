@@ -42,6 +42,25 @@ QUANTILE_RATIO_MIN_WH = 25.0
 # of REAL planned import on clip-eve days). A constant, not a config key.
 IMPORT_ARTIFACT_SLACK_WH = 50.0
 
+# Terminal-credit ramp for the merge-bounded threshold search (F-MERGE-HYSTERESIS,
+# forensics 2026-07-24). The merge decision used to be a knife-edge: a pessimistic
+# no-loads sim either found a FULL+clipping slot (drop the terminal credit AND
+# truncate the horizon -> drain to `lo`) or it did not (keep the full round-trip
+# credit -> hoard-capable). One Wh of stressed clip flipped T* between two regimes
+# ~1.8 kWh apart, so a bare SOC tick made the plan flap minute-to-minute (live
+# 2026-07-24 07:28-08:02: 24 T* flanks 20<->61). The terminal credit now ramps
+# LINEARLY with the stressed clip margin (Wh of export at the first full slot under
+# stress): the full `eta_discharge * eta_inverter` credit at margin 0 (no stressed
+# clip -> unchanged full-horizon regime) fades to 0 at margin >=
+# MERGE_TERMINAL_RAMP_WH (a decisively guaranteed clip -> unchanged drain regime,
+# horizon truncated). 250 Wh ~= a modest 250 W of clipping sustained one slot:
+# small enough that a real guaranteed clip clears it in a single tick, wide enough
+# that the clip-onset jitter (margin ~0 Wh) never crosses it. The hard horizon
+# truncation reuses the SAME edge (margin >= ramp, i.e. once the credit has fully
+# faded), so no independent knife-edge survives and the planner stays stateless
+# (no cross-replan hysteresis state to plumb).
+MERGE_TERMINAL_RAMP_WH = 250.0
+
 
 def quantile_band_slots(slots) -> list[bool]:
     """Per-slot band presence per F-QUANTILE-BANDS D2 — THE cold-start rule.
@@ -290,8 +309,10 @@ def _search_lo(config: SystemConfig) -> int:
     )
 
 
-def _threshold_merge_bound(config: SystemConfig, inputs: PlanInputs) -> int | None:
-    """Merge bound of the threshold scan (F-NIGHT-RESCUE R4/R5), or None.
+def _threshold_merge_probe(
+    config: SystemConfig, inputs: PlanInputs
+) -> tuple[int | None, float]:
+    """Merge bound of the threshold scan AND the stressed clip margin.
 
     One pessimistic no-loads sim (threshold at the scan's lower bound, PV
     stressed with the SAME per-slot vector Z4 uses — P10 where banded, alpha
@@ -300,34 +321,79 @@ def _threshold_merge_bound(config: SystemConfig, inputs: PlanInputs) -> int | No
     today's threshold (merge principle, D-A4): post-merge economics — e.g.
     hoarding for a weak final day — must not leak into the pre-merge choice
     (live 2026-07-12 04:13: T* jumped 20->58 because weak Tuesday entered the
-    horizon, although Sunday's guaranteed clip decoupled the night). Never
-    truncates below 6 slots (R5: a 1-2 h window would make T* jumpy); returns
-    None when no stressed clip exists (full-horizon behaviour unchanged) or
-    the merge sits at the horizon end anyway.
+    horizon, although Sunday's guaranteed clip decoupled the night).
+
+    Returns ``(end, margin_wh)``:
+
+    - ``end`` is the R5-floored truncation slot (never below 6 slots — a
+      1-2 h window would make T* jumpy), or None when no stressed clip exists
+      (full-horizon behaviour unchanged) or the merge sits at the horizon end
+      anyway.
+    - ``margin_wh`` is the stressed export at that first full+clipping slot: the
+      CONTINUOUS strength of the guaranteed clip (0.0 when ``end`` is None).
+      One Wh here used to flip the whole merge decision; it now moves the
+      terminal-credit ramp (F-MERGE-HYSTERESIS) by 1/MERGE_TERMINAL_RAMP_WH of
+      its full value instead. The FIRST clip is the right measure: the merge
+      principle only decouples tonight once a clip is guaranteed, so a marginal
+      first clip (export ~0) SHOULD stay in the cautious hoard-capable regime.
     """
     n = len(inputs.slots)
     if n == 0:
-        return None
+        return None, 0.0
     control = config.control
     stress_vec, _optimism, _band = _effective_uncertainty(
         inputs, control.predrain_pv_confidence, control.upper_pv_reserve
     )
     base = simulate(config, inputs, float(_search_lo(config)), pv_scale=stress_vec)
     soc_full = config.battery.soc_max_percent - 0.1
-    merge = next(
-        (
-            j
-            for j, flow in enumerate(base.flows)
-            if flow.soc_end_percent >= soc_full and flow.grid_export_wh > _EPS
-        ),
-        None,
-    )
+    merge: int | None = None
+    margin_wh = 0.0
+    for j, flow in enumerate(base.flows):
+        if flow.soc_end_percent >= soc_full and flow.grid_export_wh > _EPS:
+            merge = j
+            margin_wh = flow.grid_export_wh
+            break
     if merge is None:
-        return None
+        return None, 0.0
     end = max(merge, 5)  # R5 floor: at least 6 slots (indices 0..5)
     if end >= n - 1:
-        return None  # nothing to truncate
-    return end
+        return None, 0.0  # nothing to truncate
+    return end, margin_wh
+
+
+def _threshold_merge_bound(config: SystemConfig, inputs: PlanInputs) -> int | None:
+    """Effective merge truncation bound — the slot the T* scan truncates to, or
+    None when the scan keeps the full horizon (F-NIGHT-RESCUE R4/R5 as gated by
+    F-MERGE-HYSTERESIS).
+
+    The scan truncates only once the stressed clip is DECISIVE
+    (``margin_wh >= MERGE_TERMINAL_RAMP_WH``, where the terminal credit has fully
+    faded to 0); below that it keeps the full horizon and merely fades the credit.
+    Kept as the public helper for the R7 diagnostic ``threshold_horizon_end`` so
+    the surfaced horizon always matches the horizon the scan actually used.
+    """
+    end, margin_wh = _threshold_merge_probe(config, inputs)
+    if end is not None and margin_wh >= MERGE_TERMINAL_RAMP_WH:
+        return end
+    return None
+
+
+def _terminal_credit_factor(full_factor: float, margin_wh: float) -> float:
+    """Terminal-value credit factor for the merge-bounded scan (F-MERGE-HYSTERESIS).
+
+    Ramps from the full round-trip credit ``full_factor`` (= ``eta_discharge *
+    eta_inverter``) at stressed clip margin 0 down to 0 at ``margin_wh >=
+    MERGE_TERMINAL_RAMP_WH``. Continuous and monotone non-increasing in the
+    margin, so a 1 Wh input tick can no longer flip T* between the hoard and
+    drain regimes — it nudges the credit by at most
+    ``full_factor / MERGE_TERMINAL_RAMP_WH``. At the endpoints it reproduces the
+    pre-ramp binary: the full credit when no stressed clip decouples tonight,
+    zero once the clip is guaranteed.
+    """
+    if margin_wh <= 0.0:
+        return full_factor
+    ramp = min(margin_wh / MERGE_TERMINAL_RAMP_WH, 1.0)
+    return full_factor * (1.0 - ramp)
 
 
 def search_threshold(
@@ -345,9 +411,19 @@ def search_threshold(
     terminal-value credit is DROPPED (F2 v2): the battery is full at the merge
     point by construction, so crediting its end SOC is meaningless and, with a
     DC load breaking the terminal/import cancellation, made the threshold an
-    ill-conditioned knife-edge that hoarded at soc_max (live 2026-07-12). The
-    returned base trajectory is ALWAYS full-horizon at the chosen threshold (the
-    allocation gates keep differencing complete horizons, R6).
+    ill-conditioned knife-edge that hoarded at soc_max (live 2026-07-12).
+
+    HYSTERESIS (F-MERGE-HYSTERESIS, live 2026-07-24): the credit-drop AND the
+    truncation used to be BINARY at the first Wh of stressed clip, flipping T*
+    between two ~1.8 kWh-apart regimes on a bare SOC tick. The terminal credit
+    now RAMPS with the stressed clip margin (`_terminal_credit_factor` over
+    [0, MERGE_TERMINAL_RAMP_WH]) and the horizon is truncated only once that
+    credit has fully faded — one well-separated edge, away from the jittery clip
+    onset, so the endpoints (no clip / decisive clip) match the old behaviour
+    exactly while the crossover is continuous.
+
+    The returned base trajectory is ALWAYS full-horizon at the chosen threshold
+    (the allocation gates keep differencing complete horizons, R6).
     """
     battery = config.battery
     control = config.control
@@ -355,26 +431,38 @@ def search_threshold(
     lo = _search_lo(config)
     hi = int(math.floor(battery.soc_max_percent))
 
-    merge_end = _threshold_merge_bound(config, inputs)
+    merge_end, margin_wh = _threshold_merge_probe(config, inputs)
+    full_factor = battery.eta_discharge * config.inverter.eta
+    # F-NIGHT-RESCUE F2 v2 (fix for the 2026-07-12 midday T*=95): on a
+    # merge-truncated window the battery is FULL at the merge point by
+    # construction, so the terminal-value credit for the truncated end SOC is
+    # meaningless — it double-credits energy the imminent, stress-confirmed clip
+    # is guaranteed to refill. Worse, a DC load breaks the exact terminal/import
+    # cancellation (DC is served from the battery at eta_discharge WITHOUT the
+    # inverter, but the terminal credits at eta_discharge*eta_inverter), so the
+    # credit turned T* into an ILL-CONDITIONED knife-edge that pinned a full-day
+    # hoard at soc_max live. Dropping it leaves cost = import + tiebreak*export,
+    # which is MONOTONIC in the threshold, so the scan deterministically drains
+    # to `lo` before the clip — the operator's principle exactly.
+    #
+    # F-MERGE-HYSTERESIS (2026-07-24): that drop is now RAMPED, not binary. Both
+    # the credit AND the horizon truncation used to flip the instant the first
+    # stressed clip crossed 0 Wh, so a bare SOC tick around the clip onset flapped
+    # T* between the two ~1.8 kWh-apart regimes. The credit now fades linearly
+    # over [0, MERGE_TERMINAL_RAMP_WH] of stressed clip margin, and the horizon is
+    # truncated only once the credit has fully faded (margin >= the ramp) — a
+    # single, well-separated edge that the clip-onset jitter never reaches.
+    merge_active = merge_end is not None and margin_wh >= MERGE_TERMINAL_RAMP_WH
     if merge_end is not None:
-        scan_inputs = replace(inputs, slots=inputs.slots[: merge_end + 1])
-        # F-NIGHT-RESCUE F2 v2 (fix for the 2026-07-12 midday T*=95): on a
-        # merge-truncated window the battery is FULL at the merge point by
-        # construction, so the terminal-value credit for the truncated end SOC
-        # is meaningless — it double-credits energy the imminent, stress-
-        # confirmed clip is guaranteed to refill. Worse, a DC load breaks the
-        # exact terminal/import cancellation (DC is served from the battery at
-        # eta_discharge WITHOUT the inverter, but the terminal credits at
-        # eta_discharge*eta_inverter), so the credit turned T* into an
-        # ILL-CONDITIONED knife-edge that pinned a full-day hoard at soc_max
-        # live. Dropping it leaves cost = import + tiebreak*export, which is
-        # MONOTONIC in the threshold (higher T* never lowers import, never lowers
-        # export), so the scan deterministically drains to `lo` before the clip —
-        # the operator's principle exactly (drain just early enough to clip).
-        terminal_factor = 0.0
+        terminal_factor = _terminal_credit_factor(full_factor, margin_wh)
+        scan_inputs = (
+            replace(inputs, slots=inputs.slots[: merge_end + 1])
+            if merge_active
+            else inputs
+        )
     else:
         scan_inputs = inputs
-        terminal_factor = battery.eta_discharge * config.inverter.eta
+        terminal_factor = full_factor
 
     best_threshold = float(hi)
     best_cost = math.inf
@@ -393,9 +481,11 @@ def search_threshold(
             best_threshold = float(candidate)
             best_traj = traj
 
-    if merge_end is not None or best_traj is None:
+    if merge_active or best_traj is None:
         # Truncated scan (or degenerate empty horizon): the caller needs the
-        # FULL-horizon no-loads base at the chosen threshold.
+        # FULL-horizon no-loads base at the chosen threshold. When the scan kept
+        # the full horizon (no merge, or a faded-credit clip below the ramp)
+        # best_traj is already full-horizon at best_threshold — no rebuild.
         best_traj = simulate(config, inputs, best_threshold)
     return best_threshold, best_traj
 

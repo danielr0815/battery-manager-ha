@@ -18,6 +18,7 @@ from core.model import (
     SystemConfig,
 )
 from core.optimize import (
+    MERGE_TERMINAL_RAMP_WH,
     _committed_hours,
     _crossday_daytime_bet,
     _degrades_min_soc,
@@ -25,6 +26,8 @@ from core.optimize import (
     _refill_index,
     _slot_serviceable,
     _spread_energy,
+    _terminal_credit_factor,
+    _threshold_merge_probe,
     _windowed_min_soc,
     _z4_reject,
     allocate_loads,
@@ -2261,8 +2264,13 @@ def test_night_rescue_books_predawn_hours_before_clipping_day():
     assert result.trajectory.total_import_wh - base.total_import_wh <= allowed + 1e-6
     # The drain respects the floors: min SOC stays above the inverter cutoff.
     assert result.min_soc_percent >= config.control.inverter_min_soc_percent - 0.01
-    # The scene is a genuine stressed-clip eve (the merge bound engaged).
-    assert result.threshold_horizon_end is not None
+    # T* drains to the low-import choice — the operational D1 outcome. (Under
+    # F-MERGE-HYSTERESIS the ancillary merge bound stays disengaged here: this
+    # eve's STRESSED clip is only ~70 Wh, sub-decisive, so the scan keeps the
+    # full horizon and drains on its own merit — no weak final day pulls it up.
+    # R11 pins the merge-engaged direction on a decisive clip.)
+    assert result.threshold_percent <= 22.0
+    assert result.threshold_horizon_end is None
 
 
 def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
@@ -2380,7 +2388,14 @@ def test_merge_bounded_threshold_drains_not_hoards_with_dc_load():
     while the terminal value credits retained energy at
     `eta_discharge * eta_inverter` — so hoarding looked artificially good and the
     scan pinned T* at soc_max (95), hoarding the battery across the whole
-    forecast on a clipping day (~1.5 SOC-point knife-edge)."""
+    forecast on a clipping day (~1.5 SOC-point knife-edge).
+
+    F-MERGE-HYSTERESIS (2026-07-24): the drain regime now engages once the
+    stressed clip is DECISIVE (margin >= MERGE_TERMINAL_RAMP_WH). The original
+    11.4 kWh repro produced only a ~49 Wh stressed clip — genuinely marginal, so
+    it now stays (correctly) hoard-capable; a real strong-clipping day (15 kWh
+    here, ~289 Wh stressed margin) still truncates and drains to `lo` with the
+    DC load, which is the regime this test pins."""
     from core.optimize import _search_lo, _threshold_merge_bound
 
     config = SystemConfig(
@@ -2392,9 +2407,9 @@ def test_merge_bounded_threshold_drains_not_hoards_with_dc_load():
         ),
         dc_profile=LoadProfile(300.0, 40.0, 6, 22),  # substantial DC base load
     )
-    # Midday, battery high, strong clipping today: the merge bound truncates the
-    # scan to an all-surplus window.
-    inputs = build_slots(config, datetime(2026, 7, 12, 10, 0), 92.0, [11.4, 11.6, 4.7])
+    # Midday, battery high, decisively clipping today (stressed margin >= ramp):
+    # the merge bound truncates the scan to an all-surplus window.
+    inputs = build_slots(config, datetime(2026, 7, 12, 10, 0), 92.0, [15.0, 11.6, 4.7])
     assert _threshold_merge_bound(config, inputs) is not None  # scan IS truncated
     thr, _base = search_threshold(config, inputs)
     assert thr == float(_search_lo(config))  # drains before the clip, not hoard@95
@@ -2424,6 +2439,93 @@ def test_threshold_merge_bound_floor_and_absence():
     )
     merge = _threshold_merge_bound(config, early)
     assert merge is None or merge >= 5  # R5: at least 6 slots (indices 0..5)
+
+
+def test_terminal_credit_factor_ramp_monotone_continuous():
+    """F-MERGE-HYSTERESIS unit: the terminal credit is a CONTINUOUS, monotone
+    non-increasing ramp of the stressed clip margin — full credit at margin 0
+    (no stressed clip decouples tonight), zero at margin >= the ramp (guaranteed
+    clip), no knife-edge in between. This is the property that replaces the old
+    binary 0 / eta*eta flip."""
+    full = 0.97 * 0.95  # eta_discharge * eta_inverter
+    # Endpoints reproduce the old binary exactly.
+    assert _terminal_credit_factor(full, 0.0) == full
+    assert _terminal_credit_factor(full, -5.0) == full  # clamped, no negative clip
+    assert _terminal_credit_factor(full, MERGE_TERMINAL_RAMP_WH) == 0.0
+    assert _terminal_credit_factor(full, MERGE_TERMINAL_RAMP_WH * 3) == 0.0
+    # Midpoint is exactly half the credit (linear ramp).
+    mid = _terminal_credit_factor(full, MERGE_TERMINAL_RAMP_WH / 2.0)
+    assert abs(mid - full / 2.0) < 1e-9
+    # Monotone non-increasing and Lipschitz-bounded (a 1 Wh tick moves the credit
+    # by at most full / ramp — no discontinuity).
+    step = MERGE_TERMINAL_RAMP_WH / 200.0
+    prev = _terminal_credit_factor(full, 0.0)
+    m = step
+    while m <= MERGE_TERMINAL_RAMP_WH + step:
+        cur = _terminal_credit_factor(full, m)
+        assert cur <= prev + 1e-12
+        assert abs(cur - prev) <= full / MERGE_TERMINAL_RAMP_WH * step + 1e-12
+        prev = cur
+        m += step
+
+
+def test_merge_ramp_no_t_star_bistability_at_clip_onset():
+    """F-MERGE-HYSTERESIS regression (live 2026-07-24, 24 T* flanks 20<->61 in
+    34 min): at the stressed-clip ONSET — where the old binary merge bound
+    flipped None<->truncated and T* jumped between the hoard and drain regimes on
+    a bare SOC/forecast tick — a +-1 Wh forecast / +-0.1 % SOC jitter must NOT
+    move T*. Geometry: a strong-ish day 1 whose stressed clip is just appearing,
+    plus a weak final day (day 3 = 2 kWh) — the hoard incentive that made the old
+    edge genuinely bistable (~1.8 kWh apart), not a tie."""
+    config = SystemConfig(
+        control=NIGHT_CONTROL,
+        loads=(NIGHT_DEH,),
+        ac_profile=LoadProfile(30.0, 45.0, 6, 22),
+        dc_profile=LoadProfile(70.0, 20.0, 6, 22),
+    )
+    now = datetime(2026, 7, 12, 4, 0)
+    base_soc = 57.0
+
+    # Self-calibrate: scan day-1 PV for the value that puts the stressed clip
+    # margin just past onset but well below the ramp (so the scan stays on the
+    # full horizon and the edge is the OLD knife-edge, not the new truncation
+    # edge at margin >= ramp).
+    edge_kwh = None
+    edge_margin = None
+    milli = 8000
+    while milli <= 13000:  # 8.0 .. 13.0 kWh, 5 Wh steps
+        d1 = milli / 1000.0
+        inputs = build_slots(
+            config, now, base_soc, [d1, 12.0, 2.0], load_states=NIGHT_STATE
+        )
+        end, margin = _threshold_merge_probe(config, inputs)
+        if end is not None and 5.0 < margin < MERGE_TERMINAL_RAMP_WH / 2.0:
+            edge_kwh = d1
+            edge_margin = margin
+            break
+        milli += 5
+    assert edge_kwh is not None, "scene never crossed a sub-ramp stressed clip"
+    assert 0.0 < edge_margin < MERGE_TERMINAL_RAMP_WH
+
+    def t_star(day1_kwh: float, soc: float) -> float:
+        inputs = build_slots(
+            config, now, soc, [day1_kwh, 12.0, 2.0], load_states=NIGHT_STATE
+        )
+        thr, _base = search_threshold(config, inputs)
+        return thr
+
+    center = t_star(edge_kwh, base_soc)
+    # +-1 Wh forecast jitter (0.001 kWh) and +-0.1 % SOC jitter around the edge.
+    jittered = [
+        t_star(edge_kwh + dk, base_soc + ds)
+        for dk in (-0.001, 0.0, 0.001)
+        for ds in (-0.1, 0.0, 0.1)
+    ]
+    # The whole neighbourhood collapses onto one threshold — no 20<->61 flip.
+    assert max(jittered) - min(jittered) <= 1.0, (
+        f"T* bistable around the clip onset: {sorted(set(jittered))}"
+    )
+    assert abs(center - jittered[0]) <= 1.0
 
 
 def test_ramped_stress_floor_follows_stressed_crossover():
