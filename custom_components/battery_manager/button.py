@@ -50,4 +50,4 @@ class SurplusLoadRuntimeResetButton(BatteryManagerEntity, ButtonEntity):
         return True
 
     async def async_press(self) -> None:
-        self.coordinator.reset_load_runtime(self._subentry_id)
+        await self.coordinator.reset_load_runtime(self._subentry_id)

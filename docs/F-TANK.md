@@ -41,6 +41,74 @@ Invariants:
 (one cycle old — `_update_power_warnings` runs at the end of the cycle, like the
 other coordinator latches). Neutral default `None` = not latched.
 
+## F10 — breaking the F5 latch deadlock (recovery)
+
+F5 is correct against phantom plans but created a **deadlock** (live 2026-07-24:
+the cellar dehumidifier planned 0 kWh for the next day despite 6.5 kWh
+lost_surplus, tank already emptied, counter reset — yet the latch stood):
+
+- F5 plans a latched load at its **measured ~0 W**, so the planner books no
+  slots and the BM **never commands the load** again.
+- But the F-L7 latch clears **only** while the load runs **BM-commanded and back
+  in band** (`_update_power_warnings`: active requires
+  `_load_charging_active`/an active plan). No command → no in-band run → the
+  latch can never release on its own.
+
+In v0.15.1 the phantom full-power plan was the accidental self-healing path (it
+kept commanding the load, so the emptied tank surfaced). F5 removed that side
+effect, so F10 adds two **explicit** recovery paths:
+
+### 1. The reset button clears the latch
+
+`reset_load_runtime` (the per-load reset button) already means **"tank emptied"**
+since V6. F10 makes it also **clear a latched power warning**: it pops the
+deviation timer and calls `_set_power_warning(..., False)`. The pending tank-full
+capture is dropped **before** the release, so the release path learns **no**
+premature sample (a manual reset is the operator asserting the cause is fixed,
+not an observed full-tank cycle). The next cycle then plans the load at normal
+power again. **Self-correcting:** if the tank is really still full, the power
+collapses again on the next run and the latch returns after the F-L7 dwell.
+
+### 2. Opportunistic latch hold (nobody pressed reset)
+
+Operator rule 2026-07-24: *"the dehumidifier can ALWAYS run when the power would
+be there, not only every few hours."* So instead of probing on a timer, while a
+**switchable** load (control switch **and** power feedback) is latched the
+executor **holds it ON** for as long as the surplus gates hold (`_latch_hold_ok`
++ the `latch hold` branch of `_apply_load_switching`). It runs whenever a surplus
+run may legitimately run — **never grid-fed**:
+
+- no floor guard (SOC above the inverter floor);
+- inverter recommendation on;
+- the current slot-0 forecast PV power **covers** (`>=`) the load's **effective
+  power** — the **same** planner-G4-parity PV source the floor guard uses
+  (`inputs.slots[0].pv_wh / duration`);
+- the min_off dwell allows an ON (only relevant after a previous gate-loss stop).
+
+**Effective power** = the learned (nominal fallback) power, raised to the
+**measured** draw when that clears the standby bar (`max(10 W, 25 % × nominal)`).
+A latch can also mean the outlet draws **more** than configured (a foreign
+consumer); the gate then tests PV against the real draw, not the too-small
+config. A full tank (~2 W, below the bar) keeps the learned power, so the device
+only runs when PV could cover its **real** run.
+
+The hold drives the **normal** actuation path (INFO log reason `latch hold`, V9a
+style) and sets `_load_charging_active[sub] = True` so the existing F-L7 release
+path can supervise the run. There is **no interval and no auto-stop** — the run
+continues until one of two things happens:
+
+- **Tank emptied** → the device runs in band → the latch **releases** (V6
+  auto-reset + learning as usual), the F5 override lifts, and the normal plan
+  takes over the run **seamlessly** from the next cycle.
+- **A gate drops** (PV falls below the effective power, the recommendation goes
+  off, or the floor guard trips) → the load stops via the **normal** path: a G4
+  floor-guard stop is immediate/dwell-exempt, any other gate loss keeps the full
+  `min_runtime` dwell. The stop is classified **flicker-ineligible** (a gate
+  loss is not a recommendation flap, so it never seeds an F8 continuation), and a
+  later re-hold is guarded only by the usual `min_off` dwell. While the tank is
+  really full the device draws ~2 W, so the hold is energetically ~free; an
+  emptied tank is exactly the surplus run we want.
+
 ## V6 — the tank model (opt-in, per load)
 
 Opt-in via the per-load option **`tank_full_runtime_min`** (default `0` = off;

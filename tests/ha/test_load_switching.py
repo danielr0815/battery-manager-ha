@@ -937,6 +937,284 @@ async def test_v6_tank_prediction_never_caps_planner_state(hass):
     assert coord2.tank_diagnostics(sub2) is None
 
 
+# ---------------------------------------------------------------------------
+# F10 (F-TANK recovery): the F5 deadlock is broken by the reset button clearing
+# the latch AND by an opportunistic latch hold (docs/F-TANK.md).
+# ---------------------------------------------------------------------------
+
+
+def _latched(coordinator, sub_id):
+    """Put a switchable load into the latched, gates-open state used by the
+    latch-hold tests."""
+    hass_states = coordinator.hass.states
+    hass_states.async_set(PLUG, "off")
+    hass_states.async_set(ENABLE, "off")
+    coordinator._floor_guard_active = False
+    coordinator._inverter_recommendation = True
+    coordinator._load_power_warning[sub_id] = True
+    coordinator._load_learned_power_w[sub_id] = 400.0
+
+
+async def test_f10_reset_clears_latch_without_learning(hass):
+    """(a) The reset button clears a latched power warning (the operator's
+    explicit 'cause fixed' signal), learns NO tank sample (a manual reset is not
+    an observed full-tank cycle), and the next planner read carries no F5
+    saturated-power override."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=120
+    )
+    coordinator._load_learned_power_w[sub_id] = 400.0
+    # Latched full tank: a pending capture is staged and the F5 override is live.
+    coordinator._load_power_warning[sub_id] = True
+    coordinator._load_tank_full_min[sub_id] = 100.0
+    hass.states.async_set(POWER_FEEDBACK, "2")
+    assert coordinator._get_load_states(dt_util.utcnow())[0].saturated_power_w == 2.0
+
+    await coordinator.reset_load_runtime(sub_id)
+    await hass.async_block_till_done()
+
+    assert coordinator._load_power_warning[sub_id] is False
+    # The pending capture was dropped BEFORE the release -> no premature sample.
+    assert coordinator._load_tank_samples.get(sub_id, []) == []
+    assert sub_id not in coordinator._load_tank_full_min
+    # Next planner read: normal power, no saturated override.
+    state = coordinator._get_load_states(dt_util.utcnow())[0]
+    assert state.saturated_power_w is None
+
+
+async def test_f10_hold_keeps_load_on_while_gates_hold(hass):
+    """(b) A still-latched switchable load (F5 plans it at ~0 W, the plan never
+    asks for it) is held ON and KEEPS running across cycles while the gates hold
+    — no auto-stop after min_runtime — and the hold sets charging_active so the
+    F-L7 release path can supervise the run."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, min_runtime_min=30
+    )
+    _latched(coordinator, sub_id)
+    calls.clear()
+
+    t0 = dt_util.utcnow()
+    # PV (1500 W) covers the load power (400 W): the hold is never grid-fed.
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), t0, (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls
+    assert coordinator._load_charging_active[sub_id] is True
+    assert sub_id in coordinator._load_latch_hold
+    # No frozen sub-hour deadline: the hold runs open-ended.
+    assert sub_id not in coordinator._load_run_deadline
+
+    # Still full (~2 W) and well past min_runtime: the hold KEEPS it on (no
+    # interval, no auto-stop) as long as the gates hold.
+    hass.states.async_set(POWER_FEEDBACK, "2")
+    for minutes in (35, 120, 300):
+        calls.clear()
+        await coordinator._apply_load_switching(
+            _inactive_result(sub_id), t0 + timedelta(minutes=minutes), (1.0,), 1500.0
+        )
+        await hass.async_block_till_done()
+        assert calls == []
+        assert coordinator._load_charging_active[sub_id] is True
+        assert coordinator._load_power_warning[sub_id] is True  # latch stays
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_f10_hold_gated_off_when_conditions_unmet(hass):
+    """(c) The hold does NOT start under a floor guard, an inverter
+    recommendation off, or PV below the load power (never grid-fed)."""
+    from homeassistant.util import dt as dt_util
+
+    async def _fresh():
+        calls: list[tuple[str, str]] = []
+        coordinator, sub_id, _data = await _setup(
+            hass, calls, power_w=400.0, energy_limited=False
+        )
+        _latched(coordinator, sub_id)
+        calls.clear()
+        return coordinator, sub_id, calls
+
+    now = dt_util.utcnow()
+
+    # Floor guard active: no hold (and no grid-fed start).
+    coordinator, sub_id, calls = await _fresh()
+    coordinator._floor_guard_active = True
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), now, (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) not in calls
+
+    # Inverter recommendation off: no hold.
+    coordinator, sub_id, calls = await _fresh()
+    coordinator._inverter_recommendation = False
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), now, (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) not in calls
+
+    # PV below the load power: no hold (would be grid-fed).
+    coordinator, sub_id, calls = await _fresh()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), now, (1.0,), 300.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) not in calls
+
+
+async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
+    """(d) A gate loss (PV drops below the load power) stops the hold after the
+    min_runtime dwell via the normal path (flicker-INELIGIBLE, so min_off is not
+    waived); once the gate returns AND min_off has elapsed the load is held
+    again."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass,
+        calls,
+        power_w=400.0,
+        energy_limited=False,
+        min_runtime_min=30,
+        min_off_min=45,
+    )
+    _latched(coordinator, sub_id)
+    calls.clear()
+
+    t0 = dt_util.utcnow()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), t0, (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls
+    hass.states.async_set(POWER_FEEDBACK, "2")
+
+    # Gate lost (PV 100 W < 400 W) but still inside min_runtime: no premature off.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), t0 + timedelta(minutes=20), (1.0,), 100.0
+    )
+    await hass.async_block_till_done()
+    assert calls == []
+    assert coordinator._load_charging_active[sub_id] is True
+
+    # Past min_runtime with the gate still lost: stop via the normal path.
+    calls.clear()
+    t_off = t0 + timedelta(minutes=31)
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), t_off, (1.0,), 100.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
+    assert coordinator._load_charging_active[sub_id] is False
+    assert sub_id not in coordinator._load_latch_hold
+    # A gate-loss stop is NOT a flicker-continuation seed.
+    assert coordinator._load_last_off[sub_id][1] is False
+
+    # Gate returns but min_off (45 min) not yet elapsed: no re-hold.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), t_off + timedelta(minutes=30), (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) not in calls
+
+    # Gate returns AND min_off elapsed: the load is held again.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), t_off + timedelta(minutes=46), (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls
+    assert coordinator._load_charging_active[sub_id] is True
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_f10_hold_gate_uses_measured_when_above_config(hass):
+    """(b') Effective power for the PV gate = max(learned/nominal, measured when
+    it clears the standby bar). A latch can mean the outlet draws MORE than
+    configured (foreign consumer): the gate must then test PV against the real
+    draw, so PV between the config and the measured draw does NOT start a hold."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False
+    )
+    _latched(coordinator, sub_id)
+    # The outlet really draws 900 W (a foreign consumer), well above the standby
+    # bar and above the 400 W config/learned power.
+    hass.states.async_set(POWER_FEEDBACK, "900")
+
+    now = dt_util.utcnow()
+    # PV 600 W covers the 400 W config but NOT the 900 W real draw: no hold.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), now, (1.0,), 600.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) not in calls
+
+    # PV 1000 W covers the real 900 W draw: the hold starts.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), now, (1.0,), 1000.0
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_f10_hold_back_in_band_releases_latch_and_learns(hass):
+    """(e) The held device runs back in band (tank was emptied): the F-L7 latch
+    releases via the normal supervision path, and the V6 auto-reset + learning
+    run (sample committed, runtime counter reset)."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False, tank_full_runtime_min=120
+    )
+    _latched(coordinator, sub_id)
+    # A capture staged at the (earlier) latch entry, to be learned on release.
+    coordinator._load_tank_full_min[sub_id] = 100.0
+    coordinator._load_runtime_seconds[sub_id] = 100 * 60
+    calls.clear()
+
+    now = dt_util.utcnow()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), now, (1.0,), 1500.0
+    )
+    await hass.async_block_till_done()
+    assert coordinator._load_charging_active[sub_id] is True
+    assert sub_id in coordinator._load_latch_hold
+
+    # The device now runs at its configured power again: the supervision path
+    # (charging_active True, set by the hold) sees the in-band draw and releases
+    # the latch — which commits the sample and resets the counter.
+    hass.states.async_set(POWER_FEEDBACK, "400")
+    active = SimpleNamespace(
+        load_plans=[SimpleNamespace(load_id=sub_id, active_now=False)]
+    )
+    await coordinator._update_power_warnings(active, now + timedelta(minutes=5))
+    await hass.async_block_till_done()
+
+    assert coordinator._load_power_warning[sub_id] is False
+    assert coordinator._load_tank_samples[sub_id] == [100.0]
+    assert coordinator.load_runtime_minutes(sub_id) == 0.0
+    assert sub_id not in coordinator._load_latch_hold
+    coordinator._cancel_off_timer(sub_id)
+
+
 async def test_v6_tank_notification_once_below_lead(hass):
     """V6: a single 'tank nearly full' push per tank cycle when the predicted
     remaining tank runtime drops below the lead time AND the load is planned to
@@ -981,7 +1259,7 @@ async def test_v6_tank_notification_once_below_lead(hass):
     assert len(captured) == 1
 
     # A NEW tank cycle (runtime reset = tank emptied) re-arms the push.
-    coordinator.reset_load_runtime(sub_id)
+    await coordinator.reset_load_runtime(sub_id)
     coordinator._load_runtime_seconds[sub_id] = 55 * 60  # remaining 45 < 60
     await coordinator._update_tank_forecast(planned, now + timedelta(minutes=10))
     await hass.async_block_till_done()
@@ -1762,7 +2040,7 @@ async def test_runtime_counter_reset(hass):
     coordinator._update_load_runtime(t0 + timedelta(minutes=10))
     assert abs(coordinator.load_runtime_minutes(sub_id) - 10.0) < 0.01
 
-    coordinator.reset_load_runtime(sub_id)
+    await coordinator.reset_load_runtime(sub_id)
     assert coordinator.load_runtime_minutes(sub_id) == 0.0
     # In-progress run kept its cursor -> resumes counting from the reset moment.
     assert sub_id in coordinator._load_run_since

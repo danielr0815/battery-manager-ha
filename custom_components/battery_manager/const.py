@@ -244,6 +244,20 @@ REC_FLICKER_CONTINUATION_MIN = 5
 REC_FLICKER_MAX_CONTINUATIONS = 2
 REC_FLICKER_PINGPONG_WINDOW_MIN = 30
 
+# F10 latch opportunistic hold (F-TANK recovery, 2026-07-24 forensics): F5 plans
+# a latched load (full tank -> ~2 W despite an active recommendation) at its
+# measured ~0 W, so the plan never asks for it — but the F-L7 latch only clears
+# while the load runs BM-commanded and back in band, a deadlock that keeps a
+# refilled tank out of the plan indefinitely. Rather than probing on a timer,
+# the executor HOLDS a still-latched SWITCHABLE load (control switch + power
+# feedback) ON for as long as the surplus gates hold (no floor guard, inverter
+# recommendation on, slot-0 PV power >= the load's effective power), so an
+# emptied tank runs the instant the power is there (operator wish 2026-07-24).
+# The hold ends only on a gate loss (normal min_runtime-dwelled stop; G4
+# immediate) or the latch release (the normal plan then resumes). No interval
+# constant is needed — the min_off dwell alone guards a re-hold after a
+# gate-loss stop.
+
 # Power-deviation warning (operator requirement F-L7, 2026-07-05): while a
 # load runs at the integration's request but its real draw deviates from the
 # configured power by more than this percentage (per-load setting, 0 =

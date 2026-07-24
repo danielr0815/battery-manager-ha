@@ -360,6 +360,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # ping-pong cap. In-memory only (a fresh flicker re-detects instantly).
         self._load_last_off: dict[str, tuple[datetime, bool]] = {}
         self._load_flicker_hist: dict[str, list[datetime]] = {}
+        # F10 latch opportunistic hold (F-TANK recovery): the set of loads whose
+        # current run is a latch hold (F5 books the load at ~0 W, so the plan
+        # never asks for it, but while the surplus gates hold the executor keeps
+        # it ON so an emptied tank runs immediately). Marking the run lets its
+        # gate-loss STOP be classified flicker-ineligible (never seeds an F8
+        # continuation) and be dropped on the latch release. In-memory only.
+        self._load_latch_hold: set[str] = set()
         # G4 floor guard (operator rule 2026-07-18): True while surplus loads
         # are barred from running because they would be grid-fed. None until
         # the first update cycle computed it (treated as inactive by readers;
@@ -1227,6 +1234,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if subentry_id in self._load_run_since:
                     self._load_run_since[subentry_id] = dt_util.utcnow()
                 self._load_tank_notified.discard(subentry_id)
+        if not on:
+            # F10: the latch released — if a hold was running it succeeded (tank
+            # emptied / draw back in band), so the run is now a genuine plan run
+            # and its later stop follows the normal flicker rules.
+            self._load_latch_hold.discard(subentry_id)
         # Persist the latch so a coordinator reload (any options save) or a
         # restart does not silently drop a raised warning (operator wish
         # 2026-07-12); async_flush_persistent_state writes it before a reload.
@@ -1560,19 +1572,35 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         already folded in."""
         return self._load_runtime_seconds.get(load_id, 0.0) / 60.0
 
-    def reset_load_runtime(self, load_id: str) -> None:
+    async def reset_load_runtime(self, load_id: str) -> None:
         """Reset a load's runtime counter to zero (reset button, v0.7.18). A run
         in progress restarts its cursor from now so only post-reset time counts.
 
         V6 (F-TANK): the reset button also means "tank emptied" — start a fresh
         tank cycle. Any pending tank-full capture is dropped (a manual reset
         precedes the auto-detected latch release and would otherwise learn a
-        premature sample) and the one-per-cycle notification gate is re-armed."""
+        premature sample) and the one-per-cycle notification gate is re-armed.
+
+        F10 (F-TANK recovery): the reset is also the explicit operator signal
+        that the deadlock cause is fixed, so a latched F-L7 power warning is
+        cleared here. F5 plans a latched load at ~0 W and the BM then never
+        commands it, so the latch — which clears only while the load runs
+        BM-commanded and back in band — can otherwise never release on its own.
+        The pending tank-full capture is dropped BEFORE the release below so the
+        release path learns no premature sample (a manual reset is not an
+        observed full-tank cycle). Self-correcting: if the tank is really still
+        full the power collapses again next run and the latch returns after the
+        F-L7 dwell."""
         self._load_runtime_seconds[load_id] = 0.0
         if load_id in self._load_run_since:
             self._load_run_since[load_id] = dt_util.utcnow()
         self._load_tank_full_min.pop(load_id, None)
         self._load_tank_notified.discard(load_id)
+        if self._load_power_warning.get(load_id, False):
+            self._load_deviation_since.pop(load_id, None)
+            subentry = self.entry.subentries.get(load_id)
+            title = subentry.title if subentry is not None else load_id
+            await self._set_power_warning(load_id, title, False)
         self._save_persistent_state()
         self.async_update_listeners()
 
@@ -2284,7 +2312,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._apply_support_switching(result, config, now)
         self._run_dc48_controller(now)
         await self._apply_load_switching(
-            result, now, tuple(s.duration for s in inputs.slots)
+            result, now, tuple(s.duration for s in inputs.slots), pv_power_w
         )
         await self._update_power_warnings(result, now)
         # V6 (F-TANK): after the power warnings settle (their latch edges drive
@@ -3599,8 +3627,69 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_flicker_hist[load_id] = recent
         return True
 
+    def _latch_hold_ok(
+        self,
+        subentry_id: str,
+        data: dict[str, Any],
+        pv_power_w: float,
+    ) -> bool:
+        """F10: may a still-latched SWITCHABLE load be held ON right now?
+
+        A load whose F-L7 warning is latched is planned by F5 at its measured
+        ~0 W, so the plan never asks for it and the latch (which clears only
+        while the load runs BM-commanded and back in band) can never release on
+        its own. Instead of probing periodically the executor holds the load ON
+        opportunistically — as long as the surplus gates hold it keeps running
+        so an emptied tank is used the instant the power is there (operator wish
+        2026-07-24: "the dehumidifier can ALWAYS run when the power would be
+        there, not only every few hours"). No interval, no auto-stop: it runs
+        until a gate drops or the latch releases (then the normal plan resumes
+        seamlessly). Gated exactly like a surplus run may legitimately run —
+        never grid-fed:
+
+        - a power warning is latched;
+        - the load is switchable AND has power feedback (a latch implies
+          feedback, but be explicit — the hold needs the in-band signal to
+          eventually release the latch);
+        - no floor guard (SOC above the inverter floor);
+        - the inverter recommendation is on;
+        - the current slot-0 forecast PV power covers the load's EFFECTIVE
+          power (>=) — the SAME planner-G4-parity PV source the floor guard uses
+          (`inputs.slots[0].pv_wh / duration`), so the hold never routes the
+          load onto the grid.
+
+        Effective power = the learned (nominal fallback) power, raised to the
+        MEASURED draw when that clears the standby bar: a latch can also mean
+        "draws MORE than configured" (a foreign consumer on the outlet), and the
+        gate must then test PV against the real draw, not the too-small config.
+        A full tank (~2 W, below the bar) keeps the learned power, so the device
+        only runs when PV could cover its REAL run. The min_off dwell is applied
+        by the caller's ON path, so this method does not re-check it.
+        """
+        if not self._load_power_warning.get(subentry_id, False):
+            return False
+        if not data.get(CONF_LOAD_CONTROL_SWITCH) or not data.get(
+            CONF_LOAD_POWER_ENTITY
+        ):
+            return False
+        if self._floor_guard_active:
+            return False
+        if not self._inverter_recommendation:
+            return False
+        load_power = self._load_learned_power_w.get(subentry_id) or float(
+            data.get(CONF_LOAD_POWER_W, 0.0)
+        )
+        raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+        if raw is not None and raw >= self._load_standby_bar(data):
+            load_power = max(load_power, raw)
+        return pv_power_w >= load_power
+
     async def _apply_load_switching(
-        self, result, now: datetime, slot_durations: tuple[float, ...] | None = None
+        self,
+        result,
+        now: datetime,
+        slot_durations: tuple[float, ...] | None = None,
+        pv_power_w: float = 0.0,
     ) -> None:
         """Evaluate controlled loads and start switching where needed.
 
@@ -3608,6 +3697,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         inverter recommendation off, `_update_floor_guard`), every controlled
         load is forced OFF dwell-exempt and nothing switches ON — a surplus
         load must never run grid-fed (operator rule 2026-07-18).
+
+        F10 latch opportunistic hold: a still-latched switchable load (F5 plans
+        it at ~0 W, so the plan never asks for it) is held ON for as long as the
+        surplus gates hold — `_latch_hold_ok` gates it on `pv_power_w` (the
+        current slot-0 forecast PV power) so the hold is never grid-fed. It runs
+        until a gate drops (normal min_runtime-dwelled stop; G4 immediate) or
+        the latch releases (the normal plan then resumes seamlessly).
         """
         if self._load_switch_task is not None and not self._load_switch_task.done():
             return
@@ -3647,10 +3743,24 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # V9a: the switch-action reason, derived from the anlass at the
             # decision point (the one INFO line the executor logs per confirmed
             # switch). Refined below for target-SOC / flicker-continuation.
+            # F10 latch opportunistic hold: a latched load (F5 books 0 W, so the
+            # plan never asks for it) is held ON while the surplus gates hold —
+            # precedence over the deadline/quantum logic (but never over the G4
+            # floor guard). A stale sub-hour deadline from an earlier normal run
+            # (that then latched) is cleared so the held run is not force-offed;
+            # the run ends only on a gate loss or the latch release.
+            hold = self._latch_hold_ok(subentry_id, data, pv_power_w)
             if floor_guard:
                 # G4: grid-fed operation is forbidden — force OFF, block ON.
                 desired = False
                 reason = "G4 floor guard"
+            elif hold:
+                desired = True
+                reason = "latch hold"
+                self._load_latch_hold.add(subentry_id)
+                if subentry_id in self._load_run_deadline:
+                    self._load_run_deadline.pop(subentry_id, None)
+                    self._cancel_off_timer(subentry_id)
             elif current and deadline is not None and now >= deadline:
                 # F-SEAMLESS-RUNS: THIS refresh's plan was recomputed with
                 # fresh remaining/SOC data BEFORE switching runs. If it
@@ -3706,6 +3816,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # switch still stamps the dwell timestamp, so min_off
                     # fully gates the later re-on (compressor protection).
                     dwell_min = 0
+                    flicker_eligible = False
+                elif subentry_id in self._load_latch_hold:
+                    # F10: a gate-loss stop that ends a latch hold is NOT a
+                    # recommendation-driven flap — it must not seed an F8
+                    # flicker continuation (which would waive min_off for a
+                    # following ON). Full min_runtime still gates this OFF, and
+                    # a later re-hold is normally min_off-gated.
                     flicker_eligible = False
                 # F-EXECUTOR-GUARDS G1 (R1-R3): a target-SOC stop of an
                 # energy-limited load with a charge-enable gate is dwell-
@@ -3900,6 +4017,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._load_plug_owned[subentry_id] = False
                     self._load_charging_active[subentry_id] = False
                     self._last_load_switch[subentry_id] = now
+                    # F10: the latch-hold run ended (a gate dropped) — clear its
+                    # marker so a later hold re-arms the classification fresh.
+                    self._load_latch_hold.discard(subentry_id)
                     # F8: record this confirmed OFF and whether it is a flicker
                     # continuation candidate (a recommendation stop, not a
                     # G4/G1 safety stop) so a re-on within the window can waive
