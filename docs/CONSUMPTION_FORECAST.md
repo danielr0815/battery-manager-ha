@@ -179,8 +179,15 @@ change rate limit ±20 %/night, median as the aggregate (Stage 1), bin scheme.
   ```python
   await get_instance(hass).async_add_executor_job(
       lambda: statistics_during_period(
-          hass, start, end, ids, "hour",
-          units={"energy": "kWh", "power": "W"},   # mandatory parameter; also pins the units
+          hass,
+          start,
+          end,
+          ids,
+          "hour",
+          units={
+              "energy": "kWh",
+              "power": "W",
+          },  # mandatory parameter; also pins the units
           types={"mean", "change"},
       )
   )
