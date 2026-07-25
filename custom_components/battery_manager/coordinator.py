@@ -100,6 +100,7 @@ from .const import (
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
     INPUT_OFF_POLICY_KEEP,
+    LATCH_HOLD_OVERPOWER_FACTOR,
     LOAD_RUNTIME_MIN_W,
     LOAD_RUNTIME_TICK_MAX_S,
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
@@ -2311,8 +2312,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         await self._apply_support_switching(result, config, now)
         self._run_dc48_controller(now)
+        # F11: only when a latched switchable load exists, replan with its F5
+        # saturated override cleared (shadow plan, never published) so the F10
+        # hold follows the normal planner's rules instead of a stricter PV gate.
+        shadow_active = await self._latch_shadow_active(config, inputs, load_states)
         await self._apply_load_switching(
-            result, now, tuple(s.duration for s in inputs.slots), pv_power_w
+            result,
+            now,
+            tuple(s.duration for s in inputs.slots),
+            pv_power_w,
+            shadow_active,
         )
         await self._update_power_warnings(result, now)
         # V6 (F-TANK): after the power warnings settle (their latch edges drive
@@ -3627,13 +3636,79 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_flicker_hist[load_id] = recent
         return True
 
+    def _latched_hold_candidates(self) -> set[str]:
+        """F11: the SWITCHABLE loads eligible for a latch hold this cycle — a
+        power warning is latched AND the load has a control switch AND power
+        feedback. This is exactly `_latch_hold_ok`'s structural pre-filter (it
+        excludes the floor-guard/inverter/shadow-plan gates, which decide
+        whether the hold may actually run). Used to (a) decide whether a shadow
+        plan is even needed and (b) pick which loads' F5 saturated override to
+        clear in it."""
+        candidates: set[str] = set()
+        for subentry_id, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+                continue
+            data = subentry.data
+            if (
+                self._load_power_warning.get(subentry_id, False)
+                and data.get(CONF_LOAD_CONTROL_SWITCH)
+                and data.get(CONF_LOAD_POWER_ENTITY)
+            ):
+                candidates.add(subentry_id)
+        return candidates
+
+    async def _latch_shadow_active(
+        self, config: SystemConfig, inputs, load_states
+    ) -> dict[str, bool]:
+        """F11: per latched-switchable load, whether the SHADOW plan activates
+        its slot 0 right now — i.e. whether the normal planner WOULD run the
+        load this instant if it were not latched.
+
+        A load latched by F-L7 (full tank) is planned by F5 at its measured
+        ~0 W (`saturated_power_w`), so the honest plan never books it and F10's
+        opportunistic hold has no plan flag to lean on. Instead of a stricter-
+        than-planning PV heuristic, replan with `saturated_power_w` cleared for
+        exactly the latched switchable loads (every other state field
+        unchanged) and read each one's slot-0 `active_now`. The hold then
+        follows EXACTLY the planner's rules (floor, strict-surplus, pass-2
+        lost-export coverage, dwell/quantum, ...).
+
+        The shadow plan is NEVER published — sensors, attributes and forecasts
+        keep coming from the honest `result`; it feeds `_latch_hold_ok` only.
+        It is computed ONLY when a hold candidate exists (no permanent double
+        plan). `plan` is a pure core function of (config, inputs) with no
+        coordinator side effects (no learning/diagnostics/persistence writes),
+        so the shadow run cannot leak into published state; the cleared states
+        are fresh `replace` copies, and the untouched states are shared frozen
+        objects the planner only reads.
+        """
+        candidates = self._latched_hold_candidates()
+        if not candidates:
+            return {}
+        shadow_states = tuple(
+            replace(state, saturated_power_w=None)
+            if state.load_id in candidates
+            else state
+            for state in load_states
+        )
+        shadow_inputs = replace(inputs, load_states=shadow_states)
+        shadow_result = await self.hass.async_add_executor_job(
+            plan, config, shadow_inputs
+        )
+        return {
+            lp.load_id: lp.active_now
+            for lp in shadow_result.load_plans
+            if lp.load_id in candidates
+        }
+
     def _latch_hold_ok(
         self,
         subentry_id: str,
         data: dict[str, Any],
         pv_power_w: float,
+        shadow_active: dict[str, bool],
     ) -> bool:
-        """F10: may a still-latched SWITCHABLE load be held ON right now?
+        """F10/F11: may a still-latched SWITCHABLE load be held ON right now?
 
         A load whose F-L7 warning is latched is planned by F5 at its measured
         ~0 W, so the plan never asks for it and the latch (which clears only
@@ -3644,8 +3719,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         2026-07-24: "the dehumidifier can ALWAYS run when the power would be
         there, not only every few hours"). No interval, no auto-stop: it runs
         until a gate drops or the latch releases (then the normal plan resumes
-        seamlessly). Gated exactly like a surplus run may legitimately run —
-        never grid-fed:
+        seamlessly).
+
+        F11 (2026-07-25): the hold fires EXACTLY when the normal planner would
+        activate the load now, were it not latched — decided by the shadow plan
+        (`_latch_shadow_active`: replan with the F5 saturated override cleared).
+        This replaces F10's stricter "slot-0 PV >= load power" heuristic, which
+        barred bookings the real planner makes anyway (e.g. an early-morning,
+        battery-fed pass-2 run "covered by otherwise-lost export, latest
+        feasible slot" at PV ~0 while the SOC stays above the floor). Gates:
 
         - a power warning is latched;
         - the load is switchable AND has power feedback (a latch implies
@@ -3653,18 +3735,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
           eventually release the latch);
         - no floor guard (SOC above the inverter floor);
         - the inverter recommendation is on;
-        - the current slot-0 forecast PV power covers the load's EFFECTIVE
-          power (>=) — the SAME planner-G4-parity PV source the floor guard uses
-          (`inputs.slots[0].pv_wh / duration`), so the hold never routes the
-          load onto the grid.
+        - the shadow plan activates the load's slot 0 (the MAIN gate — all of
+          the optimizer's own gates, incl. floor / strict-surplus / pass-2
+          lost-export coverage, are thereby honoured implicitly);
+        - over-power EXTRA protection: a latch can also mean the outlet draws
+          MORE than configured (a foreign consumer). The shadow plan then
+          replans at the too-small learned/nominal power and may book the load
+          although its real draw would need grid import. So when the measured
+          feedback clears the standby bar AND sits clearly above the planning
+          power (>= LATCH_HOLD_OVERPOWER_FACTOR x), additionally require the
+          slot-0 forecast PV to cover the real draw (`pv_power_w >= raw`) — the
+          SOLE remaining role of `pv_power_w`, no longer the main gate.
 
-        Effective power = the learned (nominal fallback) power, raised to the
-        MEASURED draw when that clears the standby bar: a latch can also mean
-        "draws MORE than configured" (a foreign consumer on the outlet), and the
-        gate must then test PV against the real draw, not the too-small config.
-        A full tank (~2 W, below the bar) keeps the learned power, so the device
-        only runs when PV could cover its REAL run. The min_off dwell is applied
-        by the caller's ON path, so this method does not re-check it.
+        The min_off dwell is applied by the caller's ON path, so this method
+        does not re-check it.
         """
         if not self._load_power_warning.get(subentry_id, False):
             return False
@@ -3676,13 +3760,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         if not self._inverter_recommendation:
             return False
-        load_power = self._load_learned_power_w.get(subentry_id) or float(
+        # Main gate: the normal planner would activate this load now (shadow
+        # plan with the F5 override cleared), so the hold routes it exactly
+        # where a legitimate surplus run would go — never grid-fed.
+        if not shadow_active.get(subentry_id, False):
+            return False
+        # Over-power extra protection (foreign consumer): the shadow plan
+        # replanned at the too-small learned/nominal power; if the real draw is
+        # clearly above that, gate it on PV covering the real draw as well.
+        planning_power = self._load_learned_power_w.get(subentry_id) or float(
             data.get(CONF_LOAD_POWER_W, 0.0)
         )
         raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
-        if raw is not None and raw >= self._load_standby_bar(data):
-            load_power = max(load_power, raw)
-        return pv_power_w >= load_power
+        if (
+            raw is not None
+            and raw >= self._load_standby_bar(data)
+            and raw > planning_power * LATCH_HOLD_OVERPOWER_FACTOR
+        ):
+            return pv_power_w >= raw
+        return True
 
     async def _apply_load_switching(
         self,
@@ -3690,6 +3786,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now: datetime,
         slot_durations: tuple[float, ...] | None = None,
         pv_power_w: float = 0.0,
+        shadow_active: dict[str, bool] | None = None,
     ) -> None:
         """Evaluate controlled loads and start switching where needed.
 
@@ -3698,13 +3795,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         load is forced OFF dwell-exempt and nothing switches ON — a surplus
         load must never run grid-fed (operator rule 2026-07-18).
 
-        F10 latch opportunistic hold: a still-latched switchable load (F5 plans
-        it at ~0 W, so the plan never asks for it) is held ON for as long as the
-        surplus gates hold — `_latch_hold_ok` gates it on `pv_power_w` (the
-        current slot-0 forecast PV power) so the hold is never grid-fed. It runs
-        until a gate drops (normal min_runtime-dwelled stop; G4 immediate) or
-        the latch releases (the normal plan then resumes seamlessly).
+        F10/F11 latch opportunistic hold: a still-latched switchable load (F5
+        plans it at ~0 W, so the plan never asks for it) is held ON for as long
+        as the surplus gates hold. `shadow_active` is the F11 shadow plan's
+        slot-0 `active_now` per latched switchable load (`_latch_shadow_active`);
+        `_latch_hold_ok` fires the hold exactly when that plan would run the
+        load now, plus the `pv_power_w` over-power guard. It runs until a gate
+        drops (normal min_runtime-dwelled stop; G4 immediate) or the latch
+        releases (the normal plan then resumes seamlessly).
         """
+        if shadow_active is None:
+            shadow_active = {}
         if self._load_switch_task is not None and not self._load_switch_task.done():
             return
 
@@ -3749,7 +3850,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # floor guard). A stale sub-hour deadline from an earlier normal run
             # (that then latched) is cleared so the held run is not force-offed;
             # the run ends only on a gate loss or the latch release.
-            hold = self._latch_hold_ok(subentry_id, data, pv_power_w)
+            hold = self._latch_hold_ok(subentry_id, data, pv_power_w, shadow_active)
             if floor_guard:
                 # G4: grid-fed operation is forbidden — force OFF, block ON.
                 desired = False

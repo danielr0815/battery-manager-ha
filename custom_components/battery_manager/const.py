@@ -204,6 +204,16 @@ CONF_LOAD_IN_HOUSE = "in_house_measurement"
 # (2026-07-05 live incident: 11 h × 22 Wh planned vs. ~4.4 kWh real).
 STANDBY_FRACTION = 0.25
 
+# F11 latch-hold over-power protection: the F10 opportunistic hold is normally
+# gated by a shadow plan (does the normal planner activate the latched load now,
+# if it were not latched?). A latch can ALSO mean the outlet draws MORE than
+# configured (a foreign consumer): the shadow plan then replans at the too-small
+# learned/nominal power and may book the load although its REAL draw needs grid
+# import. When the measured feedback clears the standby bar AND sits at least
+# this factor above the planning power, the hold additionally requires slot-0 PV
+# to cover the real draw, so it is never grid-fed. A constant, not a config key.
+LATCH_HOLD_OVERPOWER_FACTOR = 1.5
+
 # Stale-SOC guard (F-EXECUTOR-GUARDS G2): a load SOC that stays EXACTLY
 # unchanged for this many minutes while the device charges above the standby
 # bar is latched as stale (the fossibot integration serves cached values with

@@ -1000,9 +1000,11 @@ async def test_f10_hold_keeps_load_on_while_gates_hold(hass):
     calls.clear()
 
     t0 = dt_util.utcnow()
-    # PV (1500 W) covers the load power (400 W): the hold is never grid-fed.
+    # F11: the shadow plan activates the load's slot 0 (it would run now if not
+    # latched); PV is irrelevant to the main gate (the ~2 W draw is below the
+    # over-power bar), so the hold fires regardless of pv_power_w.
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), t0, (1.0,), 1500.0
+        _inactive_result(sub_id), t0, (1.0,), 0.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) in calls
@@ -1012,12 +1014,16 @@ async def test_f10_hold_keeps_load_on_while_gates_hold(hass):
     assert sub_id not in coordinator._load_run_deadline
 
     # Still full (~2 W) and well past min_runtime: the hold KEEPS it on (no
-    # interval, no auto-stop) as long as the gates hold.
+    # interval, no auto-stop) as long as the gates hold (shadow plan still on).
     hass.states.async_set(POWER_FEEDBACK, "2")
     for minutes in (35, 120, 300):
         calls.clear()
         await coordinator._apply_load_switching(
-            _inactive_result(sub_id), t0 + timedelta(minutes=minutes), (1.0,), 1500.0
+            _inactive_result(sub_id),
+            t0 + timedelta(minutes=minutes),
+            (1.0,),
+            0.0,
+            {sub_id: True},
         )
         await hass.async_block_till_done()
         assert calls == []
@@ -1028,7 +1034,8 @@ async def test_f10_hold_keeps_load_on_while_gates_hold(hass):
 
 async def test_f10_hold_gated_off_when_conditions_unmet(hass):
     """(c) The hold does NOT start under a floor guard, an inverter
-    recommendation off, or PV below the load power (never grid-fed)."""
+    recommendation off, or when the shadow plan does not activate the load (the
+    normal planner would not run it now either)."""
     from homeassistant.util import dt as dt_util
 
     async def _fresh():
@@ -1042,11 +1049,12 @@ async def test_f10_hold_gated_off_when_conditions_unmet(hass):
 
     now = dt_util.utcnow()
 
-    # Floor guard active: no hold (and no grid-fed start).
+    # Floor guard active: no hold (and no grid-fed start), even though the
+    # shadow plan would run the load.
     coordinator, sub_id, calls = await _fresh()
     coordinator._floor_guard_active = True
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), now, (1.0,), 1500.0
+        _inactive_result(sub_id), now, (1.0,), 1500.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) not in calls
@@ -1055,25 +1063,28 @@ async def test_f10_hold_gated_off_when_conditions_unmet(hass):
     coordinator, sub_id, calls = await _fresh()
     coordinator._inverter_recommendation = False
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), now, (1.0,), 1500.0
+        _inactive_result(sub_id), now, (1.0,), 1500.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) not in calls
 
-    # PV below the load power: no hold (would be grid-fed).
+    # Shadow plan inactive (the normal planner would NOT run the load now — e.g.
+    # no surplus and no lost-export coverage): no hold, even with ample PV. This
+    # is the F11 replacement for the old "PV below the load power" gate.
     coordinator, sub_id, calls = await _fresh()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), now, (1.0,), 300.0
+        _inactive_result(sub_id), now, (1.0,), 1500.0, {}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) not in calls
 
 
 async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
-    """(d) A gate loss (PV drops below the load power) stops the hold after the
-    min_runtime dwell via the normal path (flicker-INELIGIBLE, so min_off is not
-    waived); once the gate returns AND min_off has elapsed the load is held
-    again."""
+    """(d) A gate loss (the shadow plan stops activating the load — the normal
+    planner would no longer run it now) stops the hold after the min_runtime
+    dwell via the normal path (flicker-INELIGIBLE, so min_off is not waived);
+    once the shadow plan activates again AND min_off has elapsed the load is
+    held again."""
     from homeassistant.util import dt as dt_util
 
     calls: list[tuple[str, str]] = []
@@ -1090,16 +1101,17 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
 
     t0 = dt_util.utcnow()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), t0, (1.0,), 1500.0
+        _inactive_result(sub_id), t0, (1.0,), 0.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) in calls
     hass.states.async_set(POWER_FEEDBACK, "2")
 
-    # Gate lost (PV 100 W < 400 W) but still inside min_runtime: no premature off.
+    # Gate lost (shadow plan no longer activates) but still inside min_runtime:
+    # no premature off.
     calls.clear()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), t0 + timedelta(minutes=20), (1.0,), 100.0
+        _inactive_result(sub_id), t0 + timedelta(minutes=20), (1.0,), 0.0, {}
     )
     await hass.async_block_till_done()
     assert calls == []
@@ -1109,7 +1121,7 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
     calls.clear()
     t_off = t0 + timedelta(minutes=31)
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), t_off, (1.0,), 100.0
+        _inactive_result(sub_id), t_off, (1.0,), 0.0, {}
     )
     await hass.async_block_till_done()
     assert ("turn_off", PLUG) in calls or ("turn_off", ENABLE) in calls
@@ -1121,7 +1133,11 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
     # Gate returns but min_off (45 min) not yet elapsed: no re-hold.
     calls.clear()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), t_off + timedelta(minutes=30), (1.0,), 1500.0
+        _inactive_result(sub_id),
+        t_off + timedelta(minutes=30),
+        (1.0,),
+        0.0,
+        {sub_id: True},
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) not in calls
@@ -1129,7 +1145,11 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
     # Gate returns AND min_off elapsed: the load is held again.
     calls.clear()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), t_off + timedelta(minutes=46), (1.0,), 1500.0
+        _inactive_result(sub_id),
+        t_off + timedelta(minutes=46),
+        (1.0,),
+        0.0,
+        {sub_id: True},
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) in calls
@@ -1138,10 +1158,12 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
 
 
 async def test_f10_hold_gate_uses_measured_when_above_config(hass):
-    """(b') Effective power for the PV gate = max(learned/nominal, measured when
-    it clears the standby bar). A latch can mean the outlet draws MORE than
-    configured (foreign consumer): the gate must then test PV against the real
-    draw, so PV between the config and the measured draw does NOT start a hold."""
+    """(b') Over-power EXTRA protection: even when the shadow plan activates the
+    load, a latch can mean the outlet draws MORE than configured (foreign
+    consumer). The shadow plan then replanned at the too-small learned/nominal
+    power, so the hold additionally requires PV to cover the REAL measured draw
+    (>= LATCH_HOLD_OVERPOWER_FACTOR x the planning power). PV between the config
+    and the measured draw does NOT start the hold; PV above the real draw does."""
     from homeassistant.util import dt as dt_util
 
     calls: list[tuple[str, str]] = []
@@ -1150,14 +1172,15 @@ async def test_f10_hold_gate_uses_measured_when_above_config(hass):
     )
     _latched(coordinator, sub_id)
     # The outlet really draws 900 W (a foreign consumer), well above the standby
-    # bar and above the 400 W config/learned power.
+    # bar and clearly above the 400 W config/learned power.
     hass.states.async_set(POWER_FEEDBACK, "900")
 
     now = dt_util.utcnow()
-    # PV 600 W covers the 400 W config but NOT the 900 W real draw: no hold.
+    # Shadow plan active, but PV 600 W covers the 400 W config, not the 900 W
+    # real draw: the over-power guard blocks the hold.
     calls.clear()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), now, (1.0,), 600.0
+        _inactive_result(sub_id), now, (1.0,), 600.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) not in calls
@@ -1165,7 +1188,7 @@ async def test_f10_hold_gate_uses_measured_when_above_config(hass):
     # PV 1000 W covers the real 900 W draw: the hold starts.
     calls.clear()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), now, (1.0,), 1000.0
+        _inactive_result(sub_id), now, (1.0,), 1000.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert ("turn_on", PLUG) in calls
@@ -1192,7 +1215,7 @@ async def test_f10_hold_back_in_band_releases_latch_and_learns(hass):
 
     now = dt_util.utcnow()
     await coordinator._apply_load_switching(
-        _inactive_result(sub_id), now, (1.0,), 1500.0
+        _inactive_result(sub_id), now, (1.0,), 0.0, {sub_id: True}
     )
     await hass.async_block_till_done()
     assert coordinator._load_charging_active[sub_id] is True
@@ -1213,6 +1236,127 @@ async def test_f10_hold_back_in_band_releases_latch_and_learns(hass):
     assert coordinator.load_runtime_minutes(sub_id) == 0.0
     assert sub_id not in coordinator._load_latch_hold
     coordinator._cancel_off_timer(sub_id)
+
+
+def _shadow_scenario(sub_id, saturated, forecasts):
+    """Build an early-morning pre-drain scenario for the F11 shadow-plan tests:
+    a continuous load (id = the coordinator's real subentry id), now = 06:00 so
+    slot 0 is the LATEST-feasible pre-window pre-drain slot (PV still 0), SOC
+    (84 %) well above the inverter floor. With `forecasts` carrying a big
+    clipping day the normal planner books the load at slot 0 via pass 2
+    (battery-fed, provably refilled from otherwise-lost export); a cloudy horizon
+    books nothing. `saturated` sets the F5 override (0 W = fully saturated full
+    tank -> the honest plan books NOTHING, the deadlock; None = the full-power
+    counterfactual the shadow plan uses)."""
+    from dataclasses import replace as _replace
+    from datetime import datetime
+
+    from custom_components.battery_manager.core.model import (
+        ControlParams,
+        SurplusLoad,
+        SurplusLoadState,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.core.series import build_slots
+
+    load = SurplusLoad(load_id=sub_id, name="Entfeuchter", nominal_power_w=400.0)
+    # alpha=beta=1.0 disables the stress gate so the deepest pass-2 pre-drain
+    # (including slot 0 at 06:00) is admissible when there is export to rescue.
+    control = _replace(
+        ControlParams(),
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    config = SystemConfig(control=control, loads=(load,))
+    states = (SurplusLoadState(load_id=sub_id, saturated_power_w=saturated),)
+    inputs = build_slots(
+        config, datetime(2026, 7, 4, 6, 0), 84.0, forecasts, load_states=states
+    )
+    return config, inputs, states
+
+
+async def test_f11_shadow_plan_holds_battery_fed_pass2_run(hass):
+    """F11 core: a latched load in an early-morning pre-drain scenario the normal
+    planner WOULD serve via pass 2 (battery-fed, PV = 0 now, big clipping day,
+    SOC well above the floor). The honest plan (F5 fully-saturated 0 W override)
+    books no run at all — the deadlock — but the shadow plan (override cleared ->
+    400 W) activates slot 0, so the hold fires TROTZ PV < load power, exactly
+    where the old slot-0-PV>=load-power gate would have blocked it."""
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.optimize import plan as _plan
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False
+    )
+    _latched(coordinator, sub_id)
+
+    config, honest_inputs, honest_states = _shadow_scenario(sub_id, 0.0, [15.0, 12.0])
+    # Honest plan (0 W override): no slot-0 booking -> the latch would be stuck.
+    honest = _plan(config, honest_inputs)
+    assert honest.load_plans[0].active_now is False
+    # Shadow plan: the override cleared -> the planner activates slot 0 (pass 2).
+    shadow_active = await coordinator._latch_shadow_active(
+        config, honest_inputs, honest_states
+    )
+    assert shadow_active.get(sub_id) is True
+    # The honest inputs were not mutated by the shadow run (purity).
+    assert honest_inputs.load_states[0].saturated_power_w == 0.0
+
+    # Drive the hold with pv_power_w = 0 (well below the 400 W load power): it
+    # still fires, because the main gate is the shadow plan, not PV.
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), dt_util.utcnow(), (1.0,), 0.0, shadow_active
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) in calls
+    assert sub_id in coordinator._load_latch_hold
+    coordinator._cancel_off_timer(sub_id)
+
+
+async def test_f11_no_hold_without_lost_export_coverage(hass):
+    """F11 counter: a cloudy horizon (no export to shift) -> the shadow plan
+    books no slot-0 run -> the shadow map is inactive and no hold starts, even
+    with the gates open and ample PV passed in."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False
+    )
+    _latched(coordinator, sub_id)
+
+    config, inputs, states = _shadow_scenario(sub_id, 0.0, [0.5, 0.5])
+    shadow_active = await coordinator._latch_shadow_active(config, inputs, states)
+    assert shadow_active.get(sub_id, False) is False
+
+    calls.clear()
+    await coordinator._apply_load_switching(
+        _inactive_result(sub_id), dt_util.utcnow(), (1.0,), 1500.0, shadow_active
+    )
+    await hass.async_block_till_done()
+    assert ("turn_on", PLUG) not in calls
+
+
+async def test_f11_shadow_plan_skipped_without_candidate(hass):
+    """F11 performance/purity: with no latched switchable load there is no hold
+    candidate, so `_latch_shadow_active` returns {} WITHOUT running a second
+    plan (the normal single-plan cost path is unchanged)."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, power_w=400.0, energy_limited=False
+    )
+    # Gates open but NO latch: not a hold candidate.
+    coordinator._floor_guard_active = False
+    coordinator._inverter_recommendation = True
+    coordinator._load_power_warning.pop(sub_id, None)
+
+    config, inputs, states = _shadow_scenario(sub_id, None, [15.0, 12.0])
+    assert coordinator._latched_hold_candidates() == set()
+    assert await coordinator._latch_shadow_active(config, inputs, states) == {}
 
 
 async def test_v6_tank_notification_once_below_lead(hass):

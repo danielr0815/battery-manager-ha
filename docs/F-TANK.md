@@ -76,21 +76,49 @@ be there, not only every few hours."* So instead of probing on a timer, while a
 **switchable** load (control switch **and** power feedback) is latched the
 executor **holds it ON** for as long as the surplus gates hold (`_latch_hold_ok`
 + the `latch hold` branch of `_apply_load_switching`). It runs whenever a surplus
-run may legitimately run — **never grid-fed**:
+run may legitimately run — **never grid-fed**.
 
+#### F11 (2026-07-25): the hold follows the planner via a shadow plan
+
+The original F10 gate compared **slot-0 PV ≥ effective load power**. That is
+**stricter than the normal planner**: the planner activates the same load
+without direct surplus too — e.g. an early-morning **battery-fed pass-2 run**
+*"covered by otherwise-lost export, latest feasible slot"* at PV ≈ 0, as long as
+the SOC stays above the floor and the energy would otherwise clip (live
+2026-07-25: the latch released at 05:33 and the plan booked the 05:35 slot at PV
+≈ 0 immediately). A load under tank-full suspicion should not be held to a
+tighter rule than the normal state.
+
+So the hold now fires **exactly when the normal planner would activate the load
+right now, were it not latched** — decided by a **shadow plan**
+(`_latch_shadow_active`): each cycle, **only if at least one latched switchable
+load exists**, the coordinator replans with **identical inputs** but
+`saturated_power_w = None` for **all** latched switchable loads (every other
+state field unchanged). The shadow plan is **never published** — sensors,
+attributes and forecasts keep coming from the honest plan; it yields only each
+latched load's slot-0 `active_now`. `plan` is a **pure** core function of
+`(config, inputs)` with no coordinator side effects, so the shadow run cannot
+leak into learning, diagnostics or persistence. Gates:
+
+- a power warning is latched;
+- the load is switchable **and** has power feedback;
 - no floor guard (SOC above the inverter floor);
 - inverter recommendation on;
-- the current slot-0 forecast PV power **covers** (`>=`) the load's **effective
-  power** — the **same** planner-G4-parity PV source the floor guard uses
-  (`inputs.slots[0].pv_wh / duration`);
+- **the shadow plan activates the load's slot 0** — the **main gate**. All of the
+  optimizer's own gates (floor, strict-surplus, pass-2 lost-export coverage,
+  dwell/quantum, …) are thereby honoured **implicitly**;
 - the min_off dwell allows an ON (only relevant after a previous gate-loss stop).
 
-**Effective power** = the learned (nominal fallback) power, raised to the
-**measured** draw when that clears the standby bar (`max(10 W, 25 % × nominal)`).
-A latch can also mean the outlet draws **more** than configured (a foreign
-consumer); the gate then tests PV against the real draw, not the too-small
-config. A full tank (~2 W, below the bar) keeps the learned power, so the device
-only runs when PV could cover its **real** run.
+**Over-power extra protection.** A latch can also mean the outlet draws **more**
+than configured (a foreign consumer). The shadow plan then replans at the
+too-small learned/nominal power and may book the load although its **real** draw
+would need grid import. So when the **measured** feedback clears the standby bar
+(`max(10 W, 25 % × nominal)`) **and** sits clearly above the planning power
+(≥ `LATCH_HOLD_OVERPOWER_FACTOR` = 1.5×), the hold **additionally** requires the
+slot-0 forecast PV to cover the real draw (`pv_power_w ≥ measured`). This is the
+**sole** remaining role of the `pv_power_w` parameter of `_apply_load_switching`
+/ `_latch_hold_ok` — no longer the main gate. A full tank (~2 W, below the bar)
+never triggers this branch.
 
 The hold drives the **normal** actuation path (INFO log reason `latch hold`, V9a
 style) and sets `_load_charging_active[sub] = True` so the existing F-L7 release
@@ -100,10 +128,10 @@ continues until one of two things happens:
 - **Tank emptied** → the device runs in band → the latch **releases** (V6
   auto-reset + learning as usual), the F5 override lifts, and the normal plan
   takes over the run **seamlessly** from the next cycle.
-- **A gate drops** (PV falls below the effective power, the recommendation goes
-  off, or the floor guard trips) → the load stops via the **normal** path: a G4
-  floor-guard stop is immediate/dwell-exempt, any other gate loss keeps the full
-  `min_runtime` dwell. The stop is classified **flicker-ineligible** (a gate
+- **A gate drops** (the shadow plan stops activating the load, the recommendation
+  goes off, or the floor guard trips) → the load stops via the **normal** path: a
+  G4 floor-guard stop is immediate/dwell-exempt, any other gate loss keeps the
+  full `min_runtime` dwell. The stop is classified **flicker-ineligible** (a gate
   loss is not a recommendation flap, so it never seeds an F8 continuation), and a
   later re-hold is guarded only by the usual `min_off` dwell. While the tank is
   really full the device draws ~2 W, so the hold is energetically ~free; an
