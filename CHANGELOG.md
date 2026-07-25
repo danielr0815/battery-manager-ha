@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-07-25
+
+### Fixed
+- **Latch hold follows the planner via a shadow plan (F11).** The F10 hold
+  gate (slot-0 PV >= effective load power) was stricter than the normal
+  planner, which also activates a load without direct surplus (early-morning
+  battery-fed pass-2 runs "covered by otherwise-lost export" at PV ~ 0). A
+  load under tank-full suspicion must not be held to a tighter rule than its
+  normal state. The hold now fires exactly when a shadow plan (F5 saturated
+  override cleared, computed only while a latched switchable load exists,
+  never published) activates the load's slot 0. The PV comparison remains
+  only as the over-power extra guard (measured >= 1.5x planning power).
+
+## [0.16.1] - 2026-07-24
+
+### Fixed
+- **F5 latch deadlock (F10).** v0.16.0 planned a latched load at its measured
+  ~0 W, but the F-L7 latch only clears while the load runs BM-commanded and
+  in band — so the BM never commanded it again (live: dehumidifier planned
+  0 kWh against 6.5 kWh forecast surplus even after the tank was emptied).
+  Two recovery paths: the per-load reset button (= "tank emptied") now also
+  clears a latched power warning (self-correcting if the tank is still
+  full), and while latched the executor holds the load ON opportunistically
+  whenever the surplus gates hold — a full tank draws ~2 W (free), an
+  emptied tank instantly becomes the desired surplus run and releases the
+  latch. Hold stops are flicker-ineligible; G4 aborts a hold immediately.
+
+## [0.16.0] - 2026-07-24
+
+Forensics-driven release (7-day decision audit 17.-24.07.2026).
+
+### Fixed
+- **T* bistability at the merge bound (F1, F-MERGE-HYSTERESIS).** The
+  terminal credit now ramps continuously over the stressed clip margin
+  (0-250 Wh) instead of flipping binary at the first Wh; horizon truncation
+  moved to the ramp end. Executor G4 rec-off branch requires PV < running
+  load power (planner parity); floor-guard warnings rate-limited.
+- **Dwell x replan flicker (F8).** A recommendation returning within 5 min
+  of a recommendation-driven stop restarts without min_off (ping-pong
+  capped; G4/G1 stops unaffected).
+- **Seamless plan continuation at raster edges (F9).** A min-runtime spill
+  into a slot already booked for the same load is a continuation, not a
+  conflict — root cause of the hourly :31 recommendation retractions.
+- **Telemetry-freeze guard (F4).** Recommendation-only loads can reach the
+  G2 stale latch; new 6 h freeze watchdog (SOC AND power exactly unchanged
+  while recommended -> unavailable, one warning, auto-release).
+- **Saturated-power feedback (F5).** A latched power warning plans the load
+  at its measured draw — no more phantom full-power slots; the
+  recommendation stays on so the latch can clear.
+
+### Added
+- **F-TANK (V6, opt-in).** Per-load `tank_full_runtime_min`: runtime counter
+  = time since last emptying, auto-reset + median learning of the full-tank
+  runtime, push notification when the tank is predicted full within 60 min
+  of planned runtime. Notification/diagnostics ONLY — never preemptive
+  curtailment (operator rule).
+- Config-entry diagnostics (V7), 120 s startup grace for the SOC source
+  (V8), one INFO line per confirmed switch action with reason (V9a).
+
+### Documentation
+- `in_house_measurement` semantics audited and documented (count-once
+  accounting confirmed; option texts cover the outside-the-grid-meter
+  case). README clarifies the forecast sensors are horizon sums. Work order
+  for the balcony-solar-forecast repo (F6/F7) under `docs/orders/`.
+
 ## [0.15.1] - 2026-07-19
 
 ### Fixed

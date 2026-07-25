@@ -208,3 +208,55 @@ Zur besseren Auswertbarkeit BM-seitig neu ausgeliefert:
 
 Umgesetzt in v0.21.0; day-0-coverage wird nach dem Seeding-Release (Backfill neu
 ausführen) messbar. Fragen gerne zurück an das balcony-solar-forecast-Repo.
+
+---
+
+## Update 2026-07-25: Deployment + Re-Bootstrap erfolgt — Messbasis für BM ab sofort
+
+Alles oben Angekündigte ist seit heute früh live und verifiziert; der BM misst ab
+sofort gegen die neue Physik.
+
+### Was heute passiert ist
+
+- **v0.21.0 live seit ~06:00 lokal.** Config-Kampagne Teil 1 umgesetzt: Ost-Horizont
+  als τ-Rampe (az 63–78) in allen 8 Planes, `site.bifacial_beam_gain: 1.25`,
+  Albedo 0,15.
+- **`reset_day_ahead_bias` (alle 12 Zellen) + 320-Tage-Re-Bootstrap unter der neuen
+  Physik** um ~06:30 importiert — erstmals **inklusive Quantile-Seeding (A6)**:
+  10 Bins, 3.796 Samples.
+
+### Verifizierter Live-Zustand
+
+- **day-0-Stundenbänder:** `wh_period_p10/p90` tragen jetzt in **56/56**
+  Tageslicht-Slots ein echtes Band (vorher 4/62); day-1 55/55. 9/10 Quantil-Bins
+  `trained` (einzige Ausnahme: `fog|morning`, n=13). Tages-p10/p50/p90 heute
+  9,7/11,2/14,7 kWh.
+- **Bias-Zellen nach Re-Bootstrap:** `clear|morning` θ=1,094 (vorher 1,50 am Clamp —
+  der F6-Rohphysik-Fix trägt), `clear|midday` 0,908, `clear|afternoon` 0,812. Einzige
+  geclampte Zelle: `overcast|morning` 1,5 — bekannter, dokumentiert offener
+  Diffus-Floor, Fix in 0.22 unterwegs.
+
+### Konsequenz für den BM
+
+- **Abnahmekriterium Teil 2 ist ab heute messbar**, nicht erst in Wochen:
+  `quantile_coverage` day-0 mit `source != scalar` sollte ab sofort deutlich > 0,5
+  liegen.
+- Die BM-seitige **p10==p90-Fallback-Heuristik** bitte beobachten: sie wird jetzt nur
+  noch selten anschlagen (z. B. fog-Morgen) — häufiges Auslösen wäre ab heute ein
+  Regressionssignal, kein Normalzustand mehr.
+- **Neue Forensik-Felder (v0.21.0) stehen bereit:** `get_issued_forecast` liefert
+  `hourly_wh_ac` (DC/AC-Verwechslung damit vom Tisch), `cloud_class_by_hour` und
+  `applied_factor_by_hour`; die Kurven-Sensoren tragen `band_source`;
+  `day_ahead_bias_status` weist je Zelle ein `clamped`-Flag aus.
+- **Scalar-Peaks > 1,3 an klaren Morgen sollten ab heute strukturell Geschichte
+  sein.** Sieht der BM sie weiterhin, bitte melden — dann greift ein Fix nicht wie
+  erwartet.
+
+### Ausblick (damit der BM nicht überrascht wird)
+
+- **0.22 in Arbeit:** elevationsabhängiges Horizont-τ (`tau_points`) + `diffuse_tau`
+  für Wand-Reflexion — hebt den Diffus-Floor (`overcast|morning`-Clamp) und ändert
+  die RAW-Kurve erneut. **0.23:** `run_bootstrap` als HA-Action.
+- Nach deren Config-Kampagne folgt **ein** weiterer Bias-Reset + Re-Bootstrap. In
+  dieser Übergangswoche (~Anfang August) Tagesabweichungen bitte nicht
+  überinterpretieren; danach ist die Messbasis stabil.
