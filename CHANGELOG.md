@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-07-30
+
 ### Changed
 - **Dev setup 2026 (infrastructure only, no runtime change).** One-command
   onboarding via devcontainer (`.devcontainer/`, Python 3.14) or
