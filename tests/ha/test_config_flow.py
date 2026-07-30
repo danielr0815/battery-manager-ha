@@ -1,5 +1,6 @@
 """Config/options flow smoke tests (schema construction must never raise)."""
 
+import pytest
 import voluptuous as vol
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -10,6 +11,26 @@ from custom_components.battery_manager.const import (
     CONF_SOC_ENTITY,
     DOMAIN,
 )
+
+
+@pytest.fixture(autouse=True)
+async def _unload_entries_after_test(hass):
+    """Unload whatever the test set up. Since HA 2026.x (eager task
+    scheduling) platform forwarding completes inside the test body, the
+    coordinator's refresh-interval timer is armed already — and phacc's
+    verify_cleanup flags it as a lingering timer at teardown unless the
+    entry is unloaded (test_coordinator.py unloads explicitly for the same
+    reason). The drain comes FIRST: creating a subentry / submitting the
+    options flow fires an update listener that schedules an entry reload,
+    and unloading a still-SETUP_IN_PROGRESS entry raises
+    OperationNotAllowed. Module-level autouse so no call site changes.
+    """
+    yield
+    await hass.async_block_till_done()
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
 
 ENTRY_DATA = {
     CONF_SOC_ENTITY: "sensor.test_soc",

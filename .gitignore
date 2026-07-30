@@ -211,7 +211,10 @@ coverage.xml
 # -------------------
 
 # Visual Studio Code
-.vscode/
+# (`.vscode/*` statt `.vscode/`: git kann keine Dateien unterhalb eines
+# ignorierten VERZEICHNISSES wieder aufnehmen — mit `/*` greifen die
+# Negationen darunter tatsächlich.)
+.vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json

@@ -1159,7 +1159,7 @@ def _running_predicate(threshold_w: float) -> Callable[[str], bool]:
     def _running(state: str) -> bool:
         try:
             return float(state) >= threshold_w
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return state.lower() in APPLIANCE_RUNNING_STATES
 
     return _running

@@ -1,7 +1,7 @@
 # This is a Home Assistant CUSTOM COMPONENT, not a PyPI package — it is loaded
 # by Home Assistant from custom_components/, not `pip install`ed. There is
 # deliberately no [build-system]; this file carries project metadata, the dev
-# dependency group, and the tool configuration (ruff, pytest).
+# dependency group, and the tool configuration (ruff, pytest, coverage, mypy, uv).
 #
 # Runtime version source of truth: custom_components/battery_manager/manifest.json.
 # The device `sw_version` and the dashboard card version are both derived from
@@ -12,7 +12,8 @@ name = "battery-manager-ha"
 version = "0.16.2"
 description = "Solar-battery optimizer for Home Assistant: SOC forecast, discharge-threshold planning, surplus-load and grid-support control."
 readme = "README.md"
-requires-python = ">=3.13"
+# Floor matches homeassistant's own requirement (HA >= 2026.3 needs 3.14.2+).
+requires-python = ">=3.14.2"
 license = "MIT"
 authors = [{ name = "Daniel R." }]
 keywords = ["home-assistant", "hacs", "solar", "battery", "energy"]
@@ -23,23 +24,43 @@ Documentation = "https://github.com/danielr0815/battery-manager-ha/blob/main/doc
 Issues = "https://github.com/danielr0815/battery-manager-ha/issues"
 Changelog = "https://github.com/danielr0815/battery-manager-ha/blob/main/CHANGELOG.md"
 
-# Dev tooling (PEP 735 dependency group). Install with `pip install --group dev`
-# (pip >= 25.1), or install the tools directly (see CONTRIBUTING.md).
+# Dev tooling (PEP 735 dependency group). Install with `uv sync` (creates
+# .venv from uv.lock — the single source of truth, also used by CI), or with
+# `pip install --group dev` (pip >= 25.1). See CONTRIBUTING.md.
+#
+# Version policy: `>=` states the minimum requirement; the EXACT versions
+# live in uv.lock (reproducibility guarantee — updates flow via Dependabot
+# or `uv lock --upgrade`, reviewed in a PR).
+# EXCEPTION: pytest-homeassistant-custom-component stays fully pinned —
+# phacc itself pins homeassistant (and pytest/pytest-cov) exactly, so it
+# carries the effective HA coupling; the next release (0.13.349) would
+# already pull the 2026.8.0b0 beta. phacc therefore leads the HA version.
 [dependency-groups]
 dev = [
-    "homeassistant",
-    "pytest",
-    "pytest-homeassistant-custom-component",
-    "ruff",
+    "homeassistant>=2026.7.4",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-homeassistant-custom-component==0.13.348",
+    "ruff>=0.16.0",
+    "mypy>=2.3.0",
 ]
+
+[tool.uv]
+# Not a PyPI package (no [build-system] above): uv only manages the dev
+# environment, it must not try to build/install the project itself.
+package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+# Make `custom_components` importable regardless of how pytest is invoked
+# (console script, `python -m pytest`, IDE) — previously this worked only
+# because `python -m pytest` puts the CWD on sys.path.
+pythonpath = ["."]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 88
 extend-exclude = [".venv"]
 
@@ -53,3 +74,30 @@ select = [
     "SIM", # simplify
 ]
 ignore = ["E501"]
+
+[tool.coverage.run]
+# Measure only the integration itself; tests/ and the bundled JS card are
+# not meaningful coverage targets.
+source = ["custom_components/battery_manager"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+# Type checking is a BASELINE, not a gate: errors are only reported for the
+# pure planner core (no Home Assistant imports, fully typed dataclasses).
+# `follow_imports = "silent"` still analyses the HA layer for types (core
+# imports from it) but suppresses its errors; widen the scope before
+# tightening any rule. Run: `mypy` (via `uv run mypy`).
+[tool.mypy]
+python_version = "3.14"
+files = ["custom_components/battery_manager/core"]
+mypy_path = "custom_components/battery_manager"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Dev setup 2026 (infrastructure only, no runtime change).** One-command
+  onboarding via devcontainer (`.devcontainer/`, Python 3.14) or
+  `uv sync --group dev` — the committed `uv.lock` is the single source of
+  truth for every dev-tool version (minimum versions `>=` in `pyproject.toml`,
+  exact ones in the lock; only `pytest-homeassistant-custom-component` stays
+  exact-pinned because it pins homeassistant itself and thus leads the HA
+  coupling). CI installs through `astral-sh/setup-uv` + the dependency group
+  instead of floating `pip install`, and its actions are pinned
+  (`hacs/action@22.5.0`, hassfest master SHA); Dependabot now also tracks the
+  uv ecosystem. New: `.vscode/` (ruff formatter, pytest tasks), pre-commit
+  hooks (ruff check + format), a mypy baseline over `core/`, pytest-cov with
+  the coverage XML as a build artifact, `.gitattributes` enforcing LF, and
+  `AGENTS.md` as the entry point for coding agents.
+- **Dev environment moved to Python 3.14 / homeassistant 2026.7.4** (phacc
+  0.13.348; HA >= 2026.3 requires Python >= 3.14.2). Test-side fix: the
+  config-flow suite now unloads its entries via an autouse fixture — under
+  HA 2026.7's eager task scheduling the coordinator's refresh-interval timer
+  was armed inside the test body and phacc's `verify_cleanup` flagged it as a
+  lingering timer (flaky, order-dependent). ruff target is `py314` (PEP 758
+  unparenthesized except tuples, syntax only).
+
 ## [0.16.2] - 2026-07-25
 
 ### Fixed

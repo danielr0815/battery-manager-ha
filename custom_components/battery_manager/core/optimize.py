@@ -105,6 +105,8 @@ def _effective_uncertainty(
     optimism: list[float] = []
     for slot, has_band in zip(inputs.slots, band, strict=True):
         if has_band:
+            # quantile_band_slots() only flags slots whose p10/p90 both exist.
+            assert slot.pv_p10_wh is not None and slot.pv_p90_wh is not None
             stress.append(min(1.0, max(0.1, slot.pv_p10_wh / slot.pv_wh)))
             optimism.append(min(2.0, max(1.0, slot.pv_p90_wh / slot.pv_wh)))
         else:
@@ -1067,6 +1069,8 @@ def allocate_loads(
                     # former energy-limited c1-only path is superseded).
                     accept = export_drop + _EPS >= need
                     if not accept and c2_active and in_window(i):
+                        # current_beta is simulated iff c2_active (see above).
+                        assert current_beta is not None
                         trial_beta = simulate(
                             config,
                             inputs,

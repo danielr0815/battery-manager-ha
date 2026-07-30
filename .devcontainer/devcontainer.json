@@ -1,0 +1,16 @@
+{
+  "name": "battery-manager-ha",
+  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  // uv installs the locked dev environment (uv.lock is the single source of
+  // truth, same as CI). Requires network access on container creation.
+  "postCreateCommand": "python -m pip install uv && uv sync --group dev",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "github.vscode-github-actions"
+      ]
+    }
+  }
+}

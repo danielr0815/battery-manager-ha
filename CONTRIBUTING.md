@@ -19,16 +19,27 @@ By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Dev setup
 
+Two ways — pick one:
+
+**A. Devcontainer** (VS Code / GitHub Codespaces): reopen the repo in the
+[devcontainer](.devcontainer/) — its `postCreateCommand` installs the locked
+dev environment (and the recommended extensions) automatically.
+
+**B. Local with [uv](https://docs.astral.sh/uv/):**
+
 ```bash
-python -m venv .venv
-# activate: `source .venv/bin/activate` (Linux/macOS/WSL) or
-#           `.venv\Scripts\activate`     (Windows PowerShell)
-python -m pip install homeassistant pytest pytest-homeassistant-custom-component ruff
+uv sync --group dev   # creates .venv from uv.lock, fetches Python 3.14 if needed
 ```
 
+`uv.lock` is the single source of truth for every dev-tool version — CI runs
+the same `uv sync`, and Dependabot keeps the pins current. The interpreter
+floor is Python 3.14.2 (`.python-version`), matching homeassistant's own
+requirement since HA 2026.3.
+
 There are no runtime dependencies to install — the integration is pure Python
-and ships `requirements: []` in its manifest. The packages above are only for
-running the tests and the linter.
+and ships `requirements: []` in its manifest. The dev group is only for
+running the tests and the linters. (No uv at hand? `pip install --group dev`
+with pip ≥ 25.1 into a venv works too, but without the lockfile's guarantees.)
 
 ## Running the tests — note the split
 
@@ -38,23 +49,44 @@ Windows:
 ```bash
 # Core suite — pure Python, runs ANYWHERE (Windows included).
 # The -p no:homeassistant flag disables the HA pytest plugin.
-python -m pytest tests/core -p no:homeassistant
+uv run pytest tests/core -p no:homeassistant
 
 # Full suite incl. the HA layer — needs Linux or WSL (this is what CI runs).
-python -m pytest tests
+uv run pytest tests
 ```
+
+(Without uv, activate `.venv` and call `python -m pytest …` instead.)
 
 On Windows, develop and test the planner core natively; run the HA-layer tests
 under WSL (or let CI run them on your PR).
 
-## Linting & formatting
+## Linting, formatting & type checking
 
 CI enforces [ruff](https://docs.astral.sh/ruff/) (the project moved off
-black/isort/flake8/mypy — see the CHANGELOG). Before pushing:
+black/isort/flake8 — see the CHANGELOG). Dev versions are **minimums**
+(`>=`) in `pyproject.toml`; the exact ones live in `uv.lock` — updates
+arrive via Dependabot or `uv lock --upgrade`, reviewed in a PR (new ruff
+releases have broken this CI before, so read the changelog on bumps). The
+one exception is `pytest-homeassistant-custom-component`, which stays
+fully pinned: it pins homeassistant exactly itself and thus leads the HA
+coupling (the comment in `pyproject.toml` has the details). Before pushing:
 
 ```bash
-ruff check custom_components tests
-ruff format --check .    # or `ruff format .` to apply
+uv run ruff check custom_components tests
+uv run ruff format --check .    # or `uv run ruff format .` to apply
+```
+
+Optional but recommended: `uvx pre-commit install` — the hooks in
+`.pre-commit-config.yaml` run the locked ruff on every commit.
+
+[mypy](https://mypy.readthedocs.io/) runs in CI as a **baseline**, not a full
+gate: it reports errors only for the pure planner core
+(`custom_components/battery_manager/core/`); the HA layer is analysed for
+types but its errors are suppressed (`follow_imports = "silent"`, see
+`[tool.mypy]` in `pyproject.toml`). Widen the scope before tightening rules.
+
+```bash
+uv run mypy
 ```
 
 Match the style of the surrounding code, and comment the **why** for anything
@@ -68,7 +100,7 @@ scenarios (`tests/core/golden_topology.json`) so any behaviour change is caught.
 If you **intentionally** change planner behaviour:
 
 ```bash
-python scripts/gen_golden.py     # regenerates the golden file
+uv run python scripts/gen_golden.py     # regenerates the golden file
 git diff tests/core/golden_topology.json
 ```
 

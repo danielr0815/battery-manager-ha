@@ -10,6 +10,46 @@ früheren Reviews als Regel festgeschrieben sind. Was der Code tut, steht in
 Alle Aussagen sind gegen `.github/workflows/*`, `pyproject.toml`,
 `CONTRIBUTING.md` und den Testbaum geprüft. **Im Zweifel gilt der Code.**
 
+> **Update 2026-07-30 — uv-Workflow:** Das Dev-Setup läuft seitdem über
+> **uv** (`uv sync --group dev`, Wahrheit ist `uv.lock`; Python 3.13 via
+> `.python-version`, Devcontainer in `.devcontainer/`). Die CI-Jobs `lint`/
+> `tests` installieren nicht mehr per `pip install`, sondern per
+> `astral-sh/setup-uv` + `uv sync` und rufen alles über `uv run` auf; der
+> Lint-Job enthält zusätzlich eine **mypy-Baseline** (nur `core/`,
+> `[tool.mypy]` in `pyproject.toml`) und der Test-Job **Coverage**
+> (`--cov`, XML als Artifact). ruff ist seither **gepinnt** (0.16.0) —
+> die unten beschriebene ruff-Drift-Falle (§2.3) war der Grund dafür.
+> Die Kommandos unten (`~/bmha-venv`, nacktes `ruff`) sind historisch zu
+> lesen; aktuell: `AGENTS.md` und `CONTRIBUTING.md`. Der Test-Split (§1.1),
+> die Golden Snapshots und die Release-Mechanik gelten unverändert.
+
+> **Update 2026-07-30 (2) — Python 3.14 & HA 2026.7.4:** Kurz nach dem
+> uv-Umzug ist das Dev-Setup auf **Python 3.14** gewandert
+> (`requires-python >= 3.14.2`, `.python-version`, Devcontainer-Image
+> `python:3.14`), weil homeassistant seit 2026.3 Python ≥ 3.14.2 fordert.
+> Pins: `homeassistant==2026.7.4` mit `pytest-homeassistant-custom-component==0.13.348`
+> (pinnt `pytest==9.0.3`/`pytest-cov==7.1.0` exakt — Vorsicht: 0.13.349
+> pinnt bereits eine 2026.8-Beta). ruff `target-version = "py314"`; der
+> Formatter nutzt seither PEP 758 (`except ValueError, TypeError:` ohne
+> Klammern) — reine Syntax, keine Semantikänderung. Nachtrag gleicher Tag:
+> Die `==`-Pins wurden zu **Mindestversionen** (`>=`) gelockert — exakte
+> Versionen garantiert allein `uv.lock` (Updates via Dependabot/
+> `uv lock --upgrade`); Voll-Pin blieb nur phacc, weil es die HA-Kopplung
+> führt.
+>
+> **Test-Fix zur Migration (einzige Code-Anpassung):** Unter HA 2026.7
+> (eager task scheduling) schloss das Platform-Forwarding in
+> `tests/ha/test_config_flow.py` schon im Test-Body ab, sodass der
+> Refresh-Intervall-Timer des Coordinators armiert war und phacc's
+> `verify_cleanup` als *lingering timer* rügte — flaky und
+> reihenfolgeabhängig (unter HA 2026.2 trat das nicht auf). Lösung:
+> modulweite Autouse-Fixture `_unload_entries_after_test`, die nach jedem
+> Test erst drained (`async_block_till_done` — Subentry-/Options-Submit
+> feuert einen Entry-Reload; Entladen im Zustand SETUP_IN_PROGRESS wirft
+> `OperationNotAllowed`) und dann alle Entries entlädt — dasselbe Muster,
+> das `test_coordinator.py` schon immer explizit fährt. Keine Änderung an
+> der Integration selbst.
+
 ---
 
 ## 1. Testumgebung
@@ -113,14 +153,18 @@ das Muster — sonst debuggt er die Testinfrastruktur statt seines Features.
 ### 2.1 `.github/workflows/validate.yml`
 
 Trigger: **jeder Push**, jeder Pull Request, **nächtlich** (`cron: 0 0 * * *`)
-und manuell. Vier unabhängige Jobs:
+und manuell. Vier unabhängige Jobs. `lint` und `tests` laufen über **uv**:
+`astral-sh/setup-uv@v9` (mit Cache) → `uv sync --group dev` → alle Aufrufe
+via `uv run`. Der Interpreter (**Python 3.14**) kommt aus `.python-version`,
+alle Tool-Versionen aus `uv.lock` (Mindestversionen `>=` in `pyproject.toml`,
+exakt im Lock; einzig phacc ist voll gepinnt, weil es die HA-Kopplung führt):
 
 | Job | Was er tut |
 |---|---|
-| **`lint` (Lint (ruff))** | Python 3.13, frisches `pip install ruff`, dann drei Schritte: `ruff check custom_components tests`, **`ruff format --check .`** und das **Versions-Gate** |
-| **`tests` (Tests (pytest))** | Python 3.13, `pip install homeassistant pytest pytest-homeassistant-custom-component`, `python -m pytest tests -q` — also die **volle** Suite inkl. HA-Schicht |
-| **`validate-hacs`** | `hacs/action@main`, `category: integration`, `ignore: brands` |
-| **`validate-hassfest`** | `home-assistant/actions/hassfest@master` |
+| **`lint` (Lint (ruff + mypy))** | `uv run ruff check custom_components tests`, **`uv run ruff format --check .`**, **mypy-Baseline** (`uv run mypy` — meldet nur Fehler in `core/`, Scope-Begründung in `[tool.mypy]`) und das **Versions-Gate** |
+| **`tests` (Tests (pytest))** | `uv run pytest tests --cov --cov-report=term --cov-report=xml` — die **volle** Suite inkl. HA-Schicht; Coverage-Quelle aus `[tool.coverage.run]`, das XML landet als **Artifact** (`actions/upload-artifact@v7`, `coverage-xml`, kein externer Dienst) |
+| **`validate-hacs`** | `hacs/action@22.5.0` (gepinnter Tag statt `@main`), `category: integration`, `ignore: brands` |
+| **`validate-hassfest`** | `home-assistant/actions/hassfest@e3fb68e…` — gepinnter master-**SHA** statt `@master` (upstream existieren keine nutzbaren Tags; manuell bumpen, Kommentar im Workflow) |
 
 **Das Versions-Gate** (inline Python im Lint-Job):
 
@@ -139,12 +183,14 @@ Karten-Version); `pyproject.toml` trägt dieselbe Zahl als Metadatum.
 **Falle 1 — `ruff format --check .` formatiert auch Markdown.** Der Punkt am
 Ende ist wörtlich zu nehmen: *das ganze Repo*, nicht nur Python-Dateien.
 Neuere ruff-Versionen formatieren **Python-Codeblöcke innerhalb von Markdown**
-(also Fences, die als Sprachkennung `python` tragen). Weil CI ruff
-**frisch installiert**, kann eine
-nächtliche Validate-Runde auf **unverändertem** `main` rot werden, sobald ruff
-eine neue Version veröffentlicht — genau das passierte am 24.07.2026 und wurde
-in Commit `ea8286a` („CI: format markdown code block for new ruff") mit einer
-Umformatierung von `docs/CONSUMPTION_FORECAST.md` behoben.
+(also Fences, die als Sprachkennung `python` tragen). Damals installierte die
+CI ruff **frisch** — so konnte eine nächtliche Validate-Runde auf
+**unverändertem** `main` rot werden, sobald ruff eine neue Version
+veröffentlichte; genau das passierte am 24.07.2026 und wurde in Commit
+`ea8286a` („CI: format markdown code block for new ruff") mit einer
+Umformatierung von `docs/CONSUMPTION_FORECAST.md` behoben. Seit dem uv-Umzug
+(Update-Kästen oben) kommt ruff aus `uv.lock` — die Drift ist geschlossen,
+neue ruff-Versionen kommen nur noch über einen reviewed Lock-Upgrade herein.
 
 > **Regel für alle Markdown-Dateien in diesem Repo — inklusive dieser
 > Wissensbasis: Code-Fences NIE mit der Sprachkennung `python` öffnen.
@@ -152,10 +198,11 @@ Umformatierung von `docs/CONSUMPTION_FORECAST.md` behoben.
 > Ein Block ohne Sprachkennung wird von ruff nicht angefasst. Die
 > Wissensbasis-Dokumente 00–07 halten sich durchgängig daran.
 
-**Falle 2 — der HACS-Job flaked.** `hacs/action@main` lädt zur Laufzeit weitere
-Actions nach und läuft dabei gelegentlich in ein **HTTP 429** (Rate-Limit) beim
-Download. Das ist kein Repo-Fehler: **Job neu starten genügt**. Nicht
-„reparieren", nicht am Workflow drehen.
+**Falle 2 — der HACS-Job flaked.** Die HACS-Action (heute `hacs/action@22.5.0`
+gepinnt, zuvor `@main`) lädt zur Laufzeit weitere Actions nach und läuft dabei
+gelegentlich in ein **HTTP 429** (Rate-Limit) beim Download. Das ist kein
+Repo-Fehler: **Job neu starten genügt**. Nicht „reparieren", nicht am
+Workflow drehen.
 
 ### 2.3 `scratchpad/` und CI — die genaue Mechanik
 

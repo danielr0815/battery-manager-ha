@@ -42,7 +42,7 @@ def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
                 value = "on" if value else "-"
             try:
                 row.append(fmt.format(value))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 row.append(str(value))
         rows.append(row)
 

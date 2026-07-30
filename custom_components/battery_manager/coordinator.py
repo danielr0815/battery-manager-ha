@@ -830,7 +830,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         try:
             return float(state.state)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     def _get_soc(self, now: datetime) -> float | None:
@@ -901,7 +901,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ts = dt_util.as_local(ts).replace(tzinfo=None)
             try:
                 wh = float(value)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 skipped += 1
                 continue
             if not math.isfinite(wh):  # NaN / ±inf
@@ -1522,7 +1522,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if st is not None and st.state not in ("unknown", "unavailable"):
                 try:
                     return float(st.state) > LOAD_RUNTIME_MIN_W
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     pass
         if load_id in self._load_charging_active:
             return bool(self._load_charging_active[load_id])
@@ -2020,7 +2020,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return latched  # hold last state during a dropout, do not reset
         try:
             power = float(state.state)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return state.state.lower() in APPLIANCE_RUNNING_STATES
         on_th = float(data.get(CONF_APPLIANCE_POWER_THRESHOLD_W, 10.0))
         off_th = min(float(data.get(CONF_APPLIANCE_OFF_THRESHOLD_W, on_th)), on_th)

@@ -257,7 +257,6 @@ def simulate(
     flows: list[HourFlows] = []
     total_import = 0.0
     total_export = 0.0
-    seq_scale = not isinstance(pv_scale, (int, float))
 
     for i, slot in enumerate(inputs.slots):
         flow = step_hour(
@@ -268,7 +267,11 @@ def simulate(
             extra_ac_wh=extra_ac_wh[i] if extra_ac_wh else 0.0,
             dc24_from_grid=bool(dc24_schedule[i]) if dc24_schedule else False,
             dc48_support=bool(dc48_schedule[i]) if dc48_schedule else False,
-            pv_scale=pv_scale[i] if seq_scale else pv_scale,
+            # Inline isinstance (was a `seq_scale` flag) so mypy narrows the
+            # union in each branch; same runtime semantics.
+            pv_scale=pv_scale[i]
+            if not isinstance(pv_scale, (int, float))
+            else pv_scale,
         )
         flows.append(flow)
         soc = flow.soc_end_percent

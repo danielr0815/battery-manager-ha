@@ -177,24 +177,25 @@ series:
 
 ## Development & testing
 
+Setup once — either reopen the repo in the [devcontainer](.devcontainer/)
+(everything installs itself), or locally with [uv](https://docs.astral.sh/uv/):
+
 ```bash
-python -m venv .venv
-# activate: `source .venv/bin/activate` (Linux/macOS/WSL) or
-#           `.venv\Scripts\activate`     (Windows PowerShell)
-python -m pip install homeassistant pytest pytest-homeassistant-custom-component ruff
+uv sync --group dev   # .venv from uv.lock — the single source of truth, incl. CI
 
 # Core suite (pure Python, runs anywhere incl. Windows):
-python -m pytest tests/core -p no:homeassistant
+uv run pytest tests/core -p no:homeassistant
 
 # Full suite incl. Home Assistant layer (needs Linux/WSL — the HA test
 # helpers do not install on Windows):
-python -m pytest tests
+uv run pytest tests
 
-ruff check custom_components tests
+uv run ruff check custom_components tests
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow (golden snapshots,
-versioning) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+versioning, pre-commit, type-check baseline) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 The simulation core (`custom_components/battery_manager/core/`) is free of
 Home Assistant imports and side effects: frozen dataclasses in, frozen
