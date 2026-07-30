@@ -23,7 +23,12 @@ Two ways — pick one:
 
 **A. Devcontainer** (VS Code / GitHub Codespaces): reopen the repo in the
 [devcontainer](.devcontainer/) — its `postCreateCommand` installs the locked
-dev environment (and the recommended extensions) automatically.
+dev environment (and the recommended extensions) automatically. The
+devcontainer is **verified in CI** (the `devcontainer` job builds it and runs
+the full suite inside) and locally via the
+[devcontainer CLI](https://github.com/devcontainers/cli)
+(`devcontainer up --workspace-folder .`, then `devcontainer exec
+--workspace-folder . uv run pytest tests`).
 
 **B. Local with [uv](https://docs.astral.sh/uv/):**
 

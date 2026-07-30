@@ -153,7 +153,7 @@ das Muster — sonst debuggt er die Testinfrastruktur statt seines Features.
 ### 2.1 `.github/workflows/validate.yml`
 
 Trigger: **jeder Push**, jeder Pull Request, **nächtlich** (`cron: 0 0 * * *`)
-und manuell. Vier unabhängige Jobs. `lint` und `tests` laufen über **uv**:
+und manuell. Fünf unabhängige Jobs. `lint` und `tests` laufen über **uv**:
 `astral-sh/setup-uv@v9` (mit Cache) → `uv sync --group dev` → alle Aufrufe
 via `uv run`. Der Interpreter (**Python 3.14**) kommt aus `.python-version`,
 alle Tool-Versionen aus `uv.lock` (Mindestversionen `>=` in `pyproject.toml`,
@@ -163,6 +163,7 @@ exakt im Lock; einzig phacc ist voll gepinnt, weil es die HA-Kopplung führt):
 |---|---|
 | **`lint` (Lint (ruff + mypy))** | `uv run ruff check custom_components tests`, **`uv run ruff format --check .`**, **mypy-Baseline** (`uv run mypy` — meldet nur Fehler in `core/`, Scope-Begründung in `[tool.mypy]`) und das **Versions-Gate** |
 | **`tests` (Tests (pytest))** | `uv run pytest tests --cov --cov-report=term --cov-report=xml` — die **volle** Suite inkl. HA-Schicht; Coverage-Quelle aus `[tool.coverage.run]`, das XML landet als **Artifact** (`actions/upload-artifact@v7`, `coverage-xml`, kein externer Dienst) |
+| **`devcontainer`** | Baut `.devcontainer/devcontainer.json` via `devcontainers/ci` (inkl. `postCreateCommand` = `uv sync`) und führt im Container aus: volle Suite, `ruff check`, `ruff format --check .`, `mypy` — ein kaputter Devcontainer fällt sofort auf. `lint`/`tests` bleiben das schnellere Feedback (setup-uv); kein `cacheFrom`, weil der Devcontainer image-basiert ist (kein Dockerfile, keine eigenen Layer) |
 | **`validate-hacs`** | `hacs/action@22.5.0` (gepinnter Tag statt `@main`), `category: integration`, `ignore: brands` |
 | **`validate-hassfest`** | `home-assistant/actions/hassfest@e3fb68e…` — gepinnter master-**SHA** statt `@master` (upstream existieren keine nutzbaren Tags; manuell bumpen, Kommentar im Workflow) |
 

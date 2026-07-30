@@ -14,8 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   truth for every dev-tool version (minimum versions `>=` in `pyproject.toml`,
   exact ones in the lock; only `pytest-homeassistant-custom-component` stays
   exact-pinned because it pins homeassistant itself and thus leads the HA
-  coupling). CI installs through `astral-sh/setup-uv` + the dependency group
-  instead of floating `pip install`, and its actions are pinned
+  coupling). The devcontainer is not just a local option: a dedicated CI job
+  (`devcontainers/ci`) builds it on every push/PR and runs the full test
+  suite, ruff and mypy inside the container — verified locally the same way
+  with the devcontainer CLI. CI installs through `astral-sh/setup-uv` + the
+  dependency group instead of floating `pip install`, and its actions are
+  pinned
   (`hacs/action@22.5.0`, hassfest master SHA); Dependabot now also tracks the
   uv ecosystem. New: `.vscode/` (ruff formatter, pytest tasks), pre-commit
   hooks (ruff check + format), a mypy baseline over `core/`, pytest-cov with

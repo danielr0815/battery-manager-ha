@@ -26,6 +26,10 @@ uv sync --group dev        # erzeugt .venv aus uv.lock (einzige Wahrheit,
 
 Alternativ: Devcontainer (`.devcontainer/`) — der postCreateCommand macht
 dasselbe. Kein `pip install` nötig; Python-Version steht in `.python-version`.
+Der Devcontainer ist **CI-verifiziert**: der `devcontainer`-Job in
+`validate.yml` baut ihn bei jedem Push/PR und führt die volle Suite + ruff +
+mypy darin aus (`devcontainers/ci`); lokal geht das mit der devcontainer-CLI
+(`devcontainer up` / `devcontainer exec`) genauso.
 
 ## Tests
 
