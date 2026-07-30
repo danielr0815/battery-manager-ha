@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Translations: dropped the deprecated `config_subentries.<type>.title`
+  keys** (hassfest `[TRANSLATIONS]` warning). The title moved out of the flow
+  sections back in HA 0.109; `entry_type` already carries the identical text,
+  so nothing visible changes — this only silences the warning.
+
 ## [0.16.3] - 2026-07-30
 
 ### Changed

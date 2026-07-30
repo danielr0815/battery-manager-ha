@@ -261,7 +261,6 @@
   },
   "config_subentries": {
     "surplus_load": {
-      "title": "Überschusslast",
       "entry_type": "Überschusslast",
       "error": {
         "keep_on_requires_enable": "Die Politik „Anlassen“ erfordert eine Lade-Freigabe-Entität — sonst könnte das Laden nie gestoppt werden.",
@@ -366,7 +365,6 @@
       }
     },
     "appliance": {
-      "title": "Haushaltsgerät",
       "entry_type": "Haushaltsgerät",
       "initiate_flow": {
         "user": "Haushaltsgerät hinzufügen",

@@ -261,7 +261,6 @@
   },
   "config_subentries": {
     "surplus_load": {
-      "title": "Surplus load",
       "entry_type": "Surplus load",
       "error": {
         "keep_on_requires_enable": "The 'keep on' policy requires a charge-enable entity — otherwise charging could never be stopped.",
@@ -366,7 +365,6 @@
       }
     },
     "appliance": {
-      "title": "Appliance",
       "entry_type": "Appliance",
       "initiate_flow": {
         "user": "Add appliance",
