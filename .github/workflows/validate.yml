@@ -13,10 +13,10 @@ jobs:
     name: HACS Validation
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
       - name: HACS validation
-        uses: "hacs/action@main"
+        uses: "hacs/action@22.5.0"
         with:
           category: "integration"
           ignore: "brands"
@@ -26,35 +26,45 @@ jobs:
     name: Hassfest Validation
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
+      # hassfest has no usable release tags (only an ancient 1.0.0), so this
+      # pins a master SHA instead of floating on @master. Bump manually:
+      # https://github.com/home-assistant/actions/commits/master
       - name: Hassfest validation
-        uses: "home-assistant/actions/hassfest@master"
+        uses: "home-assistant/actions/hassfest@e3fb68ebda13d88a0d695082f471ba2c83d025fb"
 
   lint:
     runs-on: "ubuntu-latest"
-    name: Lint (ruff)
+    name: Lint (ruff + mypy)
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
-      - name: Set up Python
-        uses: "actions/setup-python@v5"
+      - name: Set up uv
+        uses: "astral-sh/setup-uv@v9"
         with:
-          python-version: "3.13"
+          enable-cache: true
 
-      - name: Install ruff
-        run: pip install ruff
+      # uv reads .python-version (3.14) and installs the interpreter itself;
+      # uv.lock is the single source of truth for every tool version.
+      - name: Install dev dependencies
+        run: uv sync --group dev
 
       - name: Ruff check
-        run: ruff check custom_components tests
+        run: uv run ruff check custom_components tests
 
       - name: Ruff format check
-        run: ruff format --check .
+        run: uv run ruff format --check .
+
+      # Baseline only: errors are reported for the pure planner core
+      # ([tool.mypy] in pyproject.toml explains the scope).
+      - name: Type check (mypy)
+        run: uv run mypy
 
       - name: Version consistency (manifest == pyproject)
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import json, re, pathlib
           mf = json.loads(pathlib.Path(
               "custom_components/battery_manager/manifest.json").read_text())["version"]
@@ -69,17 +79,46 @@ jobs:
     name: Tests (pytest)
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
 
-      - name: Set up Python
-        uses: "actions/setup-python@v5"
+      - name: Set up uv
+        uses: "astral-sh/setup-uv@v9"
         with:
-          python-version: "3.13"
+          enable-cache: true
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install homeassistant pytest pytest-homeassistant-custom-component
+      - name: Install dev dependencies
+        run: uv sync --group dev
 
+      # Coverage source comes from [tool.coverage.run] in pyproject.toml;
+      # the XML report is kept as a build artifact (no external service).
       - name: Run test suite
-        run: python -m pytest tests -q
+        run: uv run pytest tests --cov --cov-report=term --cov-report=xml
+
+      - name: Upload coverage report
+        uses: "actions/upload-artifact@v7"
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  devcontainer:
+    runs-on: "ubuntu-latest"
+    name: Devcontainer (build + full suite)
+    steps:
+      - name: Checkout
+        uses: "actions/checkout@v7"
+
+      # Builds .devcontainer/devcontainer.json (incl. postCreateCommand =
+      # uv sync) and runs the full check battery INSIDE the container, so a
+      # broken devcontainer fails immediately. The lint/tests jobs give
+      # faster feedback via setup-uv; this job proves the container itself.
+      # No cacheFrom: the devcontainer is image-based (no Dockerfile), the
+      # only layers are the pulled base image.
+      - name: Build and test in devcontainer
+        uses: "devcontainers/ci@v0.3.1900000450"
+        with:
+          runCmd: >-
+            uv run pytest tests -q
+            && uv run ruff check custom_components tests
+            && uv run ruff format --check .
+            && uv run mypy
