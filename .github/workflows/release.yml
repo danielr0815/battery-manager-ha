@@ -10,16 +10,17 @@ jobs:
     name: Validate for release
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
-        
+        uses: "actions/checkout@v7"
+
       - name: HACS validation
-        uses: "hacs/action@main"
+        uses: "hacs/action@22.5.0"
         with:
           category: "integration"
           ignore: "brands"
-          
+
+      # Pinned SHA (no usable tags upstream) — see validate.yml.
       - name: Hassfest validation
-        uses: "home-assistant/actions/hassfest@master"
+        uses: "home-assistant/actions/hassfest@e3fb68ebda13d88a0d695082f471ba2c83d025fb"
         
   release:
     runs-on: "ubuntu-latest"
@@ -29,7 +30,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: "actions/checkout@v4"
+        uses: "actions/checkout@v7"
         # Check out the real branch, not the tag: the release event leaves the
         # runner in detached HEAD, from which a push to main cannot resolve
         # (the ad-m push action failed exactly here). `ref: main` puts us on a
