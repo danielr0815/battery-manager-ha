@@ -623,6 +623,25 @@ def _seamless_spill(
     return None
 
 
+def _final_note(load, commit_h: float, seamless: bool) -> str:
+    """Sub-quantum label for the explain-plan reason, shared by both passes
+    (the pre-refactor copies were verbatim duplicates).
+
+    Only the gate-stop final quantum sits below one min_runtime quantum —
+    name it so a shorter-than-dwell booking is self-explaining
+    (F-GATE-TOPUP R6). A seamless raster-edge continuation
+    (F-SEAMLESS-PLAN) is also sub-quantum but is named for what it is,
+    not a top-up.
+    """
+    return (
+        ", seamless continuation"
+        if seamless
+        else ", final top-up to target"
+        if commit_h < load.min_runtime_min / 60.0 - _EPS
+        else ""
+    )
+
+
 def allocate_loads(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -764,7 +783,14 @@ def allocate_loads(
         closes the latest-first re-drain ratchet: a later acceptance at an
         earlier hour must not silently degrade an accepted run into a grid-fed
         or cutoff-riding one."""
-        inverter_floor = control.inverter_min_soc_percent
+        # Same cutoff the simulator itself applies to the inverter
+        # (simulate.py: inv_floor at max(soc_min, inverter_min_soc)) — the
+        # planner guard must veto slots the simulation would ride at its own
+        # floor. Bit-identical to the former bare `inverter_min_soc_percent`
+        # for every config with soc_min <= inverter_min (the golden suite).
+        inverter_floor = max(
+            config.battery.soc_min_percent, control.inverter_min_soc_percent
+        )
         return all(
             _slot_serviceable(traj.flows[j], inputs.slots[j], inverter_floor)
             for j, _take in covered
@@ -788,6 +814,91 @@ def allocate_loads(
     def in_window(i: int) -> bool:
         w = windows.get(inputs.slots[i].start.date())
         return w is not None and w[0] <= i <= w[1]
+
+    def _spread_candidate(
+        load, i: int, commit_h: float, power_w: float
+    ) -> tuple[list[float], list[tuple[int, float]], float, bool] | None:
+        """Spread + seamless-spill trim, shared by pass 1 and pass 2 (the
+        pre-refactor copies were verbatim duplicates — ONE implementation, so
+        the raster-edge rule can never drift asymmetric between the passes).
+
+        Lays the commitment into a trial copy of `extra`. When the min-runtime
+        spill lands in a slot already running THIS load, it is a seamless
+        raster-edge continuation (F-SEAMLESS-PLAN, F9), not a conflict: book
+        slot i's own duration instead of dropping the candidate (pass 1) /
+        retracting the current recommendation (pass 2). Any other overlap is a
+        real double-booking -> None (the caller skips the candidate). Returns
+        ``(trial, covered, commit_h, seamless)``; on a seamless trim
+        `commit_h` is re-floored to slot i's own duration, so the caller
+        recomputes ``power_wh = power_w * commit_h`` afterwards.
+        """
+        trial, covered = _spread_energy(extra, inputs.slots, i, power_w, commit_h)
+        seamless = False
+        if any(schedules[load.load_id][j] for j, _ in covered):
+            trimmed = _seamless_spill(
+                covered, inputs.slots, i, power_w, extra, schedules[load.load_id]
+            )
+            if trimmed is None:
+                return None  # commitment overlaps an already-scheduled slot
+            trial, covered = trimmed
+            commit_h = inputs.slots[i].duration
+            seamless = True
+        return trial, covered, commit_h, seamless
+
+    def _gate_trial(
+        trial_ac: tuple[float, ...], covered: list[tuple[int, float]]
+    ) -> Trajectory | None:
+        """Full-horizon re-simulation + the hard conditions BOTH passes apply,
+        in the same order (Z2'' import invariant, R2 planner-G4 slot
+        serviceability, R5 reach-max, Z3 buffer floor) — the pre-refactor
+        copies were verbatim duplicates; ONE implementation, so a gate change
+        can never drift asymmetric between the passes. Returns None when the
+        candidate is vetoed, else the trial trajectory for the caller's
+        pass-specific gates / acceptance.
+        """
+        traj = simulate(config, inputs, threshold, extra_ac_wh=trial_ac)
+        if not import_ok(traj):  # Z2''
+            return None
+        if not slots_serviceable(traj, covered):  # R2 planner-G4
+            return None
+        if not preserves_daily_max(traj):  # R5 reach-max
+            return None
+        if _degrades_min_soc(traj, current, buffer_floor):  # Z3
+            return None
+        return traj
+
+    def _accept_candidate(
+        load,
+        pass_no: int,
+        i: int,
+        power_w: float,
+        trial: list[float],
+        covered: list[tuple[int, float]],
+        traj: Trajectory,
+        rem: float | None,
+    ) -> tuple[float, float]:
+        """Accept bookkeeping, shared by both passes (the pre-refactor copies
+        were verbatim duplicates): commit the trial series, mark the covered
+        slots booked, and account the energy. Book what actually landed in the
+        horizon (a commitment may be truncated at the horizon end); the gates
+        deliberately used the full committed energy. `pass_no` (1/2) is only
+        recorded in the allocation entry. Returns ``(placed_h, placed_wh)`` for
+        the caller's reason string.
+        """
+        nonlocal extra, current
+        extra = trial
+        current = traj
+        for j, take in covered:
+            schedules[load.load_id][j] = True
+            run_h[load.load_id][j] = take
+            booked_any[j] = True
+        placed_h = sum(take for _, take in covered)
+        placed_wh = power_w * placed_h
+        planned_wh[load.load_id] += placed_wh
+        allocations[load.load_id].append((i, len(covered), pass_no, placed_wh))
+        if rem is not None:
+            remaining[load.load_id] = rem - placed_wh
+        return placed_h, placed_wh
 
     # Pass 1 — direct-surplus hours, LOAD-OUTER in config order (F-PLANNER-
     # HONESTY R7): strict priority — a load books its complete pass-1
@@ -829,29 +940,16 @@ def allocate_loads(
                     and rem < max(power_w, load.nominal_power_w) * commit_h
                 ):
                     continue  # saturated (or nearly): skip
-                trial, covered = _spread_energy(
-                    extra, inputs.slots, i, power_w, commit_h
-                )
-                seamless = False
-                if any(schedules[load.load_id][j] for j, _ in covered):
-                    # A min-runtime spill that lands in a slot already running
-                    # THIS load is a seamless continuation, not a conflict
-                    # (F-SEAMLESS-PLAN): book slot i's own duration instead of
-                    # dropping it. Any other overlap is a real double-booking.
-                    trimmed = _seamless_spill(
-                        covered,
-                        inputs.slots,
-                        i,
-                        power_w,
-                        extra,
-                        schedules[load.load_id],
-                    )
-                    if trimmed is None:
-                        continue  # commitment overlaps an already-scheduled slot
-                    trial, covered = trimmed
-                    commit_h = inputs.slots[i].duration
-                    power_wh = power_w * commit_h
-                    seamless = True
+                spread = _spread_candidate(load, i, commit_h, power_w)
+                # Unreachable in pass 1: slots are tried ascending and bookings
+                # mark contiguously forward from the accepted slot, so no own
+                # slot ahead of i can be marked yet (unlike pass 2, which runs
+                # descending and relies on this guard). Kept as a defensive
+                # mirror of the pass-2 structure.
+                if spread is None:  # pragma: no cover
+                    continue  # commitment overlaps an already-scheduled slot
+                trial, covered, commit_h, seamless = spread
+                power_wh = power_w * commit_h
                 # Soft surplus condition (D-A4): battery may cover at most
                 # `battery_tolerance` of the committed energy. Spilled slots
                 # contribute their export prorated by the occupied share.
@@ -863,48 +961,19 @@ def allocate_loads(
                 if battery_share > load.battery_tolerance + _EPS:
                     continue
                 # Hard conditions via full re-simulation (Z2''/R2/R5/Z3).
-                traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-                if not import_ok(traj):
+                traj = _gate_trial(tuple(trial), covered)
+                if traj is None:
                     continue
-                if not slots_serviceable(traj, covered):
-                    continue
-                if not preserves_daily_max(traj):
-                    continue
-                if _degrades_min_soc(traj, current, buffer_floor):
-                    continue
-                extra = trial
-                current = traj
-                for j, take in covered:
-                    schedules[load.load_id][j] = True
-                    run_h[load.load_id][j] = take
-                    booked_any[j] = True
-                # Book what actually landed in the horizon (a commitment may be
-                # truncated at the horizon end); the gates above deliberately
-                # used the full committed energy.
-                placed_h = sum(take for _, take in covered)
-                placed_wh = power_w * placed_h
-                planned_wh[load.load_id] += placed_wh
-                allocations[load.load_id].append((i, len(covered), 1, placed_wh))
-                # Only the gate-stop final quantum sits below one min_runtime
-                # quantum — name it so a shorter-than-dwell booking is
-                # self-explaining (F-GATE-TOPUP R6). A seamless raster-edge
-                # continuation (F-SEAMLESS-PLAN) is also sub-quantum but is named
-                # for what it is, not a top-up.
-                final_note = (
-                    ", seamless continuation"
-                    if seamless
-                    else ", final top-up to target"
-                    if commit_h < load.min_runtime_min / 60.0 - _EPS
-                    else ""
+                placed_h, _placed_wh = _accept_candidate(
+                    load, 1, i, power_w, trial, covered, traj, rem
                 )
+                final_note = _final_note(load, commit_h, seamless)
                 reasons[load.load_id].append(
                     f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
                     f"direct surplus, {round(placed_h * 60)} min x "
                     f"{round(power_w)} W, battery share {round(battery_share * 100)}%"
                     f"{final_note}"
                 )
-                if rem is not None:
-                    remaining[load.load_id] = rem - placed_wh
                 break  # placed the largest feasible quantum; done with this slot
 
     # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2,
@@ -990,29 +1059,11 @@ def allocate_loads(
                         and rem < max(power_w, load.nominal_power_w) * commit_h
                     ):
                         continue
-                    trial, covered = _spread_energy(
-                        extra, inputs.slots, i, power_w, commit_h
-                    )
-                    seamless = False
-                    if any(schedules[load.load_id][j] for j, _ in covered):
-                        # Seamless raster-edge continuation into a slot already
-                        # running THIS load (F-SEAMLESS-PLAN, F9): book slot i's
-                        # own duration rather than dropping the current
-                        # recommendation. Any other overlap is a real conflict.
-                        trimmed = _seamless_spill(
-                            covered,
-                            inputs.slots,
-                            i,
-                            power_w,
-                            extra,
-                            schedules[load.load_id],
-                        )
-                        if trimmed is None:
-                            continue
-                        trial, covered = trimmed
-                        commit_h = inputs.slots[i].duration
-                        power_wh = power_w * commit_h
-                        seamless = True
+                    spread = _spread_candidate(load, i, commit_h, power_w)
+                    if spread is None:
+                        continue
+                    trial, covered, commit_h, seamless = spread
+                    power_wh = power_w * commit_h
                     if load.energy_limited and any(
                         inputs.slots[j].pv_wh <= 0.0 for j, _ in covered
                     ):
@@ -1022,14 +1073,8 @@ def allocate_loads(
                         # final quantum) still get their chance below.
                         continue
                     trial_tuple = tuple(trial)
-                    traj = simulate(config, inputs, threshold, extra_ac_wh=trial_tuple)
-                    if not import_ok(traj):  # Z2''
-                        continue
-                    if not slots_serviceable(traj, covered):  # R2 planner-G4
-                        continue
-                    if not preserves_daily_max(traj):  # R5 reach-max
-                        continue
-                    if _degrades_min_soc(traj, current, buffer_floor):  # Z3
+                    traj = _gate_trial(trial_tuple, covered)
+                    if traj is None:
                         continue
                     # Bet settlement (R3): where the trial actually refills.
                     recovery = _refill_index(traj, i, soc_full)
@@ -1130,8 +1175,7 @@ def allocate_loads(
                             trial_wmin, stress_floor_by_slot[i], stress_base[key]
                         ):
                             continue
-                    extra = trial
-                    current = traj
+                    _accept_candidate(load, 2, i, power_w, trial, covered, traj, rem)
                     stress_base.clear()  # `extra` changed -> windowed baselines stale
                     if c2_active:
                         current_beta = (
@@ -1145,26 +1189,9 @@ def allocate_loads(
                                 pv_scale=optimism_vec,
                             )
                         )
-                    for j, take in covered:
-                        schedules[load.load_id][j] = True
-                        run_h[load.load_id][j] = take
-                        booked_any[j] = True
-                    placed_wh = power_w * sum(take for _, take in covered)
-                    planned_wh[load.load_id] += placed_wh
-                    allocations[load.load_id].append((i, len(covered), 2, placed_wh))
                     # "latest feasible slot" is structurally true: pass 2 walks
                     # descending and accepts the first slot that passes (R13).
-                    # Only the gate-stop final quantum sits below one
-                    # min_runtime quantum (F-GATE-TOPUP R6); a seamless
-                    # raster-edge continuation (F-SEAMLESS-PLAN) is also
-                    # sub-quantum but named for what it is.
-                    final_note = (
-                        ", seamless continuation"
-                        if seamless
-                        else ", final top-up to target"
-                        if commit_h < load.min_runtime_min / 60.0 - _EPS
-                        else ""
-                    )
+                    final_note = _final_note(load, commit_h, seamless)
                     # F-QUANTILE-BANDS R6: name the evidence — "(p90)" when the
                     # accepted slot itself carried a band, "(beta)" otherwise.
                     insurance_src = "p90" if band_slots[i] else "beta"
@@ -1181,8 +1208,6 @@ def allocate_loads(
                         )
                         + final_note
                     )
-                    if rem is not None:
-                        remaining[load.load_id] = rem - placed_wh
                     break
 
     plans = [
@@ -1232,8 +1257,13 @@ def appliance_windows(
             dc24_schedule=dc24_schedule,
             dc48_schedule=dc48_schedule,
         )
+        # An empty horizon must NOT advise a start (code review 2026-07): with
+        # no slots the trial imports 0 Wh and never degrades the min SOC, so
+        # both gates below pass vacuously and the advisor used to green-light
+        # a run on zero evidence.
         windows[appliance.appliance_id] = (
-            traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
+            bool(traj.flows)
+            and traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
             and not _degrades_min_soc(traj, planned_trajectory, buffer_floor)
         )
     return windows

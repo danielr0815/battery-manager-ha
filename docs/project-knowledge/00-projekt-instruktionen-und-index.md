@@ -1,6 +1,6 @@
 # Projekt-Instruktionen & Index
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Diese Datei ist der Einstieg in die
+**Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Diese Datei ist der Einstieg in die
 Wissensbasis zum Repository **`danielr0815/battery-manager-ha`**
 (<https://github.com/danielr0815/battery-manager-ha>). Sie erklärt, was das
 Projekt ist, welches Wissensdokument wofür zuständig ist, über welchen Pfad man
@@ -36,13 +36,13 @@ Kernideen, die das Projekt von simplen Überschuss-Automationen unterscheiden:
 - **Ehrliche Selbstauskunft:** per-Slot-`why`-Strings am Plan, `daily`-Aufriss,
   prevented_export, Diagnostics-Endpoint.
 
-Technische Eckdaten (Stand v0.16.2):
+Technische Eckdaten (Stand v0.17.0):
 
 | Punkt | Wert |
 |---|---|
-| Aktueller Stand | `main` @ **v0.16.2** (Commit `a172d48`); manifest.json + pyproject.toml versionssynchron (CI-Gate) |
+| Aktueller Stand | `main` @ **v0.17.0** (Arbeitsstand 2026-07-31); manifest.json + pyproject.toml versionssynchron (CI-Gate) |
 | Plattformen | `sensor`, `binary_sensor`, `switch`, `button`, Diagnostics; Konfiguration komplett über Config-Flow + **Subentries** (je Last / Appliance) |
-| Architekturgrenze | `core/` (model/series/simulate/optimize) importiert nichts aus `homeassistant` — pur und einzeln testbar; `coordinator.py` (~3800 Zeilen) ist die Ausführungs- und Zustandsschicht |
+| Architekturgrenze | `core/` (model/series/simulate/optimize) importiert nichts aus `homeassistant` — pur und einzeln testbar; `coordinator.py` (~4730 Zeilen, Stand v0.17.0) ist die Ausführungs- und Zustandsschicht |
 | Prognose-Lieferant | Schwester-Repo `danielr0815/balcony-solar-forecast` (15-min-PV-Prognose + p10/p90-Bänder); Kopplung + Schriftwechsel siehe Dokument 06 §5 |
 | Referenz-Anlage | Live-HA des Betreibers (Victron 5 kWh, 8-Modul-Balkonanlage, Entfeuchter + 2 Fossibots); Deploy ausschließlich über GitHub-Releases + HACS |
 | Tests | volle Suite nur unter WSL lauffähig (fcntl); ruff unter Windows; Golden-Tests für Planentscheidungen |
@@ -51,7 +51,8 @@ Technische Eckdaten (Stand v0.16.2):
 Menschen) ohne Vorwissen und ohne Chatverlauf arbeitsfähig machen: Code ändern,
 eine Planentscheidung forensisch nachvollziehen, den Betreiber beraten, ein
 Release bauen. Sie ist destillierte Analyse, kein Ersatz für den Code — jede
-Verhaltensaussage wurde gegen `main` @ v0.16.2 geprüft, aber Code altert
+Verhaltensaussage wurde gegen `main` @ v0.16.2 geprüft (die v0.17.0-Einträge
+gegen den Arbeitsstand vom 2026-07-31), aber Code altert
 schneller als Prosa. **Im Zweifel gilt der Code.**
 
 ---
@@ -146,13 +147,17 @@ Home-Assistant-Custom-Integration (Domain battery_manager), die eine
 Victron-Hausbatterie und Überschusslasten (Entfeuchter, Fossibot-
 Powerstations) mit einem planenden Optimierer steuert. Das Projektwissen
 liegt in den Dokumenten 00–07 (docs/project-knowledge/); 00 enthält den
-Index. Stand der Wissensbasis: main @ v0.16.2 (2026-07-25) — bei neueren
+Index. Stand der Wissensbasis: main @ v0.17.0 (Arbeitsstand 2026-07-31) — bei neueren
 Versionen gilt der Code bzw. das CHANGELOG.
 
 Grundregeln:
-1. Im Zweifel gilt der Code, nicht die Doku. ARCHITECTURE.md/STRATEGY.md im
-   Repo sind veraltet (v0.7.x); aktuell sind die F-*.md-Feature-Dokumente,
-   LOAD_CONTROL.md und diese Wissensbasis.
+1. Im Zweifel gilt der Code, nicht die Doku. Danach gilt: je `F-*.md` ist die
+   Spezifikation **seines** Features; bei einem Konflikt zwischen einem
+   F-Doc und dieser Wissensbasis gilt die Wissensbasis (sie ist gegen den
+   aktuellen Code geprüft, F-Docs werden bei Supersession nur annotiert).
+   `ARCHITECTURE.md` ist größtenteils aktuell (Code-Map gepflegt, Stand
+   2026-07); `STRATEGY.md`, `REQUIREMENTS.md` und `ALGORITHM.md` sind
+   historische Design-Records.
 2. Unverhandelbare Operator-Regeln: (a) Strict-Surplus — Zusatzlasten kaufen
    nie Import und laufen nie netzgespeist (G4). (b) Lasten so spät wie
    möglich, gerade früh genug um Export zu vermeiden (Latest-First).

@@ -2,11 +2,45 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from .forecast_hours import coverage_and_residual
 from .model import ApplianceRun, HourSlot, PlanInputs, SurplusLoadState, SystemConfig
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _slot_duration_hours(index: int, slot_start: datetime) -> float:
+    """Slot length in hours: slot 0 is the partial hour from `now` to the next
+    full hour; every later slot is a full hour.
+
+    Seconds and microseconds MUST count (code review 2026-07): the old
+    `(60 - minute) / 60` dropped them, stretching slot 0 by up to 59 s and
+    systematically over-booking PV and load in the first slot of every cycle.
+    """
+    if index != 0:
+        return 1.0
+    remaining_s = (
+        3600.0
+        - slot_start.minute * 60.0
+        - slot_start.second
+        - slot_start.microsecond / 1e6
+    )
+    return remaining_s / 3600.0
+
+
+def _daily_forecast_wh(daily_kwh: float, day_offset: int) -> float:
+    """Daily PV forecast in Wh, sanitized (code review 2026-07): NaN (broken
+    forecast sensor) counts as no production — one NaN state would otherwise
+    poison EVERY slot of the day with NaN Wh; a negative state is physically
+    meaningless and clamps to 0."""
+    if math.isnan(daily_kwh):
+        _LOGGER.debug("discarding NaN daily PV forecast (day offset %d)", day_offset)
+        return 0.0
+    return max(0.0, daily_kwh) * 1000.0
 
 
 def _pv_share_total(pv) -> float:
@@ -60,7 +94,12 @@ def slot_starts(now: datetime, num_days: int) -> tuple[datetime, ...]:
     starts: list[datetime] = []
     slot_start = now
     index = 0
-    while slot_start <= horizon_end:
+    # The FIRST slot is emitted unconditionally (code review 2026-07): at
+    # now >= 23:59:59.x of the last forecast day, `now` sits past horizon_end
+    # (whose microseconds are pinned to 0) and the horizon used to come back
+    # EMPTY, leaving downstream with no plan for the current moment. The
+    # remaining sliver of the day is a valid tiny slot instead.
+    while slot_start <= horizon_end or not starts:
         starts.append(slot_start)
         if index == 0:
             slot_start = slot_start.replace(
@@ -96,18 +135,18 @@ def _pv_wh_series(
         return _pv_wh_hourly(config, now, daily_forecasts_kwh, starts, pv_hourly)
     result: list[float] = []
     for index, slot_start in enumerate(starts):
-        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
+        duration = _slot_duration_hours(index, slot_start)
         day_offset = (slot_start.date() - now.date()).days
-        daily_kwh = (
-            daily_forecasts_kwh[day_offset]
+        daily_wh = (
+            _daily_forecast_wh(daily_forecasts_kwh[day_offset], day_offset)
             if 0 <= day_offset < len(daily_forecasts_kwh)
             else 0.0
         )
         pv_w = min(
-            daily_kwh * 1000.0 * pv_hour_share(config.pv, slot_start.hour),
+            daily_wh * pv_hour_share(config.pv, slot_start.hour),
             config.pv.peak_power_w,
         )
-        result.append(pv_w * duration)
+        result.append(max(0.0, pv_w) * duration)
     return result
 
 
@@ -135,27 +174,38 @@ def _pv_wh_hourly(
     per-slot peak-power cap then applies exactly as in the two-window path.
     """
     peak = config.pv.peak_power_w
+    # Sanitize the bucket map ONCE (code review 2026-07): NaN buckets are
+    # DROPPED — their hours count as uncovered and take a residual share like
+    # any other hour the map does not cover (the documented fallback); kept,
+    # they would NaN-poison the day's residual AND their own slot. Negative
+    # buckets are physically meaningless and clamp to 0 Wh.
+    buckets: dict[datetime, float] = {}
+    for key, wh in pv_hourly.items():
+        if math.isnan(wh):
+            _LOGGER.debug("dropping NaN hourly PV bucket at %s", key)
+            continue
+        buckets[key] = max(0.0, wh)
     # Per-day residual from the daily forecast state vs. the day's covered buckets.
     residual_by_day: dict[date, float] = {}
     for day_offset, daily_kwh in enumerate(daily_forecasts_kwh):
         day = now.date() + timedelta(days=day_offset)
         _covered_wh, residual_wh = coverage_and_residual(
-            (wh for key, wh in pv_hourly.items() if key.date() == day),
-            daily_kwh * 1000.0,
+            (wh for key, wh in buckets.items() if key.date() == day),
+            _daily_forecast_wh(daily_kwh, day_offset),
         )
         residual_by_day[day] = residual_wh
 
     result: list[float] = []
     for index, slot_start in enumerate(starts):
-        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
+        duration = _slot_duration_hours(index, slot_start)
         cap = peak * duration
         hour_key = slot_start.replace(minute=0, second=0, microsecond=0)
-        if hour_key in pv_hourly:
-            pv_wh = pv_hourly[hour_key] * duration
+        if hour_key in buckets:
+            pv_wh = buckets[hour_key] * duration
         else:
             share = pv_hour_share(config.pv, slot_start.hour)
             pv_wh = residual_by_day.get(slot_start.date(), 0.0) * share * duration
-        result.append(min(pv_wh, cap))
+        result.append(min(max(0.0, pv_wh), cap))
     return result
 
 
@@ -171,7 +221,14 @@ def _quantile_wh(
     hour_key = slot_start.replace(minute=0, second=0, microsecond=0)
     if hour_key not in series:
         return None
-    return series[hour_key] * duration
+    value = series[hour_key]
+    if math.isnan(value):
+        # No band on broken evidence (code review 2026-07): a NaN quantile
+        # bucket leaves the slot UNBANDED (same as uncovered) instead of
+        # NaN-poisoning the stress simulations reading the band.
+        _LOGGER.debug("dropping NaN PV quantile bucket at %s", hour_key)
+        return None
+    return max(0.0, value) * duration
 
 
 def build_slots(
@@ -212,7 +269,7 @@ def build_slots(
     pv_wh_series = _pv_wh_series(config, now, daily_forecasts_kwh, starts, pv_hourly)
 
     for index, slot_start in enumerate(starts):
-        duration = (60 - slot_start.minute) / 60.0 if index == 0 else 1.0
+        duration = _slot_duration_hours(index, slot_start)
 
         hour_of_day = slot_start.hour
         ac_override = _series_value(ac_load_w, index)

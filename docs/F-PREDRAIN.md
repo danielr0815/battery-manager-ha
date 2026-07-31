@@ -205,7 +205,10 @@ philosophy (the plan re-runs every 5 min; catch-up on better information).
   keep it simple and document the exact choice).
 
 **Acceptance criterion (binding):** on the 2026-07-10 repro scenario
-(scratchpad `repro_v080.py`), the recommended config (~~ratio 0.10~~ / alpha 0.5 /
+(~~scratchpad `repro_v080.py`~~ — **frozen in the repo since v0.8.0** as
+`tests/core/golden_night_predrain.json` + `tests/core/test_golden_night_predrain.py`;
+that golden is the binding acceptance, the scratchpad script no longer
+exists), the recommended config (~~ratio 0.10~~ / alpha 0.5 /
 beta 1.2) must (a) book night slots in the FIRST two nights, (b) achieve
 lost_surplus strictly below the neutral config's value (3.12 kWh) minus 1.0
 kWh, and (c) keep grid import within the artifact slack.
@@ -321,8 +324,10 @@ Core (fast, `.venv/Scripts/python.exe -m pytest tests/core/`):
   bookings, lost surplus < ~1.5 kWh, `import_trade_used_wh` <= 0.1 * rescued,
   stressed min SOC >= 23 %.
 
-Fixtures: real attribute payloads are in the session dump
-(`live-dump-2026-07-10.md` in the session scratchpad; hourly tables inline).
+Fixtures: the real attribute payloads were captured in a session dump
+(`live-dump-2026-07-10.md`, session scratchpad — **not in the repo**); the
+binding fixture is the frozen golden `tests/core/golden_night_predrain.json`
+with its test `tests/core/test_golden_night_predrain.py`.
 
 Conventions: English comments; match existing code style; ruff clean
 (`.venv/Scripts/python.exe -m ruff check custom_components tests`); goldens via

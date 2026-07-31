@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 import voluptuous as vol
@@ -16,7 +17,9 @@ from homeassistant.components.persistent_notification import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
 from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
@@ -48,11 +51,22 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
 ]
 
-# Config-entry-only integration; async_setup exists solely for the card.
+# Config-entry-only integration; async_setup exists for the card and the
+# download-export sweep.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 CARD_FILENAME = "battery-manager-forecast-card.js"
 CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
+
+# Export-service hardening (security review 2026-07-30): exports are confined
+# to a per-integration subdirectory — plain exports under
+# <config>/battery_manager/, downloads under <config>/www/battery_manager/.
+# The www tree is served WITHOUT authentication under /local/, so every
+# download file expires after one hour (per-file timer below; the startup
+# sweep in async_setup removes files whose timer died with the last run).
+_EXPORT_SUBDIR = "battery_manager"
+_DOWNLOAD_TTL_S = 3600
+_ALLOWED_EXPORT_SUFFIXES = frozenset({".txt", ".json"})
 
 # Config keys removed in v2 (see docs/REQUIREMENTS.md, breaking change accepted)
 _REMOVED_KEYS = {
@@ -64,7 +78,14 @@ _REMOVED_KEYS = {
 
 
 def _validate_file_path(file_path: str, base_dir: Path) -> Path:
-    """Validate a user-provided path to prevent directory traversal."""
+    """Validate a user-provided path to prevent directory traversal.
+
+    `base_dir` is the hard ceiling: nothing outside it is writable. On top of
+    containment, HA-internal state (.storage) and anything but the documented
+    export formats (.txt/.json) are refused — the export contains learned
+    household behaviour and must never overwrite HA state or become an
+    attacker-planted config file.
+    """
     try:
         resolved_path = Path(file_path).resolve()
         resolved_base = base_dir.resolve()
@@ -79,6 +100,13 @@ def _validate_file_path(file_path: str, base_dir: Path) -> Path:
             )
         if "\0" in file_path:
             raise ValueError("Path contains null bytes")
+        if ".storage" in resolved_path.parts:
+            raise ValueError("Path must not touch HA internal state (.storage)")
+        if resolved_path.suffix.lower() not in _ALLOWED_EXPORT_SUFFIXES:
+            raise ValueError(
+                f"Unsupported file extension '{resolved_path.suffix}' — "
+                "only .txt and .json are allowed"
+            )
         filename = resolved_path.name
         if filename.startswith(".") or "/" in filename or "\\" in filename:
             raise ValueError(f"Invalid filename: {filename}")
@@ -98,7 +126,38 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await _async_setup_card(hass)
     except Exception:
         _LOGGER.warning("Could not register the bundled dashboard card", exc_info=True)
+    try:
+        await _async_sweep_download_dir(hass)
+    except Exception:
+        _LOGGER.warning("Could not sweep stale download exports", exc_info=True)
     return True
+
+
+async def _async_sweep_download_dir(hass: HomeAssistant) -> None:
+    """Delete leftover download exports older than the TTL.
+
+    The per-file async_call_later timer dies with the HA process, so a file
+    written shortly before a restart would otherwise linger in the
+    unauthenticated /local/ tree indefinitely. Runs on the executor (pure
+    filesystem work) and, like the card, must never break the setup.
+    """
+    download_dir = Path(hass.config.config_dir) / "www" / _EXPORT_SUBDIR
+    cutoff = time.time() - _DOWNLOAD_TTL_S
+
+    def _sweep() -> None:
+        try:
+            children = list(download_dir.iterdir())
+        except OSError:  # nothing exported yet (or directory unreadable)
+            return
+        for child in children:
+            try:
+                if child.is_file() and child.stat().st_mtime < cutoff:
+                    child.unlink()
+                    _LOGGER.info("Removed stale download export %s", child)
+            except OSError as err:
+                _LOGGER.warning("Could not remove stale export %s: %s", child, err)
+
+    await hass.async_add_executor_job(_sweep)
 
 
 async def _async_setup_card(hass: HomeAssistant) -> None:
@@ -316,34 +375,67 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 def _export_coordinator(
     hass: HomeAssistant, call: ServiceCall
-) -> tuple[str, BatteryManagerCoordinator] | None:
-    """Resolve the target coordinator for an export service call."""
+) -> tuple[str, BatteryManagerCoordinator]:
+    """Resolve the target coordinator for an export service call.
+
+    Failures raise instead of only logging: a service call that silently does
+    nothing leaves the operator believing the export happened.
+    """
     domain_data: dict[str, BatteryManagerCoordinator] = hass.data.get(DOMAIN, {})
     if not domain_data:
-        _LOGGER.error("No Battery Manager instances available for export")
-        return None
+        raise ServiceValidationError("No Battery Manager entry is set up")
     entry_id = call.data.get("entry_id") or next(iter(domain_data))
     coordinator = domain_data.get(entry_id)
     if coordinator is None:
-        _LOGGER.error("Unknown entry_id for export: %s", entry_id)
-        return None
+        raise ServiceValidationError(f"Unknown entry_id for export: {entry_id}")
     return entry_id, coordinator
+
+
+def _schedule_download_cleanup(hass: HomeAssistant, target: Path) -> None:
+    """Delete a download export once its TTL expires.
+
+    The /local/ tree is served without login, so the export (learned
+    household behaviour) must not stay reachable longer than the download
+    takes. FileNotFoundError is tolerated: the operator or the startup sweep
+    may have removed the file first.
+    """
+
+    def _delete() -> None:
+        try:
+            target.unlink()
+            _LOGGER.info("Deleted expired download export %s", target)
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            _LOGGER.warning("Could not delete expired download export: %s", err)
+
+    async def _on_ttl_expired(_now) -> None:
+        await hass.async_add_executor_job(_delete)
+
+    async_call_later(hass, _DOWNLOAD_TTL_S, _on_ttl_expired)
 
 
 async def _async_write_export(
     hass: HomeAssistant, call: ServiceCall, content: str, default_name: str
 ) -> None:
-    """Validate the target path, write the export, notify on download."""
+    """Validate the target path, write the export, notify on download.
+
+    Plain exports stay under <config>/battery_manager/; downloads go to
+    <config>/www/battery_manager/ — the only subtree the unauthenticated
+    /local/ handler may ever serve for this integration, and every file in
+    it expires after _DOWNLOAD_TTL_S.
+    """
     config_dir = Path(hass.config.config_dir)
     download = call.data.get("download", False)
-    base_dir = config_dir / "www" if download else config_dir
+    base_dir = (
+        config_dir / "www" / _EXPORT_SUBDIR if download else config_dir / _EXPORT_SUBDIR
+    )
     file_path = call.data.get("file_path") or str(base_dir / default_name)
 
     try:
         target = _validate_file_path(file_path, base_dir)
     except ValueError as err:
-        _LOGGER.error("Refusing to export: %s", err)
-        return
+        raise ServiceValidationError(f"Refusing to export: {err}") from err
 
     def _write() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -352,29 +444,30 @@ async def _async_write_export(
     try:
         await hass.async_add_executor_job(_write)
     except OSError as err:  # pragma: no cover
-        _LOGGER.error("Failed to write export: %s", err)
-        return
+        raise HomeAssistantError(f"Failed to write export: {err}") from err
 
     _LOGGER.info("Export written to %s", target)
     if download:
+        _schedule_download_cleanup(hass, target)
         persistent_notification_create(
             hass,
-            f"[Download {target.name}](/local/{target.name})",
+            f"[Download {target.name}](/local/{_EXPORT_SUBDIR}/{target.name}) — "
+            "the file is reachable under /local/ without login and is "
+            "deleted automatically after 1 hour.",
             title="Battery Manager Export",
         )
 
 
 async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -> None:
     """Write the last plan's hourly details to a file."""
-    resolved = _export_coordinator(hass, call)
-    if resolved is None:
-        return
-    entry_id, coordinator = resolved
+    entry_id, coordinator = _export_coordinator(hass, call)
 
     details = coordinator.get_last_hourly_details()
     if not details:
-        _LOGGER.warning("No hourly details available yet")
-        return
+        raise HomeAssistantError(
+            "No hourly details available yet — the planner has not produced "
+            "a plan since startup"
+        )
 
     if call.data.get(CONF_AS_TABLE, True):
         content = format_hourly_details_table(details)
@@ -389,12 +482,17 @@ async def _async_export_learned_profiles(
     hass: HomeAssistant, call: ServiceCall
 ) -> None:
     """Write the learned consumption profiles to a file (CONSUMPTION_FORECAST)."""
-    resolved = _export_coordinator(hass, call)
-    if resolved is None:
-        return
-    entry_id, coordinator = resolved
+    entry_id, coordinator = _export_coordinator(hass, call)
 
     snapshot = coordinator.learner.export_snapshot()
+    # A fresh learner stores {"ac": None, "dc": None} — truthy but empty, so
+    # the check must look at the per-path bins, not the container.
+    profiles = snapshot.get("profiles") or {}
+    if not any(profiles.values()):
+        raise HomeAssistantError(
+            "No learned consumption profiles available yet — the learner "
+            "needs long-term statistics first"
+        )
     if call.data.get(CONF_AS_TABLE, True):
         content = format_learned_profiles_table(snapshot)
     else:

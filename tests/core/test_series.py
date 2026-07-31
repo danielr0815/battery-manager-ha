@@ -1,5 +1,6 @@
 """Tests for hourly series construction."""
 
+import logging
 from dataclasses import replace
 from datetime import datetime
 
@@ -303,3 +304,120 @@ def test_pv_hourly_does_not_change_ac_or_dc_loads():
     for a, b in zip(with_h.slots, without.slots, strict=True):
         assert a.ac_wh == b.ac_wh
         assert a.dc_wh == b.dc_wh
+
+
+# ---------------------------------------------------------------------------
+# Code review 2026-07: slot-0 duration, midnight-edge horizon, PV sanitizing
+# ---------------------------------------------------------------------------
+
+
+def test_slot0_duration_counts_seconds_and_microseconds():
+    """The old `(60 - minute) / 60` dropped the seconds, stretching slot 0 by
+    up to 59 s every cycle."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 3, 21, 30, 45)  # 29 min 15 s left in the hour
+    inputs = build_slots(config, now, 50.0, [5.0])
+    assert abs(inputs.slots[0].duration - 1755.0 / 3600.0) < 1e-12
+    now = datetime(2026, 7, 3, 21, 30, 0, 500000)  # +0.5 s
+    inputs = build_slots(config, now, 50.0, [5.0])
+    assert abs(inputs.slots[0].duration - 1799.5 / 3600.0) < 1e-12
+    # Full-hour start keeps duration exactly 1.0 (golden-identity anchor).
+    now = datetime(2026, 7, 3, 21, 0, 0)
+    inputs = build_slots(config, now, 50.0, [5.0])
+    assert inputs.slots[0].duration == 1.0
+
+
+def test_slot_starts_never_empty_within_last_second_of_day():
+    """At now >= 23:59:59.x of the last forecast day the horizon used to come
+    back EMPTY (horizon_end pins microseconds to 0); the remaining sliver of
+    the day is a valid tiny slot instead (code review 2026-07)."""
+    now = datetime(2026, 7, 3, 23, 59, 59, 500000)
+    starts = slot_starts(now, 1)
+    assert starts == (now,)
+    # ... and build_slots/plan downstream do not crash on the tiny horizon.
+    inputs = build_slots(SystemConfig(), now, 50.0, [5.0])
+    assert len(inputs.slots) == 1
+    assert 0.0 < inputs.slots[0].duration < 1e-3
+
+
+def test_negative_daily_forecast_clamps_to_zero():
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    inputs = build_slots(config, now, 50.0, [-5.0])
+    assert all(s.pv_wh == 0.0 for s in inputs.slots)
+
+
+def test_nan_daily_forecast_counts_as_no_production(caplog):
+    """A NaN forecast state (broken sensor) must not NaN-poison every slot of
+    the day; it counts as no production and is debug-logged."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    with caplog.at_level(logging.DEBUG, logger="core.series"):
+        inputs = build_slots(config, now, 50.0, [float("nan"), 8.0])
+    assert all(s.pv_wh == 0.0 for s in inputs.slots if s.start.day == 4)
+    assert all(s.pv_wh == s.pv_wh for s in inputs.slots)  # no NaN anywhere
+    assert any("NaN daily PV forecast" in r.message for r in caplog.records)
+
+
+def test_pv_hourly_negative_bucket_clamps_to_zero():
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    pv_hourly = {datetime(2026, 7, 4, 10, 0): -500.0}
+    inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    by_hour = {s.hour_of_day: s.pv_wh for s in inputs.slots}
+    assert by_hour[10] == 0.0
+    assert all(s.pv_wh >= 0.0 for s in inputs.slots)
+
+
+def test_pv_hourly_nan_bucket_is_dropped_and_treated_as_uncovered(caplog):
+    """A NaN bucket is DROPPED: its hour falls back to the residual share like
+    any uncovered hour, and the day's residual is not NaN-poisoned."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    pv_hourly = {
+        datetime(2026, 7, 4, 10, 0): float("nan"),
+        datetime(2026, 7, 4, 11, 0): 1000.0,
+    }
+    with caplog.at_level(logging.DEBUG, logger="core.series"):
+        inputs = build_slots(config, now, 50.0, [8.0], pv_hourly=pv_hourly)
+    by_hour = {s.hour_of_day: s.pv_wh for s in inputs.slots}
+    assert by_hour[11] == 1000.0  # covered bucket untouched
+    # Hour 10 is uncovered: residual (8000 - 1000) x its two-window share.
+    assert by_hour[10] == 7000.0 * pv_hour_share(config.pv, 10)
+    assert all(s.pv_wh == s.pv_wh for s in inputs.slots)  # no NaN anywhere
+    assert any("NaN hourly PV bucket" in r.message for r in caplog.records)
+
+
+def test_pv_quantile_bands_sanitize_negative_and_nan(caplog):
+    """Negative quantile buckets clamp to 0; a NaN bucket leaves the slot
+    UNBANDED (None, same as uncovered) instead of poisoning the stress sims."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 0, 0)
+    p10 = {
+        datetime(2026, 7, 4, 10, 0): -100.0,
+        datetime(2026, 7, 4, 11, 0): float("nan"),
+    }
+    p90 = {datetime(2026, 7, 4, 10, 0): 900.0}
+    with caplog.at_level(logging.DEBUG, logger="core.series"):
+        inputs = build_slots(
+            config, now, 50.0, [8.0], pv_hourly_p10=p10, pv_hourly_p90=p90
+        )
+    by_hour = {s.hour_of_day: s for s in inputs.slots}
+    assert by_hour[10].pv_p10_wh == 0.0
+    assert by_hour[10].pv_p90_wh == 900.0
+    assert by_hour[11].pv_p10_wh is None
+    assert any("NaN PV quantile bucket" in r.message for r in caplog.records)
+
+
+def test_insert_appliance_run_without_remaining_work_is_noop():
+    """A run with no remaining energy (or no remaining hours) contributes
+    nothing — the advisor's hypothetical run must not inject phantom load."""
+    config = SystemConfig()
+    now = datetime(2026, 7, 4, 10, 0)
+    inputs = build_slots(config, now, 50.0, [5.0, 5.0])
+
+    zero_energy = insert_appliance_run(inputs, 0.0, 2.0)
+    zero_hours = insert_appliance_run(inputs, 500.0, 0.0)
+
+    for out in (zero_energy, zero_hours):
+        assert [s.ac_wh for s in out.slots] == [s.ac_wh for s in inputs.slots]

@@ -267,10 +267,14 @@ stayed ON at SOC 20.0 (its ±1 % hysteresis flips only at 19).
 
 Mechanics (`_update_floor_guard`, computed each cycle right after
 `_apply_hysteresis`): the guard trips when the battery SOC is at/below
-`inverter_min_soc_percent` OR the inverter RECOMMENDATION is off ("Inverter
-aus" is deliberately the recommendation, not the physical inverter state —
-BM has no inverter state entity; the SOC branch catches the physical cutoff,
-the recommendation branch the T*-driven shutdowns). While active,
+`inverter_min_soc_percent` OR the inverter RECOMMENDATION is off **while the
+forecast PV power is below the power of the running surplus loads** (the
+PV condition since v0.16.0/F1b, project-knowledge 06 §2 — a T\*-driven
+inverter-off no longer forces loads out when PV covers them; see §14).
+"Inverter aus" is deliberately the recommendation, not the physical
+inverter state — BM has no inverter state entity; the SOC branch catches
+the physical cutoff (and stays unconditional), the recommendation branch
+the T\*-driven shutdowns. While active,
 `_apply_load_switching` forces every controlled load OFF **dwell-exempt**
 (the G1 precedent: safety overrides min_runtime; the confirmed switch still
 stamps the dwell so min_off fully gates the re-on), never switches one ON,
@@ -362,3 +366,42 @@ once-only accounting.
 `in_house_measurement = **off**`. It is fed outside the EM540 grid-meter
 circuit, so leaving it on would make the learner subtract a draw that is not in
 the measured house load and skew the AC baseline.
+
+## 15. House-battery SOC stale watchdog (v0.17.0)
+
+G2 (§10) watches the *loads'* SOC sensors; the **house** battery SOC had the
+same blind spot: a BMS serving a cached, frozen SOC with fresh timestamps
+passes every age check, and the planner would keep planning on fiction
+forever. The adaptive watchdog `_update_house_soc_watchdog` (G2's sibling)
+latches the house SOC as stale when it stays EXACTLY unchanged while the
+battery demonstrably flows power. BM has no live house-battery *power*
+sensor, so the proof proxy is the **expected slot-0 battery flow of the last
+valid plan**: while `|expected| > HOUSE_SOC_STALE_POWER_W = 300 W`, a frozen
+reading accumulates evidence for
+`min(HOUSE_SOC_STALE_MAX_MINUTES = 60 min, capacity × 1 % / |expected|)` —
+the time a ≥ 1 % SOC change would take at that power. Below the power bar
+(standby/float) the clock resets: a constant SOC is physically correct
+there. While latched, `_get_soc` treats the reading as invalid, which routes
+into the normal data-loss path (§16) — not into a load-local `available`.
+Unlatch: any DIFFERENT live reading (INFO once, the G2 pattern). In-memory
+only; a restart re-accumulates within one window.
+
+## 16. Fail-safe load shed on sustained data loss (D-A8 stage 2, v0.17.0)
+
+Data-loss handling is two-staged. **Stage 1:** with no valid SOC (cache
+older than `MAX_HISTORICAL_SOC_AGE_HOURS = 6` h) or PV forecast (cache older
+than `MAX_HISTORICAL_FORECAST_AGE_HOURS = 72` h) the update fails and all
+plan-driven entities become `unavailable` immediately. **Stage 2:** if the
+outage persists for `STALE_LOAD_SHED_HOURS = 2` more hours, the coordinator
+fires the fail-safe **exactly once per episode** (`_note_data_loss` /
+`_execute_stale_load_shed`): every controlled surplus load is force-switched
+off — the charge-enable gate always, the plug per `input_off_policy` and
+plug ownership — a repair issue `stale_data_load_shed` plus a push
+notification is raised, and the shed **latches against re-on** until the
+data recovers. On recovery the latch releases, the issue resolves and a
+recovery push goes out automatically. Clock and latch are persisted, so a
+restart mid-outage neither resets the budget nor re-fires the shed; with no
+controlled loads configured, stage 2 is skipped entirely (plain
+unavailability already covers the outage). Fail-safe rationale: better to
+waste surplus than risk grid draw — the same operator principle as the G4
+floor guard.

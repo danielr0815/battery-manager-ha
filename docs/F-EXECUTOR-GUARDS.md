@@ -147,6 +147,13 @@ werden."**
   SOC strictly above the floor AND `>= floor + hysteresis_percent` (the
   strict-floor clause keeps trip/release disjoint even at hysteresis 0) AND
   the recommendation on. Restart inside the release band starts latched.
+  **Superseded in part (v0.16.0, F1b — see project-knowledge 06 §2 and
+  LOAD_CONTROL.md §14):** the recommendation branch now trips only when the
+  forecast PV power is **below the power of the running surplus loads** — a
+  T\*-driven inverter-off with PV covering the loads no longer forces them
+  out (the unconditional branch had forced a ~410 W dehumidifier off for
+  67 min at 1391–1680 W PV on 2026-07-24). The SOC branch stays
+  unconditional.
 - **R13** Enforcement in `_apply_load_switching`: `desired = False` for every
   controlled load, ON->OFF dwell-exempt (G1 precedent; the confirmed OFF
   stamps the dwell so min_off gates the re-on). `_execute_load_switching`

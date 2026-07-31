@@ -73,6 +73,7 @@ from .const import (
     LEARNING_RATE_LIMIT,
     LEARNING_RUN_HOUR,
     LEARNING_VACATION_MIN_HOURS,
+    RECORDER_TIMEOUT_S,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_LOAD,
     VALIDATION_HISTORY_DAYS,
@@ -116,6 +117,10 @@ def _default_data() -> dict[str, Any]:
     return {
         "version": LEARNED_STORE_VERSION,
         "computed_at": None,
+        # Last run attempt that aborted WITHOUT producing a profile (today:
+        # recorder integration missing). Lets async_schedule suppress the
+        # reload catch-up loop; computed_at stays reserved for real results.
+        "attempted_at": None,
         "window_days": None,
         "cleaning_fingerprint": None,
         "source_entities": {"ac": [], "dc": []},
@@ -136,13 +141,44 @@ def _default_data() -> dict[str, Any]:
     }
 
 
+class _LearnedProfileStore(Store):
+    """Learner store whose migration can never crash the entry setup.
+
+    HA's default ``_async_migrate_func`` raises NotImplementedError for any
+    envelope mismatch; ``Store.async_load`` swallows that only for a
+    same-major minor diff, so a major diff (the incident behind the
+    LEARNED_STORE_MAJOR pin in const.py) killed the whole entry setup after
+    an update. The learned profile is always re-derivable from recorder
+    history, so any combination we do not explicitly migrate is discarded
+    with a warning instead of raising.
+    """
+
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: Any
+    ) -> Any:
+        if old_major_version == LEARNED_STORE_MAJOR:
+            # Same envelope major: minor diffs are compatible — unknown
+            # inner fields are handled by the _default_data() merge and the
+            # inner data["version"] check in ProfileLearner.async_load.
+            return old_data
+        _LOGGER.warning(
+            "Discarding learned consumption profiles: unsupported store "
+            "envelope version %s.%s (expected major %s); the window is "
+            "relearned from recorder history",
+            old_major_version,
+            old_minor_version,
+            LEARNED_STORE_MAJOR,
+        )
+        return None
+
+
 class ProfileLearner:
     """Owns the learned-profile store and the nightly learning run."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self._store: Store = Store(
+        self._store: Store = _LearnedProfileStore(
             hass,
             LEARNED_STORE_MAJOR,
             f"{DOMAIN}.{LEARNED_STORE_KEY}.{entry.entry_id}",
@@ -156,11 +192,32 @@ class ProfileLearner:
     # ------------------------------------------------------------------
 
     async def async_load(self) -> None:
-        stored = await self._store.async_load()
+        # A store that cannot be read at all (e.g. an envelope major version
+        # NEWER than this code, which HA refuses before the migrate callback
+        # runs) must not break the entry setup either — same rationale as the
+        # _LearnedProfileStore migration: the data is always re-derivable.
+        try:
+            stored = await self._store.async_load()
+        except Exception:  # noqa: BLE001 - learning must never break setup
+            _LOGGER.exception(
+                "Discarding learned consumption profiles: the store could "
+                "not be read; the window is relearned from recorder history"
+            )
+            return
         if stored and stored.get("version") == LEARNED_STORE_VERSION:
             merged = _default_data()
             merged.update(stored)
             self.data = merged
+        elif stored:
+            # Was silently dropped before; surface it — an unexpected inner
+            # version means the data came from a different schema.
+            _LOGGER.warning(
+                "Discarding learned consumption profiles: unsupported inner "
+                "store version %s (expected %s); the window is relearned "
+                "from recorder history",
+                stored.get("version"),
+                LEARNED_STORE_VERSION,
+            )
 
     def _save(self) -> None:
         self._store.async_delay_save(lambda: self.data, 10)
@@ -189,9 +246,24 @@ class ProfileLearner:
         cleaning_changed = self.data.get(
             "cleaning_fingerprint"
         ) != self._cleaning_fingerprint(cfg)
-        if self._binding_changed() or (
-            self._learning_configured()
-            and (stale or window_changed or cleaning_changed)
+        # Reload-loop guard: a run that recently aborted because the recorder
+        # integration is missing stamps attempted_at — without this check the
+        # catch-up conditions above stay true forever (no run can ever
+        # complete), so every entry reload would re-run and re-warn. The
+        # nightly timer retries daily regardless, and once the recorder is
+        # back the marker is ignored so the catch-up runs right away.
+        attempted = self._attempted_at()
+        aborted_recently = (
+            attempted is not None
+            and dt_util.now() - attempted <= timedelta(hours=24)
+            and "recorder" not in self.hass.config.components
+        )
+        if not aborted_recently and (
+            self._binding_changed()
+            or (
+                self._learning_configured()
+                and (stale or window_changed or cleaning_changed)
+            )
         ):
             self._start_run()
 
@@ -233,6 +305,10 @@ class ProfileLearner:
 
     def _computed_at(self) -> datetime | None:
         raw = self.data.get("computed_at")
+        return dt_util.parse_datetime(raw) if raw else None
+
+    def _attempted_at(self) -> datetime | None:
+        raw = self.data.get("attempted_at")
         return dt_util.parse_datetime(raw) if raw else None
 
     def profiles_for_planning(self) -> dict[str, Any] | None:
@@ -324,6 +400,25 @@ class ProfileLearner:
         try:
             async with self._lock:
                 await self._run_learning()
+        except TimeoutError:
+            # A hung recorder DB must surface, not stall silently: one
+            # warning per timed-out run plus an idempotent repair issue that
+            # the next successful run clears again (_run_learning tail). The
+            # `async with` above has already released the lock, so later runs
+            # are not blocked by this failure.
+            _LOGGER.warning(
+                "Consumption-profile learning timed out after %s s waiting "
+                "for the recorder; the next run retries",
+                RECORDER_TIMEOUT_S,
+            )
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"learning_recorder_timeout_{self.entry.entry_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="learning_recorder_timeout",
+            )
         except Exception:  # noqa: BLE001 - learning must never break setup
             _LOGGER.exception("Consumption-profile learning run failed")
 
@@ -340,10 +435,32 @@ class ProfileLearner:
             return
 
         if "recorder" not in self.hass.config.components:
-            _LOGGER.warning(
-                "Consumption-profile learning requires the recorder"
-                " integration; skipping run"
+            # Report once per incident (idempotent repair issue), not on
+            # every run: the nightly timer fires daily and entries reload
+            # often, so a per-run warning would be logspam. attempted_at
+            # marks the attempt so async_schedule does not immediately
+            # re-run after a reload; computed_at stays untouched because no
+            # profile was computed (D-C6 freshness must not be faked).
+            issue_id = f"learning_no_recorder_{self.entry.entry_id}"
+            if ir.async_get(self.hass).async_get_issue(DOMAIN, issue_id) is None:
+                _LOGGER.warning(
+                    "Consumption-profile learning requires the recorder"
+                    " integration; skipping run"
+                )
+            else:
+                _LOGGER.debug(
+                    "Recorder integration still missing; skipping learning run"
+                )
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="learning_no_recorder",
             )
+            self.data["attempted_at"] = dt_util.now().isoformat()
+            self._save()
             return
 
         window_days = int(cfg[CONF_LEARNING_WINDOW_DAYS])
@@ -444,6 +561,15 @@ class ProfileLearner:
         # Only now (successful run) does the fingerprint become current.
         self.data["cleaning_fingerprint"] = self._cleaning_fingerprint(cfg)
         self._save()
+        # A completed run proves the recorder path healthy again: resolve the
+        # idempotent issues from earlier aborted attempts (timeout / missing
+        # recorder integration).
+        ir.async_delete_issue(
+            self.hass, DOMAIN, f"learning_recorder_timeout_{self.entry.entry_id}"
+        )
+        ir.async_delete_issue(
+            self.hass, DOMAIN, f"learning_no_recorder_{self.entry.entry_id}"
+        )
         _LOGGER.info(
             "Consumption profiles updated (coverage ac=%.0f%% dc=%.0f%%)",
             coverage.get("ac", 0.0) * 100,
@@ -627,6 +753,21 @@ class ProfileLearner:
     # History fetching & cleaning (D-C1/D-C2)
     # ------------------------------------------------------------------
 
+    async def _recorder_job(self, job: Callable[[], Any]) -> Any:
+        """Recorder executor job with a hard timeout (RECORDER_TIMEOUT_S).
+
+        A hung recorder DB (worn SD card, locked SQLite file) would
+        otherwise block the learning run forever — and with it self._lock,
+        silently stalling every future nightly run. The timeout raises
+        TimeoutError, which async_run_learning turns into a repair
+        issue. Cancelling the await does not stop the executor thread, but
+        it frees the run (and the lock).
+        """
+        recorder = get_instance(self.hass)
+        return await asyncio.wait_for(
+            recorder.async_add_executor_job(job), RECORDER_TIMEOUT_S
+        )
+
     async def _fetch_days(
         self,
         cfg: dict[str, Any],
@@ -664,8 +805,7 @@ class ProfileLearner:
         if voltage_entity:
             stat_ids.add(voltage_entity)
 
-        recorder = get_instance(self.hass)
-        metadata = await recorder.async_add_executor_job(
+        metadata = await self._recorder_job(
             lambda: list_statistic_ids(self.hass, stat_ids)
         )
         meta_by_id = {item["statistic_id"]: item for item in metadata}
@@ -674,7 +814,7 @@ class ProfileLearner:
         available = stat_ids & set(meta_by_id)
         stats: dict[str, list[dict[str, Any]]] = {}
         if available:
-            stats = await recorder.async_add_executor_job(
+            stats = await self._recorder_job(
                 lambda: statistics_during_period(
                     self.hass,
                     dt_util.as_utc(start_local),
@@ -1046,12 +1186,11 @@ class ProfileLearner:
         no history at all for this entity in the window — callers must not
         interpret that as "off".
         """
-        recorder = get_instance(self.hass)
         changes: list[tuple[datetime, bool]] = []
         cursor = start_local
         while cursor < end_local:
             chunk_end = min(cursor + timedelta(days=7), end_local)
-            states = await recorder.async_add_executor_job(
+            states = await self._recorder_job(
                 lambda s=cursor, e=chunk_end: history.state_changes_during_period(
                     self.hass,
                     dt_util.as_utc(s),

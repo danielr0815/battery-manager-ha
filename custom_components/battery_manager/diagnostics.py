@@ -6,6 +6,9 @@ data and options, the effective core SystemConfig values, the coordinator's
 learned/latched runtime state and the last plan's headline metrics — so a
 forensic pass no longer has to guess which subentry options are active.
 
+The dump contains consumption data (learned profiles, daily_surplus and load
+runtimes reveal household behaviour) — share it only with that in mind.
+
 Entity IDs are kept (they carry no secret and are needed to read the state);
 the redaction set covers the generic HA sensitive keys defensively, though the
 integration stores no tokens.
@@ -60,6 +63,13 @@ def _subentries(entry: ConfigEntry) -> list[dict[str, Any]]:
                 "title": subentry.title,
                 "unique_id": subentry.unique_id,
                 "data": async_redact_data(dict(subentry.data), TO_REDACT),
+                # HA core's ConfigSubentry has no options mapping yet — the
+                # getattr keeps the key in the dump (stable schema, always {}
+                # today) and picks options up automatically once core adds
+                # them.
+                "options": async_redact_data(
+                    dict(getattr(subentry, "options", {})), TO_REDACT
+                ),
             }
         )
     return result

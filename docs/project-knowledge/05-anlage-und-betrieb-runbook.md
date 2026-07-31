@@ -1,6 +1,6 @@
 # Anlage & Betriebs-Runbook
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument beschreibt die
+**Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument beschreibt die
 **konkrete Referenz-Anlage des Betreibers** (Batterie, PV, Messkreis, Lasten,
 Stützpfade, Legacy-Automatisierungen) und die **Handgriffe im Betrieb**:
 deployen, diagnostizieren, Logs und History korrekt lesen, Meldungstexte
@@ -20,10 +20,11 @@ dabei. **Im Zweifel gilt die Anlage bzw. der Code.**
 | Datei | Stand | Nutzung |
 |---|---|---|
 | `docs/STRATEGY.md` | **veraltet** (v0.7.x, Eigenetikett „historical design rationale") | nur als Begründung des Grundgedankens: Zielfunktion = Import + Export minimieren, T\* durch Policy-Simulation statt Formel. Die dort skizzierte Allokationsschleife (Z2/Z3, „drop hour/load, repeat") ist **nicht mehr** die Implementierung — es gilt Dokument 02 |
-| `docs/ARCHITECTURE.md`, `docs/ALGORITHM.md`, `docs/REQUIREMENTS.md` | **veraltet** (v0.7.x) | Referenzen für Regelnamen (D-A1…D-A9, D-C1…D-C8), nicht fürs Verhalten |
+| `docs/ARCHITECTURE.md` | **größtenteils aktuell** — Code-Map und Update-Zyklus werden gepflegt (ergänzt 2026-07, v0.17.0) | Einstieg in den Code; die Gate-Beschreibungen im Detail stehen in Dokument 02 |
+| `docs/ALGORITHM.md`, `docs/REQUIREMENTS.md` | **historisch** (v0.7.x; Eigenetikett seit v0.17.0) | Referenzen für Regelnamen (D-A1…D-A9, D-C1…D-C8), nicht fürs Verhalten; verbindlich: Dokument 02 |
 | `docs/DC_TOPOLOGY.md` | **teils stale**: Spezifikation der F-N3-Phasen 0–7 (implementiert seit v0.7.9/0.7.10). Die Spalte „Live value (operator)" ist ein **Planungsstand von 2026-07-05**, nicht der heutige Live-Zustand | Physik der Zwei-Bus-Modellierung und die R2-/R3-Regeln sind gültig; die konkreten Zahlen gegen die Live-Config prüfen |
-| `docs/LOAD_CONTROL.md` | **aktuell**, wird fortgeschrieben (bis §14 `in_house_measurement`, V3 vom 24.07.2026) | verbindliche Quelle für Schaltsemantik, Floor-Guard, Stale-SOC-Guard, Robust-Power, Seamless-Runs |
-| `docs/F-*.md` | **aktuell** — je Verhaltensregel ein Dokument | die eigentliche Spezifikation |
+| `docs/LOAD_CONTROL.md` | **aktuell**, wird fortgeschrieben (bis §14 `in_house_measurement`, V3 vom 24.07.2026; §15/§16 v0.17.0) | verbindliche Quelle für Schaltsemantik, Floor-Guard, Stale-SOC-Guard, Robust-Power, Seamless-Runs |
+| `docs/F-*.md` | je F-Doc die **Spezifikation seines Features** | bei Konflikt mit den Zusammenfassungen dieser Wissensbasis gilt die Wissensbasis (Code-geprüft); Supersessions werden im F-Doc selbst annotiert |
 | `docs/CONSUMPTION_FORECAST.md` | aktuell für die Lernschicht | D-C-Regeln |
 
 ---
@@ -362,6 +363,25 @@ Load <Name>: robust power estimate 818 W exceeds 3x the configured 400 W
 — check the power sensor (frozen/cached value?) or the configured nominal power
 ```
 
+Seit v0.17.0 zusätzlich der **Haus-SOC-Wächter** (LOAD_CONTROL.md §15 —
+er bewacht die SOC-Quelle der *Hausbatterie*, nicht die der Lasten):
+
+```
+House battery SOC frozen at 63.0% for 45.0+ min while the plan expects
+800 W of battery flow — treating the reading as STALE (UpdateFailed path)
+until the sensor reports a different value
+```
+
+```
+House battery SOC reports 63.4% again (was frozen at 63.0%) — stale
+watchdog latch cleared
+```
+
+**Bedeutung:** der SOC blieb exakt unverändert, obwohl der letzte gültige
+Plan > 300 W Batteriefluss erwartete (Fenster `min(60 min, Kapazität×1 %/|P|)`).
+Danach gilt der SOC als Datenverlust — es greift derselbe Pfad wie bei
+fehlenden Daten (§5.7 `stale_data_load_shed`).
+
 ### 5.4 Schaltprotokoll (V9a: genau eine INFO-Zeile je bestätigter Aktion)
 
 ```
@@ -434,6 +454,24 @@ Eine INFO-Zeile **nur bei Änderung** der Buchung (kein Spam je Zyklus).
 `import traded` sollte seit F-STRICT-SURPLUS nahe 0 liegen — größere Werte sind
 ein Alarmzeichen.
 
+### 5.7 Repair-Issues (Benachrichtigungsboard, Stand v0.17.0)
+
+Die Integration meldet anhaltende Störungen als **Repair-Issue** (Einstellungen
+→ System → Reparaturen), jeweils mit Push-Benachrichtigung. Alle vier lösen
+sich bei Gesundung **selbst** wieder auf:
+
+| Issue | Auslöser | Was zu tun ist |
+|---|---|---|
+| `stale_data_load_shed` | Datenverlust (kein gültiger SOC > 6 h bzw. keine Prognose > 72 h, inkl. Haus-SOC-Stale-Wächter §5.3) hält ≥ `STALE_LOAD_SHED_HOURS = 2` h an → das **Fail-safe** (D-A8 Stufe 2, LOAD_CONTROL.md §16) hat einmalig alle gesteuerten Zusatzlasten zwangsabgeschaltet (Charge-Enable immer, Stecker je `input_off_policy`/Ownership) und latcht gegen Wieder-Ein | SOC-/Prognose-Quelle prüfen; bei Recovery löst sich Latch und Issue automatisch, Recovery-Push geht raus |
+| `support_switch_failed` | `SUPPORT_SWITCH_FAIL_ALERT = 3` **aufeinanderfolgende** Schaltfehler im Support-Pfad (fehlgeschlagener Service-Call **oder** unbestätigte Make-before-break-Sequenz); Retry läuft weiter implizit über den 5-min-Zyklus | die konfigurierten PSU-/DC/DC-Switches prüfen (erreichbar? richtige Entities?); der nächste erfolgreiche Schaltvorgang löst das Issue |
+| `learning_recorder_timeout` | ein Lernlauf wartete `RECORDER_TIMEOUT_S = 300` s erfolglos auf den Recorder | Recorder-DB prüfen (Last, Korruption); der nächste erfolgreiche Lauf löst das Issue |
+| `learning_no_recorder` | Lernquellen konfiguriert, aber die `recorder`-Integration fehlt | Recorder aktivieren oder Lernquellen leeren; idempotent (kein Logspam) |
+
+Die Lern-Robustheit umfasst außerdem die **abgesicherte Store-Migration**
+(`_LearnedProfileStore`): ein Envelope-Mismatch verwirft den Lernstand und
+lernt frisch, statt das Entry-Setup zu crashen (die Quelldaten sind jederzeit
+re-fetchbar).
+
 ---
 
 ## 6. Kochbuch: die häufigsten Symptome
@@ -500,7 +538,8 @@ in diesem Fall.
 ---
 
 **Verifikation: geprüft gegen Commit `a172d48` (v0.16.2); Anlagenfakten
-live verifiziert am 24./25.07.2026.**
+live verifiziert am 24./25.07.2026; die v0.17.0-Einträge gegen den
+Arbeitsstand vom 2026-07-31.**
 
 Wichtigste Code-Anker dieses Dokuments:
 

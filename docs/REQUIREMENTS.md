@@ -1,6 +1,17 @@
 # Battery Manager — Requirements Analysis and Rework
 
 > Status: historical design record. It captures the original requirements and intent; some file/line references describe the pre-refactor layout (see docs/ARCHITECTURE.md for the current code map).
+>
+> **Supersession note (v0.15.0, 2026-07-19):** the objective catalogue of
+> §4.1 — in particular **Z1** ("minimise `grid_import + grid_export`",
+> weightable) — is **replaced** by the **lexicographic objective hierarchy**
+> in [F-STRICT-SURPLUS.md](F-STRICT-SURPLUS.md), which is the binding spec:
+> **1.** surplus loads must never cause grid import, **2.** subject to 1,
+> keep the house-battery SOC as high as possible, **3.** subject to 1–2,
+> absorb surplus as late as possible, just early enough to prevent export.
+> Of this document only the parts the hierarchy explicitly restores or that
+> later F-docs still reference remain normative (e.g. **Z2** in its original
+> form, **N1/N1a**); everything else is intent history.
 
 ## 1. Current State (reconstructed from the code)
 
@@ -153,6 +164,11 @@ grid import/export for the forecast period.
   entire horizon that no additional grid import arises and the lost surplus
   drops by at least (1 − tolerance) × load energy
   (details: ALGORITHM.md D-A4 v2).
+  *Superseded (v0.15.0, 2026-07-19):* the gate formula was extended by the
+  physical round-trip factor `rt` (F-NIGHT-RESCUE R2: the refill need is
+  `(1 − tolerance) × energy × rt`), and the proportional import trade was
+  retired in favour of the absolute `IMPORT_ARTIFACT_SLACK_WH` gate
+  (F-STRICT-SURPLUS R1).
 - **L4:** Deactivation as soon as the surplus condition is no longer met —
   regardless of whether a target SOC has been reached.
 - **L5:** A dedicated HA entity per load (switch recommendation/status) so that
@@ -241,3 +257,33 @@ grid import/export for the forecast period.
   load power; the configured nominal value serves as a fallback.
 - **L8:** Optionally per load a SOC/done entity (Fossibot SOC) to detect "load is
   saturated" (fully charged → the load is no longer available and is skipped).
+
+## Appendix: Deliberate non-requirements / scope boundaries
+
+*Collected in the 2026-07 review; documented here so they are not re-raised as
+missing requirements. Status: binding scope decisions (v0.17.0).*
+
+- **No grid-import power limit.** The planner bounds *energy* (no import caused
+  by surplus loads, F-STRICT-SURPLUS R1), never an import *power* cap. A kW
+  limit on grid draw is deliberately out of scope: the plant inverter
+  physically caps import already, so a second, simulated limiter would add
+  complexity without protecting anything real.
+- **DST behaviour of the planner = accepted fuzziness.** The *learning* side is
+  DST-exact (bins are looked up by the tz-aware local slot start, D-C5); the
+  *planning* side computes naïve-local (`timedelta(hours=1)`) and may shift a
+  profile hour by ±1 h in the ≤ 2 changeover nights per year. Accepted and
+  documented (CONSUMPTION_FORECAST.md D-C5), not a bug.
+- **Counter resets / negative balance hours are discarded.** A negative hour
+  of the D-C1 counter balance (counter reset, sensor noise) is *dropped*, not
+  learned as 0 W — implemented in `core/load_profile.py` (code review
+  2026-07). A dropped hour simply does not count as a sample.
+- **Privacy / data locality.** All learned and planning data stay local in the
+  HA `Store` (per config entry); nothing leaves the instance. Removing the
+  config entry deletes both stores (`async_remove_entry`). The diagnostics
+  download redacts only generic HA secrets (tokens, coordinates) — it
+  **contains consumption-profile data** (learned household behaviour), so
+  treat a diagnostics dump as personal data when sharing it.
+- **Battery protection beyond SOC is out of scope.** Temperature limits,
+  cell balancing and deep protection are the sovereignty of the battery's
+  BMS/pack; the integration protects the battery exclusively through its SOC
+  limits and the support-path escalation (D-A9).

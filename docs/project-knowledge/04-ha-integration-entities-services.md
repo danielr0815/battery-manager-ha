@@ -1,6 +1,6 @@
 # HA-Integration: Entities, Attribute, Config-Flow
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument ist die
+**Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument ist die
 **Außenschnittstelle** der Integration `battery_manager`: welche Entities je
 Plattform entstehen, welchen Vertrag ihre Attribute haben (insbesondere der
 große `soc_forecast`-Sensor), was der Config-Flow und die beiden Subentry-Typen
@@ -341,18 +341,29 @@ kein Geheimnis.
 
 Beide sind **domainweit** (nicht je Entry) und werden beim Unload des letzten
 Entrys wieder entfernt. Gemeinsames Schema: `entry_id` (optional, sonst der
-erste Entry), `file_path` (optional), `download` (Default `false`),
-`as_table` (Default `true`).
+erste Entry; UI-Selector `config_entry`), `file_path` (optional),
+`download` (Default `false`), `as_table` (Default `true`). Beide tragen seit
+v0.17.0 `name`/`description` für die Service-UI.
 
 | Service | Wirkung |
 |---|---|
 | `battery_manager.export_hourly_details` | Schreibt die `hourly_details` des letzten Plans als Tabelle (oder JSON-Lines) in eine Datei. Je Slot: `hour`, `datetime`, `duration_minutes`, Start-/End-SOC, `pv_production_wh`, `ac_consumption_wh` (**inklusive** `extra_ac_wh`), `dc_consumption_wh`, `surplus_load_wh`, `grid_import_wh`, `grid_export_wh`, `battery_charge_wh`, `battery_discharge_wh`, `inverter_enabled`, `support_dc24/48`, die F-N3-Zwei-Bus-Werte (`psu48_delivered_wh`, `psu24_delivered_wh`, `dcdc_input_wh`, `dcdc_loss_wh`, `unserved_dc_wh`, `gate_open`) und `profile_sources` (`"learned/static"` o. ä. je Pfad) |
 | `battery_manager.export_learned_profiles` | Schreibt `learner.export_snapshot()`: `computed_at`, `window_days`, `profiles`, `samples`, `diagnostics`, `validation`, `day_log` |
 
-`download: true` schreibt nach `<config>/www/` und erzeugt eine persistente
-Benachrichtigung mit `/local/`-Link; ohne `download` nach `<config>/`. Der Pfad
-wird gegen Directory-Traversal geprüft (`_validate_file_path`,
-`Path.is_relative_to`, keine Punktdateien, keine Nullbytes).
+**Export-Pfade (v0.17.0, Breaking Change):** ohne `download` landet die Datei
+unter `<config>/battery_manager/`, mit `download: true` unter
+`<config>/www/battery_manager/` und eine persistente Benachrichtigung liefert
+den `/local/`-Link samt Warnhinweis. Downloads laufen nach **1 h ab** (TTL
+`_DOWNLOAD_TTL_S = 3600`, per Datei-Timer plus Sweep beim Start), weil
+`/local/` unauthentifiziert ausgeliefert wird und der Export gelerntes
+Haushaltsverhalten enthält. Erlaubt sind nur `.txt`/`.json` innerhalb des
+Export-Verzeichnisses; `.storage` und Traversal sind gesperrt
+(`_validate_file_path`, `Path.is_relative_to`, keine Punktdateien, keine
+Nullbytes). Fehler (inkl. ungültigem Pfad) werden als **Service-Fehler**
+gemeldet (`ServiceValidationError`/`HomeAssistantError`), nicht nur geloggt.
+Alte Automatisierungen mit eigenem absolutem `file_path` außerhalb des
+Export-Verzeichnisses schlagen damit fehl und müssen auf das neue
+Verzeichnis zeigen.
 
 ### 7.3 Push-Benachrichtigungen
 
@@ -382,6 +393,10 @@ erlaubt, damit ein gerade nicht registriertes Ziel gespeichert bleibt.
 Einrichtung in **sechs Schritten**: `user` → `battery` → `pv` → `consumers` →
 `power` → `control` (danach `async_create_entry`). Zusätzlich der
 Reconfigure-Schritt und der Options-Flow.
+
+**Single-Instance (v0.17.0):** es ist nur **ein** Config-Entry erlaubt —
+`async_step_user` bricht mit `single_instance_allowed` ab, sobald bereits ein
+Entry existiert.
 
 Konvention im ganzen Flow: **Zahlenfelder** sind `NumberSelector` im BOX-Modus
 mit Min/Max/Step; **optionale Entity-Felder** nutzen
@@ -521,11 +536,17 @@ Laufzeitzähler.
 
 ### 8.8 Options-Flow
 
-`BatteryManagerOptionsFlow` hat **einen** Schritt (`init`) mit sechs
-einklappbaren Sektionen: `planner_tuning`, `consumption_profile`,
+`BatteryManagerOptionsFlow` hat **einen** Schritt (`init`) mit **neun**
+einklappbaren Sektionen: `battery`, `pv`, `power` (seit v0.17.0 die
+**Basisdimensionen** — Kapazität/SOC-Grenzen, PV-Modell, Lade-/Inverter-
+Leistung und Wirkungsgrade; nur die Batterie-Wirkungsgrade bleiben
+Wizard-only), dann `planner_tuning`, `consumption_profile`,
 `consumption_learning`, `support_paths`, `dc_devices`, `notifications`.
 HA verschachtelt die Felder unter dem Sektionsschlüssel; `_flatten_sections`
-macht daraus wieder ein flaches Dict.
+macht daraus wieder ein flaches Dict. Die Basisdimensionen sind damit
+**nachträglich änderbar, ohne Subentries oder Lernstände zu verlieren** —
+die liegen in `entry.subentries` bzw. den Stores, die ein Options-Save nicht
+anfasst (kein Löschen + Neuanlegen mehr).
 
 Zusätzlich zum Einrichtungsflow bietet die Sektion `consumption_learning`:
 `learning_window_days` (Default **120**, 14…120), `learning_max_age_days` (14,
@@ -683,7 +704,8 @@ die Entity-IDs geprägt. Wer eine Entity-ID rät, rät falsch — Registry lesen
 
 ---
 
-**Verifikation: geprüft gegen Commit `a172d48` (v0.16.2).**
+**Verifikation: geprüft gegen Commit `a172d48` (v0.16.2); die v0.17.0-Einträge
+gegen den Arbeitsstand vom 2026-07-31.**
 
 Wichtigste Code-Anker dieses Dokuments:
 

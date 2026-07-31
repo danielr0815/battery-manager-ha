@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime
 
+import pytest
 from core.model import HourSlot, LoadProfile, PlanInputs, SupportParams, SystemConfig
 from core.series import build_slots
 from core.simulate import simulate, step_hour
@@ -280,6 +281,35 @@ def test_empty_horizon_is_valid():
     traj = simulate(config, inputs, 50.0)
     assert traj.total_import_wh == 0.0
     assert traj.end_soc_percent == 50.0
+
+
+def test_simulate_rejects_short_option_series():
+    """Optional per-slot series shorter than the horizon must fail up-front
+    with a speaking ValueError instead of a bare IndexError mid-run (code
+    review 2026-07)."""
+    config = SystemConfig()
+    inputs = make_inputs(config, NOW_NIGHT, 80.0, [0.0, 0.0])
+    n = len(inputs.slots)
+    assert n > 2
+    with pytest.raises(ValueError, match="extra_ac_wh has 1 entries"):
+        simulate(config, inputs, 95.0, extra_ac_wh=(0.0,))
+    with pytest.raises(ValueError, match="dc24_schedule has 2 entries"):
+        simulate(config, inputs, 95.0, dc24_schedule=(True, False))
+    with pytest.raises(ValueError, match="dc48_schedule has 2 entries"):
+        simulate(config, inputs, 95.0, dc48_schedule=(True, False))
+    with pytest.raises(ValueError, match="pv_scale has 1 entries"):
+        simulate(config, inputs, 95.0, pv_scale=[0.5])
+    # Exact-length series still pass, and a scalar pv_scale is never checked.
+    simulate(
+        config,
+        inputs,
+        95.0,
+        extra_ac_wh=(0.0,) * n,
+        dc24_schedule=(False,) * n,
+        dc48_schedule=(False,) * n,
+        pv_scale=[1.0] * n,
+    )
+    simulate(config, inputs, 95.0, pv_scale=0.5)
 
 
 # ---------------------------------------------------------------------------

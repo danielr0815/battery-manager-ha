@@ -45,21 +45,39 @@ def day_type(day: date, vacation: bool) -> str:
     return DAY_TYPE_WEEKDAY if day.weekday() < 5 else DAY_TYPE_WEEKEND
 
 
+def _hour_values(series_list: list[DaySeries], hour: int) -> list[float] | None:
+    """Per-hour values across counter series; None if ANY source lacks the
+    hour (explicit None or a series shorter than 24 h — the missing tail
+    counts as no data, same guard as clean_day's `load_wh`)."""
+    values: list[float] = []
+    for series in series_list:
+        value = series[hour] if hour < len(series) else None
+        if value is None:
+            return None
+        values.append(value)
+    return values
+
+
 def balance_day(inflows: list[DaySeries], outflows: list[DaySeries]) -> DaySeries:
     """Combine counter series into one consumption series (D-C1).
 
     An hour is valid only if EVERY configured balance entity has a value
-    for it — a partial balance looks plausible but is wrong. Negative
-    results are clamped to 0.
+    for it — a partial balance looks plausible but is wrong. A NEGATIVE
+    balance hour (counter reset / sensor noise) is DROPPED, not learned as
+    0 W: learning it would drag the bin median down with garbage, while a
+    dropped hour simply does not count as a sample (code review 2026-07).
+    Series shorter than 24 h count the missing tail as no data (None), same
+    as an explicit None.
     """
     result: DaySeries = []
     for hour in range(24):
-        values_in = [series[hour] for series in inflows]
-        values_out = [series[hour] for series in outflows]
-        if not inflows or any(v is None for v in values_in + values_out):
+        values_in = _hour_values(inflows, hour)
+        values_out = _hour_values(outflows, hour)
+        if not inflows or values_in is None or values_out is None:
             result.append(None)
             continue
-        result.append(max(0.0, sum(values_in) - sum(values_out)))
+        balance = sum(values_in) - sum(values_out)
+        result.append(balance if balance >= 0.0 else None)
     return result
 
 
@@ -73,7 +91,9 @@ def clean_day(
     """Remove self-controlled consumption from one day (D-C2).
 
     - `subtract_wh`: per-source hourly energy to subtract; a None value in
-      any source means the hour cannot be cleaned and is dropped.
+      any source means the hour cannot be cleaned and is dropped. A series
+      shorter than 24 h counts the missing tail as None (same guard as
+      `load_wh`).
     - `exclude_hours`: hours contaminated by sources that cannot be
       subtracted (status-only appliances, active support paths).
     - Residuals below -`negative_threshold_wh` are counted (diagnostic for
@@ -88,8 +108,8 @@ def clean_day(
         if value is None or hour in exclude_hours:
             cleaned.append(None)
             continue
-        subtractions = [series[hour] for series in subtract_wh]
-        if any(s is None for s in subtractions):
+        subtractions = _hour_values(subtract_wh, hour)
+        if subtractions is None:
             cleaned.append(None)
             continue
         residual = value - sum(subtractions)

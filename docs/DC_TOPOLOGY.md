@@ -164,12 +164,28 @@ dc48 manual mode:
 - **Race rules** (Jury-Gap #5): never mutate the mode during a running
   N1a sequence (defer until sequence end); double toggle idempotent;
   display behaviour during the grace windows defined.
+- **Failure escalation (v0.17.0, F7/U5):** after `SUPPORT_SWITCH_FAIL_ALERT
+  = 3` **consecutive** failed switch operations in the automatic support
+  path — a failed service call OR an unconfirmed make-before-break
+  switchover — the coordinator raises a repair issue
+  `support_switch_failed` plus a push notification (once). No retry counter
+  or backoff lives there: the 5-min cycle re-derives `desired != state` and
+  retries implicitly, so a transient hiccup heals itself; the first success
+  resets the streak and resolves the issue. Operator-driven manual mode and
+  the R2 controller are deliberately not counted (they have their own
+  diagnostics).
 
 ## 8. Configuration (base flow, support step)
 
 New fields — ALL with behaviour-neutral defaults (η = 1.0, caps
 unlimited, gate open, `dc24_share` = 100 %): the upgrade changes nothing
 until the operator enters real values (rollback = clear the fields):
+
+> **Dating note (review 2026-07):** the column *"Live value (operator)"* is a
+> **planning snapshot of 2026-07-05**, not today's live configuration. The
+> current live support thresholds, for example, are 24 V: **10 / 12 %** and
+> 48 V: **7 / 10 %** (activate / recovery); see
+> `docs/project-knowledge/05` §1.6 for the current live values.
 
 | Field | Default | Live value (operator) | Phase |
 |---|---|---|---|

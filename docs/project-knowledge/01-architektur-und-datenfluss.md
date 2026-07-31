@@ -1,6 +1,6 @@
 # Architektur & Datenfluss
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument ist der Code-Wegweiser
+**Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument ist der Code-Wegweiser
 für die Integration `battery_manager`: welches Modul ist wofür zuständig, in
 welcher Reihenfolge läuft ein Update-Zyklus, woher kommt jeder Eingangswert und
 was überlebt einen Neustart. Planer-Interna stehen in
@@ -60,8 +60,8 @@ seiteneffektfrei ist.
 
 | Modul | Verantwortung | Einstiegspunkte |
 |---|---|---|
-| `coordinator.py` | **Das Herz** (~4250 Zeilen). Liest Eingänge, baut `SystemConfig`/`PlanInputs`, ruft den Kern, wendet Trägheit/Hysterese an, fährt Floor-Guard, Support-Schaltung, Lastschaltung, Power-Warnings, Tank-Prognose; hält sämtliche Latches und den persistierten Zustand. | `BatteryManagerCoordinator._async_update_data`, `build_system_config`, `_apply_load_switching` |
-| `__init__.py` | Plumbing: Coordinator verdrahten, `sw_version` aus dem Manifest lesen, Persistenz laden, Plattformen forwarden, die zwei Export-Services registrieren, Entry-Migration (v1→v2, minor 2/3), sauberes Unload mit Flush. | `async_setup_entry`, `async_migrate_entry`, `_async_setup_card` |
+| `coordinator.py` | **Das Herz** (~4730 Zeilen, Stand v0.17.0). Liest Eingänge, baut `SystemConfig`/`PlanInputs`, ruft den Kern, wendet Trägheit/Hysterese an, fährt Floor-Guard, Support-Schaltung, Lastschaltung, Power-Warnings, Tank-Prognose; hält sämtliche Latches und den persistierten Zustand. | `BatteryManagerCoordinator._async_update_data`, `build_system_config`, `_apply_load_switching` |
+| `__init__.py` | Plumbing: Coordinator verdrahten, `sw_version` aus dem Manifest lesen, Persistenz laden, Plattformen forwarden, die zwei Export-Services registrieren, Entry-Migration (v1→v2, minor 2/3), sauberes Unload mit Flush. Export-Pfade (v0.17.0): `<config>/battery_manager/`, Downloads `<config>/www/battery_manager/` mit 1-h-TTL + Start-Sweep; nur `.txt`/`.json`, `.storage` gesperrt, Fehler als Service-Fehler. | `async_setup_entry`, `async_migrate_entry`, `_async_setup_card` |
 | `const.py` | Single Source of Truth für Config-Keys, Defaults (`DEFAULT_CONFIG`, `DEFAULT_LOAD_CONFIG`) und alle HA-seitigen Tunables. Re-exportiert `GATE_TOPUP_MIN_WH` und `MERGE_TERMINAL_RAMP_WH` aus `core/optimize.py` (deren Konsument ist der pure Kern, deshalb wohnen sie dort). | (nur Konstanten) |
 | `config_flow.py` | Config- und Options-Flow inkl. Subentry-Flows je Lastklasse und Appliance. Validiert Querbedingungen (soc_min < soc_max, PV-Fenster-Ordnung, buffer_min < buffer_max, `keep_on` ohne Charge-Enable). | `async_step_user`, Subentry-Flow-Handler |
 | `history_profile.py` | **Verbrauchslernen** (`ProfileLearner`): nächtlicher Lauf um `LEARNING_RUN_HOUR = 3`, liest Recorder-Statistiken, bereinigt Tage, subtrahiert Zusatzlasten (`in_house`-Semantik!), bildet p50/p80-Bins je (Pfad × Tagestyp × Stunde), rate-limitiert Änderungen, betreibt einen Bias-Watchdog. Eigener Store. | `ProfileLearner.async_run_learning`, `profiles_for_planning`, `planning_daytype`, `diagnostics` |
@@ -175,8 +175,19 @@ absichtlich eine Runde alt — das ist im Code so dokumentiert und kein Bug.
 
 `_get_soc` liest `CONF_SOC_ENTITY` und akzeptiert nur `0.0 <= v <= 100.0`.
 Ein gültiger Wert aktualisiert `_last_valid_soc`/`_last_soc_update`. Fehlt er,
-wird der letzte gültige Wert bis `MAX_SOC_AGE_HOURS = 1` weiterverwendet,
-danach `None`.
+wird der letzte gültige Wert bis `MAX_HISTORICAL_SOC_AGE_HOURS = 6` (h)
+weiterverwendet, danach `None`. (Die früheren, ungenutzten Alters-Konstanten
+für den SOC-/Prognose-Cache wurden mit v0.17.0 entfernt; es gelten nur noch
+die beiden `MAX_HISTORICAL_*`-Grenzen.)
+
+Zwei Eskalationen hängen an diesem Pfad (v0.17.0): der **adaptive
+Haus-SOC-Stale-Wächter** (`_update_house_soc_watchdog`) erkennt einen mit
+frischen Zeitstempeln eingefrorenen SOC und lässt `_get_soc` `None`
+liefern, und bei anhaltendem Datenverlust feuert die **D-A8-Stufe-2** nach
+`STALE_LOAD_SHED_HOURS = 2` h einmalig das Fail-safe-Abschalten aller
+gesteuerten Zusatzlasten (`_note_data_loss`/`_execute_stale_load_shed`,
+Repair-Issue `stale_data_load_shed` + Push, Latch bis zur Recovery —
+Details: `docs/ALGORITHM.md` D-A8 und `docs/LOAD_CONTROL.md` §15/§16).
 
 `None` führt normalerweise zu `UpdateFailed("No valid input data available
 (SOC)")`. **V8-Ausnahme:** innerhalb `STARTUP_SOC_GRACE_S = 120` s nach dem
@@ -463,11 +474,12 @@ Upgrade die Schaltpunkte nicht verschiebt).
 | Warum ist eine Last „unavailable"? | `_get_load_states`: Verfügbarkeits-Entity, BM-Switch, `_update_soc_stale` (G2), `_update_telemetry_freeze` (F4) |
 | Warum plant der Planer 2 W statt 400 W? | F5: `_load_power_warning` gelatcht → `saturated_power_w` |
 | Was überlebt einen Neustart? | `coordinator._persistent_payload` (§6.1) |
-| Was ist der verbindliche Vertrag? | der Code; danach die `F-*.md` im `docs/`-Ordner. `ARCHITECTURE.md`/`STRATEGY.md` sind **veraltet** (v0.7.x-Stand) |
+| Was ist der verbindliche Vertrag? | der Code; danach je `F-*.md` die Spezifikation seines Features. `ARCHITECTURE.md` ist größtenteils aktuell; `STRATEGY.md`/`REQUIREMENTS.md`/`ALGORITHM.md` sind **historisch** (v0.7.x-Stand) |
 
 ---
 
-**Verifikation: geprüft gegen Commit `a172d48` (v0.16.2).**
+**Verifikation: geprüft gegen Commit `a172d48` (v0.16.2); die v0.17.0-Einträge
+gegen den Arbeitsstand vom 2026-07-31.**
 
 Wichtigste Code-Anker dieses Dokuments:
 

@@ -256,7 +256,8 @@
     },
     "abort": {
       "already_configured": "Dieses System ist bereits konfiguriert.",
-      "reconfigure_successful": "Quellen aktualisiert; die Integration wurde neu geladen."
+      "reconfigure_successful": "Quellen aktualisiert; die Integration wurde neu geladen.",
+      "single_instance_allowed": "Battery Manager ist bereits konfiguriert. Es wird nur eine Instanz unterstützt."
     }
   },
   "config_subentries": {
@@ -264,7 +265,8 @@
       "entry_type": "Überschusslast",
       "error": {
         "keep_on_requires_enable": "Die Politik „Anlassen“ erfordert eine Lade-Freigabe-Entität — sonst könnte das Laden nie gestoppt werden.",
-        "control_entities_not_distinct": "Ladeeingang-Schalter und Lade-Freigabe müssen unterschiedliche Entitäten sein."
+        "control_entities_not_distinct": "Ladeeingang-Schalter und Lade-Freigabe müssen unterschiedliche Entitäten sein.",
+        "name_required": "Bitte gib einen Namen für die Last ein."
       },
       "initiate_flow": {
         "user": "Überschusslast hinzufügen",
@@ -366,6 +368,9 @@
     },
     "appliance": {
       "entry_type": "Haushaltsgerät",
+      "error": {
+        "name_required": "Bitte gib einen Namen für das Gerät ein."
+      },
       "initiate_flow": {
         "user": "Haushaltsgerät hinzufügen",
         "reconfigure": "Haushaltsgerät anpassen"
@@ -419,6 +424,8 @@
   },
   "options": {
     "error": {
+      "min_soc_above_max": "Der minimale SOC muss unter dem maximalen SOC liegen.",
+      "pv_windows_out_of_order": "Die PV-Fenster müssen aufsteigend geordnet sein: Morgen-Start < Morgen-Ende < Nachmittag-Ende.",
       "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
       "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität.",
       "buffer_min_above_max": "Das Minimum des dynamischen Puffers muss unter dem Maximum liegen.",
@@ -432,6 +439,60 @@
       "init": {
         "title": "Planer-Feineinstellung",
         "sections": {
+          "battery": {
+            "name": "Batterie",
+            "description": "Basisdimensionen des Speichers: Kapazität und SOC-Grenzen — nachträglich änderbar, ohne Subentries oder Lernstände zu verlieren. Wirkt nach dem Speichern (die Integration lädt dazu neu).",
+            "data": {
+              "battery_capacity_wh": "Kapazität (Wh)",
+              "battery_min_soc_percent": "Minimaler SOC (%)",
+              "battery_max_soc_percent": "Maximaler SOC (%)"
+            },
+            "data_description": {
+              "battery_capacity_wh": "Gesamtkapazität der Batterie in Wattstunden (z. B. 5000 für 5 kWh).",
+              "battery_min_soc_percent": "Harte Untergrenze: Unter diesen Ladezustand wird die Batterie nie geplant entladen (Schutz vor Tiefentladung).",
+              "battery_max_soc_percent": "Obergrenze für das Laden: Darüber nimmt die Batterie keinen Überschuss mehr auf (schont die Zellen)."
+            }
+          },
+          "pv": {
+            "name": "PV-Anlage",
+            "description": "Basisdimensionen der PV-Anlage: Spitzenleistung und Ertragsfenster — nachträglich änderbar, ohne Subentries oder Lernstände zu verlieren.",
+            "data": {
+              "pv_max_power_w": "Spitzenleistung (W)",
+              "pv_morning_start_hour": "Produktionsbeginn (Stunde)",
+              "pv_morning_end_hour": "Ende Vormittagsfenster (Stunde)",
+              "pv_afternoon_end_hour": "Produktionsende (Stunde)",
+              "pv_morning_ratio": "Vormittagsanteil der Tagesenergie (0-1)"
+            },
+            "data_description": {
+              "pv_max_power_w": "Maximale Leistung der PV-Anlage — kappt die aus der Tagesprognose berechneten Stundenwerte nach oben.",
+              "pv_morning_start_hour": "Stunde, ab der die Anlage nennenswert produziert (7 = ab 07:00 Uhr).",
+              "pv_morning_end_hour": "Ende des ertragreichen Vormittagsfensters — bis hierhin fällt der unten eingestellte Vormittagsanteil an.",
+              "pv_afternoon_end_hour": "Stunde, zu der die Produktion endet (18 = bis 18:00 Uhr).",
+              "pv_morning_ratio": "Anteil der Tagesenergie im Vormittagsfenster (0,8 = 80 % vormittags, 20 % nachmittags). Je nach Ausrichtung der Module anpassen."
+            }
+          },
+          "power": {
+            "name": "Ladegerät & Wechselrichter",
+            "description": "Basisdimensionen von Ladegerät und Wechselrichter — nachträglich änderbar, ohne Subentries oder Lernstände zu verlieren.",
+            "data": {
+              "charger_max_power_w": "Ladegerät max. Leistung (W)",
+              "charger_efficiency": "Ladegerät-Wirkungsgrad (0-1)",
+              "charger_standby_power_w": "Ladegerät Standby (W)",
+              "inverter_max_power_w": "Wechselrichter max. Leistung (W)",
+              "inverter_efficiency": "Wechselrichter-Wirkungsgrad (0-1)",
+              "inverter_standby_power_w": "Wechselrichter Standby (W)",
+              "inverter_min_soc_percent": "Wechselrichter Mindest-SOC (%)"
+            },
+            "data_description": {
+              "charger_max_power_w": "Maximale AC-Aufnahmeleistung des Batterie-Ladegeräts — begrenzt, wie schnell Überschuss eingespeichert werden kann.",
+              "charger_efficiency": "Wirkungsgrad der AC→DC-Wandlung des Ladegeräts (0,92 = 8 % Verlust).",
+              "charger_standby_power_w": "Eigenverbrauch des Ladegeräts, solange es aktiv ist.",
+              "inverter_max_power_w": "Maximale AC-Abgabeleistung des Entlade-Wechselrichters.",
+              "inverter_efficiency": "Wirkungsgrad der DC→AC-Wandlung des Wechselrichters (0,95 = 5 % Verlust).",
+              "inverter_standby_power_w": "Eigenverbrauch des Wechselrichters, solange er eingeschaltet ist.",
+              "inverter_min_soc_percent": "Unter diesem Ladezustand schaltet der Wechselrichter hart ab — das Haus läuft dann aus dem Netz."
+            }
+          },
           "planner_tuning": {
             "name": "Regelparameter",
             "description": "SOC-Puffer, Hysterese, Schaltabstände und PV-Vorentladung des Planers.",
@@ -705,6 +766,68 @@
     "learning_bias": {
       "title": "Verbrauchslernen: systematische Abweichung",
       "description": "Die gelernte P50-Verbrauchsprognose weicht seit mehr als zwei Wochen einseitig von der gemessenen Last ab. Prüfe Messpunkt, in-Hauslast-Flags der Lasten und die Bereinigungs-Sensoren (Diagnose: consumption_profile am SOC-Prognose-Sensor, Service export_learned_profiles)."
+    },
+    "stale_data_load_shed": {
+      "title": "Datenverlust: Zusatzlasten zwangsabgeschaltet",
+      "description": "Seit über zwei Stunden liegen weder gültige Batterie-SOC- noch PV-Prognosedaten vor. Als Fail-safe wurden alle gesteuerten Zusatzlasten einmalig abgeschaltet, damit sie nicht blind (ggf. netzgespeist) weiterlaufen. Nach Wiederherstellung der Daten läuft der Normalbetrieb automatisch weiter und dieser Hinweis löst sich auf; prüfe die Erreichbarkeit der Mess-Entitäten und der Schaltaktoren."
+    },
+    "support_switch_failed": {
+      "title": "Support-Schaltung: wiederholte Schaltfehler",
+      "description": "Die Support-Aktorik (48-V-PSU bzw. 24-V-Schiene inkl. DC/DC-Umschaltung) ist dreimal in Folge fehlgeschlagen — Dienstaufruf gescheitert oder Umschaltung nicht bestätigt. Prüfe Erreichbarkeit und Zustandsrückmeldung der konfigurierten Schalter. Der 5-Minuten-Zyklus versucht weiterhin automatisch zu schalten; der Hinweis löst sich nach dem ersten erfolgreichen Schaltvorgang von selbst auf."
+    },
+    "learning_recorder_timeout": {
+      "title": "Verbrauchslernen: Recorder-Zeitüberschreitung",
+      "description": "Der nächtliche Lernlauf wurde nach 5 Minuten ohne Antwort der Recorder-Datenbank abgebrochen (häufige Ursachen: verschlissene SD-Karte, blockierte SQLite-Datei). Der Lauf wird beim nächsten Nachtlauf automatisch wiederholt; bis dahin bleibt das bisher gelernte bzw. statische Lastprofil aktiv. Dieser Hinweis löst sich nach dem ersten erfolgreichen Lauf von selbst auf; bei Wiederholung Datenbank und Speichermedium prüfen."
+    },
+    "learning_no_recorder": {
+      "title": "Verbrauchslernen: Recorder-Integration fehlt",
+      "description": "Das Verbrauchslernen benötigt die Recorder-Integration (Langzeitstatistik und Zustandshistorie), es sind aber Mess-Entitäten ohne sie konfiguriert. Solange der Recorder fehlt, bleibt das statische Lastprofil aktiv und es wird nichts gelernt. Recorder einrichten oder die Mess-Entitäten des Verbrauchslernens entfernen; dieser Hinweis löst sich nach dem ersten erfolgreichen Lauf von selbst auf."
+    }
+  },
+  "services": {
+    "export_learned_profiles": {
+      "name": "Gelernte Profile exportieren",
+      "description": "Exportiert die gelernten Verbrauchsprofile (AC-/DC-Pfad, je Tagstyp und Stunde) als Texttabelle oder JSON-Snapshot in das Exportverzeichnis battery_manager oder als Browser-Download.",
+      "fields": {
+        "entry_id": {
+          "name": "Konfigurationseintrag",
+          "description": "Eintrag, aus dem exportiert wird. Nur nötig, wenn mehrere Battery-Manager-Einträge eingerichtet sind; Standard ist der erste Eintrag."
+        },
+        "file_path": {
+          "name": "Dateipfad",
+          "description": "Zielpfad der Exportdatei. Standard ist ein erzeugter Dateiname im Exportverzeichnis; eigene Pfade müssen darin liegen und auf .txt oder .json enden."
+        },
+        "download": {
+          "name": "Download",
+          "description": "Die Datei über /local/ als Browser-Download bereitstellen, statt sie in das Konfigurationsverzeichnis zu schreiben. Download-Links brauchen kein Login, deshalb wird die Datei nach einer Stunde automatisch gelöscht."
+        },
+        "as_table": {
+          "name": "Als Tabelle",
+          "description": "Eine lesbare Texttabelle statt des JSON-Snapshots schreiben."
+        }
+      }
+    },
+    "export_hourly_details": {
+      "name": "Stundendetails exportieren",
+      "description": "Exportiert die Stundendetails des letzten Plans (SOC, Netzbezug/-einspeisung, Entscheidungen) als Texttabelle oder JSON-Snapshot in das Exportverzeichnis battery_manager oder als Browser-Download.",
+      "fields": {
+        "entry_id": {
+          "name": "Konfigurationseintrag",
+          "description": "Eintrag, aus dem exportiert wird. Nur nötig, wenn mehrere Battery-Manager-Einträge eingerichtet sind; Standard ist der erste Eintrag."
+        },
+        "file_path": {
+          "name": "Dateipfad",
+          "description": "Zielpfad der Exportdatei. Standard ist ein erzeugter Dateiname im Exportverzeichnis; eigene Pfade müssen darin liegen und auf .txt oder .json enden."
+        },
+        "download": {
+          "name": "Download",
+          "description": "Die Datei über /local/ als Browser-Download bereitstellen, statt sie in das Konfigurationsverzeichnis zu schreiben. Download-Links brauchen kein Login, deshalb wird die Datei nach einer Stunde automatisch gelöscht."
+        },
+        "as_table": {
+          "name": "Als Tabelle",
+          "description": "Eine lesbare Texttabelle statt des JSON-Snapshots schreiben."
+        }
+      }
     }
   }
 }

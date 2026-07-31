@@ -24,6 +24,8 @@ from .const import (
     CONF_APPLIANCE_OPPORTUNISTIC,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_WARNING_PCT,
+    CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_SWITCH,
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
     ENTITY_INVERTER_STATUS,
@@ -44,16 +46,28 @@ async def async_setup_entry(
     """Set up Battery Manager binary sensors (incl. per-subentry entities)."""
     coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[Entity] = [
-        InverterRecommendationSensor(coordinator),
-        SupportPathSensor(coordinator, ENTITY_SUPPORT_DC24, "support_dc24"),
-        SupportPathSensor(coordinator, ENTITY_SUPPORT_DC48, "support_dc48"),
-    ]
+    entities: list[Entity] = [InverterRecommendationSensor(coordinator)]
+
+    # Support-path status only while the path is configured (F-N2); a
+    # leftover sensor of a removed path is dropped from the registry instead
+    # of lingering as a permanently-off corpse (mirrors sensor.py/switch.py).
+    ent_reg = er.async_get(hass)
+    for entity_key, conf_key, data_key in (
+        (ENTITY_SUPPORT_DC24, CONF_SUPPORT_DC24_SWITCH, "support_dc24"),
+        (ENTITY_SUPPORT_DC48, CONF_SUPPORT_DC48_SWITCH, "support_dc48"),
+    ):
+        if coordinator.raw_config.get(conf_key):
+            entities.append(SupportPathSensor(coordinator, entity_key, data_key))
+        else:
+            stale = ent_reg.async_get_entity_id(
+                "binary_sensor", DOMAIN, f"{entry.entry_id}_{entity_key}"
+            )
+            if stale:
+                ent_reg.async_remove(stale)
 
     # Per-subentry entities are scoped to their subentry so they are removed
     # automatically when the load/appliance subentry is deleted (v0.7.19).
     per_subentry: dict[str, list[Entity]] = {}
-    ent_reg = er.async_get(hass)
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
             load_entities: list[Entity] = [

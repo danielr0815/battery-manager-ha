@@ -1,6 +1,6 @@
 # Forensik Juli 2026 & offene Punkte
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument destilliert die
+**Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument destilliert die
 7-Tage-Entscheidungsforensik (17.–24.07.2026, 65-Agenten-Analyse mit
 adversarialer Verifikation: 23 Befunde bestätigt/plausibel, 3 widerlegt) und
 die daraus entstandene Fix-Serie F1–F11 (v0.16.0–v0.16.2) — inklusive dessen,
@@ -82,6 +82,10 @@ Direktüberschuss; lost_surplus des Tages 5,15 → 2,06 kWh.
   Export > X W über Y min + unsaturierte Last → außerplanmäßiges Quantum;
   Strict-Surplus-Bedingung zwingend. Voraussetzung sinnvollerweise V3-Betrieb
   (Entfeuchter aus dem Exportzähler heraus, sonst ist das Signal verseucht).
+- **Stage 3 der Verbrauchsprognose (D-C10 „erwartete Läufe"/Appliance-
+  Signaturen, CONSUMPTION_FORECAST.md §6):** spezifiziert, aber **nicht
+  implementiert** — die Entscheidung, ob es gebaut wird, ist offen
+  (Stand v0.17.0).
 - **V4 — Ladeverlust-Modell energielimitierter Lasten** (S–M): Fossibot B
   stoppte bei 86,9 % statt 90 % (841 Wh Wand → 574 Wh intern, η ≈ 0,7);
   Wirkungsgradfaktor in der Wh-Dimensionierung.
@@ -169,6 +173,6 @@ Für den BM daraus relevant:
 
 Verifikation: destilliert aus der Live-Forensik-Session 24./25.07.2026
 (adversarial verifizierte Befunde) und geprüft gegen Commit `a172d48`
-(v0.16.2). Wichtigste Code-Anker: `core/optimize.py::_threshold_merge_probe`,
+(v0.16.2); die v0.17.0-Einträge gegen den Arbeitsstand vom 2026-07-31. Wichtigste Code-Anker: `core/optimize.py::_threshold_merge_probe`,
 `core/optimize.py::_seamless_spill`, `coordinator.py::_latch_shadow_active`,
 `coordinator.py::_update_telemetry_freeze`, `docs/F-TANK.md`.

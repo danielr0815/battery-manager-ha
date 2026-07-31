@@ -240,6 +240,27 @@ def test_appliance_window_closed_at_night_with_low_battery():
     assert result.appliance_windows["washer"] is False
 
 
+def test_appliance_window_empty_horizon_is_false():
+    """An empty horizon must NOT green-light a start (code review 2026-07):
+    the trial trajectory imports 0 Wh and cannot degrade the min SOC, so both
+    advisor gates used to pass vacuously on zero evidence."""
+    washer = Appliance(
+        appliance_id="washer",
+        name="Waschmaschine",
+        run_energy_wh=1000.0,
+        run_duration_h=2.0,
+        opportunistic_start=True,
+    )
+    config = SystemConfig(appliances=(washer,))
+    inputs = PlanInputs(
+        now=datetime(2026, 7, 4, 12, 0), start_soc_percent=80.0, slots=()
+    )
+    planned = simulate(config, inputs, 20.0)
+    assert not planned.flows  # the empty horizon under test
+    windows = appliance_windows(config, inputs, 20.0, (), planned)
+    assert windows == {"washer": False}
+
+
 def test_appliance_window_evaluated_under_support_policy():
     """Review #2: the appliance advisor must simulate the hypothetical run under
     the SAME support-PSU schedules as the planned trajectory it compares against
@@ -3415,3 +3436,225 @@ def test_energy_limited_priority_load_reaches_target_when_surplus_permits():
     assert result.trajectory.total_import_wh - base.total_import_wh <= (
         IMPORT_ARTIFACT_SLACK_WH + 1e-6
     )
+
+
+# ---------------------------------------------------------------------------
+# Coverage-targeted edge branches (helpers + degenerate horizons)
+# ---------------------------------------------------------------------------
+
+
+def test_pv_windows_skips_zero_duration_slots():
+    """A degenerate zero-duration slot must be skipped BEFORE the pv/duration
+    division — it can never count as a strong-PV slot."""
+    slots = (
+        HourSlot(
+            index=0,
+            start=datetime(2026, 7, 4, 7),
+            duration=0.0,
+            hour_of_day=7,
+            pv_wh=999999.0,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        ),
+        _esc_slot(1, pv=300.0, dc=0.0, hour=8),
+        _esc_slot(2, pv=300.0, dc=0.0, hour=9),
+    )
+    inputs = PlanInputs(
+        now=datetime(2026, 7, 4, 7), start_soc_percent=50.0, slots=slots
+    )
+    assert pv_windows(inputs, 200.0, None) == {datetime(2026, 1, 1).date(): (1, 2)}
+
+
+def test_pv_windows_end_hour_drops_window_starting_after_it():
+    """The site override caps the absorption window at the last slot starting
+    before `end_hour`; a day whose strong slots all begin at/after the
+    override hour has NO window (night/cloudy slots keep only the nominal
+    opportunity gate)."""
+    slots = tuple(
+        _esc_slot(i, pv=300.0 if hour >= 13 else 50.0, dc=0.0, hour=hour)
+        for i, hour in enumerate(range(7, 18))
+    )
+    inputs = PlanInputs(
+        now=datetime(2026, 7, 4, 7), start_soc_percent=50.0, slots=slots
+    )
+    day = datetime(2026, 1, 1).date()  # _esc_slot's hardcoded day
+    assert pv_windows(inputs, 200.0, None) == {day: (6, 10)}
+    assert pv_windows(inputs, 200.0, 12) == {}
+
+
+def test_threshold_merge_probe_empty_horizon():
+    """No slots -> no stressed clip exists -> (None, 0.0): full-horizon
+    behaviour with zero margin."""
+    inputs = PlanInputs(
+        now=datetime(2026, 7, 4, 12, 0), start_soc_percent=55.0, slots=()
+    )
+    assert _threshold_merge_probe(SystemConfig(), inputs) == (None, 0.0)
+
+
+def test_plan_empty_horizon():
+    """An empty slot list is a legal (degenerate) plan: the summary fields
+    read the start SOC, nothing is "to max", the inverter stays off."""
+    inputs = PlanInputs(
+        now=datetime(2026, 7, 4, 12, 0), start_soc_percent=55.0, slots=()
+    )
+    result = plan(SystemConfig(), inputs)
+    assert result.trajectory.flows == ()
+    assert result.min_soc_percent == 55.0
+    assert result.max_soc_percent == 55.0
+    assert result.hours_to_max_soc == 0
+    assert result.inverter_on is False
+
+
+def test_quantised_hours_without_min_runtime_is_whole_slot():
+    """min_runtime_min = 0 (no dwell) means no quantisation: only the
+    committed (whole-slot) candidate exists."""
+    load = SurplusLoad(load_id="x", name="X", nominal_power_w=300.0, min_runtime_min=0)
+    slot = HourSlot(
+        index=0,
+        start=datetime(2026, 7, 4),
+        duration=0.3,
+        hour_of_day=0,
+        pv_wh=0.0,
+        ac_wh=0.0,
+        dc_wh=0.0,
+    )
+    assert _quantised_hours(load, slot) == [0.3]
+
+
+def test_appliance_windows_skips_non_opportunistic():
+    """An appliance without opportunistic_start never gets a start advisory —
+    it is not even simulated."""
+    washer = Appliance(
+        appliance_id="washer",
+        name="W",
+        run_energy_wh=1000.0,
+        run_duration_h=2.0,
+        opportunistic_start=False,
+    )
+    config = SystemConfig(appliances=(washer,))
+    result, _ = make_plan(config, datetime(2026, 7, 4, 10, 0), 90.0, [15.0, 15.0])
+    assert result.appliance_windows == {}
+
+
+def test_support_dc48_recovers_above_recovery_soc():
+    """48 V hysteresis: once the SOC recovers to the recover level the PSU
+    releases — it must not stay latched for the rest of the horizon."""
+    cfg = SystemConfig(support=SupportParams(configured=True, native48_base_w=250.0))
+    slots = (
+        _esc_slot(0, pv=0.0, dc=300.0),  # native 48 V drain below the 5.5 % activate
+        _esc_slot(1, pv=2000.0, dc=0.0, hour=1),  # strong PV: recovers >= 10 %
+        _esc_slot(2, pv=0.0, dc=0.0, hour=2),  # stays high: 48 V released
+    )
+    inputs = PlanInputs(now=datetime(2026, 1, 1, 0), start_soc_percent=9.0, slots=slots)
+    threshold = 100.0  # inverter parked off: isolates the DC path
+    extra_ac = (0.0, 0.0, 0.0)
+    base = simulate(cfg, inputs, threshold, extra_ac_wh=extra_ac)
+    _dc24, dc48, _ = support_escalation(cfg, inputs, threshold, extra_ac, base)
+    assert dc48 == (True, False, False)
+
+
+def test_saturated_load_books_no_phantom_energy():
+    """F5: a load whose power warning latched at ~0 W (full tank) plans at
+    planning_power_w == 0 — every candidate is discarded as zero-energy in
+    BOTH passes, so no phantom full-power slot enters the plan."""
+    config = SystemConfig(loads=(DEHUMIDIFIER,))
+    states = (SurplusLoadState(load_id="dehumidifier", saturated_power_w=0.0),)
+    result, _inputs = make_plan(
+        config, datetime(2026, 7, 4, 20, 0), 80.0, [0.0, 14.0, 12.0], states
+    )
+    plan_dehumid = result.load_plans[0]
+    assert plan_dehumid.planned_energy_wh == 0.0
+    assert not any(plan_dehumid.schedule)
+
+
+def test_pass2_bet_breaking_buffer_floor_is_vetoed():
+    """Z3 in the shared _gate_trial: a pre-drain bet whose trial trajectory
+    dips below soc_min + buffer (AND below the no-bet plan's own minimum) is
+    vetoed — even with a clip day coming that would refill it. The inverter
+    floor is set to soc_min so the veto is provably Z3's, not the planner-G4
+    serviceability floor (which would reject first otherwise)."""
+    control = replace(ControlParams(), inverter_min_soc_percent=5.0)
+    config = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
+    states = (SurplusLoadState(load_id="dehumidifier"),)
+    # 35 % at 22:00: the bare night drain ends ~11 % (above the 10 % buffer
+    # floor); any additional night bet would deepen it below the floor.
+    result, _inputs = make_plan(
+        config, datetime(2026, 7, 3, 22, 0), 35.0, [0.0, 14.0, 12.0], states
+    )
+    lp = result.load_plans[0]
+    # No night slot (22:00-06:00, slots 0-8) is booked — every candidate
+    # there broke the buffer floor in the trial re-simulation.
+    assert not any(lp.schedule[:9])
+    # Bets ARE still placed where the floor holds (daylight pre-drain).
+    assert lp.planned_energy_wh > 0.0
+    # And the accepted plan never falls through the inverter floor.
+    assert result.min_soc_percent >= 5.0
+
+
+def test_energy_limited_pass2_never_spills_into_night():
+    """Daylight rule, spill guard: an energy-limited load's min-runtime
+    commitment starting in the last daylight slot must not spill into the
+    following zero-PV (night) slot — the whole candidate is dropped, shorter
+    quantised candidates keep their chance (here: none exists, so the slot
+    stays unbooked)."""
+    fossibot = SurplusLoad(
+        load_id="fossibot",
+        name="F",
+        nominal_power_w=300.0,
+        energy_limited=True,
+        capacity_wh=20000.0,  # large enough that rem never saturates the gate
+        min_runtime_min=60,
+    )
+    config = SystemConfig(loads=(fossibot,))
+    states = (SurplusLoadState(load_id="fossibot", soc_percent=0.0),)
+    # 17:30: slot 0 (17:30-18:00, 40 Wh PV) is daylight, slot 1 (18:00) is
+    # night. The 1 h commitment would spill 30 min into the night slot.
+    result, inputs = make_plan(
+        config, datetime(2026, 7, 3, 17, 30), 80.0, [2.0, 14.0, 12.0], states
+    )
+    lp = result.load_plans[0]
+    assert inputs.slots[0].pv_wh > 0.0 and inputs.slots[1].pv_wh <= 0.0
+    assert not lp.schedule[0]
+    # The invariant the guard protects: NO booked slot is a zero-PV slot.
+    assert all(
+        inputs.slots[i].pv_wh > 0.0 for i, booked in enumerate(lp.schedule) if booked
+    )
+
+
+def test_pass2_candidate_overlapping_pass1_booking_is_dropped():
+    """The shared _spread_candidate returns None when a min-runtime commitment
+    spills past a free slot into one ALREADY booked by the same load (a real
+    double-booking, not a seamless raster-edge continuation — the covered
+    NEXT slot is free, so trimming to the candidate slot would strand the run
+    below its dwell). The candidate is dropped; the plan keeps exactly the
+    non-overlapping bookings."""
+    dehumid = SurplusLoad(
+        load_id="dehumidifier",
+        name="D",
+        nominal_power_w=400.0,
+        min_runtime_min=150,  # 2.5 h quantum -> every commitment spans 3 slots
+    )
+    config = SystemConfig(loads=(dehumid,))
+    states = (SurplusLoadState(load_id="dehumidifier"),)
+    result, _inputs = make_plan(
+        config, datetime(2026, 7, 4, 9, 0), 90.0, [8.0, 8.0], states
+    )
+    lp = result.load_plans[0]
+    # Pinned allocation: two 2.5 h pass-1 blocks in the morning surplus, one
+    # 2.5 h pass-1 block plus two 1 h pass-2 bets in the afternoon — and
+    # NOTHING double-booked in between, where the overlap guard dropped the
+    # spilling candidates.
+    assert [i for i, booked in enumerate(lp.schedule) if booked] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        22,
+        23,
+        24,
+        25,
+        26,
+    ]
+    assert lp.planned_energy_wh == 3800.0

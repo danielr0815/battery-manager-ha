@@ -1,4 +1,5 @@
 {
+ "appliance_windows": {},
  "export_kwh": 3.990782,
  "hours_to_max": 14,
  "import_kwh": 0.06,
@@ -73,6 +74,10 @@
  "lost_surplus_kwh": 3.990782,
  "max_soc": 95.0,
  "min_soc": 28.1986,
+ "prevented_export_by_day_wh": {
+  "2026-07-03": 0.0,
+  "2026-07-04": 6619.009
+ },
  "pv_window_ends": {
   "2026-07-04": 17
  },
@@ -106,5 +111,6 @@
   74.557
  ],
  "stressed_min_soc": 28.1986,
- "threshold": 20.0
+ "threshold": 20.0,
+ "threshold_horizon_end": "2026-07-04T10:00:00"
 }

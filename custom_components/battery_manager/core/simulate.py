@@ -252,7 +252,24 @@ def simulate(
       recovery window and leave the rest of the horizon at nominal PV.
     1.0 (scalar) is the neutral default and keeps the result bit-identical to the
     unscaled run.
+
+    The optional per-slot series are index-aligned with `inputs.slots`; a series
+    SHORTER than the horizon used to crash with a bare IndexError mid-run
+    (code review 2026-07) and now fails up-front with a speaking ValueError.
     """
+    n_slots = len(inputs.slots)
+    for name, series in (
+        ("extra_ac_wh", extra_ac_wh),
+        ("dc24_schedule", dc24_schedule),
+        ("dc48_schedule", dc48_schedule),
+        ("pv_scale", pv_scale if not isinstance(pv_scale, (int, float)) else None),
+    ):
+        if series is not None and len(series) < n_slots:
+            raise ValueError(
+                f"simulate: {name} has {len(series)} entries but the horizon "
+                f"has {n_slots} slots"
+            )
+
     soc = inputs.start_soc_percent
     flows: list[HourFlows] = []
     total_import = 0.0

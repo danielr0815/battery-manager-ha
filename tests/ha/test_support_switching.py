@@ -549,3 +549,48 @@ async def test_manual_dc24_off_failure_keeps_manual(hass):
         await coordinator.async_set_support_manual("dc24", False)
     # DC/DC restore failed -> stay in manual mode (PSU is still on).
     assert coordinator._support_manual["dc24"] is True
+
+
+async def test_manual_dc24_on_failure_stays_auto(hass):
+    """Symmetric to the OFF-failure case: if the PSU does not confirm 'on'
+    during manual activation, the switchover aborts — manual mode is NOT
+    entered and the model stays automatic (the DC/DC keeps feeding the
+    rail). The pending-confirm latch still arms, so a late 'on' report is
+    adopted as ours instead of misread as a foreign manual override (F-N2)."""
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, dead_entities=(PSU,))
+    hass.states.async_set(PSU, "off")
+    hass.states.async_set(DCDC, "on")
+    calls.clear()
+
+    with patch("asyncio.sleep", return_value=None):
+        await coordinator.async_set_support_manual("dc24", True)
+
+    assert coordinator._support_manual["dc24"] is False
+    assert coordinator._support_state["dc24"] is False
+    assert coordinator._support_pending_confirm["dc24"] is True
+    # The DC/DC was never told to turn off (the sequence aborted first).
+    assert calls == [("turn_on", PSU)]
+
+
+async def test_manual_dc48_on_service_error_stays_auto(hass):
+    """48 V variant: a RAISING turn_on service call makes _switch_entity
+    report failure — the activation aborts before manual mode is entered."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(hass, calls, extra_data={CONF_SUPPORT_DC48_SWITCH: DC48})
+    hass.states.async_set(DC48, "off")
+
+    async def failing_turn_on(call):
+        if call.data["entity_id"] == DC48:
+            raise HomeAssistantError("psu unreachable")
+        calls.append(("turn_on", call.data["entity_id"]))
+        hass.states.async_set(call.data["entity_id"], "on")
+
+    hass.services.async_register("homeassistant", "turn_on", failing_turn_on)
+
+    await coordinator.async_set_support_manual("dc48", True)
+
+    assert coordinator._support_manual["dc48"] is False
+    assert coordinator._support_state["dc48"] is False

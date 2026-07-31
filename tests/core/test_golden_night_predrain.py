@@ -93,6 +93,15 @@ def _digest(result):
             else round(result.stressed_min_soc_percent, 4)
         ),
         "pv_window_ends": result.pv_window_ends,
+        "appliance_windows": result.appliance_windows,
+        "prevented_export_by_day_wh": {
+            day: round(wh, 3) for day, wh in result.prevented_export_by_day_wh.items()
+        },
+        "threshold_horizon_end": (
+            result.threshold_horizon_end.isoformat()
+            if result.threshold_horizon_end is not None
+            else None
+        ),
         "min_soc": round(result.min_soc_percent, 4),
         "max_soc": round(result.max_soc_percent, 4),
         "hours_to_max": result.hours_to_max_soc,

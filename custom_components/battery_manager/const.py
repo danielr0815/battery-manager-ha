@@ -35,13 +35,19 @@ STARTUP_RETRY_ATTEMPTS = 5
 STARTUP_SOC_GRACE_S = 120
 
 # Data validity limits
-MAX_PV_FORECAST_AGE_HOURS = 24
-MAX_SOC_AGE_HOURS = 1
 MAX_HISTORICAL_SOC_AGE_HOURS = 6
 MAX_HISTORICAL_FORECAST_AGE_HOURS = 72
 # A load's last-known SOC (cached while the device sleeps) is trusted for at
 # most this long; beyond it the load plans as "empty" and self-heals on wake.
 LOAD_SOC_CACHE_MAX_AGE_HOURS = 168  # 7 days
+
+# D-A8 stage 2 fail-safe: once the coordinator has had NO valid SOC/forecast
+# data for this long CONTINUOUSLY (every refresh failing, entities
+# unavailable), all controlled surplus loads are force-switched OFF once —
+# blind operation must never leave loads running (potentially grid-fed or
+# draining the battery below its floor). Deliberately a constant, not a
+# config key (same class as the G2/F4 guards).
+STALE_LOAD_SHED_HOURS = 2
 
 # --- Input entity config keys (base entry) ---
 CONF_SOC_ENTITY = "soc_entity"
@@ -80,6 +86,13 @@ LEARNING_HOLIDAY_MIN_HOURS = 12.0  # workday-sensor "off" share tagging a day
 LEARNING_BIAS_ALERT_DAYS = 14  # one-sided P50 bias for this long -> repair
 LEARNING_BIAS_ALERT_SHARE = 0.15  # ... when |bias| exceeds this load share
 VALIDATION_HISTORY_DAYS = 30  # kept watchdog entries per path
+# Hard timeout for every recorder executor call of the learner (LTS fetch
+# and state-history chunks): a hung recorder DB (worn SD card, locked
+# SQLite file) must not block the nightly learning run forever — the run
+# holds the learner lock, so an unbounded wait would silently stall every
+# future run. 300 s is generous for a weekly chunk yet bounded; a timeout
+# raises a repair issue and the next run retries.
+RECORDER_TIMEOUT_S = 300
 # Store ENVELOPE major version — pinned at 1 forever: bumping the Store
 # major would make HA's default _async_migrate_func raise on old files and
 # crash the whole entry setup after an update. Schema changes are handled
@@ -109,6 +122,13 @@ CONF_SUPPORT_DC24_ACTIVATE_SOC = "support_dc24_activate_soc"
 CONF_SUPPORT_DC24_RECOVERY_SOC = "support_dc24_recovery_soc"
 CONF_SUPPORT_DC48_ACTIVATE_SOC = "support_dc48_activate_soc"
 CONF_SUPPORT_DC48_RECOVERY_SOC = "support_dc48_recovery_soc"
+# Support-actuator failure escalation (F7/U5): after this many CONSECUTIVE
+# failed switch operations in the support path (failed service call OR an
+# unconfirmed make-before-break sequence) a repair issue + push is raised.
+# No retry counter lives here — the 5-min cycle already re-derives
+# desired != state and retries implicitly; this only surfaces PERSISTENT
+# actuator failure to the operator. A constant, not a config key.
+SUPPORT_SWITCH_FAIL_ALERT = 3
 
 # --- F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md, phase 2) ---
 # All NEUTRAL by default (share 100 %, efficiencies 1.0, 0 A = uncapped),
@@ -221,6 +241,18 @@ LATCH_HOLD_OVERPOWER_FACTOR = 1.5
 # 12 min of frozen SOC while drawing ~500 W is unambiguous). Deliberately a
 # constant, not a config key.
 STALE_LOAD_SOC_MIN = 12
+
+# House-battery SOC stale watchdog (adaptive sibling of the G2 load guard): the
+# same "cached values with fresh timestamps" failure exists for the HOUSE
+# battery BMS, and `_get_soc` alone accepts any in-range value as fresh. A SOC
+# that stays EXACTLY unchanged while the battery demonstrably flows power is
+# latched as stale — which routes into the normal UpdateFailed path and hence
+# the D-A8 stage-2 escalation. Proof of flow needs at least this much expected
+# battery power (W); the stale window adapts to the expected power (time for a
+# >= 1 % SOC change at that power) and is capped at this many minutes so a
+# trickle flow cannot stretch it. Constants, not config keys (like G2).
+HOUSE_SOC_STALE_POWER_W = 300.0
+HOUSE_SOC_STALE_MAX_MINUTES = 60
 
 # Telemetry-freeze watchdog (F4, 2026-07-24 forensics): a redundant guard for
 # ENERGY-LIMITED loads, independent of the switching path AND the G2 latch. The

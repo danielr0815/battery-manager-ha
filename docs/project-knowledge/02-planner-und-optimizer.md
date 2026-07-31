@@ -1,6 +1,6 @@
 # Planner & Optimizer
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument beschreibt den
+**Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument beschreibt den
 HA-freien Planungskern (`core/optimize.py`, `core/simulate.py`,
 `core/series.py`) exakt so, wie er implementiert ist: T*-Suche mit Merge-Probe
 und Terminal-Credit-Rampe, die Energiefluss-Simulation, die Zwei-Pass-
@@ -8,9 +8,10 @@ Lastallokation mit ihrer vollständigen Gate-Familie, und was die
 Ergebniszahlen wirklich bedeuten. Wer eine konkrete Planentscheidung
 nachrechnen oder den Optimierer ändern will, liest hier.
 
-Die `F-*.md` im `docs/`-Ordner sind Sekundärquelle (F-TANK.md und
-F-SEAMLESS-RUNS.md sind aktuell, ältere teils überholt). **Im Zweifel gilt der
-Code.**
+Die `F-*.md` im `docs/`-Ordner sind **je die Spezifikation ihres Features** —
+bei einem Konflikt mit dieser Zusammenfassung gilt die Wissensbasis, weil sie
+(anders als manche älteren F-Docs) laufend gegen den Code geprüft wird.
+**Im Zweifel gilt der Code.**
 
 ---
 
@@ -673,7 +674,8 @@ die Golden-Tests:
 
 ---
 
-**Verifikation: geprüft gegen Commit `a172d48` (v0.16.2).**
+**Verifikation: geprüft gegen Commit `a172d48` (v0.16.2); die v0.17.0-Einträge
+gegen den Arbeitsstand vom 2026-07-31.**
 
 Wichtigste Code-Anker dieses Dokuments:
 

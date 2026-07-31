@@ -7,7 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-31
+
+### Security
+- **Export services hardened.** Exports are now confined to
+  `<config>/battery_manager/` (plain) and `<config>/www/battery_manager/`
+  (downloads) — previously any writable path under `/config` was accepted,
+  including HA-internal state like `.storage/core.config_entries`. `.storage`
+  is now refused explicitly and only `.txt`/`.json` suffixes are allowed.
+  Download files are deleted automatically after 1 hour (the `/local/` tree
+  is served without login and the learned-profile export contains household
+  presence/consumption patterns); a startup sweep removes leftovers whose
+  timer died with the previous run, and the notification now warns about the
+  unauthenticated reachability.
+- **Service failures are raised, not just logged.** Invalid `file_path` or
+  unknown `entry_id` raise `ServiceValidationError`, missing export data
+  raises `HomeAssistantError` — automations and the UI now see the failure.
+
+### Changed
+- **Single instance only.** A second config entry is aborted
+  (`single_instance_allowed`): two planners would fight over the same
+  physical switches.
+- **Breaking: export paths moved** (see Security). Existing automations
+  passing a custom `file_path` outside the new directories must be updated.
+- **Base dimensions editable after setup.** Battery (capacity, SOC bounds),
+  PV (peak power, forecast windows) and power (charger/inverter ratings,
+  efficiencies) moved into the options flow — changing them no longer
+  requires deleting the entry (subentries and learned data survive).
+- **Gate pipeline consolidated** in the planner core (shared
+  `_spread_candidate`/`_gate_trial`/`_accept_candidate` helpers replace the
+  duplicated pass-1/pass-2 blocks; golden snapshots prove bit-identical
+  behaviour). The serviceability gate now uses the same SOC cutoff as the
+  simulator (`max(soc_min, inverter_min)`).
+- **Docs consolidated.** Goal hierarchy now consistently references
+  F-STRICT-SURPLUS (never import for optional loads → SOC high → absorb
+  late), stale doc labels fixed, and the deliberate scope boundaries (no
+  grid power limit, plan-side DST tolerance, counter-reset handling,
+  privacy, BMS-owned battery protection) are written down.
+- **Card: full accessibility + robustness overhaul.** All numeric/array
+  attributes are validated defensively (a malformed entity can no longer
+  crash the render; oversized series are capped), a render error shows an
+  in-card message, and the chart is keyboard-navigable with an
+  `aria-label`, a screen reader summary and a WCAG-AA-checked palette.
+  `setConfig` now validates types strictly: a YAML `hours: "48"` string is
+  rejected with a clear error instead of being silently coerced.
+
+### Added
+- **Fail-safe on sustained data loss (D-A8 stage 2).** Entities go
+  `unavailable` immediately when the SOC (6 h) or forecast (72 h) caches
+  expire; after 2 more hours of data loss all managed surplus loads are
+  force-switched off once (charge-enable always, plug follows
+  `input_off_policy`/ownership), with a repair issue and push notification
+  until recovery.
+- **Adaptive house-battery SOC watchdog.** A frozen SOC sensor (unchanged
+  while the last valid plan expects > 300 W of battery flow for longer than
+  the time a 1 % SOC change needs, capped at 60 min) is treated as stale
+  and escalates through the normal data-loss path.
+- **Support-switch failure escalation.** Three consecutive actuation
+  failures (including unconfirmed make-before-break) raise the
+  `support_switch_failed` repair issue plus push notification.
+- **Recorder robustness.** Recorder queries time out after 5 minutes
+  (`learning_recorder_timeout` issue, self-resolving), a missing recorder
+  integration raises `learning_no_recorder` once instead of log-spamming,
+  and both stores survive version mismatches with a warning instead of a
+  crash.
+- **Diagnostics include redacted subentry options** (plus a privacy note:
+  the dump contains consumption data — share carefully).
+- **Services metadata.** `services.yaml` now carries names/descriptions, a
+  typed `config_entry` selector for `entry_id`, and de/en translations.
+- **Coverage gates in CI.** The pure planner core is held at 100 % line
+  coverage (dedicated step), the total integration at ≥ 95 %
+  (`fail_under`), enforced in the `tests` and `devcontainer` jobs.
+
 ### Fixed
+- **Slot-0 energy overestimation.** The first planning slot ignored the
+  seconds fraction of `now`, overestimating every slot-0 energy by up to
+  59 s; an empty horizon right before midnight is handled.
+- **Corrupt PV forecasts are clamped.** Negative and NaN forecast values no
+  longer propagate as phantom load or silent hoarding.
+- **Counter-reset hours are discarded** instead of learned as 0 W
+  consumption (negative balance hours in the profile learner).
+- **Core input validation.** The planner dataclasses fail fast
+  (`ValueError`) on zero capacity, out-of-range efficiencies and invalid
+  battery tolerances instead of crashing later or inverting energy flows;
+  `simulate()` checks input series lengths up front.
+- **Appliance advisor no longer approves a start on an empty horizon.**
+- **Stale `SupportPathSensor` entities** are only created for configured
+  paths and leftovers are cleaned up.
+- **Empty load/appliance names rejected** in the subentry flows.
+- **Flaky time-dependent tests pinned** (startup-grace boundary).
 - **Translations: dropped the deprecated `config_subentries.<type>.title`
   keys** (hassfest `[TRANSLATIONS]` warning). The title moved out of the flow
   sections back in HA 0.109; `entry_type` already carries the identical text,

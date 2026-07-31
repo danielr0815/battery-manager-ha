@@ -1,5 +1,6 @@
 {
  "forced_dc24": {
+  "appliance_windows": {},
   "dc24_now": true,
   "dc48_now": false,
   "export_kwh": 0.0,
@@ -7,8 +8,18 @@
   "import_kwh": 4.67,
   "inverter_on": false,
   "loads": {},
+  "lost_surplus_kwh": 0.0,
   "max_soc": 63.8322,
   "min_soc": 49.6666,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {
+   "2026-07-04": 12,
+   "2026-07-05": 12
+  },
   "soc_curve": [
    50.0,
    50.0,
@@ -61,9 +72,11 @@
    49.667,
    49.667
   ],
-  "threshold": 50.0
+  "threshold": 50.0,
+  "threshold_horizon_end": null
  },
  "forced_dc48": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": true,
   "export_kwh": 0.0,
@@ -71,8 +84,18 @@
   "import_kwh": 4.345,
   "inverter_on": false,
   "loads": {},
+  "lost_surplus_kwh": 0.0,
   "max_soc": 53.0945,
   "min_soc": 46.7625,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {
+   "2026-07-04": 12,
+   "2026-07-05": 12
+  },
   "soc_curve": [
    50.194,
    48.977,
@@ -125,9 +148,11 @@
    47.901,
    48.095
   ],
-  "threshold": 50.0
+  "threshold": 50.0,
+  "threshold_horizon_end": null
  },
  "s1_evening_sunny": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 16.094296,
@@ -135,8 +160,18 @@
   "import_kwh": 0.02,
   "inverter_on": true,
   "loads": {},
+  "lost_surplus_kwh": 16.094296,
   "max_soc": 95.0,
   "min_soc": 49.9674,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {
+   "2026-07-04": 17,
+   "2026-07-05": 17
+  },
   "soc_curve": [
    77.043,
    74.086,
@@ -191,9 +226,11 @@
    77.474,
    75.033
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": "2026-07-04T09:00:00"
  },
  "s2_cloudy_reserve": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 0.0,
@@ -201,8 +238,18 @@
   "import_kwh": 2.62,
   "inverter_on": false,
   "loads": {},
+  "lost_surplus_kwh": 0.0,
   "max_soc": 58.4536,
   "min_soc": 12.0684,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {
+   "2026-07-04": 12,
+   "2026-07-05": 12
+  },
   "soc_curve": [
    58.454,
    56.907,
@@ -257,9 +304,11 @@
    13.099,
    12.068
   ],
-  "threshold": 60.0
+  "threshold": 60.0,
+  "threshold_horizon_end": null
  },
  "s3_loads_night": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 4.638444,
@@ -380,8 +429,18 @@
     ]
    ]
   },
+  "lost_surplus_kwh": 4.638444,
   "max_soc": 95.0,
   "min_soc": 21.0716,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 4730.0,
+   "2026-07-05": 5115.652
+  },
+  "pv_window_ends": {
+   "2026-07-04": 17,
+   "2026-07-05": 17
+  },
   "soc_curve": [
    81.043,
    78.601,
@@ -435,9 +494,11 @@
    77.474,
    75.033
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": "2026-07-04T09:00:00"
  },
  "s3_low_soc_5am": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 9.408016,
@@ -590,8 +651,19 @@
     ]
    ]
   },
+  "lost_surplus_kwh": 9.408016,
   "max_soc": 95.0,
   "min_soc": 21.0716,
+  "prevented_export_by_day_wh": {
+   "2026-07-05": 4340.0,
+   "2026-07-06": 4839.239,
+   "2026-07-07": 5325.652
+  },
+  "pv_window_ends": {
+   "2026-07-05": 17,
+   "2026-07-06": 17,
+   "2026-07-07": 17
+  },
   "soc_curve": [
    47.558,
    42.973,
@@ -661,9 +733,11 @@
    77.474,
    75.033
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": "2026-07-05T11:00:00"
  },
  "s4_midday_full": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 4.057382,
@@ -804,8 +878,19 @@
     ]
    ]
   },
+  "lost_surplus_kwh": 4.057382,
   "max_soc": 95.0,
   "min_soc": 21.0716,
+  "prevented_export_by_day_wh": {
+   "2026-07-04": 2150.0,
+   "2026-07-05": 4996.032,
+   "2026-07-06": 5115.652
+  },
+  "pv_window_ends": {
+   "2026-07-04": 17,
+   "2026-07-05": 17,
+   "2026-07-06": 17
+  },
   "soc_curve": [
    95.0,
    95.0,
@@ -869,9 +954,11 @@
    77.474,
    75.033
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": "2026-07-04T17:00:00"
  },
  "short_peak_preempt": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 3.399698,
@@ -913,8 +1000,16 @@
     ]
    ]
   },
+  "lost_surplus_kwh": 3.399698,
   "max_soc": 95.0,
   "min_soc": 41.6278,
+  "prevented_export_by_day_wh": {
+   "2026-07-04": 0.0,
+   "2026-07-05": 900.0
+  },
+  "pv_window_ends": {
+   "2026-07-05": 13
+  },
   "soc_curve": [
    87.043,
    84.086,
@@ -945,9 +1040,11 @@
    59.135,
    56.693
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": "2026-07-05T13:00:00"
  },
  "support_dc24_escalate": {
+  "appliance_windows": {},
   "dc24_now": true,
   "dc48_now": false,
   "export_kwh": 0.0,
@@ -955,8 +1052,15 @@
   "import_kwh": 12.1,
   "inverter_on": false,
   "loads": {},
+  "lost_surplus_kwh": 0.0,
   "max_soc": 8.0,
   "min_soc": 8.0,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {},
   "soc_curve": [
    8.0,
    8.0,
@@ -1009,9 +1113,11 @@
    8.0,
    8.0
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": null
  },
  "support_dc48_escalate": {
+  "appliance_windows": {},
   "dc24_now": true,
   "dc48_now": false,
   "export_kwh": 0.0,
@@ -1019,8 +1125,15 @@
   "import_kwh": 7.9,
   "inverter_on": false,
   "loads": {},
+  "lost_surplus_kwh": 0.0,
   "max_soc": 7.0,
   "min_soc": 7.0,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {},
   "soc_curve": [
    7.0,
    7.0,
@@ -1073,9 +1186,11 @@
    7.0,
    7.0
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": null
  },
  "support_none_healthy": {
+  "appliance_windows": {},
   "dc24_now": false,
   "dc48_now": false,
   "export_kwh": 16.094296,
@@ -1083,8 +1198,18 @@
   "import_kwh": 0.02,
   "inverter_on": true,
   "loads": {},
+  "lost_surplus_kwh": 16.094296,
   "max_soc": 95.0,
   "min_soc": 49.9674,
+  "prevented_export_by_day_wh": {
+   "2026-07-03": 0.0,
+   "2026-07-04": 0.0,
+   "2026-07-05": 0.0
+  },
+  "pv_window_ends": {
+   "2026-07-04": 17,
+   "2026-07-05": 17
+  },
   "soc_curve": [
    77.043,
    74.086,
@@ -1139,6 +1264,7 @@
    77.474,
    75.033
   ],
-  "threshold": 20.0
+  "threshold": 20.0,
+  "threshold_horizon_end": "2026-07-04T09:00:00"
  }
 }

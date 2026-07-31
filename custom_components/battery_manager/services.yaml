@@ -1,10 +1,18 @@
 export_learned_profiles:
+  name: Export learned profiles
+  description: >-
+    Exports the learned consumption profiles (AC/DC path, per day type and
+    hour) as a text table or JSON snapshot into the battery_manager export
+    directory, or as a browser download.
   fields:
     entry_id:
+      advanced: true
       example: "1234567890abcdef"
       selector:
-        text:
+        config_entry:
+          integration: battery_manager
     file_path:
+      advanced: true
       example: "/config/battery_manager_profiles.txt"
       selector:
         text:
@@ -18,12 +26,20 @@ export_learned_profiles:
         boolean:
 
 export_hourly_details:
+  name: Export hourly details
+  description: >-
+    Exports the last plan's hourly details (SOC, grid import/export, decisions)
+    as a text table or JSON snapshot into the battery_manager export
+    directory, or as a browser download.
   fields:
     entry_id:
+      advanced: true
       example: "1234567890abcdef"
       selector:
-        text:
+        config_entry:
+          integration: battery_manager
     file_path:
+      advanced: true
       example: "/config/battery_manager_export.txt"
       selector:
         text:

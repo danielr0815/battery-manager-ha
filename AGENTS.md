@@ -35,11 +35,24 @@ mypy darin aus (`devcontainers/ci`); lokal geht das mit der devcontainer-CLI
 
 ```bash
 uv run pytest tests/core -p no:homeassistant   # Kern-Suite, läuft überall
-uv run pytest tests                            # volle Suite (433 Tests), Linux/WSL
+uv run pytest tests                            # volle Suite (561 Tests), Linux/WSL
+```
+
+**Coverage-Gates** (CI bricht bei Unterschreiten; laufen im `tests`-Job und
+im Devcontainer von `validate.yml`):
+
+```bash
+# Kern 100 % — Konvention: der reine Planner bleibt vollständig getestet:
+uv run pytest tests/core -p no:homeassistant \
+    --cov=custom_components/battery_manager/core --cov-fail-under=100
+# Gesamt 95 % — fail_under in [tool.coverage.report], greift bei jedem
+# Lauf mit --cov:
+uv run pytest tests --cov
 ```
 
 Planner-Verhalten ist durch **Golden Snapshots** eingefroren
-(`tests/core/golden_topology.json`). Bei *beabsichtigten* Verhaltensänderungen:
+(`tests/core/golden_topology.json`) — dieser Workflow gilt unverändert: Bei
+*beabsichtigten* Verhaltensänderungen
 `uv run python scripts/gen_golden.py` und den Diff im PR erklären — kein
 Szenario darf ohne dokumentierten Grund mehr Netzbezug importieren.
 

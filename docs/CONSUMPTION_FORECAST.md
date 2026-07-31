@@ -12,13 +12,22 @@
 > history"), **N2** (dynamic SOC buffer from forecast quality) and the
 > structural preparation for **P3** (hourly PV forecasts). Decision points
 > D-C1 … D-C10.
+>
+> **Stage status (2026-07, v0.17.0):** stages 1–2 are implemented and live.
+> **Stage 3 (§6: expected runs / appliance signatures, D-C10) is specified
+> but NOT implemented** — the decision whether to build it is open
+> (see docs/project-knowledge/06, open points). Degradation note: while the
+> PV forecast ships no quantile bands (diagnostics `source=scalar`), the
+> planner stays on the scalar α/β fallback by design; observation via the
+> `quantile_coverage` diagnostics and docs/project-knowledge/06 §5.
 
 ## 1. Starting point & goal
 
 Today the consumption forecast is purely static: per path (AC/DC) one
 `LoadProfile` built from a base load plus an additional load in a time window
-(2×4 scalars; no longer editable via the UI after setup — there is no
-reconfigure flow for the base entry, and it is not in the options flow), plus
+(2×4 scalars; ~~no longer editable via the UI after setup~~ — **fixed:
+a reconfigure flow exists since F-RECONFIGURE-PV, and the options flow covers
+all base dimensions since v0.17.0**), plus
 detected appliance runs with a configured energy, distributed linearly over
 the remaining duration. No measured value flows in; the weaknesses are named
 in REQUIREMENTS.md §2.2 (no HA history, no weekday/season profiles).

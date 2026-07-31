@@ -7,8 +7,10 @@
 
 Simulation-based battery energy optimization for AC-coupled PV systems without
 feed-in remuneration: the integration plans hourly energy flows over the full
-forecast horizon and derives switching recommendations that minimize grid
-import **and** wasted (exported) surplus.
+forecast horizon and derives switching recommendations from a lexicographic
+objective hierarchy — surplus loads **never** cause grid import, the battery
+SOC is kept **as high as possible**, and remaining surplus is absorbed **as
+late as possible**, just early enough to prevent export.
 
 New to the code base? Start with **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 — the code map, the update cycle, and the glossary of the shorthand used in the
@@ -89,8 +91,9 @@ The base config flow asks for:
   Forecast.Solar).
 - **System parameters**: battery (capacity, SOC limits, efficiencies), PV
   hourly distribution, AC/DC base load profiles, charger/inverter limits.
-- **Planner tuning**: SOC safety buffer (default 5 %), hysteresis (±1 %),
-  threshold inertia (2 %), minimum switch interval (60 s).
+- **Planner tuning**: SOC safety buffer (dynamic: computed from the learned
+  consumption-profile quantiles and clamped to 3–15 %; fixed fallback 5 %),
+  hysteresis (±1 %), threshold inertia (2 %), minimum switch interval (60 s).
 - **Emergency support** (optional): switch entities for the 48 V support PSU
   (fixed power, default 60 W) and the 24 V PSU replacing the DC/DC converter.
 
@@ -99,14 +102,26 @@ integration card (*Add surplus load* / *Add appliance*):
 
 - Surplus load: nominal power, allowed battery share (default 15 %),
   energy-limited flag with capacity + target SOC (powerstations), optional
-  SOC / power-feedback / availability entities. Priority = creation order;
-  loads run in parallel when the surplus suffices.
+  SOC / power-feedback / availability entities. Priority is **configurable
+  per load** (since v0.8.2; new loads append at the end); loads run in
+  parallel when the surplus suffices.
 - Appliance: detection entity (power sensor or state), energy + duration per
   run, optional start-window advisor entity.
 
-Automations then switch the real devices based on the recommendation
-entities. Only the emergency support PSUs are switched by the integration
-itself.
+For loads with a configured control switch the integration switches the
+charging path **itself** (input plug + charge-enable gate, see
+[Charging-path control](#charging-path-control-powerstations)); without one
+it emits recommendation entities for your own automations. The emergency
+support PSUs are always switched by the integration itself.
+
+Two things worth knowing:
+
+- **Single instance:** one Battery Manager entry per Home Assistant
+  installation — adding a second one is refused in the config flow.
+- **Everything stays editable:** the options flow re-opens the base
+  dimensions (battery capacity/SOC limits, PV model, charger/inverter power
+  and efficiencies) plus all tuning sections *after* setup — sub-entries and
+  learned state are kept, no delete-and-recreate needed.
 
 ## Dashboard card (bundled)
 
@@ -213,10 +228,26 @@ sleeping powerstation is cached and survives restarts.
 
 ### Debug export
 
-Service `battery_manager.export_hourly_details` writes the hourly plan of the
-last run as an ASCII table (or JSON lines with `as_table: false`) to
-`<config>/battery_manager_hourly_<entry_id>.txt`; `download: true` places it
-under `/local/` with a notification link.
+Two services, `battery_manager.export_hourly_details` (the last plan's hourly
+table, or JSON lines with `as_table: false`) and
+`battery_manager.export_learned_profiles`, write into the integration's own
+export directory **`<config>/battery_manager/`**; with `download: true` the
+file goes to **`<config>/www/battery_manager/`** instead and a notification
+serves the `/local/` link. Hardened behaviour (v0.17.0):
+
+- Only `.txt` / `.json` filenames inside the export directories are accepted
+  (`.storage` and traversal are refused); failures are reported as **service
+  errors**, not just logged.
+- **Downloads expire after one hour** (the `/local/` tree is served without
+  authentication and the export contains learned household behaviour) — the
+  warning is part of the download notification.
+- Both services carry UI metadata (`name`/`description`) and an
+  `entry_id` `config_entry` selector for multi-entry safety.
+
+> **Breaking change (v0.17.0):** exports no longer land directly in
+> `<config>/` / `<config>/www/` — automations that pass their own absolute
+> `file_path` outside `<config>/battery_manager/` now fail with a service
+> error. Point them at the new export directory instead.
 
 ## License
 

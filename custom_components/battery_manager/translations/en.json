@@ -256,7 +256,8 @@
     },
     "abort": {
       "already_configured": "This system is already configured.",
-      "reconfigure_successful": "Sources updated; the integration was reloaded."
+      "reconfigure_successful": "Sources updated; the integration was reloaded.",
+      "single_instance_allowed": "Battery Manager is already configured. Only a single instance is supported."
     }
   },
   "config_subentries": {
@@ -264,7 +265,8 @@
       "entry_type": "Surplus load",
       "error": {
         "keep_on_requires_enable": "The 'keep on' policy requires a charge-enable entity — otherwise charging could never be stopped.",
-        "control_entities_not_distinct": "Charging input switch and charge-enable entity must be different."
+        "control_entities_not_distinct": "Charging input switch and charge-enable entity must be different.",
+        "name_required": "Please enter a name for the load."
       },
       "initiate_flow": {
         "user": "Add surplus load",
@@ -366,6 +368,9 @@
     },
     "appliance": {
       "entry_type": "Appliance",
+      "error": {
+        "name_required": "Please enter a name for the appliance."
+      },
       "initiate_flow": {
         "user": "Add appliance",
         "reconfigure": "Reconfigure appliance"
@@ -419,6 +424,8 @@
   },
   "options": {
     "error": {
+      "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
+      "pv_windows_out_of_order": "The PV windows must be strictly ordered: morning start < morning end < afternoon end.",
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
       "buffer_min_above_max": "The dynamic buffer minimum must be below the maximum.",
@@ -432,6 +439,60 @@
       "init": {
         "title": "Planner tuning",
         "sections": {
+          "battery": {
+            "name": "Battery",
+            "description": "Base dimensions of the storage: capacity and SOC limits — adjustable after setup without losing subentries or learned state. Takes effect on save (the integration reloads).",
+            "data": {
+              "battery_capacity_wh": "Capacity (Wh)",
+              "battery_min_soc_percent": "Minimum SOC (%)",
+              "battery_max_soc_percent": "Maximum SOC (%)"
+            },
+            "data_description": {
+              "battery_capacity_wh": "Total battery capacity in watt-hours (e.g. 5000 for 5 kWh).",
+              "battery_min_soc_percent": "Hard lower limit: planning never discharges the battery below this state of charge (deep-discharge protection).",
+              "battery_max_soc_percent": "Upper charging limit: above this value the battery absorbs no more surplus (protects the cells)."
+            }
+          },
+          "pv": {
+            "name": "PV system",
+            "description": "Base dimensions of the PV system: peak power and yield windows — adjustable after setup without losing subentries or learned state.",
+            "data": {
+              "pv_max_power_w": "Peak power (W)",
+              "pv_morning_start_hour": "Production start hour",
+              "pv_morning_end_hour": "Morning window end hour",
+              "pv_afternoon_end_hour": "Production end hour",
+              "pv_morning_ratio": "Morning share of daily energy (0-1)"
+            },
+            "data_description": {
+              "pv_max_power_w": "Maximum PV system power — caps the hourly values derived from the daily forecast.",
+              "pv_morning_start_hour": "Hour from which the system produces noticeably (7 = from 07:00).",
+              "pv_morning_end_hour": "End of the high-yield morning window — the morning share configured below falls into this window.",
+              "pv_afternoon_end_hour": "Hour at which production ends (18 = until 18:00).",
+              "pv_morning_ratio": "Share of the daily energy produced in the morning window (0.8 = 80 % mornings, 20 % afternoons). Adjust to your panel orientation."
+            }
+          },
+          "power": {
+            "name": "Charger & inverter",
+            "description": "Base dimensions of charger and inverter — adjustable after setup without losing subentries or learned state.",
+            "data": {
+              "charger_max_power_w": "Charger max power (W)",
+              "charger_efficiency": "Charger efficiency (0-1)",
+              "charger_standby_power_w": "Charger standby power (W)",
+              "inverter_max_power_w": "Inverter max power (W)",
+              "inverter_efficiency": "Inverter efficiency (0-1)",
+              "inverter_standby_power_w": "Inverter standby power (W)",
+              "inverter_min_soc_percent": "Inverter minimum SOC (%)"
+            },
+            "data_description": {
+              "charger_max_power_w": "Maximum AC input power of the battery charger — limits how fast surplus can be stored.",
+              "charger_efficiency": "AC→DC conversion efficiency of the charger (0.92 = 8 % loss).",
+              "charger_standby_power_w": "Charger self-consumption while active.",
+              "inverter_max_power_w": "Maximum AC output power of the discharge inverter.",
+              "inverter_efficiency": "DC→AC conversion efficiency of the inverter (0.95 = 5 % loss).",
+              "inverter_standby_power_w": "Inverter self-consumption while switched on.",
+              "inverter_min_soc_percent": "Below this state of charge the inverter shuts off hard — the house then runs from the grid."
+            }
+          },
           "planner_tuning": {
             "name": "Control parameters",
             "description": "SOC buffer, hysteresis, switching intervals and the PV pre-drain tuning of the planner.",
@@ -705,6 +766,68 @@
     "learning_bias": {
       "title": "Consumption learning: systematic bias",
       "description": "The learned P50 consumption forecast has deviated one-sidedly from the measured load for more than two weeks. Check the measuring point, the loads' in-house flags and the cleaning sensors (diagnostics: consumption_profile on the SOC forecast sensor, service export_learned_profiles)."
+    },
+    "stale_data_load_shed": {
+      "title": "Data loss: surplus loads force-switched off",
+      "description": "No valid battery SOC or PV forecast data for more than two hours. As a fail-safe, all controlled surplus loads were switched off once so they cannot keep running blindly (potentially grid-fed). Normal operation resumes automatically once data returns and this issue resolves; check the reachability of the measurement entities and the switch actuators."
+    },
+    "support_switch_failed": {
+      "title": "Support switching: repeated switch failures",
+      "description": "The support actuators (48 V PSU / 24 V rail incl. the DC/DC changeover) failed three times in a row — service call failed or the switchover was not confirmed. Check reachability and state reporting of the configured switches. The 5-minute cycle keeps retrying automatically; this issue resolves itself after the first successful switch."
+    },
+    "learning_recorder_timeout": {
+      "title": "Consumption learning: recorder timeout",
+      "description": "The nightly learning run was aborted after 5 minutes without a response from the recorder database (common causes: worn SD card, locked SQLite file). The run retries automatically at the next nightly run; until then the previously learned or static load profile stays active. This notice clears itself after the first successful run; if it recurs, check the database and storage medium."
+    },
+    "learning_no_recorder": {
+      "title": "Consumption learning: recorder integration missing",
+      "description": "Consumption learning needs the recorder integration (long-term statistics and state history), but measurement entities are configured without it. While the recorder is missing, the static load profile stays active and nothing is learned. Set up the recorder or remove the learning measurement entities; this notice clears itself after the first successful run."
+    }
+  },
+  "services": {
+    "export_learned_profiles": {
+      "name": "Export learned profiles",
+      "description": "Exports the learned consumption profiles (AC/DC path, per day type and hour) as a text table or JSON snapshot into the battery_manager export directory, or as a browser download.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry",
+          "description": "Entry to export from. Only needed when more than one Battery Manager entry is set up; defaults to the first entry."
+        },
+        "file_path": {
+          "name": "File path",
+          "description": "Target path of the export file. Defaults to a generated file name inside the export directory; custom paths must stay inside it and end in .txt or .json."
+        },
+        "download": {
+          "name": "Download",
+          "description": "Serve the file via /local/ as a browser download instead of writing it into the config directory. Download links need no login, so the file is deleted automatically after one hour."
+        },
+        "as_table": {
+          "name": "As table",
+          "description": "Write a human-readable text table instead of the JSON snapshot."
+        }
+      }
+    },
+    "export_hourly_details": {
+      "name": "Export hourly details",
+      "description": "Exports the last plan's hourly details (SOC, grid import/export, decisions) as a text table or JSON snapshot into the battery_manager export directory, or as a browser download.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry",
+          "description": "Entry to export from. Only needed when more than one Battery Manager entry is set up; defaults to the first entry."
+        },
+        "file_path": {
+          "name": "File path",
+          "description": "Target path of the export file. Defaults to a generated file name inside the export directory; custom paths must stay inside it and end in .txt or .json."
+        },
+        "download": {
+          "name": "Download",
+          "description": "Serve the file via /local/ as a browser download instead of writing it into the config directory. Download links need no login, so the file is deleted automatically after one hour."
+        },
+        "as_table": {
+          "name": "As table",
+          "description": "Write a human-readable text table instead of the JSON snapshot."
+        }
+      }
     }
   }
 }

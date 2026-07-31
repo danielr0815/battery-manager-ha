@@ -19,6 +19,12 @@
  *
  * Vanilla web component (no build step, no external dependencies); theming
  * via Home Assistant CSS variables inside an <ha-card>.
+ *
+ * The entity is user-configurable, so every attribute read is validated:
+ * numbers via num(), arrays via Array.isArray(), and collection sizes are
+ * capped (MAX_*). Accessibility: the SVG is a labelled img, focusable, and
+ * the arrow keys step through the forecast slots; a visually hidden text
+ * summary carries the key figures for screen readers.
  */
 
 // Read the version from this module's own `?v=` cache-bust param (set from
@@ -28,14 +34,29 @@ const CARD_VERSION =
 const CARD_TYPE = "battery-manager-forecast-card";
 const DOCS_URL = "https://github.com/danielr0815/battery-manager-ha";
 
+// Lane palette as theme-overridable custom properties. The fallbacks were
+// picked for >= 3:1 contrast against both #fff and #111/#1c1c1c card
+// backgrounds (WCAG AA for non-text, verified numerically 2026-07) — this
+// is why orange/purple deviate from the original Material-600 set. Color
+// is never the only channel: the legend pairs every dot with a text label.
 const LOAD_COLORS = [
-  "#43a047", // green
-  "#fb8c00", // orange
-  "#039be5", // light blue
-  "#8e24aa", // purple
-  "#e53935", // red
-  "#00897b", // teal
+  "var(--bmpc-load-1-color, #43a047)", // green
+  "var(--bmpc-load-2-color, #ef6c00)", // orange
+  "var(--bmpc-load-3-color, #039be5)", // light blue
+  "var(--bmpc-load-4-color, #ba68c8)", // purple
+  "var(--bmpc-load-5-color, #e53935)", // red
+  "var(--bmpc-load-6-color, #00897b)", // teal
 ];
+// Grid-support lanes, same treatment (#26a69a sits exactly at 3.0:1 on
+// white, so the safer teal-600 is the fallback).
+const DC24_COLOR = "var(--bmpc-dc24-color, #009688)";
+const DC48_COLOR = "var(--bmpc-dc48-color, #7e57c2)";
+
+// Defensive caps: attributes are user-controlled input, and a broken or
+// hostile payload must not freeze the UI with megabytes of SVG.
+const MAX_POINTS = 1000; // forecast samples kept (stride-downsampled)
+const MAX_LANES = 8; // loads + grid-support lanes below the plot
+const MAX_BLOCKS = 100; // schedule blocks rendered per lane
 
 const STRINGS = {
   en: {
@@ -54,6 +75,11 @@ const STRINGS = {
     not_found: "Entity not found:",
     no_data: "Waiting for the first planning run …",
     min_reserve: "reserve",
+    render_error: "The forecast chart could not be rendered:",
+    chart_label: "SOC forecast",
+    sr_min: "minimum",
+    sr_max: "maximum",
+    kbd_hint: "Use the arrow keys to step through the forecast.",
   },
   de: {
     now: "jetzt",
@@ -72,6 +98,11 @@ const STRINGS = {
     not_found: "Entität nicht gefunden:",
     no_data: "Warte auf den ersten Planungslauf …",
     min_reserve: "Reserve",
+    render_error: "Das Prognosediagramm konnte nicht dargestellt werden:",
+    chart_label: "SOC-Prognose",
+    sr_min: "Minimum",
+    sr_max: "Maximum",
+    kbd_hint: "Mit den Pfeiltasten durch die Prognose gehen.",
   },
 };
 
@@ -86,7 +117,19 @@ function esc(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Attribute values arrive as JSON and may be strings, objects or NaN.
+// Accept anything Number() can make finite; treat the rest as absent so
+// callers fall back to their default instead of crashing on .toFixed().
+function num(value) {
+  if (value == null || value === "" || typeof value === "boolean") {
+    return undefined;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 function isForecastEntity(stateObj) {
@@ -119,7 +162,12 @@ class BatteryManagerForecastCard extends HTMLElement {
     this._hass = undefined;
     this._lastState = undefined;
     this._width = 0;
-    this._hover = null;
+    this._chartMeta = null;
+    this._laneCount = 0; // rendered lanes, feeds getCardSize()
+    this._kbIndex = null; // keyboard-driven slot index
+    this._shownSlot = null; // dedupes marker/readout DOM writes
+    this._rafId = null; // pending pointermove animation frame
+    this._pointerEv = null;
     this._resizeObserver = new ResizeObserver(() => {
       const width = this.getBoundingClientRect().width;
       if (width && Math.abs(width - this._width) > 4) {
@@ -135,11 +183,23 @@ class BatteryManagerForecastCard extends HTMLElement {
 
   disconnectedCallback() {
     this._resizeObserver.disconnect();
+    this._cancelPendingFrame();
   }
 
   setConfig(config) {
     if (!config || typeof config !== "object") {
       throw new Error("Invalid configuration");
+    }
+    // YAML is free-form: fail loudly with a useful message instead of
+    // rendering something subtly broken (Lovelace shows thrown errors).
+    if (config.entity != null && typeof config.entity !== "string") {
+      throw new Error(`${CARD_TYPE}: "entity" must be an entity id string`);
+    }
+    if (
+      config.hours != null &&
+      (typeof config.hours !== "number" || !Number.isFinite(config.hours))
+    ) {
+      throw new Error(`${CARD_TYPE}: "hours" must be a finite number`);
     }
     this._config = {
       hours: 48,
@@ -156,13 +216,14 @@ class BatteryManagerForecastCard extends HTMLElement {
       : undefined;
     if (stateObj !== this._lastState) {
       this._lastState = stateObj;
-      this._hover = null;
       this._render();
     }
   }
 
   getCardSize() {
-    return 4;
+    // One Lovelace unit ≈ 50 px; each schedule lane adds ~11 px below the
+    // plot, so the card grows with the lane count set by _renderChart().
+    return 4 + Math.ceil(this._laneCount / 3);
   }
 
   // Instance method by contract (unlike getStubConfig/getConfigForm):
@@ -206,9 +267,43 @@ class BatteryManagerForecastCard extends HTMLElement {
   }
 
   _render() {
+    // Attribute payloads are user input: a rendering exception must surface
+    // as an in-card error (Lovelace convention), not as a silently dead
+    // card. The guard lives here so the setConfig/ResizeObserver/hass call
+    // sites are all covered.
+    try {
+      this._renderInner();
+    } catch (err) {
+      console.error(`[${CARD_TYPE}] render failed:`, err);
+      this._renderError(err);
+    }
+  }
+
+  _renderError(err) {
+    if (!this.shadowRoot) {
+      return;
+    }
+    const detail = err instanceof Error ? err.message : String(err);
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { display: block; padding: 12px 16px; }
+        .error { color: var(--error-color, #db4437); }
+      </style>
+      <ha-card>
+        <span class="error">${esc(localize(this._hass, "render_error"))} ${esc(
+          detail
+        )}</span>
+      </ha-card>
+    `;
+  }
+
+  _renderInner() {
     if (!this.shadowRoot || !this._config) {
       return;
     }
+    this._laneCount = 0;
+    this._kbIndex = null;
+    this._shownSlot = null;
     const hass = this._hass;
     const t = (key) => localize(hass, key);
 
@@ -251,6 +346,16 @@ class BatteryManagerForecastCard extends HTMLElement {
           padding: 24px 8px; color: var(--secondary-text-color);
         }
         svg { display: block; }
+        svg:focus { outline: none; }
+        svg:focus-visible {
+          outline: 2px solid var(--primary-color, #03a9f4);
+          outline-offset: 2px; border-radius: 2px;
+        }
+        .visually-hidden {
+          position: absolute; width: 1px; height: 1px; margin: -1px;
+          padding: 0; overflow: hidden; clip: rect(0 0 0 0);
+          clip-path: inset(50%); white-space: nowrap; border: 0;
+        }
         .legend {
           display: flex; flex-wrap: wrap; gap: 2px 14px;
           padding: 6px 4px 0; font-size: 0.8em;
@@ -284,7 +389,7 @@ class BatteryManagerForecastCard extends HTMLElement {
         ${body}
       </ha-card>
     `;
-    this._attachHoverHandlers();
+    this._attachChartHandlers();
   }
 
   _statsLine(stateObj, t) {
@@ -293,8 +398,9 @@ class BatteryManagerForecastCard extends HTMLElement {
     }
     const a = stateObj.attributes;
     const parts = [];
-    if (a.soc_threshold_percent != null) {
-      parts.push(`T* ${Math.round(a.soc_threshold_percent)} %`);
+    const threshold = num(a.soc_threshold_percent);
+    if (threshold !== undefined) {
+      parts.push(`T* ${Math.round(threshold)} %`);
     }
     // Per-day today/tomorrow figures from the `daily` breakdown (import +
     // lost surplus since v0.9.1, load energy since v0.10.1). Shown as
@@ -303,8 +409,8 @@ class BatteryManagerForecastCard extends HTMLElement {
     const daily = Array.isArray(a.daily) ? a.daily : null;
     if (daily && daily.length) {
       const td = (key) => {
-        const today = Number(daily[0]?.[key] ?? 0);
-        const tomorrow = Number(daily[1]?.[key] ?? 0);
+        const today = num(daily[0]?.[key]) ?? 0;
+        const tomorrow = num(daily[1]?.[key]) ?? 0;
         return `${today.toFixed(1)}/${tomorrow.toFixed(1)}`;
       };
       parts.push(`${t("import")} ${td("grid_import_kwh")}`);
@@ -322,11 +428,13 @@ class BatteryManagerForecastCard extends HTMLElement {
     }
     // Fallback for a pre-0.9.1 backend without the per-day breakdown: the
     // horizon totals, exactly as before.
-    if (a.grid_import_kwh != null) {
-      parts.push(`${t("import")} ${a.grid_import_kwh.toFixed(1)} kWh`);
+    const gridImport = num(a.grid_import_kwh);
+    if (gridImport !== undefined) {
+      parts.push(`${t("import")} ${gridImport.toFixed(1)} kWh`);
     }
-    if (a.lost_surplus_kwh != null) {
-      parts.push(`${t("lost")} ${a.lost_surplus_kwh.toFixed(1)} kWh`);
+    const lostSurplus = num(a.lost_surplus_kwh);
+    if (lostSurplus !== undefined) {
+      parts.push(`${t("lost")} ${lostSurplus.toFixed(1)} kWh`);
     }
     return parts.join(" · ");
   }
@@ -356,11 +464,32 @@ class BatteryManagerForecastCard extends HTMLElement {
         points = capped;
       }
     }
+    if (points.length > MAX_POINTS) {
+      // Cap SVG size against hostile payloads. Stride sampling keeps the
+      // first and last point, so horizon and curve shape survive; the
+      // backend normally sends well under 400 points and never hits this.
+      const stride = Math.ceil(points.length / MAX_POINTS);
+      points = points.filter(
+        (_, i, arr) => i % stride === 0 || i === arr.length - 1
+      );
+    }
+    const t0 = points[0].time;
+    const t1 = points[points.length - 1].time;
+    // Identical timestamps would divide by zero in x() — nothing to plot.
+    if (t1 <= t0) {
+      return this._message(t("no_data"));
+    }
 
-    const loads = (a.loads || []).map((load, i) => ({
-      ...load,
-      color: LOAD_COLORS[i % LOAD_COLORS.length],
-    }));
+    const loads = (Array.isArray(a.loads) ? a.loads : [])
+      .filter((load) => load && typeof load === "object")
+      .slice(0, MAX_LANES)
+      .map((load, i) => ({
+        ...load,
+        schedule: (Array.isArray(load.schedule) ? load.schedule : [])
+          .filter((b) => b && typeof b === "object")
+          .slice(0, MAX_BLOCKS),
+        color: LOAD_COLORS[i % LOAD_COLORS.length],
+      }));
     // Grid-support lanes (24 V / 48 V): the forecast flags mark the slot
     // ENDING at each point, so a contiguous run of flagged points is one block
     // from the start of its first slot to the end of its last.
@@ -381,15 +510,16 @@ class BatteryManagerForecastCard extends HTMLElement {
       return blocks;
     };
     const supportLanes = [
-      { name: t("support_dc24"), color: "#26a69a", key: "dc24" },
-      { name: t("support_dc48"), color: "#7e57c2", key: "dc48" },
+      { name: t("support_dc24"), color: DC24_COLOR, key: "dc24" },
+      { name: t("support_dc48"), color: DC48_COLOR, key: "dc48" },
     ]
       .map((d) => ({ name: d.name, color: d.color, schedule: supportBlocks(d.key) }))
       .filter((l) => l.schedule.length > 0);
     const lanes = [
-      ...loads.filter((l) => (l.schedule || []).length > 0),
+      ...loads.filter((l) => l.schedule.length > 0),
       ...supportLanes,
-    ];
+    ].slice(0, MAX_LANES);
+    this._laneCount = lanes.length;
 
     const width = Math.max(this._width || this.clientWidth || 320, 280);
     // Generous right margin: the curve must not run into the card edge
@@ -401,8 +531,6 @@ class BatteryManagerForecastCard extends HTMLElement {
     const plotH = 150;
     const height = margin.top + plotH + lanesH + margin.bottom;
 
-    const t0 = points[0].time;
-    const t1 = points[points.length - 1].time;
     const x = (time) =>
       margin.left +
       ((time - t0) / (t1 - t0)) * (width - margin.left - margin.right);
@@ -416,18 +544,22 @@ class BatteryManagerForecastCard extends HTMLElement {
 
     const svg = [];
 
-    // Zones: hard SOC limits and the planning reserve (min + buffer)
-    const socMin = Number(a.battery_min_soc_percent ?? 0);
-    const socMax = Number(a.battery_max_soc_percent ?? 100);
-    const buffer = Number(a.soc_buffer_percent ?? 0);
-    const invMin = Number(a.inverter_min_soc_percent ?? NaN);
+    // Zones: hard SOC limits and the planning reserve (min + buffer).
+    // num() guarantees finite inputs; the clamp keeps a garbage value from
+    // producing a negative-height rect (invalid SVG, dropped by browsers).
+    const socMin = num(a.battery_min_soc_percent) ?? 0;
+    const socMax = num(a.battery_max_soc_percent) ?? 100;
+    const buffer = num(a.soc_buffer_percent) ?? 0;
+    const invMin = num(a.inverter_min_soc_percent);
     const plotW = width - margin.left - margin.right;
-    const reserve = Math.min(socMin + buffer, 100);
-    svg.push(
-      `<rect x="${margin.left}" y="${y(reserve)}" width="${plotW}"
-        height="${y(0) - y(reserve)}" fill="${err}" opacity="0.07"/>`
-    );
-    if (socMax < 100) {
+    const reserve = Math.max(0, Math.min(socMin + buffer, 100));
+    if (reserve > 0) {
+      svg.push(
+        `<rect x="${margin.left}" y="${y(reserve)}" width="${plotW}"
+          height="${y(0) - y(reserve)}" fill="${err}" opacity="0.07"/>`
+      );
+    }
+    if (socMax < 100 && socMax >= 0) {
       svg.push(
         `<rect x="${margin.left}" y="${y(100)}" width="${plotW}"
           height="${y(socMax) - y(100)}" fill="${text}" opacity="0.07"/>`
@@ -471,16 +603,19 @@ class BatteryManagerForecastCard extends HTMLElement {
       }
     }
 
-    // Inverter cut-off (dotted) and threshold T* (dashed)
-    if (Number.isFinite(invMin) && invMin > reserve) {
+    // Inverter cut-off (dotted) and threshold T* (dashed); out-of-range
+    // values would land outside the plot, so skip them entirely.
+    if (invMin !== undefined && invMin > reserve && invMin <= 100) {
       svg.push(
         `<line x1="${margin.left}" y1="${y(invMin)}"
           x2="${width - margin.right}" y2="${y(invMin)}" stroke="${text}"
           stroke-width="1" stroke-dasharray="1 3"/>`
       );
     }
-    const threshold = Number(a.soc_threshold_percent ?? NaN);
-    if (Number.isFinite(threshold)) {
+    const threshold = num(a.soc_threshold_percent);
+    const showThreshold =
+      threshold !== undefined && threshold >= 0 && threshold <= 100;
+    if (showThreshold) {
       svg.push(
         `<line x1="${margin.left}" y1="${y(threshold)}"
           x2="${width - margin.right}" y2="${y(threshold)}" stroke="${warn}"
@@ -548,9 +683,31 @@ class BatteryManagerForecastCard extends HTMLElement {
       hour: "2-digit",
       minute: "2-digit",
     });
+
+    // Screen-reader summary: the SVG is announced as one labelled image,
+    // so the key figures ride along as text — in the aria-label and, with
+    // the stats line appended, in a visually hidden block below the chart.
+    let minP = points[0];
+    let maxP = points[0];
+    for (const p of points) {
+      if (p.soc < minP.soc) minP = p;
+      if (p.soc > maxP.soc) maxP = p;
+    }
+    const summary =
+      `${t("chart_label")}: ${t("now")} ${Math.round(points[0].soc)} %, ` +
+      `${t("sr_min")} ${Math.round(minP.soc)} % (${whenFmt.format(
+        minP.time
+      )}), ` +
+      `${t("sr_max")} ${Math.round(maxP.soc)} % (${whenFmt.format(
+        maxP.time
+      )})` +
+      (showThreshold ? `, ${t("threshold")} ${Math.round(threshold)} %` : "") +
+      ".";
+    const statsText = this._statsLine(stateObj, t);
+
     const legend = loads
       .map((load) => {
-        const planned = Number(load.planned_energy_kwh || 0);
+        const planned = num(load.planned_energy_kwh) ?? 0;
         // Per-load heute/morgen split when the backend supplies it (the slash
         // format is explained once by the subtitle's `today_tomorrow` legend);
         // fall back to the horizon total for a pre-0.11.1 backend, or when the
@@ -572,7 +729,7 @@ class BatteryManagerForecastCard extends HTMLElement {
         // A load can be scheduled OUTSIDE the plotted window (e.g. a horizon
         // longer than `hours`): it shows planned energy but no lane block, which
         // looks contradictory. Flag it with when the first block runs.
-        const sched = load.schedule || [];
+        const sched = load.schedule;
         const firstMs = sched.length ? new Date(sched[0].start).getTime() : NaN;
         const inWindow = sched.some((b) => {
           const s = new Date(b.start).getTime();
@@ -600,10 +757,14 @@ class BatteryManagerForecastCard extends HTMLElement {
       .join("");
 
     return `
-      <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <svg id="chart" role="img" tabindex="0" aria-label="${esc(summary)}"
+        width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
-      <div class="readout" id="readout">&nbsp;</div>
+      <div class="readout" id="readout" aria-live="polite">&nbsp;</div>
+      <div class="visually-hidden">${esc(summary)} ${esc(statsText)} ${esc(
+        t("kbd_hint")
+      )}</div>
       ${
         legend || supportLegend
           ? `<div class="legend">${legend}${supportLegend}</div>`
@@ -613,43 +774,128 @@ class BatteryManagerForecastCard extends HTMLElement {
   }
 
   // ------------------------------------------------------------------
-  // Hover crosshair
+  // Hover crosshair + keyboard exploration
   // ------------------------------------------------------------------
 
-  _attachHoverHandlers() {
+  _attachChartHandlers() {
     const target = this.shadowRoot.getElementById("hover-target");
     if (!target || !this._chartMeta) {
       return;
     }
-    target.addEventListener("pointermove", (ev) => this._onHover(ev));
-    target.addEventListener("pointerleave", () => this._onHover(null));
+    target.addEventListener("pointermove", (ev) => this._onPointerMove(ev));
+    target.addEventListener("pointerleave", () => {
+      this._cancelPendingFrame();
+      this._clearSlot();
+    });
+    // The SVG itself is focusable (tabindex), so keyboard users get the
+    // same per-slot details via the arrow keys that pointer users get via
+    // hover.
+    const svg = this.shadowRoot.getElementById("chart");
+    if (svg) {
+      svg.addEventListener("keydown", (ev) => this._onKeyDown(ev));
+    }
+  }
+
+  // pointermove fires far more often than is worth repainting for —
+  // coalesce to one marker update per animation frame.
+  _onPointerMove(ev) {
+    this._pointerEv = ev;
+    if (this._rafId == null) {
+      this._rafId = requestAnimationFrame(() => {
+        this._rafId = null;
+        const pending = this._pointerEv;
+        this._pointerEv = null;
+        this._onHover(pending);
+      });
+    }
+  }
+
+  _cancelPendingFrame() {
+    if (this._rafId != null) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+    this._pointerEv = null;
+  }
+
+  _onKeyDown(ev) {
+    const meta = this._chartMeta;
+    if (!meta) {
+      return;
+    }
+    const last = meta.points.length - 1;
+    let index = this._kbIndex;
+    switch (ev.key) {
+      case "ArrowLeft":
+        index = index == null ? 0 : Math.max(0, index - 1);
+        break;
+      case "ArrowRight":
+        index = index == null ? 0 : Math.min(last, index + 1);
+        break;
+      case "Home":
+        index = 0;
+        break;
+      case "End":
+        index = last;
+        break;
+      case "Escape":
+        this._clearSlot();
+        return;
+      default:
+        return;
+    }
+    // Keep the page from scrolling while the user walks the curve.
+    ev.preventDefault();
+    this._showSlot(index);
   }
 
   _onHover(ev) {
     const meta = this._chartMeta;
     const marker = this.shadowRoot.getElementById("hover-marker");
-    const readout = this.shadowRoot.getElementById("readout");
-    if (!meta || !marker || !readout) {
-      return;
-    }
-    if (!ev) {
-      marker.innerHTML = "";
-      readout.innerHTML = "&nbsp;";
+    if (!meta || !marker) {
       return;
     }
     const svg = marker.ownerSVGElement;
     const rect = svg.getBoundingClientRect();
+    // A zero-size SVG (hidden card) would make the px mapping NaN.
+    if (!(rect.width > 0)) {
+      return;
+    }
     const px = ((ev.clientX - rect.left) / rect.width) * svg.viewBox.baseVal.width;
     const time =
       meta.t0 +
       ((px - meta.margin.left) /
         (svg.viewBox.baseVal.width - meta.margin.left - 10)) *
         (meta.t1 - meta.t0);
-    let nearest = meta.points[0];
-    for (const p of meta.points) {
-      if (Math.abs(p.time - time) < Math.abs(nearest.time - time)) {
-        nearest = p;
+    let nearest = 0;
+    for (let i = 1; i < meta.points.length; i++) {
+      if (
+        Math.abs(meta.points[i].time - time) <
+        Math.abs(meta.points[nearest].time - time)
+      ) {
+        nearest = i;
       }
+    }
+    this._showSlot(nearest);
+  }
+
+  _showSlot(index) {
+    const meta = this._chartMeta;
+    const marker = this.shadowRoot.getElementById("hover-marker");
+    const readout = this.shadowRoot.getElementById("readout");
+    if (!meta || !marker || !readout) {
+      return;
+    }
+    // Skip redundant DOM writes: most pointer moves stay inside one slot,
+    // and each write would re-announce the aria-live readout.
+    if (index === this._shownSlot) {
+      return;
+    }
+    this._shownSlot = index;
+    this._kbIndex = index;
+    const nearest = meta.points[index];
+    if (!nearest) {
+      return;
     }
     const cx = meta.x(nearest.time);
     marker.innerHTML = `
@@ -664,7 +910,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       hour: "2-digit",
       minute: "2-digit",
     });
-    // Which lanes (surplus loads + grid-support paths) cover the hovered slot?
+    // Which lanes (surplus loads + grid-support paths) cover the shown slot?
     // Blocks are [start, end); the crosshair snaps to `nearest`, so test that
     // point for membership to stay consistent with the marker the user sees.
     const activeLanes = (meta.lanes || []).filter((lane) =>
@@ -689,6 +935,18 @@ class BatteryManagerForecastCard extends HTMLElement {
       )
       .join("");
     readout.innerHTML = chips ? `${when} · ${chips}` : when;
+  }
+
+  _clearSlot() {
+    this._shownSlot = null;
+    const marker = this.shadowRoot?.getElementById("hover-marker");
+    const readout = this.shadowRoot?.getElementById("readout");
+    if (marker) {
+      marker.innerHTML = "";
+    }
+    if (readout) {
+      readout.innerHTML = "&nbsp;";
+    }
   }
 }
 

@@ -316,7 +316,9 @@ async def test_export_learned_profiles_service(hass):
     coordinator.learner.data["computed_at"] = dt_util.now().isoformat()
     coordinator.learner.data["window_days"] = 42
 
-    target = Path(hass.config.config_dir) / "bm_profiles_test.txt"
+    # Exports are confined to <config>/battery_manager/ (security hardening
+    # 2026-07-30): a config-root path like before is now refused.
+    target = Path(hass.config.config_dir) / "battery_manager" / "bm_profiles_test.txt"
     await hass.services.async_call(
         DOMAIN,
         "export_learned_profiles",

@@ -116,6 +116,27 @@ async def test_options_flow_flattens_sections_on_submit(hass):
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
+            "battery": {
+                "battery_capacity_wh": 5000.0,
+                "battery_min_soc_percent": 5.0,
+                "battery_max_soc_percent": 95.0,
+            },
+            "pv": {
+                "pv_max_power_w": 3200.0,
+                "pv_morning_start_hour": 7,
+                "pv_morning_end_hour": 13,
+                "pv_afternoon_end_hour": 18,
+                "pv_morning_ratio": 0.8,
+            },
+            "power": {
+                "charger_max_power_w": 2300.0,
+                "charger_efficiency": 0.92,
+                "charger_standby_power_w": 10.0,
+                "inverter_max_power_w": 2300.0,
+                "inverter_efficiency": 0.95,
+                "inverter_standby_power_w": 15.0,
+                "inverter_min_soc_percent": 20.0,
+            },
             "planner_tuning": {
                 "soc_buffer_percent": 6.0,
                 "hysteresis_percent": 1.0,
@@ -167,7 +188,10 @@ async def test_options_flow_flattens_sections_on_submit(hass):
     assert opts[CONF_DC24_SHARE_PERCENT] == 80.0
     assert opts[CONF_DCDC_EFFICIENCY] == 0.93
     assert opts["battery_cells_series"] == 15
+    assert opts["battery_capacity_wh"] == 5000.0
+    assert opts["inverter_min_soc_percent"] == 20.0
     assert "planner_tuning" not in opts  # section wrappers removed
+    assert "battery" not in opts
 
 
 async def test_options_flow_rejects_inverted_controller_band(hass):
@@ -180,6 +204,27 @@ async def test_options_flow_rejects_inverted_controller_band(hass):
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
+            "battery": {
+                "battery_capacity_wh": 5000.0,
+                "battery_min_soc_percent": 5.0,
+                "battery_max_soc_percent": 95.0,
+            },
+            "pv": {
+                "pv_max_power_w": 3200.0,
+                "pv_morning_start_hour": 7,
+                "pv_morning_end_hour": 13,
+                "pv_afternoon_end_hour": 18,
+                "pv_morning_ratio": 0.8,
+            },
+            "power": {
+                "charger_max_power_w": 2300.0,
+                "charger_efficiency": 0.92,
+                "charger_standby_power_w": 10.0,
+                "inverter_max_power_w": 2300.0,
+                "inverter_efficiency": 0.95,
+                "inverter_standby_power_w": 15.0,
+                "inverter_min_soc_percent": 20.0,
+            },
             "planner_tuning": {
                 "soc_buffer_percent": 6.0,
                 "hysteresis_percent": 1.0,
@@ -243,6 +288,27 @@ async def test_options_flow_rejects_bad_support_hysteresis(hass):
         support = {"support_dc48_power_w": 60.0, "support_switch_delay_s": 3}
         support.update(support_extra)
         return {
+            "battery": {
+                "battery_capacity_wh": 5000.0,
+                "battery_min_soc_percent": 5.0,
+                "battery_max_soc_percent": 95.0,
+            },
+            "pv": {
+                "pv_max_power_w": 3200.0,
+                "pv_morning_start_hour": 7,
+                "pv_morning_end_hour": 13,
+                "pv_afternoon_end_hour": 18,
+                "pv_morning_ratio": 0.8,
+            },
+            "power": {
+                "charger_max_power_w": 2300.0,
+                "charger_efficiency": 0.92,
+                "charger_standby_power_w": 10.0,
+                "inverter_max_power_w": 2300.0,
+                "inverter_efficiency": 0.95,
+                "inverter_standby_power_w": 15.0,
+                "inverter_min_soc_percent": 20.0,
+            },
             "planner_tuning": {
                 "soc_buffer_percent": 6.0,
                 "hysteresis_percent": 1.0,
@@ -1150,3 +1216,374 @@ async def test_options_flow_stores_notify_targets(hass):
     assert opts[CONF_WARNING_NOTIFY_TARGETS] == ["mobile_app_alice", "mobile_app_bob"]
     assert opts[CONF_WARNING_NOTIFY_ON_RESOLVE] is False
     assert "notifications" not in opts  # section wrapper flattened away
+
+
+async def test_second_entry_aborts_single_instance(hass):
+    """One site = one battery system: with an entry present, a second user
+    flow aborts instead of running a second planner against the same
+    hardware."""
+    await _setup_entry(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "single_instance_allowed"
+
+
+@pytest.mark.parametrize("blank_name", ["", "   "])
+async def test_load_subentry_rejects_blank_name(hass, blank_name):
+    """The name becomes the subentry title; a blank one (even whitespace
+    that only LOOKS filled) would create a nameless entry in the UI."""
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_LOAD
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**BASIC_CONTINUOUS, "name": blank_name}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"name": "name_required"}
+
+
+@pytest.mark.parametrize("blank_name", ["", "   "])
+async def test_appliance_subentry_rejects_blank_name(hass, blank_name):
+    """Same blank-name guard for appliances (user step; the name is popped
+    into the title there)."""
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_APPLIANCE
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_APPLIANCE), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {"name": blank_name, "detection_entity": "sensor.washer_power"},
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"name": "name_required"}
+
+
+APPLIANCE_PAYLOAD = {
+    "name": "Waschmaschine",
+    "detection_entity": "sensor.washer_power",
+    "power_threshold_w": 10.0,
+    "off_threshold_w": 5.0,
+    "run_energy_wh": 800.0,
+    "run_duration_h": 2.0,
+    "opportunistic_start": True,
+}
+
+
+async def test_appliance_subentry_user_step_creates_entry(hass):
+    """Happy path of the single-step appliance flow: the form renders all
+    fields and a valid submit creates the subentry with the name popped into
+    the title (not duplicated into the data)."""
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_APPLIANCE
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_APPLIANCE), context={"source": "user"}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
+    assert {str(k) for k in result["data_schema"].schema} == set(APPLIANCE_PAYLOAD)
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(APPLIANCE_PAYLOAD)
+    )
+    assert result["type"] == "create_entry"
+    sub = next(iter(entry.subentries.values()))
+    assert sub.subentry_type == SUBENTRY_TYPE_APPLIANCE
+    assert sub.title == "Waschmaschine"
+    assert "name" not in sub.data
+    assert sub.data == {k: v for k, v in APPLIANCE_PAYLOAD.items() if k != "name"}
+
+
+async def _setup_entry_with_appliance(hass):
+    """An entry carrying one appliance subentry (title DW)."""
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.dishwasher_power",
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 500.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 1.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="DW",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_soc", "55", {"unit_of_measurement": "%"})
+    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(pv, "10.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    subentry_id = next(iter(entry.subentries))
+    return entry, subentry_id
+
+
+async def test_appliance_subentry_reconfigure_updates_title_and_data(hass):
+    """The reconfigure step renders prefilled from the stored subentry (the
+    name default is the TITLE) and a submit updates data + title in place."""
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_NAME,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+    )
+
+    entry, subentry_id = await _setup_entry_with_appliance(hass)
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    name_marker = next(
+        k for k in result["data_schema"].schema if str(k) == CONF_APPLIANCE_NAME
+    )
+    assert name_marker.default() == "DW"
+    energy_marker = next(
+        k
+        for k in result["data_schema"].schema
+        if str(k) == CONF_APPLIANCE_RUN_ENERGY_WH
+    )
+    assert energy_marker.default() == 500.0
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**APPLIANCE_PAYLOAD, "name": "DW 2026"}
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    sub = entry.subentries[subentry_id]
+    assert sub.title == "DW 2026"
+    assert "name" not in sub.data
+    assert sub.data == {k: v for k, v in APPLIANCE_PAYLOAD.items() if k != "name"}
+
+
+async def test_appliance_subentry_reconfigure_rejects_blank_name(hass):
+    """The blank-name guard applies to the reconfigure step too — a nameless
+    rename must not silently empty the title."""
+    entry, subentry_id = await _setup_entry_with_appliance(hass)
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**APPLIANCE_PAYLOAD, "name": "   "}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    assert result["errors"] == {"name": "name_required"}
+    assert entry.subentries[subentry_id].title == "DW"  # untouched
+
+
+# ---------------------------------------------------------------------------
+# Base plant dimensions in the options flow (battery / PV / power): previously
+# changeable only by deleting and re-adding the entry — losing subentries and
+# learned state. Stored in entry.options they override entry.data via the
+# coordinator's raw_config merge ({**DEFAULT_CONFIG, **data, **options}).
+# ---------------------------------------------------------------------------
+
+
+async def test_options_flow_renders_base_dimension_sections(hass):
+    """The three base-dimension sections render (schema construction must not
+    raise) and their defaults come from the effective config — here the
+    DEFAULT_CONFIG fallbacks, since ENTRY_DATA carries no dimension keys."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema = result["data_schema"].schema
+
+    battery = {str(m): _marker_default(m) for m in _section_fields(schema, "battery")}
+    assert battery == {
+        "battery_capacity_wh": 5000.0,
+        "battery_min_soc_percent": 5.0,
+        "battery_max_soc_percent": 95.0,
+    }
+    pv = {str(m): _marker_default(m) for m in _section_fields(schema, "pv")}
+    assert pv == {
+        "pv_max_power_w": 3200.0,
+        "pv_morning_start_hour": 7,
+        "pv_morning_end_hour": 13,
+        "pv_afternoon_end_hour": 18,
+        "pv_morning_ratio": 0.8,
+    }
+    power = {str(m): _marker_default(m) for m in _section_fields(schema, "power")}
+    assert power == {
+        "charger_max_power_w": 2300.0,
+        "charger_efficiency": 0.92,
+        "charger_standby_power_w": 10.0,
+        "inverter_max_power_w": 2300.0,
+        "inverter_efficiency": 0.95,
+        "inverter_standby_power_w": 15.0,
+        "inverter_min_soc_percent": 20.0,
+    }
+
+
+async def test_options_flow_updates_battery_dimensions(hass):
+    """Changed battery dimensions persist FLAT to entry.options and reach the
+    planner: the options save fires the update listener, and the reloaded
+    coordinator's SystemConfig carries the new values."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["battery"] = {
+        "battery_capacity_wh": 10000.0,
+        "battery_min_soc_percent": 10.0,
+        "battery_max_soc_percent": 90.0,
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    assert "battery" not in result["data"]  # section wrapper flattened away
+    assert result["data"]["battery_capacity_wh"] == 10000.0
+    await hass.async_block_till_done()  # update listener reloads the entry
+
+    assert entry.options["battery_capacity_wh"] == 10000.0
+    battery = hass.data[DOMAIN][entry.entry_id].build_system_config().battery
+    assert battery.capacity_wh == 10000.0
+    assert battery.soc_min_percent == 10.0
+    assert battery.soc_max_percent == 90.0
+
+
+async def test_options_flow_updates_pv_dimensions(hass):
+    """PV peak power + yield windows persist to entry.options and reach the
+    planner's PVParams after the options-triggered reload."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["pv"] = {
+        "pv_max_power_w": 5600.0,
+        "pv_morning_start_hour": 6,
+        "pv_morning_end_hour": 12,
+        "pv_afternoon_end_hour": 19,
+        "pv_morning_ratio": 0.6,
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    assert "pv" not in result["data"]
+    assert result["data"]["pv_max_power_w"] == 5600.0
+    await hass.async_block_till_done()
+
+    assert entry.options["pv_max_power_w"] == 5600.0
+    pv = hass.data[DOMAIN][entry.entry_id].build_system_config().pv
+    assert pv.peak_power_w == 5600.0
+    assert pv.morning_start_hour == 6
+    assert pv.morning_end_hour == 12
+    assert pv.afternoon_end_hour == 19
+    assert pv.morning_ratio == 0.6
+
+
+async def test_options_flow_updates_power_dimensions(hass):
+    """Charger/inverter dimensions persist to entry.options and reach the
+    planner's ConverterParams / control after the options-triggered reload."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["power"] = {
+        "charger_max_power_w": 3000.0,
+        "charger_efficiency": 0.9,
+        "charger_standby_power_w": 12.0,
+        "inverter_max_power_w": 3600.0,
+        "inverter_efficiency": 0.94,
+        "inverter_standby_power_w": 18.0,
+        "inverter_min_soc_percent": 25.0,
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    assert "power" not in result["data"]
+    assert result["data"]["inverter_max_power_w"] == 3600.0
+    await hass.async_block_till_done()
+
+    assert entry.options["charger_max_power_w"] == 3000.0
+    config = hass.data[DOMAIN][entry.entry_id].build_system_config()
+    assert config.charger.max_power_w == 3000.0
+    assert config.charger.eta == 0.9
+    assert config.charger.standby_power_w == 12.0
+    assert config.inverter.max_power_w == 3600.0
+    assert config.inverter.eta == 0.94
+    assert config.inverter.standby_power_w == 18.0
+    assert config.control.inverter_min_soc_percent == 25.0
+
+
+async def test_options_flow_rejects_inverted_soc_bounds(hass):
+    """The wizard's min<max SOC rule applies in the options flow too (same
+    error key) — an inverted window would leave the planner zero usable SOC."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["battery"]["battery_min_soc_percent"] = 95.0
+    payload["battery"]["battery_max_soc_percent"] = 90.0
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "min_soc_above_max"}
+
+
+async def test_options_flow_rejects_misordered_pv_windows(hass):
+    """The wizard's PV-window ordering rule applies in the options flow too —
+    a degenerate window would silently discard forecast energy."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["pv"]["pv_morning_start_hour"] = 13
+    payload["pv"]["pv_morning_end_hour"] = 7
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "pv_windows_out_of_order"}
+
+
+async def test_options_base_update_preserves_subentries_and_learned_state(hass):
+    """The point of the feature: re-dimensioning via options must NOT lose
+    subentries or learned state (the old delete + re-add path did). The
+    options save fires the entry's update listener → a reload; the unload
+    flushes the learned planning power to the store and the reloaded
+    coordinator restores it (keyed by the surviving subentry id)."""
+    entry, (sub_id,) = await _setup_entry_with_loads(hass, ["Fossibot"])
+    coord_before = hass.data[DOMAIN][entry.entry_id]
+    coord_before._load_learned_power_w[sub_id] = 409.0
+    sub_data_before = entry.subentries[sub_id].data
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["battery"]["battery_capacity_wh"] = 10000.0
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    await hass.async_block_till_done()
+
+    # The update listener fired: the entry was reloaded (new coordinator).
+    coord_after = hass.data[DOMAIN][entry.entry_id]
+    assert coord_after is not coord_before
+    # Subentry untouched (same id, same data object), learned power restored.
+    assert entry.subentries[sub_id].data is sub_data_before
+    assert coord_after._load_learned_power_w[sub_id] == 409.0
+    # And the new base dimension reached the planner.
+    assert coord_after.build_system_config().battery.capacity_wh == 10000.0

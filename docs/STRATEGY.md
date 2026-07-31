@@ -1,6 +1,8 @@
 # Battery Manager — Solution Strategy for the Rework
 
-> Status: historical design rationale; see [ARCHITECTURE.md](ARCHITECTURE.md) and the other docs for the current design.
+> Status: historical design rationale. **Binding description of the shipped
+> planner: [docs/project-knowledge/02-planner-und-optimizer.md](project-knowledge/02-planner-und-optimizer.md)**;
+> the code map is [ARCHITECTURE.md](ARCHITECTURE.md).
 > Based on [REQUIREMENTS.md](REQUIREMENTS.md).
 
 ## 1. Core Idea of the New Algorithm
@@ -134,11 +136,18 @@ adopted in substance and re-implemented as a pure function in `core/simulate.py`
 
 | Phase | Content | Result |
 |---|---|---|
-| **0** | Dev environment, pytest harness, coordinator bugfix (listener) | Immediately mergeable, foundation for everything else |
-| **1** | Core rewrite (`core/`), threshold search, ONE surplus load with correct surplus logic, test suite, CI | Fixes all known algorithm errors |
-| **2** | Multiple loads (subentries, priorities, parallel), Fossibot feedback (power/SOC), load entities | Target picture for surplus utilisation |
-| **3** | Household appliances: remaining-run forecast + start-window recommendation | Target picture for appliances |
-| **4** *(optional)* | Hourly PV forecasts (Solcast/Forecast.Solar directly), learned load profiles from HA history, de/en polish | Accuracy |
+| **0** ✓ | Dev environment, pytest harness, coordinator bugfix (listener) | Immediately mergeable, foundation for everything else |
+| **1** ✓ | Core rewrite (`core/`), threshold search, ONE surplus load with correct surplus logic, test suite, CI | Fixes all known algorithm errors |
+| **2** ✓ | Multiple loads (subentries, priorities, parallel), Fossibot feedback (power/SOC), load entities | Target picture for surplus utilisation |
+| **3** ✓ | Household appliances: remaining-run forecast + start-window recommendation | Target picture for appliances |
+| **4** ✓ *(formerly optional)* | Hourly PV forecasts (Solcast/Forecast.Solar directly), learned load profiles from HA history, de/en polish | Accuracy |
+
+All phases are **completed** (status 2026-07, v0.17.0): hourly PV forecasts
+landed in v0.8.0 via the `wh_period` entity attributes ([F-PREDRAIN.md](F-PREDRAIN.md);
+a direct Solcast/Forecast.Solar hourly series was never needed — the balcony
+forecaster provides 15-min buckets), the learned load profiles followed with
+the consumption learner ([CONSUMPTION_FORECAST.md](CONSUMPTION_FORECAST.md)
+stages 1–2; stage 3 is specified but deliberately not implemented yet).
 
 Each phase ends with runnable tests and a testable state on the real HA instance
 (http://hass:8123).

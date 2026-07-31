@@ -28,14 +28,38 @@ def _flat_day(value):
 # ----------------------------------------------------------------------
 
 
-def test_balance_subtracts_outflows_and_clamps():
+def test_balance_subtracts_outflows():
     inflows = [_flat_day(500.0), _flat_day(100.0)]
     outflows = [_flat_day(200.0)]
     result = balance_day(inflows, outflows)
     assert result == _flat_day(400.0)
 
+
+def test_balance_drops_negative_hours():
+    """A negative balance hour (counter reset / sensor noise) is DROPPED, not
+    learned as 0 W — a bogus 0 W sample would drag the bin median down, a
+    dropped hour simply does not count (code review 2026-07)."""
     negative = balance_day([_flat_day(100.0)], [_flat_day(300.0)])
-    assert negative == _flat_day(0.0)
+    assert negative == [None] * 24
+    # Only the negative hours are dropped; valid hours keep their balance.
+    inflow = _flat_day(100.0)
+    inflow[5] = 500.0
+    mixed = balance_day([inflow], [_flat_day(300.0)])
+    assert mixed[5] == 200.0
+    assert all(v is None for h, v in enumerate(mixed) if h != 5)
+
+
+def test_balance_short_series_counts_missing_tail_as_no_data():
+    """A series shorter than 24 h must not IndexError; the missing tail is
+    no data (None), same guard as clean_day's load_wh (code review 2026-07)."""
+    short_in = [500.0] * 12
+    result = balance_day([short_in], [_flat_day(100.0)])
+    assert result[:12] == [400.0] * 12
+    assert result[12:] == [None] * 12
+    short_out = [100.0] * 3
+    result = balance_day([_flat_day(500.0)], [short_out])
+    assert result[:3] == [400.0] * 3
+    assert result[3:] == [None] * 21
 
 
 def test_balance_requires_all_entities_per_hour():
@@ -85,6 +109,16 @@ def test_clean_drops_hours_with_unknown_subtraction():
     cleaned, _ = clean_day(load, [partial], set(), 3000.0, 10.0)
     assert cleaned[5] is None
     assert cleaned[6] == 400.0
+
+
+def test_clean_short_subtraction_series_counts_missing_tail_as_no_data():
+    """A subtract series shorter than 24 h must not IndexError; hours beyond
+    its length cannot be cleaned and drop out (code review 2026-07)."""
+    load = _flat_day(500.0)
+    short = [100.0] * 10
+    cleaned, _ = clean_day(load, [short], set(), 3000.0, 10.0)
+    assert cleaned[:10] == [400.0] * 10
+    assert cleaned[10:] == [None] * 14
 
 
 def test_clean_applies_plausibility_clamp():
@@ -293,3 +327,62 @@ def test_aggregate_weights_follow_recent_days():
     )
     assert bins[DAY_TYPE_WEEKDAY]["p50"][0] == 300.0
     assert bins[DAY_TYPE_WEEKDAY]["p80"][0] >= bins[DAY_TYPE_WEEKDAY]["p50"][0]
+
+
+def test_weighted_quantile_zero_total_weight_falls_back_to_median():
+    """All-zero (or negative-sum) weights make the weighted rule degenerate:
+    fall back to the plain median instead of dividing by a zero total."""
+    assert weighted_quantile([1.0, 5.0, 9.0], [0.0, 0.0, 0.0], 0.8) == 5.0
+    assert weighted_quantile([1.0, 5.0, 9.0], [-1.0, 0.0, 0.0], 0.8) == 5.0
+
+
+def test_weighted_quantile_above_one_returns_largest_value():
+    """A quantile beyond 1.0 overshoots the total weight — the loop never
+    reaches the threshold and the largest value is returned."""
+    assert weighted_quantile([1.0, 5.0, 9.0], [1.0, 1.0, 1.0], 1.5) == 9.0
+
+
+def test_aggregate_bins_skips_unknown_day_type():
+    """A day_types entry outside DAY_TYPES (stale/corrupt store content) is
+    skipped instead of KeyError-ing or polluting a wrong bin."""
+    daily = {
+        "2026-06-29": _flat_day(100.0),
+        "2026-06-30": _flat_day(100.0),
+        "2026-07-01": _flat_day(100.0),
+        "2026-07-02": _flat_day(999.0),
+    }
+    day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
+    day_types["2026-07-02"] = "not-a-day-type"
+    bins, samples = aggregate_bins(daily, day_types, MIN_SAMPLES, None, 0.2, 3000.0)
+    assert samples[DAY_TYPE_WEEKDAY][0] == 3  # only the three valid days count
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][0] == 100.0
+
+
+def test_aggregate_bins_restores_quantile_order_after_rate_limit():
+    """D-C2: the ±rate_limit clamp runs per quantile, so a fast-rising p50 can
+    overtake a clamped-down p80 — the order restore must lift p80 to p50."""
+    daily = {
+        "2026-06-29": _flat_day(5000.0),
+        "2026-06-30": _flat_day(5000.0),
+        "2026-07-01": _flat_day(5000.0),
+    }
+    day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
+    previous = {
+        DAY_TYPE_WEEKDAY: {"p50": [1000.0] * 24, "p80": [100.0] * 24},
+    }
+    bins, _ = aggregate_bins(daily, day_types, MIN_SAMPLES, previous, 0.5, 10000.0)
+    # p50 clamped to 1000+500 = 1500; p80 would clamp to 100+50 = 150 (< p50)
+    # without the order restore.
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][0] == 1500.0
+    assert bins[DAY_TYPE_WEEKDAY]["p80"][0] == 1500.0
+
+
+def test_on_fractions_empty_window_is_empty():
+    """start >= end (a zero-length or inverted query window) yields no
+    fractions instead of a bogus full-hour entry."""
+    from datetime import datetime
+
+    start = datetime(2026, 7, 1, 10, 0)
+    end = datetime(2026, 7, 1, 11, 0)
+    assert on_fractions([(start, True)], end, start) == {}
+    assert on_fractions([(start, True)], start, start) == {}

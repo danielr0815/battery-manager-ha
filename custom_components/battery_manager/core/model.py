@@ -6,6 +6,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
+def _require(condition: bool, message: str) -> None:
+    """Fail-fast input validation for the core dataclasses (code review
+    2026-07): a physically impossible parameter (eta 0, negative power) used
+    to plan silently garbage instead of failing at the config boundary. NaN
+    fails every comparison below, so it is rejected by the same checks."""
+    if not condition:
+        raise ValueError(message)
+
+
 @dataclass(frozen=True)
 class BatteryParams:
     """48 V battery parameters."""
@@ -15,6 +24,21 @@ class BatteryParams:
     soc_max_percent: float = 95.0
     eta_charge: float = 0.97
     eta_discharge: float = 0.97
+
+    def __post_init__(self) -> None:
+        _require(
+            self.capacity_wh > 0,
+            f"BatteryParams.capacity_wh must be > 0, got {self.capacity_wh!r}",
+        )
+        _require(
+            0.0 < self.eta_charge <= 1.0,
+            f"BatteryParams.eta_charge must be in (0, 1], got {self.eta_charge!r}",
+        )
+        _require(
+            0.0 < self.eta_discharge <= 1.0,
+            "BatteryParams.eta_discharge must be in (0, 1], "
+            f"got {self.eta_discharge!r}",
+        )
 
     def energy_wh(self, soc_percent: float) -> float:
         return soc_percent / 100.0 * self.capacity_wh
@@ -31,6 +55,21 @@ class ConverterParams:
     eta: float = 0.92
     standby_power_w: float = 0.0
 
+    def __post_init__(self) -> None:
+        _require(
+            self.max_power_w >= 0.0,
+            f"ConverterParams.max_power_w must be >= 0, got {self.max_power_w!r}",
+        )
+        _require(
+            0.0 < self.eta <= 1.0,
+            f"ConverterParams.eta must be in (0, 1], got {self.eta!r}",
+        )
+        _require(
+            self.standby_power_w >= 0.0,
+            "ConverterParams.standby_power_w must be >= 0, "
+            f"got {self.standby_power_w!r}",
+        )
+
 
 @dataclass(frozen=True)
 class PVParams:
@@ -42,6 +81,12 @@ class PVParams:
     afternoon_end_hour: int = 18
     morning_ratio: float = 0.8
 
+    def __post_init__(self) -> None:
+        _require(
+            self.peak_power_w >= 0.0,
+            f"PVParams.peak_power_w must be >= 0, got {self.peak_power_w!r}",
+        )
+
 
 @dataclass(frozen=True)
 class LoadProfile:
@@ -51,6 +96,16 @@ class LoadProfile:
     variable_w: float = 25.0
     variable_start_hour: int = 6
     variable_end_hour: int = 22
+
+    def __post_init__(self) -> None:
+        _require(
+            self.base_w >= 0.0,
+            f"LoadProfile.base_w must be >= 0, got {self.base_w!r}",
+        )
+        _require(
+            self.variable_w >= 0.0,
+            f"LoadProfile.variable_w must be >= 0, got {self.variable_w!r}",
+        )
 
     def power_w(self, hour_of_day: int) -> float:
         power = self.base_w
@@ -92,6 +147,17 @@ class SurplusLoad:
     # book ONE final quantum below min_runtime (the stall band). Neutral
     # default keeps every legacy constructor and all goldens bit-identical.
     gate_stop_capable: bool = False
+
+    def __post_init__(self) -> None:
+        _require(
+            self.nominal_power_w >= 0.0,
+            f"SurplusLoad.nominal_power_w must be >= 0, got {self.nominal_power_w!r}",
+        )
+        _require(
+            0.0 <= self.battery_tolerance <= 1.0,
+            f"SurplusLoad.battery_tolerance must be in [0, 1], "
+            f"got {self.battery_tolerance!r}",
+        )
 
 
 @dataclass(frozen=True)
@@ -212,6 +278,28 @@ class SupportParams:
     psu48_max_power_w: float | None = None
     psu48_output_voltage_v: float = 49.56
     gate_soc_percent: float | None = None
+
+    def __post_init__(self) -> None:
+        _require(
+            self.dc48_power_w >= 0.0,
+            f"SupportParams.dc48_power_w must be >= 0, got {self.dc48_power_w!r}",
+        )
+        _require(
+            self.native48_base_w >= 0.0,
+            f"SupportParams.native48_base_w must be >= 0, got {self.native48_base_w!r}",
+        )
+        for name in ("dcdc_eta", "psu24_eta", "psu48_eta"):
+            eta = getattr(self, name)
+            _require(
+                0.0 < eta <= 1.0,
+                f"SupportParams.{name} must be in (0, 1], got {eta!r}",
+            )
+        for name in ("dcdc_max_power_w", "psu24_max_power_w", "psu48_max_power_w"):
+            cap = getattr(self, name)
+            _require(
+                cap is None or cap >= 0.0,
+                f"SupportParams.{name} must be >= 0 or None, got {cap!r}",
+            )
 
 
 @dataclass(frozen=True)

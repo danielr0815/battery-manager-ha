@@ -109,6 +109,14 @@ from .coordinator import ordered_load_subentries
 # Collapsible section groups for the options flow (visual grouping only;
 # their fields are nested under the section key in the submitted data and
 # flattened again by _flatten_sections).
+# battery/pv/power are the base plant dimensions the setup wizard collects
+# into entry.data; stored via options they override entry.data in the
+# coordinator's raw_config merge ({**DEFAULT_CONFIG, **entry.data,
+# **entry.options}), so the plant can be re-dimensioned WITHOUT deleting the
+# entry (which would lose subentries and learned state).
+SECTION_BATTERY = "battery"
+SECTION_PV = "pv"
+SECTION_POWER = "power"
 SECTION_TUNING = "planner_tuning"
 SECTION_PROFILE = "consumption_profile"
 SECTION_LEARNING = "consumption_learning"
@@ -116,6 +124,9 @@ SECTION_SUPPORT = "support_paths"
 SECTION_DEVICES = "dc_devices"
 SECTION_NOTIFY = "notifications"
 _OPTION_SECTIONS = (
+    SECTION_BATTERY,
+    SECTION_PV,
+    SECTION_POWER,
     SECTION_TUNING,
     SECTION_PROFILE,
     SECTION_LEARNING,
@@ -165,10 +176,7 @@ def _notify_services(hass) -> list[str]:
     """Registered `notify` service names, minus the ones that are not push
     targets: `send_message` needs an entity_id (would raise) and the
     persistent_notification dispatcher is not a phone."""
-    try:
-        services = hass.services.async_services_for_domain("notify")
-    except AttributeError:  # pre-2024.7 fallback
-        services = hass.services.async_services().get("notify", {})
+    services = hass.services.async_services_for_domain("notify")
     return sorted(
         name
         for name in services
@@ -242,6 +250,16 @@ def _validate_buffer_clamps(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _validate_soc_bounds(data: dict[str, Any]) -> str | None:
+    """min >= max would leave the planner zero usable SOC window (the setup
+    wizard's battery step rejects the same inversion)."""
+    low = data.get("battery_min_soc_percent")
+    high = data.get("battery_max_soc_percent")
+    if low is not None and high is not None and float(low) >= float(high):
+        return "min_soc_above_max"
+    return None
+
+
 def _validate_pv_windows(data: dict[str, Any]) -> str | None:
     """The two PV windows must be strictly ordered
     (morning_start < morning_end < afternoon_end); a mis-ordered/degenerate
@@ -293,6 +311,76 @@ def _validate_support_hysteresis(data: dict[str, Any]) -> str | None:
     if r48 > r24:
         return "support_dc48_recovery_above_dc24"
     return None
+
+
+def _battery_dimension_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """Battery base dimensions, editable after setup (options flow only).
+
+    Capacity + SOC bounds with the same selector bounds as the wizard's
+    battery step. The charge/discharge efficiencies deliberately stay
+    wizard-only: they are a hardware property of the battery itself, not a
+    site dimension that is retuned in operation.
+    """
+    return {
+        vol.Required(
+            "battery_capacity_wh", default=_d(current, "battery_capacity_wh")
+        ): _number(100, 1_000_000, 100, "Wh"),
+        vol.Required(
+            "battery_min_soc_percent", default=_d(current, "battery_min_soc_percent")
+        ): _number(0, 100, 1, "%"),
+        vol.Required(
+            "battery_max_soc_percent", default=_d(current, "battery_max_soc_percent")
+        ): _number(0, 100, 1, "%"),
+    }
+
+
+def _pv_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """PV base dimensions (shared: pv step + options flow)."""
+    return {
+        vol.Required("pv_max_power_w", default=_d(current, "pv_max_power_w")): _number(
+            0, 100_000, 50, "W"
+        ),
+        vol.Required(
+            "pv_morning_start_hour", default=_d(current, "pv_morning_start_hour")
+        ): _number(0, 23),
+        vol.Required(
+            "pv_morning_end_hour", default=_d(current, "pv_morning_end_hour")
+        ): _number(0, 23),
+        vol.Required(
+            "pv_afternoon_end_hour", default=_d(current, "pv_afternoon_end_hour")
+        ): _number(0, 23),
+        vol.Required(
+            "pv_morning_ratio", default=_d(current, "pv_morning_ratio")
+        ): _number(0.0, 1.0, 0.05),
+    }
+
+
+def _power_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """Charger/inverter base dimensions (shared: power step + options flow)."""
+    return {
+        vol.Required(
+            "charger_max_power_w", default=_d(current, "charger_max_power_w")
+        ): _number(0, 50_000, 50, "W"),
+        vol.Required(
+            "charger_efficiency", default=_d(current, "charger_efficiency")
+        ): _number(0.1, 1.0, 0.01),
+        vol.Required(
+            "charger_standby_power_w", default=_d(current, "charger_standby_power_w")
+        ): _number(0, 500, 1, "W"),
+        vol.Required(
+            "inverter_max_power_w", default=_d(current, "inverter_max_power_w")
+        ): _number(0, 50_000, 50, "W"),
+        vol.Required(
+            "inverter_efficiency", default=_d(current, "inverter_efficiency")
+        ): _number(0.1, 1.0, 0.01),
+        vol.Required(
+            "inverter_standby_power_w",
+            default=_d(current, "inverter_standby_power_w"),
+        ): _number(0, 500, 1, "W"),
+        vol.Required(
+            "inverter_min_soc_percent", default=_d(current, "inverter_min_soc_percent")
+        ): _number(0, 100, 1, "%"),
+    }
 
 
 def _device_param_fields(current: dict[str, Any]) -> dict[Any, Any]:
@@ -499,6 +587,11 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Input entities."""
+        # One site = one battery system: a second entry would run a second
+        # planner against the same hardware, and both coordinators would
+        # fight over the same switches.
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
         if user_input is not None:
             self._data.update(user_input)
             return await self.async_step_battery()
@@ -553,14 +646,12 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         if user_input is not None:
-            if (
-                user_input["battery_min_soc_percent"]
-                >= user_input["battery_max_soc_percent"]
-            ):
+            error = _validate_soc_bounds(user_input)
+            if error is not None:
                 return self.async_show_form(
                     step_id="battery",
                     data_schema=self._battery_schema(),
-                    errors={"base": "min_soc_above_max"},
+                    errors={"base": error},
                 )
             self._data.update(user_input)
             return await self.async_step_pv()
@@ -608,26 +699,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="pv", data_schema=self._pv_schema())
 
     def _pv_schema(self) -> vol.Schema:
-        d = self._data
-        return vol.Schema(
-            {
-                vol.Required(
-                    "pv_max_power_w", default=_d(d, "pv_max_power_w")
-                ): _number(0, 100_000, 50, "W"),
-                vol.Required(
-                    "pv_morning_start_hour", default=_d(d, "pv_morning_start_hour")
-                ): _number(0, 23),
-                vol.Required(
-                    "pv_morning_end_hour", default=_d(d, "pv_morning_end_hour")
-                ): _number(0, 23),
-                vol.Required(
-                    "pv_afternoon_end_hour", default=_d(d, "pv_afternoon_end_hour")
-                ): _number(0, 23),
-                vol.Required(
-                    "pv_morning_ratio", default=_d(d, "pv_morning_ratio")
-                ): _number(0.0, 1.0, 0.05),
-            }
-        )
+        return vol.Schema(_pv_schema_fields(self._data))
 
     async def async_step_consumers(
         self, user_input: dict[str, Any] | None = None
@@ -663,37 +735,9 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._data.update(user_input)
             return await self.async_step_control()
-        d = self._data
         return self.async_show_form(
             step_id="power",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        "charger_max_power_w", default=_d(d, "charger_max_power_w")
-                    ): _number(0, 50_000, 50, "W"),
-                    vol.Required(
-                        "charger_efficiency", default=_d(d, "charger_efficiency")
-                    ): _number(0.1, 1.0, 0.01),
-                    vol.Required(
-                        "charger_standby_power_w",
-                        default=_d(d, "charger_standby_power_w"),
-                    ): _number(0, 500, 1, "W"),
-                    vol.Required(
-                        "inverter_max_power_w", default=_d(d, "inverter_max_power_w")
-                    ): _number(0, 50_000, 50, "W"),
-                    vol.Required(
-                        "inverter_efficiency", default=_d(d, "inverter_efficiency")
-                    ): _number(0.1, 1.0, 0.01),
-                    vol.Required(
-                        "inverter_standby_power_w",
-                        default=_d(d, "inverter_standby_power_w"),
-                    ): _number(0, 500, 1, "W"),
-                    vol.Required(
-                        "inverter_min_soc_percent",
-                        default=_d(d, "inverter_min_soc_percent"),
-                    ): _number(0, 100, 1, "%"),
-                }
-            ),
+            data_schema=vol.Schema(_power_schema_fields(self._data)),
         )
 
     async def async_step_control(
@@ -776,7 +820,9 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class BatteryManagerOptionsFlow(OptionsFlow):
-    """Adjust planner tuning and support paths after setup."""
+    """Adjust the base plant dimensions, planner tuning and support paths
+    after setup — without losing subentries or learned state (options win
+    over entry.data in the coordinator's raw_config merge)."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -785,7 +831,9 @@ class BatteryManagerOptionsFlow(OptionsFlow):
         if user_input is not None:
             data = _flatten_sections(user_input)
             error = (
-                _validate_support_entities(data)
+                _validate_soc_bounds(data)
+                or _validate_pv_windows(data)
+                or _validate_support_entities(data)
                 or _validate_learning_sources(data)
                 or _validate_buffer_clamps(data)
                 or _validate_controller_voltages(data)
@@ -921,7 +969,18 @@ class BatteryManagerOptionsFlow(OptionsFlow):
         }
 
         # Grouped into collapsible sections for readability (F-N UX request).
+        # The three base-dimension sections come first: they re-dimension the
+        # plant in place (previously only possible via delete + re-add).
         schema = {
+            vol.Required(SECTION_BATTERY): section(
+                vol.Schema(_battery_dimension_fields(current)), {"collapsed": True}
+            ),
+            vol.Required(SECTION_PV): section(
+                vol.Schema(_pv_schema_fields(current)), {"collapsed": True}
+            ),
+            vol.Required(SECTION_POWER): section(
+                vol.Schema(_power_schema_fields(current)), {"collapsed": True}
+            ),
             vol.Required(SECTION_TUNING): section(
                 vol.Schema(tuning), {"collapsed": False}
             ),
@@ -1160,6 +1219,14 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         self, step_id: str, user_input: dict[str, Any] | None
     ) -> SubentryFlowResult:
         if user_input is not None:
+            # The name becomes the subentry title; a blank one would create a
+            # nameless entry the operator cannot tell apart in the UI.
+            if not str(user_input.get(CONF_LOAD_NAME, "")).strip():
+                return self.async_show_form(
+                    step_id=step_id,
+                    data_schema=self._basic_schema(user_input),
+                    errors={CONF_LOAD_NAME: "name_required"},
+                )
             self._basic = user_input
             if user_input.get(CONF_LOAD_ENERGY_LIMITED):
                 # charge-enable is captured on the storage step -> validate there.
@@ -1288,6 +1355,14 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         if user_input is not None:
+            # The name becomes the subentry title; a blank one would create a
+            # nameless entry the operator cannot tell apart in the UI.
+            if not str(user_input.get(CONF_APPLIANCE_NAME, "")).strip():
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=self._schema(user_input),
+                    errors={CONF_APPLIANCE_NAME: "name_required"},
+                )
             title = user_input.pop(CONF_APPLIANCE_NAME)
             return self.async_create_entry(title=title, data=user_input)
         return self.async_show_form(step_id="user", data_schema=self._schema({}))
@@ -1297,6 +1372,12 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         subentry = self._get_reconfigure_subentry()
         if user_input is not None:
+            if not str(user_input.get(CONF_APPLIANCE_NAME, "")).strip():
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=self._schema(user_input),
+                    errors={CONF_APPLIANCE_NAME: "name_required"},
+                )
             title = user_input.pop(CONF_APPLIANCE_NAME)
             return self.async_update_and_abort(
                 self._get_entry(), subentry, title=title, data=user_input

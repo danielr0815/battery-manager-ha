@@ -1283,8 +1283,22 @@ async def _setup_with_unavailable_soc(hass):
 async def test_startup_grace_holds_unavailable_soc(hass, caplog):
     """Within the startup grace, an unavailable SOC source does NOT escalate to
     an ERROR + UpdateFailed: the coordinator stays successful with a not-ready
-    placeholder (entities read unavailable via valid=False) and logs no error."""
-    with caplog.at_level(logging.ERROR):
+    placeholder (entities read unavailable via valid=False) and logs no error.
+
+    `dt_util.now` is pinned (pattern: the floor-guard test above): the grace
+    decision compares wall-clock `now` against the refresh's own `_startup_at`
+    anchor, and only the pin keeps that delta at exactly 0 — a background
+    refresh firing late on a loaded runner can otherwise spend real seconds of
+    the 120 s grace budget between setup and the assertions."""
+    from datetime import datetime
+
+    from homeassistant.util import dt as dt_util
+
+    pinned = dt_util.as_local(datetime(2026, 7, 19, 5, 30, tzinfo=UTC))
+    with (
+        patch.object(dt_util, "now", return_value=pinned),
+        caplog.at_level(logging.ERROR),
+    ):
         _entry, coordinator = await _setup_with_unavailable_soc(hass)
 
     assert coordinator.last_update_success is True
@@ -1295,17 +1309,28 @@ async def test_startup_grace_holds_unavailable_soc(hass, caplog):
 
 async def test_startup_grace_expires_to_update_failed(hass, caplog):
     """After the grace window elapses, the same unavailable SOC source escalates
-    to the normal UpdateFailed path (last_update_success False, error logged)."""
-    _entry, coordinator = await _setup_with_unavailable_soc(hass)
-    assert coordinator.last_update_success is True  # still in grace
+    to the normal UpdateFailed path (last_update_success False, error logged).
 
-    # Push the grace anchor past the window and refresh again.
-    coordinator._startup_at = coordinator._startup_at - timedelta(
-        seconds=STARTUP_SOC_GRACE_S + 1
-    )
-    with caplog.at_level(logging.ERROR):
-        await coordinator.async_refresh()
-        await hass.async_block_till_done()
+    Pinned clock for the same reason as the sibling test — with a frozen `now`
+    the anchor subtraction lands the grace delta at EXACTLY GRACE+1 s, so the
+    boundary crossing cannot drift with runner load (this test flaked once,
+    non-reproducibly, before the pin)."""
+    from datetime import datetime
+
+    from homeassistant.util import dt as dt_util
+
+    pinned = dt_util.as_local(datetime(2026, 7, 19, 5, 30, tzinfo=UTC))
+    with patch.object(dt_util, "now", return_value=pinned):
+        _entry, coordinator = await _setup_with_unavailable_soc(hass)
+        assert coordinator.last_update_success is True  # still in grace
+
+        # Push the grace anchor past the window and refresh again.
+        coordinator._startup_at = coordinator._startup_at - timedelta(
+            seconds=STARTUP_SOC_GRACE_S + 1
+        )
+        with caplog.at_level(logging.ERROR):
+            await coordinator.async_refresh()
+            await hass.async_block_till_done()
 
     assert coordinator.last_update_success is False
     assert [r for r in caplog.records if "No valid input data" in r.getMessage()]

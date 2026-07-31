@@ -2,6 +2,15 @@
 
 Status: **binding spec**, implemented in v0.13.0. Operator decision 2026-07-17:
 
+> **Structural note (2026-07, v0.17.0):** the gates themselves were
+> consolidated in `core/optimize.py` — the former verbatim pass-1/pass-2
+> copies now share the helpers `_spread_candidate` / `_gate_trial` /
+> `_accept_candidate` / `_final_note`, and `slots_serviceable` uses
+> `max(soc_min, inverter_min)` as its cutoff (parity with the simulator's own
+> inverter floor). **The parity principle below is unchanged — pure
+> implementation consolidation, no behaviour delta** (bit-identical for every
+> config with `soc_min <= inverter_min`, i.e. the whole golden suite).
+
 > „Es ist ein Spezifikationsfehler, dass B Energie nicht verwenden darf aber
 > der Luftentfeuchter schon. Es soll immer die Priorität eingehalten werden…
 > lieber den Fossibot laden, als den Luftentfeuchter betreiben, wenn die Wahl

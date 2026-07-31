@@ -2,6 +2,11 @@
 
 > Start here if you want to work on the code. This is the map; the other docs in
 > `docs/` are the detailed design records for individual subsystems.
+>
+> Status: **current as of 2026-07 (v0.17.0)** — the code map and the update
+> cycle are maintained; earlier "outdated (v0.7.x)" labels in other docs
+> referred to a stale code map that has since been completed
+> (`core/forecast_hours.py`, `core/power_learning.py`) and corrected.
 
 Battery Manager plans hourly energy flows for an AC-coupled PV + battery system
 and turns the plan into switching recommendations (and, for the grid-support
@@ -35,9 +40,11 @@ belongs in the HA layer.
 |---|---|
 | `model.py` | All the frozen dataclasses: `SystemConfig`, `BatteryParams`, `ControlParams`, `SupportParams`, `LoadProfile`, `PVParams`, `SurplusLoad`, `Appliance`, and the per-hour `HourSlot` / `HourFlows` / `Trajectory`. The data contract between the layers. |
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
+| `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
 | `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the appliance-window advisor, and the last-resort grid-support escalation. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
+| `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 
 ### Home Assistant layer
 
@@ -65,6 +72,16 @@ belongs in the HA layer.
    surplus right now.
 4. **Support escalation** — if the battery would still fall through its floor,
    schedule the 24 V / 48 V grid PSUs as last-resort protection.
+
+The allocation gates of both passes share **one** implementation in
+`core/optimize.py` (consolidated 2026-07 from the former pass-1/pass-2
+duplicate copies — no behaviour delta): `_spread_candidate` (energy spread +
+seamless-spill trim), `_gate_trial` (re-simulation + the floor-guard-parity
+check), `_accept_candidate` (book-keeping) and `_final_note` (the `why`
+string). The `slots_serviceable` floor-guard-parity gate uses
+`max(soc_min_percent, inverter_min_soc_percent)` as its cutoff — the same
+floor the simulator itself applies to the inverter, so the planner vetoes
+exactly the slots the simulation would ride at its own floor.
 
 The output is a single consistent `PlanResult` (one trajectory). Details:
 [ALGORITHM.md](ALGORITHM.md); the two-bus DC / support model:

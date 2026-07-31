@@ -1,6 +1,10 @@
 # Battery Manager — Algorithm Design in Detail
 
-> Status: reflects the shipped planner as of v0.7.10.
+> Status: **historical design record** — it reflects the planner as of
+> v0.7.10 and is kept for the D-A1 … D-A9 decision names and their
+> rationale. **Binding description of the shipped planner:
+> [docs/project-knowledge/02-planner-und-optimizer.md](project-knowledge/02-planner-und-optimizer.md)**
+> (plus the `F-*.md` feature specs).
 > In-depth companion to [STRATEGY.md](STRATEGY.md); decision points D-A1 … D-A9.
 
 ## 1. Flow of a Planning Run
@@ -303,11 +307,21 @@ candidates).
 
 ### D-A8 Behaviour on Data Loss
 
-- As before: last valid values with age limits (SOC 1 h/6 h, forecast
-  24 h/72 h). **Additional recommendation:** on exceedance the last plan is
-  frozen, and after a further 2 h all recommendation entities become
-  `unavailable` + the additional-load recommendation "off" (fail-safe: better to
-  waste surplus than risk grid draw).
+- Last valid values with age limits (SOC cache 6 h =
+  `MAX_HISTORICAL_SOC_AGE_HOURS`, forecast 72 h =
+  `MAX_HISTORICAL_FORECAST_AGE_HOURS`); beyond that the inputs count as lost.
+- **Implemented (v0.17.0, two stages):** on data loss the entities become
+  `unavailable` immediately (stage 1, the normal `UpdateFailed` path); if the
+  outage persists for a further **2 h** (`STALE_LOAD_SHED_HOURS`), stage 2
+  fires **once** per episode: all controlled surplus loads are
+  force-switched off (charge-enable always; the plug follows
+  `input_off_policy`/ownership), a repair issue `stale_data_load_shed` plus a
+  push notification are raised, and the shed latches against re-on until the
+  data recovers — at which point the latch releases and the issue resolves
+  automatically (fail-safe: better to waste surplus than risk grid draw).
+  House-SOC readings that freeze *with fresh timestamps* are caught upstream
+  by the adaptive house-SOC stale watchdog (`_update_house_soc_watchdog`,
+  see LOAD_CONTROL.md §15) and routed into the same path.
 
 ### D-A9 Emergency Support of the DC Levels (new, from the operator answer to D-A1)
 
