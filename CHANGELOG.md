@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-31
+
+### Added
+- **Configurable house-SOC stale watchdog bands.** New options
+  `house_soc_stale_mid_percent` (default 2 %) and
+  `house_soc_stale_edge_percent` (default 7 %) in the battery section of the
+  options flow: how much expected battery throughput (in % of capacity) may
+  accumulate without any SOC change before the house-SOC reading is treated
+  as frozen. The band bounds (13 % / 89 % SOC) are fixed.
+
+### Fixed
+- **No more false stale alarms at the BMS plateaus.** The house-SOC watchdog
+  no longer uses the adaptive "time for a 1 % change" window (only a few
+  minutes at high power), which false-latched healthy batteries whose SOC
+  reading legitimately sticks near the ends (~10 % / ~90 %, BMS
+  balancing/clamping). The watchdog is now energy-based and banded: it
+  accumulates the plan's expected battery throughput while the reading is
+  frozen and latches only past the configured band allowance — the edge
+  bands tolerate much more drift. Below 300 W expected flow the accumulation
+  pauses instead of resetting, so duty-cycled flow still counts.
+
 ## [0.17.0] - 2026-07-31
 
 ### Security

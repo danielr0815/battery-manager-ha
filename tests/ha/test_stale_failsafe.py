@@ -4,9 +4,10 @@
   SOC / PV forecasts) all controlled surplus loads are force-switched OFF once
   (repair issue + push), the latch blocks any re-ON, and recovery resumes
   normal operation. The data-loss clock and the latch survive restarts.
-- House-SOC stale watchdog: a frozen house-battery SOC is latched stale only
-  while the last valid plan expects battery power flow (adaptive window,
-  60 min cap); the latch routes into UpdateFailed and thus into stage 2.
+- House-SOC stale watchdog: a frozen house-battery SOC is latched stale once
+  the plan's expected battery throughput exceeds the band's drift allowance
+  (mid band vs. plateau-prone edge bands); the latch routes into UpdateFailed
+  and thus into stage 2.
 - F7/U5: three consecutive support-switch failures raise a repair issue +
   push; the first success resets the streak and resolves the issue.
 """
@@ -478,9 +479,10 @@ async def test_watchdog_no_false_alarm_at_standby(hass):
 
 
 async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):
-    """Under expected load the SOC MUST move: the same value for longer than
-    the adaptive window (capacity x 1 % / expected power) latches stale and
-    routes into UpdateFailed; the first changed reading releases."""
+    """Under expected load the SOC MUST move: once the accumulated expected
+    throughput exceeds the mid-band drift allowance (capacity x 2 %) without
+    a SOC change, the reading latches stale and routes into UpdateFailed; the
+    first changed reading releases."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
     _entry, coordinator = await _setup(hass, calls, notifications)
@@ -489,9 +491,12 @@ async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):
     assert expected is not None and abs(expected) >= 300.0, (
         f"midday scenario must expect >= 300 W battery flow, got {expected}"
     )
-    # Deterministic window: 5000 Wh x 1 % / 1000 W = 3 min. The plan-derived
-    # expectation is re-seeded after each successful refresh (each plan
-    # recomputes it) so the window is exactly what is asserted below.
+    # Deterministic allowance: 5000 Wh x 2 % = 100 Wh; at 1000 W expected
+    # flow that accumulates in 6 min. The plan-derived expectation is
+    # re-seeded after each successful refresh (each plan recomputes it) so
+    # the accumulation below is exactly what is asserted. The setup refresh
+    # already seeded the evidence — restart it so t1 is the epoch.
+    coordinator._house_soc_frozen = None
     coordinator._expected_battery_power_w = 1000.0
 
     t1 = MIDDAY + timedelta(minutes=2)
@@ -499,42 +504,84 @@ async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):
     assert coordinator._house_soc_stale is None
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=2, seconds=59))
-    assert coordinator._house_soc_stale is None  # inside the 3-min window
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=5))
+    assert coordinator._house_soc_stale is None  # 83 Wh < 100 Wh allowance
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=3, seconds=1))
-    assert coordinator._house_soc_stale == 55.0  # latched stale
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
+    assert coordinator._house_soc_stale == 55.0  # 117 Wh > 100 Wh: latched
     assert not coordinator.last_update_success  # routed into UpdateFailed
 
     _set_soc(hass, coordinator, "56")
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=4))
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=8))
     assert coordinator._house_soc_stale is None  # unlatched on the change
     assert coordinator.last_update_success
     assert coordinator._data_stale_since is None  # short episode, no shed
 
 
-async def test_watchdog_window_capped_at_60_minutes(hass):
-    """The adaptive window is capped: even a huge battery at the minimum
-    provable flow (60000 Wh x 1 % / 300 W = 2 h) latches after 60 min."""
+async def test_watchdog_edge_band_needs_larger_drift(hass):
+    """At the plateau-prone SOC end (> 89 %) the watchdog allows the larger
+    edge drift (7 % of capacity): a frozen 90 % reading does NOT latch at the
+    mid-band allowance but only once the edge allowance is exceeded too."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
-    _entry, coordinator = await _setup(
-        hass, calls, notifications, extra_data={"battery_capacity_wh": 60000.0}
-    )
+    _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "90")
 
-    coordinator._expected_battery_power_w = 300.0
+    # Edge allowance: 5000 Wh x 7 % = 350 Wh; at 1000 W expected flow that
+    # accumulates in 21 min (the mid-band 100 Wh mark passes silently).
+    coordinator._expected_battery_power_w = 1000.0
     t1 = MIDDAY + timedelta(minutes=2)
-    await _refresh_at(hass, coordinator, t1)  # seeds the frozen evidence
+    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 90 % evidence
     assert coordinator._house_soc_stale is None
 
-    coordinator._expected_battery_power_w = 300.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=59))
-    assert coordinator._house_soc_stale is None  # uncapped window would be 2 h
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=20))
+    assert coordinator._house_soc_stale is None  # 333 Wh: past mid, under edge
 
-    coordinator._expected_battery_power_w = 300.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=61))
-    assert coordinator._house_soc_stale == 55.0  # capped window elapsed
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=22))
+    assert coordinator._house_soc_stale == 90.0  # 367 Wh > 350 Wh: latched
+
+
+async def test_watchdog_band_boundary_89_is_mid(hass):
+    """The high edge band is strict (> 89): a frozen 89.0 % reading still
+    falls in the mid band and latches at the 2 % allowance."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "89")
+
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 89 % evidence
+    assert coordinator._house_soc_stale is None
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
+    assert coordinator._house_soc_stale == 89.0  # 117 Wh > 100 Wh mid allowance
+
+
+async def test_watchdog_low_edge_band(hass):
+    """The low plateau is symmetric: 10 % (< 13) is the edge band and holds
+    past the mid-band allowance before latching."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "10")
+
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 10 % evidence
+    assert coordinator._house_soc_stale is None
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=20))
+    assert coordinator._house_soc_stale is None  # 333 Wh: past mid, under edge
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=22))
+    assert coordinator._house_soc_stale == 10.0  # 367 Wh > 350 Wh: latched
 
 
 async def test_frozen_soc_escalates_into_stage2_shed(hass):
@@ -550,11 +597,14 @@ async def test_frozen_soc_escalates_into_stage2_shed(hass):
     coordinator._load_plug_owned[sub_id] = True
     coordinator._load_charging_active[sub_id] = True
 
+    # Restart the setup-seeded evidence so t1 is the accumulation epoch.
+    coordinator._house_soc_frozen = None
     coordinator._expected_battery_power_w = 1000.0
     t1 = MIDDAY + timedelta(minutes=2)
     await _refresh_at(hass, coordinator, t1)
     coordinator._expected_battery_power_w = 1000.0
-    t_latch = t1 + timedelta(minutes=3, seconds=1)
+    # 7 min x 1000 W = 117 Wh: past the 100 Wh mid-band allowance.
+    t_latch = t1 + timedelta(minutes=7)
     await _refresh_at(hass, coordinator, t_latch)
     assert coordinator._house_soc_stale == 55.0
     assert coordinator._data_stale_since == t_latch  # clock starts at latch

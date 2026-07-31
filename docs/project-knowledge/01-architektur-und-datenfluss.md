@@ -180,11 +180,15 @@ weiterverwendet, danach `None`. (Die früheren, ungenutzten Alters-Konstanten
 für den SOC-/Prognose-Cache wurden mit v0.17.0 entfernt; es gelten nur noch
 die beiden `MAX_HISTORICAL_*`-Grenzen.)
 
-Zwei Eskalationen hängen an diesem Pfad (v0.17.0): der **adaptive
-Haus-SOC-Stale-Wächter** (`_update_house_soc_watchdog`) erkennt einen mit
-frischen Zeitstempeln eingefrorenen SOC und lässt `_get_soc` `None`
-liefern, und bei anhaltendem Datenverlust feuert die **D-A8-Stufe-2** nach
-`STALE_LOAD_SHED_HOURS = 2` h einmalig das Fail-safe-Abschalten aller
+Zwei Eskalationen hängen an diesem Pfad (v0.17.0): der **energiebasierte,
+band-abhängige Haus-SOC-Stale-Wächter** (`_update_house_soc_watchdog`, seit
+v0.18.0) erkennt einen mit frischen Zeitstempeln eingefrorenen SOC — erst,
+wenn der akkumulierte erwartete Batteriedurchsatz die Drift-Toleranz des
+SOC-Bands übersteigt (Mitte 13–89 %: `house_soc_stale_mid_percent`, Standard
+2 % der Kapazität; Ränder < 13 % / > 89 %: `house_soc_stale_edge_percent`,
+Standard 7 %, weil BMS-Plateaus dort normal sind) — und lässt `_get_soc`
+`None` liefern, und bei anhaltendem Datenverlust feuert die **D-A8-Stufe-2**
+nach `STALE_LOAD_SHED_HOURS = 2` h einmalig das Fail-safe-Abschalten aller
 gesteuerten Zusatzlasten (`_note_data_loss`/`_execute_stale_load_shed`,
 Repair-Issue `stale_data_load_shed` + Push, Latch bis zur Recovery —
 Details: `docs/ALGORITHM.md` D-A8 und `docs/LOAD_CONTROL.md` §15/§16).

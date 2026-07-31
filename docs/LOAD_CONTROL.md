@@ -367,24 +367,29 @@ once-only accounting.
 circuit, so leaving it on would make the learner subtract a draw that is not in
 the measured house load and skew the AC baseline.
 
-## 15. House-battery SOC stale watchdog (v0.17.0)
+## 15. House-battery SOC stale watchdog (v0.17.0; energy-based bands since v0.18.0)
 
 G2 (§10) watches the *loads'* SOC sensors; the **house** battery SOC had the
 same blind spot: a BMS serving a cached, frozen SOC with fresh timestamps
 passes every age check, and the planner would keep planning on fiction
-forever. The adaptive watchdog `_update_house_soc_watchdog` (G2's sibling)
-latches the house SOC as stale when it stays EXACTLY unchanged while the
-battery demonstrably flows power. BM has no live house-battery *power*
-sensor, so the proof proxy is the **expected slot-0 battery flow of the last
-valid plan**: while `|expected| > HOUSE_SOC_STALE_POWER_W = 300 W`, a frozen
-reading accumulates evidence for
-`min(HOUSE_SOC_STALE_MAX_MINUTES = 60 min, capacity × 1 % / |expected|)` —
-the time a ≥ 1 % SOC change would take at that power. Below the power bar
-(standby/float) the clock resets: a constant SOC is physically correct
-there. While latched, `_get_soc` treats the reading as invalid, which routes
-into the normal data-loss path (§16) — not into a load-local `available`.
-Unlatch: any DIFFERENT live reading (INFO once, the G2 pattern). In-memory
-only; a restart re-accumulates within one window.
+forever. The watchdog `_update_house_soc_watchdog` (G2's sibling) latches the
+house SOC as stale when it stays EXACTLY unchanged while the battery
+demonstrably flows power. BM has no live house-battery *power* sensor, so the
+proof proxy is the **expected slot-0 battery flow of the last valid plan**:
+while `|expected| >= HOUSE_SOC_STALE_POWER_W = 300 W`, a frozen reading
+accumulates the expected energy (`|expected| × Δt`); below the bar the
+accumulation pauses (standby/float — a constant SOC is physically correct
+there, no evidence either way), and only a CHANGED reading resets it, so
+duty-cycled flow still accumulates. The latch fires once the accumulated
+energy exceeds the band's drift allowance: `house_soc_stale_mid_percent`
+(default 2 % of capacity) in the mid band, `house_soc_stale_edge_percent`
+(default 7 %) at the plateau-prone ends (< 13 % or > 89 % SOC — BMS
+balancing/clamping can pin the reading there for hours legitimately;
+2026-07-31 incident: 10 false latches in 90 min under the former adaptive
+1 %-change window). While latched, `_get_soc` treats the reading as invalid,
+which routes into the normal data-loss path (§16) — not into a load-local
+`available`. Unlatch: any DIFFERENT live reading (INFO once, the G2 pattern).
+In-memory only; a restart re-accumulates the evidence energy.
 
 ## 16. Fail-safe load shed on sustained data loss (D-A8 stage 2, v0.17.0)
 

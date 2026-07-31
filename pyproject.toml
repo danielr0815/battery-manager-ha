@@ -9,7 +9,7 @@
 
 [project]
 name = "battery-manager-ha"
-version = "0.17.0"
+version = "0.18.0"
 description = "Solar-battery optimizer for Home Assistant: SOC forecast, discharge-threshold planning, surplus-load and grid-support control."
 readme = "README.md"
 # Floor matches homeassistant's own requirement (HA >= 2026.3 needs 3.14.2+).

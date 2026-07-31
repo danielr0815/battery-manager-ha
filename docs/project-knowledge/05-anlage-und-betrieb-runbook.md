@@ -364,12 +364,14 @@ Load <Name>: robust power estimate 818 W exceeds 3x the configured 400 W
 ```
 
 Seit v0.17.0 zusätzlich der **Haus-SOC-Wächter** (LOAD_CONTROL.md §15 —
-er bewacht die SOC-Quelle der *Hausbatterie*, nicht die der Lasten):
+er bewacht die SOC-Quelle der *Hausbatterie*, nicht die der Lasten; seit
+v0.18.0 energiebasiert/band-abhängig):
 
 ```
-House battery SOC frozen at 63.0% for 45.0+ min while the plan expects
-800 W of battery flow — treating the reading as STALE (UpdateFailed path)
-until the sensor reports a different value
+House battery SOC frozen at 63.0% — the plan expected 420 Wh of battery
+flow without any SOC change (band drift allowance 2.0% of capacity) —
+treating the reading as STALE (UpdateFailed path) until the sensor
+reports a different value
 ```
 
 ```
@@ -377,10 +379,14 @@ House battery SOC reports 63.4% again (was frozen at 63.0%) — stale
 watchdog latch cleared
 ```
 
-**Bedeutung:** der SOC blieb exakt unverändert, obwohl der letzte gültige
-Plan > 300 W Batteriefluss erwartete (Fenster `min(60 min, Kapazität×1 %/|P|)`).
-Danach gilt der SOC als Datenverlust — es greift derselbe Pfad wie bei
-fehlenden Daten (§5.7 `stale_data_load_shed`).
+**Bedeutung:** der SOC blieb exakt unverändert, während der letzte gültige
+Plan ≥ 300 W Batteriefluss erwartete — so lange, bis der akkumulierte
+erwartete Durchsatz die Drift-Toleranz des SOC-Bands überstieg (Mitte
+13–89 %: `house_soc_stale_mid_percent`, Standard 2 % der Kapazität; Ränder
+< 13 % / > 89 %: `house_soc_stale_edge_percent`, Standard 7 %, weil
+BMS-Plateaus dort stundenlang normal sein können; unter 300 W pausiert die
+Akkumulation). Danach gilt der SOC als Datenverlust — es greift derselbe
+Pfad wie bei fehlenden Daten (§5.7 `stale_data_load_shed`).
 
 ### 5.4 Schaltprotokoll (V9a: genau eine INFO-Zeile je bestätigter Aktion)
 

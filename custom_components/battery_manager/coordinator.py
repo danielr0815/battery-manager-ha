@@ -42,6 +42,8 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
+    CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
+    CONF_HOUSE_SOC_STALE_MID_PERCENT,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
@@ -98,7 +100,8 @@ from .const import (
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
     FREEZE_STALE_HOURS,
-    HOUSE_SOC_STALE_MAX_MINUTES,
+    HOUSE_SOC_STALE_EDGE_HIGH_PERCENT,
+    HOUSE_SOC_STALE_EDGE_LOW_PERCENT,
     HOUSE_SOC_STALE_POWER_W,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
@@ -273,13 +276,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._data_stale_since: datetime | None = None
         self._stale_shed_active = False
         self._stale_shed_task: asyncio.Task | None = None
-        # House-SOC stale watchdog (adaptive sibling of the G2 load guard):
-        # evidence tuple (frozen value, since) while power flow is expected,
+        # House-SOC stale watchdog (energy-based, banded sibling of the G2
+        # load guard): evidence tuple (frozen value, last accumulation time,
+        # accumulated expected energy in Wh) while power flow is expected,
         # and the latch (frozen value, for the unlatch compare + log). The
         # expected slot-0 battery flow of the last VALID plan is the flow
         # proof — see _update_house_soc_watchdog. In-memory only (like G2):
-        # a restart re-accumulates evidence within one adaptive window.
-        self._house_soc_frozen: tuple[float, datetime] | None = None
+        # a restart re-accumulates the evidence energy.
+        self._house_soc_frozen: tuple[float, datetime, float] | None = None
         self._house_soc_stale: float | None = None
         self._expected_battery_power_w: float | None = None
         # Hourly PV forecast (docs/F-PREDRAIN.md F1): merged naive-local hour -> Wh
@@ -959,28 +963,37 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return None
 
     def _update_house_soc_watchdog(self, now: datetime) -> None:
-        """Adaptive stale watchdog for the HOUSE battery SOC (G2's sibling).
+        """Energy-based, banded stale watchdog for the HOUSE battery SOC
+        (G2's sibling).
 
         `_get_soc` accepts any in-range value as fresh, so a BMS serving a
         cached, frozen SOC (with fresh timestamps — age checks cannot catch
-        it) would keep the planner running on fiction forever. A SOC that
-        stays EXACTLY unchanged while the battery demonstrably flows power is
-        latched as stale; `_get_soc` then treats it as invalid.
+        it) would keep the planner running on fiction forever. While the SOC
+        reading stays EXACTLY unchanged, the watchdog accumulates the EXPECTED
+        energy throughput; once that exceeds the band's configured share of
+        capacity, the SOC would have had to move, so the reading is latched as
+        stale and `_get_soc` treats it as invalid.
 
         Flow proof: the integration has no live house-battery POWER sensor
         (only SOC, voltage, and consumption inputs are configurable), so the
         expected slot-0 battery flow of the last VALID plan (its trajectory)
         is used as the |power| proxy — the planner states how many watts the
         battery should be exchanging right now; a real BMS must reflect that
-        in the SOC within the time a >= 1 % change takes at that power. That
-        is also why the evidence clock RESETS below HOUSE_SOC_STALE_POWER_W
-        (standby / float charge: a constant SOC is physically correct there,
-        no false alarm) and why the watchdog stays INACTIVE without any valid
-        plan (no expectation, nothing to prove a freeze against). The window
-        adapts: capacity*0.01/|power| hours, capped at
-        HOUSE_SOC_STALE_MAX_MINUTES so a trickle flow cannot stretch it.
+        in the SOC once the accumulated expectation passes the band's drift
+        allowance. That is also why accumulation PAUSES below
+        HOUSE_SOC_STALE_POWER_W (standby / float charge: a constant SOC is
+        physically correct there, no evidence either way) and while no valid
+        plan exists (no expectation, nothing to prove a freeze against). Only
+        a CHANGED reading resets the evidence — a pause keeps it, so
+        duty-cycled flow still accumulates. Bands (2026-07-31 incident: 10
+        false latches in 90 min while the BMS sat at its 87-89 % plateau):
+        near the SOC ends (< HOUSE_SOC_STALE_EDGE_LOW_PERCENT or >
+        HOUSE_SOC_STALE_EDGE_HIGH_PERCENT) the reading can legitimately sit on
+        one value for a long time (balancing/clamping), so the edge bands
+        allow more unexplained drift (house_soc_stale_edge_percent) than the
+        mid band (house_soc_stale_mid_percent).
         Unlatch: any DIFFERENT live reading (INFO once, G2 pattern).
-        In-memory only — a restart re-accumulates within one window.
+        In-memory only — a restart re-accumulates the evidence energy.
         """
         raw = self._read_float(self.raw_config[CONF_SOC_ENTITY])
         if raw is not None and not 0.0 <= raw <= 100.0:
@@ -998,31 +1011,40 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             else:
                 return  # still frozen (or no reading): stay latched
-        power_w = self._expected_battery_power_w
-        if raw is None or power_w is None or abs(power_w) < HOUSE_SOC_STALE_POWER_W:
-            # No evidence this cycle: the clock resets (standby is not a
-            # freeze; without a valid plan there is no expectation).
-            self._house_soc_frozen = None
-            return
+        if raw is None:
+            return  # no reading this cycle: keep the evidence untouched
         evidence = self._house_soc_frozen
         if evidence is None or evidence[0] != raw:
-            self._house_soc_frozen = (raw, now)
+            # New (or changed) value: (re)seed — no elapsed time to add yet.
+            self._house_soc_frozen = (raw, now, 0.0)
             return
-        capacity_wh = float(self.raw_config["battery_capacity_wh"])
-        window_h = min(
-            HOUSE_SOC_STALE_MAX_MINUTES / 60.0,
-            capacity_wh * 0.01 / abs(power_w),
-        )
-        if now - evidence[1] >= timedelta(hours=window_h):
+        power_w = self._expected_battery_power_w
+        _value, last, accumulated_wh = evidence
+        if power_w is not None and abs(power_w) >= HOUSE_SOC_STALE_POWER_W:
+            accumulated_wh += abs(power_w) * (now - last).total_seconds() / 3600.0
+        # Advance the cursor on pause cycles too, so a later above-bar cycle
+        # is only charged the time actually spent with significant flow.
+        self._house_soc_frozen = (raw, now, accumulated_wh)
+        cfg = self.raw_config
+        if (
+            raw < HOUSE_SOC_STALE_EDGE_LOW_PERCENT
+            or raw > HOUSE_SOC_STALE_EDGE_HIGH_PERCENT
+        ):
+            drift_percent = float(cfg[CONF_HOUSE_SOC_STALE_EDGE_PERCENT])
+        else:
+            drift_percent = float(cfg[CONF_HOUSE_SOC_STALE_MID_PERCENT])
+        threshold_wh = float(cfg["battery_capacity_wh"]) * drift_percent / 100.0
+        if accumulated_wh > threshold_wh:
             self._house_soc_stale = raw
             _LOGGER.warning(
-                "House battery SOC frozen at %.1f%% for %.1f+ min while the"
-                " plan expects %.0f W of battery flow — treating the reading"
-                " as STALE (UpdateFailed path) until the sensor reports a"
+                "House battery SOC frozen at %.1f%% — the plan expected"
+                " %.0f Wh of battery flow without any SOC change (band drift"
+                " allowance %.1f%% of capacity) — treating the reading as"
+                " STALE (UpdateFailed path) until the sensor reports a"
                 " different value",
                 raw,
-                window_h * 60.0,
-                power_w,
+                accumulated_wh,
+                drift_percent,
             )
 
     def _get_forecasts(self, now: datetime) -> list[float] | None:

@@ -242,17 +242,29 @@ LATCH_HOLD_OVERPOWER_FACTOR = 1.5
 # constant, not a config key.
 STALE_LOAD_SOC_MIN = 12
 
-# House-battery SOC stale watchdog (adaptive sibling of the G2 load guard): the
-# same "cached values with fresh timestamps" failure exists for the HOUSE
-# battery BMS, and `_get_soc` alone accepts any in-range value as fresh. A SOC
-# that stays EXACTLY unchanged while the battery demonstrably flows power is
-# latched as stale — which routes into the normal UpdateFailed path and hence
-# the D-A8 stage-2 escalation. Proof of flow needs at least this much expected
-# battery power (W); the stale window adapts to the expected power (time for a
-# >= 1 % SOC change at that power) and is capped at this many minutes so a
-# trickle flow cannot stretch it. Constants, not config keys (like G2).
+# House-battery SOC stale watchdog (energy-based, banded sibling of the G2
+# load guard): the same "cached values with fresh timestamps" failure exists
+# for the HOUSE battery BMS, and `_get_soc` alone accepts any in-range value
+# as fresh. While the SOC reading stays EXACTLY unchanged, the watchdog
+# accumulates the EXPECTED energy throughput (the slot-0 battery flow of the
+# last valid plan — there is no live house-battery power sensor); once that
+# expectation exceeds the configured share of capacity, the SOC would have had
+# to move, so the reading is latched as stale — which routes into the normal
+# UpdateFailed path and hence the D-A8 stage-2 escalation. Proof of flow needs
+# at least this much expected battery power (W); below it the accumulation
+# pauses (standby/float: a constant SOC is physically correct there, no
+# evidence either way). A constant, not a config key (like G2).
 HOUSE_SOC_STALE_POWER_W = 300.0
-HOUSE_SOC_STALE_MAX_MINUTES = 60
+# BMS plateaus (2026-07-31 incident: 10 false latches in 90 min at SOC
+# 87-89 %): near the SOC ends the reading can sit on one value for a long time
+# while power keeps flowing (balancing/clamping), so the edge bands tolerate a
+# much larger unexplained drift than the mid band before the watchdog alarms.
+# The band bounds are constants; the two drift percentages are operator-tunable
+# (defaults in DEFAULT_CONFIG).
+HOUSE_SOC_STALE_EDGE_LOW_PERCENT = 13.0
+HOUSE_SOC_STALE_EDGE_HIGH_PERCENT = 89.0
+CONF_HOUSE_SOC_STALE_MID_PERCENT = "house_soc_stale_mid_percent"
+CONF_HOUSE_SOC_STALE_EDGE_PERCENT = "house_soc_stale_edge_percent"
 
 # Telemetry-freeze watchdog (F4, 2026-07-24 forensics): a redundant guard for
 # ENERGY-LIMITED loads, independent of the switching path AND the G2 latch. The
@@ -410,6 +422,11 @@ DEFAULT_CONFIG = {
     "battery_max_soc_percent": 95.0,
     "battery_charge_efficiency": 0.97,
     "battery_discharge_efficiency": 0.97,
+    # House-SOC stale watchdog (see HOUSE_SOC_STALE_* above): unexplained
+    # expected SOC drift (in % of capacity) before the latch — mid band and
+    # edge bands.
+    CONF_HOUSE_SOC_STALE_MID_PERCENT: 2.0,
+    CONF_HOUSE_SOC_STALE_EDGE_PERCENT: 7.0,
     # PV system
     "pv_max_power_w": 3200.0,
     "pv_morning_start_hour": 7,

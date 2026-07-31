@@ -445,12 +445,16 @@
             "data": {
               "battery_capacity_wh": "Capacity (Wh)",
               "battery_min_soc_percent": "Minimum SOC (%)",
-              "battery_max_soc_percent": "Maximum SOC (%)"
+              "battery_max_soc_percent": "Maximum SOC (%)",
+              "house_soc_stale_mid_percent": "Stale-SOC drift allowance, mid band (%)",
+              "house_soc_stale_edge_percent": "Stale-SOC drift allowance, edge bands (%)"
             },
             "data_description": {
               "battery_capacity_wh": "Total battery capacity in watt-hours (e.g. 5000 for 5 kWh).",
               "battery_min_soc_percent": "Hard lower limit: planning never discharges the battery below this state of charge (deep-discharge protection).",
-              "battery_max_soc_percent": "Upper charging limit: above this value the battery absorbs no more surplus (protects the cells)."
+              "battery_max_soc_percent": "Upper charging limit: above this value the battery absorbs no more surplus (protects the cells).",
+              "house_soc_stale_mid_percent": "House-SOC watchdog: the reading is treated as frozen once the plan expected this much battery throughput (in % of capacity) without any SOC change — mid band (13-89 % SOC).",
+              "house_soc_stale_edge_percent": "Same watchdog at the SOC ends (< 13 % or > 89 %): BMS plateaus there are normal, so a larger unexplained drift is allowed before the alarm."
             }
           },
           "pv": {

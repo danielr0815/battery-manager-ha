@@ -1415,6 +1415,8 @@ async def test_options_flow_renders_base_dimension_sections(hass):
         "battery_capacity_wh": 5000.0,
         "battery_min_soc_percent": 5.0,
         "battery_max_soc_percent": 95.0,
+        "house_soc_stale_mid_percent": 2.0,
+        "house_soc_stale_edge_percent": 7.0,
     }
     pv = {str(m): _marker_default(m) for m in _section_fields(schema, "pv")}
     assert pv == {
@@ -1447,6 +1449,8 @@ async def test_options_flow_updates_battery_dimensions(hass):
         "battery_capacity_wh": 10000.0,
         "battery_min_soc_percent": 10.0,
         "battery_max_soc_percent": 90.0,
+        "house_soc_stale_mid_percent": 3.0,
+        "house_soc_stale_edge_percent": 8.0,
     }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], payload
@@ -1461,6 +1465,11 @@ async def test_options_flow_updates_battery_dimensions(hass):
     assert battery.capacity_wh == 10000.0
     assert battery.soc_min_percent == 10.0
     assert battery.soc_max_percent == 90.0
+    # The stale-watchdog tuning lives in the same section and reaches the
+    # coordinator through the same flat options merge.
+    raw_config = hass.data[DOMAIN][entry.entry_id].raw_config
+    assert raw_config["house_soc_stale_mid_percent"] == 3.0
+    assert raw_config["house_soc_stale_edge_percent"] == 8.0
 
 
 async def test_options_flow_updates_pv_dimensions(hass):

@@ -41,6 +41,8 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
+    CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
+    CONF_HOUSE_SOC_STALE_MID_PERCENT,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_AVAILABILITY_ENTITY,
@@ -331,6 +333,17 @@ def _battery_dimension_fields(current: dict[str, Any]) -> dict[Any, Any]:
         vol.Required(
             "battery_max_soc_percent", default=_d(current, "battery_max_soc_percent")
         ): _number(0, 100, 1, "%"),
+        # House-SOC stale watchdog (const.py HOUSE_SOC_STALE_*): unexplained
+        # expected SOC drift before the reading is treated as stale — mid band
+        # vs. the plateau-prone edge bands.
+        vol.Required(
+            CONF_HOUSE_SOC_STALE_MID_PERCENT,
+            default=_d(current, CONF_HOUSE_SOC_STALE_MID_PERCENT),
+        ): _number(0.5, 50.0, 0.5, "%"),
+        vol.Required(
+            CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
+            default=_d(current, CONF_HOUSE_SOC_STALE_EDGE_PERCENT),
+        ): _number(0.5, 50.0, 0.5, "%"),
     }
 
 

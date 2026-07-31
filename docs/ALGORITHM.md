@@ -320,8 +320,9 @@ candidates).
   data recovers — at which point the latch releases and the issue resolves
   automatically (fail-safe: better to waste surplus than risk grid draw).
   House-SOC readings that freeze *with fresh timestamps* are caught upstream
-  by the adaptive house-SOC stale watchdog (`_update_house_soc_watchdog`,
-  see LOAD_CONTROL.md §15) and routed into the same path.
+  by the energy-based, banded house-SOC stale watchdog
+  (`_update_house_soc_watchdog`, see LOAD_CONTROL.md §15) and routed into the
+  same path.
 
 ### D-A9 Emergency Support of the DC Levels (new, from the operator answer to D-A1)
 
