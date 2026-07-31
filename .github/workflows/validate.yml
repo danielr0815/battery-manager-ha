@@ -100,8 +100,14 @@ jobs:
       - name: Install dev dependencies
         run: uv sync --group dev
 
+      # Core gate: the pure planner core is kept at 100 % coverage — a
+      # separate fast step (no HA test helpers) ahead of the full suite.
+      - name: Core coverage gate (100 %)
+        run: uv run pytest tests/core -p no:homeassistant --cov=custom_components/battery_manager/core --cov-fail-under=100
+
       # Coverage source comes from [tool.coverage.run] in pyproject.toml;
       # the XML report is kept as a build artifact (no external service).
+      # fail_under = 95 in [tool.coverage.report] gates the total coverage.
       - name: Run test suite
         run: uv run pytest tests --cov --cov-report=term --cov-report=xml
 
@@ -129,7 +135,8 @@ jobs:
         uses: "devcontainers/ci@v0.3.1900000450"
         with:
           runCmd: >-
-            uv run pytest tests -q
+            uv run pytest tests/core -p no:homeassistant --cov=custom_components/battery_manager/core --cov-fail-under=100
+            && uv run pytest tests -q --cov
             && uv run ruff check custom_components tests
             && uv run ruff format --check .
             && uv run mypy
