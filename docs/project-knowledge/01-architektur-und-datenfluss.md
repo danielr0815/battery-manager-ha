@@ -139,11 +139,11 @@ Exakt wie implementiert (jeder Schritt hängt am Ergebnis des vorigen):
     (`hass.async_add_executor_job`) → `PlanResult`.
 13. **`_update_plan_active(result)`** — Lern-Erlaubnis je Last an der
     OFF→ON-Flanke schnappschussen (`_load_learn_ok`).
-14. **`_log_night_predrain(...)`** — eine INFO-Zeile, wenn sich die
-    Nacht-Pre-Drain-Buchung ändert.
-15. **`_apply_threshold_inertia(...)`** — Anzeige-/Steuerschwelle wird nur
-    übernommen, wenn sie sich um ≥ `threshold_inertia_percent` (Default 2 %)
-    bewegt hat.
+14. **`_update_predrain_block_evidence(...)`** — Stabilitäts-Gate
+    (F-PREDRAIN-BLOCK R7): zählt je Last aufeinanderfolgende identische
+    Pass-3-Block-Signaturen (≥ 3 Pläne + ≥ 10 min alt → aktuierbar).
+15. **`_log_night_predrain(...)`** — eine INFO-Zeile, wenn sich die
+    Pass-3-Block-Buchung ändert.
 16. **`_apply_hysteresis(soc, threshold, ...)`** — Inverter-Empfehlung mit
     ±`hysteresis_percent` (Default 1 %) und `min_switch_interval_s` (60 s).
 17. **`_update_floor_guard(soc, config, pv_power_w, running_load_power_w, now)`**

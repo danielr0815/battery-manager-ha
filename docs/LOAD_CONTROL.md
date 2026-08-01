@@ -410,3 +410,26 @@ controlled loads configured, stage 2 is skipped entirely (plain
 unavailability already covers the outage). Fail-safe rationale: better to
 waste surplus than risk grid draw — the same operator principle as the G4
 floor guard.
+
+## 17. Pre-drain block (F-PREDRAIN-BLOCK, v0.19.0)
+
+Continuous loads no longer bet slot-wise in pass 2 (the 2026-08-01 flicker
+run: a marginal slot-0 bet flipped within minutes and produced a pointless
+19-min battery run). Pass 3 books their pre-drain as **one contiguous
+block** ending at **today's SOC peak** (the first export slot of slot 0's
+day in the accepted trajectory without this load), sized to at most today's
+remaining lost export, started as late as the gate stack allows (Z2''/R2/
+R5-preserve-daily-max/Z3/Z4 evaluated once for the whole block — the floors
+cap the length, never the start time alone). Today-only: the cross-day
+night carve-out (F-NIGHT-RESCUE) is retired for this class. Energy-limited
+loads keep the unchanged pass-2 machinery (c1-rt/c2/Z4/daylight rule).
+
+The executor actuates a block only after **3 consecutive identical plans
+plus a 10-minute wall-clock floor** (`PREDRAIN_BLOCK_STABLE_PLANS`,
+`PREDRAIN_BLOCK_STABLE_MINUTES`, coordinator `_predrain_block_evidence`).
+The gate covers OFF->ON only: a running block is never cut by it — when the
+block leaves the plan, the normal dwell logic applies, and G4 stays the
+backstop. Block window + stability progress are exposed per load as the
+`predrain_block` sensor attribute; the INFO line is
+`F-PREDRAIN-BLOCK: pre-drain booked for <load> <start> -> <end> (<wh> Wh)`
+(FIX-11 change-only semantics).

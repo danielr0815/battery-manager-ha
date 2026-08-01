@@ -134,6 +134,12 @@ candidates).
   same-day PV window end (R3) — daytime and night bets face the same
   overnight stress, restoring the operator's lateness order.
   See docs/F-STRICT-SURPLUS.md.
+  **v0.19.0 (F-PREDRAIN-BLOCK, operator decision 2026-08-01):** for
+  CONTINUOUS loads the slot-wise pass 2 is retired — pass 3 books their
+  pre-drain as one contiguous block to today's SOC peak (first export slot
+  today), today-only, actuated only after 3 identical plans + a 10-minute
+  stability floor. Energy-limited loads keep pass 2 unchanged.
+  See docs/F-PREDRAIN-BLOCK.md.
 - **Merge principle (operator insight, 2026-07-04):** All gate conditions
   are **difference comparisons** of two complete trajectories. As soon as
   both variants (with/without the load hour) reach the max SOC, they are

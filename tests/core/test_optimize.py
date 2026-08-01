@@ -838,17 +838,18 @@ def _f9_plan(minute, soc=70.0):
 
 def test_f9_running_load_keeps_slot0_across_raster_edge():
     # At :30 the partial slot 0 is exactly one 30-min quantum (fits inside the
-    # slot); at :31 it is shorter, so the forced quantum would spill into the
-    # already-booked slot 1. Pre-fix that collision dropped slot 0; now the
-    # slot-0 booking is trimmed to its own duration and the recommendation holds.
+    # slot); at :31 it is shorter, so the pre-drain block alone would fall
+    # below the min-runtime dwell. The own pass-1 booking in the peak slot
+    # continues the run seamlessly and counts toward the dwell
+    # (F-PREDRAIN-BLOCK R6), so the recommendation holds at both minutes.
     before = _f9_plan(30)
     after = _f9_plan(31)
     assert before.active_now, "slot 0 booked at :30 (quantum fits the slot)"
     assert after.active_now, "slot 0 must stay booked at :31 (seamless raster edge)"
     # The continuation the trim relies on: slot 1 also runs (contiguous block).
     assert after.schedule[0] and after.schedule[1]
-    # And it is labelled for what it is, not misreported as a gate top-up.
-    assert any("seamless continuation" in r for r in after.reasons)
+    # And it is booked for what it is: the pre-drain block, not a gate top-up.
+    assert any("pass 3" in r and "pre-drain block" in r for r in after.reasons)
 
 
 def test_f9_no_edge_flip_across_the_whole_partial_hour():
@@ -1310,13 +1311,19 @@ def test_pass1_load_outer_config_order_priority_scarce_surplus():
     deh_first, import_deh = planned((DEHUMIDIFIER, FOSSIBOT_B))
     assert fb_first["fossibot_b"] > deh_first["fossibot_b"]
     assert deh_first["dehumidifier"] > fb_first["dehumidifier"]
-    # Total booked ENERGY is order-invariant — priority only reassigns WHICH
-    # load gets the scarce surplus, never how much is absorbed (this is the
-    # discriminating assertion; the import bound below is implied by R1 and
-    # would not catch a priority bug on its own).
+    # Total booked ENERGY is order-invariant up to ONE dehumidifier quantum:
+    # priority reassigns WHICH load gets the scarce surplus, not how much is
+    # absorbed — except at the marginal contested slot, whose atomic quanta do
+    # not trade 1:1 between the classes. Here the 10:00 slot's export covers a
+    # 400 Wh dehumidifier hour OR a 300 W fossibot hour; with the fossibot
+    # first, the ~150 Wh it leaves behind falls ~19 Wh short of the cover the
+    # dehumidifier's 0.5 h quantum (200 Wh) needs, so exactly one quantum
+    # (400 W x 0.5 h) less is booked in that order. (Pass 3 never engages
+    # here: today's first export slot IS slot 0, so there is no block.)
     total_fb = sum(fb_first.values())
     total_deh = sum(deh_first.values())
-    assert abs(total_fb - total_deh) < 1e-6
+    quantum = DEHUMIDIFIER.nominal_power_w * DEHUMIDIFIER.min_runtime_min / 60.0
+    assert abs(total_fb - total_deh) <= quantum + 1e-6
     # Import may differ only within the artifact slack (F-STRICT-SURPLUS R1: a
     # booking's ~10 Wh standby artifact may ride the slack in one order and not
     # the other — never more).
@@ -1357,7 +1364,11 @@ def test_legacy_load_plan_defaults_to_empty_reasons():
 # F-PREDRAIN: import-trade rule + two-buffer pre-drain gates (docs/F-PREDRAIN.md
 # §3, WP2). Root cause (live 2026-07-10): the 10 W charger standby of an
 # extended morning charge modeled ~10 Wh of new import that vetoed 250-520 Wh of
-# rescued night export per candidate. Test contract T1-T5, T12, T13.
+# rescued night export per candidate. Test contract T1-T5, T13 — all rewritten
+# same-day for F-PREDRAIN-BLOCK (operator 2026-08-01): the continuous load's
+# pre-drain is pass 3's single block ending at TODAY's first export slot, never
+# a cross-day night carve-out. T12's c2 machinery is energy-limited-only now and
+# stays pinned by test_gate_parity_c2_beta_books_energy_limited_in_window.
 # ---------------------------------------------------------------------------
 
 FB_STATE = SurplusLoadState(load_id="fossibot_b", soc_percent=46.4)  # 872 Wh to go
@@ -1383,24 +1394,36 @@ def _dehumid_hours(result, inputs):
     return [inputs.slots[i].hour_of_day for i, on in enumerate(lp.schedule) if on]
 
 
+def _pass3_block(result, load_id="dehumidifier"):
+    """The load's pass-3 pre-drain-block allocations (0 or 1 by design,
+    F-PREDRAIN-BLOCK)."""
+    lp = next(p for p in result.load_plans if p.load_id == load_id)
+    return [a for a in lp.allocations if a[2] == 3]
+
+
 def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
-    """T1 (F-STRICT-SURPLUS R1): the ~10 Wh charger-standby artifact of a night
-    pre-drain rides the ABSOLUTE artifact slack — the pre-drain books without
-    any trade ratio, and the retired `import_trade_ratio` field changes
-    nothing (0.0 and 0.1 produce the identical plan). The used import stays
-    bounded by the slack, never by a rescued-export budget."""
-    now = datetime(2026, 7, 3, 21, 0)
+    """T1 (F-STRICT-SURPLUS R1): the ~10 Wh charger-standby artifact of the
+    pre-drain block rides the ABSOLUTE artifact slack — the block books
+    without any trade ratio, and the retired `import_trade_ratio` field
+    changes nothing (0.0 and 0.1 produce the identical plan). The used import
+    stays bounded by the slack, never by a rescued-export budget. (Same-day
+    rewrite, F-PREDRAIN-BLOCK: 04:00 on the clip day, the block's pre-dawn
+    hours drain toward today's 09:00 peak.)"""
+    now = datetime(2026, 7, 4, 4, 0)
 
     def run(ratio):
         cfg = _predrain_config(ratio=ratio, alpha=1.0, beta=1.0)
-        return make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+        return make_plan(cfg, now, 50.0, [13.0, 11.0])
 
     r0, inputs = run(0.0)
     r1, _ = run(0.1)
-    night0 = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
-    night1 = [h for h in _dehumid_hours(r1, inputs) if not daylight_h(h)]
-    assert night0, "the standby artifact must not veto the night predrain (L1)"
-    assert night0 == night1, "the retired ratio must not change the plan"
+    p3 = _pass3_block(r0)
+    assert p3 == [(1, 4, 3, 1600.0)], (
+        "the standby artifact must not veto the pre-drain block (L1)"
+    )
+    night = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
+    assert night, "the block's pre-dawn hours are part of the booking"
+    assert r0.load_plans == r1.load_plans, "the retired ratio must not change the plan"
     from core.optimize import IMPORT_ARTIFACT_SLACK_WH
 
     assert 0.0 < r0.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
@@ -1408,18 +1431,23 @@ def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
 
 
 def test_t2_cumulative_import_trade_invariant():
-    """T2: over the whole allocation, final import stays within the cumulative
-    trade invariant against the no-loads base."""
-    now = datetime(2026, 7, 3, 21, 0)
+    """T2: over the whole allocation, final import stays within the Z2''
+    invariant the code actually applies — at most IMPORT_ARTIFACT_SLACK_WH of
+    added import over the no-loads base — and the pre-drain block booked real
+    energy for the artifact it traded."""
+    now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
-    inputs = build_slots(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    inputs = build_slots(cfg, now, 50.0, [13.0, 11.0])
     result = plan(cfg, inputs)
     _, base = search_threshold(cfg, inputs)
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
     traj = result.trajectory
     assert traj.total_import_wh - base.total_import_wh <= (
-        0.1 * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
+        IMPORT_ARTIFACT_SLACK_WH + 1e-6
     )
-    assert traj.total_import_wh > base.total_import_wh  # a trade actually happened
+    assert traj.total_import_wh > base.total_import_wh  # the artifact trade happened
+    assert _pass3_block(result) == [(1, 4, 3, 1600.0)]  # the block booked energy
 
 
 def test_t3_energy_limited_never_night_charged_with_ratio():
@@ -1446,29 +1474,32 @@ def test_t3_energy_limited_never_night_charged_with_ratio():
 
 def test_t4_alpha_stress_gate_protects_inverter_reserve():
     """T4: the pessimistic WINDOWED stress gate (alpha, §3.3 v2) refuses the
-    DEEPEST pre-dawn hours a full-confidence run would take — a deep multi-hour
-    drain lengthens the bet window before the (stressed) morning refills, so it
-    is rejected, while the shallower pre-dawn block that hugs the window is
-    accepted. The stressed reserve holds at the inverter+buffer floor (NOT
-    soc_min+buffer). alpha=1.0 disables the gate."""
-    now = datetime(2026, 7, 3, 21, 0)
+    EARLIEST hour of the pre-drain block a full-confidence run would book —
+    the deeper block lengthens the drain before the (stressed) morning
+    refill, so its stressed windowed reserve breaks the floor, while the
+    shallower block starting one hour later is accepted. The stressed reserve
+    holds at the inverter+buffer floor (NOT soc_min+buffer). alpha=1.0
+    disables the gate. (Same-day rewrite, F-PREDRAIN-BLOCK: 04:00 on the clip
+    day, the block drains toward today's 09:00 peak.)"""
+    now = datetime(2026, 7, 4, 4, 0)
 
     def run(alpha):
         cfg = _predrain_config(
             ratio=0.1, alpha=alpha, beta=1.0, loads=(FOSSIBOT_B, DEHUMIDIFIER)
         )
         return make_plan(
-            cfg, now, 90.0, [0.0, 15.0], load_states=(FB_STATE, DEHUMID_STATE)
+            cfg, now, 50.0, [13.0, 11.0], load_states=(FB_STATE, DEHUMID_STATE)
         )
 
-    trusting, inputs = run(1.0)
+    trusting, _ = run(1.0)
     stressed, _ = run(0.5)
-    predawn_trust = [h for h in _dehumid_hours(trusting, inputs) if h < 7]
-    predawn_stress = [h for h in _dehumid_hours(stressed, inputs) if h < 7]
-    # Full confidence drains deeper into the night (down to the 20 % cutoff);
-    # the stressed run books strictly fewer, later pre-dawn hours.
-    assert predawn_trust and predawn_stress
-    assert min(predawn_trust) < min(predawn_stress)
+    block_trust = _pass3_block(trusting)
+    block_stress = _pass3_block(stressed)
+    # Full confidence drains deeper (books from 05:00, down toward the 20 %
+    # cutoff); the stressed run starts the block one hour later (06:00).
+    assert block_trust == [(1, 4, 3, 1600.0)]
+    assert block_stress == [(2, 3, 3, 1200.0)]
+    assert block_trust[0][0] < block_stress[0][0]
     assert trusting.min_soc_percent < stressed.min_soc_percent
     floor = 20.0 + 5.0  # inverter_min_soc + soc_buffer (NOT soc_min + buffer)
     assert stressed.stressed_min_soc_percent >= floor - 0.5
@@ -1476,55 +1507,34 @@ def test_t4_alpha_stress_gate_protects_inverter_reserve():
 
 
 def test_t5_predrain_hours_hug_the_window_latest_first():
-    """T5: pre-drain hours sit as late as the constraints allow (L4): a
-    contiguous pre-dawn block ending right before the production window, never a
-    detached earlier evening run."""
-    now = datetime(2026, 7, 3, 21, 0)
-    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
-    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    """T5: the block sits as late as the target allows (L4/R4): ONE
+    contiguous block ending right before today's first export slot, covering
+    exactly ceil(clip/power) hours — never extended earlier than the clip
+    needs. (Same-day rewrite, F-PREDRAIN-BLOCK; a 250 W load on a modest clip
+    day so the latest start is target-bound, not floor-bound.)"""
+    import re
+
+    deh250 = replace(DEHUMIDIFIER, nominal_power_w=250.0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh250,))
+    now = datetime(2026, 7, 4, 4, 0)
+    result, inputs = make_plan(cfg, now, 65.0, [6.0, 11.0])
     lp = result.load_plans[0]
-    day1 = now.date() + timedelta(days=1)
-    predawn = sorted(
-        inputs.slots[i].hour_of_day
-        for i, on in enumerate(lp.schedule)
-        if on
-        and inputs.slots[i].start.date() == day1
-        and inputs.slots[i].hour_of_day < 7
-    )
-    assert predawn, "a short pre-dawn window must force predrain hours"
-    assert predawn == list(range(min(predawn), max(predawn) + 1)), (
-        "block not contiguous"
-    )
-    assert max(predawn) == 6  # hugs the 07:00 production start
-
-
-def test_t12_beta_books_in_window_opportunities_never_night():
-    """T12: the optimistic upper-buffer gate (c2) books in-window slots the
-    nominal forecast alone cannot justify; beta=1.0 does not. c2 never books a
-    night slot (outside every PV window), and the ratio invariant still holds."""
-    now = datetime(2026, 7, 4, 8, 0)
-
-    def run(beta):
-        cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=beta)
-        return make_plan(cfg, now, 92.0, [7.0])
-
-    r10, inputs = run(1.0)
-    r12, _ = run(1.2)
-    booked10 = {i for i, on in enumerate(r10.load_plans[0].schedule) if on}
-    booked12 = {i for i, on in enumerate(r12.load_plans[0].schedule) if on}
-    extra = booked12 - booked10
-    assert extra, "beta=1.2 must open extra in-window opportunity slots"
-    windows = pv_windows(inputs, 200.0, None)
-    for i in extra:
-        w = windows[inputs.slots[i].start.date()]
-        assert w[0] <= i <= w[1], f"c2 slot {i} not inside its PV window {w}"
-        assert daylight(inputs.slots[i]), "c2 must never book a night slot"
-    cfg12 = _predrain_config(ratio=0.1, alpha=1.0, beta=1.2)
-    _, base = search_threshold(cfg12, inputs)
-    traj = r12.trajectory
-    assert traj.total_import_wh - base.total_import_wh <= (
-        0.1 * (base.total_export_wh - traj.total_export_wh) + 1.0 + 1e-6
-    )
+    p3 = _pass3_block(result)
+    # ONE contiguous block [07:00, 10:00) ending the slot right before
+    # today's first export slot (the 10:00 peak).
+    assert p3 == [(3, 3, 3, 750.0)]
+    start, count, _, wh = p3[0]
+    assert [inputs.slots[i].hour_of_day for i in range(start, start + count)] == [
+        7,
+        8,
+        9,
+    ]
+    assert inputs.slots[start + count].hour_of_day == 10
+    reason = next(r for r in lp.reasons if r.startswith("pass 3 @"))
+    assert "pre-drain block" in reason and "latest feasible start" in reason
+    # Latest start: one 250 W hour less would miss the clip target.
+    target = int(re.search(r"against (\d+) Wh clip", reason).group(1))
+    assert wh >= target > wh - deh250.nominal_power_w
 
 
 def test_t13_pv_window_derivation_and_override():
@@ -1576,27 +1586,21 @@ def test_refill_index_settles_at_first_actual_refill():
 
 
 def test_t4_windowed_gate_scopes_stress_to_recovery_window():
-    """§3.3 v2: the stress gate is WINDOWED, not whole-horizon. A first-night
-    pre-drain is judged only on its own recovery window, so it is booked even
-    though the WHOLE-HORIZON alpha sim (which the failed v1 gate used) drops far
-    below the floor on a later, weaker day. The v1 whole-horizon gate would have
-    vetoed these bookings; the windowed gate does not."""
-    now = datetime(2026, 7, 3, 21, 0)
+    """§3.3 v2: the stress gate is WINDOWED, not whole-horizon. Today's
+    pre-drain block is judged only on its own recovery window, so it is
+    booked even though the WHOLE-HORIZON alpha sim (which the failed v1 gate
+    used) drops far below the floor on a later, weaker day. The v1
+    whole-horizon gate would have vetoed the block; the windowed gate does
+    not. (Same-day rewrite, F-PREDRAIN-BLOCK: the bet is the pass-3 block and
+    the diagnostic reports exactly its windowed reserve.)"""
+    now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=0.5, beta=1.0)
-    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    result, inputs = make_plan(cfg, now, 50.0, [13.0, 11.0, 3.0])
     n = len(inputs.slots)
-    lp = result.load_plans[0]
 
-    # A first-night pre-dawn block IS booked (windowed gate permits it).
-    day1 = now.date() + timedelta(days=1)
-    first_night = sorted(
-        inputs.slots[i].hour_of_day
-        for i, on in enumerate(lp.schedule)
-        if on
-        and inputs.slots[i].start.date() == day1
-        and inputs.slots[i].hour_of_day < 7
-    )
-    assert first_night, "windowed gate must still book a first-night pre-drain"
+    # Today's block IS booked (the windowed gate permits it).
+    p3 = _pass3_block(result)
+    assert p3 == [(2, 3, 3, 1200.0)], "windowed gate must book today's block"
 
     # The WHOLE-HORIZON alpha sim of the final series breaks the inverter floor
     # (a later, weaker day dominates it) — proving the gate is NOT whole-horizon.
@@ -1608,15 +1612,14 @@ def test_t4_windowed_gate_scopes_stress_to_recovery_window():
         "scenario must have a later whole-horizon stressed dip below the floor"
     )
 
-    # Yet the WINDOWED reserve of the earliest pass-2 bet is held at the floor.
-    booked = [a[0] for a in lp.allocations if a[2] == 2]
-    i0 = min(booked)
+    # Yet the WINDOWED reserve over the block's own bet window is held at the
+    # floor, and the diagnostic reports exactly this windowed reserve.
+    i0 = p3[0][0]
     recovery = _refill_index(result.trajectory, i0, cfg.battery.soc_max_percent - 0.1)
     scale_vec = [0.5 if i0 <= j <= recovery else 1.0 for j in range(n)]
     stressed = simulate(cfg, inputs, threshold, extra_ac_wh=extra, pv_scale=scale_vec)
     windowed_min = _windowed_min_soc(stressed, i0, recovery)
     assert windowed_min >= floor - 0.5
-    # The diagnostic reports exactly this windowed reserve.
     assert result.stressed_min_soc_percent is not None
     assert abs(result.stressed_min_soc_percent - windowed_min) < 1e-6
 
@@ -1681,8 +1684,8 @@ def test_t4_bet_settles_at_refill_so_unrelated_tail_dip_cannot_veto():
     load_plans, extra, _ = allocate_loads(config, inputs, threshold, base)
     lp = load_plans[0]
 
-    # The pre-drain at slot 0 (pass 2) IS booked.
-    assert any(a[0] == 0 and a[2] == 2 for a in lp.allocations)
+    # The pre-drain at slot 0 (the pass-3 block) IS booked.
+    assert any(a[0] == 0 and a[2] == 3 for a in lp.allocations)
 
     # Settlement: the trial refills to the ceiling at the spike slot, so the
     # bet window is [0, 1] — the heavy DC tail (slots 2+) sits OUTSIDE it.
@@ -1716,11 +1719,12 @@ def daylight_h(hour):
 
 def test_fix1_appliance_windows_survive_predrain_booking():
     """FIX-1: the stressed_min_soc diagnostic must NOT clobber
-    PlanResult.appliance_windows. With an opportunistic appliance AND an accepted
-    pre-drain (pass-2 continuous booking; alpha < 1 so the diagnostic block runs),
-    appliance_windows must stay the advisor dict (appliance id -> bool), not the
-    pv_windows date->tuple dict the diagnostic builds internally."""
-    now = datetime(2026, 7, 3, 21, 0)
+    PlanResult.appliance_windows. With an opportunistic appliance AND an
+    accepted pre-drain (the pass-3 block of a continuous load; alpha < 1 so
+    the diagnostic block runs), appliance_windows must stay the advisor dict
+    (appliance id -> bool), not the pv_windows date->tuple dict the
+    diagnostic builds internally. (Same-day rewrite, F-PREDRAIN-BLOCK.)"""
+    now = datetime(2026, 7, 4, 4, 0)
     dishwasher = Appliance(
         appliance_id="dishwasher",
         name="Dishwasher",
@@ -1736,11 +1740,11 @@ def test_fix1_appliance_windows_survive_predrain_booking():
         strong_pv_cutoff_w=200.0,
     )
     cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), appliances=(dishwasher,))
-    result, _inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
-    # Premise: the scenario books a pre-drain (pass 2, continuous), so the
+    result, _inputs = make_plan(cfg, now, 50.0, [13.0, 11.0])
+    # Premise: the scenario books the pass-3 pre-drain block, so the
     # diagnostic block that used to reassign `windows` runs.
     lp = next(p for p in result.load_plans if p.load_id == "dehumidifier")
-    assert any(a[2] == 2 for a in lp.allocations), "scenario must book a pre-drain"
+    assert any(a[2] == 3 for a in lp.allocations), "scenario must book the block"
     assert result.stressed_min_soc_percent is not None  # diagnostic path taken
     # appliance_windows is the advisor dict: appliance id -> bool (NOT clobbered).
     assert set(result.appliance_windows) == {"dishwasher"}
@@ -1824,10 +1828,13 @@ def test_gate_parity_shared_trade_budget_across_classes():
 
 # ---------------------------------------------------------------------------
 # F-GATE-PARITY (operator decision 2026-07-17): both load classes face the
-# identical pass-2 gate set (shared Z2' trade, c1-rt, c2-beta, Z4 stress);
-# the priority order (config order) alone decides contested bet energy.
+# identical pass-2 gate set (shared Z2' trade, c1-rt, c2-beta, Z4 stress).
 # Single remaining class rule: energy-limited loads never book zero-PV
-# (night) slots — nights stay reserved for continuous loads.
+# (night) slots. Since F-PREDRAIN-BLOCK (operator 2026-08-01) continuous
+# loads no longer bet slot-wise at all — their pre-drain is pass 3's
+# today-only block — so contested bet depth goes to the pass-2 (energy-
+# limited) class structurally; config order discriminates among same-class
+# contenders (see the F-PREDRAIN-BLOCK section below).
 # ---------------------------------------------------------------------------
 
 
@@ -1899,23 +1906,38 @@ def _books_slot0_pass2(plans, load_id):
     return any(a[0] == 0 and a[2] == 2 for a in lp.allocations)
 
 
-def test_gate_parity_contested_bet_goes_to_priority_one():
+def _books_slot0_bet(plans, load_id):
+    """Slot-0 bet coverage via EITHER bet pass (2 = energy-limited slot bet,
+    3 = the continuous load's pass-3 pre-drain block, F-PREDRAIN-BLOCK)."""
+    lp = next(p for p in plans if p.load_id == load_id)
+    return any(a[0] == 0 and a[2] in (2, 3) for a in lp.allocations)
+
+
+def test_gate_parity_contested_bet_prefers_the_pass2_bet():
     """The depth-capped bet slot (room for ONE 300 Wh booking above the
-    inverter cutoff) goes to whichever load is FIRST in config order — the
-    energy-limited powerstation wins it when it holds priority 1, the
-    continuous load wins it when the order is swapped. Priority, not load
-    class, decides."""
+    inverter cutoff) goes to the energy-limited load's pass-2 bet in BOTH
+    config orders. Since F-PREDRAIN-BLOCK the two classes bet in DIFFERENT
+    passes and pass 2 evaluates before pass 3: the fossibot's bet is accepted
+    against a horizon that does not yet contain the dehumidifier's block, and
+    the block's own gate stack then vetoes it (a second 300 Wh drain would
+    fall through the cutoff). The operator's F-LOAD-PRIORITY preference —
+    "lieber den Fossibot laden, als den Luftentfeuchter betreiben, wenn die
+    Wahl besteht" — is thus STRUCTURAL for contested bet depth; config order
+    discriminates only among same-class contenders now (pinned by
+    test_predrain_block_two_continuous_loads_follow_config_order). The depth
+    cap still discriminates: without the fossibot's accepted bet the
+    dehumidifier's block books exactly that slot."""
     fb = replace(FOSSIBOT_B, target_soc_percent=100.0)
     # 800 Wh start: one ~326 Wh drain lands at ~474 Wh (above the 400 Wh
     # cutoff); any second quantum would fall through it — room for one bet.
-    # Powerstation first: it takes the bet, the dehumidifier is floor-blocked.
-    plans = _parity_scene(800.0, (fb, _DEH300))
-    assert _books_slot0_pass2(plans, "fossibot_b")
-    assert not _books_slot0_pass2(plans, "deh300")
-    # Swapped order: the same slot goes to the dehumidifier instead.
-    plans = _parity_scene(800.0, (_DEH300, fb))
-    assert _books_slot0_pass2(plans, "deh300")
-    assert not _books_slot0_pass2(plans, "fossibot_b")
+    for loads in ((fb, _DEH300), (_DEH300, fb)):
+        plans = _parity_scene(800.0, loads)
+        assert _books_slot0_pass2(plans, "fossibot_b")
+        assert not _books_slot0_bet(plans, "deh300")
+    # The cap is the binding constraint: without the fossibot's bet, the same
+    # slot hosts the dehumidifier's pass-3 block.
+    plans = _parity_scene(800.0, (_DEH300,))
+    assert _books_slot0_bet(plans, "deh300")
 
 
 def test_gate_parity_z4_stress_binds_energy_limited_bets():
@@ -2003,12 +2025,20 @@ def test_gate_parity_daylight_rule_blocks_fb_night_predrain():
             assert inputs.slots[i].pv_wh > 0.0, (
                 f"fossibot booked zero-PV slot at {inputs.slots[i].hour_of_day}:00"
             )
-    # Contrast: the SAME horizon books night hours for a continuous load —
-    # the c1/Z2' gates admit them, so only the daylight rule blocked fb.
+    # Contrast (F-PREDRAIN-BLOCK, operator 2026-08-01): in the SAME cross-day
+    # horizon the continuous load now books NOTHING at night either — its
+    # pre-drain moved to the pass-3 block, which only ever serves TODAY's
+    # peak (no export today -> no block; see the F-PREDRAIN-BLOCK section).
+    # The daylight rule nonetheless stays the binding class rule for the
+    # pass-2 bet machinery: the hungry fossibot above never takes a zero-PV
+    # slot, although its gates would admit the same rescue energy.
     deh_cfg = _predrain_config(ratio=0.5, alpha=1.0, beta=1.0)
     deh_res, deh_in = make_plan(deh_cfg, now, 84.0, [0.0, 13.0, 11.0])
     night = [h for h in _dehumid_hours(deh_res, deh_in) if not daylight_h(h)]
-    assert night, "contrast: the continuous load must book the night pre-drain"
+    assert not night, "no cross-day night pre-drain for continuous loads anymore"
+    assert deh_res.load_plans[0].planned_energy_wh > 0.0, (
+        "contrast is not vacuous: the clip day is still absorbed in daylight"
+    )
 
 
 def test_gate_parity_c2_beta_books_energy_limited_in_window():
@@ -2046,14 +2076,14 @@ def test_gate_parity_c2_beta_books_energy_limited_in_window():
 def test_r1_import_capped_at_slack_never_scales_with_rescue():
     """F-STRICT-SURPLUS R1 (supersedes FIX-6): the import gate is the absolute
     IMPORT_ARTIFACT_SLACK_WH, in BOTH directions. (a) A sub-Wh standby artifact
-    (0.5 W charger) no longer vetoes the night pre-drain — L1 is solved by the
-    slack, not by a trade ratio. (b) On a heavy clip-eve with kWh of rescuable
+    (0.5 W charger) no longer vetoes the pre-drain block — L1 is solved by the
+    slack, not by a trade ratio. (b) On a strong clip day with kWh of rescuable
     export, the whole allocation still may not add import beyond the slack —
     the retired proportional budget (0.1 * rescued + 1) would have minted
-    hundreds of Wh here."""
+    hundreds of Wh here. (Same-day rewrite, F-PREDRAIN-BLOCK.)"""
     from core.optimize import IMPORT_ARTIFACT_SLACK_WH
 
-    now = datetime(2026, 7, 3, 21, 0)
+    now = datetime(2026, 7, 4, 4, 0)
     charger = ConverterParams(max_power_w=2300.0, eta=0.92, standby_power_w=0.5)
     control = replace(
         ControlParams(),
@@ -2062,15 +2092,16 @@ def test_r1_import_capped_at_slack_never_scales_with_rescue():
         upper_pv_reserve=1.0,
     )
     cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,), charger=charger)
-    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
-    night = [h for h in _dehumid_hours(result, inputs) if not daylight_h(h)]
-    assert night, "a sub-Wh standby artifact must not veto the night pre-drain"
+    result, inputs = make_plan(cfg, now, 50.0, [13.0, 11.0])
+    assert _pass3_block(result), (
+        "a sub-Wh standby artifact must not veto the pre-drain block"
+    )
     assert result.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
 
     # (b) the hard cap: rescued export is huge, yet added import <= slack.
     _thr, base = search_threshold(cfg, inputs)
     rescued = base.total_export_wh - result.trajectory.total_export_wh
-    assert rescued > 1000.0  # kWh-class rescue on this clip-eve
+    assert rescued > 1000.0  # kWh-class rescue on this clip day
     added = result.trajectory.total_import_wh - base.total_import_wh
     assert added <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
     assert added < 0.1 * rescued  # the retired budget would have allowed more
@@ -2159,6 +2190,285 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
 
 
 # ---------------------------------------------------------------------------
+# F-PREDRAIN-BLOCK (operator 2026-08-01): the continuous load's pre-drain is
+# ONE contiguous block ending at TODAY's first export slot, started as late
+# as the gates allow — never cross-day (the 19-min forecast-flicker battery
+# run of 2026-08-01 ended the slot-wise night betting). Energy-limited loads
+# keep the pass-2 slot-bet machinery unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_predrain_block_books_one_block_ending_at_todays_peak():
+    """R1-R4: a same-day clip books exactly ONE pass-3 allocation — a
+    contiguous block [start, peak) ending at today's first export slot,
+    latest-first, and named in the reason string."""
+    now = datetime(2026, 7, 4, 4, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    result, inputs = make_plan(cfg, now, 50.0, [13.0, 11.0])
+    lp = result.load_plans[0]
+    p3 = _pass3_block(result)
+    assert len(p3) == 1
+    start, count, _, _wh = p3[0]
+    # The block is one unbroken range (05:00-08:00) whose last slot sits right
+    # before today's first export slot (the 09:00 peak).
+    assert [inputs.slots[i].hour_of_day for i in range(start, start + count)] == [
+        5,
+        6,
+        7,
+        8,
+    ]
+    assert inputs.slots[start + count].hour_of_day == 9
+    reason = next(r for r in lp.reasons if r.startswith("pass 3 @"))
+    assert "pre-drain block" in reason
+    assert "latest feasible start" in reason
+
+
+def test_predrain_block_latest_start_covers_ceil_of_target():
+    """R4 latest start: when the floors allow it, the block covers exactly
+    ceil(clip/power) hours — one quantum less would miss today's remaining
+    clip, one more would start earlier than the target needs."""
+    import re
+
+    deh250 = replace(DEHUMIDIFIER, nominal_power_w=250.0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh250,))
+    now = datetime(2026, 7, 4, 4, 0)
+    result, _inputs = make_plan(cfg, now, 65.0, [6.0, 11.0])
+    lp = result.load_plans[0]
+    p3 = _pass3_block(result)
+    assert p3 == [(3, 3, 3, 750.0)]
+    reason = next(r for r in lp.reasons if r.startswith("pass 3 @"))
+    target = int(re.search(r"against (\d+) Wh clip", reason).group(1))
+    assert 750.0 >= target > 750.0 - deh250.nominal_power_w
+
+
+def test_predrain_block_skipped_when_today_has_no_export():
+    """R2: no export slot today -> no block at all; a weak today never
+    pre-drains for tomorrow's clip, and nothing is booked at night."""
+    now = datetime(2026, 7, 4, 4, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    result, inputs = make_plan(cfg, now, 50.0, [0.8, 13.0])
+    lp = result.load_plans[0]
+    assert not _pass3_block(result)
+    today = inputs.slots[0].start.date()
+    assert all(
+        inputs.slots[i].start.date() != today for i, on in enumerate(lp.schedule) if on
+    )
+    assert all(inputs.slots[i].pv_wh > 0.0 for i, on in enumerate(lp.schedule) if on)
+    # Not vacuous: tomorrow's clip is still absorbed, in its own daylight.
+    assert lp.planned_energy_wh > 0.0
+
+
+def test_predrain_block_never_crosses_into_tomorrow():
+    """R1, the removed F-NIGHT-RESCUE carve-out: on the 21:00 clipping-eve
+    geometry (today export-free, tomorrow clips hard) the continuous load
+    books NOTHING at night — the cross-day night pre-drain is gone
+    deliberately (operator 2026-08-01)."""
+    now = datetime(2026, 7, 3, 21, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=0.5, beta=1.0)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
+    lp = result.load_plans[0]
+    assert not _pass3_block(result)
+    night = [h for h in _dehumid_hours(result, inputs) if not daylight_h(h)]
+    assert not night
+    assert lp.planned_energy_wh > 0.0  # the clip is absorbed in daylight
+
+
+def test_predrain_block_energy_limited_keeps_pass2_bets():
+    """Regression anchor: in the SAME 21:00 clipping-eve horizon the
+    energy-limited load still bets via pass 2 (its machinery is unchanged) —
+    in daylight, never in a zero-PV slot."""
+    now = datetime(2026, 7, 3, 21, 0)
+    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    cfg = _predrain_config(ratio=0.5, alpha=1.0, beta=1.0, loads=(fb_hungry,))
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
+    result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0], load_states=states)
+    lp = result.load_plans[0]
+    assert any(a[2] == 2 for a in lp.allocations)
+    assert all(inputs.slots[i].pv_wh > 0.0 for i, on in enumerate(lp.schedule) if on)
+
+
+def test_predrain_block_skipped_when_the_peak_is_now():
+    """R2: today's first export slot IS slot 0 (the battery is already
+    exporting) -> no block; pass 1 owns the present surplus."""
+    now = datetime(2026, 7, 4, 8, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    result, inputs = make_plan(cfg, now, 93.0, [13.0, 11.0])
+    lp = result.load_plans[0]
+    assert result.trajectory.flows[0].grid_export_wh > 0.0
+    assert not _pass3_block(result)
+    assert lp.active_now and lp.allocations[0][2] == 1
+
+
+def test_predrain_block_two_continuous_loads_follow_config_order():
+    """Priority among continuous loads: the FIRST load's block sees the
+    unmodified (pass-1-adjusted) export and books exactly the block it would
+    book alone; the second load's own pass-1 bookings sit right before the
+    (shifted) peak, so its backward walk immediately hits its own booking and
+    no second block exists. Swapping the config order swaps the winner."""
+    deh1 = replace(DEHUMIDIFIER, load_id="deh1", name="D1")
+    deh2 = replace(DEHUMIDIFIER, load_id="deh2", name="D2")
+    now = datetime(2026, 7, 4, 4, 0)
+
+    def blocks(order):
+        cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=order)
+        states = tuple(SurplusLoadState(load_id=ld.load_id) for ld in order)
+        result, _ = make_plan(cfg, now, 50.0, [13.0, 11.0], load_states=states)
+        return {ld.load_id: _pass3_block(result, ld.load_id) for ld in order}
+
+    first = blocks((deh1, deh2))
+    assert first["deh1"] == [(1, 4, 3, 1600.0)]  # identical to the solo block
+    assert first["deh2"] == []
+    swapped = blocks((deh2, deh1))
+    assert swapped["deh2"] == [(1, 4, 3, 1600.0)]
+    assert swapped["deh1"] == []
+
+
+def test_predrain_block_today_never_predrains_for_tomorrow():
+    """R1 over multiple days: today's block ends at TODAY's peak even though
+    tomorrow's clip is bigger — no night bookings between the days, no
+    pre-drain for tomorrow (its bigger clip is absorbed by its own daylight
+    pass-1 runs)."""
+    now = datetime(2026, 7, 4, 4, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    result, inputs = make_plan(cfg, now, 50.0, [13.0, 15.0])
+    lp = result.load_plans[0]
+    assert _pass3_block(result) == [(1, 4, 3, 1600.0)]
+    today = inputs.slots[0].start.date()
+    after = [
+        (i, a)
+        for a in lp.allocations
+        for i in range(a[0], a[0] + a[1])
+        if inputs.slots[i].start.date() != today
+    ]
+    assert after, "tomorrow's clip is still absorbed"
+    assert all(a[2] == 1 for _i, a in after), "tomorrow is pass-1 daylight only"
+    assert all(inputs.slots[i].pv_wh > 0.0 for i, _a in after)
+
+
+def test_predrain_block_shorter_than_min_runtime_is_dropped():
+    """R6: a block whose committed run (block hours + an own booking
+    continuing in the peak slot) is shorter than min_runtime is never booked
+    — the executor dwell would deliver more than the plan accounts. Here the
+    gates accept a single-hour block ending at the 10:00 peak whose thin
+    export never triggered a pass-1 booking (no continuation), and one hour
+    is below the 90 min dwell, so the block is dropped wholesale."""
+    deh90 = replace(DEHUMIDIFIER, min_runtime_min=90)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh90,))
+    now = datetime(2026, 7, 4, 4, 0)
+    result, inputs = make_plan(cfg, now, 60.0, [5.5, 11.0])
+    lp = result.load_plans[0]
+    assert not _pass3_block(result)
+    today = inputs.slots[0].start.date()
+    assert all(
+        inputs.slots[i].start.date() != today for i, on in enumerate(lp.schedule) if on
+    )
+
+
+def test_predrain_block_detour_not_repaid_is_refused():
+    """R5/c1: a block whose battery detour cannot be repaid from lost export
+    at the physical round trip is refused — even with every hard gate
+    (Z2''/R2/R5/Z3) passing. Geometry: a PV-served ramp slot ahead of a
+    charger-saturated clip; the charger runs at its cap in every strong hour,
+    so the charge the block steals never comes back (export drop 0) and the
+    (1-tol)*block*rt need is unmet."""
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        control=control,
+        loads=(deh,),
+        battery=BatteryParams(capacity_wh=18000.0),
+        ac_profile=LoadProfile(50.0, 75.0, 6, 20),
+        dc_profile=LoadProfile(50.0, 25.0, 6, 22),
+    )
+    start = datetime(2026, 7, 4, 7, 0)
+
+    def slot(i, pv, ac=125.0, dc=75.0):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=(start + timedelta(hours=i)).hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
+        )
+
+    # 07:00 ramp (the block candidate), 08:00-09:00 charger-capped (the peak),
+    # then a cloudy tail: the big battery never fills, so the refill can only
+    # ever come from capped hours — where no headroom exists.
+    slots = tuple(
+        slot(i, pv) for i, pv in enumerate([800.0, 5000.0, 5000.0] + [0.0] * 10)
+    )
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=50.0,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, extra, current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    assert not any(a[2] == 3 for a in lp.allocations)
+
+    # Prove the veto is c1's: the refused one-slot block [0, 1) passes the
+    # hard gates (no import, PV-served, no max-day robbed, floor intact) ...
+    trial = list(extra)
+    trial[0] += 400.0
+    traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    assert (
+        traj.total_import_wh - base.total_import_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    )
+    # ... yet rescues NOTHING: the export drop is zero against a (1-tol)*rt
+    # need of ~280 Wh, because the capped charger can never refill the drain.
+    drop = current.total_export_wh - traj.total_export_wh
+    rt = (
+        cfg.charger.eta
+        * cfg.battery.eta_charge
+        * cfg.battery.eta_discharge
+        * cfg.inverter.eta
+    )
+    assert drop < (1.0 - deh.battery_tolerance) * 400.0 * rt
+
+
+def test_predrain_block_stops_at_own_pass1_booking():
+    """R4: the backward walk never crosses a slot the load itself already
+    booked. When pass 1 consumes the export of the slot right before the
+    (shifted) peak, there is no contiguous room for a block at all and none
+    is booked — the block machinery yields to the pass-1 plan instead of
+    double-covering the hour."""
+    now = datetime(2026, 7, 4, 4, 0)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    result, inputs = make_plan(cfg, now, 84.0, [13.0, 11.0])
+    lp = result.load_plans[0]
+    assert not _pass3_block(result)
+    # The slot right before today's first export slot is a pass-1 booking
+    # (07:00): pass 1 ate its export, the peak moved one slot later, and the
+    # walk breaks at the own booking.
+    today = inputs.slots[0].start.date()
+    peak = next(
+        j
+        for j, f in enumerate(result.trajectory.flows)
+        if inputs.slots[j].start.date() == today and f.grid_export_wh > 1e-6
+    )
+    assert lp.schedule[peak - 1]
+    assert any(a[0] == peak - 1 and a[2] == 1 for a in lp.allocations)
+
+
+# ---------------------------------------------------------------------------
 # F-QUANTILE-BANDS: per-slot P10/P90 bands replace scalar alpha/beta where
 # evidence exists (docs/F-QUANTILE-BANDS.md). THE safety rule (D2): a COLLAPSED
 # band (p10 == p90, the balcony cold-start signature) means "no evidence", NOT
@@ -2210,8 +2520,10 @@ def test_effective_uncertainty_band_detection_and_clamps():
 
 
 def _t12_band_plan(beta, r10=None, r90=None):
-    """The T12 c2 geometry (08:00, house 92 %, one 7 kWh day, dehumidifier)
-    with optional P10/P90 bands at the given ratios on every daylight slot."""
+    """The T12 c2 geometry (08:00, house 92 %, one 7 kWh day) with optional
+    P10/P90 bands at the given ratios on every daylight slot. The load is a
+    hungry ENERGY-LIMITED powerstation: since F-PREDRAIN-BLOCK the c2/beta
+    insurance machinery is pass-2-only, and pass 2 is its class."""
     control = replace(
         ControlParams(),
         import_trade_ratio=0.1,
@@ -2219,9 +2531,11 @@ def _t12_band_plan(beta, r10=None, r90=None):
         upper_pv_reserve=beta,
         strong_pv_cutoff_w=200.0,
     )
-    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
+    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    cfg = SystemConfig(control=control, loads=(fb_hungry,))
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
     now = datetime(2026, 7, 4, 8, 0)
-    base_inputs = build_slots(cfg, now, 92.0, [7.0])
+    base_inputs = build_slots(cfg, now, 92.0, [7.0], load_states=states)
     if r10 is None:
         return plan(cfg, base_inputs), base_inputs
     p10: dict[datetime, float] = {}
@@ -2230,7 +2544,9 @@ def _t12_band_plan(beta, r10=None, r90=None):
         if s.pv_wh >= 25.0 and s.duration == 1.0:
             p10[s.start] = s.pv_wh * r10
             p90[s.start] = s.pv_wh * r90
-    inputs = build_slots(cfg, now, 92.0, [7.0], pv_hourly_p10=p10, pv_hourly_p90=p90)
+    inputs = build_slots(
+        cfg, now, 92.0, [7.0], load_states=states, pv_hourly_p10=p10, pv_hourly_p90=p90
+    )
     return plan(cfg, inputs), inputs
 
 
@@ -2279,17 +2595,38 @@ def test_collapsed_bands_keep_the_scalar_plan():
 
 
 def _predrain_band_plan(alpha, r10=None, r90=None):
-    """The T4 pre-drain geometry (21:00, house 90 %, one strong 15 kWh day)
-    with optional bands on the next day's daylight slots."""
-    cfg = _predrain_config(
-        ratio=0.1, alpha=alpha, beta=1.0, loads=(FOSSIBOT_B, DEHUMIDIFIER)
+    """The same-day pre-drain-block geometry (04:00, house 45 %, a slow-ramping
+    ~12.6 kWh day so the block's stressed dip is PV-dependent and band evidence
+    can move the gated start), with optional bands on today's daylight slots.
+    (Same-day rewrite, F-PREDRAIN-BLOCK: the Z4-gated bet is the pass-3 block,
+    so the evidence must move the block START, not a set of pre-dawn bets.)"""
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=alpha,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
     )
-    now = datetime(2026, 7, 3, 21, 0)
-    states = (FB_STATE, DEHUMID_STATE)
-    base_inputs = build_slots(cfg, now, 90.0, [0.0, 15.0], load_states=states)
+    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
+    now = datetime(2026, 7, 4, 4, 0)
+    pv_shape = {
+        7: 200,
+        8: 500,
+        9: 1200,
+        10: 2000,
+        11: 2500,
+        12: 2500,
+        13: 2000,
+        14: 1200,
+        15: 500,
+    }
+    pv = {now.replace(hour=h, minute=0): float(w) for h, w in pv_shape.items()}
+    daily = [sum(pv_shape.values()) / 1000.0, 11.0]
+    states = (DEHUMID_STATE,)
+    base_inputs = build_slots(cfg, now, 45.0, daily, load_states=states, pv_hourly=pv)
     if r10 is None:
         return plan(cfg, base_inputs), base_inputs
-    day = now.date() + timedelta(days=1)
+    day = now.date()
     p10: dict[datetime, float] = {}
     p90: dict[datetime, float] = {}
     for s in base_inputs.slots:
@@ -2299,51 +2636,35 @@ def _predrain_band_plan(alpha, r10=None, r90=None):
     inputs = build_slots(
         cfg,
         now,
-        90.0,
-        [0.0, 15.0],
+        45.0,
+        daily,
         load_states=states,
+        pv_hourly=pv,
         pv_hourly_p10=p10,
         pv_hourly_p90=p90,
     )
     return plan(cfg, inputs), inputs
 
 
-def _predawn_hours(result, inputs):
-    lp = next(p for p in result.load_plans if p.load_id == "dehumidifier")
-    day1 = datetime(2026, 7, 4).date()
-    return sorted(
-        inputs.slots[i].hour_of_day
-        for i, on in enumerate(lp.schedule)
-        if on
-        and inputs.slots[i].start.date() == day1
-        and inputs.slots[i].hour_of_day < 7
-    )
-
-
 def test_z4_stress_follows_p10_evidence():
-    """R12c: the Z4 pre-drain stress follows P10 evidence in BOTH directions.
-    A stable-day band (p10_ratio 0.85 on the refill slots) admits a pre-dawn
-    hour the scalar alpha rejected; a volatile-day band (p10_ratio 0.4)
-    rejects hours the trusting alpha=1.0 accepted. (The milder direction is
-    demonstrated at scalar alpha 0.35 — under F-STRICT-SURPLUS R3 the bet
-    window ends at the actual refill, so this geometry's marginal 03:00 hour
-    is already accepted by scalars >= 0.4; 0.35 is the nearest scalar whose
-    rejection the evidence overturns.)"""
-    # Milder-than-scalar: 0.35 rejects the 03:00 bet; 0.85 P10 evidence on the
-    # morning refill accepts it (stable day -> the reserve provably recovers).
-    scalar_mid, inputs = _predrain_band_plan(0.35)
-    evidence_mid, _ = _predrain_band_plan(0.35, 0.85, 1.0)
-    assert min(_predawn_hours(evidence_mid, inputs)) < min(
-        _predawn_hours(scalar_mid, inputs)
-    )
+    """R12c: the Z4 block stress follows P10 evidence in BOTH directions.
+    A stable-day band (p10_ratio 0.85 on the refill hours) admits an EARLIER
+    block start than the scalar alpha; a volatile-day band (p10_ratio 0.4)
+    caps the block the trusting alpha=1.0 dial accepted. (Same-day rewrite,
+    F-PREDRAIN-BLOCK: the block start moves because the band changes the
+    stressed refill inside the block's own bet window.)"""
+    # Milder-than-scalar: scalar 0.5 caps the block at 08:00; 0.85 P10
+    # evidence on the refill hours admits the 07:00 start (stable day -> the
+    # reserve provably recovers).
+    scalar_mid, _ = _predrain_band_plan(0.5)
+    evidence_mid, _ = _predrain_band_plan(0.5, 0.85, 1.0)
+    assert _pass3_block(evidence_mid)[0][0] < _pass3_block(scalar_mid)[0][0]
 
     # Harsher-than-scalar: alpha=1.0 trusts and drains deep; 0.4 P10 evidence
-    # (volatile day) rejects most of the pre-dawn block despite the dial.
+    # (volatile day) caps the block despite the dial.
     trusting, _ = _predrain_band_plan(1.0)
     evidence_low, _ = _predrain_band_plan(1.0, 0.4, 1.0)
-    assert len(_predawn_hours(evidence_low, inputs)) < len(
-        _predawn_hours(trusting, inputs)
-    )
+    assert _pass3_block(evidence_low)[0][0] > _pass3_block(trusting)[0][0]
     # The diagnostic reports the SAME stressed reserve the gate used (R5):
     # engaged by evidence even though the alpha dial is 1.0.
     assert evidence_low.stressed_min_soc_percent is not None
@@ -2362,10 +2683,12 @@ def test_bit_identity_without_band_data():
         upper_pv_reserve=1.2,
         strong_pv_cutoff_w=200.0,
     )
-    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
+    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    cfg = SystemConfig(control=control, loads=(fb_hungry,))
+    states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
     now = datetime(2026, 7, 4, 8, 0)
     inputs_empty = build_slots(
-        cfg, now, 92.0, [7.0], pv_hourly_p10={}, pv_hourly_p90=None
+        cfg, now, 92.0, [7.0], load_states=states, pv_hourly_p10={}, pv_hourly_p90=None
     )
     empty = plan(cfg, inputs_empty)
     assert _booked(empty) == _booked(plain)
@@ -2399,13 +2722,13 @@ NIGHT_CONTROL = ControlParams(
 )
 
 
-def test_night_rescue_books_predawn_hours_before_clipping_day():
-    """R10 (D1 incident regression): clipping-eve, SOC 57 at 21:00, learned
-    426 W dehumidifier, next day clips even under alpha=0.5 stress. The
-    rt-honest c1 books >= 1 h in the 22:00-05:00 night window (was: zero — a
-    pure battery round trip could never satisfy the old 0.85*energy demand);
-    import stays within the Z2' trade allowance and the min SOC respects the
-    (ramped) floors."""
+def test_night_rescue_no_crossday_predrain_for_continuous_loads():
+    """R10 REVERSED (F-PREDRAIN-BLOCK, operator 2026-08-01): in the exact
+    21:00 clipping-eve incident geometry the continuous load now books ZERO
+    hours before dawn — the cross-day night pre-drain is gone deliberately,
+    after a forecast flicker produced a pointless 19-min battery run. The
+    clip is absorbed by tomorrow's daylight pass-1 runs instead, and the T*
+    drain regime (the operational D1 outcome) is untouched."""
     config = SystemConfig(
         control=NIGHT_CONTROL,
         loads=(NIGHT_DEH,),
@@ -2422,12 +2745,18 @@ def test_night_rescue_books_predawn_hours_before_clipping_day():
     night_hours = sum(
         h for i, h in enumerate(lp.run_hours) if h > 0 and inputs.slots[i].start < dawn
     )
-    assert night_hours >= 1.0, f"only {night_hours} h booked in the night window"
-    # Z2' trade allowance still bounds the drain (R3).
-    _thr, base = search_threshold(config, inputs)
-    allowed = 0.1 * (base.total_export_wh - result.trajectory.total_export_wh) + 1.0
-    assert result.trajectory.total_import_wh - base.total_import_wh <= allowed + 1e-6
-    # The drain respects the floors: min SOC stays above the inverter cutoff.
+    assert night_hours == 0.0, (
+        f"{night_hours} h booked before dawn — cross-day pre-drain is gone by design"
+    )
+    assert not any(a[2] == 3 for a in lp.allocations)  # no today-peak, no block
+    # The clip day is still rescued — in its own daylight, by pass 1.
+    assert lp.planned_energy_wh > 0.0
+    assert all(inputs.slots[i].pv_wh > 0.0 for i, on in enumerate(lp.schedule) if on)
+    # The allocation's import stays within the artifact slack (R1).
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    assert result.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    # The floors hold: min SOC stays above the inverter cutoff.
     assert result.min_soc_percent >= config.control.inverter_min_soc_percent - 0.01
     # T* drains to the low-import choice — the operational D1 outcome. (Under
     # F-MERGE-HYSTERESIS the ancillary merge bound stays disengaged here: this
@@ -2439,15 +2768,13 @@ def test_night_rescue_books_predawn_hours_before_clipping_day():
 
 
 def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
-    """F-STRICT-SURPLUS regression lock on the old c1-honesty geometry (small
-    5 kWh battery, deep drain): the marginal 05:00 half-quantum the retired
-    trade budget used to finance is now refused by ALL THREE new/tightened
-    gates — it would end the slot AT the 20 % cutoff (R2), push the house onto
-    grid pre-dawn for ~76 Wh > IMPORT_ARTIFACT_SLACK_WH (R1), and break the
-    stressed windowed floor over its refill-settled bet window (R3/Z4). The
-    plan keeps rescuing via floor-safe morning pre-charges instead; the
-    rescue-capable geometry (7 kWh battery) still books true pre-dawn quanta
-    — see test_night_rescue_books_predawn_hours_before_clipping_day."""
+    """F-STRICT-SURPLUS regression lock on the small-battery geometry, same-day
+    rewrite (F-PREDRAIN-BLOCK): the pre-drain block books only floor-safe
+    hours. No booked slot rides the 20 % cutoff at either endpoint (R2), the
+    allocation's import stays within IMPORT_ARTIFACT_SLACK_WH (R1), and the
+    one-slot-earlier extension the block REFUSES is vetoed by the stressed
+    windowed floor over its refill-settled bet window (R3/Z4) — not by R1 or
+    R2, which the gate-by-gate check below shows passing for it."""
     from core.optimize import (
         IMPORT_ARTIFACT_SLACK_WH,
         _effective_uncertainty,
@@ -2461,54 +2788,71 @@ def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
         ac_profile=LoadProfile(60.0, 90.0, 6, 20),
         dc_profile=LoadProfile(100.0, 40.0, 6, 22),
     )
-    now = datetime(2026, 7, 11, 21, 0)
-    inputs = build_slots(config, now, 57.0, [11.9, 12.1, 11.8], load_states=NIGHT_STATE)
+    now = datetime(2026, 7, 12, 4, 0)
+    inputs = build_slots(config, now, 57.0, [12.1, 11.8], load_states=NIGHT_STATE)
     result = plan(config, inputs)
     lp = result.load_plans[0]
+    p3 = _pass3_block(result)
+    assert p3, "the floor-safe part of the block still books"
 
-    # No booking before 06:00 on day 1 anymore (the old plan booked 05:00).
-    dawn = datetime(2026, 7, 12, 6, 0)
-    assert not any(
-        h > 0 and inputs.slots[i].start < dawn for i, h in enumerate(lp.run_hours)
-    )
-    # The allocation's import stays within the artifact slack.
+    # R2: no booked slot rides the 20 % cutoff at either endpoint.
+    floor20 = config.control.inverter_min_soc_percent
+    for i, on in enumerate(lp.schedule):
+        if on:
+            flow = result.trajectory.flows[i]
+            assert flow.soc_start_percent > floor20 + 1e-6
+            assert flow.soc_end_percent > floor20 + 1e-6
+    # R1: the allocation's import stays within the artifact slack.
     assert result.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
-    # Rescue continues floor-safe: pass-2 pre-charges book in the morning.
-    assert any(a[2] == 2 for a in lp.allocations)
+    # The booked block's stressed windowed reserve holds the ramped floor.
+    assert result.stressed_min_soc_percent >= floor20 + 5.0 - 0.5
 
-    # Gate-by-gate: evaluate the old 05:00 half-quantum against the no-loads
-    # base exactly as pass 2 would.
+    # Gate-by-gate: evaluate the refused one-slot-earlier block extension
+    # [start-1, peak) against the accepted series exactly as pass 3 would.
     n = len(inputs.slots)
     threshold, base = search_threshold(config, inputs)
-    i = next(
-        k for k, s in enumerate(inputs.slots) if s.start == datetime(2026, 7, 12, 5, 0)
-    )
-    trial, covered = _spread_energy([0.0] * n, inputs.slots, i, 426.0, 0.5)
+    start, count, _, _ = p3[0]
+    peak = start + count
+    extra_wo = [f.extra_ac_wh for f in result.trajectory.flows]
+    for j in range(start, peak):
+        extra_wo[j] -= 426.0 * lp.run_hours[j]
+    trial = list(extra_wo)
+    covered = []
+    for j in range(start - 1, peak):
+        take = inputs.slots[j].duration
+        trial[j] += 426.0 * take
+        covered.append((j, take))
     traj = simulate(config, inputs, threshold, extra_ac_wh=tuple(trial))
-    # R1: real pre-dawn import beyond the artifact slack.
-    assert traj.total_import_wh - base.total_import_wh > IMPORT_ARTIFACT_SLACK_WH
-    # R2: the covered slot ends AT the cutoff (would ride it).
-    floor20 = config.control.inverter_min_soc_percent
-    assert any(traj.flows[j].soc_end_percent <= floor20 + 1e-6 for j, _t in covered)
-    # R3/Z4: the stressed refill-settled window breaks the ramped floor and is
-    # worse than the base's own window.
+    # R1 is NOT the veto: the extension's import stays within the slack.
+    assert (
+        traj.total_import_wh - base.total_import_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    )
+    # R2 is not either: the covered slots stay off the 20 % cutoff.
+    assert all(
+        traj.flows[j].soc_start_percent > floor20 + 1e-6
+        and traj.flows[j].soc_end_percent > floor20 + 1e-6
+        for j, _t in covered
+    )
+    # Z4 IS: the stressed refill-settled window breaks the ramped floor AND is
+    # worse than the accepted series' own window — the extension would deepen
+    # the dip the block is allowed to cause.
     alpha = config.control.predrain_pv_confidence
     stress_vec, _o, _b = _effective_uncertainty(inputs, alpha, 1.0)
-    recovery = _refill_index(traj, i, config.battery.soc_max_percent - 0.1)
+    recovery = _refill_index(traj, start - 1, config.battery.soc_max_percent - 0.1)
     hi = max(recovery, covered[-1][0])
-    sv = [stress_vec[j] if i <= j <= hi else 1.0 for j in range(n)]
+    sv = [stress_vec[j] if start - 1 <= j <= hi else 1.0 for j in range(n)]
     t_w = _windowed_min_soc(
         simulate(config, inputs, threshold, extra_ac_wh=tuple(trial), pv_scale=sv),
-        i,
+        start - 1,
         hi,
     )
     b_w = _windowed_min_soc(
-        simulate(config, inputs, threshold, extra_ac_wh=(0.0,) * n, pv_scale=sv),
-        i,
+        simulate(config, inputs, threshold, extra_ac_wh=tuple(extra_wo), pv_scale=sv),
+        start - 1,
         hi,
     )
     floors = _ramped_stress_floors(config, inputs, stress_vec)
-    assert t_w < floors[i] - 1e-6 and t_w < b_w - 1e-6
+    assert t_w < floors[start - 1] - 1e-6 and t_w < b_w - 1e-6
 
 
 def test_merge_bounded_threshold_ignores_post_clip_hoarding():
@@ -3096,16 +3440,27 @@ def test_r6_suppresses_daylight_afternoon_crossday_below_strong_cutoff():
     enormously (saturated), so the latest-first walk reaches back to Sunday's
     afternoon-taper slots. Those slots are DAYLIGHT (pv > 0) but NOT in-window;
     R6 must still suppress them. Discriminating (mutation-tight at plan level):
-    with R6 disabled the same afternoon bets book. Night slots (pv == 0) keep
-    the F-NIGHT-RESCUE cross-day carve-out."""
+    with R6 disabled the same afternoon bets book.
+
+    Re-scoped to an ENERGY-LIMITED load (F-PREDRAIN-BLOCK, operator
+    2026-08-01): pass 2's slot-wise bets — and with them the R6 guard — are
+    its class's machinery now; the continuous class's pre-drain moved to pass
+    3's today-only block, so it can never bet a Sunday afternoon for Monday
+    at all. The night half of the old scenario is gone with it: energy-
+    limited loads never book zero-PV slots anyway (daylight rule), and the
+    predicate's night branch stays pinned by
+    test_crossday_daytime_bet_predicate."""
     import core.optimize as opt
 
-    deh = SurplusLoad(
-        load_id="deh",
-        name="Deh",
-        nominal_power_w=400.0,
+    fb = SurplusLoad(
+        load_id="fb",
+        name="F",
+        nominal_power_w=300.0,
         battery_tolerance=0.15,
         min_runtime_min=30,
+        energy_limited=True,
+        capacity_wh=8000.0,
+        target_soc_percent=100.0,
     )
     cfg = SystemConfig(
         control=replace(
@@ -3114,7 +3469,7 @@ def test_r6_suppresses_daylight_afternoon_crossday_below_strong_cutoff():
             upper_pv_reserve=1.2,
             strong_pv_cutoff_w=200.0,
         ),
-        loads=(deh,),
+        loads=(fb,),
         battery=BatteryParams(
             capacity_wh=18000.0, soc_min_percent=5.0, soc_max_percent=95.0
         ),
@@ -3161,7 +3516,7 @@ def test_r6_suppresses_daylight_afternoon_crossday_below_strong_cutoff():
         now,
         78.0,
         [sum(sun_pv.values()) / 1e3, sum(mon_pv.values()) / 1e3],
-        load_states=(SurplusLoadState(load_id="deh", learned_power_w=422.0),),
+        load_states=(SurplusLoadState(load_id="fb", soc_percent=0.0),),
         pv_hourly=pv,
     )
     sunday = datetime(2026, 7, 19).date()
@@ -3177,23 +3532,11 @@ def test_r6_suppresses_daylight_afternoon_crossday_below_strong_cutoff():
             and "otherwise-lost export" in r
         ]
 
-    def night_crossday(result):
-        return [
-            inputs.slots[a[0]].start.hour
-            for lp in result.load_plans
-            for a, r in zip(lp.allocations, lp.reasons, strict=True)
-            if inputs.slots[a[0]].start.date() == sunday
-            and inputs.slots[a[0]].pv_wh == 0.0
-            and "otherwise-lost export" in r
-        ]
-
-    # R6 ON (current code): no daylight afternoon-taper cross-day bet ...
+    # R6 ON (current code): no daylight afternoon-taper cross-day bet.
     result = plan(cfg, inputs)
     assert not daylight_afternoon_crossday(result), (
         "R6 must suppress the daylight afternoon-taper cross-day pre-drain"
     )
-    # ... but night pre-drain (pv == 0) survives (F-NIGHT-RESCUE carve-out).
-    assert night_crossday(result), "night cross-day pre-drain must still book"
     # The afternoon-taper slots are below the strong cutoff (NOT in-window), so
     # only the daylight-based R6 catches them — an in_window-based R6 would not.
     for s in inputs.slots:
@@ -3622,28 +3965,33 @@ def test_energy_limited_pass2_never_spills_into_night():
 
 
 def test_pass2_candidate_overlapping_pass1_booking_is_dropped():
-    """The shared _spread_candidate returns None when a min-runtime commitment
-    spills past a free slot into one ALREADY booked by the same load (a real
-    double-booking, not a seamless raster-edge continuation — the covered
-    NEXT slot is free, so trimming to the candidate slot would strand the run
-    below its dwell). The candidate is dropped; the plan keeps exactly the
-    non-overlapping bookings."""
-    dehumid = SurplusLoad(
-        load_id="dehumidifier",
-        name="D",
+    """The shared _spread_candidate never lets a min-runtime commitment
+    double-book a slot the load already owns: a 2.5 h pass-2 candidate
+    spilling into the pass-1 block is trimmed to a seamless single hour (F9),
+    and nothing lands twice. Re-scoped to an ENERGY-LIMITED load
+    (F-PREDRAIN-BLOCK): pass 2's candidates — and with them the overlap guard
+    — are its class's machinery now; the pinned plan is bit-identical to the
+    pre-block contract (three 2.5 h pass-1 blocks plus two seamless 1 h
+    pass-2 daylight bets)."""
+    elslow = SurplusLoad(
+        load_id="elslow",
+        name="EL slow",
         nominal_power_w=400.0,
         min_runtime_min=150,  # 2.5 h quantum -> every commitment spans 3 slots
+        energy_limited=True,
+        capacity_wh=20000.0,  # large enough that rem never saturates the gate
+        target_soc_percent=100.0,
     )
-    config = SystemConfig(loads=(dehumid,))
-    states = (SurplusLoadState(load_id="dehumidifier"),)
-    result, _inputs = make_plan(
+    config = SystemConfig(loads=(elslow,))
+    states = (SurplusLoadState(load_id="elslow", soc_percent=0.0),)
+    result, inputs = make_plan(
         config, datetime(2026, 7, 4, 9, 0), 90.0, [8.0, 8.0], states
     )
     lp = result.load_plans[0]
     # Pinned allocation: two 2.5 h pass-1 blocks in the morning surplus, one
-    # 2.5 h pass-1 block plus two 1 h pass-2 bets in the afternoon — and
-    # NOTHING double-booked in between, where the overlap guard dropped the
-    # spilling candidates.
+    # 2.5 h pass-1 block plus two seamless 1 h pass-2 daylight bets the next
+    # morning — and NOTHING double-booked in between, where the overlap guard
+    # dropped or trimmed the spilling candidates.
     assert [i for i, booked in enumerate(lp.schedule) if booked] == [
         0,
         1,
@@ -3658,3 +4006,181 @@ def test_pass2_candidate_overlapping_pass1_booking_is_dropped():
         26,
     ]
     assert lp.planned_energy_wh == 3800.0
+    # Nothing double-booked: run hours never exceed a slot's duration.
+    assert all(
+        run_h <= inputs.slots[i].duration + 1e-9 for i, run_h in enumerate(lp.run_hours)
+    )
+
+
+def test_pass2_bet_vetoed_by_z3_buffer_floor_inside_gate_trial():
+    """Z3 inside the shared _gate_trial, reached by an energy-limited pass-2
+    bet (F-PREDRAIN-BLOCK: pass 2 is its class's machinery now). The
+    candidate passes Z2''/R2/R5, but its trial deepens the overnight dip
+    below soc_min + buffer while the accepted series stays above it — vetoed
+    before any pass-specific gate runs. Geometry: a big battery behind a
+    charger-capped midday (the charge the bet steals can never be refilled)
+    and a heavy overnight DC drain ending at ~10.3 % without the bet, ~8.8 %
+    with it."""
+    fb = SurplusLoad(
+        load_id="fb",
+        name="F",
+        nominal_power_w=300.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+        energy_limited=True,
+        capacity_wh=8000.0,
+        target_soc_percent=100.0,
+    )
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        control=control,
+        loads=(fb,),
+        battery=BatteryParams(capacity_wh=18000.0),
+        ac_profile=LoadProfile(50.0, 75.0, 6, 20),
+        dc_profile=LoadProfile(50.0, 25.0, 6, 22),
+    )
+    start = datetime(2026, 7, 4, 7, 0)
+
+    def slot(i, pv, ac=125.0):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=(start + timedelta(hours=i)).hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=450.0,
+        )
+
+    # 07:00 ramp (the bet candidate), 08:00-09:00 charger-capped, then a heavy
+    # night tail into a cloudy day.
+    slots = tuple(
+        slot(i, pv) for i, pv in enumerate([500.0, 5000.0, 5000.0] + [0.0] * 15)
+    )
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=32.0,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="fb", soc_percent=0.0),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, extra, current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    # The pass-1 surplus hours book; the slot-0 bet (the only free daylight
+    # slot) does NOT — Z3 vetoes it.
+    assert lp.planned_energy_wh > 0.0
+    assert all(a[0] != 0 for a in lp.allocations)
+
+    # Gate-by-gate: the slot-0 candidate exactly as pass 2 evaluated it —
+    # Z2'' passes (no added import), the slot is PV-served (R2), no base-max
+    # day exists (R5 vacuous), and only Z3's rule rejects.
+    buffer_floor = cfg.battery.soc_min_percent + cfg.control.soc_buffer_percent
+    trial = list(extra)
+    trial[0] += 300.0
+    traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
+
+    assert (
+        traj.total_import_wh - base.total_import_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    )
+    assert inputs.slots[0].pv_wh >= inputs.slots[0].ac_wh + 300.0  # PV-served
+    assert base.max_soc_percent < cfg.battery.soc_max_percent - 0.1  # R5 vacuous
+    assert current.min_soc_percent >= buffer_floor  # the accepted series is legal
+    assert traj.min_soc_percent < buffer_floor - 1e-6
+    assert _degrades_min_soc(traj, current, buffer_floor)  # -> Z3 vetoes
+
+
+def test_pass2_candidate_spilling_over_free_slot_into_own_booking_is_dropped():
+    """_spread_candidate's None path (a genuine double-booking, not a seamless
+    raster-edge continuation): the 2.5 h pass-2 commitment at slot 0 would
+    cover [0, 1, 2] — slot 1 is a dark hour the energy-limited load can never
+    book (daylight rule), slot 2 is already its own pass-1 block. Trimming to
+    slot 0 would strand the run below its dwell with no continuation, so the
+    candidate is dropped and slot 0 stays unbooked."""
+    from core.optimize import _seamless_spill
+
+    fb = SurplusLoad(
+        load_id="fb",
+        name="F",
+        nominal_power_w=300.0,
+        battery_tolerance=0.15,
+        min_runtime_min=150,
+        energy_limited=True,
+        capacity_wh=20000.0,
+        target_soc_percent=100.0,
+    )
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        control=control,
+        loads=(fb,),
+        battery=BatteryParams(capacity_wh=5000.0),
+        ac_profile=LoadProfile(50.0, 75.0, 6, 20),
+        dc_profile=LoadProfile(50.0, 25.0, 6, 22),
+    )
+    start = datetime(2026, 7, 4, 7, 0)
+
+    def slot(i, pv, ac=125.0, dc=75.0):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=(start + timedelta(hours=i)).hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
+        )
+
+    # 07:00 ramp, 08:00 dark, 09:00-11:00 surplus: pass 1 books only from
+    # 09:00 on (the ramp hour's covered export stays below the soft gate).
+    slots = tuple(
+        slot(i, pv)
+        for i, pv in enumerate([500.0, 0.0, 1500.0, 800.0, 2500.0, 0.0, 0.0])
+    )
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=50.0,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="fb", soc_percent=0.0),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, _extra, _current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    assert lp.allocations == ((2, 3, 1, 750.0),)  # slot 0 dropped, nothing else
+
+    # The guard's verdict on the pass-2 state: covered [0, 1, 2] with slot 1
+    # FREE and slot 2 booked -> None (a trim is only legal into an own
+    # booking, F9).
+    sched = [
+        any(a[0] <= j < a[0] + a[1] for a in lp.allocations) for j in range(len(slots))
+    ]
+    trial, covered = _spread_energy([0.0] * len(slots), slots, 0, 300.0, 2.5)
+    assert [j for j, _t in covered] == [0, 1, 2]
+    assert _seamless_spill(covered, slots, 0, 300.0, [0.0] * len(slots), sched) is None
+
+
+def test_saturated_energy_limited_load_offers_no_pass2_energy():
+    """F5 for pass 2 (F-PREDRAIN-BLOCK: pass 2 is energy-limited-only now): a
+    powerstation whose power warning latched at 0 W plans at
+    planning_power_w == 0 — every pass-2 candidate is discarded as
+    zero-energy, so even with strong export ahead nothing books."""
+    fb = replace(FOSSIBOT_B, target_soc_percent=100.0)
+    config = SystemConfig(loads=(fb,))
+    states = (
+        SurplusLoadState(load_id="fossibot_b", soc_percent=0.0, saturated_power_w=0.0),
+    )
+    result, _inputs = make_plan(config, datetime(2026, 7, 4, 8, 0), 92.0, [7.0], states)
+    lp = result.load_plans[0]
+    assert lp.planned_energy_wh == 0.0
+    assert not any(lp.schedule)

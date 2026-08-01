@@ -266,6 +266,16 @@ HOUSE_SOC_STALE_EDGE_HIGH_PERCENT = 89.0
 CONF_HOUSE_SOC_STALE_MID_PERCENT = "house_soc_stale_mid_percent"
 CONF_HOUSE_SOC_STALE_EDGE_PERCENT = "house_soc_stale_edge_percent"
 
+# Pre-drain block stability gate (F-PREDRAIN-BLOCK R7, 2026-08-01 incident):
+# a continuous load's pass-3 block is only ACTUATED after this many
+# consecutive plans proposed the identical [start, end) window AND the first
+# proposal is at least this old. The 2026-08-01 flicker run showed a marginal
+# block flipping in and out within minutes (a pointless 19-min battery run);
+# the time floor covers fast state-driven refresh cadences (~30 s), where
+# three plans alone would pass in 90 s. Constants, not config keys (G2 style).
+PREDRAIN_BLOCK_STABLE_PLANS = 3
+PREDRAIN_BLOCK_STABLE_MINUTES = 10
+
 # Telemetry-freeze watchdog (F4, 2026-07-24 forensics): a redundant guard for
 # ENERGY-LIMITED loads, independent of the switching path AND the G2 latch. The
 # Fossibot B2 (a recommendation-only load) froze SOC AND input power for 95 h

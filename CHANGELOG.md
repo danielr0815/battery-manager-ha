@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-01
+
+### Changed
+- **Pre-drain for continuous loads is now ONE block to today's SOC peak
+  (F-PREDRAIN-BLOCK).** The slot-wise pass-2 betting is replaced by a single
+  contiguous run ending at today's first export slot, sized to at most
+  today's remaining lost surplus, started as late as the floors allow
+  (docs/F-PREDRAIN-BLOCK.md). Consequences: no more cross-day night
+  pre-drain for continuous loads (the F-NIGHT-RESCUE carve-out is retired
+  for this class), and a block is only switched after
+  `PREDRAIN_BLOCK_STABLE_PLANS = 3` identical plans plus a
+  `PREDRAIN_BLOCK_STABLE_MINUTES = 10` wall-clock floor. Energy-limited
+  loads (powerstations) keep the unchanged pass-2 machinery; a new
+  `predrain_block` sensor attribute exposes the block window and stability
+  progress.
+
+### Fixed
+- **No more flicker micro-runs at the pre-drain gate edge.** On 2026-08-01
+  a marginal slot-0 bet flipped in and out of the plan within minutes and
+  started a 19-minute battery run nobody needed (the target clip was two
+  days out and today's battery refilled anyway). The block + stability gate
+  makes the actuation match the operator rule: run as late as possible,
+  only when the battery provably fills to max SOC today anyway, and never
+  below the inverter reserve.
+
 ## [0.18.0] - 2026-07-31
 
 ### Added

@@ -1,5 +1,12 @@
 # F-NIGHT-RESCUE — round-trip-honest c1, merge-bounded threshold, crossover buffer ramp
 
+> **v0.19.0 supersession (docs/F-PREDRAIN-BLOCK.md):** the cross-day NIGHT
+> carve-out (overnight pre-drain for a next-day clip) is RETIRED for
+> CONTINUOUS loads — their pre-drain is now ONE contiguous block to today's
+> SOC peak only. The rt-honest c1 factor, the merge-bounded threshold search
+> and the crossover buffer ramp below are UNCHANGED (and reused by the block
+> pass and by energy-limited pass 2).
+
 > **v0.15.0 supersession (docs/F-STRICT-SURPLUS.md R1):** every mention below of
 > the "Z2' trade rule" / "import-trade allowance" / "trade allowance" (R3 line
 > 63, R10 line 130, R14 line 143, the v0.13.0 note line 164) is RETIRED. Loads

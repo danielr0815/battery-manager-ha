@@ -682,9 +682,14 @@ def allocate_loads(
     classes face the IDENTICAL gate set — one Z2' trade invariant, c1-rt/c2
     opportunity gates and the Z4 stress floor — so the priority order alone
     decides who gets contested energy ("lieber den Fossibot laden, als den
-    Luftentfeuchter betreiben, wenn die Wahl besteht"). The single remaining
-    class rule: energy-limited loads never book zero-PV (night) slots in
-    pass 2 — nights stay reserved for continuous loads.
+    Luftentfeuchter betreiben, wenn die Wahl besteht"). Since F-PREDRAIN-BLOCK
+    (v0.19.0) pass 2 bets are ENERGY-LIMITED ONLY (incl. the daylight rule:
+    they never book zero-PV night slots): continuous loads no longer bet
+    slot-wise at all — pass 3 books their pre-drain as ONE contiguous block
+    ending at today's SOC peak, which the executor only switches after
+    PREDRAIN_BLOCK_STABLE_PLANS identical plans (the 2026-08-01 flicker run:
+    a marginal slot-0 bet oscillated within minutes and produced a 19-min
+    battery run nobody needed).
     """
     n = len(inputs.slots)
     states = {s.load_id: s for s in inputs.load_states}
@@ -977,7 +982,10 @@ def allocate_loads(
                 break  # placed the largest feasible quantum; done with this slot
 
     # Pass 2: objective-based preemptive hours (docs/ALGORITHM.md D-A4 v2,
-    # two-buffer pre-drain F-PREDRAIN §3). A load may run without direct surplus
+    # two-buffer pre-drain F-PREDRAIN §3) — ENERGY-LIMITED loads only since
+    # F-PREDRAIN-BLOCK (v0.19.0): continuous loads no longer bet slot-wise
+    # (their pre-drain is pass 3's single contiguous block). A load may run
+    # without direct surplus
     # when the re-simulation proves it is safe AND worthwhile:
     #   Z2' import trade   — import stays within the trade invariant (F2),
     #   Z3  buffer floor   — nominal min SOC not degraded below soc_min+buffer,
@@ -987,15 +995,11 @@ def allocate_loads(
     #   (c) opportunity    — (c1) the nominal drain is refilled from lost export,
     #                        OR (c2) inside the day's PV window an optimistic
     #                        (beta) run would be (upper-buffer insurance, F4).
-    # All gates apply to ALL load classes (F-GATE-PARITY: the former
-    # energy-limited c1-only carve-out let a lower-priority continuous load take
-    # bet energy a higher-priority powerstation was forbidden, silently
-    # overriding the operator's priority order). The one remaining class rule is
-    # the DAYLIGHT restriction: energy-limited loads never book zero-PV (night)
-    # slots — nights stay reserved for continuous loads (operator refinement 2,
-    # 2026-07-17). Iterated latest-first (L4); slots after the last export can
-    # never satisfy the gate, so they are skipped, as is the whole pass on an
-    # export-free horizon.
+    # The DAYLIGHT restriction applies: energy-limited loads never book
+    # zero-PV (night) slots (operator refinement 2, 2026-07-17). Iterated
+    # latest-first (L4); slots after the last export can never satisfy the
+    # gate, so they are skipped, as is the whole pass on an export-free
+    # horizon.
     if current.total_export_wh > _EPS:
         # Optimistic opportunity baseline for the CURRENTLY accepted series —
         # whole-horizon, kept in step with `current` and refreshed only on
@@ -1035,13 +1039,18 @@ def allocate_loads(
                 state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
                 if not state.available or schedules[load.load_id][i]:
                     continue
+                # F-PREDRAIN-BLOCK: pass-2 bets are energy-limited only —
+                # continuous loads get their pre-drain as ONE block in
+                # pass 3 (no more slot-wise flicker bets).
+                if not load.energy_limited:
+                    continue
                 # Daylight rule (F-GATE-PARITY refinement 2): energy-limited
                 # loads never open a bet in a zero-PV (night) slot. Deliberately
                 # `pv_wh > 0` and NOT `in_window` — pre-window daylight
                 # pre-charges before a short peak stay allowed (they were a
                 # pinned capability before parity, and forbidding them would
                 # re-introduce a class asymmetry in daylight).
-                if load.energy_limited and slot.pv_wh <= 0.0:
+                if slot.pv_wh <= 0.0:
                     continue
                 power_w = state.planning_power_w(load)
                 rem = remaining[load.load_id]
@@ -1210,6 +1219,136 @@ def allocate_loads(
                     )
                     break
 
+    # Pass 3 — pre-drain block for CONTINUOUS (non-energy-limited) loads
+    # (docs/F-PREDRAIN-BLOCK.md, operator 2026-08-01). Replaces the slot-wise
+    # pass-2 betting that flickered at the gate edge (the 19-min battery run
+    # of 2026-08-01). Rules:
+    #   R1 today only: the block ends at TODAY's first export slot — no
+    #      cross-day night pre-drain for tomorrow's clips.
+    #   R2 peak: first slot of slot 0's day whose ACCEPTED trajectory
+    #      (`current`, without this load's pre-drain) exports. No export
+    #      today -> no block; peak at slot 0 -> pass 1 owns it.
+    #   R3 target: today's remaining lost export from the peak on — the
+    #      block's opportunity (c1) is justified by construction up to it.
+    #   R4 latest start (L4): extend backwards from the peak only until the
+    #      target is covered; the floors cap the block earlier.
+    #   R5 floors: the WHOLE block is ONE candidate through the same gate
+    #      stack pass 1/2 use (Z2''/R2/R5/Z3 via `_gate_trial`, the
+    #      rt-weighted opportunity check, and Z4's windowed stress floor
+    #      with the crossover-ramped buffer — the time-of-day-dependent
+    #      reserve). Every gate worsens monotonically with block length, so
+    #      the first veto ends the extension and the last accepted block is
+    #      the longest feasible one; R5 (preserve daily max) additionally
+    #      pins "the battery still fills to soc_max today" — the operator's
+    #      precondition for pre-draining at all.
+    #   R6 min length: a block shorter than min_runtime is never booked
+    #      (the executor dwell would deliver more than the plan accounts).
+    #   R7 execution: the coordinator switches the block only after
+    #      PREDRAIN_BLOCK_STABLE_PLANS identical plans (stable signature).
+    today = inputs.slots[0].start.date() if n else None
+    for load in config.loads:
+        if load.energy_limited or today is None:
+            continue
+        state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
+        if not state.available:
+            continue
+        power_w = state.planning_power_w(load)
+        if power_w <= _EPS:
+            continue
+        peak = next(
+            (
+                j
+                for j in range(n)
+                if inputs.slots[j].start.date() == today
+                and current.flows[j].grid_export_wh > _EPS
+            ),
+            None,
+        )
+        if peak is None or peak == 0:
+            continue
+        target_wh = sum(
+            current.flows[j].grid_export_wh
+            for j in range(peak, n)
+            if inputs.slots[j].start.date() == today
+        )
+        # target_wh > _EPS holds by construction: the peak slot itself exports
+        # more than _EPS and is part of the sum. The guard is kept as a
+        # defensive mirror of the peak checks above (same pattern as the
+        # pass-1 overlap guard's pragma below).
+        if target_wh <= _EPS:  # pragma: no cover
+            continue
+        best: tuple[int, list[float], list[tuple[int, float]], Trajectory] | None = None
+        block_wh = 0.0
+        for s in range(peak - 1, -1, -1):
+            if inputs.slots[s].start.date() != today or schedules[load.load_id][s]:
+                break  # the block never leaves today nor overlaps own bookings
+            block_wh += power_w * inputs.slots[s].duration
+            trial = list(extra)
+            covered = []  # already typed by the pass-1 unpack above
+            for j in range(s, peak):
+                take = inputs.slots[j].duration
+                trial[j] += power_w * take
+                covered.append((j, take))
+            traj = _gate_trial(tuple(trial), covered)
+            if traj is None:
+                break  # Z2''/R2/R5/Z3 veto: longer blocks only get worse
+            export_drop = current.total_export_wh - traj.total_export_wh
+            if export_drop + _EPS < (1.0 - load.battery_tolerance) * block_wh * rt:
+                break  # the detour is not repaid (c1 at the physical rt)
+            if z4_active:
+                recovery = _refill_index(traj, s, soc_full)
+                hi = max(recovery, covered[-1][0])
+                scale_vec = [stress_vec[j] if s <= j <= hi else 1.0 for j in range(n)]
+                trial_wmin = _windowed_min_soc(
+                    simulate(
+                        config,
+                        inputs,
+                        threshold,
+                        extra_ac_wh=tuple(trial),
+                        pv_scale=scale_vec,
+                    ),
+                    s,
+                    hi,
+                )
+                base_wmin = _windowed_min_soc(
+                    simulate(
+                        config,
+                        inputs,
+                        threshold,
+                        extra_ac_wh=tuple(extra),
+                        pv_scale=scale_vec,
+                    ),
+                    s,
+                    hi,
+                )
+                if _z4_reject(trial_wmin, stress_floor_by_slot[s], base_wmin):
+                    break
+            best = (s, trial, covered, traj)
+            if block_wh >= target_wh:
+                break  # target covered: the latest feasible start is found
+        if best is None:
+            continue
+        s, trial, covered, traj = best
+        # R6: the committed run must cover the executor dwell. An own booking
+        # in the peak slot (pass 1) continues the block's run seamlessly, so
+        # it counts toward min_runtime — otherwise a block ending inside a
+        # partial slot 0 would be dropped although the dwell is delivered
+        # (the F-SEAMLESS-PLAN raster-edge case).
+        block_hours = sum(take for _, take in covered)
+        run_after = run_h[load.load_id][peak] if peak < n else 0.0
+        if block_hours + run_after < load.min_runtime_min / 60.0 - _EPS:
+            continue
+        _placed_h, placed_wh = _accept_candidate(
+            load, 3, s, power_w, trial, covered, traj, remaining[load.load_id]
+        )
+        reasons[load.load_id].append(
+            f"pass 3 @ {inputs.slots[s].start.strftime('%m-%d %H:%M')}: "
+            f"pre-drain block to today's peak "
+            f"{inputs.slots[peak].start.strftime('%H:%M')} "
+            f"({round(placed_wh)} Wh against {round(target_wh)} Wh clip), "
+            "latest feasible start"
+        )
+
     plans = [
         LoadPlan(
             load_id=load.load_id,
@@ -1360,14 +1499,15 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
 
     The `stressed_min_soc_percent` diagnostic (§3.5, v2) reports the WINDOWED
     lower-buffer reserve that the Z4 gate actually protects: the earliest
-    pass-2 slot booked for ANY load is treated as the deepest bet
-    (F-GATE-PARITY GP-R4 — the stress gate binds energy-limited bets too),
-    and the diagnostic is the stressed windowed min SOC over that bet's
-    recovery window [i0, recovery] under the FINAL accepted series — stressed
-    with the same per-slot vector as the gate (P10 bands where present, alpha
-    elsewhere; F-QUANTILE-BANDS R5). It is None when no slot is stressed
-    (alpha == 1.0 and no P10 evidence) or when no load at all has a pass-2
-    booking (nothing was bet, so there is no reserve to report).
+    pass-2/pass-3 slot booked for ANY load is treated as the deepest bet
+    (F-GATE-PARITY GP-R4 — the stress gate binds energy-limited bets too;
+    F-PREDRAIN-BLOCK — the continuous load's block is a bet through the same
+    gate stack), and the diagnostic is the stressed windowed min SOC over that
+    bet's recovery window [i0, recovery] under the FINAL accepted series —
+    stressed with the same per-slot vector as the gate (P10 bands where
+    present, alpha elsewhere; F-QUANTILE-BANDS R5). It is None when no slot is
+    stressed (alpha == 1.0 and no P10 evidence) or when no load at all has a
+    pass-2/pass-3 booking (nothing was bet, so there is no reserve to report).
     """
     control = config.control
     threshold, base_traj = search_threshold(config, inputs)
@@ -1412,15 +1552,19 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         inputs, alpha, control.upper_pv_reserve
     )
     if any(s < 1.0 - _EPS for s in stress_vec) and alloc_traj.flows:
-        # Windowed stressed reserve of the deepest bet: the earliest pass-2 slot
-        # booked for ANY load, evaluated over its recovery window under the
-        # final series (§3.5 v2). Since F-GATE-PARITY the Z4 stress gate binds
-        # energy-limited bets too, so their bookings belong in the diagnostic —
-        # what the sensor reports is what the gate protected. None when no
-        # pass-2 booking exists at all.
+        # Windowed stressed reserve of the deepest bet: the earliest slot booked
+        # for ANY load via the bet passes — pass 2 (energy-limited) or pass 3
+        # (the continuous load's pre-drain block, F-PREDRAIN-BLOCK) — evaluated
+        # over its recovery window under the FINAL accepted series (§3.5 v2).
+        # Since F-GATE-PARITY the Z4 stress gate binds energy-limited bets too,
+        # so their bookings belong in the diagnostic — what the sensor reports
+        # is what the gate protected. None when no bet booking exists at all.
         n = len(inputs.slots)
         booked = [
-            alloc[0] for lp in load_plans for alloc in lp.allocations if alloc[2] == 2
+            alloc[0]
+            for lp in load_plans
+            for alloc in lp.allocations
+            if alloc[2] in (2, 3)
         ]
         if booked:
             i0 = min(booked)

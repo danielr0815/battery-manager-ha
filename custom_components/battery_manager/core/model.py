@@ -473,7 +473,9 @@ class LoadPlan:
     planned_energy_wh: float
     # One entry per activation decision, for transparency/diagnostics:
     # (start slot, covered slot count, pass number, booked energy Wh).
-    # Pass 1 = direct surplus, pass 2 = preemptive ("zielbasiert").
+    # Pass 1 = direct surplus, pass 2 = preemptive ("zielbasiert",
+    # energy-limited only), pass 3 = pre-drain block (continuous loads,
+    # exactly one entry — F-PREDRAIN-BLOCK).
     allocations: tuple[tuple[int, int, int, float], ...] = ()
     # Planned RUN HOURS actually booked in each slot (F-SUBHOUR): a
     # non-energy-limited load may run only a sub-hour fraction of a slot

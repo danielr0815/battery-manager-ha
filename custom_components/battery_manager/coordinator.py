@@ -113,6 +113,8 @@ from .const import (
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    PREDRAIN_BLOCK_STABLE_MINUTES,
+    PREDRAIN_BLOCK_STABLE_PLANS,
     PREDRAIN_PV_CONFIDENCE_DEFAULT,
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
@@ -315,7 +317,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pv_source_by_day: dict[str, str] = {}
         # FIX-11: last-logged set of night-booked (load, slot-start) pairs, so the
         # F-PREDRAIN night-charge line is emitted only when the booking changes.
-        self._night_predrain_logged: frozenset[tuple[str, str]] = frozenset()
+        self._night_predrain_logged: frozenset[tuple[str, ...]] = frozenset()
 
         # Hysteresis / switching state (docs/ALGORITHM.md D-A2)
         self._displayed_threshold: float | None = None
@@ -471,6 +473,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # and actuates the load; False holds it UNAVAILABLE (planner drops it,
         # executor switches it off) without touching the control-switch config.
         self._load_bm_enabled: dict[str, bool] = {}
+        # F-PREDRAIN-BLOCK stability gate: per continuous load the current
+        # block signature (start, end) with the count of consecutive identical
+        # plans and its first-seen time; and the set of loads whose block may
+        # be ACTUATED now (stable long enough). In-memory only — a restart
+        # re-counts, which merely delays the block (the safe direction).
+        self._predrain_block_evidence: dict[
+            str, tuple[tuple[str | None, str], int, datetime]
+        ] = {}
+        self._predrain_block_stable: set[str] = set()
         # Real active-runtime counter per load (v0.7.18): accumulated seconds the
         # load really ran (persisted, so the count survives restarts), plus the
         # last-tick cursor of an in-progress run (NOT persisted — a restored
@@ -1338,73 +1349,110 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         return coverage
 
-    def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
-        """One INFO line when the plan books preemptive night charging.
+    def _update_predrain_block_evidence(self, result, inputs, now: datetime) -> None:
+        """Stability gate for pass-3 pre-drain blocks (F-PREDRAIN-BLOCK R7).
 
-        A pre-drain "make room" run (pass 2) that lands OUTSIDE every PV
-        absorption window is the F-PREDRAIN feature's headline action
-        (docs/F-PREDRAIN.md F4) — surface it with the load name, the booked
-        slot times and the grid import the trade cost. Only continuous loads
-        can appear here: energy-limited loads are barred from zero-PV pass-2
-        slots by construction (F-GATE-PARITY daylight rule), and their allowed
-        pre-window DAYLIGHT bookings would be misread as "night" by this log's
-        strong-PV window test — the class skip below keeps the line honest.
-        Emitted only when the set of night-booked (load, slot-start) pairs
-        CHANGES vs the previous log (FIX-11): the plan re-runs every 5 min, so
-        an unchanged night booking would otherwise spam an identical line
-        every cycle.
+        A continuous load's block is only ACTUATED after
+        PREDRAIN_BLOCK_STABLE_PLANS consecutive plans proposed the identical
+        [start, end) window AND the first proposal is at least
+        PREDRAIN_BLOCK_STABLE_MINUTES old — the 2026-08-01 flicker run showed
+        a marginal block flipping in and out within minutes, producing a
+        pointless 19-min battery run; the time floor covers fast state-driven
+        refresh cadences where three plans pass in ~90 s. The count resets on
+        any signature change; a RUNNING load is never cut by this gate (only
+        the OFF->ON transition is gated — the plan itself retracts the
+        recommendation when the block disappears). In-memory only: a restart
+        re-counts, which merely delays the block.
         """
-        ends = result.pv_window_ends  # {iso date -> last strong-PV hour}
+        signatures: dict[str, tuple[str | None, str]] = {}
+        for load_plan in result.load_plans:
+            for start, count, pass_no, _wh in load_plan.allocations:
+                if pass_no != 3 or start + count > len(inputs.slots):
+                    continue
+                last = inputs.slots[start + count - 1]
+                signatures[load_plan.load_id] = (
+                    # A block covering slot 0 starts "now" — slot 0's own start
+                    # moves with every refresh, which would reset the evidence
+                    # on every cycle instead of counting a stable running block.
+                    None if start == 0 else inputs.slots[start].start.isoformat(),
+                    (last.start + timedelta(hours=last.duration)).isoformat(),
+                )
+        stable: set[str] = set()
+        for load_id, signature in signatures.items():
+            prev = self._predrain_block_evidence.get(load_id)
+            if prev is not None and prev[0] == signature:
+                count, first_seen = prev[1] + 1, prev[2]
+            else:
+                count, first_seen = 1, now
+            self._predrain_block_evidence[load_id] = (signature, count, first_seen)
+            if count >= PREDRAIN_BLOCK_STABLE_PLANS and now - first_seen >= timedelta(
+                minutes=PREDRAIN_BLOCK_STABLE_MINUTES
+            ):
+                stable.add(load_id)
+        # Loads whose block vanished lose the evidence (and the stability).
+        for load_id in list(self._predrain_block_evidence):
+            if load_id not in signatures:
+                del self._predrain_block_evidence[load_id]
+        self._predrain_block_stable = stable
+
+    def _predrain_block_attr(self, load_plan, inputs) -> dict[str, Any] | None:
+        """The load's pass-3 pre-drain block for the sensor attributes: the
+        [start, end) window plus the stability-gate progress (consecutive
+        identical plans), or None when the plan books no block."""
+        for start, count, pass_no, _wh in load_plan.allocations:
+            if pass_no == 3 and start + count <= len(inputs.slots):
+                last = inputs.slots[start + count - 1]
+                evidence = self._predrain_block_evidence.get(load_plan.load_id)
+                return {
+                    "start": inputs.slots[start].start.isoformat(),
+                    "end": (last.start + timedelta(hours=last.duration)).isoformat(),
+                    "stable_plans": evidence[1] if evidence else 0,
+                }
+        return None
+
+    def _log_night_predrain(self, result, inputs, config: SystemConfig) -> None:
+        """One INFO line when the plan books a pre-drain block (pass 3).
+
+        The block IS the F-PREDRAIN-BLOCK feature's headline action: a
+        continuous load running ahead of today's SOC peak to make room —
+        surface it with the load name, the block's [start, end) window and
+        the booked energy. Only continuous loads can appear here (pass 3 is
+        their pass; energy-limited loads bet slot-wise in pass 2, daylight
+        only). Emitted only when the set of (load, block-start, block-end)
+        triples CHANGES vs the previous log (FIX-11): the plan re-runs every
+        few minutes, so an unchanged block would otherwise spam an identical
+        line every cycle — the stability gate keeps the ACTUATION itself off
+        a flickering block (F-PREDRAIN-BLOCK R7).
+        """
         if not result.load_plans:
             self._night_predrain_logged = frozenset()
             return
-        cutoff = config.control.strong_pv_cutoff_w
-        # First strong-PV slot index per day. The end-hour override only caps the
-        # window END, so the start comes straight from the forecast shape; the
-        # authoritative capped end is taken from the plan result.
-        first_idx: dict[str, int] = {}
-        for slot in inputs.slots:
-            if slot.duration > 0.0 and slot.pv_wh / slot.duration >= cutoff:
-                first_idx.setdefault(slot.start.date().isoformat(), slot.index)
-
-        def _in_window(slot) -> bool:
-            day = slot.start.date().isoformat()
-            end_hour = ends.get(day)
-            if end_hour is None or day not in first_idx:
-                return False
-            return slot.index >= first_idx[day] and slot.hour_of_day <= end_hour
-
         booked: list[str] = []
-        pairs: set[tuple[str, str]] = set()
+        triples: set[tuple[str, str, str]] = set()
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
             if load.energy_limited:
-                # Cannot book night slots (F-GATE-PARITY daylight rule); their
-                # pre-window daylight bookings are not night pre-drains.
                 continue
-            night = [
-                inputs.slots[j]
-                for start, count, pass_no, _wh in load_plan.allocations
-                if pass_no == 2
-                for j in range(start, start + count)
-                if j < len(inputs.slots) and not _in_window(inputs.slots[j])
-            ]
-            if night:
-                times = ", ".join(s.start.strftime("%Y-%m-%d %H:%M") for s in night)
-                booked.append(f"{load.name} @ {times}")
-                pairs.update((load.load_id, s.start.isoformat()) for s in night)
-        current = frozenset(pairs)
+            for start, count, pass_no, wh in load_plan.allocations:
+                if pass_no != 3 or start + count > len(inputs.slots):
+                    continue
+                block_start = inputs.slots[start].start
+                last = inputs.slots[start + count - 1]
+                block_end = last.start + timedelta(hours=last.duration)
+                booked.append(
+                    f"{load.name} {block_start.strftime('%Y-%m-%d %H:%M')}"
+                    f" -> {block_end.strftime('%H:%M')} ({wh:.0f} Wh)"
+                )
+                triples.add(
+                    (load.load_id, block_start.isoformat(), block_end.isoformat())
+                )
+        current = frozenset(triples)
         if not current:
             self._night_predrain_logged = frozenset()
             return
         if current == self._night_predrain_logged:
             return  # identical booking already logged — do not spam every cycle
         self._night_predrain_logged = current
-        _LOGGER.info(
-            "F-PREDRAIN: preemptive night charging booked for %s"
-            " (import traded %.1f Wh)",
-            "; ".join(booked),
-            result.import_trade_used_wh,
-        )
+        _LOGGER.info("F-PREDRAIN-BLOCK: pre-drain booked for %s", "; ".join(booked))
 
     async def _update_power_warnings(self, result, now: datetime) -> None:
         """Per-load power-deviation warning (operator requirement F-L7).
@@ -2619,6 +2667,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         profile_diag.update(buffer_diag)
         result = await self.hass.async_add_executor_job(plan, config, inputs)
         self._update_plan_active(result)
+        self._update_predrain_block_evidence(result, inputs, now)
         self._log_night_predrain(result, inputs, config)
         # Flow proof for the house-SOC stale watchdog: the slot-0 battery
         # flow (charge + discharge power) this FRESH plan expects right now.
@@ -2721,6 +2770,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # sub-hour deadline (F-SUBHOUR R8/R12), so the binary sensor an
                 # operator's automation follows flips off at the run's end.
                 "active": self._effective_load_active(load_plan, now),
+                # F-PREDRAIN-BLOCK: the load's pass-3 block window + the
+                # stability-gate progress (None when the plan books none).
+                "predrain_block": self._predrain_block_attr(load_plan, inputs),
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
                 # Per-load today/tomorrow planned energy (analogous to the
@@ -3439,6 +3491,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "learned_power_w": dict(self._load_learned_power_w),
             "load_runtime_seconds": dict(self._load_runtime_seconds),
             "power_warning_latched": dict(self._load_power_warning),
+            # F-PREDRAIN-BLOCK: consecutive-plan stability per proposed block.
+            "predrain_block_stable_plans": {
+                load_id: count
+                for load_id, (
+                    _sig,
+                    count,
+                    _first,
+                ) in self._predrain_block_evidence.items()
+            },
             "soc_stale_frozen_soc": dict(self._load_soc_stale),
             "telemetry_freeze_stale": sorted(self._load_freeze_stale),
             "tank": {
@@ -4247,6 +4308,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 current = self._load_charging_active.get(subentry_id, False)
             self._load_charging_active[subentry_id] = current
             active_now = bool(plan and plan.active_now)
+            # F-PREDRAIN-BLOCK stability gate (R7): a pass-3 slot-0 only
+            # starts an OFF load after the block held stable (plans + time
+            # floor, see _update_predrain_block_evidence); a RUNNING load
+            # keeps its plan flag — the gate never cuts a run mid-block, the
+            # plan itself retracts the recommendation when the block vanishes.
+            slot0_pass = (
+                next(
+                    (
+                        pass_no
+                        for start, _count, pass_no, _wh in getattr(
+                            plan, "allocations", ()
+                        )
+                        if start == 0
+                    ),
+                    None,
+                )
+                if plan
+                else None
+            )
+            if active_now and not current and slot0_pass == 3:
+                active_now = subentry_id in self._predrain_block_stable
             # F-SUBHOUR (approach A) + F-RESIDUAL-TOPUP R7: once a load's frozen
             # sub-hour run deadline passes, force it OFF even if the plan still
             # wants it on — the booked partial-hour energy has been delivered.

@@ -523,8 +523,8 @@ async def test_hourly_mode_warns_once_when_no_wh_period(hass, caplog):
 
 
 async def test_night_predrain_logs_only_on_change(hass, caplog):
-    """FIX-11: the F-PREDRAIN night-charge line is emitted only when the set of
-    night-booked (load, slot-start) pairs CHANGES, not every 5-min cycle."""
+    """FIX-11: the F-PREDRAIN-BLOCK line is emitted only when the set of
+    (load, block-start, block-end) triples CHANGES, not every 5-min cycle."""
     import logging
     from datetime import datetime
     from types import SimpleNamespace
@@ -561,18 +561,16 @@ async def test_night_predrain_logs_only_on_change(hass, caplog):
                     load_id="deh",
                     schedule=(True,) * 3,
                     planned_energy_wh=400.0,
-                    allocations=((start, 1, 2, 400.0),),
+                    allocations=((start, 1, 3, 400.0),),
                     run_hours=(1.0,) * 3,
                 ),
             ),
-            pv_window_ends={},  # no PV window -> every pass-2 slot counts as night
+            pv_window_ends={},
             import_trade_used_wh=10.0,
         )
 
     def _count():
-        return sum(
-            1 for r in caplog.records if "preemptive night charging" in r.getMessage()
-        )
+        return sum(1 for r in caplog.records if "pre-drain booked" in r.getMessage())
 
     with caplog.at_level(logging.INFO):
         coordinator._log_night_predrain(result(0), inputs, config)

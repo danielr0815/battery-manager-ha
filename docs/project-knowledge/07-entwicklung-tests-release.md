@@ -291,7 +291,8 @@ Der Bestand (Stand v0.16.2): `F-EXECUTOR-GUARDS`, `F-GATE-PARITY`,
 `F-GATE-TOPUP`, `F-LOAD-PRIORITY`, `F-NIGHT-RESCUE`, `F-PERDAY-SURPLUS`,
 `F-PLANNER-HONESTY`, `F-PREDRAIN`, `F-QUANTILE-BANDS`, `F-RECONFIGURE-PV`,
 `F-RESCUE-EXPORT`, `F-RESIDUAL-TOPUP`, `F-ROBUST-POWER`, `F-SEAMLESS-RUNS`,
-`F-STRICT-SURPLUS`, `F-SUBHOUR-ALLOCATION`, `F-TANK`.
+`F-STRICT-SURPLUS`, `F-SUBHOUR-ALLOCATION`, `F-TANK`; dazu seit v0.19.0
+`F-PREDRAIN-BLOCK`.
 
 Aufbau eines F-Dokuments: **Befund** (mit Live-Daten und Zeitstempeln) →
 **Regeln** durchnummeriert (R1, R2, …) → **Abgrenzung** (was bewusst *nicht*

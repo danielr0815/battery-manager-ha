@@ -1,5 +1,11 @@
 # F-PREDRAIN — Hourly PV forecast & two-buffer pre-drain allocation (v0.8.0)
 
+> **v0.19.0 supersession (docs/F-PREDRAIN-BLOCK.md):** for CONTINUOUS loads
+> the slot-wise pass-2 pre-drain below is RETIRED — replaced by ONE
+> contiguous block to today's SOC peak with an executor-side stability gate.
+> The hourly-forecast machinery (F1, WP1) and the gate stack for
+> ENERGY-LIMITED loads are UNCHANGED.
+
 Status: approved by the operator 2026-07-10 ("Los gehts"). This document is the
 implementation contract for WP1 (hourly forecast) and WP2 (allocation gates).
 Architecture owner: Fable. Implementation: Opus agents. Review gates apply per

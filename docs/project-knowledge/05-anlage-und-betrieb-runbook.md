@@ -452,13 +452,15 @@ nahtlos.
 ### 5.6 Pre-Drain
 
 ```
-F-PREDRAIN: preemptive night charging booked for <Last> 02:00-05:00
-(import traded 0.0 Wh)
+F-PREDRAIN-BLOCK: pre-drain booked for <Last> 2026-08-02 05:00 -> 11:00 (1700 Wh)
 ```
 
-Eine INFO-Zeile **nur bei Änderung** der Buchung (kein Spam je Zyklus).
-`import traded` sollte seit F-STRICT-SURPLUS nahe 0 liegen — größere Werte sind
-ein Alarmzeichen.
+Eine INFO-Zeile **nur bei Änderung** der Buchung (kein Spam je Zyklus). Seit
+v0.19.0 (F-PREDRAIN-BLOCK) ist der Pre-drain endloser Lasten EIN
+zusammenhängender Block bis zum heutigen SOC-Peak (kein Cross-day, keine
+Slot-Einzelwetten mehr); geschaltet wird er erst nach 3 identischen Plänen
++ 10 min Stabilität (R7). Energie-limitierte Lasten wettern unverändert
+slotweise in Pass 2.
 
 ### 5.7 Repair-Issues (Benachrichtigungsboard, Stand v0.17.0)
 
