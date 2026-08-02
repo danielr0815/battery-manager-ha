@@ -1336,7 +1336,8 @@ def test_reasons_align_one_to_one_with_allocations():
     """R12/R13/R15: every allocation entry has exactly one reason, same order;
     the pass number in the string matches the allocation's pass, pass-1
     reasons name the booking kind (direct surplus or the F-PEAK-FILL at-max
-    top-up), and pass-2 reasons carry the structural lateness claim."""
+    top-up), pass-2 reasons carry the structural lateness claim, and pass-3
+    reasons the block's latest-start claim."""
     result, _ = _s3_plan()
     for lp in result.load_plans:
         assert len(lp.reasons) == len(lp.allocations)
@@ -1346,8 +1347,10 @@ def test_reasons_align_one_to_one_with_allocations():
             assert why.startswith(f"pass {pass_no} @ ")
             if pass_no == 1:
                 assert "direct surplus" in why or "at-max top-up" in why
-            else:
+            elif pass_no == 2:
                 assert "latest feasible slot" in why
+            else:
+                assert "latest feasible start" in why
     # The scenario books at least one allocation, so the check is not vacuous.
     assert any(lp.allocations for lp in result.load_plans)
 
@@ -1420,10 +1423,10 @@ def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
     r0, inputs = run(0.0)
     r1, _ = run(0.1)
     p3 = _pass3_block(r0)
-    # (2,3,3,1200): the always-on nominal dynamic floor (operator 2026-08-02)
-    # caps the start at 06:00 — at alpha=1.0 the floor check used to be
-    # skipped entirely, so the block reached 05:00.
-    assert p3 == [(2, 3, 3, 1200.0)], (
+    # Today's block [(2,3,3,1200)] is capped by the always-on nominal dynamic
+    # floor (operator 2026-08-02); tomorrow's clip earns its OWN block
+    # [(24,4,3,1600)] inside its own day (per-day R1, v0.22.0).
+    assert p3 == [(2, 3, 3, 1200.0), (24, 4, 3, 1600.0)], (
         "the standby artifact must not veto the pre-drain block (L1)"
     )
     night = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
@@ -1455,8 +1458,8 @@ def test_t2_cumulative_import_trade_invariant():
     # Standby-accounting fix: no artifact trade at all — the block books with
     # zero added import over the base (was: a few ~10 Wh standby artifacts).
     assert traj.total_import_wh == base.total_import_wh
-    # Same always-on-floor geometry as T1 (operator 2026-08-02).
-    assert _pass3_block(result) == [(2, 3, 3, 1200.0)]  # the block booked energy
+    # Today's floor-capped block plus tomorrow's own (per-day R1, v0.22.0).
+    assert _pass3_block(result) == [(2, 3, 3, 1200.0), (24, 4, 3, 1600.0)]
 
 
 def test_t3_energy_limited_never_night_charged_with_ratio():
@@ -1506,8 +1509,10 @@ def test_t4_alpha_stress_gate_protects_inverter_reserve():
 
     trusting, inputs = run(1.0)
     stressed, _ = run(0.5)
-    # Alpha-independence: identical block, identical drain depth.
-    assert _pass3_block(trusting) == [(2, 3, 3, 1200.0)]
+    # Alpha-independence: identical blocks, identical drain depth (today's
+    # floor-capped block plus tomorrow's own, per-day R1 — both
+    # alpha-independent).
+    assert _pass3_block(trusting) == [(2, 3, 3, 1200.0), (24, 4, 3, 1600.0)]
     assert _pass3_block(stressed) == _pass3_block(trusting)
     assert stressed.min_soc_percent == trusting.min_soc_percent
 
@@ -1560,8 +1565,10 @@ def test_t5_predrain_hours_hug_the_window_latest_first():
     lp = result.load_plans[0]
     p3 = _pass3_block(result)
     # ONE contiguous block [07:00, 10:00) ending the slot right before
-    # today's first export slot (the 10:00 peak).
-    assert p3 == [(3, 3, 3, 750.0)]
+    # today's first export slot (the 10:00 peak) — tomorrow's clip earns its
+    # own block inside its own day (per-day R1, v0.22.0), which does not
+    # change today's target-bound shape.
+    assert p3 == [(3, 3, 3, 750.0), (22, 6, 3, 1500.0)]
     start, count, _, wh = p3[0]
     assert [inputs.slots[i].hour_of_day for i in range(start, start + count)] == [
         7,
@@ -1639,9 +1646,11 @@ def test_t4_windowed_gate_scopes_stress_to_recovery_window():
     result, inputs = make_plan(cfg, now, 50.0, [13.0, 11.0, 3.0])
     n = len(inputs.slots)
 
-    # Today's block IS booked (the nominal floor permits it, stress or not).
+    # Today's block IS booked (the nominal floor permits it, stress or not) —
+    # and tomorrow's clip earns its own block inside its own day (per-day R1);
+    # the weak day 3 gets none (no peak there).
     p3 = _pass3_block(result)
-    assert p3 == [(2, 3, 3, 1200.0)], "today's block must book"
+    assert p3 == [(2, 3, 3, 1200.0), (24, 4, 3, 1600.0)], "today's block must book"
 
     # The WHOLE-HORIZON alpha sim of the final series breaks the inverter floor
     # (a later, weaker day dominates it) — the diagnostic must NOT report this.
@@ -2076,17 +2085,29 @@ def test_gate_parity_daylight_rule_blocks_fb_night_predrain():
             assert inputs.slots[i].pv_wh > 0.0, (
                 f"fossibot booked zero-PV slot at {inputs.slots[i].hour_of_day}:00"
             )
-    # Contrast (F-PREDRAIN-BLOCK, operator 2026-08-01): in the SAME cross-day
-    # horizon the continuous load now books NOTHING at night either — its
-    # pre-drain moved to the pass-3 block, which only ever serves TODAY's
-    # peak (no export today -> no block; see the F-PREDRAIN-BLOCK section).
-    # The daylight rule nonetheless stays the binding class rule for the
-    # pass-2 bet machinery: the hungry fossibot above never takes a zero-PV
-    # slot, although its gates would admit the same rescue energy.
+    # Contrast (F-PREDRAIN-BLOCK per-day blocks, v0.22.0): in the SAME
+    # horizon the continuous load books NOTHING tonight before midnight —
+    # the retired cross-day carve-out — while TOMORROW's own block runs
+    # pre-dawn, confined to tomorrow (each day gets its own block). The
+    # daylight rule nonetheless stays the binding class rule for the pass-2
+    # bet machinery: the hungry fossibot above never takes a zero-PV slot,
+    # although its gates would admit the same rescue energy.
     deh_cfg = _predrain_config(ratio=0.5, alpha=1.0, beta=1.0)
     deh_res, deh_in = make_plan(deh_cfg, now, 84.0, [0.0, 13.0, 11.0])
-    night = [h for h in _dehumid_hours(deh_res, deh_in) if not daylight_h(h)]
-    assert not night, "no cross-day night pre-drain for continuous loads anymore"
+    tomorrow = now.date() + timedelta(days=1)
+    tonight = [
+        deh_in.slots[i].hour_of_day
+        for i, on in enumerate(deh_res.load_plans[0].schedule)
+        if on and deh_in.slots[i].start.date() < tomorrow
+    ]
+    assert not tonight, "nothing tonight — the cross-day drain stays retired"
+    # Tomorrow's own block may exist, but every block stays inside ONE day.
+    p3_blocks = [a for a in deh_res.load_plans[0].allocations if a[2] == 3]
+    assert p3_blocks, "tomorrow's own pre-drain block is expected (per-day)"
+    for start, count, _pass, _wh in p3_blocks:
+        days = {deh_in.slots[j].start.date() for j in range(start, start + count)}
+        assert len(days) == 1, f"block spans midnight: {days}"
+        assert next(iter(days)) >= tomorrow, f"block starts tonight: {days}"
     assert deh_res.load_plans[0].planned_energy_wh > 0.0, (
         "contrast is not vacuous: the clip day is still absorbed in daylight"
     )
@@ -2257,25 +2278,33 @@ def test_fix7_stress_window_extends_over_spill_past_recovery():
 
 
 def test_predrain_block_books_one_block_ending_at_todays_peak():
-    """R1-R4: a same-day clip books exactly ONE pass-3 allocation — a
+    """R1-R4: EVERY clipping day books exactly ONE pass-3 allocation — today a
     contiguous block [start, peak) ending at today's first export slot,
-    latest-first, and named in the reason string."""
+    latest-first, and named in the reason string; tomorrow's clip earns its
+    own block inside tomorrow (per-day R1, v0.22.0)."""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 50.0, [13.0, 11.0])
     lp = result.load_plans[0]
     p3 = _pass3_block(result)
-    assert len(p3) == 1
+    assert p3 == [(2, 3, 3, 1200.0), (24, 4, 3, 1600.0)]
     start, count, _, _wh = p3[0]
-    # The block is one unbroken range (06:00-08:00) whose last slot sits right
-    # before today's first export slot (the 09:00 peak). (06:00 start since
-    # the always-on nominal dynamic floor caps the block, operator 2026-08-02.)
+    # Today's block is one unbroken range (06:00-08:00) whose last slot sits
+    # right before today's first export slot (the 09:00 peak). (06:00 start
+    # since the always-on nominal dynamic floor caps the block, operator
+    # 2026-08-02.)
     assert [inputs.slots[i].hour_of_day for i in range(start, start + count)] == [
         6,
         7,
         8,
     ]
     assert inputs.slots[start + count].hour_of_day == 9
+    # Tomorrow's block is equally confined to its own day (04:00-07:00).
+    start2, count2, _, _wh2 = p3[1]
+    assert {inputs.slots[i].start.date() for i in range(start2, start2 + count2)} == {
+        inputs.slots[start2].start.date()
+    }
+    assert inputs.slots[start2].start.date() != inputs.slots[start].start.date()
     reason = next(r for r in lp.reasons if r.startswith("pass 3 @"))
     assert "pre-drain block" in reason
     assert "latest feasible start" in reason
@@ -2307,7 +2336,9 @@ def test_predrain_block_drains_to_the_nominal_ramped_floor():
     # Part A: the block drains to the nominal ramped floor, alpha-independently.
     cfg, result, inputs = run(45.0, 1.0)
     block = _pass3_block(result)
-    assert block == [(1, 4, 3, 800.0)]  # [05:00, 09:00)
+    # Today's floor-bound block [05:00, 09:00); tomorrow's own block starts
+    # at its midnight (per-day R1, v0.22.0).
+    assert block == [(1, 4, 3, 800.0), (20, 8, 3, 1600.0)]
     _cfg_h, half, _inputs_h = run(45.0, 0.5)
     assert _pass3_block(half) == block  # stress-independent depth
     s, count, _, _ = block[0]
@@ -2337,7 +2368,9 @@ def test_predrain_block_drains_to_the_nominal_ramped_floor():
     # Part B: lower start SOC -> R2 shortens the block to the PV-served tail.
     cfg_b, low, inputs_b = run(30.0, 1.0)
     block_b = _pass3_block(low)
-    assert block_b == [(3, 2, 3, 400.0)]  # [07:00, 09:00) only
+    # Today's block is R2-shortened to [07:00, 09:00); tomorrow's own block
+    # (per-day R1) books normally from its midnight.
+    assert block_b == [(3, 2, 3, 400.0), (20, 8, 3, 1600.0)]
     s_b, count_b, _, _ = block_b[0]
     peak_b = s_b + count_b
     for j in range(s_b, peak_b):
@@ -2372,21 +2405,33 @@ def test_predrain_block_latest_start_covers_ceil_of_target():
     result, _inputs = make_plan(cfg, now, 67.0, [6.2, 11.0])
     lp = result.load_plans[0]
     p3 = _pass3_block(result)
-    assert p3 == [(3, 3, 3, 750.0)]
+    # Today's block is the target-bound one; tomorrow's clip earns its own
+    # (per-day R1, v0.22.0) — the reason inspected below is today's (first).
+    assert p3 == [(3, 3, 3, 750.0), (22, 6, 3, 1500.0)]
     reason = next(r for r in lp.reasons if r.startswith("pass 3 @"))
     target = int(re.search(r"against (\d+) Wh clip", reason).group(1))
     assert 750.0 >= target > 750.0 - deh250.nominal_power_w
 
 
 def test_predrain_block_skipped_when_today_has_no_export():
-    """R2: no export slot today -> no block at all; a weak today never
-    pre-drains for tomorrow's clip, and nothing is booked at night."""
+    """R2: no export slot today -> no block TODAY; a weak today never
+    pre-drains for tomorrow's clip and nothing is booked on it at all.
+    Tomorrow's clip earns its OWN block starting at its own midnight
+    (per-day R1, v0.22.0) — never a drain from the empty day."""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 50.0, [0.8, 13.0])
     lp = result.load_plans[0]
-    assert not _pass3_block(result)
     today = inputs.slots[0].start.date()
+    # No pass-3 block touches today (today has no peak); tomorrow's own
+    # block [(28,2,3,800)] exists and is confined to tomorrow.
+    p3 = _pass3_block(result)
+    assert p3 == [(28, 2, 3, 800.0)]
+    assert all(inputs.slots[a[0]].start.date() != today for a in p3)
+    assert {inputs.slots[i].start.date() for i in range(28, 30)} == {
+        datetime(2026, 7, 5).date()
+    }
+    # Nothing at all is booked on the weak today.
     assert all(
         inputs.slots[i].start.date() != today for i, on in enumerate(lp.schedule) if on
     )
@@ -2396,18 +2441,30 @@ def test_predrain_block_skipped_when_today_has_no_export():
 
 
 def test_predrain_block_never_crosses_into_tomorrow():
-    """R1, the removed F-NIGHT-RESCUE carve-out: on the 21:00 clipping-eve
-    geometry (today export-free, tomorrow clips hard) the continuous load
-    books NOTHING at night — the cross-day night pre-drain is gone
-    deliberately (operator 2026-08-01)."""
+    """R1 confinement, the retired F-NIGHT-RESCUE carve-out: on the 21:00
+    clipping-eve geometry (today export-free, tomorrow clips hard) the
+    continuous load books NOTHING before tomorrow's midnight — nothing ever
+    drains one day for the next (operator 2026-08-01). Per-day R1 (v0.22.0):
+    tomorrow's and the day-after's clips DO earn their own blocks — each
+    starting at its own midnight and staying inside its own day."""
     now = datetime(2026, 7, 3, 21, 0)
     cfg = _predrain_config(ratio=0.1, alpha=0.5, beta=1.0)
     result, inputs = make_plan(cfg, now, 84.0, [0.0, 13.0, 11.0])
     lp = result.load_plans[0]
-    assert not _pass3_block(result)
-    night = [h for h in _dehumid_hours(result, inputs) if not daylight_h(h)]
-    assert not night
-    assert lp.planned_energy_wh > 0.0  # the clip is absorbed in daylight
+    today = inputs.slots[0].start.date()
+    # (a) Nothing at all is booked before tomorrow's midnight — the cross-day
+    # night pre-drain stays retired.
+    assert all(
+        inputs.slots[i].start.date() != today for i, on in enumerate(lp.schedule) if on
+    )
+    # (b) Each future clipping day gets its OWN confined block.
+    p3 = _pass3_block(result)
+    assert p3 == [(7, 4, 3, 1600.0), (31, 4, 3, 1600.0)]
+    for start, count, _, _wh in p3:
+        days = {inputs.slots[i].start.date() for i in range(start, start + count)}
+        assert len(days) == 1, "a block must never cross midnight"
+        assert days.pop() > today
+    assert lp.planned_energy_wh > 0.0  # the clips are still absorbed
 
 
 def test_predrain_block_energy_limited_keeps_pass2_bets():
@@ -2426,22 +2483,29 @@ def test_predrain_block_energy_limited_keeps_pass2_bets():
 
 def test_predrain_block_skipped_when_the_peak_is_now():
     """R2: today's first export slot IS slot 0 (the battery is already
-    exporting) -> no block; pass 1 owns the present surplus."""
+    exporting) -> no block TODAY; pass 1 owns the present surplus. Tomorrow's
+    clip still earns its own block inside its own day (per-day R1, v0.22.0)."""
     now = datetime(2026, 7, 4, 8, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 93.0, [13.0, 11.0])
     lp = result.load_plans[0]
     assert result.trajectory.flows[0].grid_export_wh > 0.0
-    assert not _pass3_block(result)
+    today = inputs.slots[0].start.date()
+    p3 = _pass3_block(result)
+    assert all(inputs.slots[a[0]].start.date() != today for a in p3)
+    assert p3 == [(20, 4, 3, 1600.0)]  # tomorrow's own block only
     assert lp.active_now and lp.allocations[0][2] == 1
 
 
 def test_predrain_block_two_continuous_loads_follow_config_order():
-    """Priority among continuous loads: the FIRST load's block sees the
-    unmodified (pass-1-adjusted) export and books exactly the block it would
-    book alone; the second load's own pass-1 bookings sit right before the
-    (shifted) peak, so its backward walk immediately hits its own booking and
-    no second block exists. Swapping the config order swaps the winner."""
+    """Priority among continuous loads: the FIRST load's blocks see the
+    unmodified (pass-1-adjusted) export and today's block is identical to the
+    one it would book alone; the second load's own pass-1 bookings sit right
+    before the (shifted) peak, so its backward walk immediately hits its own
+    booking and no second block exists. Swapping the config order swaps the
+    winner. (Per-day R1, v0.22.0: the winner ALSO books tomorrow's block —
+    shorter than the solo scenario's, because the loser's pass-1 bookings
+    reshape tomorrow's peak before any block walk runs.)"""
     deh1 = replace(DEHUMIDIFIER, load_id="deh1", name="D1")
     deh2 = replace(DEHUMIDIFIER, load_id="deh2", name="D2")
     now = datetime(2026, 7, 4, 4, 0)
@@ -2453,24 +2517,33 @@ def test_predrain_block_two_continuous_loads_follow_config_order():
         return {ld.load_id: _pass3_block(result, ld.load_id) for ld in order}
 
     first = blocks((deh1, deh2))
-    assert first["deh1"] == [(2, 3, 3, 1200.0)]  # identical to the solo block
+    assert first["deh1"] == [(2, 3, 3, 1200.0), (25, 3, 3, 1200.0)]
     assert first["deh2"] == []
     swapped = blocks((deh2, deh1))
-    assert swapped["deh2"] == [(2, 3, 3, 1200.0)]
+    assert swapped["deh2"] == [(2, 3, 3, 1200.0), (25, 3, 3, 1200.0)]
     assert swapped["deh1"] == []
 
 
 def test_predrain_block_today_never_predrains_for_tomorrow():
     """R1 over multiple days: today's block ends at TODAY's peak even though
-    tomorrow's clip is bigger — no night bookings between the days, no
-    pre-drain for tomorrow (its bigger clip is absorbed by its own daylight
-    pass-1 runs)."""
+    tomorrow's clip is bigger, and nothing books today's late hours — today
+    never lends a drain to tomorrow. Tomorrow's bigger clip is absorbed by
+    its OWN confined block plus its daylight pass-1 runs (per-day R1,
+    v0.22.0)."""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 50.0, [13.0, 15.0])
     lp = result.load_plans[0]
-    assert _pass3_block(result) == [(2, 3, 3, 1200.0)]  # nominal-floor capped
+    # Today's nominal-floor-capped block plus tomorrow's own (its midnight).
+    assert _pass3_block(result) == [(2, 3, 3, 1200.0), (24, 4, 3, 1600.0)]
     today = inputs.slots[0].start.date()
+    # Nothing books today past its peak (18:00+) — no night bridge between
+    # the days.
+    assert all(
+        inputs.slots[i].hour_of_day < 18
+        for i, on in enumerate(lp.schedule)
+        if on and inputs.slots[i].start.date() == today
+    )
     after = [
         (i, a)
         for a in lp.allocations
@@ -2478,8 +2551,12 @@ def test_predrain_block_today_never_predrains_for_tomorrow():
         if inputs.slots[i].start.date() != today
     ]
     assert after, "tomorrow's clip is still absorbed"
-    assert all(a[2] == 1 for _i, a in after), "tomorrow is pass-1 daylight only"
-    assert all(inputs.slots[i].pv_wh > 0.0 for i, _a in after)
+    # Tomorrow's block is confined to tomorrow (04:00-07:00); everything
+    # tomorrow books BEYOND its block is pass-1 daylight, as before.
+    assert {inputs.slots[i].start.date() for i in range(24, 28)} == {
+        datetime(2026, 7, 5).date()
+    }
+    assert all(a[2] == 1 and inputs.slots[i].pv_wh > 0.0 for i, a in after if a[2] != 3)
 
 
 def test_predrain_block_shorter_than_min_runtime_is_dropped():
@@ -2588,17 +2665,20 @@ def test_predrain_block_stops_at_own_pass1_booking():
     """R4: the backward walk never crosses a slot the load itself already
     booked. When pass 1 consumes the export of the slot right before the
     (shifted) peak, there is no contiguous room for a block at all and none
-    is booked — the block machinery yields to the pass-1 plan instead of
-    double-covering the hour."""
+    is booked THAT DAY — the block machinery yields to the pass-1 plan
+    instead of double-covering the hour. (Tomorrow, without such an own
+    booking at its peak's shoulder, gets its own block — per-day R1.)"""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 84.0, [13.0, 11.0])
     lp = result.load_plans[0]
-    assert not _pass3_block(result)
+    today = inputs.slots[0].start.date()
+    p3 = _pass3_block(result)
+    assert p3 == [(24, 4, 3, 1600.0)]  # tomorrow's own block; none today
+    assert all(inputs.slots[a[0]].start.date() != today for a in p3)
     # The slot right before today's first export slot is a pass-1 booking
     # (07:00): pass 1 ate its export, the peak moved one slot later, and the
     # walk breaks at the own booking.
-    today = inputs.slots[0].start.date()
     peak = next(
         j
         for j, f in enumerate(result.trajectory.flows)
@@ -2876,12 +2956,13 @@ NIGHT_CONTROL = ControlParams(
 
 
 def test_night_rescue_no_crossday_predrain_for_continuous_loads():
-    """R10 REVERSED (F-PREDRAIN-BLOCK, operator 2026-08-01): in the exact
-    21:00 clipping-eve incident geometry the continuous load now books ZERO
-    hours before dawn — the cross-day night pre-drain is gone deliberately,
-    after a forecast flicker produced a pointless 19-min battery run. The
-    clip is absorbed by tomorrow's daylight pass-1 runs instead, and the T*
-    drain regime (the operational D1 outcome) is untouched."""
+    """R10 REVERSED, per-day form (v0.22.0): in the exact 21:00 clipping-eve
+    incident geometry the continuous load books ZERO hours TONIGHT before
+    midnight — the cross-day night drain stays retired (the 19-min flicker
+    run of 2026-08-01). TOMORROW gets its own block though (per-day R1):
+    it may run pre-dawn but never crosses its own midnight. Pass-1 slots
+    stay strictly daylight, the floors and the T* drain regime (the
+    operational D1 outcome) are untouched."""
     config = SystemConfig(
         control=NIGHT_CONTROL,
         loads=(NIGHT_DEH,),
@@ -2894,17 +2975,27 @@ def test_night_rescue_no_crossday_predrain_for_continuous_loads():
     result = plan(config, inputs)
     lp = result.load_plans[0]
 
-    dawn = datetime(2026, 7, 12, 6, 0)
-    night_hours = sum(
-        h for i, h in enumerate(lp.run_hours) if h > 0 and inputs.slots[i].start < dawn
+    tomorrow = now.date() + timedelta(days=1)
+    tonight_hours = sum(
+        h
+        for i, h in enumerate(lp.run_hours)
+        if h > 0 and inputs.slots[i].start.date() < tomorrow
     )
-    assert night_hours == 0.0, (
-        f"{night_hours} h booked before dawn — cross-day pre-drain is gone by design"
+    assert tonight_hours == 0.0, (
+        f"{tonight_hours} h booked tonight — cross-day pre-drain stays retired"
     )
-    assert not any(a[2] == 3 for a in lp.allocations)  # no today-peak, no block
-    # The clip day is still rescued — in its own daylight, by pass 1.
+    p3_blocks = [a for a in lp.allocations if a[2] == 3]
+    assert p3_blocks, "tomorrow's own pre-drain block is expected (per-day)"
+    for start, count, _pass, _wh in p3_blocks:
+        days = {inputs.slots[j].start.date() for j in range(start, start + count)}
+        assert days == {tomorrow}, f"block spans midnight: {days}"
+    # The clip day is still rescued — in its own daylight by pass 1 (strictly
+    # daylight), plus tomorrow's own block.
     assert lp.planned_energy_wh > 0.0
-    assert all(inputs.slots[i].pv_wh > 0.0 for i, on in enumerate(lp.schedule) if on)
+    p1_slots = {
+        j for a in lp.allocations if a[2] == 1 for j in range(a[0], a[0] + a[1])
+    }
+    assert p1_slots and all(inputs.slots[j].pv_wh > 0.0 for j in p1_slots)
     # The allocation's import stays within the artifact slack (R1).
     from core.optimize import IMPORT_ARTIFACT_SLACK_WH
 

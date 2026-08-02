@@ -1260,11 +1260,18 @@ def allocate_loads(
     # (docs/F-PREDRAIN-BLOCK.md, operator 2026-08-01). Replaces the slot-wise
     # pass-2 betting that flickered at the gate edge (the 19-min battery run
     # of 2026-08-01). Rules:
-    #   R1 today only: the block ends at TODAY's first export slot — no
-    #      cross-day night pre-drain for tomorrow's clips.
-    #   R2 peak: first slot of slot 0's day whose ACCEPTED trajectory
+    #   R1 per day, within the day (2026-08-02): EVERY horizon day with a
+    #      clip gets its own block — but each block stays inside its own
+    #      day (start >= the day's midnight), so nothing ever drains one day
+    #      for the next (the retired cross-day carve-out stays retired).
+    #      Today's block actuates as before (slot 0 + stability gate);
+    #      future-day blocks are plan/display until their day comes — the
+    #      forecast then honestly shows tomorrow's pre-drain instead of a
+    #      flat curve that cannot happen.
+    #   R2 peak: first slot of the block's day whose ACCEPTED trajectory
     #      (`current`, without this load's pre-drain) exports. No export
-    #      today -> no block; peak at slot 0 -> pass 1 owns it.
+    #      that day -> no block; peak at the day's first slot -> pass 1
+    #      owns it.
     #   R3 target: today's remaining lost export from the peak on — the
     #      block's opportunity (c1) is justified by construction up to it.
     #   R4 latest start (L4): extend backwards from the peak only until the
@@ -1289,6 +1296,11 @@ def allocate_loads(
     #   R7 execution: the coordinator switches the block only after
     #      PREDRAIN_BLOCK_STABLE_PLANS identical plans (stable signature).
     today = inputs.slots[0].start.date() if n else None
+    # Horizon days in ascending order: (date, first slot index).
+    horizon_days: list[tuple] = []
+    for _j, _slot in enumerate(inputs.slots):
+        if not horizon_days or _slot.start.date() != horizon_days[-1][0]:
+            horizon_days.append((_slot.start.date(), _j))
     for load in config.loads:
         if load.energy_limited or today is None:
             continue
@@ -1298,88 +1310,90 @@ def allocate_loads(
         power_w = state.planning_power_w(load)
         if power_w <= _EPS:
             continue
-        peak = next(
-            (
-                j
-                for j in range(n)
-                if inputs.slots[j].start.date() == today
-                and current.flows[j].grid_export_wh > _EPS
-            ),
-            None,
-        )
-        if peak is None or peak == 0:
-            continue
-        target_wh = sum(
-            current.flows[j].grid_export_wh
-            for j in range(peak, n)
-            if inputs.slots[j].start.date() == today
-        )
-        # target_wh > _EPS holds by construction: the peak slot itself exports
-        # more than _EPS and is part of the sum. The guard is kept as a
-        # defensive mirror of the peak checks above (same pattern as the
-        # pass-1 overlap guard's pragma below).
-        if target_wh <= _EPS:  # pragma: no cover
-            continue
-        best: tuple[int, list[float], list[tuple[int, float]], Trajectory] | None = None
-        block_wh = 0.0
-        for s in range(peak - 1, -1, -1):
-            if inputs.slots[s].start.date() != today or schedules[load.load_id][s]:
-                break  # the block never leaves today nor overlaps own bookings
-            block_wh += power_w * inputs.slots[s].duration
-            trial = list(extra)
-            covered = []  # already typed by the pass-1 unpack above
-            for j in range(s, peak):
-                take = inputs.slots[j].duration
-                trial[j] += power_w * take
-                covered.append((j, take))
-            traj = _gate_trial(tuple(trial), covered)
-            if traj is None:
-                break  # Z2''/R2/R5/Z3 veto: longer blocks only get worse
-            export_drop = current.total_export_wh - traj.total_export_wh
-            if export_drop + _EPS < (1.0 - load.battery_tolerance) * block_wh * rt:
-                break  # the detour is not repaid (c1 at the physical rt)
-            # Dynamic-buffer floor for the block, evaluated on the NOMINAL
-            # trajectory (operator decision 2026-08-02): the alpha/band
-            # STRESS is deliberately NOT applied to pass 3 — a forecast miss
-            # is caught by the intra-day replan loop (the block is recomputed
-            # every refresh; a degraded forecast retracts the recommendation;
-            # the G4 floor guard force-switches at the real-time cutoff), and
-            # R5 already pins "the battery still fills to soc_max today".
-            # The stress stays in force for the slot-wise pass-2 bets of
-            # energy-limited loads.
-            recovery = _refill_index(traj, s, soc_full)
-            hi = max(recovery, covered[-1][0])
-            if _z4_reject(
-                _windowed_min_soc(traj, s, hi),
-                stress_floor_by_slot[s],
-                _windowed_min_soc(current, s, hi),
-            ):
-                break
-            best = (s, trial, covered, traj)
-            if block_wh >= target_wh:
-                break  # target covered: the latest feasible start is found
-        if best is None:
-            continue
-        s, trial, covered, traj = best
-        # R6: the committed run must cover the executor dwell. An own booking
-        # in the peak slot (pass 1) continues the block's run seamlessly, so
-        # it counts toward min_runtime — otherwise a block ending inside a
-        # partial slot 0 would be dropped although the dwell is delivered
-        # (the F-SEAMLESS-PLAN raster-edge case).
-        block_hours = sum(take for _, take in covered)
-        run_after = run_h[load.load_id][peak] if peak < n else 0.0
-        if block_hours + run_after < load.min_runtime_min / 60.0 - _EPS:
-            continue
-        _placed_h, placed_wh = _accept_candidate(
-            load, 3, s, power_w, trial, covered, traj, remaining[load.load_id]
-        )
-        reasons[load.load_id].append(
-            f"pass 3 @ {inputs.slots[s].start.strftime('%m-%d %H:%M')}: "
-            f"pre-drain block to today's peak "
-            f"{inputs.slots[peak].start.strftime('%H:%M')} "
-            f"({round(placed_wh)} Wh against {round(target_wh)} Wh clip), "
-            "latest feasible start"
-        )
+        for day, day_start in horizon_days:
+            peak = next(
+                (
+                    j
+                    for j in range(day_start, n)
+                    if inputs.slots[j].start.date() == day
+                    and current.flows[j].grid_export_wh > _EPS
+                ),
+                None,
+            )
+            if peak is None or peak == day_start:
+                continue  # no clip this day (or it opens the day: pass 1 owns it)
+            target_wh = sum(
+                current.flows[j].grid_export_wh
+                for j in range(peak, n)
+                if inputs.slots[j].start.date() == day
+            )
+            # target_wh > _EPS holds by construction: the peak slot itself
+            # exports more than _EPS and is part of the sum. The guard is
+            # kept as a defensive mirror of the peak checks above.
+            if target_wh <= _EPS:  # pragma: no cover
+                continue
+            best: (
+                tuple[int, list[float], list[tuple[int, float]], Trajectory] | None
+            ) = None
+            block_wh = 0.0
+            for s in range(peak - 1, day_start - 1, -1):
+                if schedules[load.load_id][s]:
+                    break  # the block never overlaps own bookings
+                block_wh += power_w * inputs.slots[s].duration
+                trial = list(extra)
+                covered = []  # already typed by the pass-1 unpack above
+                for j in range(s, peak):
+                    take = inputs.slots[j].duration
+                    trial[j] += power_w * take
+                    covered.append((j, take))
+                traj = _gate_trial(tuple(trial), covered)
+                if traj is None:
+                    break  # Z2''/R2/R5/Z3 veto: longer blocks only get worse
+                export_drop = current.total_export_wh - traj.total_export_wh
+                if export_drop + _EPS < (1.0 - load.battery_tolerance) * block_wh * rt:
+                    break  # the detour is not repaid (c1 at the physical rt)
+                # Dynamic-buffer floor for the block, evaluated on the NOMINAL
+                # trajectory (operator decision 2026-08-02): the alpha/band
+                # STRESS is deliberately NOT applied to pass 3 — a forecast
+                # miss is caught by the intra-day replan loop (the block is
+                # recomputed every refresh; a degraded forecast retracts the
+                # recommendation; the G4 floor guard force-switches at the
+                # real-time cutoff), and R5 already pins "the battery still
+                # fills to soc_max today". The stress stays in force for the
+                # slot-wise pass-2 bets of energy-limited loads.
+                recovery = _refill_index(traj, s, soc_full)
+                hi = max(recovery, covered[-1][0])
+                if _z4_reject(
+                    _windowed_min_soc(traj, s, hi),
+                    stress_floor_by_slot[s],
+                    _windowed_min_soc(current, s, hi),
+                ):
+                    break
+                best = (s, trial, covered, traj)
+                if block_wh >= target_wh:
+                    break  # target covered: the latest feasible start is found
+            if best is None:
+                continue
+            s, trial, covered, traj = best
+            # R6: the committed run must cover the executor dwell. An own
+            # booking in the peak slot (pass 1) continues the block's run
+            # seamlessly, so it counts toward min_runtime — otherwise a block
+            # ending inside a partial slot 0 would be dropped although the
+            # dwell is delivered (the F-SEAMLESS-PLAN raster-edge case).
+            block_hours = sum(take for _, take in covered)
+            run_after = run_h[load.load_id][peak] if peak < n else 0.0
+            if block_hours + run_after < load.min_runtime_min / 60.0 - _EPS:
+                continue
+            _placed_h, placed_wh = _accept_candidate(
+                load, 3, s, power_w, trial, covered, traj, remaining[load.load_id]
+            )
+            reasons[load.load_id].append(
+                f"pass 3 @ {inputs.slots[s].start.strftime('%m-%d %H:%M')}: "
+                f"pre-drain block to the {day.strftime('%m-%d')} peak "
+                f"{inputs.slots[peak].start.strftime('%H:%M')} "
+                f"({round(placed_wh)} Wh against {round(target_wh)} Wh clip), "
+                "latest feasible start"
+            )
 
     plans = [
         LoadPlan(

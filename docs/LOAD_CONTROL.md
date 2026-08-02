@@ -426,8 +426,12 @@ applied to the block — an intra-day forecast miss is caught by the replan
 loop (the block is recomputed every refresh and a degraded forecast
 retracts the recommendation; the G4 floor guard force-switches at the
 real-time cutoff), so the block may drain to the ~25 % trough instead of
-~35 % (operator decision 2026-08-02). Today-only: the cross-day
-night carve-out (F-NIGHT-RESCUE) is retired for this class. Energy-limited
+~35 % (operator decision 2026-08-02). Per-day since v0.22.0: EVERY horizon
+day with a clip gets its own block, each confined to its own day (start >=
+its midnight — nothing drains one day for the next; the cross-day night
+carve-out stays retired). Today's block actuates as before (slot 0 +
+stability gate); future-day blocks are plan/display until their day comes,
+so the forecast honestly shows tomorrow's pre-drain. Energy-limited
 loads keep the unchanged pass-2 machinery (c1-rt/c2/Z4/daylight rule).
 
 The executor actuates a block only after **3 consecutive identical plans

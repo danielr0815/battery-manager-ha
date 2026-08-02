@@ -1,13 +1,13 @@
 {
  "appliance_windows": {},
- "export_kwh": 6.286433,
- "hours_to_max": 12,
+ "export_kwh": 3.940782,
+ "hours_to_max": 14,
  "import_kwh": 0.0,
  "import_trade_used_wh": 0.0,
  "inverter_on": true,
  "loads": {
   "dehumidifier": [
-   3600.0,
+   5600.0,
    [
     false,
     false,
@@ -15,11 +15,11 @@
     false,
     false,
     false,
-    false,
-    false,
-    false,
-    false,
-    false,
+    true,
+    true,
+    true,
+    true,
+    true,
     true,
     true,
     true,
@@ -71,12 +71,12 @@
    ]
   ]
  },
- "lost_surplus_kwh": 6.286433,
+ "lost_surplus_kwh": 3.940782,
  "max_soc": 95.0,
- "min_soc": 62.9246,
+ "min_soc": 28.1986,
  "prevented_export_by_day_wh": {
   "2026-07-03": 0.0,
-  "2026-07-04": 4313.358
+  "2026-07-04": 6659.009
  },
  "pv_window_ends": {
   "2026-07-04": 17
@@ -88,13 +88,13 @@
   79.718,
   77.276,
   74.835,
-  72.393,
-  69.951,
-  67.509,
-  62.925,
-  91.72,
-  95.0,
-  95.0,
+  63.711,
+  52.588,
+  41.465,
+  28.199,
+  49.855,
+  68.833,
+  87.812,
   95.0,
   95.0,
   95.0,
@@ -110,7 +110,7 @@
   76.82,
   74.379
  ],
- "stressed_min_soc": null,
+ "stressed_min_soc": 28.1986,
  "threshold": 20.0,
  "threshold_horizon_end": "2026-07-04T10:00:00"
 }

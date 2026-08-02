@@ -34,14 +34,19 @@ Drei strukturelle Defekte dahinter:
 
 ## 2. Regeln
 
-- **R1 (nur heute).** Pre-drain bedient ausschließlich den HEUTIGEN
-  Höhepunkt. Kein Cross-day-Pre-drain für morgige Clips mehr — die
-  F-NIGHT-RESCUE-Carve-out endet für kontinuierliche Lasten (Operator
-  2026-08-01).
-- **R2 (Peak).** Der Höhepunkt ist der erste Slot des Slot-0-Tages, in dem
-  die akzeptierte Trajektorie OHNE diese Last (`current` nach Pass 1/2)
-  exportiert. Kein Export heute → kein Block. Peak in Slot 0 → Pass 1
-  regelt (kein Block).
+- **R1 (per Tag, tagesbeschränkt; v0.22.0).** JEDER Horizont-Tag mit Clip
+  bekommt seinen eigenen Block — aber jeder Block bleibt innerhalb seines
+  Tages (Start >= dessen Mitternacht), sodass nie ein Tag für den nächsten
+  entladen wird (die F-NIGHT-RESCUE-Carve-out bleibt beerdigt, Operator
+  2026-08-01). Der heutige Block aktuiert wie gehabt (Slot 0 +
+  Stabilitäts-Gate); Blöcke künftiger Tage sind Plan/Anzeige, bis ihr Tag
+  kommt — die Prognose zeigt den morgigen Pre-drain also ehrlich an, statt
+  eine flache Kurve, die so nie eintreten wird (Operator-Beobachtung
+  2026-08-02: „Entfeuchter morgen erst ab 8 Uhr auf der Card — unerwartet").
+- **R2 (Peak).** Der Höhepunkt ist der erste Slot DES BETREFFENDEN Tages,
+  in dem die akzeptierte Trajektorie OHNE diese Last (`current` nach Pass
+  1/2 und älteren Tages-Blöcken) exportiert. Kein Export an dem Tag → kein
+  Block. Peak am ersten Slot des Tages → Pass 1 regelt (kein Block).
 - **R3 (Ziel-Energie).** Der Block deckt höchstens den ab dem Peak heute
   noch verlorenen Export (`sum(grid_export_wh)` der heutigen Slots ≥ Peak)
   — die c1-Opportunity ist damit konstruktiv begründet; die Block-c1-Prüfung

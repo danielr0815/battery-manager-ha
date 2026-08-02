@@ -1365,9 +1365,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         re-counts, which merely delays the block.
         """
         signatures: dict[str, tuple[str | None, str]] = {}
+        slot0_day = inputs.slots[0].start.date() if inputs.slots else None
         for load_plan in result.load_plans:
             for start, count, pass_no, _wh in load_plan.allocations:
                 if pass_no != 3 or start + count > len(inputs.slots):
+                    continue
+                # Per-day blocks (R1, v0.22.0): only the block of slot 0's
+                # own day is actuation-relevant — future-day blocks are
+                # plan/display until their day comes and must not feed the
+                # stability evidence (or switch anything now).
+                if inputs.slots[start].start.date() != slot0_day:
                     continue
                 last = inputs.slots[start + count - 1]
                 signatures[load_plan.load_id] = (

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-02
+
+### Changed
+- **Every horizon day gets its own pre-drain block (per-day).** The pass-3
+  block was computed only for slot-0's day, so the forecast showed
+  tomorrow's dehumidifier only from ~08:00 and a tomorrow SOC curve that
+  could never happen. Now each horizon day with a clip gets its own block,
+  each confined to its own day (start >= its midnight — nothing drains one
+  day for the next; the cross-day carve-out stays retired). Today's block
+  actuates as before (slot 0 + stability gate); future-day blocks are
+  plan/display until their day comes — the SOC forecast honestly shows
+  tomorrow's pre-drain now. On the clipping-eve golden the dehumidifier's
+  own tomorrow block cuts lost export from 6.29 to 3.94 kWh (min SOC now
+  reaches the ~25-28 % dynamic floor instead of ~63 %).
+
 ## [0.21.0] - 2026-08-02
 
 ### Changed
