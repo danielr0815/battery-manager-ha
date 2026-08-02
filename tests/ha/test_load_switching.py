@@ -1170,14 +1170,14 @@ async def test_f10_hold_gate_uses_measured_when_above_config(hass):
     coordinator, sub_id, _data = await _setup(
         hass, calls, power_w=400.0, energy_limited=False
     )
+    _detach_listener(coordinator)
     _latched(coordinator, sub_id)
     # The outlet really draws 900 W (a foreign consumer), well above the standby
     # bar and clearly above the 400 W config/learned power.
     hass.states.async_set(POWER_FEEDBACK, "900")
-
-    now = dt_util.utcnow()
     # Shadow plan active, but PV 600 W covers the 400 W config, not the 900 W
     # real draw: the over-power guard blocks the hold.
+    now = dt_util.utcnow()
     calls.clear()
     await coordinator._apply_load_switching(
         _inactive_result(sub_id), now, (1.0,), 600.0, {sub_id: True}

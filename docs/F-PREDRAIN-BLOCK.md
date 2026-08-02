@@ -89,6 +89,15 @@ Drei strukturelle Defekte dahinter:
   (z. B. s_night_predrain 3,99 → 6,32 kWh) und `min_soc` steigt (28 → 63 %)
   — lieber etwas Export verlieren als die Batterie planlos zu zyklen;
   Import sinkt überall (0,06 → 0,04 kWh).
+- **Z2''-Artefakt-Hunger (behoben v0.20.0, live 2026-08-03):** der Block
+  verhungerte an starken Tagen nicht an seinen Gates, sondern am geteilten
+  50-Wh-Slack: der Charger-Standby mintete ~10 Wh Phantom-Import pro
+  Ladestunde und akkumulierte über den 3-Tage-Horizont (der morgige
+  07:00-Kandidat wurde verworfen, obwohl der Block sonst 07:00–10:00
+  Z4-gedeckelt bucht). Behoben an der Quelle (`simulate.py`: der Standby
+  reduziert die gespeicherte Ladung statt Import zu minten, `needed_ac`
+  kompensiert ihn — Überschuss-Stunden minten keinen Import mehr, und der
+  Deckel bleibt exakt erreichbar, keine Lade-Asymptote).
 - **Keine c2/β-Insurance** für kontinuierliche Lasten (nur noch
   energie-limitierte). Pass-1-Überschuss + R3-Block decken deren
   Bedarf.

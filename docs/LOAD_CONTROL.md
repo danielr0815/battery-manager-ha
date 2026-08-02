@@ -433,3 +433,17 @@ backstop. Block window + stability progress are exposed per load as the
 `predrain_block` sensor attribute; the INFO line is
 `F-PREDRAIN-BLOCK: pre-drain booked for <load> <start> -> <end> (<wh> Wh)`
 (FIX-11 change-only semantics).
+
+## 18. At-max top-up (F-PEAK-FILL, v0.20.0)
+
+An energy-limited load with budget left no longer stalls or pulses at the
+max line when the PV surplus is below its charge power: pass 1 may book the
+slot anyway — the house battery buffers the difference — as long as PV
+exceeds consumption, the trial ends the slot inside the hysteresis band
+(`soc_end >= soc_max − AT_MAX_TOPUP_BAND_PERCENT = 5 %`), and the full gate
+stack passes (R5 forces re-reaching soc_max the same day, Z2'' forbids an
+unpaid dip). The dip provably refills from otherwise-lost export, so export
+spikes become load charge; the per-slot band check IS the hysteresis (from
+the band floor every run is rejected until PV refills). Reasons carry the
+`at-max top-up (peak fill)` wording. Continuous loads are excluded (their
+buffer form is the pass-3 block, §17).

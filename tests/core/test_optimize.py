@@ -1324,9 +1324,9 @@ def test_pass1_load_outer_config_order_priority_scarce_surplus():
     total_deh = sum(deh_first.values())
     quantum = DEHUMIDIFIER.nominal_power_w * DEHUMIDIFIER.min_runtime_min / 60.0
     assert abs(total_fb - total_deh) <= quantum + 1e-6
-    # Import may differ only within the artifact slack (F-STRICT-SURPLUS R1: a
-    # booking's ~10 Wh standby artifact may ride the slack in one order and not
-    # the other — never more).
+    # Import may differ only within the artifact slack (F-STRICT-SURPLUS R1:
+    # an order-dependent import difference rides the absolute cap, never a
+    # rescued-export budget).
     from core.optimize import IMPORT_ARTIFACT_SLACK_WH
 
     assert abs(import_fb - import_deh) <= IMPORT_ARTIFACT_SLACK_WH / 1000.0 + 1e-9
@@ -1334,8 +1334,9 @@ def test_pass1_load_outer_config_order_priority_scarce_surplus():
 
 def test_reasons_align_one_to_one_with_allocations():
     """R12/R13/R15: every allocation entry has exactly one reason, same order;
-    the pass number in the string matches the allocation's pass, and pass-2
-    reasons carry the structural lateness claim."""
+    the pass number in the string matches the allocation's pass, pass-1
+    reasons name the booking kind (direct surplus or the F-PEAK-FILL at-max
+    top-up), and pass-2 reasons carry the structural lateness claim."""
     result, _ = _s3_plan()
     for lp in result.load_plans:
         assert len(lp.reasons) == len(lp.allocations)
@@ -1344,7 +1345,7 @@ def test_reasons_align_one_to_one_with_allocations():
         ):
             assert why.startswith(f"pass {pass_no} @ ")
             if pass_no == 1:
-                assert "direct surplus" in why
+                assert "direct surplus" in why or "at-max top-up" in why
             else:
                 assert "latest feasible slot" in why
     # The scenario books at least one allocation, so the check is not vacuous.
@@ -1402,13 +1403,14 @@ def _pass3_block(result, load_id="dehumidifier"):
 
 
 def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
-    """T1 (F-STRICT-SURPLUS R1): the ~10 Wh charger-standby artifact of the
-    pre-drain block rides the ABSOLUTE artifact slack — the block books
-    without any trade ratio, and the retired `import_trade_ratio` field
-    changes nothing (0.0 and 0.1 produce the identical plan). The used import
-    stays bounded by the slack, never by a rescued-export budget. (Same-day
-    rewrite, F-PREDRAIN-BLOCK: 04:00 on the clip day, the block's pre-dawn
-    hours drain toward today's 09:00 peak.)"""
+    """T1 (F-STRICT-SURPLUS R1): the pre-drain block books without touching
+    the ABSOLUTE artifact slack — since the standby accounting fix the
+    block's charging hours mint no import at all (the charger standby is
+    surplus-covered, so the ~10 Wh artifact class is gone) and the used
+    import is exactly zero. The retired `import_trade_ratio` field changes
+    nothing (0.0 and 0.1 produce the identical plan). (Same-day rewrite,
+    F-PREDRAIN-BLOCK: 04:00 on the clip day, the block's pre-dawn hours
+    drain toward today's 09:00 peak.)"""
     now = datetime(2026, 7, 4, 4, 0)
 
     def run(ratio):
@@ -1424,9 +1426,9 @@ def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
     night = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
     assert night, "the block's pre-dawn hours are part of the booking"
     assert r0.load_plans == r1.load_plans, "the retired ratio must not change the plan"
-    from core.optimize import IMPORT_ARTIFACT_SLACK_WH
-
-    assert 0.0 < r0.import_trade_used_wh <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    # Exactly zero: no standby artifact rides the slack anymore (was
+    # 0.0 < used <= IMPORT_ARTIFACT_SLACK_WH while the artifact existed).
+    assert r0.import_trade_used_wh == 0.0
     assert r0.import_trade_used_wh == r1.import_trade_used_wh
 
 
@@ -1434,7 +1436,8 @@ def test_t2_cumulative_import_trade_invariant():
     """T2: over the whole allocation, final import stays within the Z2''
     invariant the code actually applies — at most IMPORT_ARTIFACT_SLACK_WH of
     added import over the no-loads base — and the pre-drain block booked real
-    energy for the artifact it traded."""
+    energy. Since the standby accounting fix the invariant is met with zero
+    added import: the artifact trade it used to tolerate no longer exists."""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     inputs = build_slots(cfg, now, 50.0, [13.0, 11.0])
@@ -1446,7 +1449,9 @@ def test_t2_cumulative_import_trade_invariant():
     assert traj.total_import_wh - base.total_import_wh <= (
         IMPORT_ARTIFACT_SLACK_WH + 1e-6
     )
-    assert traj.total_import_wh > base.total_import_wh  # the artifact trade happened
+    # Standby-accounting fix: no artifact trade at all — the block books with
+    # zero added import over the base (was: a few ~10 Wh standby artifacts).
+    assert traj.total_import_wh == base.total_import_wh
     assert _pass3_block(result) == [(1, 4, 3, 1600.0)]  # the block booked energy
 
 
@@ -1517,7 +1522,10 @@ def test_t5_predrain_hours_hug_the_window_latest_first():
     deh250 = replace(DEHUMIDIFIER, nominal_power_w=250.0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh250,))
     now = datetime(2026, 7, 4, 4, 0)
-    result, inputs = make_plan(cfg, now, 65.0, [6.0, 11.0])
+    # Geometry tuned for the standby-aware charger accounting (2026-08-03):
+    # the ~9 Wh/h honest charge loss needs a touch more PV headroom so the
+    # refill still provably succeeds and the block stays target-bound.
+    result, inputs = make_plan(cfg, now, 67.0, [6.2, 11.0])
     lp = result.load_plans[0]
     p3 = _pass3_block(result)
     # ONE contiguous block [07:00, 10:00) ending the slot right before
@@ -1759,11 +1767,12 @@ def test_gate_parity_shared_trade_budget_across_classes():
     now trade import for daylight bookings exactly like the dehumidifier.
 
     Scenario (unchanged from FIX-2): modest day-1 then a strong day-2. The
-    dehumidifier pre-drains and trades ~10 Wh; the fossibot has a large
+    dehumidifier pre-drains (its ~10 Wh standby artifact is gone since the
+    accounting fix — no import is traded at all); the fossibot has a large
     remaining budget. Under parity the fossibot books MORE than the old
-    strict gate allowed (2250 Wh vs 1800 — parity can only add opportunities
-    here) while the cumulative trade invariant (b1) and the attribution
-    bound (b2) keep holding — they are the binding contracts."""
+    strict gate allowed (parity can only add opportunities here) while the
+    cumulative trade invariant (b1) and the attribution bound (b2) keep
+    holding — they are the binding contracts."""
     now = datetime(2026, 7, 3, 21, 0)
     fb = SurplusLoad(
         load_id="fb",
@@ -1792,14 +1801,21 @@ def test_gate_parity_shared_trade_budget_across_classes():
     load_plans, extra, traj = allocate_loads(cfg, inputs, threshold, base)
     fb_plan = next(p for p in load_plans if p.load_id == "fb")
 
-    # (a) A continuous trade fired AND the fossibot books its parity coverage:
-    #     2250 Wh, 450 Wh MORE than the old strict gate's 1800 (pass-2 refills
-    #     incl. a 0.5 h residual quantum, F-RESIDUAL-TOPUP R1) — the shared
-    #     trade budget now finances fossibot bookings too.
-    assert traj.total_import_wh - base.total_import_wh > 1e-6  # deh traded
+    # (a) No import trade fires at all (the standby accounting fix removed
+    #     the dehumidifier's ~10 Wh artifact) AND the fossibot books its
+    #     parity coverage: 2400 Wh (was 1800 under the pre-parity strict
+    #     gate, 2250 before F-PEAK-FILL). Parity only ever ADDS
+    #     opportunities, and R2 adds +150 net on top: three at-max top-ups
+    #     (13/15/17:00, battery-buffered pass-1 bookings at the max line) —
+    #     the 13:00 slot upgraded from a 150 Wh pass-2 bet to a 300 Wh
+    #     top-up and a new 15:00 top-up, against the 14:00 pass-2 bet whose
+    #     refill the top-ups consumed. (The third top-up moved 16:00 ->
+    #     17:00 with the standby-cleaned export trajectory.)
+    assert traj.total_import_wh - base.total_import_wh == 0.0  # no trade needed
     assert any(a[2] == 2 for a in fb_plan.allocations)  # a post-trade refill booked
     assert fb_plan.planned_energy_wh >= 1800.0 - 1e-6  # parity only ever adds
-    assert abs(fb_plan.planned_energy_wh - 2250.0) < 1e-6
+    assert abs(fb_plan.planned_energy_wh - 2400.0) < 1e-6
+    assert any("at-max top-up" in r for r in fb_plan.reasons)  # the R2 additions
     # Daylight rule: every fossibot slot carries PV (never a night booking).
     assert all(
         inputs.slots[i].pv_wh > 0.0 for i, on in enumerate(fb_plan.schedule) if on
@@ -2044,14 +2060,21 @@ def test_gate_parity_daylight_rule_blocks_fb_night_predrain():
 def test_gate_parity_c2_beta_books_energy_limited_in_window():
     """T12 parity: the optimistic c2 gate now opens extra in-window slots for
     an energy-limited load exactly as it does for the dehumidifier — reason
-    string included — while the trade invariant keeps holding."""
+    string included — while the trade invariant keeps holding. (Geometry
+    re-scoped for F-PEAK-FILL: a 600 W powerstation on a 9 kWh day, so the
+    c2 bet's dip LEAVES the at-max top-up band (slot ends < 90 %) and the
+    cheap pass-1 top-up cannot shadow it — with the old 300 W / 7 kWh
+    geometry the bet dips only to ~92 %, sits inside the band, and the
+    top-up books the slot regardless of beta.)"""
     now = datetime(2026, 7, 4, 8, 0)
-    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    fb_hungry = replace(
+        FOSSIBOT_B, nominal_power_w=600.0, capacity_wh=8000.0, target_soc_percent=100.0
+    )
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
 
     def run(beta):
         cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=beta, loads=(fb_hungry,))
-        return make_plan(cfg, now, 92.0, [7.0], load_states=states)
+        return make_plan(cfg, now, 92.0, [9.0], load_states=states)
 
     r10, inputs = run(1.0)
     r12, _ = run(1.2)
@@ -2232,7 +2255,8 @@ def test_predrain_block_latest_start_covers_ceil_of_target():
     deh250 = replace(DEHUMIDIFIER, nominal_power_w=250.0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh250,))
     now = datetime(2026, 7, 4, 4, 0)
-    result, _inputs = make_plan(cfg, now, 65.0, [6.0, 11.0])
+    # Same tuned geometry as test_t5 (standby-aware charger accounting).
+    result, _inputs = make_plan(cfg, now, 67.0, [6.2, 11.0])
     lp = result.load_plans[0]
     p3 = _pass3_block(result)
     assert p3 == [(3, 3, 3, 750.0)]
@@ -2349,11 +2373,14 @@ def test_predrain_block_shorter_than_min_runtime_is_dropped():
     """R6: a block whose committed run (block hours + an own booking
     continuing in the peak slot) is shorter than min_runtime is never booked
     — the executor dwell would deliver more than the plan accounts. Here the
-    gates accept a single-hour block ending at the 10:00 peak whose thin
-    export never triggered a pass-1 booking (no continuation), and one hour
-    is below the 90 min dwell, so the block is dropped wholesale."""
-    deh90 = replace(DEHUMIDIFIER, min_runtime_min=90)
-    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh90,))
+    gates accept a two-hour block ending at the 11:00 peak whose thin export
+    never triggered a pass-1 booking (no continuation), and two hours is
+    below the 150 min dwell, so the block is dropped wholesale. (Geometry
+    shifted by the standby accounting fix: the candidate was a single hour
+    ending at the 10:00 peak under the old export trajectory — same drop
+    rule, re-pinned dwell.)"""
+    deh150 = replace(DEHUMIDIFIER, min_runtime_min=150)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh150,))
     now = datetime(2026, 7, 4, 4, 0)
     result, inputs = make_plan(cfg, now, 60.0, [5.5, 11.0])
     lp = result.load_plans[0]
@@ -2520,10 +2547,14 @@ def test_effective_uncertainty_band_detection_and_clamps():
 
 
 def _t12_band_plan(beta, r10=None, r90=None):
-    """The T12 c2 geometry (08:00, house 92 %, one 7 kWh day) with optional
-    P10/P90 bands at the given ratios on every daylight slot. The load is a
-    hungry ENERGY-LIMITED powerstation: since F-PREDRAIN-BLOCK the c2/beta
-    insurance machinery is pass-2-only, and pass 2 is its class."""
+    """The T12 c2 geometry (08:00, house 92 %, one 9 kWh day, a 600 W hungry
+    powerstation) with optional P10/P90 bands at the given ratios on every
+    daylight slot. The load is ENERGY-LIMITED: since F-PREDRAIN-BLOCK the
+    c2/beta insurance machinery is pass-2-only, and pass 2 is its class.
+    Re-scoped for F-PEAK-FILL: the 600 W quantum makes the c2 bet's dip leave
+    the at-max top-up band (slot ends < 90 %), so the cheap pass-1 top-up
+    cannot shadow the insurance slots — the banded optimism stays the
+    discriminating mechanism (see the parity T12 test)."""
     control = replace(
         ControlParams(),
         import_trade_ratio=0.1,
@@ -2531,11 +2562,13 @@ def _t12_band_plan(beta, r10=None, r90=None):
         upper_pv_reserve=beta,
         strong_pv_cutoff_w=200.0,
     )
-    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    fb_hungry = replace(
+        FOSSIBOT_B, nominal_power_w=600.0, capacity_wh=8000.0, target_soc_percent=100.0
+    )
     cfg = SystemConfig(control=control, loads=(fb_hungry,))
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
     now = datetime(2026, 7, 4, 8, 0)
-    base_inputs = build_slots(cfg, now, 92.0, [7.0], load_states=states)
+    base_inputs = build_slots(cfg, now, 92.0, [9.0], load_states=states)
     if r10 is None:
         return plan(cfg, base_inputs), base_inputs
     p10: dict[datetime, float] = {}
@@ -2545,7 +2578,7 @@ def _t12_band_plan(beta, r10=None, r90=None):
             p10[s.start] = s.pv_wh * r10
             p90[s.start] = s.pv_wh * r90
     inputs = build_slots(
-        cfg, now, 92.0, [7.0], load_states=states, pv_hourly_p10=p10, pv_hourly_p90=p90
+        cfg, now, 92.0, [9.0], load_states=states, pv_hourly_p10=p10, pv_hourly_p90=p90
     )
     return plan(cfg, inputs), inputs
 
@@ -2683,12 +2716,14 @@ def test_bit_identity_without_band_data():
         upper_pv_reserve=1.2,
         strong_pv_cutoff_w=200.0,
     )
-    fb_hungry = replace(FOSSIBOT_B, capacity_wh=8000.0, target_soc_percent=100.0)
+    fb_hungry = replace(
+        FOSSIBOT_B, nominal_power_w=600.0, capacity_wh=8000.0, target_soc_percent=100.0
+    )
     cfg = SystemConfig(control=control, loads=(fb_hungry,))
     states = (SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),)
     now = datetime(2026, 7, 4, 8, 0)
     inputs_empty = build_slots(
-        cfg, now, 92.0, [7.0], load_states=states, pv_hourly_p10={}, pv_hourly_p90=None
+        cfg, now, 92.0, [9.0], load_states=states, pv_hourly_p10={}, pv_hourly_p90=None
     )
     empty = plan(cfg, inputs_empty)
     assert _booked(empty) == _booked(plain)
@@ -2998,7 +3033,12 @@ def test_merge_ramp_no_t_star_bistability_at_clip_onset():
     # Self-calibrate: scan day-1 PV for the value that puts the stressed clip
     # margin just past onset but well below the ramp (so the scan stays on the
     # full horizon and the edge is the OLD knife-edge, not the new truncation
-    # edge at margin >= ramp).
+    # edge at margin >= ramp). The window's lower bound is 20 Wh: with the
+    # standby-compensated charge accounting (cap-limited hours store ~9 Wh
+    # less) the full-horizon hoard/drain cost tie moved a few Wh of margin
+    # past the bare clip onset, and margins below ~20 Wh still sit on that
+    # tie (T* flips 20<->50 there — a base-scan edge the ramp cannot and
+    # should not smooth); from ~20 Wh up the fade separates the regimes.
     edge_kwh = None
     edge_margin = None
     milli = 8000
@@ -3008,7 +3048,7 @@ def test_merge_ramp_no_t_star_bistability_at_clip_onset():
             config, now, base_soc, [d1, 12.0, 2.0], load_states=NIGHT_STATE
         )
         end, margin = _threshold_merge_probe(config, inputs)
-        if end is not None and 5.0 < margin < MERGE_TERMINAL_RAMP_WH / 2.0:
+        if end is not None and 20.0 < margin < MERGE_TERMINAL_RAMP_WH / 2.0:
             edge_kwh = d1
             edge_margin = margin
             break
@@ -3369,10 +3409,13 @@ def test_card_20260719_strict_invariants_hold_end_to_end():
     no-loads base; (b) R2 — no slot carrying booked load energy is GRID-FED
     (inverter off AND PV below the AC load) or touches the 20 % cutoff at
     either endpoint; (c) the SOC touches soc_max on Sunday (the operator's
-    expectation: battery first), with Sunday hosting only direct-surplus
-    pass-1 runs — the 08:00-12:00 beta-insurance morning bets and the pre-dawn
-    cutoff-riding bookings of the v0.14.0 live plan are gone; (d) Monday's clip
-    is still absorbed by pass-1 runs (rescue not suppressed)."""
+    expectation: battery first), with Sunday hosting only pass-1 runs —
+    direct-surplus bookings and, for the energy-limited fossibot with budget
+    left, F-PEAK-FILL at-max top-ups (the battery-buffered variant of the
+    same pass-1 machinery, judged by the identical (a)-(c) invariants) — the
+    08:00-12:00 beta-insurance morning bets and the pre-dawn cutoff-riding
+    bookings of the v0.14.0 live plan are gone; (d) Monday's clip is still
+    absorbed by pass-1 runs (rescue not suppressed)."""
     from core.optimize import IMPORT_ARTIFACT_SLACK_WH
 
     cfg, inputs, result = _card_20260719_plan()
@@ -3398,10 +3441,20 @@ def test_card_20260719_strict_invariants_hold_end_to_end():
         if s.start.date() == sunday
     )
     assert sunday_max >= cfg.battery.soc_max_percent - 0.1  # (c) battery first
+    energy_limited = {ld.load_id for ld in cfg.loads if ld.energy_limited}
+    topups = 0
     for lp in result.load_plans:
         for alloc, reason in zip(lp.allocations, lp.reasons, strict=True):
             if inputs.slots[alloc[0]].start.date() == sunday:
-                assert alloc[2] == 1 and "direct surplus" in reason
+                # Pass 1 only; the at-max top-up wording is legitimate for
+                # energy-limited loads (F-PEAK-FILL R2), everything else stays
+                # direct surplus.
+                assert alloc[2] == 1
+                if lp.load_id in energy_limited and "at-max top-up" in reason:
+                    topups += 1
+                else:
+                    assert "direct surplus" in reason
+    assert topups > 0, "the card's full midday hosts at-max top-ups now"
 
     monday = datetime(2026, 7, 20).date()
     deh_plan = next(p for p in result.load_plans if p.load_id == "dehumidifier")
@@ -3970,9 +4023,12 @@ def test_pass2_candidate_overlapping_pass1_booking_is_dropped():
     spilling into the pass-1 block is trimmed to a seamless single hour (F9),
     and nothing lands twice. Re-scoped to an ENERGY-LIMITED load
     (F-PREDRAIN-BLOCK): pass 2's candidates — and with them the overlap guard
-    — are its class's machinery now; the pinned plan is bit-identical to the
-    pre-block contract (three 2.5 h pass-1 blocks plus two seamless 1 h
-    pass-2 daylight bets)."""
+    — are its class's machinery now. (Re-pinned 2026-08 for the standby
+    accounting: the cleaned export trajectory — no standby subtracted from
+    the PV balance — leaves more covered export, so pass 1 now books a
+    FOURTH 2.5 h block at 12:00 the next morning; the overlap guard's
+    contract is unchanged — both pass-2 bets are still seamless 1 h trims
+    and nothing double-books.)"""
     elslow = SurplusLoad(
         load_id="elslow",
         name="EL slow",
@@ -3988,8 +4044,8 @@ def test_pass2_candidate_overlapping_pass1_booking_is_dropped():
         config, datetime(2026, 7, 4, 9, 0), 90.0, [8.0, 8.0], states
     )
     lp = result.load_plans[0]
-    # Pinned allocation: two 2.5 h pass-1 blocks in the morning surplus, one
-    # 2.5 h pass-1 block plus two seamless 1 h pass-2 daylight bets the next
+    # Pinned allocation: two 2.5 h pass-1 blocks in the morning surplus, two
+    # seamless 1 h pass-2 daylight bets plus two 2.5 h pass-1 blocks the next
     # morning — and NOTHING double-booked in between, where the overlap guard
     # dropped or trimmed the spilling candidates.
     assert [i for i, booked in enumerate(lp.schedule) if booked] == [
@@ -4004,8 +4060,11 @@ def test_pass2_candidate_overlapping_pass1_booking_is_dropped():
         24,
         25,
         26,
+        27,
+        28,
+        29,
     ]
-    assert lp.planned_energy_wh == 3800.0
+    assert lp.planned_energy_wh == 4800.0
     # Nothing double-booked: run hours never exceed a slot's duration.
     assert all(
         run_h <= inputs.slots[i].duration + 1e-9 for i, run_h in enumerate(lp.run_hours)
@@ -4184,3 +4243,260 @@ def test_saturated_energy_limited_load_offers_no_pass2_energy():
     lp = result.load_plans[0]
     assert lp.planned_energy_wh == 0.0
     assert not any(lp.schedule)
+
+
+# ---------------------------------------------------------------------------
+# F-PEAK-FILL R2 (operator 2026-08-01): the at-max top-up — an energy-limited
+# load with budget left may book a slot whose PV surplus does NOT cover its
+# power (the house battery buffers the difference) as long as the slot
+# carries positive PV surplus and ends inside the hysteresis band at the max
+# line (soc_max - AT_MAX_TOPUP_BAND_PERCENT). Export spikes become load
+# charge instead of the load pulsing at the max line; R5/Z2'' prove the dip
+# refills from otherwise-lost export. Continuous loads are excluded by
+# construction.
+# ---------------------------------------------------------------------------
+
+_TOPUP_FB = SurplusLoad(
+    load_id="fb",
+    name="F",
+    nominal_power_w=300.0,
+    battery_tolerance=0.15,
+    min_runtime_min=30,
+    energy_limited=True,
+    capacity_wh=8000.0,
+    target_soc_percent=100.0,
+)
+_TOPUP_TAIL = [(0.0, 50.0, 75.0)] * 5
+
+
+def _topup_scene(spec, soc, loads, states, start=datetime(2026, 7, 4, 12, 0)):
+    """Hand-built top-up scene: thin PV slots ahead of a strong 3 kWh slot
+    (the merge engages, so T* drains and the inverter really serves the dip)
+    plus a dark tail. `spec` entries are (pv_wh, ac_wh, dc_wh) per slot."""
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(control=control, loads=loads)
+    slots = tuple(
+        HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=(start + timedelta(hours=i)).hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
+        )
+        for i, (pv, ac, dc) in enumerate(spec)
+    )
+    inputs = PlanInputs(
+        now=start, start_soc_percent=soc, slots=slots, load_states=states
+    )
+    return cfg, inputs
+
+
+def test_at_max_topup_books_at_max_with_budget_left():
+    """R2: near house SOC max with PV surplus below the load's power, an
+    energy-limited load with budget left books the slot anyway — battery-
+    buffered, as an `at-max top-up (peak fill)` — because the dip stays
+    inside the 5 % hysteresis band and provably refills (R5/Z2'')."""
+    cfg, inputs = _topup_scene(
+        [(250.0, 125.0, 75.0), (3000.0, 125.0, 75.0)] + _TOPUP_TAIL,
+        93.0,
+        (_TOPUP_FB,),
+        (SurplusLoadState(load_id="fb", soc_percent=0.0),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, _extra, _current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    assert lp.allocations == ((0, 1, 1, 150.0), (1, 1, 1, 300.0))
+    topup = lp.reasons[0]
+    assert topup.startswith("pass 1 @ ")
+    assert "at-max top-up (peak fill)" in topup
+    # Battery-buffered: the share is far above the 15 % tolerance, so the
+    # bare soft gate would have skipped the slot outright.
+    assert "battery share 100%" in topup
+    assert "direct surplus" in lp.reasons[1]  # the strong slot stays direct
+
+
+def test_at_max_topup_quantum_auto_limited_to_fit_the_band():
+    """Quantum auto-limiting: the 60 min candidate dips below the band floor
+    and is rejected, the 30 min candidate fits the band and books — the dwell
+    quantum is never stretched past the band."""
+    from core.optimize import AT_MAX_TOPUP_BAND_PERCENT, IMPORT_ARTIFACT_SLACK_WH
+
+    cfg, inputs = _topup_scene(
+        [(250.0, 125.0, 75.0), (3000.0, 125.0, 75.0)] + _TOPUP_TAIL,
+        93.0,
+        (_TOPUP_FB,),
+        (SurplusLoadState(load_id="fb", soc_percent=0.0),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, _extra, _current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    assert lp.allocations[0] == (0, 1, 1, 150.0)  # 30 min booked, not 60
+
+    # Evaluate both quanta at slot 0 exactly as pass 1 did (slot 0 is the
+    # first candidate of the ascending walk -> the all-zero series).
+    floor = cfg.battery.soc_max_percent - AT_MAX_TOPUP_BAND_PERCENT
+    for commit_h, fits in ((1.0, False), (0.5, True)):
+        trial = [0.0] * len(inputs.slots)
+        trial[0] += _TOPUP_FB.nominal_power_w * commit_h
+        traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+        # The hard gates pass for BOTH quanta (battery-served dip that
+        # refills at the strong slot; no import) — only the band discriminates.
+        assert (
+            traj.total_import_wh - base.total_import_wh
+            <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+        )
+        assert (traj.flows[0].soc_end_percent >= floor - 1e-6) == fits
+
+
+def test_at_max_topup_needs_budget_and_the_energy_limited_class():
+    """Scope: no top-up without remaining budget (target reached -> the
+    saturation gate skips the load entirely), and never for a CONTINUOUS
+    load — in the same scene its slot-0 coverage is the pass-3 pre-drain
+    block, not a pass-1 top-up."""
+    cfg, inputs = _topup_scene(
+        [(250.0, 125.0, 75.0), (3000.0, 125.0, 75.0)] + _TOPUP_TAIL,
+        93.0,
+        (_TOPUP_FB, DEHUMIDIFIER),
+        (
+            SurplusLoadState(load_id="fb", soc_percent=100.0),  # rem == 0
+            SurplusLoadState(load_id="dehumidifier"),
+        ),
+    )
+    result = plan(cfg, inputs)
+    fb_plan = next(p for p in result.load_plans if p.load_id == "fb")
+    assert fb_plan.allocations == ()
+    deh_plan = next(p for p in result.load_plans if p.load_id == "dehumidifier")
+    assert deh_plan.planned_energy_wh > 0.0
+    assert all("at-max top-up" not in r for r in deh_plan.reasons)
+    # The continuous load's slot-0 coverage is the pass-3 block machinery.
+    assert any(a[2] == 3 for a in deh_plan.allocations)
+
+
+def test_at_max_topup_needs_positive_pv_surplus():
+    """No top-up on a slot whose PV does not cover the house load
+    (pv <= ac+dc): the PV-surplus predicate vetoes a dip the band itself
+    would admit — with a few Wh more PV the identical slot books."""
+    from core.optimize import AT_MAX_TOPUP_BAND_PERCENT
+
+    def run(pv0):
+        cfg, inputs = _topup_scene(
+            [(pv0, 125.0, 75.0), (3000.0, 125.0, 75.0)] + _TOPUP_TAIL,
+            94.0,
+            (_TOPUP_FB,),
+            (SurplusLoadState(load_id="fb", soc_percent=0.0),),
+        )
+        threshold, base = search_threshold(cfg, inputs)
+        plans, _extra, _current = allocate_loads(cfg, inputs, threshold, base)
+        return plans[0], cfg, inputs, threshold, base
+
+    lp, cfg, inputs, threshold, base = run(190.0)
+    assert all("at-max top-up" not in r for r in lp.reasons)
+    # The band would have admitted the dip — the PV predicate is the veto.
+    assert inputs.slots[0].pv_wh <= (inputs.slots[0].ac_wh + inputs.slots[0].dc_wh)
+    trial = [0.0] * len(inputs.slots)
+    trial[0] += 150.0
+    traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    assert (
+        traj.flows[0].soc_end_percent
+        >= cfg.battery.soc_max_percent - AT_MAX_TOPUP_BAND_PERCENT - 1e-6
+    )
+    lp2, *_ = run(210.0)
+    assert any("at-max top-up" in r for r in lp2.reasons)
+
+
+def test_at_max_topup_unpaid_dip_is_vetoed_by_z2pp():
+    """Z2'': an unpaid dip is not booked. The dusk slot sits inside the band
+    and the day maxed before it (R5 fine), but the hard night after leaves no
+    export to refill the drain, so the trial's import exceeds the artifact
+    slack and the candidate dies in the hard gate stack. (The fb commits
+    whole hours only — min_runtime 60 — so no smaller quantum slips under
+    the cap.)"""
+    from core.optimize import AT_MAX_TOPUP_BAND_PERCENT, IMPORT_ARTIFACT_SLACK_WH
+
+    fb60 = replace(_TOPUP_FB, min_runtime_min=60)
+    cfg, inputs = _topup_scene(
+        [(3000.0, 125.0, 75.0)] * 3
+        + [(350.0, 125.0, 75.0)]
+        + [(0.0, 125.0, 400.0)] * 10,
+        95.0,
+        (fb60,),
+        (SurplusLoadState(load_id="fb", soc_percent=0.0),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, extra, _current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    assert all(a[0] != 3 for a in lp.allocations)  # the dusk slot is refused
+
+    # Gate-by-gate at the dusk slot: the band passes, R5 passes (the day
+    # maxed before the dip), Z2'' is the veto.
+    trial = list(extra)  # the pass-1 bookings at slots 0-2 are in `extra`
+    trial[3] += fb60.nominal_power_w * 1.0
+    traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    assert (
+        traj.flows[3].soc_end_percent
+        >= cfg.battery.soc_max_percent - AT_MAX_TOPUP_BAND_PERCENT - 1e-6
+    )
+    soc_full = cfg.battery.soc_max_percent - 0.1
+    assert max(f.soc_end_percent for f in traj.flows[:3]) >= soc_full
+    assert traj.total_import_wh - base.total_import_wh > IMPORT_ARTIFACT_SLACK_WH
+
+
+def test_at_max_topup_hysteresis_rejects_until_pv_refills():
+    """Hysteresis shape over consecutive plans: the top-up dips the SOC to
+    the band floor; planning the SAME thin slot again right after rejects
+    the next top-up (its trial would leave the band) — until strong PV
+    refills the SOC above the floor, when the slot books again. (A pass-2
+    bet with a PROVEN refill may still take the rejected slot: the band is
+    the cheap pass-1 heuristic, the floors themselves are Z3/Z4's job.)"""
+    from core.optimize import AT_MAX_TOPUP_BAND_PERCENT
+
+    start = datetime(2026, 7, 4, 12, 0)
+    # Plan A: the top-up books and dips to the band floor.
+    cfg, inputs = _topup_scene(
+        [(3000.0, 125.0, 75.0), (210.0, 125.0, 75.0), (3000.0, 125.0, 75.0)]
+        + _TOPUP_TAIL,
+        94.0,
+        (_TOPUP_FB,),
+        (SurplusLoadState(load_id="fb", soc_percent=0.0),),
+        start,
+    )
+    result_a = plan(cfg, inputs)
+    lp_a = result_a.load_plans[0]
+    assert any("at-max top-up" in r for r in lp_a.reasons)
+    dip_soc = result_a.trajectory.flows[1].soc_end_percent
+
+    # Plan B: the same thin slot fed the post-dip SOC — the top-up is
+    # rejected because its trial would leave the band.
+    cfg_b, inputs_b = _topup_scene(
+        [(210.0, 125.0, 75.0), (3000.0, 125.0, 75.0)] + _TOPUP_TAIL,
+        dip_soc,
+        (_TOPUP_FB,),
+        (SurplusLoadState(load_id="fb", soc_percent=20.0),),
+        start + timedelta(hours=1),
+    )
+    result_b = plan(cfg_b, inputs_b)
+    lp_b = result_b.load_plans[0]
+    assert all("at-max top-up" not in r for r in lp_b.reasons)
+    threshold_b, _base_b = search_threshold(cfg_b, inputs_b)
+    trial = [0.0] * len(inputs_b.slots)
+    trial[0] += 150.0
+    traj_b = simulate(cfg_b, inputs_b, threshold_b, extra_ac_wh=tuple(trial))
+    assert (
+        traj_b.flows[0].soc_end_percent
+        < cfg_b.battery.soc_max_percent - AT_MAX_TOPUP_BAND_PERCENT
+    )
+    # The documented contrast: pass 2 takes the slot with a proven refill.
+    assert any(a[2] == 2 for a in lp_b.allocations)
+
+    # Plan C: SOC refilled above the floor -> the top-up books again.
+    result_c = plan(cfg_b, replace(inputs_b, start_soc_percent=95.0))
+    lp_c = result_c.load_plans[0]
+    assert any("at-max top-up" in r for r in lp_c.reasons)

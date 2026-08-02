@@ -140,6 +140,12 @@ candidates).
   today), today-only, actuated only after 3 identical plans + a 10-minute
   stability floor. Energy-limited loads keep pass 2 unchanged.
   See docs/F-PREDRAIN-BLOCK.md.
+  **v0.20.0 (F-PEAK-FILL, operator decision 2026-08-01):** energy-limited
+  loads with budget left may also book slots whose PV surplus is below
+  their charge power when the house battery is at max — pass 1 accepts them
+  as `at-max top-up (peak fill)` while the trial ends the slot inside the
+  hysteresis band (soc_max − 5 %); R5/Z2'' prove the dip refills from
+  otherwise-lost export. See docs/F-PEAK-FILL.md.
 - **Merge principle (operator insight, 2026-07-04):** All gate conditions
   are **difference comparisons** of two complete trajectories. As soon as
   both variants (with/without the load hour) reach the max SOC, they are

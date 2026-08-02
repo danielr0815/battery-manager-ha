@@ -83,12 +83,11 @@ def test_pv_surplus_covers_dc_load_no_phantom_import():
     DC bus load must be served from PV (via the charger), NOT imported from grid
     while the surplus is simultaneously exported/stored."""
     config = SystemConfig()
-    # Zero charger standby so the assertion isolates the DC-load path (standby
-    # would otherwise leak a few Wh to grid once the surplus is exactly used).
-    config = replace(config, charger=replace(config.charger, standby_power_w=0.0))
     soc = config.battery.soc_min_percent  # battery empty -> DC can't drain it
     # 2 kWh PV surplus, 500 Wh DC bus load, inverter off (threshold above SOC).
     # Pre-fix this imported ~540 Wh for the DC load while storing/exporting PV.
+    # (The default 10 W charger standby no longer leaks to grid either: the
+    # standby accounting trims the stored energy instead — pinned below.)
     flow = step_hour(config, soc, _slot(pv=2000.0, ac=0.0, dc=500.0), 99.0)
     assert flow.grid_import_wh < _EPS  # PV covered the DC load, nothing imported
     # The (large) surplus still stores/exports after covering the DC load.
@@ -103,6 +102,54 @@ def test_dc_load_at_floor_without_pv_still_imports():
     flow = step_hour(config, soc, _slot(pv=0.0, ac=0.0, dc=500.0), 99.0)
     assert flow.grid_import_wh > 0.0
     assert flow.grid_export_wh < _EPS
+
+
+# --- charger standby in the surplus branch (2026-08 accounting fix) ---
+
+
+def test_surplus_charging_hour_books_no_import_and_stores_net_of_standby():
+    """Standby accounting fix: when the charger takes the WHOLE PV surplus
+    (balance-limited), its standby is part of that surplus-covered AC draw —
+    it trims the stored energy instead of minting phantom grid import.
+    Pre-fix this exact shape pushed the balance negative by the standby and
+    imported ~10 Wh while storing the gross amount; over a 3-day horizon
+    those artifacts exhausted the Z2'' slack and vetoed whole pre-drain
+    blocks (F-PREDRAIN L1, live 2026-08-03)."""
+    config = SystemConfig()  # default charger: 2300 W, eta 0.92, 10 W standby
+    charger = config.charger
+    # 1 kWh of PV surplus; charger cap (2300 W) and battery headroom (45 % of
+    # 5 kWh) both far above -> charger_ac == balance (the pre-fix import shape).
+    flow = step_hour(config, 50.0, _slot(pv=1000.0, ac=0.0, dc=0.0), 99.0)
+    standby = charger.standby_power_w * 1.0
+    stored = (1000.0 - standby) * charger.eta * config.battery.eta_charge
+    assert flow.grid_import_wh == 0.0  # no phantom import (was ~10 Wh)
+    assert flow.grid_export_wh < _EPS  # the whole surplus went to the charger
+    assert flow.battery_charge_wh == pytest.approx(stored)
+    assert flow.soc_end_percent == pytest.approx(
+        config.battery.soc_percent(config.battery.energy_wh(50.0) + stored)
+    )
+
+
+def test_no_standby_booked_when_charger_off():
+    """The charger only runs on PV surplus, so a charger-off hour must not
+    book its standby anywhere: a deficit hour imports exactly the deficit
+    (no standby markup), and a full-battery surplus hour exports the whole
+    surplus (charger_ac == 0, so the standby line is never reached)."""
+    config = SystemConfig()
+    # (a) Deficit hour, inverter off: import is exactly the deficit.
+    flow = step_hour(config, 50.0, _slot(pv=0.0, ac=100.0, dc=0.0), 99.0)
+    assert flow.grid_import_wh == pytest.approx(100.0)
+    # (b) Battery full, surplus present but nothing to store: the charger
+    # stays off and the export is unreduced.
+    flow = step_hour(
+        config,
+        config.battery.soc_max_percent,
+        _slot(pv=1000.0, ac=0.0, dc=0.0),
+        99.0,
+    )
+    assert flow.battery_charge_wh < _EPS
+    assert flow.grid_export_wh == pytest.approx(1000.0)
+    assert flow.grid_import_wh == 0.0
 
 
 # --- #4 net-charging gate suppression ---

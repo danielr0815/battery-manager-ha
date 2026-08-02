@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-01
+
+### Added
+- **At-max top-up for energy-limited loads (F-PEAK-FILL).** A powerstation
+  with charge budget left no longer stalls or pulses at the max line when
+  the PV surplus is below its charge power: pass 1 may book the slot
+  anyway, with the house battery buffering the difference — as long as PV
+  exceeds consumption and the trial ends the slot inside the hysteresis
+  band (`soc_max − 5 %`). R5/Z2'' prove the dip refills from otherwise-lost
+  export, so afternoon export spikes become Fossibot charge instead of
+  clipping. Reasons show `at-max top-up (peak fill)`; continuous loads are
+  excluded (their buffer form is the pass-3 block).
+
+### Fixed
+- **Pre-drain blocks are no longer starved by phantom import.** The AC
+  charger's 10 W standby was booked as grid import in every charging hour
+  although the charger only runs on PV surplus; over the 3-day horizon
+  these artifacts accumulated past the shared 50 Wh import slack (Z2'') and
+  vetoed whole pre-drain blocks — on exactly the strong-sun days they exist
+  for (found 2026-08-03: tomorrow's 07:00–10:00 block would have been
+  refused). The standby now reduces the stored charge instead, with the
+  charger ramping to cover its own standby (`needed_ac` compensation), so a
+  nearly full battery still reaches soc_max exactly and surplus hours mint
+  no import at all.
+
 ## [0.19.0] - 2026-08-01
 
 ### Changed

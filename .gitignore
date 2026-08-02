@@ -365,3 +365,6 @@ hacs_debug.log
 # Release preparation files
 release_notes_*.md
 version_*.txt
+
+# Playwright MCP: browser profile (contains login state) and debug output
+.playwright-mcp/

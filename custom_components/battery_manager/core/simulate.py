@@ -177,16 +177,32 @@ def step_hour(
         # (b) charge the battery through the charger, export the rest.
         headroom = max(0.0, ceil_wh - energy)
         max_charger_ac = config.charger.max_power_w * slot.duration
-        needed_ac = headroom / (battery.eta_charge * config.charger.eta)
+        # The charger only runs on PV surplus, so its standby is surplus-
+        # covered: it is part of the AC-side draw and reduces the stored
+        # energy a touch instead of minting phantom grid import (F-PREDRAIN
+        # L1's ~10 Wh artifacts per flipped charging hour accumulated over
+        # the 3-day horizon, exhausted the Z2'' slack and vetoed whole
+        # pre-drain blocks, live 2026-08-03). needed_ac compensates the
+        # standby so a nearly-full battery still reaches the ceiling exactly
+        # (a real charger ramps to cover its own standby) — otherwise the
+        # carve-out would create a charge asymptote just below soc_max and
+        # disarm the full-line machinery (R5, merge probe, refill
+        # settlement) at capacities below ~9 kWh.
+        standby = config.charger.standby_power_w * slot.duration
+        needed_ac = (
+            headroom / (battery.eta_charge * config.charger.eta) + standby
+            if headroom > _EPS
+            else 0.0  # full battery: the charger is off, no standby at all
+        )
         charger_ac = min(balance, max_charger_ac, needed_ac)
         if charger_ac > _EPS:
-            stored = charger_ac * config.charger.eta * battery.eta_charge
+            ac_in = max(0.0, charger_ac - standby)
+            stored = ac_in * config.charger.eta * battery.eta_charge
             energy += stored
             battery_charge += stored
-            standby = config.charger.standby_power_w * slot.duration
-            balance -= charger_ac + standby
+            balance -= charger_ac
         grid_export += max(0.0, balance)
-        if balance < 0:  # charger standby pushed balance negative
+        if balance < 0:  # pragma: no cover - balance >= 0 by construction
             grid_import += -balance
         # (c) DC shortfall PV could not cover imports via the charger.
         if dc_ac_demand > _EPS:

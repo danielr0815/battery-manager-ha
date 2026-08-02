@@ -35,11 +35,16 @@ QUANTILE_RATIO_MIN_WH = 25.0
 
 # Hard import slack for load bookings (F-STRICT-SURPLUS R1): the whole
 # allocation may add at most this much simulated grid import over the
-# no-loads base — an ABSOLUTE artifact allowance (a few ~10 Wh charger-standby
-# artifacts across multiple bookings, F-PREDRAIN L1), never a budget that
+# no-loads base — an ABSOLUTE artifact allowance, never a budget that
 # scales with rescued export. Supersedes the Z2' proportional trade
 # (`import_trade_ratio`, retired 2026-07-19: the ratio minted hundreds of Wh
 # of REAL planned import on clip-eve days). A constant, not a config key.
+# (The artifact class it tolerated — F-PREDRAIN L1's ~10 Wh charger-standby
+# phantom import per flipped charging hour — was removed at the source in
+# v0.20.0: the standby now reduces the stored charge, with `needed_ac`
+# compensating it so the ceiling stays reachable; over a 3-day horizon the
+# artifacts had accumulated past this slack and vetoed whole pre-drain
+# blocks, live 2026-08-03.)
 IMPORT_ARTIFACT_SLACK_WH = 50.0
 
 # Terminal-credit ramp for the merge-bounded threshold search (F-MERGE-HYSTERESIS,
@@ -60,6 +65,21 @@ IMPORT_ARTIFACT_SLACK_WH = 50.0
 # faded), so no independent knife-edge survives and the planner stays stateless
 # (no cross-replan hysteresis state to plumb).
 MERGE_TERMINAL_RAMP_WH = 250.0
+
+# SOC band for the at-max top-up (F-PEAK-FILL R2, operator 2026-08-01): an
+# energy-limited load with budget left may also book a slot whose PV surplus
+# does NOT cover its power — the house battery buffers the difference — as
+# long as the trial ends the slot at/above soc_max minus this band. The dip
+# provably refills from otherwise-lost export (R5 forces re-reaching soc_max
+# the same day, Z2'' forbids an unpaid dip = import), so export spikes become
+# load charge instead of the load pulsing on/off at the max line. Sizing:
+# one min-runtime quantum of a typical load (~750 W x 30 min ~ 7 % of a
+# 5 kWh battery at zero surplus) must fit, so 2 % would suppress nearly all
+# top-ups; 5 % admits moderate-surplus episodes and still bounds the ride to
+# a shallow band — the per-slot band check IS the hysteresis: from the band
+# floor every run dips below it and is rejected until PV refills. A constant,
+# not a config key.
+AT_MAX_TOPUP_BAND_PERCENT = 5.0
 
 
 def quantile_band_slots(slots) -> list[bool]:
@@ -963,19 +983,36 @@ def allocate_loads(
                     for j, take in covered[1:]
                 )
                 battery_share = max(0.0, power_wh - surplus_cov) / power_wh
+                # F-PEAK-FILL R2: an energy-limited load with budget left may
+                # pass the soft gate even over tolerance when the slot proves
+                # to be an at-max top-up (checked after the re-simulation).
+                at_max_topup = False
                 if battery_share > load.battery_tolerance + _EPS:
-                    continue
+                    if not (load.energy_limited and rem is not None and rem > _EPS):
+                        continue
+                    at_max_topup = True
                 # Hard conditions via full re-simulation (Z2''/R2/R5/Z3).
                 traj = _gate_trial(tuple(trial), covered)
                 if traj is None:
                     continue
+                if at_max_topup and not (
+                    slot.pv_wh > slot.ac_wh + slot.dc_wh
+                    and traj.flows[i].soc_end_percent
+                    >= config.battery.soc_max_percent - AT_MAX_TOPUP_BAND_PERCENT - _EPS
+                ):
+                    continue  # no at-max top-up: dip leaves the hysteresis band
                 placed_h, _placed_wh = _accept_candidate(
                     load, 1, i, power_w, trial, covered, traj, rem
                 )
                 final_note = _final_note(load, commit_h, seamless)
                 reasons[load.load_id].append(
                     f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
-                    f"direct surplus, {round(placed_h * 60)} min x "
+                    + (
+                        "at-max top-up (peak fill)"
+                        if at_max_topup
+                        else "direct surplus"
+                    )
+                    + f", {round(placed_h * 60)} min x "
                     f"{round(power_w)} W, battery share {round(battery_share * 100)}%"
                     f"{final_note}"
                 )
