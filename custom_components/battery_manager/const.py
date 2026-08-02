@@ -257,14 +257,19 @@ STALE_LOAD_SOC_MIN = 12
 HOUSE_SOC_STALE_POWER_W = 300.0
 # BMS plateaus (2026-07-31 incident: 10 false latches in 90 min at SOC
 # 87-89 %): near the SOC ends the reading can sit on one value for a long time
-# while power keeps flowing (balancing/clamping), so the edge bands tolerate a
-# much larger unexplained drift than the mid band before the watchdog alarms.
-# The band bounds are constants; the two drift percentages are operator-tunable
-# (defaults in DEFAULT_CONFIG).
+# while power keeps flowing (balancing/clamping — Victron calibrates the SOC
+# at the plateaus), so the edge bands tolerate a much larger unexplained drift
+# than the mid band before the watchdog alarms. The high bound is 88 %, NOT
+# 89 %, and the bounds are INCLUSIVE: the calibration plateau demonstrably
+# covers 88.0 and 89.0 (2026-08-02: a real 89.0 reading with an idle battery
+# latched after ~107 Wh in the mid band). Both bounds and both drift
+# percentages are operator-tunable (defaults below / in DEFAULT_CONFIG).
 HOUSE_SOC_STALE_EDGE_LOW_PERCENT = 13.0
-HOUSE_SOC_STALE_EDGE_HIGH_PERCENT = 89.0
+HOUSE_SOC_STALE_EDGE_HIGH_PERCENT = 88.0
 CONF_HOUSE_SOC_STALE_MID_PERCENT = "house_soc_stale_mid_percent"
 CONF_HOUSE_SOC_STALE_EDGE_PERCENT = "house_soc_stale_edge_percent"
+CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC = "house_soc_stale_edge_low_soc"
+CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC = "house_soc_stale_edge_high_soc"
 
 # Pre-drain block stability gate (F-PREDRAIN-BLOCK R7, 2026-08-01 incident):
 # a continuous load's pass-3 block is only ACTUATED after this many
@@ -437,6 +442,10 @@ DEFAULT_CONFIG = {
     # edge bands.
     CONF_HOUSE_SOC_STALE_MID_PERCENT: 2.0,
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT: 7.0,
+    # ... and the SOC bounds of those edge bands (Victron calibration
+    # plateaus live there).
+    CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC: HOUSE_SOC_STALE_EDGE_LOW_PERCENT,
+    CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC: HOUSE_SOC_STALE_EDGE_HIGH_PERCENT,
     # PV system
     "pv_max_power_w": 3200.0,
     "pv_morning_start_hour": 7,

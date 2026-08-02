@@ -41,6 +41,8 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
+    CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC,
+    CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC,
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
     CONF_HOUSE_SOC_STALE_MID_PERCENT,
     CONF_LEARNING_MAX_AGE_DAYS,
@@ -259,6 +261,16 @@ def _validate_soc_bounds(data: dict[str, Any]) -> str | None:
     high = data.get("battery_max_soc_percent")
     if low is not None and high is not None and float(low) >= float(high):
         return "min_soc_above_max"
+    # Inverted stale bands would silently turn the whole SOC range into the
+    # tight mid band (or all of it into the loose edge band).
+    edge_low = data.get(CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC)
+    edge_high = data.get(CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC)
+    if (
+        edge_low is not None
+        and edge_high is not None
+        and float(edge_low) >= float(edge_high)
+    ):
+        return "stale_edge_low_not_below_high"
     return None
 
 
@@ -344,6 +356,17 @@ def _battery_dimension_fields(current: dict[str, Any]) -> dict[Any, Any]:
             CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
             default=_d(current, CONF_HOUSE_SOC_STALE_EDGE_PERCENT),
         ): _number(0.5, 50.0, 0.5, "%"),
+        # ... and the SOC bounds of those edge bands (the BMS/Victron
+        # calibration plateaus live there; _validate_soc_bounds keeps low <
+        # high).
+        vol.Required(
+            CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC,
+            default=_d(current, CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC),
+        ): _number(0.0, 100.0, 1.0, "%"),
+        vol.Required(
+            CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC,
+            default=_d(current, CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC),
+        ): _number(0.0, 100.0, 1.0, "%"),
     }
 
 

@@ -42,6 +42,8 @@ from .const import (
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
     CONF_GATE_SOC_PERCENT,
+    CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC,
+    CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC,
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
     CONF_HOUSE_SOC_STALE_MID_PERCENT,
     CONF_LOAD_AVAILABILITY_ENTITY,
@@ -100,8 +102,6 @@ from .const import (
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
     FREEZE_STALE_HOURS,
-    HOUSE_SOC_STALE_EDGE_HIGH_PERCENT,
-    HOUSE_SOC_STALE_EDGE_LOW_PERCENT,
     HOUSE_SOC_STALE_POWER_W,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
@@ -1037,9 +1037,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # is only charged the time actually spent with significant flow.
         self._house_soc_frozen = (raw, now, accumulated_wh)
         cfg = self.raw_config
-        if (
-            raw < HOUSE_SOC_STALE_EDGE_LOW_PERCENT
-            or raw > HOUSE_SOC_STALE_EDGE_HIGH_PERCENT
+        # Edge bounds INCLUSIVE (2026-08-02): the Victron calibration plateau
+        # demonstrably covers 88.0 itself, so `>= high` must put 88.0 into
+        # the loose edge band, not the tight mid band (the operator's
+        # "set to 88" intent). Symmetric `<= low` for the bottom plateau.
+        if raw <= float(cfg[CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC]) or raw >= float(
+            cfg[CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC]
         ):
             drift_percent = float(cfg[CONF_HOUSE_SOC_STALE_EDGE_PERCENT])
         else:

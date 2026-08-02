@@ -1417,6 +1417,8 @@ async def test_options_flow_renders_base_dimension_sections(hass):
         "battery_max_soc_percent": 95.0,
         "house_soc_stale_mid_percent": 2.0,
         "house_soc_stale_edge_percent": 7.0,
+        "house_soc_stale_edge_low_soc": 13.0,
+        "house_soc_stale_edge_high_soc": 88.0,
     }
     pv = {str(m): _marker_default(m) for m in _section_fields(schema, "pv")}
     assert pv == {
@@ -1451,6 +1453,8 @@ async def test_options_flow_updates_battery_dimensions(hass):
         "battery_max_soc_percent": 90.0,
         "house_soc_stale_mid_percent": 3.0,
         "house_soc_stale_edge_percent": 8.0,
+        "house_soc_stale_edge_low_soc": 11.0,
+        "house_soc_stale_edge_high_soc": 86.0,
     }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], payload
@@ -1470,6 +1474,24 @@ async def test_options_flow_updates_battery_dimensions(hass):
     raw_config = hass.data[DOMAIN][entry.entry_id].raw_config
     assert raw_config["house_soc_stale_mid_percent"] == 3.0
     assert raw_config["house_soc_stale_edge_percent"] == 8.0
+    assert raw_config["house_soc_stale_edge_low_soc"] == 11.0
+    assert raw_config["house_soc_stale_edge_high_soc"] == 86.0
+
+
+async def test_options_flow_rejects_inverted_stale_edge_bounds(hass):
+    """The stale-SOC edge bounds must stay ordered — an inversion would
+    silently turn the whole SOC range into the tight mid band."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["battery"]["house_soc_stale_edge_low_soc"] = 90.0
+    payload["battery"]["house_soc_stale_edge_high_soc"] = 80.0
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "stale_edge_low_not_below_high"}
 
 
 async def test_options_flow_updates_pv_dimensions(hass):

@@ -544,12 +544,59 @@ async def test_watchdog_edge_band_needs_larger_drift(hass):
     assert coordinator._house_soc_stale == 90.0  # 367 Wh > 350 Wh: latched
 
 
-async def test_watchdog_band_boundary_89_is_mid(hass):
-    """The high edge band is strict (> 89): a frozen 89.0 % reading still
-    falls in the mid band and latches at the 2 % allowance."""
+async def test_watchdog_band_boundary_87_is_mid(hass):
+    """The high edge bound is 88 (the Victron calibration plateau includes
+    89): a frozen 87.0 % reading still falls in the mid band and latches at
+    the 2 % allowance."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
     _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "87")
+
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 87 % evidence
+    assert coordinator._house_soc_stale is None
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
+    assert coordinator._house_soc_stale == 87.0  # 117 Wh > 100 Wh mid allowance
+
+
+async def test_watchdog_band_boundary_88_is_edge(hass):
+    """88.0 % itself is already the edge band (7 %): the Victron calibration
+    plateau at the top end belongs there, so a frozen reading holds past
+    the mid-band allowance."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "88")
+
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 88 % evidence
+    assert coordinator._house_soc_stale is None
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=20))
+    assert coordinator._house_soc_stale is None  # 333 Wh: past mid, under edge
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=22))
+    assert coordinator._house_soc_stale == 88.0  # 367 Wh > 350 Wh edge allowance
+
+
+async def test_watchdog_edge_high_bound_is_configurable(hass):
+    """The edge bounds are options: raising the high bound above the reading
+    moves it back into the mid band (2 %)."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(
+        hass,
+        calls,
+        notifications,
+        extra_data={"house_soc_stale_edge_high_soc": 95.0},
+    )
     _set_soc(hass, coordinator, "89")
 
     coordinator._expected_battery_power_w = 1000.0
@@ -559,7 +606,7 @@ async def test_watchdog_band_boundary_89_is_mid(hass):
 
     coordinator._expected_battery_power_w = 1000.0
     await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
-    assert coordinator._house_soc_stale == 89.0  # 117 Wh > 100 Wh mid allowance
+    assert coordinator._house_soc_stale == 89.0  # mid band via the option
 
 
 async def test_watchdog_low_edge_band(hass):

@@ -244,6 +244,7 @@
     },
     "error": {
       "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
+      "stale_edge_low_not_below_high": "The lower stale-SOC edge bound must be below the upper bound.",
       "pv_windows_out_of_order": "The PV windows must be strictly ordered: morning start < morning end < afternoon end.",
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
@@ -425,6 +426,7 @@
   "options": {
     "error": {
       "min_soc_above_max": "Minimum SOC must be below maximum SOC.",
+      "stale_edge_low_not_below_high": "The lower stale-SOC edge bound must be below the upper bound.",
       "pv_windows_out_of_order": "The PV windows must be strictly ordered: morning start < morning end < afternoon end.",
       "support_entities_not_distinct": "The 24 V PSU, 48 V PSU and DC/DC converter must use different switch entities.",
       "balance_out_without_in": "Outflow counters without inflow counters: the balance needs at least one inflow entity.",
@@ -447,14 +449,18 @@
               "battery_min_soc_percent": "Minimum SOC (%)",
               "battery_max_soc_percent": "Maximum SOC (%)",
               "house_soc_stale_mid_percent": "Stale-SOC drift allowance, mid band (%)",
-              "house_soc_stale_edge_percent": "Stale-SOC drift allowance, edge bands (%)"
+              "house_soc_stale_edge_percent": "Stale-SOC drift allowance, edge bands (%)",
+              "house_soc_stale_edge_low_soc": "Edge band lower bound (SOC %)",
+              "house_soc_stale_edge_high_soc": "Edge band upper bound (SOC %)"
             },
             "data_description": {
               "battery_capacity_wh": "Total battery capacity in watt-hours (e.g. 5000 for 5 kWh).",
               "battery_min_soc_percent": "Hard lower limit: planning never discharges the battery below this state of charge (deep-discharge protection).",
               "battery_max_soc_percent": "Upper charging limit: above this value the battery absorbs no more surplus (protects the cells).",
-              "house_soc_stale_mid_percent": "House-SOC watchdog: the reading is treated as frozen once the plan expected this much battery throughput (in % of capacity) without any SOC change — mid band (13-89 % SOC).",
-              "house_soc_stale_edge_percent": "Same watchdog at the SOC ends (< 13 % or > 89 %): BMS plateaus there are normal, so a larger unexplained drift is allowed before the alarm."
+              "house_soc_stale_mid_percent": "House-SOC watchdog: the reading is treated as frozen once the plan expected this much battery throughput (in % of capacity) without any SOC change — mid band (between the edge bounds).",
+              "house_soc_stale_edge_percent": "Same watchdog at the SOC edges (below the lower / above the upper bound): BMS calibration plateaus there are normal, so a larger unexplained drift is allowed before the alarm.",
+              "house_soc_stale_edge_low_soc": "Below this SOC the edge allowance applies (BMS calibration plateau at the bottom end).",
+              "house_soc_stale_edge_high_soc": "Above this SOC the edge allowance applies (Victron calibrates the SOC here — the 89 % plateau belongs in the edge band)."
             }
           },
           "pv": {

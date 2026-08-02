@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-08-02
+
+### Fixed
+- **Stale watchdog: the 89 % plateau belongs in the edge band.** A real 89.0
+  SOC (battery idle on a strong-PV afternoon, Victron calibrating at the top
+  plateau) latched after just ~107 Wh of expected flow because the edge band
+  only covered `> 89 %`. The high bound is now 88 % and both bounds are
+  INCLUSIVE, so 88.0/89.0 get the loose 7 % allowance (~45–60 min tolerance
+  instead of ~10 min) — a genuinely frozen BMS is still caught, just much
+  later.
+
+### Added
+- **Configurable stale-band SOC bounds.** New options
+  `house_soc_stale_edge_low_soc` (default 13 %) and
+  `house_soc_stale_edge_high_soc` (default 88 %) in the battery section of
+  the options flow, with an order validation (low must be below high).
+
 ## [0.22.0] - 2026-08-02
 
 ### Changed

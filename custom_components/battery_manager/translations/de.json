@@ -244,6 +244,7 @@
     },
     "error": {
       "min_soc_above_max": "Der minimale SOC muss unter dem maximalen SOC liegen.",
+      "stale_edge_low_not_below_high": "Die untere Stale-SOC-Bandgrenze muss unter der oberen liegen.",
       "pv_windows_out_of_order": "Die PV-Fenster müssen aufsteigend geordnet sein: Morgen-Start < Morgen-Ende < Nachmittag-Ende.",
       "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
       "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität.",
@@ -425,6 +426,7 @@
   "options": {
     "error": {
       "min_soc_above_max": "Der minimale SOC muss unter dem maximalen SOC liegen.",
+      "stale_edge_low_not_below_high": "Die untere Stale-SOC-Bandgrenze muss unter der oberen liegen.",
       "pv_windows_out_of_order": "Die PV-Fenster müssen aufsteigend geordnet sein: Morgen-Start < Morgen-Ende < Nachmittag-Ende.",
       "support_entities_not_distinct": "24-V-Netzteil, 48-V-Netzteil und DC/DC-Wandler müssen unterschiedliche Schalter-Entitäten verwenden.",
       "balance_out_without_in": "Abfluss-Zähler ohne Zufluss-Zähler: Die Zählerbilanz braucht mindestens eine Zufluss-Entität.",
@@ -447,14 +449,18 @@
               "battery_min_soc_percent": "Minimaler SOC (%)",
               "battery_max_soc_percent": "Maximaler SOC (%)",
               "house_soc_stale_mid_percent": "Stale-SOC-Toleranz, mittlerer Bereich (%)",
-              "house_soc_stale_edge_percent": "Stale-SOC-Toleranz, Randbereiche (%)"
+              "house_soc_stale_edge_percent": "Stale-SOC-Toleranz, Randbereiche (%)",
+              "house_soc_stale_edge_low_soc": "Randband untere Grenze (SOC %)",
+              "house_soc_stale_edge_high_soc": "Randband obere Grenze (SOC %)"
             },
             "data_description": {
               "battery_capacity_wh": "Gesamtkapazität der Batterie in Wattstunden (z. B. 5000 für 5 kWh).",
               "battery_min_soc_percent": "Harte Untergrenze: Unter diesen Ladezustand wird die Batterie nie geplant entladen (Schutz vor Tiefentladung).",
               "battery_max_soc_percent": "Obergrenze für das Laden: Darüber nimmt die Batterie keinen Überschuss mehr auf (schont die Zellen).",
-              "house_soc_stale_mid_percent": "House-SOC-Watchdog: Der Messwert gilt als eingefroren, wenn der Plan diesen Batteriedurchsatz (in % der Kapazität) erwartet hat, ohne dass sich der SOC änderte — mittlerer Bereich (13-89 % SOC).",
-              "house_soc_stale_edge_percent": "Derselbe Watchdog an den SOC-Rändern (< 13 % oder > 89 %): BMS-Plateaus sind dort normal, daher ist eine größere unerklärte Abweichung vor dem Alarm erlaubt."
+              "house_soc_stale_mid_percent": "House-SOC-Watchdog: Der Messwert gilt als eingefroren, wenn der Plan diesen Batteriedurchsatz (in % der Kapazität) erwartet hat, ohne dass sich der SOC änderte — mittlerer Bereich (zwischen den Randgrenzen).",
+              "house_soc_stale_edge_percent": "Derselbe Watchdog an den SOC-Rändern (unterhalb der unteren / oberhalb der oberen Grenze): BMS-Kalibrierungs-Plateaus sind dort normal, daher ist eine größere unerklärte Abweichung vor dem Alarm erlaubt.",
+              "house_soc_stale_edge_low_soc": "Unterhalb dieses SOC gilt die Rand-Toleranz (BMS-Kalibrierungs-Plateau am unteren Ende).",
+              "house_soc_stale_edge_high_soc": "Oberhalb dieses SOC gilt die Rand-Toleranz (Victron kalibriert hier den SOC — das 89-%-Plateau gehört ins Randband)."
             }
           },
           "pv": {

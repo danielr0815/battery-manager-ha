@@ -383,10 +383,12 @@ there, no evidence either way), and only a CHANGED reading resets it, so
 duty-cycled flow still accumulates. The latch fires once the accumulated
 energy exceeds the band's drift allowance: `house_soc_stale_mid_percent`
 (default 2 % of capacity) in the mid band, `house_soc_stale_edge_percent`
-(default 7 %) at the plateau-prone ends (< 13 % or > 89 % SOC — BMS
-balancing/clamping can pin the reading there for hours legitimately;
-2026-07-31 incident: 10 false latches in 90 min under the former adaptive
-1 %-change window). While latched, `_get_soc` treats the reading as invalid,
+(default 7 %) at the plateau-prone ends. The ends' SOC bounds are options
+too: `house_soc_stale_edge_low_soc` / `house_soc_stale_edge_high_soc`
+(defaults 13 % / 88 %, both INCLUSIVE — the Victron calibration plateau
+covers 88.0 and 89.0; 2026-08-02 incident: a real 89.0 with an idle battery
+latched after ~107 Wh in the mid band, so the bound moved 89 → 88). While
+latched, `_get_soc` treats the reading as invalid,
 which routes into the normal data-loss path (§16) — not into a load-local
 `available`. Unlatch: any DIFFERENT live reading (INFO once, the G2 pattern).
 In-memory only; a restart re-accumulates the evidence energy.
