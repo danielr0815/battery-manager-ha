@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-08-02
+
+### Changed
+- **Pre-drain blocks may drain to the dynamic buffer floor.** The alpha/band
+  Z4 stress is no longer applied to the pass-3 block (it stays in force for
+  the slot-wise pass-2 bets of energy-limited loads): an intra-day forecast
+  miss is caught by the replan loop — the block is recomputed every
+  refresh, a degraded forecast retracts the recommendation, and the G4
+  floor guard force-switches at the real-time cutoff — so the conservative
+  whole-window stress was redundant. On strong days the block now drains to
+  the nominal dynamic buffer (trough ~25 % instead of ~35 % at alpha 0.7)
+  and prevents noticeably more export; the floor check now also runs at
+  alpha 1.0 (previously skipped there — blocks can be shallower in that
+  configuration than before).
+
 ## [0.20.0] - 2026-08-01
 
 ### Added

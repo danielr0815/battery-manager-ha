@@ -419,8 +419,14 @@ run: a marginal slot-0 bet flipped within minutes and produced a pointless
 block** ending at **today's SOC peak** (the first export slot of slot 0's
 day in the accepted trajectory without this load), sized to at most today's
 remaining lost export, started as late as the gate stack allows (Z2''/R2/
-R5-preserve-daily-max/Z3/Z4 evaluated once for the whole block — the floors
-cap the length, never the start time alone). Today-only: the cross-day
+R5-preserve-daily-max/Z3 evaluated once for the whole block — the floors
+cap the length, never the start time alone). Since v0.21.0 the block's
+floor is the NOMINAL dynamic buffer: the alpha/band stress is no longer
+applied to the block — an intra-day forecast miss is caught by the replan
+loop (the block is recomputed every refresh and a degraded forecast
+retracts the recommendation; the G4 floor guard force-switches at the
+real-time cutoff), so the block may drain to the ~25 % trough instead of
+~35 % (operator decision 2026-08-02). Today-only: the cross-day
 night carve-out (F-NIGHT-RESCUE) is retired for this class. Energy-limited
 loads keep the unchanged pass-2 machinery (c1-rt/c2/Z4/daylight rule).
 

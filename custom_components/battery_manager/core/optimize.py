@@ -1271,12 +1271,18 @@ def allocate_loads(
     #      target is covered; the floors cap the block earlier.
     #   R5 floors: the WHOLE block is ONE candidate through the same gate
     #      stack pass 1/2 use (Z2''/R2/R5/Z3 via `_gate_trial`, the
-    #      rt-weighted opportunity check, and Z4's windowed stress floor
-    #      with the crossover-ramped buffer — the time-of-day-dependent
-    #      reserve). Every gate worsens monotonically with block length, so
-    #      the first veto ends the extension and the last accepted block is
-    #      the longest feasible one; R5 (preserve daily max) additionally
-    #      pins "the battery still fills to soc_max today" — the operator's
+    #      rt-weighted opportunity check, and the dynamic buffer — the
+    #      crossover-ramped floor evaluated on the NOMINAL trial). The
+    #      alpha/band STRESS is deliberately NOT applied to the block
+    #      (operator decision 2026-08-02): a forecast miss is caught by the
+    #      intra-day replan loop (the block is recomputed every refresh, a
+    #      degraded forecast retracts the recommendation, and the G4 floor
+    #      guard force-switches at the real-time cutoff) — the stress stays
+    #      in force for the slot-wise pass-2 bets of energy-limited loads.
+    #      Every gate worsens monotonically with block length, so the first
+    #      veto ends the extension and the last accepted block is the
+    #      longest feasible one; R5 (preserve daily max) additionally pins
+    #      "the battery still fills to soc_max today" — the operator's
     #      precondition for pre-draining at all.
     #   R6 min length: a block shorter than min_runtime is never booked
     #      (the executor dwell would deliver more than the plan accounts).
@@ -1332,34 +1338,23 @@ def allocate_loads(
             export_drop = current.total_export_wh - traj.total_export_wh
             if export_drop + _EPS < (1.0 - load.battery_tolerance) * block_wh * rt:
                 break  # the detour is not repaid (c1 at the physical rt)
-            if z4_active:
-                recovery = _refill_index(traj, s, soc_full)
-                hi = max(recovery, covered[-1][0])
-                scale_vec = [stress_vec[j] if s <= j <= hi else 1.0 for j in range(n)]
-                trial_wmin = _windowed_min_soc(
-                    simulate(
-                        config,
-                        inputs,
-                        threshold,
-                        extra_ac_wh=tuple(trial),
-                        pv_scale=scale_vec,
-                    ),
-                    s,
-                    hi,
-                )
-                base_wmin = _windowed_min_soc(
-                    simulate(
-                        config,
-                        inputs,
-                        threshold,
-                        extra_ac_wh=tuple(extra),
-                        pv_scale=scale_vec,
-                    ),
-                    s,
-                    hi,
-                )
-                if _z4_reject(trial_wmin, stress_floor_by_slot[s], base_wmin):
-                    break
+            # Dynamic-buffer floor for the block, evaluated on the NOMINAL
+            # trajectory (operator decision 2026-08-02): the alpha/band
+            # STRESS is deliberately NOT applied to pass 3 — a forecast miss
+            # is caught by the intra-day replan loop (the block is recomputed
+            # every refresh; a degraded forecast retracts the recommendation;
+            # the G4 floor guard force-switches at the real-time cutoff), and
+            # R5 already pins "the battery still fills to soc_max today".
+            # The stress stays in force for the slot-wise pass-2 bets of
+            # energy-limited loads.
+            recovery = _refill_index(traj, s, soc_full)
+            hi = max(recovery, covered[-1][0])
+            if _z4_reject(
+                _windowed_min_soc(traj, s, hi),
+                stress_floor_by_slot[s],
+                _windowed_min_soc(current, s, hi),
+            ):
+                break
             best = (s, trial, covered, traj)
             if block_wh >= target_wh:
                 break  # target covered: the latest feasible start is found

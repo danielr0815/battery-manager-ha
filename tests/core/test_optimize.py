@@ -1420,7 +1420,10 @@ def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
     r0, inputs = run(0.0)
     r1, _ = run(0.1)
     p3 = _pass3_block(r0)
-    assert p3 == [(1, 4, 3, 1600.0)], (
+    # (2,3,3,1200): the always-on nominal dynamic floor (operator 2026-08-02)
+    # caps the start at 06:00 — at alpha=1.0 the floor check used to be
+    # skipped entirely, so the block reached 05:00.
+    assert p3 == [(2, 3, 3, 1200.0)], (
         "the standby artifact must not veto the pre-drain block (L1)"
     )
     night = [h for h in _dehumid_hours(r0, inputs) if not daylight_h(h)]
@@ -1452,7 +1455,8 @@ def test_t2_cumulative_import_trade_invariant():
     # Standby-accounting fix: no artifact trade at all — the block books with
     # zero added import over the base (was: a few ~10 Wh standby artifacts).
     assert traj.total_import_wh == base.total_import_wh
-    assert _pass3_block(result) == [(1, 4, 3, 1600.0)]  # the block booked energy
+    # Same always-on-floor geometry as T1 (operator 2026-08-02).
+    assert _pass3_block(result) == [(2, 3, 3, 1200.0)]  # the block booked energy
 
 
 def test_t3_energy_limited_never_night_charged_with_ratio():
@@ -1478,14 +1482,18 @@ def test_t3_energy_limited_never_night_charged_with_ratio():
 
 
 def test_t4_alpha_stress_gate_protects_inverter_reserve():
-    """T4: the pessimistic WINDOWED stress gate (alpha, §3.3 v2) refuses the
-    EARLIEST hour of the pre-drain block a full-confidence run would book —
-    the deeper block lengthens the drain before the (stressed) morning
-    refill, so its stressed windowed reserve breaks the floor, while the
-    shallower block starting one hour later is accepted. The stressed reserve
-    holds at the inverter+buffer floor (NOT soc_min+buffer). alpha=1.0
-    disables the gate. (Same-day rewrite, F-PREDRAIN-BLOCK: 04:00 on the clip
-    day, the block drains toward today's 09:00 peak.)"""
+    """T4 RE-SCOPED (operator 2026-08-02): the pass-3 block's floor is the
+    NOMINAL dynamic buffer — the alpha/band Z4 stress no longer applies to
+    blocks (a forecast miss is caught by the intra-day replan loop and the
+    G4 real-time floor guard instead). The block depth is therefore
+    ALPHA-INDEPENDENT (identical at 0.5 and 1.0) and still floor-capped: the
+    one-hour-earlier extension the walk refuses breaks the nominal ramped
+    floor while staying off the 20 % cutoff — the dynamic buffer, not R2,
+    is the binding floor here. The windowed Z4 stress survives unchanged for
+    the slot-wise pass-2 bets of ENERGY-LIMITED loads — pinned by
+    test_gate_parity_z4_stress_binds_energy_limited_bets. (Same-day
+    geometry, F-PREDRAIN-BLOCK: 04:00 on the clip day, the block drains
+    toward today's 09:00 peak.)"""
     now = datetime(2026, 7, 4, 4, 0)
 
     def run(alpha):
@@ -1496,19 +1504,42 @@ def test_t4_alpha_stress_gate_protects_inverter_reserve():
             cfg, now, 50.0, [13.0, 11.0], load_states=(FB_STATE, DEHUMID_STATE)
         )
 
-    trusting, _ = run(1.0)
+    trusting, inputs = run(1.0)
     stressed, _ = run(0.5)
-    block_trust = _pass3_block(trusting)
-    block_stress = _pass3_block(stressed)
-    # Full confidence drains deeper (books from 05:00, down toward the 20 %
-    # cutoff); the stressed run starts the block one hour later (06:00).
-    assert block_trust == [(1, 4, 3, 1600.0)]
-    assert block_stress == [(2, 3, 3, 1200.0)]
-    assert block_trust[0][0] < block_stress[0][0]
-    assert trusting.min_soc_percent < stressed.min_soc_percent
+    # Alpha-independence: identical block, identical drain depth.
+    assert _pass3_block(trusting) == [(2, 3, 3, 1200.0)]
+    assert _pass3_block(stressed) == _pass3_block(trusting)
+    assert stressed.min_soc_percent == trusting.min_soc_percent
+
+    # Floor-capped by the nominal dynamic buffer: the accepted trough holds
+    # the ramped floor (25 = inverter 20 + full buffer 5 at the pre-dawn
+    # slots), and the refused one-hour-earlier extension dips below it while
+    # staying off the 20 % cutoff (R2 would pass it).
     floor = 20.0 + 5.0  # inverter_min_soc + soc_buffer (NOT soc_min + buffer)
-    assert stressed.stressed_min_soc_percent >= floor - 0.5
-    assert trusting.stressed_min_soc_percent is None  # alpha=1.0 -> gate off
+    assert trusting.min_soc_percent >= floor - 0.5
+    cfg = _predrain_config(
+        ratio=0.1, alpha=1.0, beta=1.0, loads=(FOSSIBOT_B, DEHUMIDIFIER)
+    )
+    threshold, _base = search_threshold(cfg, inputs)
+    s, count, _, _ = _pass3_block(trusting)[0]
+    peak = s + count
+    lp = next(p for p in trusting.load_plans if p.load_id == "dehumidifier")
+    extra_wo = [f.extra_ac_wh for f in trusting.trajectory.flows]
+    for j in range(s, peak):
+        extra_wo[j] -= 400.0 * lp.run_hours[j]
+    trial = list(extra_wo)
+    for j in range(s - 1, peak):
+        trial[j] += 400.0 * inputs.slots[j].duration
+    ext_traj = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    recovery = _refill_index(ext_traj, s - 1, cfg.battery.soc_max_percent - 0.1)
+    ext_min = _windowed_min_soc(ext_traj, s - 1, max(recovery, peak - 1))
+    assert 20.0 < ext_min < floor
+
+    # The §3.5 diagnostic still reports the windowed reserve for the booking
+    # — the stress machinery is alive (pass 2, the diagnostic); it just no
+    # longer gates blocks.
+    assert stressed.stressed_min_soc_percent is not None
+    assert trusting.stressed_min_soc_percent is None  # alpha=1.0 -> no stress
 
 
 def test_t5_predrain_hours_hug_the_window_latest_first():
@@ -1594,24 +1625,26 @@ def test_refill_index_settles_at_first_actual_refill():
 
 
 def test_t4_windowed_gate_scopes_stress_to_recovery_window():
-    """§3.3 v2: the stress gate is WINDOWED, not whole-horizon. Today's
-    pre-drain block is judged only on its own recovery window, so it is
-    booked even though the WHOLE-HORIZON alpha sim (which the failed v1 gate
-    used) drops far below the floor on a later, weaker day. The v1
-    whole-horizon gate would have vetoed the block; the windowed gate does
-    not. (Same-day rewrite, F-PREDRAIN-BLOCK: the bet is the pass-3 block and
-    the diagnostic reports exactly its windowed reserve.)"""
+    """§3.3 v2 → §3.5 (operator 2026-08-02): the block's reserve is judged on
+    its own recovery window, never whole-horizon. The pass-3 gate itself is
+    the NOMINAL dynamic floor now — today's block books regardless of the
+    whole-horizon alpha dip on the later, weaker day — but the §3.5
+    diagnostic must still report exactly the WINDOWED stressed reserve (not
+    the whole-horizon min), so the sensor shows what a forecast miss would
+    do to THIS bet's window. (Same-day rewrite, F-PREDRAIN-BLOCK: the bet is
+    the pass-3 block and the diagnostic reports exactly its windowed
+    reserve.)"""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=0.5, beta=1.0)
     result, inputs = make_plan(cfg, now, 50.0, [13.0, 11.0, 3.0])
     n = len(inputs.slots)
 
-    # Today's block IS booked (the windowed gate permits it).
+    # Today's block IS booked (the nominal floor permits it, stress or not).
     p3 = _pass3_block(result)
-    assert p3 == [(2, 3, 3, 1200.0)], "windowed gate must book today's block"
+    assert p3 == [(2, 3, 3, 1200.0)], "today's block must book"
 
     # The WHOLE-HORIZON alpha sim of the final series breaks the inverter floor
-    # (a later, weaker day dominates it) — proving the gate is NOT whole-horizon.
+    # (a later, weaker day dominates it) — the diagnostic must NOT report this.
     threshold = result.threshold_percent
     extra = tuple(f.extra_ac_wh for f in result.trajectory.flows)
     whole_horizon = simulate(cfg, inputs, threshold, extra_ac_wh=extra, pv_scale=0.5)
@@ -1636,10 +1669,12 @@ def test_t4_bet_settles_at_refill_so_unrelated_tail_dip_cannot_veto():
     """F-STRICT-SURPLUS R3 settlement: a pre-drain whose trial refills to the
     ceiling at the very next slot has its bet window END there — the deep,
     unrelated DC-tail trough AFTER the refill is structurally outside the
-    stressed window and cannot veto the (fully refilled, export-covered)
-    pre-drain. (Pre-R3 this scenario needed the Z4 relief clause to survive a
-    window that ran to the same-day PV window end; the relief clause remains
-    in force for base dips INSIDE [i, refill].)"""
+    window and cannot veto the (fully refilled, export-covered) pre-drain.
+    (Pre-R3 this scenario needed the Z4 relief clause to survive a window
+    that ran to the same-day PV window end; the relief clause remains in
+    force for base dips INSIDE [i, refill]. The settlement rule itself still
+    scopes both the pass-3 NOMINAL floor window (operator 2026-08-02) and the
+    pass-2 stress window.)"""
     deh = SurplusLoad(
         load_id="deh",
         name="E",
@@ -2232,10 +2267,10 @@ def test_predrain_block_books_one_block_ending_at_todays_peak():
     p3 = _pass3_block(result)
     assert len(p3) == 1
     start, count, _, _wh = p3[0]
-    # The block is one unbroken range (05:00-08:00) whose last slot sits right
-    # before today's first export slot (the 09:00 peak).
+    # The block is one unbroken range (06:00-08:00) whose last slot sits right
+    # before today's first export slot (the 09:00 peak). (06:00 start since
+    # the always-on nominal dynamic floor caps the block, operator 2026-08-02.)
     assert [inputs.slots[i].hour_of_day for i in range(start, start + count)] == [
-        5,
         6,
         7,
         8,
@@ -2244,6 +2279,84 @@ def test_predrain_block_books_one_block_ending_at_todays_peak():
     reason = next(r for r in lp.reasons if r.startswith("pass 3 @"))
     assert "pre-drain block" in reason
     assert "latest feasible start" in reason
+
+
+def test_predrain_block_drains_to_the_nominal_ramped_floor():
+    """Operator model (2026-08-02): on a strong day with high start SOC the
+    block drains to the NOMINAL ramped floor — no alpha/band stress, so the
+    depth is identical at any alpha — while R2 still vetoes anything that
+    would ride the inverter cutoff.
+
+    Part A (floor-bound): a 200 W load from 45 % books [05:00, 09:00) with
+    the trough just above the saturated ramped floor (inverter 20 + full
+    buffer 5); the refused 04:00 extension would dip to ~22.5 % — below the
+    floor but clear of the 20 % cutoff, so the dynamic buffer, not R2, caps
+    the depth. Identical block at alpha 0.5 and 1.0 (stress-independence).
+
+    Part B (cutoff-bound): from 30 % the same scene books only the PV-served
+    morning tail [07:00, 09:00) — the pre-dawn extension would ride the
+    20 % cutoff, so R2 (inside `_gate_trial`) refuses it."""
+    deh200 = replace(DEHUMIDIFIER, nominal_power_w=200.0)
+    now = datetime(2026, 7, 4, 4, 0)
+
+    def run(soc, alpha):
+        cfg = _predrain_config(ratio=0.1, alpha=alpha, beta=1.0, loads=(deh200,))
+        result, inputs = make_plan(cfg, now, soc, [13.0, 11.0])
+        return cfg, result, inputs
+
+    # Part A: the block drains to the nominal ramped floor, alpha-independently.
+    cfg, result, inputs = run(45.0, 1.0)
+    block = _pass3_block(result)
+    assert block == [(1, 4, 3, 800.0)]  # [05:00, 09:00)
+    _cfg_h, half, _inputs_h = run(45.0, 0.5)
+    assert _pass3_block(half) == block  # stress-independent depth
+    s, count, _, _ = block[0]
+    peak = s + count
+    soc_full = cfg.battery.soc_max_percent - 0.1
+    recovery = _refill_index(result.trajectory, s, soc_full)
+    trough = _windowed_min_soc(result.trajectory, s, max(recovery, peak - 1))
+    floor = 20.0 + 5.0  # inverter cutoff + full buffer (ramp saturates pre-dawn)
+    assert floor <= trough < floor + 2.0  # drained to the nominal floor
+
+    # The refused 04:00 extension (replayed on the accepted series) dips
+    # below the floor but stays off the 20 % cutoff — the dynamic buffer,
+    # not R2, is the binding cap.
+    threshold, _base = search_threshold(cfg, inputs)
+    lp = result.load_plans[0]
+    extra_wo = [f.extra_ac_wh for f in result.trajectory.flows]
+    for j in range(s, peak):
+        extra_wo[j] -= 200.0 * lp.run_hours[j]
+    trial = list(extra_wo)
+    for j in range(s - 1, peak):
+        trial[j] += 200.0 * inputs.slots[j].duration
+    ext = simulate(cfg, inputs, threshold, extra_ac_wh=tuple(trial))
+    ext_rec = _refill_index(ext, s - 1, soc_full)
+    ext_min = _windowed_min_soc(ext, s - 1, max(ext_rec, peak - 1))
+    assert 20.0 < ext_min < floor
+
+    # Part B: lower start SOC -> R2 shortens the block to the PV-served tail.
+    cfg_b, low, inputs_b = run(30.0, 1.0)
+    block_b = _pass3_block(low)
+    assert block_b == [(3, 2, 3, 400.0)]  # [07:00, 09:00) only
+    s_b, count_b, _, _ = block_b[0]
+    peak_b = s_b + count_b
+    for j in range(s_b, peak_b):
+        flow = low.trajectory.flows[j]
+        assert flow.soc_start_percent > 20.0 and flow.soc_end_percent > 20.0
+    lp_b = low.load_plans[0]
+    threshold_b, _ = search_threshold(cfg_b, inputs_b)
+    extra_wo = [f.extra_ac_wh for f in low.trajectory.flows]
+    for j in range(s_b, peak_b):
+        extra_wo[j] -= 200.0 * lp_b.run_hours[j]
+    trial = list(extra_wo)
+    for j in range(s_b - 1, peak_b):
+        trial[j] += 200.0 * inputs_b.slots[j].duration
+    ext_b = simulate(cfg_b, inputs_b, threshold_b, extra_ac_wh=tuple(trial))
+    # R2's veto: the pre-dawn extension would ride the 20 % cutoff.
+    assert (
+        min(ext_b.flows[j].soc_end_percent for j in range(s_b - 1, peak_b))
+        <= 20.0 + 1e-6
+    )
 
 
 def test_predrain_block_latest_start_covers_ceil_of_target():
@@ -2340,10 +2453,10 @@ def test_predrain_block_two_continuous_loads_follow_config_order():
         return {ld.load_id: _pass3_block(result, ld.load_id) for ld in order}
 
     first = blocks((deh1, deh2))
-    assert first["deh1"] == [(1, 4, 3, 1600.0)]  # identical to the solo block
+    assert first["deh1"] == [(2, 3, 3, 1200.0)]  # identical to the solo block
     assert first["deh2"] == []
     swapped = blocks((deh2, deh1))
-    assert swapped["deh2"] == [(1, 4, 3, 1600.0)]
+    assert swapped["deh2"] == [(2, 3, 3, 1200.0)]
     assert swapped["deh1"] == []
 
 
@@ -2356,7 +2469,7 @@ def test_predrain_block_today_never_predrains_for_tomorrow():
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 50.0, [13.0, 15.0])
     lp = result.load_plans[0]
-    assert _pass3_block(result) == [(1, 4, 3, 1600.0)]
+    assert _pass3_block(result) == [(2, 3, 3, 1200.0)]  # nominal-floor capped
     today = inputs.slots[0].start.date()
     after = [
         (i, a)
@@ -2627,12 +2740,15 @@ def test_collapsed_bands_keep_the_scalar_plan():
     assert collapsed.grid_export_kwh == scalar12.grid_export_kwh
 
 
-def _predrain_band_plan(alpha, r10=None, r90=None):
-    """The same-day pre-drain-block geometry (04:00, house 45 %, a slow-ramping
-    ~12.6 kWh day so the block's stressed dip is PV-dependent and band evidence
-    can move the gated start), with optional bands on today's daylight slots.
-    (Same-day rewrite, F-PREDRAIN-BLOCK: the Z4-gated bet is the pass-3 block,
-    so the evidence must move the block START, not a set of pre-dawn bets.)"""
+def _el_z4_band_plan(alpha, r10=None, r90=None):
+    """The energy-limited Z4 stress scene: a thin dawn slot (50 Wh PV, 200 Wh
+    house — band-capable at >= 25 Wh) ahead of a big refill, on a 2 kWh
+    battery; the fossibot's pass-2 bet quantum (300 Wh full / 150 Wh half) is
+    gated ONLY by the windowed stress (c1/Z2''/R2/Z3 all pass), so band
+    evidence on the dawn slot moves the booking directly. Start SOC 51.5 sits
+    inside the discrimination window: the scalar 0.5 stress caps the full
+    quantum, 0.85 P10 evidence admits it."""
+    fb = replace(FOSSIBOT_B, target_soc_percent=100.0)
     control = replace(
         ControlParams(),
         import_trade_ratio=0.1,
@@ -2640,64 +2756,66 @@ def _predrain_band_plan(alpha, r10=None, r90=None):
         upper_pv_reserve=1.0,
         strong_pv_cutoff_w=200.0,
     )
-    cfg = SystemConfig(control=control, loads=(DEHUMIDIFIER,))
-    now = datetime(2026, 7, 4, 4, 0)
-    pv_shape = {
-        7: 200,
-        8: 500,
-        9: 1200,
-        10: 2000,
-        11: 2500,
-        12: 2500,
-        13: 2000,
-        14: 1200,
-        15: 500,
-    }
-    pv = {now.replace(hour=h, minute=0): float(w) for h, w in pv_shape.items()}
-    daily = [sum(pv_shape.values()) / 1000.0, 11.0]
-    states = (DEHUMID_STATE,)
-    base_inputs = build_slots(cfg, now, 45.0, daily, load_states=states, pv_hourly=pv)
-    if r10 is None:
-        return plan(cfg, base_inputs), base_inputs
-    day = now.date()
-    p10: dict[datetime, float] = {}
-    p90: dict[datetime, float] = {}
-    for s in base_inputs.slots:
-        if s.start.date() == day and s.pv_wh >= 25.0 and s.duration == 1.0:
-            p10[s.start] = s.pv_wh * r10
-            p90[s.start] = s.pv_wh * r90
-    inputs = build_slots(
-        cfg,
-        now,
-        45.0,
-        daily,
-        load_states=states,
-        pv_hourly=pv,
-        pv_hourly_p10=p10,
-        pv_hourly_p90=p90,
+    cfg = SystemConfig(
+        control=control,
+        loads=(fb,),
+        battery=BatteryParams(capacity_wh=2000.0),
+        ac_profile=LoadProfile(0.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
     )
-    return plan(cfg, inputs), inputs
+    start = datetime(2026, 7, 4, 6, 0)
+
+    def slot(i, pv, ac):
+        s = HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=6 + i,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=0.0,
+        )
+        if r10 is not None and pv >= 25.0:
+            s = replace(s, pv_p10_wh=pv * r10, pv_p90_wh=pv * r90)
+        return s
+
+    slots = (slot(0, 50.0, 200.0), slot(1, 2500.0, 0.0), slot(2, 100.0, 0.0))
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=51.5,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="fossibot_b", soc_percent=0.0),),
+    )
+    return plan(cfg, inputs)
+
+
+def _slot0_bet_wh(result):
+    lp = next(p for p in result.load_plans if p.load_id == "fossibot_b")
+    return sum(a[3] for a in lp.allocations if a[0] == 0 and a[2] == 2)
 
 
 def test_z4_stress_follows_p10_evidence():
-    """R12c: the Z4 block stress follows P10 evidence in BOTH directions.
-    A stable-day band (p10_ratio 0.85 on the refill hours) admits an EARLIER
-    block start than the scalar alpha; a volatile-day band (p10_ratio 0.4)
-    caps the block the trusting alpha=1.0 dial accepted. (Same-day rewrite,
-    F-PREDRAIN-BLOCK: the block start moves because the band changes the
-    stressed refill inside the block's own bet window.)"""
-    # Milder-than-scalar: scalar 0.5 caps the block at 08:00; 0.85 P10
-    # evidence on the refill hours admits the 07:00 start (stable day -> the
-    # reserve provably recovers).
-    scalar_mid, _ = _predrain_band_plan(0.5)
-    evidence_mid, _ = _predrain_band_plan(0.5, 0.85, 1.0)
-    assert _pass3_block(evidence_mid)[0][0] < _pass3_block(scalar_mid)[0][0]
+    """R12c RE-SCOPED (operator 2026-08-02): the Z4 stress follows P10
+    evidence in BOTH directions — but since the pass-3 block floor went
+    NOMINAL, the stress lives ONLY in the slot-wise pass-2 bets of
+    energy-limited loads, so the discriminating booking is a fossibot dawn
+    bet, not a block start. A stable-dawn band (p10_ratio 0.85 on the bet
+    slot) admits the FULL 300 Wh quantum the scalar alpha caps at the half;
+    a volatile-dawn band (p10_ratio 0.4) caps the quantum the trusting
+    alpha=1.0 dial accepts. (Pass-3 blocks are alpha/band-independent now —
+    pinned by test_t4_alpha_stress_gate_protects_inverter_reserve.)"""
+    # Milder-than-scalar: scalar 0.5 caps the bet at the half quantum; 0.85
+    # P10 evidence on the bet slot admits the full one (stable dawn -> the
+    # reserve provably holds).
+    assert _slot0_bet_wh(_el_z4_band_plan(0.5)) == 150.0
+    assert _slot0_bet_wh(_el_z4_band_plan(0.5, 0.85, 1.0)) == 300.0
 
-    # Harsher-than-scalar: alpha=1.0 trusts and drains deep; 0.4 P10 evidence
-    # (volatile day) caps the block despite the dial.
-    trusting, _ = _predrain_band_plan(1.0)
-    evidence_low, _ = _predrain_band_plan(1.0, 0.4, 1.0)
-    assert _pass3_block(evidence_low)[0][0] > _pass3_block(trusting)[0][0]
+    # Harsher-than-scalar: alpha=1.0 trusts and books the full quantum; 0.4
+    # P10 evidence (volatile dawn) caps it despite the dial.
+    trusting = _el_z4_band_plan(1.0)
+    evidence_low = _el_z4_band_plan(1.0, 0.4, 1.0)
+    assert _slot0_bet_wh(trusting) == 300.0
+    assert _slot0_bet_wh(evidence_low) == 150.0
     # The diagnostic reports the SAME stressed reserve the gate used (R5):
     # engaged by evidence even though the alpha dial is 1.0.
     assert evidence_low.stressed_min_soc_percent is not None
@@ -2807,9 +2925,10 @@ def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
     rewrite (F-PREDRAIN-BLOCK): the pre-drain block books only floor-safe
     hours. No booked slot rides the 20 % cutoff at either endpoint (R2), the
     allocation's import stays within IMPORT_ARTIFACT_SLACK_WH (R1), and the
-    one-slot-earlier extension the block REFUSES is vetoed by the stressed
-    windowed floor over its refill-settled bet window (R3/Z4) — not by R1 or
-    R2, which the gate-by-gate check below shows passing for it."""
+    one-slot-earlier extension the block REFUSES is vetoed by the NOMINAL
+    dynamic floor over its refill-settled bet window (operator 2026-08-02:
+    pass 3 no longer stresses blocks) — not by R1 or R2, which the
+    gate-by-gate check below shows passing for it."""
     from core.optimize import (
         IMPORT_ARTIFACT_SLACK_WH,
         _effective_uncertainty,
@@ -2844,7 +2963,6 @@ def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
 
     # Gate-by-gate: evaluate the refused one-slot-earlier block extension
     # [start-1, peak) against the accepted series exactly as pass 3 would.
-    n = len(inputs.slots)
     threshold, base = search_threshold(config, inputs)
     start, count, _, _ = p3[0]
     peak = start + count
@@ -2868,21 +2986,18 @@ def test_strict_surplus_refuses_cutoff_riding_predawn_quantum():
         and traj.flows[j].soc_end_percent > floor20 + 1e-6
         for j, _t in covered
     )
-    # Z4 IS: the stressed refill-settled window breaks the ramped floor AND is
-    # worse than the accepted series' own window — the extension would deepen
-    # the dip the block is allowed to cause.
+    # The dynamic floor IS: the NOMINAL refill-settled window (pass 3 no
+    # longer stresses blocks, operator 2026-08-02) breaks the ramped floor
+    # AND is worse than the accepted series' own window — the extension would
+    # deepen the dip the block is allowed to cause. (The window covers only
+    # zero-PV pre-dawn slots, so the nominal and stressed mins coincide.)
     alpha = config.control.predrain_pv_confidence
     stress_vec, _o, _b = _effective_uncertainty(inputs, alpha, 1.0)
     recovery = _refill_index(traj, start - 1, config.battery.soc_max_percent - 0.1)
     hi = max(recovery, covered[-1][0])
-    sv = [stress_vec[j] if start - 1 <= j <= hi else 1.0 for j in range(n)]
-    t_w = _windowed_min_soc(
-        simulate(config, inputs, threshold, extra_ac_wh=tuple(trial), pv_scale=sv),
-        start - 1,
-        hi,
-    )
+    t_w = _windowed_min_soc(traj, start - 1, hi)
     b_w = _windowed_min_soc(
-        simulate(config, inputs, threshold, extra_ac_wh=tuple(extra_wo), pv_scale=sv),
+        simulate(config, inputs, threshold, extra_ac_wh=tuple(extra_wo)),
         start - 1,
         hi,
     )

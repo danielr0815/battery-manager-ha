@@ -55,11 +55,21 @@ Drei strukturelle Defekte dahinter:
   (kein Slot netzgespeist/am Inverter-Cutoff), R5-preserve-daily-max (die
   Batterie muss heute trotzdem soc_max erreichen — genau die
   Operator-Bedingung „nur entladen, wenn sie eh vollläuft"), Z3
-  (Buffer-Floor) und Z4 (fensterbasierte Stress-Reserve mit der
-  Crossover-Rampe = die zeitabhängige Reserve Richtung Solarbeginn). Alle
-  Gates verschlechtern sich monoton mit der Blocklänge → das erste Veto
-  beendet die Verlängerung; der letzte akzeptierte Block ist der längste
-  zulässige.
+  (Buffer-Floor) und der **dynamische Puffer** (Crossover-Rampe-Floor).
+  **Seit v0.21.0 (Operator-Entscheid 2026-08-02) wird die Alpha-/Band-
+  STRESS-Prüfung auf die Trajektorie NICHT mehr auf den Block angewendet:**
+  ein Prognosefehlgriff wird intra-tag durch den Replan-Loop aufgefangen
+  (der Block wird je Refresh neu gerechnet, eine verschlechterte Prognose
+  zieht die Empfehlung zurück, der G4-Floor-Guard schaltet am Echtzeit-
+  Cutoff zwangsab) — im worst case steht der Entfeuchter ab ~08:00 still
+  und auch die reduzierte PV reicht fürs SOC-Max. Der Stress bleibt nur
+  für die slotweisen Pass-2-Wetten der energie-limitierten Lasten in
+  Kraft. Folge: der Block darf bis an den nominalen dynamischen Puffer
+  entladen (Tiefpunkt ~25 % statt ~35 % bei α=0,7); der Puffer-Floor wird
+  jetzt auch bei α=1,0 geprüft (vorher war die Prüfung da inaktiv — Blöcke
+  können dort flacher ausfallen als vor v0.21.0). Alle Gates verschlechtern
+  sich monoton mit der Blocklänge → das erste Veto beendet die
+  Verlängerung; der letzte akzeptierte Block ist der längste zulässige.
 - **R6 (Mindestlänge).** Kürzer als `min_runtime` wird nicht gebucht; eine
   eigene Buchung im Peak-Slot (Pass 1) zählt als Fortsetzung mit
   (Rasterkanten-Fall F-SEAMLESS-PLAN).
