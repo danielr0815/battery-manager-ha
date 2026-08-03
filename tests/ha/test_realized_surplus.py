@@ -63,6 +63,11 @@ from custom_components.battery_manager.const import (
     SUBENTRY_TYPE_LOAD,
 )
 
+# Every energy counter carries its unit: the delta is scaled by the entity's
+# OWN unit_of_measurement, so tests must not lean on the unknown-unit fallback
+# (test_export_counter_in_wh_is_scaled_by_its_own_unit covers the other unit).
+KWH = {"unit_of_measurement": "kWh", "device_class": "energy"}
+
 SOC = "sensor.test_soc"
 EXPORT = "sensor.test_export_meter"
 LOAD_A_ENERGY = "sensor.test_load_a_energy"
@@ -301,8 +306,8 @@ async def test_corrected_export_subtracts_external_load(hass):
     hass.states.async_set(LOAD_B_ENERGY, "10.0", {"unit_of_measurement": "kWh"})
     await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)  # baseline
 
-    hass.states.async_set(EXPORT, "5000.5")
-    hass.states.async_set(LOAD_B_ENERGY, "10.02")
+    hass.states.async_set(EXPORT, "5000.5", KWH)
+    hass.states.async_set(LOAD_B_ENERGY, "10.02", KWH)
     await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
 
     realized = coordinator._realized
@@ -336,8 +341,8 @@ async def test_negative_corrected_delta_clamps_at_zero(hass):
     hass.states.async_set(LOAD_B_ENERGY, "10.0", {"unit_of_measurement": "kWh"})
     await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)  # baseline
 
-    hass.states.async_set(EXPORT, "5000.01")  # +10 Wh
-    hass.states.async_set(LOAD_B_ENERGY, "10.05")  # +50 Wh
+    hass.states.async_set(EXPORT, "5000.01", KWH)  # +10 Wh
+    hass.states.async_set(LOAD_B_ENERGY, "10.05", KWH)  # +50 Wh
     await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
 
     realized = coordinator._realized
@@ -345,6 +350,111 @@ async def test_negative_corrected_delta_clamps_at_zero(hass):
     assert realized["true_export_total_wh"] == 0.0
     # The load's real consumption still counts as prevented export.
     assert realized["prevented_wh"] == pytest.approx(50.0)
+    # The 40 Wh the export delta could not absorb are CARRIED FORWARD, not
+    # discarded (review 2026-08-03).
+    assert realized["external_debt_wh"] == pytest.approx(40.0)
+
+
+async def test_external_correction_debt_is_applied_on_later_cycles(hass):
+    """A coarse load counter (Fritz!Powerline: ~0.1 kWh chunks) delivers its
+    whole chunk in one cycle while the export meter trickles. Clamping the
+    correction per cycle discarded nearly all of it and the metering artefact
+    survived; the remainder now waits as a debt and is applied to the
+    following export deltas until it is worked off."""
+    coordinator, _entry = await _setup(
+        hass,
+        loads=[
+            (
+                LOAD_B,
+                {
+                    CONF_LOAD_ENERGY_ENTITY: LOAD_B_ENERGY,
+                    CONF_LOAD_IN_HOUSE: False,
+                    CONF_LOAD_POWER_W: 400.0,
+                },
+            )
+        ],
+    )
+    hass.states.async_set(LOAD_B_ENERGY, "10.0", {"unit_of_measurement": "kWh"})
+    await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)  # baseline
+
+    # The load's 100 Wh chunk lands while the export meter advanced only 8 Wh.
+    hass.states.async_set(EXPORT, "5000.008", KWH)
+    hass.states.async_set(LOAD_B_ENERGY, "10.1", KWH)
+    await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
+    assert coordinator._realized["lost_wh"] == 0.0
+    assert coordinator._realized["external_debt_wh"] == pytest.approx(92.0)
+
+    # Next cycle: export advances 60 Wh, all of it still the load's draw.
+    hass.states.async_set(EXPORT, "5000.068", KWH)
+    await _refresh_at(hass, coordinator, T0 + 3 * FIVE_MIN, 55.3)
+    assert coordinator._realized["lost_wh"] == 0.0
+    assert coordinator._realized["external_debt_wh"] == pytest.approx(32.0)
+
+    # And once the export outruns the remaining debt, the surplus is booked.
+    hass.states.async_set(EXPORT, "5000.168", KWH)
+    await _refresh_at(hass, coordinator, T0 + 4 * FIVE_MIN, 55.4)
+    assert coordinator._realized["lost_wh"] == pytest.approx(68.0)
+    assert coordinator._realized["external_debt_wh"] == 0.0
+    # Total booked + debt == export - external consumption, exactly.
+    assert coordinator._realized["true_export_total_wh"] == pytest.approx(68.0)
+
+
+async def test_external_delta_without_export_movement_becomes_debt(hass):
+    """A load chunk arriving on a cycle where the export meter did not change
+    at all used to be thrown away entirely (`export_delta is None`)."""
+    coordinator, _entry = await _setup(
+        hass,
+        loads=[
+            (
+                LOAD_B,
+                {
+                    CONF_LOAD_ENERGY_ENTITY: LOAD_B_ENERGY,
+                    CONF_LOAD_IN_HOUSE: False,
+                    CONF_LOAD_POWER_W: 400.0,
+                },
+            )
+        ],
+    )
+    hass.states.async_set(LOAD_B_ENERGY, "10.0", {"unit_of_measurement": "kWh"})
+    await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)  # baseline
+
+    hass.states.async_set(LOAD_B_ENERGY, "10.05", KWH)  # export meter unchanged
+    await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
+    assert coordinator._realized["external_debt_wh"] == pytest.approx(50.0)
+
+    hass.states.async_set(EXPORT, "5000.08", KWH)  # +80 Wh, 50 of them the load
+    await _refresh_at(hass, coordinator, T0 + 3 * FIVE_MIN, 55.3)
+    assert coordinator._realized["lost_wh"] == pytest.approx(30.0)
+    assert coordinator._realized["external_debt_wh"] == 0.0
+
+
+async def test_export_delta_after_a_cycle_gap_is_booked_not_dropped(hass):
+    """The export meter used to be passed no cap power, so its jump cap was
+    the flat 2 kWh absolute fallback: a legitimate accrual over a cycle gap
+    (planner failure, HA restart) was discarded whole — and since the baseline
+    advances anyway, that energy was lost forever."""
+    coordinator, _entry = await _setup(hass)
+    await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)  # baseline
+
+    # 25 minutes without a successful cycle, exporting hard: +2.4 kWh in one
+    # delta — above the absolute fallback, far below 3 x PV peak x elapsed.
+    hass.states.async_set(EXPORT, "5002.4", KWH)
+    await _refresh_at(hass, coordinator, T0 + FIVE_MIN + timedelta(minutes=25), 55.6)
+    assert coordinator._realized["lost_wh"] == pytest.approx(2400.0)
+    assert coordinator._realized["true_export_total_wh"] == pytest.approx(2400.0)
+
+
+async def test_export_counter_in_wh_is_scaled_by_its_own_unit(hass):
+    """The options-flow selector filters by device class only, so a Wh-unit
+    counter is a valid pick. Assuming kWh mis-scaled it by 1000x and the jump
+    filter then swallowed every delta — all realized sensors stuck at 0."""
+    coordinator, _entry = await _setup(hass)
+    hass.states.async_set(EXPORT, "5000000", {"unit_of_measurement": "Wh"})
+    await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)  # baseline
+
+    hass.states.async_set(EXPORT, "5000480", {"unit_of_measurement": "Wh"})
+    await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
+    assert coordinator._realized["lost_wh"] == pytest.approx(480.0)
 
 
 # ---------------------------------------------------------------------------
@@ -372,44 +482,44 @@ async def test_jump_filter_drops_implausible_negative_and_relearns(hass):
 
     # Implausible jump: +150 Wh in 5 min > 100 Wh cap -> dropped, reading
     # and timestamp advance anyway.
-    hass.states.async_set(LOAD_A_ENERGY, "10.15")
+    hass.states.async_set(LOAD_A_ENERGY, "10.15", KWH)
     await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
     assert coordinator._realized["prevented_wh"] == 0.0
     assert readings[LOAD_A_ENERGY] == 10.15
 
     # Plausible step from the NEW baseline: +50 Wh <= cap -> counted.
-    hass.states.async_set(LOAD_A_ENERGY, "10.20")
+    hass.states.async_set(LOAD_A_ENERGY, "10.20", KWH)
     await _refresh_at(hass, coordinator, T0 + 3 * FIVE_MIN, 55.3)
     assert coordinator._realized["prevented_wh"] == pytest.approx(50.0)
 
     # Negative delta (counter reset / telemetry glitch): dropped, the reading
     # still advances to the reset value.
-    hass.states.async_set(LOAD_A_ENERGY, "10.10")
+    hass.states.async_set(LOAD_A_ENERGY, "10.10", KWH)
     await _refresh_at(hass, coordinator, T0 + 4 * FIVE_MIN, 55.4)
     assert coordinator._realized["prevented_wh"] == pytest.approx(50.0)
     assert readings[LOAD_A_ENERGY] == 10.10
 
     # Back up: +50 Wh from the reset baseline -> counted.
-    hass.states.async_set(LOAD_A_ENERGY, "10.15")
+    hass.states.async_set(LOAD_A_ENERGY, "10.15", KWH)
     await _refresh_at(hass, coordinator, T0 + 5 * FIVE_MIN, 55.5)
     assert coordinator._realized["prevented_wh"] == pytest.approx(100.0)
 
     # Unavailable: nothing booked, the re-learn flag arms.
-    hass.states.async_set(LOAD_A_ENERGY, "unavailable")
+    hass.states.async_set(LOAD_A_ENERGY, "unavailable", KWH)
     await _refresh_at(hass, coordinator, T0 + 6 * FIVE_MIN, 55.6)
     assert coordinator._realized["prevented_wh"] == pytest.approx(100.0)
     assert LOAD_A_ENERGY in coordinator._realized_relearn
 
     # First valid state after the dropout: fresh baseline — the gap to 12.0
     # is NOT dumped as one delta.
-    hass.states.async_set(LOAD_A_ENERGY, "12.0")
+    hass.states.async_set(LOAD_A_ENERGY, "12.0", KWH)
     await _refresh_at(hass, coordinator, T0 + 7 * FIVE_MIN, 55.7)
     assert coordinator._realized["prevented_wh"] == pytest.approx(100.0)
     assert readings[LOAD_A_ENERGY] == 12.0
     assert LOAD_A_ENERGY not in coordinator._realized_relearn
 
     # ...and normal counting resumes from the re-learned baseline.
-    hass.states.async_set(LOAD_A_ENERGY, "12.05")
+    hass.states.async_set(LOAD_A_ENERGY, "12.05", KWH)
     await _refresh_at(hass, coordinator, T0 + 8 * FIVE_MIN, 55.8)
     assert coordinator._realized["prevented_wh"] == pytest.approx(150.0)
 
@@ -450,8 +560,8 @@ async def test_prevented_sums_energy_deltas_and_runtime_estimate(hass):
 
     # In-house +30 Wh, external +20 Wh: BOTH count as prevented; with the
     # export meter unmoved there is no export delta to correct.
-    hass.states.async_set(LOAD_A_ENERGY, "10.03")
-    hass.states.async_set(LOAD_B_ENERGY, "20.02")
+    hass.states.async_set(LOAD_A_ENERGY, "10.03", KWH)
+    hass.states.async_set(LOAD_B_ENERGY, "20.02", KWH)
     await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
     assert coordinator._realized["prevented_wh"] == pytest.approx(50.0)
     assert coordinator._realized["lost_wh"] == 0.0
@@ -492,12 +602,12 @@ async def test_midnight_rollover_resets_day_counters_keeps_total(hass):
         day + timedelta(days=1), datetime.min.time(), tzinfo=tzinfo
     ).replace(hour=0, minute=5)
 
-    hass.states.async_set(EXPORT, "5000.1")  # +100 Wh today
+    hass.states.async_set(EXPORT, "5000.1", KWH)  # +100 Wh today
     await _refresh_at(hass, coordinator, pre_midnight, 55.1)
     assert coordinator._realized["lost_wh"] == pytest.approx(100.0)
     assert coordinator._realized["true_export_total_wh"] == pytest.approx(100.0)
 
-    hass.states.async_set(EXPORT, "5000.2")  # +100 Wh on the new day
+    hass.states.async_set(EXPORT, "5000.2", KWH)  # +100 Wh on the new day
     await _refresh_at(hass, coordinator, post_midnight, 55.2)
     realized = coordinator._realized
     # Exactly the new day's 100 Wh — not 200 (no carry-over) and not
@@ -592,8 +702,8 @@ async def test_restart_via_flush_and_reload_restores_counters(hass):
     )
     hass.states.async_set(LOAD_B_ENERGY, "10.0", {"unit_of_measurement": "kWh"})
     await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)
-    hass.states.async_set(EXPORT, "5000.5")
-    hass.states.async_set(LOAD_B_ENERGY, "10.02")
+    hass.states.async_set(EXPORT, "5000.5", KWH)
+    hass.states.async_set(LOAD_B_ENERGY, "10.02", KWH)
     await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
     assert coordinator._realized["lost_wh"] == pytest.approx(480.0)
 
@@ -627,7 +737,7 @@ async def test_realized_data_block_shape_and_composition(hass):
     realized (measured) + the fresh per-day forecast for the rest of the day,
     tomorrow is pure forecast (operator decisions 1/4/5)."""
     coordinator, _entry = await _setup(hass)
-    hass.states.async_set(EXPORT, "5000.5")
+    hass.states.async_set(EXPORT, "5000.5", KWH)
     await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)
 
     realized = coordinator.data["realized"]
@@ -680,7 +790,7 @@ async def test_soc_forecast_attribute_carries_realized_block(hass):
     off the coordinator data — the sensor has to republish it, else the card's
     Ist branch is dead code."""
     coordinator, entry = await _setup(hass)
-    hass.states.async_set(EXPORT, "5000.5")
+    hass.states.async_set(EXPORT, "5000.5", KWH)
     await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)
 
     registry = er.async_get(hass)
@@ -741,8 +851,8 @@ async def test_realized_sensors_exist_with_state_classes_and_values(hass):
 
     hass.states.async_set(LOAD_B_ENERGY, "10.0", {"unit_of_measurement": "kWh"})
     await _refresh_at(hass, coordinator, T0 + FIVE_MIN, 55.1)
-    hass.states.async_set(EXPORT, "5000.5")
-    hass.states.async_set(LOAD_B_ENERGY, "10.02")
+    hass.states.async_set(EXPORT, "5000.5", KWH)
+    hass.states.async_set(LOAD_B_ENERGY, "10.02", KWH)
     await _refresh_at(hass, coordinator, T0 + 2 * FIVE_MIN, 55.2)
 
     lost = hass.states.get(eids[ENTITY_LOST_SURPLUS_REALIZED_TODAY])

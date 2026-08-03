@@ -40,5 +40,21 @@ Neutral by default: with no export meter configured, the data block, the
 sensors and the card line are exactly what they were before. The planner
 core is untouched, so the plan itself is bit-identical.
 
-646 tests green. Coverage gates unchanged: planner core 100 %, integration
+**Hardening from the release review.** An adversarial pass over both features
+found the same class of bug twice: code that only ran on a successful planning
+cycle. The feed-in setpoint is now zeroed from the failure path itself, so an
+SOC or forecast outage can no longer leave the plant exporting unsupervised for
+hours; the runtime switch writes its zero directly instead of through a refresh
+that may raise; and a setpoint entity you unwire in the options flow is
+released to zero by the reloaded coordinator instead of being stranded at its
+last exported value. The control loop stopped fighting itself, too: the
+re-anchor is throttled to the planning interval (it was undoing every throttled
+trim seconds later), a downward trim no longer rewrites an unchanged value, the
+upward rate cap no longer double-subtracts the energy already delivered, and an
+operator override during an active trim is recognised instead of overwritten.
+One fix reaches beyond feed-in: a tracked entity updating faster than the
+5-second debounce used to starve the debounced refresh entirely — a pending
+window now absorbs further events.
+
+659 tests green. Coverage gates unchanged: planner core 100 %, integration
 total ≥ 95 %.

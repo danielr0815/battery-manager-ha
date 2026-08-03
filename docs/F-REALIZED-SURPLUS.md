@@ -56,26 +56,39 @@ The feature is **opt-in through wiring**: no export meter configured ⇒ no
 - **R4 (Sprungfilter, decision 7).** Negative deltas (counter reset, telemetry
   backwards jump) are dropped — a monotone counter never legitimately
   decreases. A positive delta is dropped when it exceeds
-  `REALIZED_JUMP_MAX_FACTOR (3.0) x planning power x elapsed hours`, where the
-  power is the **learned** load power (fallback: the nominal `power_w`) and the
-  elapsed time is measured **since the reading's VALUE last changed**, not
-  since our last read: a coarse counter (the Fritz!Powerline publishes in
-  ~0.1 kWh chunks) sits unchanged for many cycles and then delivers the whole
-  accrual window in one delta, so a per-read elapsed would false-positive on
-  every legitimate chunk. Without a known power (the export meter) or without a
-  known elapsed time (a reading restored from the store has no timestamp) the
-  absolute fallback `REALIZED_JUMP_MAX_WH = 2000` Wh caps. **In every drop case
-  the stored reading still advances** — otherwise a single bad jump would
-  poison every later delta forever (the inflated baseline would keep producing
-  huge deltas). Both constants are code constants, not config keys (same class
-  as the G2/F4 guards).
+  `REALIZED_JUMP_MAX_FACTOR (3.0) x cap power x elapsed hours`, where the cap
+  power is the **learned** load power (fallback: the nominal `power_w`) and,
+  for the export meter, the configured **PV peak** — the plant can never export
+  more than it produces, since feed-in is passthrough and the battery is never
+  discharged to the grid. The elapsed time is measured **since the reading's
+  VALUE last changed**, not since our last read: a coarse counter (the
+  Fritz!Powerline publishes in ~0.1 kWh chunks) sits unchanged for many cycles
+  and then delivers the whole accrual window in one delta, so a per-read
+  elapsed would false-positive on every legitimate chunk. The absolute
+  `REALIZED_JUMP_MAX_WH = 2000` Wh covers only the one case without an elapsed
+  time: the first delta of a reading restored from the store. It must stay a
+  rare fallback — as a flat cap on the export meter it silently discarded a
+  whole legitimate accrual after any cycle gap (planner failure, HA restart),
+  and since the baseline advances anyway that energy was lost forever (review
+  2026-08-03). **In every drop case the stored reading still advances** —
+  otherwise a single bad jump would poison every later delta forever (the
+  inflated baseline would keep producing huge deltas). The reading is scaled by
+  the counter's **own `unit_of_measurement`** (Wh/kWh/MWh/GJ; unknown ⇒ kWh
+  with a one-time warning), because the options-flow selector filters by device
+  class only — assuming kWh mis-scaled a Wh counter by 1000x and the filter
+  then swallowed every delta, leaving all sensors at 0 forever.
 - **R5 (Korrigierter Export = verlorener Überschuss Ist, decisions 3/4).** Per
-  cycle: `corr = max(0, export_delta − Σ deltas of the EXTERNAL loads)`, where
-  external means a load subentry with `in_house_measurement = False` **and** a
-  wired `energy_entity` — it is supplied outside the measuring node, so its
-  draw sits falsely in the export counter. The clamp at 0 keeps a metering race
-  (load counter already advanced, export meter not yet) from going negative. An
-  external load **without** an energy counter is not subtracted — the
+  cycle: `corr = export_delta − (Σ deltas of the EXTERNAL loads + carried
+  debt)`, where external means a load subentry with `in_house_measurement =
+  False` **and** a wired `energy_entity` — it is supplied outside the measuring
+  node, so its draw sits falsely in the export counter. A negative result is
+  **carried forward as `external_debt_wh`**, not clamped away: a coarse load
+  counter delivers ~0.1 kWh in one chunk while the export meter trickles a few
+  Wh per cycle, so a per-cycle clamp discarded almost the whole correction and
+  the artefact this exists to remove survived (review 2026-08-03). A load delta
+  arriving on a cycle where the export meter did not move at all is debt too.
+  The debt is persisted and survives midnight — the metering artefact does too.
+  An external load **without** an energy counter is not subtracted — the
   correction is measurement-based only, never an estimate. `corr` accumulates
   into both the day counter `lost_wh` and the monotone `true_export_total_wh`.
 - **R6 (Verhinderter Export Ist, decision 5).** The realized prevented export
@@ -109,7 +122,8 @@ The feature is **opt-in through wiring**: no export meter configured ⇒ no
   across days.
 - **R10 (Persistenz).** Store block `realized` in the existing runtime Store
   (`battery_manager.<entry_id>`), shape `{date, lost_wh, prevented_wh,
-  feedin_wh, true_export_total_wh, last_readings {entity_id: float}}`, written
+  feedin_wh, true_export_total_wh, external_debt_wh,
+  last_readings {entity_id: float}}`, written
   via `_save_persistent_state()` whenever something changed. Restored
   defensively (a missing or corrupt block starts neutral); the day counters are
   adopted only when the stored date is today, the readings always.
@@ -177,7 +191,11 @@ The feature is **opt-in through wiring**: no export meter configured ⇒ no
 
 ## 4. Tests
 
-- `tests/ha/test_realized_surplus.py` (18 tests): baseline learning without
+- `tests/ha/test_realized_surplus.py` (22 tests). From the review 2026-08-03:
+  the external-load correction carried forward as a debt (over several cycles,
+  and when the export meter did not move at all), an export delta after a cycle
+  gap booked instead of dropped, and a Wh-unit counter scaled by its own unit.
+  Original set: baseline learning without
   deltas; corrected export subtracting an external load; negative corrected
   delta clamped at 0; jump filter (implausible + negative dropped, reading still
   advances, unavailable ⇒ relearn); prevented as energy deltas + runtime x power

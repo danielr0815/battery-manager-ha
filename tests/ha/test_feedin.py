@@ -191,6 +191,9 @@ def _reset_executor_baseline(hass, coordinator, call_log):
     coordinator._feedin_last_write_at = None
     coordinator._feedin_manual_until = None
     coordinator._feedin_last_upward_at = None
+    coordinator._feedin_last_reanchor_at = None
+    coordinator._feedin_prev_written_w = None
+    coordinator._feedin_owned_entity = None
     coordinator._feedin_delivered = None
     hass.states.async_set(SETPOINT, "0")
     hass.states.async_set(BATT_POWER, "0")
@@ -667,3 +670,245 @@ async def test_entities_absent_without_config_toggle(hass):
     # The feed-in entities are not tracked inputs either (feature off).
     assert SETPOINT not in coordinator._tracked_entities()
     assert BATT_POWER not in coordinator._tracked_entities()
+
+
+# ---------------------------------------------------------------------------
+# Fail-safes OUTSIDE the planning path, and the write-storm guards
+# (review 2026-08-03 — every case below shipped broken in the first cut)
+# ---------------------------------------------------------------------------
+
+
+async def test_data_loss_forces_setpoint_to_zero_exactly_once(hass):
+    """A SOC dropout raises UpdateFailed BEFORE `_apply_feedin`, so the export
+    used to keep running unsupervised for the whole outage — draining the
+    battery once PV fell below the setpoint. The zero is written from the
+    failure path itself, and only once however long the outage lasts."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500.0))
+    assert calls[-1] == (SETPOINT, -500.0)
+
+    # Outage that outlasted the input caches (SOC 6 h, forecasts 72 h) — that
+    # is when `_get_soc`/`_get_forecasts` return None and the cycle fails.
+    hass.states.async_set("sensor.test_soc", "unavailable")
+    coordinator._last_valid_soc = None
+    coordinator._last_valid_forecasts = None
+    await _refresh_at(hass, coordinator, MORNING + timedelta(minutes=5))
+    assert not coordinator.last_update_success
+    assert calls[-1] == (SETPOINT, 0.0)
+
+    writes = len(calls)
+    await _refresh_at(hass, coordinator, MORNING + timedelta(minutes=10))
+    await _refresh_at(hass, coordinator, MORNING + timedelta(minutes=15))
+    assert len(calls) == writes  # idempotent: no write storm during the outage
+
+
+async def test_runtime_switch_off_writes_zero_while_inputs_are_stale(hass):
+    """The switch promised "the next `_apply_feedin` pass writes 0" — but that
+    pass never comes while the inputs are stale, so the switch read `off` while
+    the plant kept exporting. The zero is now written by the switch itself."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500.0))
+    assert calls[-1] == (SETPOINT, -500.0)
+
+    hass.states.async_set("sensor.test_soc", "unavailable")
+    coordinator._last_valid_soc = None
+    coordinator._last_valid_forecasts = None
+    with patch.object(dt_util, "now", return_value=MORNING + timedelta(minutes=5)):
+        await coordinator.async_set_feedin_enabled(False)
+        await hass.async_block_till_done()
+    _cancel_debounce(coordinator)
+    assert calls[-1] == (SETPOINT, 0.0)
+
+
+async def test_unwired_setpoint_entity_is_released_to_zero_after_reload(hass):
+    """Clearing the setpoint entity in the options flow stranded the last
+    exported value forever: `_apply_feedin` returns before it can write the
+    documented one-shot 0. The owning entity is persisted, so the reloaded
+    coordinator releases it."""
+    calls: list[tuple[str, float]] = []
+    coordinator, entry = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500.0))
+    assert calls[-1] == (SETPOINT, -500.0)
+    assert coordinator._feedin_owned_entity == SETPOINT
+
+    await coordinator.async_flush_persistent_state()
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    # The operator cleared the wiring: config_flow writes None for a cleared
+    # selector field.
+    hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, CONF_FEEDIN_SETPOINT_ENTITY: None},
+    )
+    calls.clear()
+    with patch.object(dt_util, "now", return_value=MORNING + timedelta(minutes=5)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    reloaded = hass.data[DOMAIN][entry.entry_id]
+    reloaded._listeners_setup = False
+    _cancel_debounce(reloaded)
+
+    assert (SETPOINT, 0.0) in calls
+    assert reloaded._feedin_owned_entity is None
+
+
+async def test_downward_trim_does_not_rewrite_an_unchanged_value(hass):
+    """Trim writes carry no deadband — but a sustained discharge clamps the
+    trim at 0, and re-writing that same 0 on every pass flooded the log and
+    hammered the state machine for the whole episode."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(400.0))
+    assert calls[-1] == (SETPOINT, -400.0)
+
+    _set_battery_power(hass, coordinator, "-800")
+    await _executor_pass(
+        hass, coordinator, _result(400.0), moment=MORNING + timedelta(seconds=5)
+    )
+    assert calls[-1] == (SETPOINT, 0.0)  # clamped
+
+    writes = len(calls)
+    for offset in (10, 15, 20):
+        await _executor_pass(
+            hass,
+            coordinator,
+            _result(400.0),
+            moment=MORNING + timedelta(seconds=offset),
+        )
+    assert len(calls) == writes  # same value, still discharging: nothing written
+
+
+async def test_reanchor_is_throttled_to_the_planning_interval(hass):
+    """`_apply_feedin` also runs on every debounced battery-power event, so an
+    ungated re-anchor undid each throttled upward trim seconds later and the
+    setpoint oscillated against the external controller. One re-anchor per
+    planning interval."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    day = {MORNING.date().isoformat(): 20000.0}
+
+    await _executor_pass(hass, coordinator, _result(500.0, day))
+    _set_battery_power(hass, coordinator, "200")
+    await _executor_pass(hass, coordinator, _result(500.0, day))
+    assert calls[-1] == (SETPOINT, -700.0)
+
+    # First re-anchor: allowed, pulls back to the plan value.
+    _set_battery_power(hass, coordinator, "0")
+    await _executor_pass(
+        hass, coordinator, _result(500.0, day), moment=MORNING + timedelta(seconds=5)
+    )
+    assert calls[-1] == (SETPOINT, -500.0)
+
+    # Trim up again, then drift back inside the throttle window: the re-anchor
+    # must NOT fire — that pair was the oscillation.
+    _set_battery_power(hass, coordinator, "200")
+    await _executor_pass(
+        hass, coordinator, _result(500.0, day), moment=MORNING + timedelta(seconds=70)
+    )
+    assert calls[-1] == (SETPOINT, -700.0)
+    _set_battery_power(hass, coordinator, "0")
+    await _executor_pass(
+        hass, coordinator, _result(500.0, day), moment=MORNING + timedelta(seconds=75)
+    )
+    assert calls[-1] == (SETPOINT, -700.0)  # unchanged: re-anchor suppressed
+
+    # Past the interval it re-anchors again.
+    await _executor_pass(
+        hass, coordinator, _result(500.0, day), moment=MORNING + timedelta(seconds=320)
+    )
+    assert calls[-1] == (SETPOINT, -500.0)
+
+
+async def test_external_change_during_an_active_trim_enters_manual_mode(hass):
+    """The trim refreshes the write timestamp every few seconds, so a grace
+    that blanket-excuses every difference masked operator overrides for as long
+    as the trim ran. Only a state still showing the PREVIOUS value we wrote is
+    propagation lag."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500.0))
+    _set_battery_power(hass, coordinator, "-200")
+    await _executor_pass(
+        hass, coordinator, _result(500.0), moment=MORNING + timedelta(seconds=5)
+    )
+    assert calls[-1] == (SETPOINT, -300.0)
+
+    # Operator caps the export by hand, well inside the grace window.
+    moment = MORNING + timedelta(seconds=10)
+    assert moment - MORNING < timedelta(seconds=FEEDIN_MANUAL_GRACE_S)
+    _set_setpoint(hass, coordinator, "-200")
+    with patch.object(dt_util, "now", return_value=moment):
+        coordinator._update_feedin_mode(moment)
+        # Read inside the pinned window: feedin_manual() compares against the
+        # CURRENT date (pattern: the override test above).
+        assert coordinator.feedin_manual() is True
+
+    writes = len(calls)
+    await _executor_pass(hass, coordinator, _result(500.0), moment=moment)
+    assert len(calls) == writes  # the operator owns the setpoint now
+
+
+async def test_lagging_setpoint_state_is_not_read_as_an_override(hass):
+    """The other side of the same rule: while the entity still shows the value
+    we wrote BEFORE the last write, that is propagation lag, not an override."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500.0))
+    _set_battery_power(hass, coordinator, "-200")
+    await _executor_pass(
+        hass, coordinator, _result(500.0), moment=MORNING + timedelta(seconds=5)
+    )
+    assert calls[-1] == (SETPOINT, -300.0)
+
+    _set_setpoint(hass, coordinator, "-500")  # still the previous value
+    moment = MORNING + timedelta(seconds=10)
+    with patch.object(dt_util, "now", return_value=moment):
+        coordinator._update_feedin_mode(moment)
+    assert not coordinator.feedin_manual()
+
+
+async def test_upward_trim_cap_ignores_the_energy_delivered_earlier(hass):
+    """`feedin_by_day_wh` is booked over the slots from NOW on — it is already
+    the remaining amount. Subtracting the energy delivered earlier today drove
+    the cap to 0 and silently disabled the upward trim for the rest of the
+    day."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    # The plan still books 12 kWh from now on (rate cap ~727 W over the 16.5 h
+    # to midnight — above the 700 W the trim wants), while MORE than that was
+    # already delivered earlier today. The old `day - delivered` drove the cap
+    # to 0; the plan value alone must be used.
+    day = {MORNING.date().isoformat(): 12000.0}
+    coordinator._feedin_delivered = (MORNING.date(), 12500.0, MORNING)
+
+    await _executor_pass(hass, coordinator, _result(500.0, day))
+    assert calls[-1] == (SETPOINT, -500.0)
+    _set_battery_power(hass, coordinator, "200")
+    await _executor_pass(
+        hass, coordinator, _result(500.0, day), moment=MORNING + timedelta(seconds=70)
+    )
+    assert calls[-1] == (SETPOINT, -700.0)
+
+
+async def test_fast_tracked_input_does_not_starve_the_debounce(hass):
+    """The battery-power sensor publishes every 1-2 s. Cancelling and
+    restarting the 5 s sleep on every event meant the debounced refresh — and
+    with it the trim that must react in SECONDS — never ran at all."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    coordinator._listeners_setup = True
+    _cancel_debounce(coordinator)
+
+    coordinator._handle_entity_change(None)
+    armed = coordinator._debounce_task
+    assert armed is not None
+    for _ in range(5):
+        coordinator._handle_entity_change(None)
+    # Same task, still pending: the burst was absorbed, not restarted.
+    assert coordinator._debounce_task is armed
+    assert not armed.cancelled()
+
+    coordinator._listeners_setup = False
+    _cancel_debounce(coordinator)

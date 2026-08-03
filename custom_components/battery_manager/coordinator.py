@@ -112,6 +112,7 @@ from .const import (
     DOMAIN,
     FEEDIN_MANUAL_GRACE_S,
     FEEDIN_REANCHOR_DEADBAND_W,
+    FEEDIN_REANCHOR_MIN_INTERVAL_S,
     FEEDIN_SETPOINT_EXPORT_SIGN,
     FEEDIN_TRIM_DEADBAND_W,
     FEEDIN_UPWARD_MIN_INTERVAL_S,
@@ -133,6 +134,7 @@ from .const import (
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
     PV_FORECAST_MODE_HOURLY,
+    REALIZED_ENERGY_UNIT_FACTORS_WH,
     REALIZED_JUMP_MAX_FACTOR,
     REALIZED_JUMP_MAX_WH,
     REC_FLICKER_CONTINUATION_MIN,
@@ -555,6 +557,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Throttle anchor of the upward trim (one raise per 60 s, requirement
         # 10). In-memory — a restart merely delays the next raise.
         self._feedin_last_upward_at: datetime | None = None
+        # Throttle cursor of the re-anchor and the value we wrote BEFORE the
+        # last write (the manual-mode grace only excuses a state still showing
+        # that previous value — see _update_feedin_mode). Both in-memory: a
+        # restart re-arms them, which is the safe direction.
+        self._feedin_last_reanchor_at: datetime | None = None
+        self._feedin_prev_written_w: float | None = None
+        # The setpoint entity that currently carries a non-zero value of ours.
+        # Persisted: it is the only way to still zero an entity the operator
+        # unwired in the options flow (_feedin_release_orphan).
+        self._feedin_owned_entity: str | None = None
 
         # F-REALIZED-SURPLUS realized surplus accounting
         # (docs/F-REALIZED-SURPLUS.md): the measured day counters (lost /
@@ -571,17 +583,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # gap is never dumped as one delta), and `_realized_runtime_base` is
         # the runtime-counter checkpoint of the prevented-export estimate for
         # loads without an energy counter.
+        # `external_debt_wh` is the not-yet-applied remainder of the
+        # external-load export correction: a coarse load counter delivers its
+        # chunk in one cycle while the export meter trickles, so the surplus of
+        # the correction waits here for the following cycles instead of being
+        # clamped away. It is NOT a day counter — it survives midnight, because
+        # the metering artefact it tracks does too.
         self._realized: dict[str, Any] = {
             "date": None,
             "lost_wh": 0.0,
             "prevented_wh": 0.0,
             "feedin_wh": 0.0,
             "true_export_total_wh": 0.0,
+            "external_debt_wh": 0.0,
             "last_readings": {},
         }
         self._realized_last_ts: dict[str, datetime] = {}
         self._realized_relearn: set[str] = set()
         self._realized_runtime_base: dict[str, float] = {}
+        self._realized_unit_warned: set[str] = set()
 
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
         self.learner = ProfileLearner(hass, entry)
@@ -757,6 +777,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             last_written = data.get("feedin_last_written_w")
             if isinstance(last_written, int | float):
                 self._feedin_last_written_w = float(last_written)
+            owned = data.get("feedin_owned_entity")
+            if isinstance(owned, str) and owned:
+                self._feedin_owned_entity = owned
             # F-REALIZED-SURPLUS: the measured day counters, the monotone
             # true-export total and the last counter readings survive
             # restarts (decision 8); a missing/corrupt block starts neutral.
@@ -774,6 +797,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "true_export_total_wh": _stored_wh(
                         realized.get("true_export_total_wh")
                     ),
+                    "external_debt_wh": _stored_wh(realized.get("external_debt_wh")),
                     "last_readings": (
                         {
                             k: float(v)
@@ -862,6 +886,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else None
             ),
             "feedin_last_written_w": self._feedin_last_written_w,
+            "feedin_owned_entity": self._feedin_owned_entity,
             # F-REALIZED-SURPLUS: measured day counters + monotone true-export
             # total + last counter readings (decision 8; rationale in
             # async_load_persistent_state).
@@ -871,6 +896,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "prevented_wh": self._realized["prevented_wh"],
                 "feedin_wh": self._realized["feedin_wh"],
                 "true_export_total_wh": self._realized["true_export_total_wh"],
+                "external_debt_wh": self._realized["external_debt_wh"],
                 "last_readings": dict(self._realized["last_readings"]),
             },
         }
@@ -2764,6 +2790,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # power-sensor state events that trigger a refresh), before any early-out
         # so it tracks continuously (v0.7.18).
         self._update_load_runtime(now)
+        # F-FEEDIN: release a setpoint entity the operator unwired in the
+        # options flow. Runs BEFORE any early-out — the whole point is that it
+        # must not depend on a successful cycle.
+        await self._feedin_release_orphan()
         # Manual-override detection first: build_system_config feeds the
         # forced flags into the simulation (F-N2).
         self._update_support_modes()
@@ -2806,6 +2836,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # the UpdateFailed path never reaches the switching code, so the
             # shed trigger cannot live in any plan/switching path.
             await self._note_data_loss(now)
+            # F-FEEDIN R12: kill the export too. `_apply_feedin` — which holds
+            # the G4/stale fail-safes and the SOC floor — is never reached on
+            # this path, so without this the setpoint kept exporting for the
+            # whole outage and drained the battery once PV fell below it
+            # (review 2026-08-03). Idempotent, so the repeated failing cycles
+            # write exactly once.
+            await self._feedin_force_zero(f"no valid input data ({missing})")
             raise UpdateFailed(f"No valid input data available ({missing})")
 
         # Data is valid again: end any data-loss episode (release the shed
@@ -3211,6 +3248,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # (docs/F-REALIZED-SURPLUS.md)
     # ------------------------------------------------------------------
 
+    def _energy_unit_factor(self, entity_id: str) -> float:
+        """Wh per unit of an energy counter, from its own
+        `unit_of_measurement`. An unrecognised unit falls back to kWh and warns
+        ONCE per entity — silently guessing 1000x either way corrupts the
+        counters, so the operator has to be told (review 2026-08-03)."""
+        state = self.hass.states.get(entity_id)
+        unit = state.attributes.get("unit_of_measurement") if state else None
+        factor = REALIZED_ENERGY_UNIT_FACTORS_WH.get(unit)
+        if factor is not None:
+            return factor
+        if entity_id not in self._realized_unit_warned:
+            self._realized_unit_warned.add(entity_id)
+            _LOGGER.warning(
+                "Realized surplus: energy counter %s reports an unknown unit"
+                " %r — assuming kWh. Pick a counter with a Wh/kWh/MWh unit if"
+                " the realized figures look wrong by a factor of 1000",
+                entity_id,
+                unit,
+            )
+        return REALIZED_ENERGY_UNIT_FACTORS_WH["kWh"]
+
     def _counter_delta(
         self, entity_id: str, power_w: float | None, now: datetime
     ) -> float | None:
@@ -3224,12 +3282,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         producing huge deltas forever). The cap is REALIZED_JUMP_MAX_FACTOR x
         planning power x elapsed hours, where the elapsed time is measured
         since the reading's VALUE last changed — NOT since our last read: a
-        coarse counter (the Fritz!Powerline publishes in ~0.1 kWh chunks)
-        sits unchanged for many cycles and then delivers the whole accrual
-        window in one delta, so a per-read elapsed would false-positive on
-        every legitimate chunk. Without a known power (the export meter) or a
-        known elapsed time (a reading restored from the store after a restart
-        has no timestamp) the absolute REALIZED_JUMP_MAX_WH fallback caps.
+        coarse counter (the Fritz!Powerline publishes in ~0.1 kWh chunks) sits
+        unchanged for many cycles and then delivers the whole accrual window in
+        one delta, so a per-read elapsed would false-positive on every
+        legitimate chunk. EVERY caller passes a power — including the export
+        meter, which used to fall back to the flat absolute cap and therefore
+        discarded a whole legitimate accrual after any cycle gap (planner
+        failure, HA restart); since the baseline advances anyway, that energy
+        was lost forever (review 2026-08-03). The absolute REALIZED_JUMP_MAX_WH
+        now only covers a reading restored from the store, which carries no
+        timestamp and thus no elapsed time.
+
+        The reading is scaled by the counter's OWN unit (`_energy_unit_factor`)
+        instead of assuming kWh: the options-flow selector filters by device
+        class only, so a Wh-unit counter is a valid pick and would otherwise be
+        read 1000x too large — every delta swallowed by the filter, all realized
+        sensors stuck at 0 with nothing but a DEBUG line (review 2026-08-03).
+
         While the sensor is unavailable/unknown nothing is booked and the
         next valid state RE-LEARNS the baseline instead of dumping the outage
         gap as one delta.
@@ -3253,7 +3322,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # — the window anchors the jump cap of the NEXT change).
             return None
         last_ts = self._realized_last_ts.get(entity_id)
-        delta_wh = (value - last) * 1000.0
+        delta_wh = (value - last) * self._energy_unit_factor(entity_id)
         readings[entity_id] = value
         self._realized_last_ts[entity_id] = now
         if delta_wh < 0.0:
@@ -3342,18 +3411,42 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         export_entity = self.raw_config.get(CONF_EXPORT_METER_ENTITY)
         if export_entity:
-            export_delta = self._counter_delta(export_entity, None, now)
-            if export_delta is not None:
-                # Corrected export (decisions 3/4): export counter minus the
-                # real consumption of the external loads fed through it. The
-                # clamp at 0 keeps a metering race (load counter advanced,
-                # export meter not yet) from going negative. Early feed-in
-                # (F-FEEDIN) counts as lost here — consistent with the
-                # planner — and is additionally counted separately below.
-                corr = max(0.0, export_delta - external_delta_wh)
+            # Cap power of the export meter: the plant can never export more
+            # than its PV peak (feed-in is passthrough, the battery is never
+            # discharged to the grid), so the jump filter scales with elapsed
+            # time like every load counter instead of falling back to the flat
+            # absolute floor — which used to discard a whole legitimate
+            # accrual after any cycle gap (review 2026-08-03).
+            export_delta = self._counter_delta(
+                export_entity, float(self.raw_config["pv_max_power_w"]), now
+            )
+            # Corrected export (decisions 3/4): export counter minus the real
+            # consumption of the external loads fed through it. The correction
+            # is CARRIED FORWARD as a debt instead of being clamped away: a
+            # coarse load counter delivers ~0.1 kWh in one chunk while the
+            # export meter advances a few Wh per cycle, so a per-cycle clamp
+            # discarded almost the entire correction and the artefact this
+            # exists to remove survived (review 2026-08-03). A load delta
+            # arriving on a cycle where the export meter did not move is debt
+            # too, not a loss.
+            pending = external_delta_wh + state["external_debt_wh"]
+            if export_delta is None:
+                if pending != state["external_debt_wh"]:
+                    state["external_debt_wh"] = pending
+                    changed = True
+            else:
+                corr = export_delta - pending
+                state["external_debt_wh"] = max(0.0, -corr)
+                corr = max(0.0, corr)
+                # Early feed-in (F-FEEDIN) counts as lost here — consistent
+                # with the planner — and is additionally counted separately
+                # below.
                 state["lost_wh"] += corr
                 state["true_export_total_wh"] += corr
                 changed = True
+        elif external_delta_wh:
+            # No export meter: nothing to correct, so no debt may accumulate.
+            state["external_debt_wh"] = 0.0
 
         # Realized early feed-in (decision 6): bridge the executor's
         # delivered-Wh integral (advanced in _apply_feedin via _feedin_tick,
@@ -3912,6 +4005,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.info("Early feed-in runtime switch turned %s", "on" if on else "off")
         self._save_persistent_state()
         self.async_update_listeners()
+        if not on:
+            # Write the 0 HERE, not via the refresh: while the inputs are stale
+            # the refresh raises UpdateFailed before `_apply_feedin`, so the
+            # switch read "off" while the plant kept exporting (review
+            # 2026-08-03).
+            await self._feedin_force_zero("runtime switch off")
         await self.async_request_refresh()
 
     def dc48_controller_diagnostic(self) -> dict[str, Any]:
@@ -5318,8 +5417,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._feedin_last_write_at is not None
             and now - self._feedin_last_write_at
             < timedelta(seconds=FEEDIN_MANUAL_GRACE_S)
+            and self._feedin_prev_written_w is not None
+            and abs(actual - self._feedin_prev_written_w) <= 1.0
         ):
-            # Propagation lag of our own recent write, not an override.
+            # Propagation lag: the entity still shows the value we wrote BEFORE
+            # the last write. Any OTHER value is an operator action — the grace
+            # must not blanket-excuse every difference, because the trim
+            # refreshes the write timestamp every few seconds and would then
+            # mask an override for as long as it runs (review 2026-08-03).
             return
         self._feedin_enter_manual(now, f"setpoint externally set to {actual:.0f} W")
 
@@ -5332,6 +5437,77 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Feed-in setpoint was changed externally (%s) — manual mode until"
             " midnight, automatic control paused (F-FEEDIN)",
             reason,
+        )
+
+    async def _feedin_release_orphan(self) -> None:
+        """Zero a setpoint entity we still own but no longer control.
+
+        Clearing `feedin_setpoint_entity` (or the battery-power entity, which
+        `_feedin_entities` also requires) in the options flow used to strand the
+        last exported value: after the reload `_apply_feedin` returned before
+        it could write the documented one-shot 0, so the external controller
+        kept exporting forever — with the entity untracked and no entity of
+        ours left to reveal it (review 2026-08-03). The entity we last wrote a
+        non-zero setpoint to is therefore persisted, and released here as soon
+        as it is no longer the configured one.
+        """
+        owned = self._feedin_owned_entity
+        if owned is None or owned == (self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY)):
+            return
+        if self.feedin_manual():
+            # The operator took the setpoint over before the unwiring — it is
+            # theirs, exactly as in the normal path.
+            self._feedin_owned_entity = None
+            self._save_persistent_state()
+            return
+        if self.hass.states.get(owned) is None:
+            # Entity gone with the integration that provided it: nothing to
+            # write, just drop the claim.
+            self._feedin_owned_entity = None
+            self._save_persistent_state()
+            return
+        async with self._switch_lock:
+            if not await self._set_number_value(owned, 0.0):
+                return
+            _LOGGER.info(
+                "Feed-in setpoint -> 0 W (%s no longer wired to the feed-in"
+                " feature — releasing it)",
+                owned,
+            )
+        self._feedin_owned_entity = None
+        self._feedin_last_written_w = 0.0
+        self._save_persistent_state()
+
+    async def _feedin_force_zero(self, reason: str) -> None:
+        """Force the setpoint to 0 outside the planning path (F-FEEDIN R12).
+
+        `_apply_feedin` only runs on a SUCCESSFUL cycle, so the fail-safes it
+        implements were unreachable exactly when they matter: a SOC/forecast
+        dropout raises `UpdateFailed` before it, and the export kept running
+        unsupervised for the whole outage — draining the battery once PV fell
+        below the setpoint (review 2026-08-03). This is the same shutdown, but
+        reachable from the failure path and from the runtime switch, which
+        cannot rely on a refresh that raises.
+
+        Idempotent: once 0 is written, `_feedin_last_written_w` keeps every
+        later failing cycle from writing again.
+        """
+        entities = self._feedin_entities()
+        if entities is None:
+            return
+        if self.feedin_manual():
+            return  # R7: the operator owns the setpoint — never write
+        if self._feedin_task is not None and not self._feedin_task.done():
+            return
+        current = self._feedin_read_power_w()
+        if current is None:
+            current = self._feedin_last_written_w
+        if current is not None and abs(current) <= 0.5:
+            return  # already at 0 — nothing to shut down
+        self._feedin_task = self.entry.async_create_background_task(
+            self.hass,
+            self._execute_feedin(0.0, reason),
+            name="battery_manager_feedin_failsafe",
         )
 
     async def _apply_feedin(
@@ -5363,7 +5539,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if current is None:
             # Entity dropout: steer against the last value we wrote.
             current = self._feedin_last_written_w
-        delivered_wh = self._feedin_tick(now)
+        # Advance the delivered-energy integral (the realized accounting and
+        # sensor 7 read it). Its value is deliberately NOT used as a trim cap —
+        # see the upward-trim branch.
+        self._feedin_tick(now)
         fail = bool(self._floor_guard_active) or self._stale_shed_active
         enabled = bool(self.raw_config.get(CONF_FEEDIN_ENABLED))
         active = (
@@ -5420,9 +5599,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     seconds=FEEDIN_UPWARD_MIN_INTERVAL_S
                 ):
                     today = now.date().isoformat()
-                    remaining_wh = max(
-                        0.0, result.feedin_by_day_wh.get(today, 0.0) - delivered_wh
-                    )
+                    # `feedin_by_day_wh` is booked over `inputs.slots`, which
+                    # START at the current slot — it is ALREADY the remaining
+                    # amount for today. Subtracting the energy delivered
+                    # earlier today double-counted it and drove the cap to 0
+                    # for the rest of the day, silently disabling the upward
+                    # trim exactly when the plan still wanted export (review
+                    # 2026-08-03).
+                    remaining_wh = result.feedin_by_day_wh.get(today, 0.0)
                     midnight = (now + timedelta(days=1)).replace(
                         hour=0, minute=0, second=0, microsecond=0
                     )
@@ -5437,19 +5621,37 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._feedin_last_upward_at = now
                         reason = f"trim up (battery +{battery_power_w:.0f} W)"
 
+        reanchored = False
         if current is None:
             write = desired != (self._feedin_last_written_w or 0.0)
         elif trimmed:
-            write = True  # trim writes carry no deadband (requirement 10)
+            # Trim writes carry no deadband (requirement 10) — but an UNCHANGED
+            # value must never be rewritten: a sustained discharge clamps the
+            # trim at 0 and re-wrote that same 0 on every pass, one INFO line
+            # and one service call per event for the whole episode (review
+            # 2026-08-03).
+            write = abs(desired - current) > 0.5
         elif (desired > 0.0) != (current > 0.0):
             write = True  # 0 <-> >0 transitions always write
         else:
-            # Re-anchor (5-min planning cycle): pull the setpoint back to the
-            # plan slot value once the trim increments drifted beyond the
-            # re-anchor deadband — the ONLY place the 25 W deadband applies.
-            write = abs(desired - current) > FEEDIN_REANCHOR_DEADBAND_W
+            # Re-anchor: pull the setpoint back to the plan slot value once the
+            # trim increments drifted beyond the re-anchor deadband — the ONLY
+            # place the 25 W deadband applies. Throttled to the PLANNING
+            # interval: this pass also runs on every debounced battery-power
+            # event, so an ungated re-anchor undid each throttled upward trim
+            # seconds later and the setpoint oscillated against the external
+            # controller for the whole window (review 2026-08-03).
+            last_anchor = self._feedin_last_reanchor_at
+            write = abs(desired - current) > FEEDIN_REANCHOR_DEADBAND_W and (
+                last_anchor is None
+                or now - last_anchor
+                >= timedelta(seconds=FEEDIN_REANCHOR_MIN_INTERVAL_S)
+            )
+            reanchored = write
         if not write:
             return
+        if reanchored:
+            self._feedin_last_reanchor_at = now
         self._feedin_task = self.entry.async_create_background_task(
             self.hass,
             self._execute_feedin(desired, reason),
@@ -5487,8 +5689,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             value = round(FEEDIN_SETPOINT_EXPORT_SIGN * desired_w, 1)
             if not await self._set_number_value(entities[0], value):
                 return
+            self._feedin_prev_written_w = self._feedin_last_written_w
             self._feedin_last_written_w = desired_w
             self._feedin_last_write_at = dt_util.now()
+            # Remember WHICH entity currently carries a non-zero setpoint of
+            # ours, so a later unwiring can still zero it (see
+            # _feedin_release_orphan). Cleared as soon as we wrote 0.
+            self._feedin_owned_entity = entities[0] if desired_w > 0.0 else None
             # V9a pattern: exactly one INFO line per confirmed write, carrying
             # the reason derived at the decision point.
             _LOGGER.info("Feed-in setpoint -> %.0f W (%s)", desired_w, reason)
@@ -5513,8 +5720,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
-        if self._debounce_task:
-            self._debounce_task.cancel()
+        if self._debounce_task is not None and not self._debounce_task.done():
+            # A window is already armed: absorb this event instead of
+            # cancelling and restarting the sleep. Restarting starves the
+            # debounce outright for any input that updates faster than
+            # DEBOUNCE_SECONDS — the F-FEEDIN battery-power sensor publishes
+            # every 1-2 s, so the refresh (and with it the event-driven trim
+            # that must react in SECONDS) never ran between the 5-min polls
+            # (review 2026-08-03). Absorbing keeps the coalescing but bounds
+            # the latency at DEBOUNCE_SECONDS.
+            return
         self._debounce_task = self.hass.async_create_task(self._debounced_update())
 
     async def _debounced_update(self) -> None:

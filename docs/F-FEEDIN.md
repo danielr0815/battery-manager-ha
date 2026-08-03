@@ -75,7 +75,11 @@ feed-in.
 - **R9 (Manuell-Modus / Ownership).** If the setpoint entity reads ≠ the value
   we last wrote, outside a `FEEDIN_MANUAL_GRACE_S = 360` s grace window after
   our own write (propagation lag, mirrors the F-N2 late-confirmation grace),
-  the feature enters manual mode until the next midnight
+  the feature enters manual mode until the next midnight. The grace excuses
+  **only a state still showing the value we wrote BEFORE the last write** —
+  any third value is an operator action. A blanket grace was wrong: the trim
+  refreshes the write timestamp every few seconds, so while it ran every
+  override was judged as lag and silently overwritten (review 2026-08-03)
   (`_feedin_manual_until = tomorrow`, persisted in the Store): no further
   writes, the operator owns the setpoint. At startup the current value is
   adopted: a value differing from the persisted own value enters manual mode
@@ -85,7 +89,11 @@ feed-in.
 - **R10 (Ereignisgesteuerter Trim, beide Richtungen).** The battery-power
   entity is a tracked input: every state update (Victron: typically every few
   seconds) fires the trim path via the debounced refresh, without waiting for
-  the 5-minute planning cycle. The trim engages **only while the plan slot
+  the 5-minute planning cycle. This only works because the debounce ABSORBS
+  events while a window is armed instead of cancelling and restarting its
+  sleep — a restart-on-every-event debounce is starved outright by an input
+  that updates faster than `DEBOUNCE_SECONDS`, and the trim then never ran
+  between the polls at all (review 2026-08-03). The trim engages **only while the plan slot
   books > 0 W** — a plan value of 0 is re-anchored to 0 directly (R11), never
   trimmed. Deadband `FEEDIN_TRIM_DEADBAND_W = 50` W around zero.
   - **Downward, immediate and unthrottled:** battery discharging
@@ -98,19 +106,39 @@ feed-in.
     battery instead) ⇒ raise the setpoint by the charge amount (hold the
     battery at ~0 W, work the day's target off faster), but at most one raise
     per `FEEDIN_UPWARD_MIN_INTERVAL_S = 60` s (anti-hunting against the
-    external controller) and capped at `min(feedin_max_w, remaining_today /
-    hours_until_midnight)`. `remaining_today` = the planned day amount minus
-    the delivered energy, integrated in-memory from the setpoint actually
-    written (`_feedin_tick`, resets at midnight).
-  Trim writes carry NO deadband; 0 ↔ >0 transitions always write.
-- **R11 (Re-Anchor).** In the 5-minute planning cycle the setpoint is pulled
-  back to the plan slot value once the trim increments drifted beyond
-  `FEEDIN_REANCHOR_DEADBAND_W = 25` W — the ONLY place this deadband applies
-  (the trim increments are estimates; the plan is the anchor).
+    external controller) and capped at `min(feedin_max_w,
+    feedin_by_day_wh[today] / hours_until_midnight)`. That plan value is
+    booked over the slots **from now on** and is therefore ALREADY the
+    remaining amount — subtracting the energy delivered earlier today
+    double-counted it, drove the cap to 0 and silently disabled the upward
+    trim for the rest of the day (review 2026-08-03).
+  Trim writes carry no deadband — but an **unchanged** value is never
+  rewritten (a sustained discharge clamps the trim at 0, and re-writing that 0
+  every pass flooded the log and hammered the state machine); 0 ↔ >0
+  transitions always write.
+- **R11 (Re-Anchor).** The setpoint is pulled back to the plan slot value once
+  the trim increments drifted beyond `FEEDIN_REANCHOR_DEADBAND_W = 25` W — the
+  ONLY place this deadband applies (the trim increments are estimates; the
+  plan is the anchor). Throttled to `FEEDIN_REANCHOR_MIN_INTERVAL_S = 300` s:
+  this pass also runs on every debounced battery-power event, so an ungated
+  re-anchor undid each throttled upward trim seconds later and the setpoint
+  oscillated against the external controller for the whole window (review
+  2026-08-03).
 - **R12 (Fail-safes).** The G4 floor guard and the D-A8 stale-data shed force
   the setpoint to 0 dwell-exempt — an unsupervised export must not keep
   running (same argument as the load force-off); a queued write is dropped in
-  `_execute_feedin` when a fail-safe tripped after queueing.
+  `_execute_feedin` when a fail-safe tripped after queueing. Two of these
+  shutdowns must work OUTSIDE the planning path, because `_apply_feedin` only
+  runs on a successful cycle (review 2026-08-03):
+  - **Data loss.** A SOC/forecast outage raises `UpdateFailed` before the
+    executor, so `_feedin_force_zero` is called from the failure site itself
+    (and by the runtime switch, which cannot rely on a refresh that raises).
+    Idempotent — however long the outage lasts, the 0 is written once.
+  - **Unwiring.** The setpoint entity that currently carries a non-zero value
+    of ours is persisted (`feedin_owned_entity`). Clearing the wiring in the
+    options flow would otherwise strand that value forever, since
+    `_apply_feedin` returns before it can write the documented one-shot 0;
+    `_feedin_release_orphan` runs at the top of every cycle and zeroes it.
 - **R13 (Entities & Attribute).** Created only while the config toggle is on:
   `switch.battery_manager_early_feed_in` (R8) and
   `sensor.battery_manager_feedin_mode` (ENUM auto/manual, R9). SOC-forecast
@@ -157,7 +185,15 @@ feed-in.
   trims latest-first; empty horizon.
 - Goldens: **no** `gen_golden.py` run — the suite passes without a diff
   (R15 neutrality verification).
-- `tests/ha/test_feedin.py` (15 tests): plan-slot write with negative setpoint
+- `tests/ha/test_feedin.py` (24 tests). Fail-safes and write-storm guards
+  (review 2026-08-03): data loss forces the setpoint to 0 exactly once however
+  long the outage lasts; the runtime switch writes its 0 even while the inputs
+  are stale; an unwired setpoint entity is released to 0 by the reloaded
+  coordinator; a downward trim never rewrites an unchanged value; the re-anchor
+  is throttled to the planning interval; an external change DURING an active
+  trim enters manual mode while a lagging state does not; the upward cap
+  ignores the energy delivered earlier today; a fast tracked input does not
+  starve the debounce. Original set: plan-slot write with negative setpoint
   and re-anchor to 0; downward trim immediate/unthrottled; upward trim 60-s
   throttle and remaining-target rate cap; deadband writes nothing; re-anchor
   pulls a drifted setpoint back; external override ⇒ manual mode until

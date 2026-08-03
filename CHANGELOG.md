@@ -44,6 +44,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sensor, attribute and card line behaves exactly as before; `core/` is
   untouched, so the plan is bit-identical.
 
+### Fixed
+- **Early feed-in: the fail-safes now work off the planning path.** The
+  setpoint was only ever written on a SUCCESSFUL cycle, so the shutdowns that
+  matter most were unreachable: an SOC/forecast outage raised `UpdateFailed`
+  before the executor and left the plant exporting unsupervised for the whole
+  outage — draining the battery once PV fell below the setpoint — and the
+  runtime switch, which relied on that same refresh, read `off` while the
+  export ran on. Both now write the 0 directly (idempotently). Clearing the
+  setpoint entity in the options flow no longer strands the last exported
+  value either: the owning entity is persisted and released to 0 by the
+  reloaded coordinator.
+- **Early feed-in: the control loop stops fighting itself.** The re-anchor is
+  throttled to the planning interval (it also ran on every debounced
+  battery-power event and undid each throttled upward trim seconds later, so
+  the setpoint oscillated against the external controller); a downward trim no
+  longer rewrites an unchanged value every few seconds; the upward rate cap no
+  longer subtracts the energy delivered earlier today from a plan value that
+  already covers only the remaining slots (which drove the cap to 0 and
+  disabled the trim for the rest of the day); and the manual-mode grace only
+  excuses a state still showing our previous value, so an operator override
+  during an active trim is no longer silently overwritten.
+- **Event-driven inputs no longer starve the debounce.** A tracked entity
+  updating faster than the 5 s debounce (the Victron battery-power sensor
+  publishes every 1-2 s) cancelled and restarted the window on every event, so
+  the debounced refresh never ran between the 5-minute polls — and with it
+  neither did the feed-in trim that has to react in seconds. A pending window
+  now absorbs further events instead of restarting.
+- **Realized surplus: measured energy is no longer silently discarded.** The
+  export meter was capped by a flat 2 kWh jump filter, so a legitimate accrual
+  across a cycle gap (planner failure, HA restart) was dropped whole while the
+  baseline advanced anyway — the energy was lost forever; it is now capped
+  against the PV peak scaled by elapsed time. The out-of-house load correction
+  is carried forward as a debt instead of being clamped away per cycle, so a
+  coarse counter publishing in 0.1 kWh chunks actually corrects the export
+  meter it is meant to correct. And counter readings are scaled by their own
+  `unit_of_measurement` — a Wh-unit counter was read as kWh, mis-scaled by
+  1000x, and every delta then swallowed by the jump filter, leaving all
+  realized sensors at 0 with nothing but a DEBUG line.
+
 ## [0.23.0] - 2026-08-03
 
 ### Added

@@ -465,9 +465,19 @@ FEEDIN_UPWARD_MIN_INTERVAL_S = 60
 # applies ONLY to re-anchor writes — trim writes and 0<->>0 transitions always
 # write.
 FEEDIN_REANCHOR_DEADBAND_W = 25.0
+# Minimum spacing between two re-anchor writes. The re-anchor is documented as
+# the 5-MINUTE cycle's correction, but `_apply_feedin` also runs on every
+# debounced battery-power event: without this throttle each throttled upward
+# trim was undone seconds later by an unthrottled re-anchor, and the setpoint
+# oscillated against the external controller for the whole feed-in window
+# (review 2026-08-03). Matches the planning interval.
+FEEDIN_REANCHOR_MIN_INTERVAL_S = 300.0
 # Grace window after our own setpoint write during which a differing entity
 # state reads as propagation lag, not a manual override (~1 cycle + slack;
-# mirrors the F-N2 late-confirmation grace).
+# mirrors the F-N2 late-confirmation grace). The grace only excuses a state
+# still showing the value we wrote BEFORE the last write — any third value is
+# an operator action, else an active trim (which refreshes the write timestamp
+# every few seconds) would mask every override forever (review 2026-08-03).
 FEEDIN_MANUAL_GRACE_S = 360.0
 
 # --- F-REALIZED-SURPLUS realized surplus accounting (docs/F-REALIZED-SURPLUS.md) ---
@@ -484,11 +494,27 @@ CONF_EXPORT_METER_ENTITY = "export_meter_entity"
 # peaks and reading jitter while still catching a wild jump. A constant, not
 # a config key (same class as the G2/F4 guards).
 REALIZED_JUMP_MAX_FACTOR = 3.0
-# Absolute fallback cap (Wh) when no power is known (the export meter) or no
-# elapsed time (first delta of a reading restored from the store after a
-# restart): 2 kWh per delta is far above any legitimate 5-min export/consumer
-# step at this plant size, below a real counter jump.
+# Absolute fallback cap (Wh) for the ONE case without an elapsed time: the
+# first delta of a reading restored from the store, which carries no
+# timestamp. 2 kWh is far above any legitimate 5-min export/consumer step at
+# this plant size, below a real counter jump. It must stay a rare fallback —
+# a flat cap silently discarded real energy whenever a cycle gap (planner
+# failure, HA restart) let a legitimate accrual grow past it, and since the
+# baseline advances anyway that energy was lost forever, which is why the
+# export meter now passes a cap power too (review 2026-08-03).
 REALIZED_JUMP_MAX_WH = 2000.0
+# Energy units the counters may report in, as the factor to Wh. HA's `energy`
+# device class admits all of these and the options-flow selector filters by
+# device class only, so a Wh- or MWh-unit counter must not be read as kWh (that
+# mis-scaled every delta by 1000x, and the jump filter then swallowed all of
+# them — the sensors sat at 0 forever with only a DEBUG line; review
+# 2026-08-03). An unknown unit falls back to kWh with a one-time warning.
+REALIZED_ENERGY_UNIT_FACTORS_WH = {
+    "Wh": 1.0,
+    "kWh": 1000.0,
+    "MWh": 1000000.0,
+    "GJ": 277777.7777777778,
+}
 
 # --- Default configuration (base entry) ---
 DEFAULT_CONFIG = {
