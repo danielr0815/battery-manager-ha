@@ -178,6 +178,10 @@ async def test_options_flow_flattens_sections_on_submit(hass):
                 "battery_cells_series": 15,
                 "gate_soc_percent": 100.0,
             },
+            "early_feed_in": {},
+            # F-REALIZED-SURPLUS: the new options section is vol.Required like
+            # the others; empty = feature off (no export meter).
+            "surplus_accounting": {},
             "notifications": {},
         },
     )
@@ -269,6 +273,10 @@ async def test_options_flow_rejects_inverted_controller_band(hass):
                 "psu48_off_voltage_v": 49.56,
                 "psu48_controller_log_only": False,
             },
+            "early_feed_in": {},
+            # F-REALIZED-SURPLUS: the new options section is vol.Required like
+            # the others; empty = feature off (no export meter).
+            "surplus_accounting": {},
             "notifications": {},
         },
     )
@@ -347,6 +355,10 @@ async def test_options_flow_rejects_bad_support_hysteresis(hass):
                 "battery_cells_series": 15,
                 "gate_soc_percent": 100.0,
             },
+            "early_feed_in": {},
+            # F-REALIZED-SURPLUS: the new options section is vol.Required like
+            # the others; empty = feature off (no export meter).
+            "surplus_accounting": {},
             "notifications": {},
         }
 
@@ -898,6 +910,59 @@ async def test_continuous_load_keep_on_without_enable_rejected_on_basic(hass):
     assert result["type"] == "form"
     assert result["step_id"] == "user"
     assert result["errors"] == {"base": "keep_on_requires_enable"}
+
+
+async def test_load_subentry_flow_offers_energy_entity(hass):
+    """F-REALIZED-SURPLUS: the optional per-load kWh energy counter (e.g. a
+    Fritz!Powerline energy sensor) feeds the realized surplus accounting —
+    the selector is offered on the basic step and stored on the subentry."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_ENERGY_ENTITY,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "user"
+    schema_keys = {str(k) for k in result["data_schema"].schema}
+    assert CONF_LOAD_ENERGY_ENTITY in schema_keys
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {**BASIC_CONTINUOUS, CONF_LOAD_ENERGY_ENTITY: "sensor.fritz_energy"},
+    )
+    assert result["type"] == "create_entry"
+    sub = next(iter(entry.subentries.values()))
+    assert sub.data[CONF_LOAD_ENERGY_ENTITY] == "sensor.fritz_energy"
+
+
+async def test_options_flow_surplus_accounting_stores_export_meter(hass):
+    """F-REALIZED-SURPLUS: the surplus-accounting options section renders the
+    export-meter selector; a submitted meter is stored FLAT (the coordinator
+    reads a flat config). Empty = feature off — covered by the no-change
+    payloads of the options tests above."""
+    from custom_components.battery_manager.const import CONF_EXPORT_METER_ENTITY
+
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema = result["data_schema"].schema
+    assert "surplus_accounting" in {str(k) for k in schema}
+    assert CONF_EXPORT_METER_ENTITY in {
+        str(k) for k in _section_fields(schema, "surplus_accounting")
+    }
+
+    payload = _no_change_options_payload(schema)
+    payload["surplus_accounting"] = {
+        CONF_EXPORT_METER_ENTITY: "sensor.grid_export_total"
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_EXPORT_METER_ENTITY] == "sensor.grid_export_total"
 
 
 # ---------------------------------------------------------------------------
@@ -1618,3 +1683,113 @@ async def test_options_base_update_preserves_subentries_and_learned_state(hass):
     assert coord_after._load_learned_power_w[sub_id] == 409.0
     # And the new base dimension reached the planner.
     assert coord_after.build_system_config().battery.capacity_wh == 10000.0
+
+
+# ---------------------------------------------------------------------------
+# F-FEEDIN early feed-in section (config_flow._validate_feedin): enabled
+# requires both wiring entities, the power cap must sit in (0, 2000] W and
+# the SOC floor must sit ABOVE the battery minimum — else the planner would
+# book feed-in the executor can never deliver (or fight the deep-discharge
+# floor). Valid sections save flat and wire the executor on the reload.
+# ---------------------------------------------------------------------------
+
+
+def _feedin_section(**overrides):
+    """A valid early_feed_in options section; override keys per test case."""
+    section = {
+        "feedin_enabled": True,
+        "feedin_setpoint_entity": "input_number.acpowersetpoint",
+        "feedin_battery_power_entity": "sensor.victron_system_battery_power",
+        "feedin_max_w": 1500.0,
+        "feedin_min_soc_percent": 40.0,
+        "feedin_deadline_hour": 10,
+    }
+    section.update(overrides)
+    return section
+
+
+async def _submit_feedin_options(hass, section):
+    """Options-flow submit with the given early_feed_in section (all other
+    sections at their rendered defaults)."""
+    entry = await _setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["early_feed_in"] = section
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    return entry, result
+
+
+async def test_options_flow_rejects_feedin_enabled_without_entities(hass):
+    """Enabled without the setpoint/battery-power wiring can never drive
+    anything — rejected instead of saved dead."""
+    _, result = await _submit_feedin_options(
+        hass,
+        {
+            "feedin_enabled": True,
+            "feedin_max_w": 1000.0,
+            "feedin_min_soc_percent": 30.0,
+            "feedin_deadline_hour": 9,
+        },
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "feedin_entities_required"}
+
+
+async def test_options_flow_rejects_feedin_max_w_out_of_range(hass):
+    """The cap must be a usable POSITIVE power — a 0 would book feed-in the
+    executor can never deliver. (The 2000 W ceiling is already enforced by
+    the number selector's schema; the validator guards the lower bound.)"""
+    _, result = await _submit_feedin_options(hass, _feedin_section(feedin_max_w=0.0))
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "feedin_max_w_out_of_range"}
+
+
+async def test_options_flow_rejects_feedin_min_soc_not_above_battery_min(hass):
+    """The no-change payload carries battery_min_soc_percent 5.0 — a feed-in
+    floor at/below it would fight the battery's deep-discharge floor."""
+    _, result = await _submit_feedin_options(
+        hass, _feedin_section(feedin_min_soc_percent=5.0)
+    )
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "feedin_min_soc_not_above_battery_min"}
+
+
+async def test_options_flow_saves_feedin_section(hass):
+    """A valid section saves FLAT (options win over entry.data), the reloaded
+    coordinator maps it into FeedInParams and the runtime switch + mode
+    sensor appear with the enabled feature."""
+    from homeassistant.helpers import entity_registry as er
+
+    entry, result = await _submit_feedin_options(hass, _feedin_section())
+    assert result["type"] == "create_entry"
+    assert "early_feed_in" not in result["data"]  # section wrapper flattened
+    assert result["data"]["feedin_enabled"] is True
+    assert result["data"]["feedin_setpoint_entity"] == "input_number.acpowersetpoint"
+    assert (
+        result["data"]["feedin_battery_power_entity"]
+        == "sensor.victron_system_battery_power"
+    )
+    await hass.async_block_till_done()  # update listener reloads the entry
+
+    feedin = hass.data[DOMAIN][entry.entry_id].build_system_config().feedin
+    assert feedin.enabled is True
+    assert feedin.max_w == 1500.0
+    assert feedin.min_soc_percent == 40.0
+    assert feedin.deadline_hour == 10
+
+    registry = er.async_get(hass)
+    assert (
+        registry.async_get_entity_id(
+            "switch", DOMAIN, f"{entry.entry_id}_early_feed_in"
+        )
+        is not None
+    )
+    assert (
+        registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_feedin_mode")
+        is not None
+    )

@@ -1409,6 +1409,144 @@ def allocate_loads(
     return plans, tuple(extra), current
 
 
+def plan_feedin(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    threshold: float,
+    extra_ac: tuple[float, ...],
+    alloc_traj: Trajectory,
+) -> tuple[tuple[float, ...], dict[str, float]]:
+    """Pre-shift the UNAVOIDABLE export into the morning surplus (F-FEEDIN).
+
+    The residual export of the post-allocation trajectory (`alloc_traj`,
+    median forecast) is energy the loads provably cannot absorb — it clips at
+    midday with a full battery. This pass books that same energy as early
+    feed-in instead: PV surplus passed straight through to the grid while the
+    battery idles (requirement 1: the battery is NEVER actively discharged
+    for feed-in — step_hour has no mechanism for it and clamps feed-in to the
+    slot surplus). Total export is invariant; only its timing moves off the
+    midday peak.
+
+    Rules (operator decisions, docs/F-FEEDIN.md):
+    - Target per calendar day = the day's residual grid_export of alloc_traj
+      (requirement 2: the MEDIAN amount, no stress scaling of the target).
+    - Slots ascending from slot 0: book only while the day's remaining amount
+      is open, the trial SOC at slot start is above `min_soc_percent` (the
+      absolute floor, requirement 3) and below soc_max (a full battery
+      exports naturally — setpoint 0), and the slot has PV surplus (same
+      notion the simulation uses: PV - house AC - extra AC, before charging).
+    - Rate per slot = remaining / max(hours until the day's `deadline_hour`,
+      slot duration) — a SOFT deadline (requirement 4): once it passes, the
+      denominator collapses to the slot duration, so the rest is worked off
+      as fast as the surplus allows. Capped at min(max_w, slot surplus)
+      (requirement 5). Every booking is re-simulated into the trial so the
+      next slot's SOC/SOC-cap checks see the real path.
+    - Z4 as a BRAKE only (requirement 3): the final WITH-feed-in series is
+      re-simulated under the stressed PV vector (same P10/alpha machinery as
+      the `_z4_reject` / `_ramped_stress_floors` gates); on a floor violation
+      the LATEST feed-in slot at/before the violation is handed back,
+      iterated (bounded: one slot per pass) until the floors hold.
+
+    Returns the booked Wh per slot plus the per-day booked Wh. The caller
+    re-simulates the published trajectory with the series; the
+    `prevented_export_by_day_wh` counterfactual deliberately keeps comparing
+    base vs. alloc WITHOUT feed-in.
+    """
+    feedin = config.feedin
+    battery = config.battery
+    n = len(inputs.slots)
+    booked = [0.0] * n
+    if n == 0 or alloc_traj.total_export_wh <= _EPS:
+        return tuple(booked), {}
+
+    day_slots: dict = {}
+    for i, slot in enumerate(inputs.slots):
+        day_slots.setdefault(slot.start.date(), []).append(i)
+
+    trial = alloc_traj
+    for idxs in day_slots.values():
+        remaining = sum(alloc_traj.flows[j].grid_export_wh for j in idxs)
+        if remaining <= _EPS:
+            continue
+        for i in idxs:
+            if remaining <= _EPS:
+                break
+            slot = inputs.slots[i]
+            surplus_wh = slot.pv_wh - slot.ac_wh - extra_ac[i]
+            if surplus_wh <= _EPS:
+                continue
+            soc_start = trial.flows[i].soc_start_percent
+            if soc_start <= feedin.min_soc_percent + _EPS:
+                continue
+            if soc_start >= battery.soc_max_percent - _EPS:
+                continue
+            deadline = slot.start.replace(
+                hour=feedin.deadline_hour, minute=0, second=0, microsecond=0
+            )
+            if slot.start < deadline:
+                hours_left = (deadline - slot.start).total_seconds() / 3600.0
+                denom = max(hours_left, slot.duration)
+            else:
+                denom = slot.duration
+            rate_w = min(remaining / denom, feedin.max_w, surplus_wh / slot.duration)
+            take_wh = min(rate_w * slot.duration, remaining)
+            booked[i] = take_wh
+            remaining -= take_wh
+            # Re-simulate so the next slot's SOC checks see the reduced charge.
+            trial = simulate(
+                config, inputs, threshold, extra_ac_wh=extra_ac, feedin_wh=tuple(booked)
+            )
+
+    # Z4 brake: the stress must not push the reserve through the ramped floors
+    # — same per-slot P10/alpha vector the allocation gates use. The relief
+    # clause (`_z4_reject`) keeps dips the no-feed-in baseline already has.
+    control = config.control
+    stress_vec, _optimism, _band = _effective_uncertainty(
+        inputs, control.predrain_pv_confidence, control.upper_pv_reserve
+    )
+    if any(s < 1.0 - _EPS for s in stress_vec) and any(b > _EPS for b in booked):
+        floors = _ramped_stress_floors(config, inputs, stress_vec)
+        base_stress = simulate(
+            config, inputs, threshold, extra_ac_wh=extra_ac, pv_scale=stress_vec
+        )
+        for _ in range(sum(b > _EPS for b in booked) + 1):
+            stressed = simulate(
+                config,
+                inputs,
+                threshold,
+                extra_ac_wh=extra_ac,
+                feedin_wh=tuple(booked),
+                pv_scale=stress_vec,
+            )
+            bad = next(
+                (
+                    j
+                    for j in range(n)
+                    if _z4_reject(
+                        stressed.flows[j].soc_end_percent,
+                        floors[j],
+                        base_stress.flows[j].soc_end_percent,
+                    )
+                ),
+                None,
+            )
+            if bad is None:
+                break
+            # Only feed-in at slots <= `bad` can deepen slot `bad`; hand back
+            # the latest of them (requirement 3: latest-first).
+            latest = max((j for j in range(bad + 1) if booked[j] > _EPS), default=None)
+            if latest is None:  # pragma: no cover - unreachable: a violation
+                break  # worse than the no-feed-in base implies a booking <= bad
+            booked[latest] = 0.0
+
+    by_day: dict[str, float] = {}
+    for i, wh in enumerate(booked):
+        if wh > _EPS:
+            day = inputs.slots[i].start.date().isoformat()
+            by_day[day] = by_day.get(day, 0.0) + wh
+    return tuple(booked), by_day
+
+
 def appliance_windows(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -1417,6 +1555,7 @@ def appliance_windows(
     planned_trajectory: Trajectory,
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
+    feedin_wh: tuple[float, ...] | None = None,
 ) -> dict[str, bool]:
     """Advisor (G3): could a full appliance run start now without extra import?
 
@@ -1424,7 +1563,9 @@ def appliance_windows(
     the planned trajectory it is compared against — otherwise the advisor
     simulates the run with the PSUs off (their default) while the baseline had
     them on, and gives false window advisories whenever support is active
-    (e.g. winter operation with a forced 48 V PSU).
+    (e.g. winter operation with a forced 48 V PSU). The same holds for the
+    booked feed-in series (F-FEEDIN): the trial must see the pass-through so
+    the comparison stays apples-to-apples.
     """
     windows: dict[str, bool] = {}
     buffer_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
@@ -1441,6 +1582,7 @@ def appliance_windows(
             extra_ac_wh=extra_ac,
             dc24_schedule=dc24_schedule,
             dc48_schedule=dc48_schedule,
+            feedin_wh=feedin_wh,
         )
         # An empty horizon must NOT advise a start (code review 2026-07): with
         # no slots the trial imports 0 Wh and never degrades the min SOC, so
@@ -1460,6 +1602,7 @@ def support_escalation(
     threshold: float,
     extra_ac: tuple[float, ...],
     trajectory: Trajectory,
+    feedin_wh: tuple[float, ...] | None = None,
 ) -> tuple[tuple[bool, ...], tuple[bool, ...], Trajectory]:
     """Last-resort protection (D-A9): shift DC loads to grid PSUs when the
     battery would otherwise fall through the buffer floor / hard minimum.
@@ -1467,6 +1610,11 @@ def support_escalation(
     Manually overridden PSUs (F-N2, `dc24_forced_on`/`dc48_forced_on`) are
     treated as permanently active: the trajectory must reflect the real
     winter operation even though the executor does not control them.
+
+    `feedin_wh` (F-FEEDIN) is the booked early feed-in series the input
+    trajectory was simulated with; every re-simulation below must keep it so
+    the published trajectory stays the WITH-feed-in one (neutral None =
+    pre-feature behaviour, bit-identical).
     """
     n = len(inputs.slots)
     dc24 = [False] * n
@@ -1492,7 +1640,12 @@ def support_escalation(
     if config.support.dc48_forced_on:
         dc48 = [True] * n
         base = simulate(
-            config, inputs, threshold, extra_ac_wh=extra_ac, dc48_schedule=tuple(dc48)
+            config,
+            inputs,
+            threshold,
+            extra_ac_wh=extra_ac,
+            dc48_schedule=tuple(dc48),
+            feedin_wh=feedin_wh,
         )
 
     # Stage 1: 24 V PSU replaces the DC/DC while SOC sits below its activate SOC.
@@ -1516,6 +1669,7 @@ def support_escalation(
         extra_ac_wh=extra_ac,
         dc24_schedule=tuple(dc24),
         dc48_schedule=tuple(dc48),
+        feedin_wh=feedin_wh,
     )
 
     # Stage 2: 48 V support PSU on top wherever SOC sits below its activate SOC.
@@ -1535,6 +1689,7 @@ def support_escalation(
                 extra_ac_wh=extra_ac,
                 dc24_schedule=tuple(dc24),
                 dc48_schedule=tuple(dc48),
+                feedin_wh=feedin_wh,
             )
 
     return tuple(dc24), tuple(dc48), traj
@@ -1561,7 +1716,27 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     # Capture the allocation trajectory BEFORE support escalation: the import
     # trade is a property of the load allocation, not of the last-resort PSUs.
     alloc_traj = traj
-    dc24, dc48, traj = support_escalation(config, inputs, threshold, extra_ac, traj)
+    # F-FEEDIN: pre-shift the unavoidable residual export into the morning
+    # surplus. Runs AFTER allocate_loads (it needs the alloc residual = the
+    # unavoidable amount, requirement 2) and BEFORE support escalation, so the
+    # escalation's re-simulations keep the booked series. Neutral default
+    # (disabled or 0 W cap) short-circuits: no extra simulation, no schedule,
+    # and the trajectory chain stays bit-identical to the pre-feature plan.
+    feedin_wh: tuple[float, ...] | None = None
+    feedin_by_day_wh: dict[str, float] = {}
+    if config.feedin.enabled and config.feedin.max_w > _EPS:
+        feedin_wh, feedin_by_day_wh = plan_feedin(
+            config, inputs, threshold, extra_ac, alloc_traj
+        )
+        # The published trajectory is the WITH-feed-in one (requirement: the
+        # flat morning SOC must show in the forecast); the pass-through moves
+        # export earlier 1:1, so the totals stay invariant.
+        traj = simulate(
+            config, inputs, threshold, extra_ac_wh=extra_ac, feedin_wh=feedin_wh
+        )
+    dc24, dc48, traj = support_escalation(
+        config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
+    )
     windows = appliance_windows(
         config,
         inputs,
@@ -1570,6 +1745,7 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         traj,
         dc24_schedule=dc24,
         dc48_schedule=dc48,
+        feedin_wh=feedin_wh,
     )
 
     if traj.flows:
@@ -1657,6 +1833,13 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         merge_slot = inputs.slots[merge_end]
         threshold_horizon_end = merge_slot.start + timedelta(hours=merge_slot.duration)
 
+    # F-FEEDIN: the executor-facing per-slot power (W); empty when disabled.
+    feedin_schedule_w = (
+        tuple(feedin_wh[i] / inputs.slots[i].duration for i in range(len(inputs.slots)))
+        if feedin_wh is not None
+        else ()
+    )
+
     return PlanResult(
         threshold_percent=threshold,
         inverter_on=inverter_on,
@@ -1678,4 +1861,6 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         pv_window_ends=window_ends,
         threshold_horizon_end=threshold_horizon_end,
         prevented_export_by_day_wh=prevented_export_by_day,
+        feedin_schedule_w=feedin_schedule_w,
+        feedin_by_day_wh=feedin_by_day_wh,
     )

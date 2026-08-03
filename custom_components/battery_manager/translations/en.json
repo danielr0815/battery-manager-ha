@@ -286,6 +286,7 @@
             "min_off_min": "Minimum off time (min)",
             "energy_limited": "Energy limited (storage that becomes full)",
             "power_entity": "Power feedback sensor (optional)",
+            "energy_entity": "Energy counter (optional)",
             "availability_entity": "Availability entity (optional)",
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)",
@@ -303,6 +304,7 @@
             "min_off_min": "Minimum OFF time before the load may switch on again — anti short-cycle for compressor devices (dehumidifier, fridge).",
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
+            "energy_entity": "kWh counter of this load (e.g. a Fritz!Powerline energy sensor). Its measured consumption feeds the realized surplus accounting — and corrects the export meter for loads supplied outside the house measuring point (in-house flag off). Implausible counter jumps are ignored.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it, whether via a feed-in setpoint OR simply on a circuit the grid meter does not see (e.g. a cellar dehumidifier whose supply shows up 1:1 as export on an EM540): otherwise it would be subtracted twice and bias the learned baseline low.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
@@ -323,6 +325,7 @@
             "min_off_min": "Minimum off time (min)",
             "energy_limited": "Energy limited (storage that becomes full)",
             "power_entity": "Power feedback sensor (optional)",
+            "energy_entity": "Energy counter (optional)",
             "availability_entity": "Availability entity (optional)",
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)",
@@ -340,6 +343,7 @@
             "min_off_min": "Minimum OFF time before the load may switch on again — anti short-cycle for compressor devices (dehumidifier, fridge).",
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
+            "energy_entity": "kWh counter of this load (e.g. a Fritz!Powerline energy sensor). Its measured consumption feeds the realized surplus accounting — and corrects the export meter for loads supplied outside the house measuring point (in-house flag off). Implausible counter jumps are ignored.",
             "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it, whether via a feed-in setpoint OR simply on a circuit the grid meter does not see (e.g. a cellar dehumidifier whose supply shows up 1:1 as export on an EM540): otherwise it would be subtracted twice and bias the learned baseline low.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
@@ -435,7 +439,10 @@
       "support_dc24_recovery_not_above_activate": "The 24 V support recover-SOC must be above its activate-SOC (a hysteresis dead band is required).",
       "support_dc48_recovery_not_above_activate": "The 48 V support recover-SOC must be above its activate-SOC (a hysteresis dead band is required).",
       "support_dc48_activate_above_dc24": "The 48 V support activate-SOC must be at or below the 24 V activate-SOC (the last-resort stage engages no later than the 24 V support).",
-      "support_dc48_recovery_above_dc24": "The 48 V support recover-SOC must be at or below the 24 V recover-SOC."
+      "support_dc48_recovery_above_dc24": "The 48 V support recover-SOC must be at or below the 24 V recover-SOC.",
+      "feedin_entities_required": "Early feed-in needs both the AC setpoint (input_number) and the battery power sensor.",
+      "feedin_max_w_out_of_range": "The maximum feed-in power must be above 0 and at most 2000 W.",
+      "feedin_min_soc_not_above_battery_min": "The feed-in minimum SOC must be above the battery minimum SOC."
     },
     "step": {
       "init": {
@@ -655,6 +662,36 @@
               "psu48_controller_log_only": "On = controller only logs its decisions without switching (dry run). Off = controller actively switches the 48 V PSU."
             }
           },
+          "early_feed_in": {
+            "name": "Early grid feed-in",
+            "description": "Pre-shift unavoidable midday export into the morning: PV surplus is fed to the grid early via the AC setpoint instead of clipping at a full battery. Total export stays the same — only its timing moves off the midday peak.",
+            "data": {
+              "feedin_enabled": "Enable early feed-in",
+              "feedin_setpoint_entity": "AC setpoint (input_number)",
+              "feedin_battery_power_entity": "Battery power sensor",
+              "feedin_max_w": "Maximum feed-in power (W)",
+              "feedin_min_soc_percent": "Minimum SOC (%)",
+              "feedin_deadline_hour": "Deadline (hour)"
+            },
+            "data_description": {
+              "feedin_enabled": "Plan and drive the early feed-in. Requires both entities below; the 'Early feed-in' switch can pause it day-to-day.",
+              "feedin_setpoint_entity": "input_number the external controller reads as the AC setpoint. NEGATIVE value = export: a planned 500 W feed-in is written as -500.",
+              "feedin_battery_power_entity": "Battery power sensor (W), Victron convention: positive = charging, negative = discharging. Drives the event-driven trim that holds the battery at ~0 W during feed-in.",
+              "feedin_max_w": "Upper cap of the feed-in setpoint (at most 2000 W).",
+              "feedin_min_soc_percent": "Feed-in only runs above this SOC (must be above the battery minimum SOC).",
+              "feedin_deadline_hour": "Soft deadline (0-12): the planned rate aims to deliver the day's feed-in by this hour; leftover energy continues past it until the battery is full."
+            }
+          },
+          "surplus_accounting": {
+            "name": "Surplus accounting",
+            "description": "Measured day counters: real lost and prevented surplus so far today, combined with the planner forecast for the rest of the day, plus the corrected true export total for the energy dashboard.",
+            "data": {
+              "export_meter_entity": "Export energy meter (optional)"
+            },
+            "data_description": {
+              "export_meter_entity": "Monotone kWh counter of grid export (e.g. the Victron reverse energy total). Enables the realized surplus sensors ('lost surplus realized today', 'true export energy', ...). Loads fed through this measuring point (in-house flag off) are subtracted via their per-load energy counters. Empty = forecast only, no measured counters."
+            }
+          },
           "notifications": {
             "name": "Power-warning notifications",
             "description": "Push a smartphone notification when any load's power warning turns on (and, unless silenced, when it clears).",
@@ -710,6 +747,30 @@
       "lost_surplus": {
         "name": "Lost surplus forecast"
       },
+      "lost_surplus_realized_today": {
+        "name": "Lost surplus realized today"
+      },
+      "lost_surplus_today": {
+        "name": "Lost surplus today"
+      },
+      "lost_surplus_tomorrow": {
+        "name": "Lost surplus tomorrow"
+      },
+      "prevented_export_realized_today": {
+        "name": "Prevented export realized today"
+      },
+      "prevented_export_today": {
+        "name": "Prevented export today"
+      },
+      "prevented_export_tomorrow": {
+        "name": "Prevented export tomorrow"
+      },
+      "early_feed_in_realized_today": {
+        "name": "Early feed-in realized today"
+      },
+      "true_export_energy": {
+        "name": "True export energy"
+      },
       "support_dc24_mode": {
         "name": "24 V support mode",
         "state": {
@@ -719,6 +780,13 @@
       },
       "support_dc48_mode": {
         "name": "48 V support mode",
+        "state": {
+          "auto": "Automatic",
+          "manual": "Manual"
+        }
+      },
+      "feedin_mode": {
+        "name": "Early feed-in mode",
         "state": {
           "auto": "Automatic",
           "manual": "Manual"
@@ -760,6 +828,9 @@
       },
       "load_control": {
         "name": "{name} BM control"
+      },
+      "early_feed_in": {
+        "name": "Early feed-in"
       }
     },
     "button": {

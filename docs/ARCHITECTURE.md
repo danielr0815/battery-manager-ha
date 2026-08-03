@@ -38,11 +38,11 @@ belongs in the HA layer.
 
 | File | Role |
 |---|---|
-| `model.py` | All the frozen dataclasses: `SystemConfig`, `BatteryParams`, `ControlParams`, `SupportParams`, `LoadProfile`, `PVParams`, `SurplusLoad`, `Appliance`, and the per-hour `HourSlot` / `HourFlows` / `Trajectory`. The data contract between the layers. |
+| `model.py` | All the frozen dataclasses: `SystemConfig`, `BatteryParams`, `ControlParams`, `SupportParams`, `FeedInParams`, `LoadProfile`, `PVParams`, `SurplusLoad`, `Appliance`, and the per-hour `HourSlot` / `HourFlows` / `Trajectory`. The data contract between the layers. |
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
-| `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the appliance-window advisor, and the last-resort grid-support escalation. |
+| `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the early feed-in pass (`plan_feedin`, F-FEEDIN), the appliance-window advisor, and the last-resort grid-support escalation. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 
@@ -51,7 +51,7 @@ belongs in the HA layer.
 | File | Role |
 |---|---|
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
-| `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, and holds the F-N2 manual-override and R2 controller state machines + persistence. |
+| `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |
 | `sensor.py`, `binary_sensor.py`, `switch.py`, `entity.py` | The entity platforms + the shared base entity/device. |
@@ -68,9 +68,15 @@ belongs in the HA layer.
 2. **Surplus allocation** — assign would-be-exported hours to surplus loads,
    re-simulating each assignment so it can never add grid import or breach the
    SOC buffer (a committed-energy floor + a latest-first second pass).
-3. **Appliance windows** — advise whether a full appliance run fits into the
+3. **Early feed-in** (`plan_feedin`, F-FEEDIN) — if enabled, pre-shift the
+   day's unavoidable residual export into the morning surplus as a passthrough
+   schedule (the battery is never discharged for it), with the Z4 stress as a
+   brake only. The published trajectory is re-simulated with the schedule, so
+   the flat morning SOC shows in the forecast. Neutral default: bit-identical
+   plan when off.
+4. **Appliance windows** — advise whether a full appliance run fits into the
    surplus right now.
-4. **Support escalation** — if the battery would still fall through its floor,
+5. **Support escalation** — if the battery would still fall through its floor,
    schedule the 24 V / 48 V grid PSUs as last-resort protection.
 
 The allocation gates of both passes share **one** implementation in
@@ -103,10 +109,17 @@ debounced input changes, in this order:
 5. Post-process: `_apply_threshold_inertia`, `_apply_hysteresis` (the inverter
    recommendation).
 6. Actuate: `_apply_support_switching` → `_run_dc48_controller` (R2) →
-   `_apply_load_switching`.
+   `_apply_load_switching` → `_update_feedin_mode` + `_apply_feedin` (the
+   F-FEEDIN setpoint executor, incl. the event-driven battery-power trim that
+   also fires on tracked battery-power updates between planning cycles).
 7. Diagnostics: `_update_power_warnings`, `_update_gate_calibration`.
 8. Assemble the `data` dict the entities read (`soc_forecast`, `hourly_details`,
-   plan params, support modes, …).
+   plan params, support modes, …) — and, once the per-day breakdown stands,
+   `_update_realized_surplus(now, daily_surplus)`: the F-REALIZED-SURPLUS
+   measured day counters (export meter + per-load energy counters). Booked last
+   so the runtime counters and the feed-in integral are current and the fresh
+   forecast is in scope for the Ist+forecast mix; the `realized` key is omitted
+   entirely when no export meter is configured.
 
 Actuation runs in **entry-scoped background tasks serialized by a single
 `_switch_lock`**, deliberately detached so a cancelled refresh can't abort a
@@ -145,6 +158,8 @@ The comments and design docs use short decision codes. Each maps to a doc:
 | `§N` | A section of DC_TOPOLOGY.md | [DC_TOPOLOGY.md](DC_TOPOLOGY.md) |
 | `Jury-Gap #N` | A gap flagged during the F-N3 design jury review | [DC_TOPOLOGY.md](DC_TOPOLOGY.md) |
 | `F-L1 … F-L7` | Load-control features | [LOAD_CONTROL.md](LOAD_CONTROL.md) |
+| `F-FEEDIN` | Early grid feed-in (pre-shifted unavoidable export), planner pass + setpoint executor | [F-FEEDIN.md](F-FEEDIN.md) |
+| `F-REALIZED-SURPLUS` | Measured ("Ist") surplus accounting from the energy counters, corrected true export | [F-REALIZED-SURPLUS.md](F-REALIZED-SURPLUS.md) |
 | "review round N" | An adversarial code-review pass; the comment records the finding it fixed | (in code) |
 
 ## Recommended reading order

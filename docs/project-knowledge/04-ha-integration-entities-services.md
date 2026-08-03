@@ -52,7 +52,10 @@ Alle Aussagen sind gegen den Code geprüft (Belege als *Datei::Symbol*).
   persistierten Zustand statt Planerausgabe zeigen — Review #15):
   `SupportModeSensor`, `SupportPathSensor`, `SurplusLoadRuntimeSensor`,
   `BatteryManagerVacationSwitch`, `SupportManualSwitch`,
-  `SurplusLoadControlSwitch`, `SurplusLoadRuntimeResetButton`.
+  `SurplusLoadControlSwitch`, `SurplusLoadRuntimeResetButton`, (v0.23.0)
+  `BatteryManagerFeedInSwitch` und `FeedInModeSensor` (persistierter
+  Schaltzustand bzw. Modus statt Planerausgabe, Review-#15-Muster) sowie
+  (v0.24.0) `EarlyFeedInRealizedSensor` (persistierter Zählerstand).
 - **Aufräumen:** Per-Subentry-Entities werden über
   `entity.async_add_by_subentry` mit `config_subentry_id` angelegt, damit HA sie
   beim Löschen der Last/Appliance automatisch mitentfernt (v0.7.19). Entities,
@@ -110,6 +113,43 @@ Der **48-V-Sensor** trägt zusätzlich das Attribut `controller` =
 R2-Spannungsreglers (aktiv/Modus/Entscheidung/Grund/Spannung), damit der
 Log-Only-Shakedown und die spätere scharfe Regelung beobachtbar sind.
 
+### 2.2a Feed-in-Modus-Sensor (`FeedInModeSensor`, v0.23.0)
+
+Key `feedin_mode`, `device_class = ENUM`, Optionen `auto` | `manual`
+(F-FEEDIN R9, `docs/F-FEEDIN.md`). Existiert **nur**, solange der
+Options-Toggle `feedin_enabled` an ist. `manual` bedeutet: der AC-Setpoint
+wurde extern überschrieben — die Integration schreibt nichts mehr bis zum
+nächsten Mitternacht, dann läuft die Automatik weiter. Quelle ist
+`coordinator.feedin_manual()` bzw. `data["feedin_mode"]`.
+
+### 2.2b Ist-Bilanz-Sensoren (F-REALIZED-SURPLUS, v0.24.0)
+
+Acht Energie-Sensoren (`device_class = ENERGY`, kWh, `docs/F-REALIZED-SURPLUS.md`).
+Sieben davon sind **Tageswerte** ⇒ `state_class = TOTAL`; nur der korrigierte
+Exportzähler ist monoton ⇒ `TOTAL_INCREASING` (damit ihn das
+Energie-Dashboard konsumieren kann).
+
+| Key | Quelle (`realized`-Block) | Bedeutung |
+|---|---|---|
+| `lost_surplus_realized_today` | `lost_surplus_realized_kwh` | **gemessener** verlorener Überschuss heute (korrigierter Export, R5) |
+| `lost_surplus_today` | `lost_surplus_today_kwh` | Ist bisher **+** Prognose für den Tagesrest |
+| `lost_surplus_tomorrow` | `lost_surplus_tomorrow_kwh` | reine Prognose |
+| `prevented_export_realized_today` | `prevented_export_realized_kwh` | **gemessen** verhinderter Export heute (Lastverbrauch, R6) |
+| `prevented_export_today` | `prevented_export_today_kwh` | Ist **+** Prognose-Rest |
+| `prevented_export_tomorrow` | `prevented_export_tomorrow_kwh` | reine Prognose |
+| `early_feed_in_realized_today` | `coordinator.feedin_delivered_today_kwh()` | **gemessen** früh eingespeist heute (Executor-Integral, R7) |
+| `true_export_energy` | `true_export_total_kwh` | monotoner **echter** Export (Zähler minus außerhäusige Lasten) |
+
+**Zwei verschiedene Gates** (beide räumen Alt-Entities aktiv aus der Registry,
+Muster `FeedInModeSensor`):
+
+- Sensoren 1–6 + `true_export_energy` (Klasse `RealizedSurplusSensor`) hängen
+  am Options-Feld `export_meter_entity`. Ohne Exportzähler fehlt der
+  `realized`-Datenblock komplett — die Sensoren werden gar nicht erst angelegt.
+- `early_feed_in_realized_today` (Klasse `EarlyFeedInRealizedSensor`) hängt
+  **allein** an `feedin_enabled` und liest das persistierte Executor-Integral
+  direkt, braucht also keinen Exportzähler; `available` ist immer `True`.
+
 ### 2.3 Laufzeitzähler je Last (`SurplusLoadRuntimeSensor`)
 
 Key `load_runtime_<subentry_id>`, Einheit **Minuten**,
@@ -163,6 +203,9 @@ Liste von Punkten, gebaut in `coordinator._async_update_data`:
   `flow.soc_end_percent`, gerundet auf 0,1.
 - `dc24` / `dc48` erscheinen **nur wenn `True`** (Grid-Support in diesem Slot
   aktiv), damit das Attribut kompakt bleibt.
+- `feedin` (W, gerundet auf 0,1) erscheint **nur auf Slots mit gebuchtem
+  Feed-in** (v0.23.0, F-FEEDIN) — daraus rendert die Karte die Einspeise-Lane
+  unter dem SOC-Chart.
 
 **Zeitstempel-Falle:** die Strings sind **naiv, ohne Offset** — der Kern rechnet
 durchgängig naiv-lokal (`build_slots(config, now.replace(tzinfo=None), …)`).
@@ -202,7 +245,7 @@ Ein `schedule`-Eintrag:
 |---|---|
 | `soc_threshold_percent` | T\* nach Trägheit (wie der eigene Sensor) |
 | `grid_import_kwh`, `lost_surplus_kwh` | **Horizontsummen** (siehe §2.1) |
-| `daily` | Liste je Kalendertag: `{date, lost_surplus_kwh, grid_import_kwh, loads_kwh, prevented_export_kwh}` (`_daily_surplus_breakdown`). Gruppiert nach `slot.start.date()` in Planer-Lokalzeit — ein Slot zählt auf **seinen Starttag**. `prevented_export_kwh` (F-STRICT-SURPLUS R4) ist das Kontrafaktische „welchen Export haben die Lastläufe an diesem Tag verhindert" (Basis minus Allokation, beides **vor** Support-Eskalation) und beantwortet „warum läuft die Last, obwohl der SOC nie ans Maximum kommt" |
+| `daily` | Liste je Kalendertag: `{date, lost_surplus_kwh, grid_import_kwh, loads_kwh, prevented_export_kwh}` (`_daily_surplus_breakdown`). Gruppiert nach `slot.start.date()` in Planer-Lokalzeit — ein Slot zählt auf **seinen Starttag**. `prevented_export_kwh` (F-STRICT-SURPLUS R4) ist das Kontrafaktische „welchen Export haben die Lastläufe an diesem Tag verhindert" (Basis minus Allokation, beides **vor** Support-Eskalation) und beantwortet „warum läuft die Last, obwohl der SOC nie ans Maximum kommt". Bei aktivem Feed-in (v0.23.0) kommt `planned_feedin_kwh` je Tag hinzu (aus `PlanResult.feedin_by_day_wh`) — die Statistikzeile der Karte liest daraus „geplante Einspeisung heute/morgen" |
 | `loads_today_kwh`, `loads_tomorrow_kwh` | Überschusslast-Energie heute/morgen (aus `daily[].loads_kwh`). **Appliances sind nicht enthalten** — sie gehen in die AC-Prognose, nie in `extra_ac_wh` |
 | `consumption_profile` | Lern-Diagnostik, siehe §3.4 |
 | `gate_calibration` | 48-V-Gate-Kalibrierbracket, siehe §3.5 |
@@ -212,6 +255,7 @@ Ein `schedule`-Eintrag:
 | `stressed_min_soc` | der tiefste SOC im *gestressten* Szenario (untere Reserve der Pre-Drain-Rechnung), `None` wenn nicht berechnet |
 | `threshold_horizon_end` | Ende des merge-begrenzten T\*-Suchhorizonts als ISO-String; **`null` = Vollhorizont-Scan** (F-NIGHT-RESCUE R7). Macht Schwellensprünge wie den 04:13-Vorfall erklärbar |
 | `pv_window_ends` | je Tag die abgeleitete Endstunde des PV-Fensters |
+| `realized` | **v0.24.0, F-REALIZED-SURPLUS:** der Ist-Bilanz-Block (`date`, die drei `lost_surplus_*`- und drei `prevented_export_*`-Werte, `early_feed_in_realized_kwh`, `true_export_total_kwh`). **Der Schlüssel fehlt komplett**, wenn kein Exportzähler konfiguriert ist — nicht als leeres Dict, denn die Karte verzweigt auf seine Existenz (ein `{}` ist in JS truthy und ergäbe ein dauerhaftes „(Ist 0.0)"). Die Karte ersetzt damit ihre Prognose-Segmente für verlorenen/verhinderten Überschuss durch die Ist-annotierte Form |
 | `battery_min_soc_percent`, `battery_max_soc_percent`, `inverter_min_soc_percent`, `soc_buffer_percent` | aus `plan_params` **flach** hineingemischt (`**data["plan_params"]`) — der statische Planungskontext für die Karte. `soc_buffer_percent` ist hier der **konfigurierte** Wert; den effektiven (ggf. dynamischen) zeigt `consumption_profile.soc_buffer_effective` |
 
 ### 3.4 `consumption_profile`
@@ -272,6 +316,7 @@ Analog die Appliance-Startfenster-Entity, die `opportunistic_start` verlangt.
 | `BatteryManagerVacationSwitch` / `vacation_mode` | Solange an, plant der Planer mit dem gelernten **Absenz-Profil**. Der Zustand liegt im Learner-Store; seine **Recorder-Historie** wird zusätzlich benutzt, um vergangene Tage rückwirkend als Absenztage zu taggen (D-C4). Schalten triggert sofort `async_request_refresh()` |
 | `SupportManualSwitch` / `support_dc24_manual`, `support_dc48_manual` | Operator-Handbetrieb je Stütz-PSU (F-N2/R3). **An** = PSU erzwungen an *und* die Automatik für sie pausiert (Winterbetrieb); **Aus** = Automatik zurück. Existiert nur bei konfiguriertem PSU-Switch. Geht über den einen Einstiegspunkt `coordinator.async_set_support_manual` |
 | `SurplusLoadControlSwitch` / `load_control_<subentry_id>` | Per-Last „BM-Steuerung aktiv" (v0.7.17). **Aus** = der BM hält die Last `available=False`, nimmt sie aus dem Plan und schaltet sie im nächsten Zyklus ab — eine Ein-Klick-Pause, **ohne** die Konfiguration anzufassen. Persistiert (`load_bm_enabled`) |
+| `BatteryManagerFeedInSwitch` / `early_feed_in` (v0.23.0) | Laufzeit-Ein/Aus der vorzeitigen Netzeinspeisung (F-FEEDIN R8). **An** (Default) = der Executor treibt den AC-Setpoint per Plan inkl. Trim; **Aus** = Pause, der nächste Executor-Pass schreibt einmalig 0 (nur Auto-Modus). Store-persistiert, immer verfügbar; existiert nur bei aktivem Options-Toggle `feedin_enabled`. Geht über den einen Einstiegspunkt `coordinator.async_set_feedin_enabled` |
 
 ---
 
@@ -536,12 +581,13 @@ Laufzeitzähler.
 
 ### 8.8 Options-Flow
 
-`BatteryManagerOptionsFlow` hat **einen** Schritt (`init`) mit **neun**
+`BatteryManagerOptionsFlow` hat **einen** Schritt (`init`) mit **elf**
 einklappbaren Sektionen: `battery`, `pv`, `power` (seit v0.17.0 die
 **Basisdimensionen** — Kapazität/SOC-Grenzen, PV-Modell, Lade-/Inverter-
 Leistung und Wirkungsgrade; nur die Batterie-Wirkungsgrade bleiben
 Wizard-only), dann `planner_tuning`, `consumption_profile`,
-`consumption_learning`, `support_paths`, `dc_devices`, `notifications`.
+`consumption_learning`, `support_paths`, `dc_devices`, `notifications`,
+(seit v0.23.0) `early_feed_in` und (seit v0.24.0) `surplus_accounting`.
 HA verschachtelt die Felder unter dem Sektionsschlüssel; `_flatten_sections`
 macht daraus wieder ein flaches Dict. Die Basisdimensionen sind damit
 **nachträglich änderbar, ohne Subentries oder Lernstände zu verlieren** —
@@ -557,12 +603,42 @@ und `buffer_max_percent` (15,0, 5…30). Validierung `_validate_buffer_clamps`:
 Sektion `notifications`: `power_warning_notify_targets` (Mehrfachauswahl,
 Default leer) und `power_warning_notify_on_resolve` (Default `True`).
 
+Sektion `early_feed_in` (v0.23.0, F-FEEDIN, `_feedin_schema_fields` — **nur
+Options-Flow**):
+
+| Feld | Default | Bereich | Wirkung |
+|---|---|---|---|
+| `feedin_enabled` | **`False`** | bool | Opt-in der vorzeitigen Netzeinspeisung; legt bei AN die Entities `switch…early_feed_in` und `sensor…feedin_mode` an |
+| `feedin_setpoint_entity` | – | `input_number` | AC-Setpoint des externen Reglers (negativ = Export); Pflicht wenn enabled |
+| `feedin_battery_power_entity` | – | `sensor` | Batterie-Leistung (positiv = ladend) für den ereignisgesteuerten Trim; Pflicht wenn enabled; wird in die getrackten Inputs aufgenommen |
+| `feedin_max_w` | 1000 | 0…2000 W | Leistungsdeckel des Feed-in (0 = aus, Neutral-Default wirksam) |
+| `feedin_min_soc_percent` | 30 | 0…100 % | absoluter SOC-Floor des Features; muss **über** `battery_min_soc_percent` liegen |
+| `feedin_deadline_hour` | 9 | 0…12 h | weiche Deadline, bis zu der die Tages-Zielmenge abgegeben sein soll |
+
+Validierung `_validate_feedin`: enabled ohne beide Entities ⇒
+`feedin_entities_required`; `max_w` außerhalb 0…2000 ⇒
+`feedin_max_w_out_of_range`; `min_soc` nicht über dem Batterieminimum ⇒
+`feedin_min_soc_not_above_battery_min`. Geleerte Entity-Felder werden explizit
+als `None` geschrieben (die Feinheit unten), was das Feature entdrahtet — der
+Executor schreibt dann nichts mehr.
+
+Sektion `surplus_accounting` (v0.24.0, F-REALIZED-SURPLUS,
+`_surplus_accounting_schema_fields` — **nur Options-Flow**, genau ein Feld):
+
+| Feld | Default | Bereich | Wirkung |
+|---|---|---|---|
+| `export_meter_entity` | – (**nicht in `DEFAULT_CONFIG`**) | `sensor`, `device_class: energy` | monotoner kWh-Exportzähler; **schaltet die Ist-Bilanz frei** — legt die sieben Sensoren aus §2.2b (ohne den Feed-in-Ist-Sensor) an und veröffentlicht den `realized`-Datenblock. Geleert ⇒ explizit `None` ⇒ wieder reiner Prognosebetrieb, die Sensoren werden aus der Registry entfernt |
+
+Keine Validierung nötig (ein einzelnes optionales Feld); das Feld nutzt
+`suggested_value` statt `default`, damit es leerbar bleibt.
+
 **Feinheit beim Leeren von Feldern:** ein geleertes Selector-Feld fehlt in der
 Eingabe komplett. Weil `coordinator.raw_config` `entry.data` **und**
 `entry.options` mergt, würde der Altwert aus `data` weiterwirken. Der Flow
 schreibt deshalb explizit `None` (Support-Switches,
 `support_dc24_power_entity`, `battery_voltage_entity`, `pv_window_end_hour`,
-`ac_load_entity`/`dc_load_entity`, `workday_entity`) bzw. `[]`
+`ac_load_entity`/`dc_load_entity`, `workday_entity`, `export_meter_entity`)
+bzw. `[]`
 (Bilanz-Entity-Listen, `power_warning_notify_targets`).
 
 ---
@@ -590,6 +666,7 @@ Speicherfelder bedeutungslos (Operator-Wunsch 05.07.2026).
 | `power_warning_dwell_min` | 15 | 0…240 | wie lange die Abweichung anhalten muss (kurze Abtaupausen bleiben darunter) |
 | `tank_full_runtime_min` | **0 (= aus)** | 0…6000, Schritt 15 | **V6/F-TANK**: Start-Schätzung der Volltank-Laufzeit in Minuten. Sobald ein Tankzyklus beobachtet wurde, gewinnt der gelernte Median. **0 = Feature aus** (Sicherheitsanker: exakt das Verhalten vor dem Feature). Nur sinnvoll mit Leistungs-Feedback |
 | `power_entity` | – (optional) | `sensor` | Leistungs-Feedback. Voraussetzung für Median-Lernen, F-L7, G2/F4-Wächter und das Tank-Modell |
+| `energy_entity` | – (optional) | `sensor`, `device_class: energy` | **v0.24.0, F-REALIZED-SURPLUS:** eigener kWh-Zähler der Last (z. B. Fritz!Powerline). Der gemessene Verbrauch ersetzt die Laufzeit-×-Leistung-Schätzung im „verhinderter Export Ist" und **korrigiert** — bei `in_house_measurement = False` — den Exportzähler um genau diese Energie. Unplausible Zählersprünge werden verworfen (R4). Fehlt der Schlüssel, bleibt alles beim Schätzwert (keine Migration) |
 | `availability_entity` | – (optional) | beliebig | „Last ist überhaupt da" |
 | `control_switch_entity` | – (optional) | `switch` | **der Schalter, den der BM betätigt.** Gilt für *jede* gesteuerte Last (auch den kontinuierlichen Entfeuchter), liegt deshalb auf dem Basis-Schritt |
 | `input_off_policy` | `auto` | auto/always_off/keep_on | Was am Ende eines Laufs mit dem Eingangs-Stecker passiert: `auto` = nur ausschalten, wenn *wir* ihn eingeschaltet haben (persistiert als `plug_owned`); `always_off` = immer aus; `keep_on` = anlassen, nur die Lade-Freigabe schalten |

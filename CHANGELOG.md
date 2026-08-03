@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-03
+
+### Added
+- **Realized surplus accounting (F-REALIZED-SURPLUS).** Everything the
+  integration reported so far was forecast; the new measured ("Ist") side reads
+  the plant's own energy counters and mixes both in the honest direction:
+  **today = measured so far + forecast for the rest of the day**, tomorrow is
+  pure forecast. The measurement also corrects a metering artefact of this
+  plant — a load supplied outside the grid measuring point (the cellar
+  dehumidifier on a circuit the EM540 never sees) shows up 1:1 as "export", so
+  its measured consumption is subtracted from the export counter. The result is
+  the **true export**, a monotone counter the energy dashboard can consume.
+  Realized prevented export is the energy the surplus loads actually drew
+  (measured where a counter exists, runtime × learned power where it does not),
+  and the realized early feed-in is bridged from the F-FEEDIN executor's own
+  delivered-energy integral — which now survives a restart. Counter deltas pass
+  a jump filter (negatives and implausible steps dropped, the reading still
+  advancing so one bad jump cannot poison every later delta) with the accrual
+  window measured since the reading last *changed*, so a coarse counter
+  publishing in 0.1 kWh chunks is not mistaken for a glitch. Day counters roll
+  over at local midnight with the readings carried over as the new baseline;
+  everything is persisted, so a reload no longer resets the day. Spec:
+  `docs/F-REALIZED-SURPLUS.md`.
+- **Configuration and entities.** New options section `surplus_accounting` with
+  a single field, the export energy meter — wiring it is what switches the
+  feature on. Optional per-load `energy_entity` (kWh counter of the load
+  itself) on the surplus-load subentry. Seven sensors gated on the export meter
+  (`lost_surplus_realized_today`, `lost_surplus_today`,
+  `lost_surplus_tomorrow`, the three `prevented_export_*` counterparts and the
+  monotone `true_export_energy`), plus `early_feed_in_realized_today` gated on
+  early feed-in alone. The dashboard card's stats line shows the day totals
+  with the measured share in parentheses ("verlorener Überschuss 2.3/1.1
+  (Ist 0.8)") instead of double-reporting forecast and measurement. Neutral
+  default: without an export meter the `realized` block stays absent and every
+  sensor, attribute and card line behaves exactly as before; `core/` is
+  untouched, so the plan is bit-identical.
+
+## [0.23.0] - 2026-08-03
+
+### Added
+- **Early grid feed-in (F-FEEDIN).** When the forecast shows unavoidable
+  midday export after all surplus loads are allocated, the new `plan_feedin`
+  planner pass pre-shifts that energy into the morning: PV surplus is passed
+  straight through to the grid via the external controller's AC setpoint
+  (negative setpoint = export) while the battery idles — it is never actively
+  discharged for feed-in. Total export stays invariant; only its timing moves
+  off the midday peak, when the grid needs it least. The per-day target is the
+  median residual export, spread towards a soft deadline (default 9:00, runs
+  over it as fast as the surplus allows, stops when delivered or the battery
+  is full), floored at `feedin_min_soc_percent` (default 30 %) and braked —
+  never enlarged — by the Z4 P10 stress, trimmed latest-first.
+- **Setpoint executor with event-driven trim.** `_apply_feedin` /
+  `_execute_feedin` write the plan slot value via `input_number.set_value`;
+  every battery-power update (Victron convention: positive = charging) fires
+  the trim between planning cycles — downward immediately and unthrottled
+  (the battery discharging means the feed-in is eating into it), upward
+  throttled to one raise per 60 s and capped at the remaining day target —
+  with a 5-minute re-anchor to the plan value (25 W deadband, trim writes
+  carry none). An external setpoint overwrite enters a persisted manual mode
+  until the next midnight (no writes; `sensor.battery_manager_feedin_mode`
+  shows auto/manual); the G4 floor guard and the stale-data shed force 0.
+- **Configuration and entities.** New options section `early_feed_in`
+  (toggle default OFF, setpoint `input_number` + battery-power `sensor`
+  wiring, max power ≤ 2000 W, min SOC above the battery floor, deadline
+  0–12 h), the persisted runtime switch `switch.battery_manager_early_feed_in`
+  (default ON), `planned_feedin_kwh` in the `daily` breakdown, a `feedin` (W)
+  value on scheduled SOC-forecast points, and a feed-in lane plus a
+  today/tomorrow stats line on the dashboard card. Neutral default: with the
+  toggle off the plan is bit-identical (golden snapshots unchanged). Spec:
+  `docs/F-FEEDIN.md`.
+
 ## [0.22.1] - 2026-08-02
 
 ### Fixed

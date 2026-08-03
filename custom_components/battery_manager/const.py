@@ -191,6 +191,13 @@ CONF_LOAD_CAPACITY_WH = "capacity_wh"
 CONF_LOAD_TARGET_SOC = "target_soc_percent"
 CONF_LOAD_SOC_ENTITY = "soc_entity"
 CONF_LOAD_POWER_ENTITY = "power_entity"
+# Optional kWh energy counter of the load itself (e.g. a Fritz!Powerline
+# energy sensor). Feeds the realized surplus accounting (F-REALIZED-SURPLUS):
+# measured consumption replaces the runtime x power estimate for "prevented
+# export realized" and — for loads marked out-of-house (CONF_LOAD_IN_HOUSE
+# False) — corrects the export meter their draw flows through. Optional key,
+# no migration (absent = estimate as before).
+CONF_LOAD_ENERGY_ENTITY = "energy_entity"
 CONF_LOAD_AVAILABILITY_ENTITY = "availability_entity"
 CONF_LOAD_CONTROL_SWITCH = "control_switch_entity"
 CONF_LOAD_CHARGE_ENABLE = "charge_enable_entity"
@@ -429,6 +436,60 @@ PREDRAIN_PV_CONFIDENCE_DEFAULT = 0.5
 UPPER_PV_RESERVE_DEFAULT = 1.2
 STRONG_PV_CUTOFF_W_DEFAULT = 200.0
 
+# --- F-FEEDIN early grid feed-in (docs/F-FEEDIN.md) ---
+# Pre-shifts the UNAVOIDABLE midday export into the morning surplus via the
+# external controller's AC setpoint: total export is invariant, only its
+# timing moves off the midday peak. Disabled by default.
+CONF_FEEDIN_ENABLED = "feedin_enabled"
+CONF_FEEDIN_SETPOINT_ENTITY = "feedin_setpoint_entity"
+CONF_FEEDIN_BATTERY_POWER_ENTITY = "feedin_battery_power_entity"
+CONF_FEEDIN_MAX_W = "feedin_max_w"
+CONF_FEEDIN_MIN_SOC = "feedin_min_soc_percent"
+CONF_FEEDIN_DEADLINE_HOUR = "feedin_deadline_hour"
+# Sign convention of the AC setpoint entity (operator decision, requirement 1):
+# the external controller reads a NEGATIVE setpoint as EXPORT (e.g. a planned
+# 500 W feed-in is written as -500). ALL coordinator bookkeeping keeps POSITIVE
+# watts of feed-in; this single constant flips the sign at the entity boundary
+# in both directions (write: power * SIGN; read: state * SIGN).
+FEEDIN_SETPOINT_EXPORT_SIGN = -1.0
+# Executor tuning (deliberately constants, not config keys — same class as the
+# G2/F4 guards). Battery-power deadband of the event-driven trim (requirement
+# 10): within ±50 W of zero the battery counts as idle and nothing is written.
+FEEDIN_TRIM_DEADBAND_W = 50.0
+# Upward trims (battery charging -> raise the setpoint) are throttled to one
+# write per 60 s (anti-hunting against the external controller); downward
+# trims (battery discharging) are immediate and unthrottled.
+FEEDIN_UPWARD_MIN_INTERVAL_S = 60
+# Deadband for the 5-min re-anchor to the plan slot value: drift below this is
+# tolerated (the trim increments are estimates; the plan is the anchor). It
+# applies ONLY to re-anchor writes — trim writes and 0<->>0 transitions always
+# write.
+FEEDIN_REANCHOR_DEADBAND_W = 25.0
+# Grace window after our own setpoint write during which a differing entity
+# state reads as propagation lag, not a manual override (~1 cycle + slack;
+# mirrors the F-N2 late-confirmation grace).
+FEEDIN_MANUAL_GRACE_S = 360.0
+
+# --- F-REALIZED-SURPLUS realized surplus accounting (docs/F-REALIZED-SURPLUS.md) ---
+# Monotone kWh counter of grid export (e.g. the Victron reverse energy
+# total). Enables the measured ("realized") day counters; without it the
+# integration stays forecast-only. Deliberately NOT in DEFAULT_CONFIG:
+# unset = feature off, and the `realized` data block stays absent so older
+# backends/cards behave exactly as before.
+CONF_EXPORT_METER_ENTITY = "export_meter_entity"
+# Jump filter for the energy counters (operator decision 7): counter deltas
+# above the plausibility cap are telemetry glitches (the Fritz!Powerline
+# counter demonstrably jumps) and must never enter a counter. The cap is this
+# factor x max(learned, nominal) power x elapsed hours — 3x covers defrost
+# peaks and reading jitter while still catching a wild jump. A constant, not
+# a config key (same class as the G2/F4 guards).
+REALIZED_JUMP_MAX_FACTOR = 3.0
+# Absolute fallback cap (Wh) when no power is known (the export meter) or no
+# elapsed time (first delta of a reading restored from the store after a
+# restart): 2 kWh per delta is far above any legitimate 5-min export/consumer
+# step at this plant size, below a real counter jump.
+REALIZED_JUMP_MAX_WH = 2000.0
+
 # --- Default configuration (base entry) ---
 DEFAULT_CONFIG = {
     # Battery
@@ -519,6 +580,13 @@ DEFAULT_CONFIG = {
     # Power-warning push notifications (operator wish 2026-07-12)
     CONF_WARNING_NOTIFY_TARGETS: [],
     CONF_WARNING_NOTIFY_ON_RESOLVE: True,
+    # F-FEEDIN early grid feed-in (docs/F-FEEDIN.md) — OFF by default: an
+    # un-reconfigured install plans bit-identically (neutral core defaults).
+    # The two entity keys have no default (unset = not wired).
+    CONF_FEEDIN_ENABLED: False,
+    CONF_FEEDIN_MAX_W: 1000.0,
+    CONF_FEEDIN_MIN_SOC: 30.0,
+    CONF_FEEDIN_DEADLINE_HOUR: 9,
 }
 
 # A load counts as "really running" for the runtime counter when its measured
@@ -578,6 +646,20 @@ ENTITY_SUPPORT_DC48_MANUAL = "support_dc48_manual"
 SUPPORT_MODE_AUTO = "auto"
 SUPPORT_MODE_MANUAL = "manual"
 ENTITY_VACATION_MODE = "vacation_mode"
+# F-FEEDIN: runtime on/off switch and auto/manual mode sensor.
+ENTITY_FEEDIN_SWITCH = "early_feed_in"
+ENTITY_FEEDIN_MODE = "feedin_mode"
+# F-REALIZED-SURPLUS: measured (realized) surplus accounting sensors — the
+# day counters, the Ist+forecast combined values and the corrected monotone
+# export total (docs/F-REALIZED-SURPLUS.md).
+ENTITY_LOST_SURPLUS_REALIZED_TODAY = "lost_surplus_realized_today"
+ENTITY_LOST_SURPLUS_TODAY = "lost_surplus_today"
+ENTITY_LOST_SURPLUS_TOMORROW = "lost_surplus_tomorrow"
+ENTITY_PREVENTED_EXPORT_REALIZED_TODAY = "prevented_export_realized_today"
+ENTITY_PREVENTED_EXPORT_TODAY = "prevented_export_today"
+ENTITY_PREVENTED_EXPORT_TOMORROW = "prevented_export_tomorrow"
+ENTITY_EARLY_FEED_IN_REALIZED_TODAY = "early_feed_in_realized_today"
+ENTITY_TRUE_EXPORT_ENERGY = "true_export_energy"
 
 # --- Attributes ---
 ATTR_GRID_IMPORT_KWH = "grid_import_kwh"

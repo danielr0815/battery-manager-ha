@@ -9,6 +9,7 @@ import pytest
 from core.model import (
     BatteryParams,
     ConverterParams,
+    FeedInParams,
     LoadProfile,
     PVParams,
     SupportParams,
@@ -95,6 +96,22 @@ def test_support_params_validation():
         SupportParams(**{field: 0.0})  # bound ok
         with pytest.raises(ValueError, match=rf"{field} must be >= 0 or None"):
             SupportParams(**{field: -500.0})
+
+
+def test_feedin_params_validation():
+    FeedInParams()  # neutral defaults must stay valid
+    FeedInParams(enabled=True, max_w=0.0, min_soc_percent=100.0, deadline_hour=0)
+    FeedInParams(deadline_hour=23)  # bounds ok
+    with pytest.raises(ValueError, match=r"max_w must be >= 0"):
+        FeedInParams(max_w=-1.0)
+    with pytest.raises(ValueError, match=r"min_soc_percent must be in \[0, 100\]"):
+        FeedInParams(min_soc_percent=-0.1)
+    with pytest.raises(ValueError, match=r"min_soc_percent must be in \[0, 100\]"):
+        FeedInParams(min_soc_percent=100.1)
+    with pytest.raises(ValueError, match=r"deadline_hour must be in \[0, 23\]"):
+        FeedInParams(deadline_hour=-1)
+    with pytest.raises(ValueError, match=r"deadline_hour must be in \[0, 23\]"):
+        FeedInParams(deadline_hour=24)
 
 
 def test_trajectory_empty_flows_min_max_fall_back_to_end_soc():

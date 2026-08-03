@@ -102,7 +102,10 @@ Der Coordinator startet mit 30 s und schaltet auf 300 s um, sobald
 Zustandsänderungen der beobachteten Entities: `_setup_entity_listeners`
 registriert `async_track_state_change_event` auf `_tracked_entities()` (SOC,
 die drei PV-Prognose-Entities, Support-Switches + DC/DC, je Last
-SOC-/Power-/Verfügbarkeits-Entity, je Appliance die Detection-Entity); jeder
+SOC-/Power-/Verfügbarkeits-Entity, je Appliance die Detection-Entity, seit
+v0.23.0 die Feed-in-Batterieleistung und seit v0.24.0 der Exportzähler plus je
+Last der optionale Energiezähler — damit die Ist-Bilanz-Deltas zeitnah gebucht
+werden statt erst im 5-Minuten-Zyklus); jeder
 Event löst über `_handle_entity_change` → `_debounced_update` nach 5 s einen
 Refresh aus. Die Batteriespannung ist **bewusst nicht** getrackt (analoges
 Rauschen würde permanent replanen; der R2-Regler läuft auf dem Poll).
@@ -156,11 +159,23 @@ Exakt wie implementiert (jeder Schritt hängt am Ergebnis des vorigen):
 21. **`_apply_load_switching(result, now, slot_durations, pv_power_w,
     shadow_active)`** — der eigentliche Schaltpfad (Dokument 03).
 22. **`_update_power_warnings(result, now)`** — F-L7-Latch setzen/lösen.
-23. **`_update_tank_forecast(result, now)`** — Tank-Diagnostik + „Tank bald
+23. **`_update_feedin_mode(now)`** + **`_apply_feedin(result, config, soc, now)`** —
+    F-FEEDIN (v0.23.0): Manuell-Modus-Erkennung des Einspeise-Sollwerts und
+    der zweiphasige Setpoint-Executor (Dokument 03 §11A).
+24. **`_update_tank_forecast(result, now)`** — Tank-Diagnostik + „Tank bald
     voll"-Push (nach den Warnungen, deren Latch-Flanken die Tank-Events sind).
-24. **`_update_gate_calibration(config, soc)`** — 48 V-Gate-Kalibrierbracket.
-25. **Startphase abschließen**, dann das `data`-Dict bauen (Lastpläne,
-    `soc_forecast`, `daily_surplus`, Diagnostik, `hourly_details`).
+25. **`_update_gate_calibration(config, soc)`** — 48 V-Gate-Kalibrierbracket.
+26. **Startphase abschließen**, dann das `data`-Dict bauen (Lastpläne,
+    `soc_forecast`, `daily_surplus`, `realized`, Diagnostik, `hourly_details`).
+27. **`_update_realized_surplus(now, daily_surplus)`** — F-REALIZED-SURPLUS
+    (v0.24.0): die gemessenen Tageszähler aus Exportzähler und
+    Last-Energiezählern, gebucht **innerhalb** des Dict-Baus, direkt nachdem
+    `daily_surplus` steht. Läuft **zuletzt**, weil es die frischen
+    Laufzeitzähler (Schritt 2), das Feed-in-Integral (Schritt 23) und eben die
+    fertige Tages-Prognose (für den Ist+Prognose-Mix) braucht. Nur auf
+    **erfolgreichen** Zyklen — ein `UpdateFailed` bucht nichts, die
+    Zählerstände tragen in den nächsten Zyklus. Ohne Exportzähler liefert es
+    `None` und der `realized`-Schlüssel fehlt im Dict.
 
 **Wichtige Reihenfolge-Eigenheit:** die Latches, die der Planer im *nächsten*
 Zyklus liest (F-L7-Power-Warning → F5 `saturated_power_w`, Tank-Zustand), werden
@@ -415,6 +430,9 @@ Inhalt laut `_persistent_payload`:
 | `load_power_warning` | **F-L7-Latch** je Last | ein Options-Save (= Reload) darf keine gesetzte Warnung verschlucken |
 | `load_tank_samples` | letzte `TANK_LEARN_SAMPLES = 5` Voll-Tank-Laufzeiten | Median = gelernte Volltank-Laufzeit |
 | `load_tank_full_min` | Laufzeit-Capture am Latch-Eintritt | Neustart mitten im Tankzyklus lernt trotzdem |
+| `stale_since`, `stale_shed_active` | D-A8-Stufe-2-Datenverlustuhr + Shed-Latch | ein Neustart darf die Uhr nicht zurücksetzen |
+| `feedin_switch_on`, `feedin_manual_until`, `feedin_last_written_w` | **F-FEEDIN** (v0.23.0): Laufzeitschalter, Manuell-Modus bis Mitternacht, zuletzt geschriebener Sollwert | der Manuell-Modus ist Operator-Eigentum und darf einen Reload nie verlieren; der letzte Schreibwert ist die Referenz der Fremdänderungs-Erkennung |
+| `realized` | **F-REALIZED-SURPLUS** (v0.24.0): `{date, lost_wh, prevented_wh, feedin_wh, true_export_total_wh, last_readings}` | Tageszähler und der monotone Echt-Export sind Messwerte, kein Prognosezustand — ein Reload darf sie nicht auf 0 werfen. Die `last_readings` sind die Baselines der Delta-Bildung: ohne sie würde der erste Zählerstand nach dem Neustart als riesiges Delta gebucht (der Sprungfilter fängt es, aber die Energie fehlte). Die Tageszähler werden nur übernommen, wenn `date` heute ist; die Readings immer |
 
 **Bewusst NICHT persistiert** (jeweils mit Begründung im Code):
 
@@ -428,6 +446,12 @@ Inhalt laut `_persistent_payload`:
   `_load_freeze_stale` (F4), `_load_last_off`/`_load_flicker_hist` (F8),
   `_load_latch_hold` (F10), `_floor_guard_active`, `_load_tank_notified` —
   alle rein in-memory, sie bauen sich nach einem Neustart neu auf.
+- `_realized_last_ts`, `_realized_relearn`, `_realized_runtime_base`
+  (F-REALIZED-SURPLUS) — das Zeitfenster des Sprungfilters, die
+  Ausfall-Markierungen und die Laufzeit-Checkpoints. Ein wiederhergestelltes
+  Fenster wäre nach der Downtime falsch weit (der Filter würde jeden Sprung
+  durchlassen); der Laufzeit-Checkpoint macht das erste Delta nach dem
+  Neustart 0 — derselbe begrenzte Verlust wie beim Laufzeit-Cursor selbst.
 
 ### 6.2 Learner-Store
 

@@ -40,6 +40,13 @@ from .const import (
     CONF_DCDC_MAX_CURRENT_A,
     CONF_DCDC_OUTPUT_VOLTAGE_V,
     CONF_DCDC_SWITCH,
+    CONF_EXPORT_METER_ENTITY,
+    CONF_FEEDIN_BATTERY_POWER_ENTITY,
+    CONF_FEEDIN_DEADLINE_HOUR,
+    CONF_FEEDIN_ENABLED,
+    CONF_FEEDIN_MAX_W,
+    CONF_FEEDIN_MIN_SOC,
+    CONF_FEEDIN_SETPOINT_ENTITY,
     CONF_GATE_SOC_PERCENT,
     CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC,
     CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC,
@@ -52,6 +59,7 @@ from .const import (
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_ENERGY_ENTITY,
     CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_OFF_POLICY,
@@ -125,6 +133,8 @@ SECTION_TUNING = "planner_tuning"
 SECTION_PROFILE = "consumption_profile"
 SECTION_LEARNING = "consumption_learning"
 SECTION_SUPPORT = "support_paths"
+SECTION_FEEDIN = "early_feed_in"
+SECTION_SURPLUS_ACCOUNTING = "surplus_accounting"
 SECTION_DEVICES = "dc_devices"
 SECTION_NOTIFY = "notifications"
 _OPTION_SECTIONS = (
@@ -135,6 +145,8 @@ _OPTION_SECTIONS = (
     SECTION_PROFILE,
     SECTION_LEARNING,
     SECTION_SUPPORT,
+    SECTION_FEEDIN,
+    SECTION_SURPLUS_ACCOUNTING,
     SECTION_DEVICES,
     SECTION_NOTIFY,
 )
@@ -174,6 +186,14 @@ def _entity(domain: str | list[str] | None = None, multiple: bool = False):
     if domain:
         config["domain"] = domain
     return selector.EntitySelector(config)
+
+
+def _energy_sensor():
+    """Selector for a monotone kWh energy counter (F-REALIZED-SURPLUS):
+    the export meter and the per-load energy counters."""
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+    )
 
 
 def _notify_services(hass) -> list[str]:
@@ -534,6 +554,79 @@ def _predrain_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     }
 
 
+def _feedin_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """F-FEEDIN early grid feed-in (docs/F-FEEDIN.md), options flow only.
+
+    The toggle plus the two wiring entities (AC setpoint input_number, battery
+    power sensor) and the three planner parameters. The recommended live
+    defaults live in DEFAULT_CONFIG (resolved via _d), so the form default and
+    the coordinator absent-key fallback resolve to the SAME value. The entity
+    fields use suggested_value (not default) so they stay clearable.
+    """
+    return {
+        vol.Required(
+            CONF_FEEDIN_ENABLED, default=_d(current, CONF_FEEDIN_ENABLED)
+        ): selector.BooleanSelector(),
+        vol.Optional(
+            CONF_FEEDIN_SETPOINT_ENTITY,
+            description={"suggested_value": current.get(CONF_FEEDIN_SETPOINT_ENTITY)},
+        ): _entity("input_number"),
+        vol.Optional(
+            CONF_FEEDIN_BATTERY_POWER_ENTITY,
+            description={
+                "suggested_value": current.get(CONF_FEEDIN_BATTERY_POWER_ENTITY)
+            },
+        ): _entity("sensor"),
+        vol.Required(
+            CONF_FEEDIN_MAX_W, default=_d(current, CONF_FEEDIN_MAX_W)
+        ): _number(0, 2000, 50, "W"),
+        vol.Required(
+            CONF_FEEDIN_MIN_SOC, default=_d(current, CONF_FEEDIN_MIN_SOC)
+        ): _number(0, 100, 1, "%"),
+        vol.Required(
+            CONF_FEEDIN_DEADLINE_HOUR, default=_d(current, CONF_FEEDIN_DEADLINE_HOUR)
+        ): _number(0, 12, 1, "h"),
+    }
+
+
+def _surplus_accounting_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    """F-REALIZED-SURPLUS surplus accounting (docs/F-REALIZED-SURPLUS.md),
+    options flow only.
+
+    Just the export meter: the measured day counters (lost/prevented surplus
+    realized, corrected true export) exist only while it is configured. The
+    per-load energy counters live on the surplus-load subentries. The entity
+    field uses suggested_value (not default) so it stays clearable.
+    """
+    return {
+        vol.Optional(
+            CONF_EXPORT_METER_ENTITY,
+            description={"suggested_value": current.get(CONF_EXPORT_METER_ENTITY)},
+        ): _energy_sensor(),
+    }
+
+
+def _validate_feedin(data: dict[str, Any]) -> str | None:
+    """F-FEEDIN section consistency: enabled requires both wiring entities,
+    a usable power cap and a SOC floor ABOVE the battery minimum — else the
+    planner would book feed-in the executor can never deliver (or feed-in
+    would fight the battery's deep-discharge floor)."""
+    if not data.get(CONF_FEEDIN_ENABLED):
+        return None
+    if not data.get(CONF_FEEDIN_SETPOINT_ENTITY) or not data.get(
+        CONF_FEEDIN_BATTERY_POWER_ENTITY
+    ):
+        return "feedin_entities_required"
+    max_w = data.get(CONF_FEEDIN_MAX_W)
+    if max_w is not None and not 0.0 < float(max_w) <= 2000.0:
+        return "feedin_max_w_out_of_range"
+    min_soc = data.get(CONF_FEEDIN_MIN_SOC)
+    soc_min = data.get("battery_min_soc_percent")
+    if min_soc is not None and soc_min is not None and float(min_soc) <= float(soc_min):
+        return "feedin_min_soc_not_above_battery_min"
+    return None
+
+
 def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """Static fallback-profile fields (shared: consumers step + options)."""
     hours = {
@@ -874,6 +967,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 or _validate_buffer_clamps(data)
                 or _validate_controller_voltages(data)
                 or _validate_support_hysteresis(data)
+                or _validate_feedin(data)
             )
             if error is None:
                 # Cleared selector fields are absent from the input. Store an
@@ -883,6 +977,13 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     *_SUPPORT_SWITCH_KEYS,
                     CONF_SUPPORT_DC24_POWER_ENTITY,
                     CONF_BATTERY_VOLTAGE_ENTITY,
+                    # F-FEEDIN: cleared = feature unwired (the executor writes
+                    # the setpoint 0 once before going idle).
+                    CONF_FEEDIN_SETPOINT_ENTITY,
+                    CONF_FEEDIN_BATTERY_POWER_ENTITY,
+                    # F-REALIZED-SURPLUS: cleared = forecast-only again (the
+                    # realized sensors are dropped from the registry).
+                    CONF_EXPORT_METER_ENTITY,
                     # Cleared = unset the site override so the window end derives
                     # from the forecast again (F-PREDRAIN F4).
                     CONF_PV_WINDOW_END_HOUR,
@@ -1029,6 +1130,13 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             vol.Required(SECTION_SUPPORT): section(
                 vol.Schema(support), {"collapsed": True}
             ),
+            vol.Required(SECTION_FEEDIN): section(
+                vol.Schema(_feedin_schema_fields(current)), {"collapsed": True}
+            ),
+            vol.Required(SECTION_SURPLUS_ACCOUNTING): section(
+                vol.Schema(_surplus_accounting_schema_fields(current)),
+                {"collapsed": True},
+            ),
             vol.Required(SECTION_DEVICES): section(
                 vol.Schema(_device_param_fields(current)), {"collapsed": True}
             ),
@@ -1137,6 +1245,15 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
+        # F-REALIZED-SURPLUS: optional kWh energy counter of the load (e.g. a
+        # Fritz!Powerline energy sensor) — measured consumption for the
+        # realized surplus accounting and the export-meter correction.
+        schema[
+            vol.Optional(
+                CONF_LOAD_ENERGY_ENTITY,
+                description={"suggested_value": data.get(CONF_LOAD_ENERGY_ENTITY)},
+            )
+        ] = _energy_sensor()
         # The control switch and its off policy apply to ANY controlled load
         # (a continuous consumer like a dehumidifier is switched by BM too), so
         # they live on the basic step; the charge-enable gate stays on the

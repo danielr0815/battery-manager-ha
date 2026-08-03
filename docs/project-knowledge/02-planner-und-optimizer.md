@@ -23,9 +23,11 @@ bei einem Konflikt mit dieser Zusammenfassung gilt die Wissensbasis, weil sie
 1. threshold, base_traj = search_threshold(config, inputs)      # T*-Suche
 2. load_plans, extra_ac, traj = allocate_loads(..., base_traj)  # Pass 1 + Pass 2
 3. alloc_traj = traj                                            # VOR Support festhalten
-4. dc24, dc48, traj = support_escalation(...)                   # Notfall-Netzteile
-5. windows = appliance_windows(...)                             # Advisor (G3)
-6. Diagnostik: import_trade_used_wh, stressed_min_soc,
+4. feedin_wh, feedin_by_day = plan_feedin(..., alloc_traj)      # F-FEEDIN (nur wenn enabled)
+   traj = simulate(..., feedin_wh=feedin_wh)                    # publizierte Trajektorie MIT Feed-in
+5. dc24, dc48, traj = support_escalation(...)                   # Notfall-Netzteile
+6. windows = appliance_windows(...)                             # Advisor (G3)
+7. Diagnostik: import_trade_used_wh, stressed_min_soc,
    pv_window_ends, threshold_horizon_end, prevented_export_by_day_wh
 ```
 
@@ -470,6 +472,46 @@ Kandidatendauer:
 
 ---
 
+## 5A. Early Feed-In (`plan_feedin`, F-FEEDIN, v0.23.0)
+
+Spec: `docs/F-FEEDIN.md`. Der Pass verlegt den **unvermeidlichen** Restexport
+zeitlich in den Morgen: PV-Überschuss wird bei leerlaufender Batterie direkt
+durchgereicht statt mittags bei voller Batterie zu exportieren. Gesamtexport
+invariant, nur das Timing wandert vom Mittagspeak weg.
+
+- **Position**: nach `allocate_loads` (braucht den `alloc_traj`-Restexport als
+  unvermeidliche Menge) und vor `support_escalation`. Neutral-Default
+  (`FeedInParams.enabled = False` oder `max_w = 0`) short-circuitet ohne
+  Zusatzsimulation — bit-identischer Plan (§10).
+- **Zielmenge pro Kalendertag** = Restexport (`grid_export`) des Tages aus der
+  Median-Prognose (R3, keine Stress-Skalierung des Ziels).
+- **Buchung** aufsteigend ab Slot 0, nur wenn `remaining > ε` ∧ Trial-SOC am
+  Slotanfang > `feedin_min_soc_percent` (absoluter Floor, R5) ∧ < soc_max
+  (volle Batterie exportiert natürlich) ∧ Slot-Überschuss > 0. Rate =
+  `remaining / max(Stunden bis deadline_hour, Slotdauer)`, gedeckelt auf
+  `min(max_w, Slot-Überschuss)`; nach der **weichen** Deadline kollabiert der
+  Nenner auf die Slotdauer — Überzug so schnell, wie der Überschuss erlaubt
+  (R4). Jede Buchung wird in die Trial re-simuliert.
+- **Physik** (`step_hour`, R2): Feed-in wird **vor** der Batterieladung aus
+  dem Überschuss bedient, `grid_export += feedin` 1:1, geklemmt auf den
+  Überschuss, im Defizit-Zweig 0 — keine aktive Entladung.
+  `HourFlows.feedin_wh` macht die Export-Zusammensetzung (natürlich vs.
+  vorverlegt) nachvollziehbar.
+- **Z4 nur als Bremse** (R6): die finale MIT-Feed-in-Reihe wird unter dem
+  P10/α-Stressvektor gegen `_ramped_stress_floors` re-simuliert (mit der
+  `_z4_reject`-Entlastungsklausel); bei Verletzung wird der **späteste**
+  Feed-in-Slot an/vor der Verletzung zurückgegeben, iteriert, bis die Floors
+  halten.
+- **Ausgabe**: `PlanResult.feedin_schedule_w` (W je Slot) und
+  `feedin_by_day_wh`. Die publizierte Trajektorie ist die MIT-Feed-in-
+  Simulation — der flache Morgen-Verlauf ist in der SOC-Prognose sichtbar.
+  `prevented_export_by_day_wh` vergleicht bewusst weiter base vs. alloc
+  **ohne** Feed-in (R4 der Gegenrechnung unverändert).
+
+Executor-Seite (Setpoint, Trim, Manuell-Modus): Dokument 03 §11A.
+
+---
+
 ## 6. Die Gate-Familie im Überblick
 
 | Regel | Wo im Code | Bedeutung in einem Satz |
@@ -606,6 +648,8 @@ Nacht-Pre-Drain mit Default-Parametern liest hier typischerweise **bis ~50 Wh**
 | `threshold_horizon_end` | Ende des merge-gekürzten T*-Horizonts; `None` = Voll-Horizont-Scan |
 | `stressed_min_soc_percent` | siehe §4.4 |
 | `support_dc24_now` / `support_dc48_now` | Slot-0-Zustand der Notfall-PSUs |
+| `feedin_schedule_w` (v0.23.0) | geplante Feed-in-Leistung je Slot (W), leer wenn deaktiviert |
+| `feedin_by_day_wh` (v0.23.0) | gebuchte Feed-in-Energie je Kalendertag (Wh) |
 
 ### 8.5 Die `why`-Strings je Slot
 
@@ -671,6 +715,9 @@ die Golden-Tests:
   ⇒ `simulate` reproduziert das Ein-Bus-Modell exakt.
 - **Merge-Rampen-Endpunkte**: bei margin 0 und bei margin ≥ 250 Wh verhält sich
   der Scan exakt wie vor F-MERGE-HYSTERESIS.
+- **F-FEEDIN-Neutraldefault** (`FeedInParams.enabled = False` / `max_w = 0`,
+  v0.23.0): `plan` short-circuitet ohne Zusatzsimulation; eine `feedin_wh`-
+  Nullserie in `simulate` ist bit-identisch zu keiner Serie.
 
 ---
 

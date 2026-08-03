@@ -23,6 +23,7 @@ def step_hour(
     dc24_from_grid: bool = False,
     dc48_support: bool = False,
     pv_scale: float = 1.0,
+    feedin_wh: float = 0.0,
 ) -> HourFlows:
     """Simulate one slot; returns all flows. Never mutates anything."""
     battery = config.battery
@@ -39,6 +40,7 @@ def step_hour(
     battery_charge = 0.0
     battery_discharge = 0.0
     inverter_output = 0.0
+    feedin_eff = 0.0
 
     inverter_on = soc_percent > threshold_percent
     support = config.support
@@ -174,6 +176,19 @@ def step_hour(
             pv_for_dc = min(balance, dc_ac_demand)
             balance -= pv_for_dc
             dc_ac_demand -= pv_for_dc
+        # (a2) F-FEEDIN: booked early feed-in is served from the surplus AFTER
+        # the DC shortfall (an export must never coexist with a same-slot
+        # import — review #1) but BEFORE battery charging: the pass-through
+        # reroutes surplus that would have been stored into the grid 1:1, on
+        # the same conversion path as natural export (no new efficiency). The
+        # clamp to the remaining balance is the hard guarantee that feed-in
+        # can never force an import; a deficit slot below never serves any
+        # (the planner only books surplus slots, requirement 1: the battery
+        # is never actively discharged for feed-in).
+        if feedin_wh > _EPS:
+            feedin_eff = min(feedin_wh, max(0.0, balance))
+            balance -= feedin_eff
+            grid_export += feedin_eff
         # (b) charge the battery through the charger, export the rest.
         headroom = max(0.0, ceil_wh - energy)
         max_charger_ac = config.charger.max_power_w * slot.duration
@@ -246,6 +261,7 @@ def step_hour(
         dcdc_loss_wh=dcdc_loss_wh,
         unserved_dc_wh=unserved_dc_wh,
         gate_open=gate_open,
+        feedin_wh=feedin_eff,
     )
 
 
@@ -257,6 +273,7 @@ def simulate(
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
     pv_scale: float | Sequence[float] = 1.0,
+    feedin_wh: tuple[float, ...] | None = None,
 ) -> Trajectory:
     """Simulate the whole horizon under the policy `inverter on <=> SOC > threshold`.
 
@@ -269,6 +286,11 @@ def simulate(
     1.0 (scalar) is the neutral default and keeps the result bit-identical to the
     unscaled run.
 
+    `feedin_wh` (F-FEEDIN) is the planner's booked early feed-in per slot,
+    served from the slot's PV surplus before battery charging (see step_hour).
+    None (the neutral default) feeds in nothing and keeps the result
+    bit-identical to a run without the feature.
+
     The optional per-slot series are index-aligned with `inputs.slots`; a series
     SHORTER than the horizon used to crash with a bare IndexError mid-run
     (code review 2026-07) and now fails up-front with a speaking ValueError.
@@ -279,6 +301,7 @@ def simulate(
         ("dc24_schedule", dc24_schedule),
         ("dc48_schedule", dc48_schedule),
         ("pv_scale", pv_scale if not isinstance(pv_scale, (int, float)) else None),
+        ("feedin_wh", feedin_wh),
     ):
         if series is not None and len(series) < n_slots:
             raise ValueError(
@@ -305,6 +328,7 @@ def simulate(
             pv_scale=pv_scale[i]
             if not isinstance(pv_scale, (int, float))
             else pv_scale,
+            feedin_wh=feedin_wh[i] if feedin_wh else 0.0,
         )
         flows.append(flow)
         soc = flow.soc_end_percent

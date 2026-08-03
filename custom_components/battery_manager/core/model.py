@@ -365,6 +365,40 @@ class ControlParams:
 
 
 @dataclass(frozen=True)
+class FeedInParams:
+    """Early feed-in of unavoidable export (F-FEEDIN, docs/F-FEEDIN.md).
+
+    When the forecast shows export the loads cannot absorb, the planner books
+    that energy as morning feed-in (PV surplus passed straight through to the
+    grid) instead of letting it clip at midday with a full battery. ALL
+    NEUTRAL defaults — disabled, 0 W cap, no SOC floor — so the planner
+    short-circuits the whole pass and every legacy constructor, the goldens
+    and the whole test corpus stay bit-identical (the R8-style anchor).
+    """
+
+    enabled: bool = False
+    max_w: float = 0.0
+    min_soc_percent: float = 0.0
+    deadline_hour: int = 9
+
+    def __post_init__(self) -> None:
+        _require(
+            self.max_w >= 0.0,
+            f"FeedInParams.max_w must be >= 0, got {self.max_w!r}",
+        )
+        _require(
+            0.0 <= self.min_soc_percent <= 100.0,
+            f"FeedInParams.min_soc_percent must be in [0, 100], "
+            f"got {self.min_soc_percent!r}",
+        )
+        _require(
+            0 <= self.deadline_hour <= 23,
+            f"FeedInParams.deadline_hour must be in [0, 23], "
+            f"got {self.deadline_hour!r}",
+        )
+
+
+@dataclass(frozen=True)
 class SystemConfig:
     """Complete static system description."""
 
@@ -384,6 +418,7 @@ class SystemConfig:
     )
     control: ControlParams = field(default_factory=ControlParams)
     support: SupportParams = field(default_factory=SupportParams)
+    feedin: FeedInParams = field(default_factory=FeedInParams)
     loads: tuple[SurplusLoad, ...] = ()
     appliances: tuple[Appliance, ...] = ()
 
@@ -440,6 +475,10 @@ class HourFlows:
     dcdc_loss_wh: float = 0.0
     unserved_dc_wh: float = 0.0  # rail demand above the active source's cap
     gate_open: bool = False  # 48 V PSU voltage gate open this slot
+    # F-FEEDIN: booked early feed-in actually served from this slot's PV
+    # surplus (after clamping), so the export composition stays traceable
+    # (natural vs. pre-shifted). 0 under neutral defaults.
+    feedin_wh: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -568,3 +607,12 @@ class PlanResult:
     # before support_escalation). The counterfactual that makes "why is a load
     # running although SOC never reaches max?" answerable on the dashboard.
     prevented_export_by_day_wh: dict[str, float] = field(default_factory=dict)
+    # --- F-FEEDIN early feed-in (docs/F-FEEDIN.md) ---
+    # Planned feed-in power per slot (W, index-aligned with the slots): the
+    # unavoidable residual export, pre-shifted into the morning surplus. Empty
+    # () when the feature is disabled (neutral default) — a full-length zero
+    # tuple when enabled but nothing was bookable.
+    feedin_schedule_w: tuple[float, ...] = ()
+    # Per calendar day (ISO date -> Wh): the feed-in actually booked that day
+    # (shaped like `prevented_export_by_day_wh`; days without feed-in absent).
+    feedin_by_day_wh: dict[str, float] = field(default_factory=dict)

@@ -3,11 +3,13 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
 
+import pytest
 from core.model import (
     Appliance,
     BatteryParams,
     ControlParams,
     ConverterParams,
+    FeedInParams,
     HourSlot,
     LoadProfile,
     PlanInputs,
@@ -4706,3 +4708,243 @@ def test_at_max_topup_hysteresis_rejects_until_pv_refills():
     result_c = plan(cfg_b, replace(inputs_b, start_soc_percent=95.0))
     lp_c = result_c.load_plans[0]
     assert any("at-max top-up" in r for r in lp_c.reasons)
+
+
+# ---------------------------------------------------------------------------
+# F-FEEDIN: early feed-in of the unavoidable residual export
+# (docs/F-FEEDIN.md). The pass runs after allocate_loads: the day's residual
+# export is pre-shifted into the morning PV surplus (battery idles, never
+# discharges for feed-in), soft-deadlined, capped by max_w and slot surplus,
+# floored by min_soc, stopped at soc_max, and braked by the Z4 stress floors.
+# ---------------------------------------------------------------------------
+
+FEEDIN_2KW = FeedInParams(enabled=True, max_w=2000.0, deadline_hour=9)
+
+
+def _feedin_plan(feedin, now, soc, forecasts, control=None):
+    config = SystemConfig(feedin=feedin, control=control or ControlParams())
+    return make_plan(config, now, soc, forecasts)
+
+
+def _booked_feedin_wh(result, inputs):
+    return sum(
+        w * s.duration
+        for w, s in zip(result.feedin_schedule_w, inputs.slots, strict=True)
+    )
+
+
+def test_feedin_disabled_is_empty_and_bit_identical():
+    """Neutral default: disabled (or a 0 W cap with enabled) means no
+    schedule, no per-day entry, and a plan bit-identical to the pre-feature
+    one — the golden anchor."""
+    now = datetime(2026, 7, 4, 6, 0)
+    disabled, _ = _feedin_plan(FeedInParams(), now, 50.0, [8.0])
+    assert disabled.feedin_schedule_w == ()
+    assert disabled.feedin_by_day_wh == {}
+    capped, _ = _feedin_plan(FeedInParams(enabled=True, max_w=0.0), now, 50.0, [8.0])
+    assert capped.feedin_schedule_w == ()
+    assert capped.feedin_by_day_wh == {}
+    plain, _ = make_plan(SystemConfig(), now, 50.0, [8.0])
+    assert disabled.trajectory == plain.trajectory
+    assert capped.trajectory == plain.trajectory
+
+
+def test_feedin_needs_residual_export_after_loads():
+    """The trigger is the post-allocation residual (requirement 2): a cloudy
+    day without export books nothing."""
+    result, _ = _feedin_plan(FEEDIN_2KW, datetime(2026, 7, 4, 6, 0), 50.0, [1.0])
+    assert sum(result.feedin_schedule_w) == 0.0
+    assert result.feedin_by_day_wh == {}
+
+
+def test_feedin_books_residual_into_morning_surplus():
+    """The happy path: the residual export is booked into PV-surplus slots
+    (capped by max_w and the slot surplus), the published trajectory carries
+    the feed-in flows, and the totals stay invariant."""
+    now = datetime(2026, 7, 4, 6, 0)
+    plain, _ = make_plan(SystemConfig(), now, 50.0, [8.0, 1.0])
+    result, inputs = _feedin_plan(FEEDIN_2KW, now, 50.0, [8.0, 1.0])
+    residual = plain.trajectory.total_export_wh
+    assert residual > 0.0
+    booked = _booked_feedin_wh(result, inputs)
+    assert 0.0 < booked <= residual + 1e-6
+    for w, s in zip(result.feedin_schedule_w, inputs.slots, strict=True):
+        assert 0.0 <= w <= FEEDIN_2KW.max_w + 1e-6  # max_w cap
+        # slot-surplus cap (planner notion: PV - house AC, before charging)
+        assert w * s.duration <= max(0.0, s.pv_wh - s.ac_wh) + 1e-6
+    # The booked energy is actually served (HourFlows.feedin_wh). Served sits
+    # a touch BELOW booked: the simulation's balance also nets out the
+    # inverter standby, which the planner's surplus notion does not.
+    served = sum(f.feedin_wh for f in result.trajectory.flows)
+    assert booked - 50.0 <= served <= booked + 1e-6
+    # Per-day accounting: day 1 only — the cloudy day 2 has no residual and
+    # is skipped entirely.
+    day1 = now.date().isoformat()
+    assert set(result.feedin_by_day_wh) == {day1}
+    assert result.feedin_by_day_wh[day1] == pytest.approx(booked)
+    # Export invariance (requirement: pre-shifting changes timing, not the
+    # amount — the small delta is the charger standby the pass-through saves)
+    # and feed-in never causes import.
+    assert result.trajectory.total_export_wh == pytest.approx(residual, abs=30.0)
+    assert result.grid_import_kwh == pytest.approx(plain.grid_import_kwh)
+
+
+def test_feedin_rate_spreads_towards_deadline():
+    """Soft deadline (requirement 4): below the caps the rate is
+    remaining / hours-to-deadline, so the amount spreads over the morning and
+    finishes by the deadline hour."""
+    now = datetime(2026, 7, 4, 6, 0)
+    plain, _ = make_plan(SystemConfig(), now, 60.0, [4.5])
+    result, inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [4.5])
+    residual = plain.trajectory.total_export_wh
+    by_hour = {
+        s.hour_of_day: w
+        for w, s in zip(result.feedin_schedule_w, inputs.slots, strict=True)
+        if w > 1e-9
+    }
+    assert set(by_hour) == {7, 8}  # done by the 09:00 deadline
+    assert by_hour[7] == pytest.approx(residual / 2.0)  # 2 h to the deadline
+    assert by_hour[8] == pytest.approx(residual / 2.0)  # the rest in the last hour
+    assert by_hour[7] < FEEDIN_2KW.max_w
+
+
+def test_feedin_overruns_deadline_as_fast_as_surplus_allows():
+    """Past the deadline the denominator collapses to the slot duration
+    (requirement 4): the remaining amount is worked off immediately, capped
+    only by max_w and the slot surplus."""
+    now = datetime(2026, 7, 4, 10, 0)  # after the 09:00 deadline
+    plain, _ = make_plan(SystemConfig(), now, 60.0, [8.0])
+    result, inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [8.0])
+    residual = plain.trajectory.total_export_wh
+    slot0 = inputs.slots[0]
+    surplus_w = (slot0.pv_wh - slot0.ac_wh) / slot0.duration
+    assert result.feedin_schedule_w[0] == pytest.approx(
+        min(residual / slot0.duration, FEEDIN_2KW.max_w, surplus_w)
+    )
+    # The full residual is worked off despite the missed deadline.
+    assert _booked_feedin_wh(result, inputs) == pytest.approx(residual, abs=1e-6)
+
+
+def test_feedin_capped_by_max_w():
+    """A small max_w stretches the booking over more slots (requirement 5)."""
+    feedin = FeedInParams(enabled=True, max_w=300.0, deadline_hour=9)
+    result, _ = _feedin_plan(feedin, datetime(2026, 7, 4, 6, 0), 50.0, [8.0])
+    nonzero = [w for w in result.feedin_schedule_w if w > 1e-9]
+    assert nonzero
+    assert max(nonzero) <= 300.0 + 1e-9
+    assert len(nonzero) >= 3  # the cap needs several slots for the residual
+
+
+def test_feedin_respects_min_soc_floor():
+    """The absolute floor (requirement 3): no booking at a slot whose trial
+    SOC at slot start is at/below min_soc_percent."""
+    feedin = FeedInParams(enabled=True, max_w=2000.0, min_soc_percent=70.0)
+    result, _ = _feedin_plan(feedin, datetime(2026, 7, 4, 6, 0), 50.0, [8.0])
+    booked_slots = [i for i, w in enumerate(result.feedin_schedule_w) if w > 1e-9]
+    assert booked_slots
+    for i in booked_slots:
+        assert result.trajectory.flows[i].soc_start_percent > 70.0
+
+
+def test_feedin_stops_at_soc_max():
+    """A battery at the ceiling exports naturally — setpoint 0 (requirement
+    4: full -> no feed-in booked) even with a large residual export."""
+    result, _ = _feedin_plan(FEEDIN_2KW, datetime(2026, 7, 4, 11, 0), 95.0, [8.0])
+    assert result.trajectory.total_export_wh > 0.0
+    assert sum(result.feedin_schedule_w) == 0.0
+    assert result.feedin_by_day_wh == {}
+
+
+def _feedin_z4_plan(alpha):
+    """Small-battery morning feed-in ahead of a DC-drained evening: under the
+    alpha stress the booked pass-through eats the evening reserve the ramped
+    floors protect, so the Z4 brake must hand feed-in back (latest-first).
+    The DC evening load drains the battery regardless of the threshold, so
+    the stress violation cannot hide behind an inverter-off import."""
+    control = replace(
+        ControlParams(), predrain_pv_confidence=alpha, upper_pv_reserve=1.0
+    )
+    cfg = SystemConfig(
+        control=control,
+        feedin=FeedInParams(enabled=True, max_w=800.0, deadline_hour=9),
+        battery=BatteryParams(capacity_wh=2000.0),
+        ac_profile=LoadProfile(0.0, 0.0),
+        dc_profile=LoadProfile(0.0, 0.0),
+    )
+    start = datetime(2026, 7, 4, 7, 0)
+    slots = tuple(
+        HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=7 + i,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
+        )
+        for i, (pv, ac, dc) in enumerate(
+            (
+                (900.0, 100.0, 0.0),  # 07:00-09:00: 800 Wh/h surplus
+                (900.0, 100.0, 0.0),
+                (900.0, 100.0, 0.0),
+                (200.0, 100.0, 0.0),  # 10:00: thin tail
+                (0.0, 0.0, 250.0),  # 11:00-13:00: DC drain
+                (0.0, 0.0, 250.0),
+                (0.0, 0.0, 250.0),
+            )
+        )
+    )
+    inputs = PlanInputs(now=start, start_soc_percent=40.0, slots=slots)
+    return plan(cfg, inputs), cfg, inputs
+
+
+def test_feedin_z4_brake_trims_latest_first():
+    """Requirement 3, Z4 as a brake only: the WITH-feed-in series is stressed
+    with the same P10/alpha machinery as the allocation gates; a floor
+    violation hands back the latest feed-in slot until the floors hold."""
+    from core.optimize import (
+        _effective_uncertainty,
+        _ramped_stress_floors,
+        _z4_reject,
+    )
+
+    trusting, _, _ = _feedin_z4_plan(1.0)  # stress off -> no brake
+    trimmed, cfg, inputs = _feedin_z4_plan(0.5)
+    assert sum(trusting.feedin_schedule_w) > 0.0
+    assert 0.0 < sum(trimmed.feedin_schedule_w) < sum(trusting.feedin_schedule_w)
+    # Latest-first: the LATER booking (08:00) is handed back, slot 0 survives.
+    assert trimmed.feedin_schedule_w[0] > 1e-9
+    assert trimmed.feedin_schedule_w[1] == 0.0
+    # The trimmed series holds the stressed floors wherever the no-feed-in
+    # baseline does (the `_z4_reject` relief reference).
+    stress_vec, _, _ = _effective_uncertainty(inputs, 0.5, 1.0)
+    floors = _ramped_stress_floors(cfg, inputs, stress_vec)
+    extra = tuple(0.0 for _ in inputs.slots)
+    feedin_wh = tuple(
+        w * s.duration
+        for w, s in zip(trimmed.feedin_schedule_w, inputs.slots, strict=True)
+    )
+    threshold = trimmed.threshold_percent
+    stressed = simulate(
+        cfg,
+        inputs,
+        threshold,
+        extra_ac_wh=extra,
+        feedin_wh=feedin_wh,
+        pv_scale=stress_vec,
+    )
+    base = simulate(cfg, inputs, threshold, extra_ac_wh=extra, pv_scale=stress_vec)
+    assert not any(
+        _z4_reject(flow.soc_end_percent, floors[j], base.flows[j].soc_end_percent)
+        for j, flow in enumerate(stressed.flows)
+    )
+
+
+def test_feedin_empty_horizon_books_nothing():
+    cfg = SystemConfig(feedin=FEEDIN_2KW)
+    inputs = PlanInputs(
+        now=datetime(2026, 7, 4, 6, 0), start_soc_percent=50.0, slots=()
+    )
+    result = plan(cfg, inputs)
+    assert result.feedin_schedule_w == ()
+    assert result.feedin_by_day_wh == {}

@@ -286,6 +286,7 @@
             "min_off_min": "Mindest-Ausschaltdauer (min)",
             "energy_limited": "Energiebegrenzt (Speicher, der voll wird)",
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
+            "energy_entity": "Energiezähler (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "in_house_measurement": "In Hauslast-Messung enthalten",
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
@@ -303,6 +304,7 @@
             "min_off_min": "Mindest-Ausschaltdauer, bevor die Last wieder einschalten darf — verhindert Kurztakten bei Kompressor-Geräten (Entfeuchter, Kühlung).",
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
+            "energy_entity": "kWh-Zähler dieser Last (z. B. der Energiezähler einer Fritz!Powerline). Der gemessene Verbrauch fließt in die Überschuss-Bilanz (Ist-Werte) — und korrigiert den Exportzähler bei Lasten, die außerhalb des Haus-Messpunkts versorgt werden (Hauslast-Flag aus). Unplausible Zählersprünge werden ignoriert.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
@@ -323,6 +325,7 @@
             "min_off_min": "Mindest-Ausschaltdauer (min)",
             "energy_limited": "Energiebegrenzt (Speicher, der voll wird)",
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
+            "energy_entity": "Energiezähler (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
             "in_house_measurement": "In Hauslast-Messung enthalten",
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
@@ -340,6 +343,7 @@
             "min_off_min": "Mindest-Ausschaltdauer, bevor die Last wieder einschalten darf — verhindert Kurztakten bei Kompressor-Geräten (Entfeuchter, Kühlung).",
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
+            "energy_entity": "kWh-Zähler dieser Last (z. B. der Energiezähler einer Fritz!Powerline). Der gemessene Verbrauch fließt in die Überschuss-Bilanz (Ist-Werte) — und korrigiert den Exportzähler bei Lasten, die außerhalb des Haus-Messpunkts versorgt werden (Hauslast-Flag aus). Unplausible Zählersprünge werden ignoriert.",
             "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
@@ -435,7 +439,10 @@
       "support_dc24_recovery_not_above_activate": "Die Rücknahme-SOC der 24-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
       "support_dc48_recovery_not_above_activate": "Die Rücknahme-SOC der 48-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
       "support_dc48_activate_above_dc24": "Die Aktivierungs-SOC der 48-V-Stützung muss bei oder unter der 24-V-Aktivierungs-SOC liegen (die Notfallstufe schaltet nicht später als die 24-V-Stützung).",
-      "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen."
+      "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen.",
+      "feedin_entities_required": "Die vorzeitige Einspeisung braucht sowohl den AC-Sollwert (input_number) als auch den Batterieleistungs-Sensor.",
+      "feedin_max_w_out_of_range": "Die maximale Einspeiseleistung muss über 0 und höchstens 2000 W liegen.",
+      "feedin_min_soc_not_above_battery_min": "Der minimale SOC der Einspeisung muss über dem minimalen Batterie-SOC liegen."
     },
     "step": {
       "init": {
@@ -655,6 +662,36 @@
               "psu48_controller_log_only": "An = Regler protokolliert nur seine Entscheidungen, schaltet aber nicht (Testlauf). Aus = Regler schaltet das 48-V-Netzteil aktiv."
             }
           },
+          "early_feed_in": {
+            "name": "Vorzeitige Netzeinspeisung",
+            "description": "Unvermeidlichen Mittagsexport in den Morgen vorverlegen: PV-Überschuss wird früh über den AC-Sollwert eingespeist, statt mittags bei voller Batterie abgeregelt zu werden. Der Gesamtexport bleibt gleich — nur sein Zeitpunkt verlagert sich weg vom Mittagspeak.",
+            "data": {
+              "feedin_enabled": "Vorzeitige Einspeisung aktivieren",
+              "feedin_setpoint_entity": "AC-Sollwert (input_number)",
+              "feedin_battery_power_entity": "Batterieleistungs-Sensor",
+              "feedin_max_w": "Maximale Einspeiseleistung (W)",
+              "feedin_min_soc_percent": "Minimaler SOC (%)",
+              "feedin_deadline_hour": "Deadline (Stunde)"
+            },
+            "data_description": {
+              "feedin_enabled": "Vorzeitige Einspeisung planen und anfahren. Braucht beide Entitäten unten; der Schalter „Vorzeitige Netzeinspeisung“ kann sie im Tagesbetrieb pausieren.",
+              "feedin_setpoint_entity": "input_number, den der externe Regler als AC-Sollwert liest. NEGATIVER Wert = Export: geplante 500 W Einspeisung werden als -500 geschrieben.",
+              "feedin_battery_power_entity": "Batterieleistungs-Sensor (W), Victron-Konvention: positiv = ladend, negativ = entladend. Treibt die ereignisgesteuerte Nachregelung, die die Batterie während der Einspeisung bei ~0 W hält.",
+              "feedin_max_w": "Obergrenze des Einspeise-Sollwerts (höchstens 2000 W).",
+              "feedin_min_soc_percent": "Einspeisung läuft nur oberhalb dieses SOC (muss über dem minimalen Batterie-SOC liegen).",
+              "feedin_deadline_hour": "Weiche Deadline (0-12): die Planrate zielt darauf, die Tagesmenge bis zu dieser Stunde abzugeben; Restmengen laufen darüber hinaus weiter, bis die Batterie voll ist."
+            }
+          },
+          "surplus_accounting": {
+            "name": "Überschuss-Bilanz",
+            "description": "Gemessene Tageszähler: real verlorener und verhinderter Überschuss des bisherigen Tages, kombiniert mit der Planner-Prognose für den Rest des Tages, plus korrigierter Gesamtzähler der echten Einspeisung fürs Energie-Dashboard.",
+            "data": {
+              "export_meter_entity": "Export-Energiezähler (optional)"
+            },
+            "data_description": {
+              "export_meter_entity": "Monotoner kWh-Zähler des Netzexports (z. B. der Victron-Reverse-Energiezähler). Aktiviert die Ist-Sensoren („Realisierter verlorener Überschuss heute“, „Echte Einspeisung“, ...). Lasten, die durch diesen Messpunkt versorgt werden (Hauslast-Flag aus), werden über ihre Energiezähler herausgerechnet. Leer = nur Prognose, keine Ist-Zähler."
+            }
+          },
           "notifications": {
             "name": "Benachrichtigungen bei Leistungswarnung",
             "description": "Sende eine Smartphone-Benachrichtigung, wenn die Leistungswarnung einer Last angeht (und, sofern nicht abgeschaltet, wenn sie sich löst).",
@@ -710,6 +747,30 @@
       "lost_surplus": {
         "name": "Verlorener Überschuss (Prognose)"
       },
+      "lost_surplus_realized_today": {
+        "name": "Realisierter verlorener Überschuss heute"
+      },
+      "lost_surplus_today": {
+        "name": "Verlorener Überschuss heute"
+      },
+      "lost_surplus_tomorrow": {
+        "name": "Verlorener Überschuss morgen"
+      },
+      "prevented_export_realized_today": {
+        "name": "Realisierter verhinderter Export heute"
+      },
+      "prevented_export_today": {
+        "name": "Verhinderter Export heute"
+      },
+      "prevented_export_tomorrow": {
+        "name": "Verhinderter Export morgen"
+      },
+      "early_feed_in_realized_today": {
+        "name": "Realisierte frühe Einspeisung heute"
+      },
+      "true_export_energy": {
+        "name": "Echte Einspeisung"
+      },
       "support_dc24_mode": {
         "name": "24-V-Stützung Modus",
         "state": {
@@ -719,6 +780,13 @@
       },
       "support_dc48_mode": {
         "name": "48-V-Stützung Modus",
+        "state": {
+          "auto": "Automatik",
+          "manual": "Manuell"
+        }
+      },
+      "feedin_mode": {
+        "name": "Vorzeitige Einspeisung Modus",
         "state": {
           "auto": "Automatik",
           "manual": "Manuell"
@@ -760,6 +828,9 @@
       },
       "load_control": {
         "name": "{name} BM-Steuerung"
+      },
+      "early_feed_in": {
+        "name": "Vorzeitige Netzeinspeisung"
       }
     },
     "button": {

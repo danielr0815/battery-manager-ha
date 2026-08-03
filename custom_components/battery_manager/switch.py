@@ -12,9 +12,11 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
+    CONF_FEEDIN_ENABLED,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_SWITCH,
     DOMAIN,
+    ENTITY_FEEDIN_SWITCH,
     ENTITY_SUPPORT_DC24_MANUAL,
     ENTITY_SUPPORT_DC48_MANUAL,
     ENTITY_VACATION_MODE,
@@ -48,6 +50,18 @@ async def async_setup_entry(
             )
             if stale:
                 ent_reg.async_remove(stale)
+
+    # Runtime on/off switch for early grid feed-in (F-FEEDIN R6) — only while
+    # the feature is enabled in the options; a leftover switch of a disabled
+    # feature is dropped from the registry instead of lingering.
+    if coordinator.raw_config.get(CONF_FEEDIN_ENABLED):
+        entities.append(BatteryManagerFeedInSwitch(coordinator))
+    else:
+        stale = ent_reg.async_get_entity_id(
+            "switch", DOMAIN, f"{entry.entry_id}_{ENTITY_FEEDIN_SWITCH}"
+        )
+        if stale:
+            ent_reg.async_remove(stale)
 
     # A "BM control active" switch per surplus load (v0.7.17): off holds the load
     # unavailable so a device can be paused without removing its control switch.
@@ -128,6 +142,40 @@ class SupportManualSwitch(BatteryManagerEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_support_manual(self._psu_key, False)
+        self.async_write_ha_state()
+
+
+class BatteryManagerFeedInSwitch(BatteryManagerEntity, SwitchEntity):
+    """Runtime on/off switch for early grid feed-in (F-FEEDIN R6, docs/F-FEEDIN.md).
+
+    On (default) = the executor drives the AC setpoint per plan, including the
+    event-driven battery-power trim; off = pause — the next executor pass
+    writes the setpoint 0 once (auto mode only) and keeps hands off. The state
+    is Store-persisted like the F-N2 manual flags, so a restart keeps the
+    pause. Actuation goes through the coordinator's single entry point.
+    """
+
+    _attr_translation_key = ENTITY_FEEDIN_SWITCH
+    _attr_icon = "mdi:transmission-tower-export"
+
+    def __init__(self, coordinator: BatteryManagerCoordinator) -> None:
+        super().__init__(coordinator, ENTITY_FEEDIN_SWITCH)
+
+    @property
+    def available(self) -> bool:
+        # Reflects persisted state — usable even while inputs are missing.
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.feedin_enabled()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_feedin_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_feedin_enabled(False)
         self.async_write_ha_state()
 
 

@@ -20,18 +20,29 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .const import (
     ATTR_GRID_EXPORT_KWH,
     ATTR_LAST_UPDATE,
+    CONF_EXPORT_METER_ENTITY,
+    CONF_FEEDIN_ENABLED,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_SWITCH,
     DOMAIN,
+    ENTITY_EARLY_FEED_IN_REALIZED_TODAY,
+    ENTITY_FEEDIN_MODE,
     ENTITY_GRID_IMPORT_FORECAST,
     ENTITY_HOURS_TO_MAX_SOC,
     ENTITY_LOST_SURPLUS,
+    ENTITY_LOST_SURPLUS_REALIZED_TODAY,
+    ENTITY_LOST_SURPLUS_TODAY,
+    ENTITY_LOST_SURPLUS_TOMORROW,
     ENTITY_MAX_SOC_FORECAST,
     ENTITY_MIN_SOC_FORECAST,
+    ENTITY_PREVENTED_EXPORT_REALIZED_TODAY,
+    ENTITY_PREVENTED_EXPORT_TODAY,
+    ENTITY_PREVENTED_EXPORT_TOMORROW,
     ENTITY_SOC_FORECAST_CURVE,
     ENTITY_SOC_THRESHOLD,
     ENTITY_SUPPORT_DC24_MODE,
     ENTITY_SUPPORT_DC48_MODE,
+    ENTITY_TRUE_EXPORT_ENERGY,
     SUBENTRY_TYPE_LOAD,
     SUPPORT_MODE_AUTO,
     SUPPORT_MODE_MANUAL,
@@ -81,6 +92,59 @@ SENSOR_DESCRIPTIONS: tuple[dict[str, Any], ...] = (
         "translation_key": "lost_surplus",
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
         "icon": "mdi:transmission-tower-export",
+    },
+)
+
+# F-REALIZED-SURPLUS (docs/F-REALIZED-SURPLUS.md): the measured (realized)
+# surplus accounting sensors. All read the coordinator's `realized` data
+# block (only present with an export meter configured — the same gate these
+# sensors are created under). Sensors 1-6 are day counters (reset at local
+# midnight -> state_class TOTAL); the true-export total is monotone
+# (TOTAL_INCREASING) so the energy dashboard can consume it. Sensor 7
+# (realized early feed-in) is NOT here — it rides on the F-FEEDIN gate and
+# reads the executor integral directly.
+REALIZED_SENSOR_DESCRIPTIONS: tuple[dict[str, Any], ...] = (
+    {
+        "key": ENTITY_LOST_SURPLUS_REALIZED_TODAY,
+        "data_key": "lost_surplus_realized_kwh",
+        "state_class": SensorStateClass.TOTAL,
+        "icon": "mdi:transmission-tower-export",
+    },
+    {
+        "key": ENTITY_LOST_SURPLUS_TODAY,
+        "data_key": "lost_surplus_today_kwh",
+        "state_class": SensorStateClass.TOTAL,
+        "icon": "mdi:transmission-tower-export",
+    },
+    {
+        "key": ENTITY_LOST_SURPLUS_TOMORROW,
+        "data_key": "lost_surplus_tomorrow_kwh",
+        "state_class": SensorStateClass.TOTAL,
+        "icon": "mdi:transmission-tower-export",
+    },
+    {
+        "key": ENTITY_PREVENTED_EXPORT_REALIZED_TODAY,
+        "data_key": "prevented_export_realized_kwh",
+        "state_class": SensorStateClass.TOTAL,
+        "icon": "mdi:transmission-tower-off",
+    },
+    {
+        "key": ENTITY_PREVENTED_EXPORT_TODAY,
+        "data_key": "prevented_export_today_kwh",
+        "state_class": SensorStateClass.TOTAL,
+        "icon": "mdi:transmission-tower-off",
+    },
+    {
+        "key": ENTITY_PREVENTED_EXPORT_TOMORROW,
+        "data_key": "prevented_export_tomorrow_kwh",
+        "state_class": SensorStateClass.TOTAL,
+        "icon": "mdi:transmission-tower-off",
+    },
+    {
+        "key": ENTITY_TRUE_EXPORT_ENERGY,
+        "data_key": "true_export_total_kwh",
+        "state_class": SensorStateClass.TOTAL_INCREASING,
+        "icon": "mdi:counter",
     },
 )
 
@@ -134,6 +198,42 @@ async def async_setup_entry(
             )
             if stale:
                 ent_reg.async_remove(stale)
+    # Auto/manual mode of early grid feed-in (F-FEEDIN R7) — only while the
+    # feature is enabled in the options; a leftover sensor of a disabled
+    # feature is dropped from the registry instead of lingering.
+    if coordinator.raw_config.get(CONF_FEEDIN_ENABLED):
+        entities.append(FeedInModeSensor(coordinator))
+    else:
+        stale = ent_reg.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}_{ENTITY_FEEDIN_MODE}"
+        )
+        if stale:
+            ent_reg.async_remove(stale)
+    # F-REALIZED-SURPLUS: the realized day counters + corrected export total
+    # exist only while the export meter is configured (docs/F-REALIZED-SURPLUS.md
+    # sensor set 1-6 + 8); leftovers of a removed meter are dropped from the
+    # registry instead of lingering. Sensor 7 (realized early feed-in) rides
+    # on the F-FEEDIN gate alone — independent of the export meter.
+    if coordinator.raw_config.get(CONF_EXPORT_METER_ENTITY):
+        entities.extend(
+            RealizedSurplusSensor(coordinator, description)
+            for description in REALIZED_SENSOR_DESCRIPTIONS
+        )
+    else:
+        for description in REALIZED_SENSOR_DESCRIPTIONS:
+            stale = ent_reg.async_get_entity_id(
+                "sensor", DOMAIN, f"{entry.entry_id}_{description['key']}"
+            )
+            if stale:
+                ent_reg.async_remove(stale)
+    if coordinator.raw_config.get(CONF_FEEDIN_ENABLED):
+        entities.append(EarlyFeedInRealizedSensor(coordinator))
+    else:
+        stale = ent_reg.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}_{ENTITY_EARLY_FEED_IN_REALIZED_TODAY}"
+        )
+        if stale:
+            ent_reg.async_remove(stale)
     # Real active-runtime counter per surplus load (v0.7.18), scoped to its
     # subentry so it is removed automatically when the load is deleted (v0.7.19).
     per_subentry: dict[str, list[Entity]] = {}
@@ -231,6 +331,101 @@ class SupportModeSensor(BatteryManagerEntity, SensorEntity):
         return {"controller": self.coordinator.dc48_controller_diagnostic()}
 
 
+class RealizedSurplusSensor(BatteryManagerEntity, SensorEntity):
+    """A realized (measured) surplus accounting value (F-REALIZED-SURPLUS,
+    docs/F-REALIZED-SURPLUS.md).
+
+    Reads the coordinator's `realized` data block — created only while the
+    export meter is configured, which is exactly when that block exists. The
+    day counters reset at local midnight (state_class TOTAL); the true-export
+    total is monotone (TOTAL_INCREASING) and energy-dashboard compatible.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, description: dict[str, Any]
+    ) -> None:
+        super().__init__(coordinator, description["key"])
+        self._data_key = description["data_key"]
+        # The translation key matches the entity key by construction.
+        self._attr_translation_key = description["key"]
+        self._attr_state_class = description["state_class"]
+        self._attr_icon = description.get("icon")
+
+    @property
+    def native_value(self) -> float | None:
+        realized = (self.coordinator.data or {}).get("realized")
+        if not realized:
+            return None
+        return realized.get(self._data_key)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data or {}
+        return {ATTR_LAST_UPDATE: str(data.get("last_update", ""))}
+
+
+class EarlyFeedInRealizedSensor(BatteryManagerEntity, SensorEntity):
+    """Realized early feed-in energy today (F-REALIZED-SURPLUS sensor 7).
+
+    Gated on the F-FEEDIN feature alone — unlike the other realized sensors
+    it does not need the export meter, so it reads the executor's delivered
+    integral (persisted in the `realized` store block) directly instead of
+    the `realized` data block.
+    """
+
+    _attr_translation_key = ENTITY_EARLY_FEED_IN_REALIZED_TODAY
+    _attr_icon = "mdi:transmission-tower-export"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator: BatteryManagerCoordinator) -> None:
+        super().__init__(coordinator, ENTITY_EARLY_FEED_IN_REALIZED_TODAY)
+
+    @property
+    def available(self) -> bool:
+        # Reflects the persisted counter — usable even without plan data
+        # (same pattern as the load runtime sensor).
+        return True
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.feedin_delivered_today_kwh()
+
+
+class FeedInModeSensor(BatteryManagerEntity, SensorEntity):
+    """Auto/manual mode of early grid feed-in (F-FEEDIN R7, docs/F-FEEDIN.md).
+
+    'manual' while the operator owns the AC setpoint (changed externally): the
+    integration keeps hands off until the next midnight, then resumes.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [SUPPORT_MODE_AUTO, SUPPORT_MODE_MANUAL]
+    _attr_icon = "mdi:transmission-tower-export"
+    _attr_translation_key = ENTITY_FEEDIN_MODE
+
+    def __init__(self, coordinator: BatteryManagerCoordinator) -> None:
+        super().__init__(coordinator, ENTITY_FEEDIN_MODE)
+
+    @property
+    def available(self) -> bool:
+        # Reflects persisted mode — known and in sync with the always-available
+        # runtime switch even while an update is failing (review #15 pattern).
+        return True
+
+    @property
+    def native_value(self) -> str:
+        return (
+            SUPPORT_MODE_MANUAL
+            if self.coordinator.feedin_manual()
+            else SUPPORT_MODE_AUTO
+        )
+
+
 class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
     """Forecasted SOC curve: state = SOC in one hour, attribute = full curve.
 
@@ -311,6 +506,13 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             # (null = full-horizon scan).
             "threshold_horizon_end": data.get("threshold_horizon_end"),
             "pv_window_ends": data.get("pv_window_ends") or {},
+            # F-REALIZED-SURPLUS R14: the measured day counters the card's
+            # stats line renders. The key is OMITTED (not an empty dict) when
+            # no export meter is configured — the card branches on the
+            # attribute existing, and an empty object is truthy in JS, which
+            # would render a permanent "(Ist 0.0)" instead of the unchanged
+            # pure-forecast line.
+            **({"realized": data["realized"]} if data.get("realized") else {}),
             **(data.get("plan_params") or {}),
         }
 

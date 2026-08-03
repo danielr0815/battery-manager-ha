@@ -621,3 +621,73 @@ def test_pv_scale_per_slot_vector():
     # Slot 0 sees exactly the alpha-scaled PV — same as a whole-horizon alpha run
     # would produce for slot 0 (the first slot has no earlier history).
     assert windowed.flows[0].soc_end_percent == scalar_half.flows[0].soc_end_percent
+
+
+# ---------------------------------------------------------------------------
+# F-FEEDIN: early feed-in passthrough (docs/F-FEEDIN.md). Booked feed-in is
+# served from the PV surplus AFTER the DC-shortfall cover but BEFORE battery
+# charging, exported 1:1 on the natural conversion path (no new efficiency),
+# and never served from the battery (requirement 1).
+# ---------------------------------------------------------------------------
+
+
+def test_feedin_reduces_charge_and_exports_one_to_one():
+    """Feed-in reroutes surplus that would have been stored: the battery
+    charges less by exactly the fed-in energy (through the same charger
+    conversion), and the export rises 1:1."""
+    config = SystemConfig()  # charger 2300 W: without feed-in all PV is stored
+    slot = _slot(pv=1000.0, ac=0.0, dc=0.0)
+    plain = step_hour(config, 50.0, slot, 99.0)
+    fed = step_hour(config, 50.0, slot, 99.0, feedin_wh=400.0)
+    assert plain.grid_export_wh < _EPS  # everything stored without feed-in
+    assert fed.feedin_wh == pytest.approx(400.0)
+    assert fed.grid_export_wh == pytest.approx(400.0)
+    eta_path = config.charger.eta * config.battery.eta_charge
+    assert fed.battery_charge_wh == pytest.approx(
+        plain.battery_charge_wh - 400.0 * eta_path
+    )
+
+
+def test_feedin_clamped_to_surplus_after_dc_cover():
+    """The clamp is the hard no-import guarantee: feed-in beyond the slot
+    surplus serves only what remains after the DC-shortfall cover — never
+    imports, never discharges the battery."""
+    config = SystemConfig()
+    soc = config.battery.soc_min_percent  # empty battery: DC shortfall via PV
+    slot = _slot(pv=1000.0, ac=0.0, dc=500.0)
+    fed = step_hour(config, soc, slot, 99.0, feedin_wh=5000.0)
+    surplus_after_dc = 1000.0 - 500.0 / config.charger.eta
+    assert fed.feedin_wh == pytest.approx(surplus_after_dc)
+    assert fed.grid_export_wh == pytest.approx(surplus_after_dc)
+    assert fed.grid_import_wh == 0.0
+    assert fed.battery_discharge_wh < _EPS
+
+
+def test_feedin_never_discharges_battery_in_deficit():
+    """Requirement 1: a deficit slot serves NO feed-in — step_hour has no
+    mechanism to feed from the battery, so the flows are the no-feed-in ones."""
+    config = SystemConfig()
+    slot = _slot(pv=0.0, ac=500.0, dc=0.0)
+    plain = step_hour(config, 80.0, slot, 20.0)  # inverter on: battery serves
+    fed = step_hour(config, 80.0, slot, 20.0, feedin_wh=300.0)
+    assert plain.battery_discharge_wh > 0.0  # the deficit really is battery-served
+    assert fed.feedin_wh == 0.0
+    assert fed.grid_export_wh < _EPS
+    assert fed.battery_discharge_wh == pytest.approx(plain.battery_discharge_wh)
+    assert fed.soc_end_percent == pytest.approx(plain.soc_end_percent)
+
+
+def test_feedin_series_validated_and_zero_is_bit_identical():
+    """The per-slot feed-in series obeys the same length contract as the
+    other optional vectors (code review 2026-07), and an all-zero series is
+    the neutral default — bit-identical to not passing it."""
+    config = SystemConfig()
+    inputs = make_inputs(config, NOW_NOON, 50.0, [15.0, 15.0, 0.0])
+    n = len(inputs.slots)
+    with pytest.raises(ValueError, match="feedin_wh has 1 entries"):
+        simulate(config, inputs, 40.0, feedin_wh=(100.0,))
+    a = simulate(config, inputs, 40.0)
+    b = simulate(config, inputs, 40.0, feedin_wh=(0.0,) * n)
+    assert [f.soc_end_percent for f in a.flows] == [f.soc_end_percent for f in b.flows]
+    assert a.total_export_wh == b.total_export_wh
+    assert all(f.feedin_wh == 0.0 for f in b.flows)

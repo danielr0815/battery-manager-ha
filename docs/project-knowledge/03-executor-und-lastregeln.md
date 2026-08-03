@@ -761,6 +761,58 @@ Diagnose: `data["support_dc48_controller"]` mit `active`, `mode`
 
 ---
 
+## 11A. F-FEEDIN — der Feed-in-Setpoint-Executor (v0.23.0)
+
+Spec: `docs/F-FEEDIN.md` (R7–R12); Planerseite: Dokument 02 §5A. Der Executor
+treibt den AC-Setpoint des externen Reglers so, dass der prognostiziert
+unvermeidliche Mittags-Export schon am Morgen durchgereicht wird — die
+Batterie bleibt dabei ≈ 0 W (nie aktiv entladen, R2).
+
+**Zweiphasig** wie die Lasten: `_apply_feedin` (Entscheidung) +
+`_execute_feedin` (Aktuation unter `self._switch_lock` mit In-Flight-Recheck —
+Manuell-Modus oder Fail-safe nach dem Einreihen ⇒ Schreibvorgang verworfen).
+Geschrieben wird per Service `input_number.set_value`; Vorzeichenkonvention
+**negativ = Export** (`FEEDIN_SETPOINT_EXPORT_SIGN = -1.0`, 500 W Feed-in →
+−500), die interne Buchhaltung rechnet durchgängig positiv. Pro bestätigtem
+Schreibvorgang eine INFO-Zeile `Feed-in setpoint -> N W (reason)` (V9a-Muster).
+
+**`desired`-Basis**: Planwert des aktuellen Slots, wenn Config-Toggle ∧
+Laufzeit-Switch ∧ Auto-Modus ∧ SOC > `feedin_min_soc_percent`, sonst 0. Der
+G4-Floor-Guard und der D-A8-Stale-Data-Shed erzwingen 0 dwell-exempt (ein
+unbeaufsichtigter Export darf nicht weiterlaufen — dasselbe Argument wie das
+Last-Force-off).
+
+**Ereignisgesteuerter Trim (R10)** — die Batterie-Leistungs-Entity ist
+getrackt, jede Aktualisierung feuert den Trim-Pfad (Victron-Konvention:
+positiv = ladend). Er greift **nur, solange der Plan-Slot > 0 W bucht** — ein
+Plan-0 wird direkt auf 0 re-anchort, nie getrimmt. Totband
+`FEEDIN_TRIM_DEADBAND_W = 50` W um null:
+
+| Richtung | Bedingung | Aktion |
+|---|---|---|
+| Abwärts | `battery_power < −50 W` (Batterie entlädt — nicht erfasster Verbraucher) | Setpoint sofort um den Entladebetrag senken, Boden 0 — **ungedrosselt** (internes `input_number`, kein physischer Aktor) |
+| Aufwärts | `battery_power > +50 W` (Überschuss lädt statt zu exportieren) | Setpoint um den Ladebetrag erhöhen — **gedrosselt** auf eine Erhöhung pro `FEEDIN_UPWARD_MIN_INTERVAL_S = 60` s und gedeckelt auf `min(max_w, verbleibende Tagesmenge / Stunden bis Mitternacht)` |
+
+Trim-Schreibvorgänge tragen **kein** Deadband; 0↔>0-Wechsel schreiben immer.
+Der 5-min-Zyklus zieht den Sollwert auf den Plan-Slot-Wert zurück, sobald der
+Drift > `FEEDIN_REANCHOR_DEADBAND_W = 25` W liegt — die einzige Stelle mit
+Deadband (R11). Die verbleibende Tagesmenge kommt aus `feedin_by_day_wh` minus
+der in `_feedin_tick` in-memory integrierten gelieferten Energie (Reset um
+Mitternacht).
+
+**Manuell-Modus (`_update_feedin_mode`, R9, F-N2-Muster)**: liest die Entity
+einen Wert ≠ dem zuletzt von uns geschriebenen — außerhalb der
+`FEEDIN_MANUAL_GRACE_S = 360` s Grace nach eigenem Schreiben — geht das
+Feature bis zum nächsten Mitternacht in den Manuell-Modus
+(`_feedin_manual_until`, Store-persistiert): kein einziger Schreibzugriff
+mehr, der Operator besitzt den Setpoint. Beim Start wird der Istwert
+adoptiert; weicht er vom persistierten Eigenwert ab (offline geändert), gilt
+sofort Manuell-Modus. Nach außen: `sensor.battery_manager_feedin_mode`
+(auto/manual) und `data["feedin_mode"]`. Deaktivieren per Switch oder Config
+schreibt einmalig 0 (nur im Auto-Modus).
+
+---
+
 ## 12. Weitere Ausführungsdetails
 
 ### 12.1 Startup-SOC-Karenz (V8)
@@ -810,9 +862,10 @@ Persistiert.
 ### 12.5 Nebenläufigkeit
 
 Ein einziger `asyncio.Lock` (`_switch_lock`) serialisiert **alle** Aktuierung
-(Lasten, Support-Sequenzen, R2-Regler, DC/DC-Restore). Vier
+(Lasten, Support-Sequenzen, R2-Regler, DC/DC-Restore, Feed-in-Setpoint). Fünf
 Hintergrund-Tasks werden verfolgt: `_switch_task`, `_load_switch_task`,
-`_dc48_ctrl_task`, `_dcdc_restore_task`; `async_cancel_actuation_tasks`
+`_dc48_ctrl_task`, `_dcdc_restore_task`, `_feedin_task` (v0.23.0);
+`async_cancel_actuation_tasks`
 canceled sie beim Unload **vor** dem Persistenz-Flush (sonst könnte ein
 detachter Task nach dem Flush noch Zustand mutieren) und räumt vorher alle
 Force-OFF-Timer ab. Ein mitten in einer Make-before-break-Sequenz abgebrochener

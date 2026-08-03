@@ -6,7 +6,9 @@
  * planned SOC trajectory of `sensor.…_soc_forecast` together with the full
  * plan context carried in the sensor's attributes:
  *
- *   forecast                    [{t, soc}, ...] planned SOC curve
+ *   forecast                    [{t, soc, dc24, dc48, feedin}, ...]
+ *                                 planned SOC curve; feedin is the planned
+ *                                 early grid feed-in power in W per slot
  *   soc_threshold_percent       optimal inverter threshold T*
  *   battery_min/max_soc_percent hard SOC limits
  *   inverter_min_soc_percent    inverter cut-off
@@ -51,6 +53,9 @@ const LOAD_COLORS = [
 // white, so the safer teal-600 is the fallback).
 const DC24_COLOR = "var(--bmpc-dc24-color, #009688)";
 const DC48_COLOR = "var(--bmpc-dc48-color, #7e57c2)";
+// Early grid feed-in lane (F-FEEDIN): pink-600, >= 3:1 on light and dark
+// card backgrounds and distinct from every load/support lane color.
+const FEEDIN_COLOR = "var(--bmpc-feedin-color, #d81b60)";
 
 // Defensive caps: attributes are user-controlled input, and a broken or
 // hostile payload must not freeze the UI with megabytes of SVG.
@@ -71,6 +76,10 @@ const STRINGS = {
     active: "active",
     support_dc24: "24 V grid support",
     support_dc48: "48 V grid support",
+    feedin_lane: "early feed-in",
+    feedin: "planned feed-in",
+    realized: "measured",
+    feedin_realized: "early feed-in",
     no_entity: "No entity configured. Pick the Battery Manager SOC forecast sensor.",
     not_found: "Entity not found:",
     no_data: "Waiting for the first planning run …",
@@ -93,6 +102,10 @@ const STRINGS = {
     active: "aktiv",
     support_dc24: "24-V-Netzstützung",
     support_dc48: "48-V-Netzstützung",
+    feedin_lane: "vorzeitige Einspeisung",
+    feedin: "geplante Einspeisung",
+    realized: "Ist",
+    feedin_realized: "frühe Einspeisung",
     no_entity:
       "Keine Entität konfiguriert. Wähle den SOC-Prognose-Sensor des Battery Managers.",
     not_found: "Entität nicht gefunden:",
@@ -414,13 +427,54 @@ class BatteryManagerForecastCard extends HTMLElement {
         return `${today.toFixed(1)}/${tomorrow.toFixed(1)}`;
       };
       parts.push(`${t("import")} ${td("grid_import_kwh")}`);
-      parts.push(`${t("lost")} ${td("lost_surplus_kwh")}`);
-      // F-STRICT-SURPLUS R4: the no-loads counterfactual — the export the
-      // day's load runs prevent. Answers "why is a load running although
-      // the SOC never reaches max?" right on the card. Only rendered when
-      // the backend (>= 0.15.0) delivers the field.
-      if (daily[0]?.prevented_export_kwh != null) {
-        parts.push(`${t("prevented")} ${td("prevented_export_kwh")}`);
+      // F-REALIZED-SURPLUS: with the `realized` block the backend delivers
+      // measured-so-far plus combined totals (Ist + rest-of-day forecast).
+      // The lost/prevented segments then show the TOTAL per day with the
+      // realized share in parentheses and replace the pure-forecast
+      // segments below, which would otherwise double-report the same days.
+      const realized =
+        a.realized && typeof a.realized === "object" ? a.realized : null;
+      if (realized) {
+        const rtd = (todayKey, tomorrowKey, realizedKey) =>
+          `${(num(realized[todayKey]) ?? 0).toFixed(1)}/` +
+          `${(num(realized[tomorrowKey]) ?? 0).toFixed(1)} ` +
+          `(${t("realized")} ${(num(realized[realizedKey]) ?? 0).toFixed(1)})`;
+        parts.push(
+          `${t("lost")} ${rtd(
+            "lost_surplus_today_kwh",
+            "lost_surplus_tomorrow_kwh",
+            "lost_surplus_realized_kwh"
+          )}`
+        );
+        parts.push(
+          `${t("prevented")} ${rtd(
+            "prevented_export_today_kwh",
+            "prevented_export_tomorrow_kwh",
+            "prevented_export_realized_kwh"
+          )}`
+        );
+        // Measured deliberate early feed-in today (F-FEEDIN); hidden when
+        // nothing was fed in yet — a permanent "0.0" would just be noise.
+        const feedinRealized = num(realized.early_feed_in_realized_kwh) ?? 0;
+        if (feedinRealized > 0) {
+          parts.push(
+            `${t("feedin_realized")} ${t("realized")} ${feedinRealized.toFixed(1)}`
+          );
+        }
+      } else {
+        parts.push(`${t("lost")} ${td("lost_surplus_kwh")}`);
+        // F-STRICT-SURPLUS R4: the no-loads counterfactual — the export the
+        // day's load runs prevent. Answers "why is a load running although
+        // the SOC never reaches max?" right on the card. Only rendered when
+        // the backend (>= 0.15.0) delivers the field.
+        if (daily[0]?.prevented_export_kwh != null) {
+          parts.push(`${t("prevented")} ${td("prevented_export_kwh")}`);
+        }
+      }
+      // F-FEEDIN: planned early feed-in energy per day, same backend-compat
+      // pattern — only rendered when the attribute is present.
+      if (daily[0]?.planned_feedin_kwh != null) {
+        parts.push(`${t("feedin")} ${td("planned_feedin_kwh")}`);
       }
       parts.push(`${t("loads")} ${td("loads_kwh")}`);
       parts.push(t("today_tomorrow"));
@@ -451,6 +505,7 @@ class BatteryManagerForecastCard extends HTMLElement {
         soc: Number(p.soc),
         dc24: !!p.dc24,
         dc48: !!p.dc48,
+        feedin: num(p.feedin) ?? 0,
       }))
       .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.soc));
     if (points.length < 2) {
@@ -515,9 +570,57 @@ class BatteryManagerForecastCard extends HTMLElement {
     ]
       .map((d) => ({ name: d.name, color: d.color, schedule: supportBlocks(d.key) }))
       .filter((l) => l.schedule.length > 0);
+    // Early grid feed-in (F-FEEDIN): same slot-ENDING semantics as the
+    // support flags, but numeric — a contiguous run of points with
+    // feedin > 0 forms one block, labelled with its power in W (single
+    // value, or min–max range when the rate varies within the block).
+    const feedinBlocks = [];
+    let feedinStart = null;
+    let feedinMin = Infinity;
+    let feedinMax = 0;
+    for (let i = 1; i < points.length; i++) {
+      const w = points[i].feedin;
+      if (w > 0) {
+        if (feedinStart === null) feedinStart = points[i - 1].time;
+        feedinMin = Math.min(feedinMin, w);
+        feedinMax = Math.max(feedinMax, w);
+      } else if (feedinStart !== null) {
+        feedinBlocks.push({
+          start: feedinStart,
+          end: points[i - 1].time,
+          label:
+            feedinMin === feedinMax
+              ? `${Math.round(feedinMax)} W`
+              : `${Math.round(feedinMin)}–${Math.round(feedinMax)} W`,
+        });
+        feedinStart = null;
+        feedinMin = Infinity;
+        feedinMax = 0;
+      }
+    }
+    if (feedinStart !== null) {
+      feedinBlocks.push({
+        start: feedinStart,
+        end: points[points.length - 1].time,
+        label:
+          feedinMin === feedinMax
+            ? `${Math.round(feedinMax)} W`
+            : `${Math.round(feedinMin)}–${Math.round(feedinMax)} W`,
+      });
+    }
+    const feedinLanes = feedinBlocks.length
+      ? [
+          {
+            name: t("feedin_lane"),
+            color: FEEDIN_COLOR,
+            schedule: feedinBlocks.slice(0, MAX_BLOCKS),
+          },
+        ]
+      : [];
     const lanes = [
       ...loads.filter((l) => l.schedule.length > 0),
       ...supportLanes,
+      ...feedinLanes,
     ].slice(0, MAX_LANES);
     this._laneCount = lanes.length;
 
@@ -666,6 +769,16 @@ class BatteryManagerForecastCard extends HTMLElement {
           `<rect x="${bx.toFixed(1)}" y="${laneY}" width="${bw.toFixed(1)}"
             height="${laneH}" rx="2" fill="${load.color}" opacity="0.85"/>`
         );
+        // Per-block power label (feed-in lane); only when the block is wide
+        // enough to carry legible text.
+        if (block.label && bw >= 34) {
+          svg.push(
+            `<text x="${(bx + bw / 2).toFixed(1)}" y="${laneY + laneH - 1.5}"
+              text-anchor="middle" font-size="7" fill="#fff">${esc(
+                block.label
+              )}</text>`
+          );
+        }
       }
     });
 
@@ -746,8 +859,9 @@ class BatteryManagerForecastCard extends HTMLElement {
       })
       .join("");
 
-    // Support lanes get a plain dot+name legend entry (no planned energy).
-    const supportLegend = supportLanes
+    // Support and feed-in lanes get a plain dot+name legend entry (no
+    // planned energy).
+    const supportLegend = [...supportLanes, ...feedinLanes]
       .map(
         (l) =>
           `<span><span class="dot" style="background:${l.color}"></span>${esc(
