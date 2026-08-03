@@ -27,14 +27,31 @@ feed-in.
 - **R1 (Trigger).** The pass runs only when the post-allocation trajectory
   (`alloc_traj`, median forecast) still exports — energy the loads provably
   cannot absorb. No residual export ⇒ no schedule, no setpoint writes.
-- **R2 (Passthrough-only physics).** The battery is NEVER actively discharged
-  for feed-in: `step_hour` serves booked feed-in from the slot surplus BEFORE
-  charging (`charge = min(headroom, max(0, surplus − feedin))`,
-  `grid_export += feedin` 1:1, same conversion path as natural export), clamps
-  it to the surplus (`feedin_eff = min(feedin, max(0, surplus))`), and has no
-  mechanism to feed it from the battery in a deficit slot. The live criterion
-  the executor steers against is the battery-power entity ≈ 0 W — Victron
-  convention: **positive = charging**.
+- **R2 (Passthrough-only physics — the battery IDLES).** The battery is NEVER
+  actively discharged for feed-in: `step_hour` serves booked feed-in from the
+  slot surplus BEFORE charging (`charge = min(headroom, max(0, surplus −
+  feedin))`, `grid_export += feedin` 1:1, same conversion path as natural
+  export), clamps it to the surplus (`feedin_eff = min(feedin, max(0,
+  surplus))`), and has no mechanism to feed it from the battery in a deficit
+  slot. The live criterion the executor steers against is the battery-power
+  entity ≈ 0 W — Victron convention: **positive = charging**.
+
+  "Not discharged" is not the same as "nothing leaves the store", and the
+  booking must reserve the difference (operator finding 2026-08-04). The
+  bookable surplus is therefore **not** `pv − ac − extra_ac` but that minus:
+  - the **inverter standby**, which `step_hour` counts in `ac_total` but the
+    planner's term did not — the booking demanded power that does not exist
+    and was silently clamped (live: booked 439 Wh, exported 424, Δ = the 15 W
+    standby);
+  - the **48 V bus give-back**: the bus load is settled BEFORE the AC balance
+    and comes out of the STORE, so unless the same slot charges it back the
+    battery pays for the bus while the whole surplus goes to the grid. The
+    reserve is the AC energy the charger needs to restore it,
+    `bus_draw / (η_charger · η_charge)` plus the charger standby.
+
+  With both reserved, the net battery balance of every booked slot is ≥ 0 —
+  which is what "0 A" means and what the live trim (R10) otherwise had to
+  repair after the fact, outside its ±50 W deadband.
 - **R3 (Zielmenge = Median).** The per-day target is the day's residual
   `grid_export` of `alloc_traj` — the MEDIAN amount. The stress vector scales
   only the Z4 brake (R6), never the target.

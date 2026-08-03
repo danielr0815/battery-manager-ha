@@ -2988,6 +2988,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 for j in range(start, start + count):
                     why_by_slot[j] = why
+            # Booked energy per SLOT (operator ask 2026-08-03: the card's hover
+            # readout shows the energy of the hovered hour per lane). The
+            # allocation carries the energy of the whole booking, so it is
+            # split across its slots by the run hours actually committed there
+            # — F-SUBHOUR: a slot may run only a fraction of its duration, so
+            # an equal split would misreport the last hour of a run.
+            wh_by_slot: dict[int, float] = {}
+            for start, count, _p3, booked_wh in load_plan.allocations:
+                covered = range(start, start + count)
+                hours = [
+                    (
+                        load_plan.run_hours[j]
+                        if load_plan.run_hours and j < len(load_plan.run_hours)
+                        else 1.0
+                    )
+                    for j in covered
+                ]
+                total_h = sum(hours)
+                for j, h in zip(covered, hours, strict=True):
+                    wh_by_slot[j] = (
+                        booked_wh * h / total_h if total_h > 0 else booked_wh / count
+                    )
             if load_plan.allocations:
                 _LOGGER.debug(
                     "Load %s planned: %s",
@@ -3039,6 +3061,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ).isoformat(),
                         # 1 = direct surplus, 2 = preemptive ("zielbasiert")
                         "pass": pass_by_slot.get(slot.index),
+                        # Booked energy of THIS slot (Wh) — the card's hover
+                        # readout renders it per lane.
+                        "wh": round(wh_by_slot.get(slot.index, 0.0), 1),
                         # Acceptance reason (R14); absent for legacy plans.
                         **(
                             {"why": why_by_slot[slot.index]}
@@ -3212,6 +3237,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         export_by_day: dict[str, float] = {}
         import_by_day: dict[str, float] = {}
         loads_by_day: dict[str, float] = {}
+        # Grid-support energy per day, so the card's legend can show the
+        # support lanes with the same heute/morgen figure as every other lane
+        # (operator ask 2026-08-03). Delivered Wh, i.e. what the PSUs actually
+        # put on their rail — not their nominal rating.
+        dc24_by_day: dict[str, float] = {}
+        dc48_by_day: dict[str, float] = {}
         order: list[str] = []
         for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
             day = slot.start.date().isoformat()
@@ -3219,10 +3250,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 export_by_day[day] = 0.0
                 import_by_day[day] = 0.0
                 loads_by_day[day] = 0.0
+                dc24_by_day[day] = 0.0
+                dc48_by_day[day] = 0.0
                 order.append(day)
             export_by_day[day] += flow.grid_export_wh
             import_by_day[day] += flow.grid_import_wh
             loads_by_day[day] += flow.extra_ac_wh
+            # getattr: the coordinator tests build flows as SimpleNamespace
+            # stubs, and a stub without the support fields must not break the
+            # breakdown (same defensive read as `feedin_by_day_wh` below).
+            dc24_by_day[day] += getattr(flow, "psu24_delivered_wh", 0.0) or 0.0
+            dc48_by_day[day] += getattr(flow, "psu48_delivered_wh", 0.0) or 0.0
         prevented = result.prevented_export_by_day_wh
         # F-FEEDIN: planned feed-in per day (ISO date -> Wh), straight from the
         # PlanResult. Emitted ONLY when anything was booked — the card renders
@@ -3237,6 +3275,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "grid_import_kwh": round(import_by_day[day] / 1000.0, 3),
                 "loads_kwh": round(loads_by_day[day] / 1000.0, 3),
                 "prevented_export_kwh": round(prevented.get(day, 0.0) / 1000.0, 3),
+                "support_dc24_kwh": round(dc24_by_day[day] / 1000.0, 3),
+                "support_dc48_kwh": round(dc48_by_day[day] / 1000.0, 3),
             }
             if feedin:
                 entry["planned_feedin_kwh"] = round(feedin.get(day, 0.0) / 1000.0, 3)

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-08-03
+
+### Fixed
+- **Early feed-in no longer lets the battery pay for the export.** The pass
+  booked against the raw AC surplus (`pv − ac − extra_ac`), which is not what
+  the simulation can actually give away: the inverter standby is part of the
+  AC draw it subtracts, and the 48 V bus load is settled out of the STORE
+  before the AC balance ever runs. The result on the plant was a slot that
+  exported the entire surplus while the battery discharged to cover the bus —
+  439 Wh booked against 424 Wh servable, SOC 31.3 → 29.8 %, i.e. straight
+  through the feature's own 30 % floor, which is only tested at slot start.
+  The booking now reserves the standby and the AC energy the charger needs to
+  put the bus draw back, so every booked slot ends battery-neutral (net ≥ 0)
+  and the setpoint is physically servable. The day's feed-in gets smaller by
+  exactly that reserve; the SOC forecast and the floor now hold. Feed-in off
+  ⇒ unchanged (goldens untouched).
+
+### Added
+- **The dashboard card answers "how much, and when?" without leaving it.**
+  The legend used to give every surplus load its today/tomorrow energy but
+  showed the early-feed-in and grid-support lanes as a bare dot and name; all
+  three now carry the same `heute/morgen kWh` figure. The hover readout, which
+  named the active lanes but never quantified them, now shows the energy of
+  the hovered hour per lane — the feed-in derived from its planned power times
+  the slot length (slot 0 is a partial hour and is handled as such), the loads
+  from a new per-slot `wh` on each schedule entry. Feeding this, the `daily`
+  breakdown gained `support_dc24_kwh` / `support_dc48_kwh` (delivered PSU
+  energy per day). All additions are backward compatible: a card reading an
+  older backend renders exactly as before.
+
 ## [0.24.0] - 2026-08-03
 
 ### Added

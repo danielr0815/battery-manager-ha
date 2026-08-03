@@ -1472,10 +1472,41 @@ def plan_feedin(
             if remaining <= _EPS:
                 break
             slot = inputs.slots[i]
-            surplus_wh = slot.pv_wh - slot.ac_wh - extra_ac[i]
+            soc_start = trial.flows[i].soc_start_percent
+            # Requirement 1 says the battery IDLES during feed-in — nothing in,
+            # nothing out. The raw AC surplus is not what `step_hour` can
+            # actually give away, so booking it broke that promise twice
+            # (operator finding 2026-08-04, live 08-04 07:00):
+            #   * the INVERTER STANDBY is part of the AC draw the simulation
+            #     subtracts (`ac_total`), but not of this term — the booking
+            #     then demands power that does not exist and is silently
+            #     clamped (booked 439 Wh, exported 424 Wh, the 15 Wh standby).
+            #   * the 48 V BUS LOAD is settled BEFORE the AC balance and comes
+            #     out of the STORE. Unless the same slot charges it back, the
+            #     battery pays for the bus while the entire surplus goes to the
+            #     grid — the SOC sank 31.3 -> 29.8 %, through the feature's own
+            #     min_soc floor (R5), which is only tested at slot START.
+            # Both are reserved here, so the booked value is servable AND the
+            # slot ends battery-neutral. The give-back is the AC energy the
+            # charger needs to restore what the bus drew, plus its standby
+            # (the charger compensates its own standby, see step_hour).
+            standby_wh = (
+                config.inverter.standby_power_w * slot.duration
+                if soc_start > threshold
+                else 0.0
+            )
+            bus_draw_wh = max(0.0, trial.flows[i].battery_discharge_wh)
+            giveback_wh = (
+                bus_draw_wh / (config.charger.eta * battery.eta_charge)
+                + config.charger.standby_power_w * slot.duration
+                if bus_draw_wh > _EPS
+                else 0.0
+            )
+            surplus_wh = (
+                slot.pv_wh - slot.ac_wh - extra_ac[i] - standby_wh - giveback_wh
+            )
             if surplus_wh <= _EPS:
                 continue
-            soc_start = trial.flows[i].soc_start_percent
             if soc_start <= feedin.min_soc_percent + _EPS:
                 continue
             if soc_start >= battery.soc_max_percent - _EPS:

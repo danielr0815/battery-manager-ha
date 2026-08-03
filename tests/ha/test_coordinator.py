@@ -979,6 +979,10 @@ async def test_daily_surplus_breakdown_splits_by_start_day(hass):
         "grid_import_kwh": 0.05,
         "loads_kwh": 0.15,
         "prevented_export_kwh": 0.2,
+        # Additive since v0.24.1: per-day delivered grid-support energy, the
+        # source of the card legend's heute/morgen for the support lanes.
+        "support_dc24_kwh": 0.0,
+        "support_dc48_kwh": 0.0,
     }
     # Day-2: export 0 + 1000 = 1000 Wh, import 200 Wh, loads 400 Wh, prevented 0.
     assert daily[1] == {
@@ -987,6 +991,8 @@ async def test_daily_surplus_breakdown_splits_by_start_day(hass):
         "grid_import_kwh": 0.2,
         "loads_kwh": 0.4,
         "prevented_export_kwh": 0.0,
+        "support_dc24_kwh": 0.0,
+        "support_dc48_kwh": 0.0,
     }
     # R1 / R-V2-3 invariant: the sums equal the trajectory totals.
     total_export = sum(e for e, _i, _x in flows_wh) / 1000.0
@@ -1399,3 +1405,43 @@ async def test_diagnostics_no_coordinator_still_dumps_entry(hass):
     assert diag["coordinator"] is None
     assert diag["entry"]["title"] == "Battery Manager"
     assert diag["subentries"] == []
+
+
+async def test_daily_breakdown_carries_support_energy_per_day(hass):
+    """Operator ask 2026-08-03: the card's legend shows the grid-support lanes
+    with the same heute/morgen figure as every other lane, so the per-day
+    delivered PSU energy rides in the `daily` breakdown."""
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    daily = coordinator.data["daily_surplus"]
+    assert daily
+    for day in daily:
+        assert {"support_dc24_kwh", "support_dc48_kwh"} <= day.keys()
+        assert day["support_dc24_kwh"] >= 0.0
+        assert day["support_dc48_kwh"] >= 0.0
+
+
+async def test_load_schedule_entries_carry_per_slot_energy(hass):
+    """The hover readout renders the energy of the hovered hour per lane, so
+    every schedule entry carries its own booked Wh. The per-slot values of one
+    booking must add up to the allocation's energy (they are a split of it, not
+    an independent estimate)."""
+    from custom_components.battery_manager.const import CONF_LOAD_POWER_W
+
+    coordinator, _titles = await _setup_entry_with_load_data(
+        hass, [("Dehumidifier", {CONF_LOAD_POWER_W: 400.0})]
+    )
+    plans = coordinator.data["load_plans"]
+    assert plans
+    for plan in plans.values():
+        for block in plan["schedule"]:
+            assert "wh" in block
+            assert block["wh"] >= 0.0
+    booked_total = sum(
+        block["wh"] for plan in plans.values() for block in plan["schedule"]
+    )
+    planned_total = sum(
+        (plan.get("planned_energy_kwh") or 0.0) * 1000.0 for plan in plans.values()
+    )
+    if planned_total > 0:
+        assert abs(booked_total - planned_total) <= max(1.0, planned_total * 0.02)

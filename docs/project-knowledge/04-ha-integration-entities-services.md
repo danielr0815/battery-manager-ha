@@ -235,6 +235,7 @@ Ein `schedule`-Eintrag:
 | `start`, `end` | naiv-lokale ISO-Strings (§3.1) |
 | `pass` | **1** = Direktüberschuss, **2** = vorausschauend/zielbasiert („covered by otherwise-lost export", Pre-Drain-Buchungen) |
 | `why` | **Explain-Plan** (F-PLANNER-HONESTY R14): der Annahmegrund der Allokation, die diesen Slot belegt hat. Fehlt bei Alt-Plänen (der `zip` über `allocations`/`reasons` ist bewusst nicht `strict`) |
+| `wh` | gebuchte Energie **dieses Slots**. Die Allokation trägt die Energie der ganzen Buchung; sie wird über ihre Slots nach den dort tatsächlich zugesagten `run_hours` aufgeteilt — eine Gleichverteilung würde die letzte Stunde eines Laufs falsch ausweisen (F-SUBHOUR). Quelle des Hover-Readouts der Karte |
 
 `why` ist das schärfste Forensik-Werkzeug am Sensor: es beantwortet
 „warum genau dieser Slot", ohne den Planer nachzurechnen.
@@ -245,7 +246,7 @@ Ein `schedule`-Eintrag:
 |---|---|
 | `soc_threshold_percent` | T\* nach Trägheit (wie der eigene Sensor) |
 | `grid_import_kwh`, `lost_surplus_kwh` | **Horizontsummen** (siehe §2.1) |
-| `daily` | Liste je Kalendertag: `{date, lost_surplus_kwh, grid_import_kwh, loads_kwh, prevented_export_kwh}` (`_daily_surplus_breakdown`). Gruppiert nach `slot.start.date()` in Planer-Lokalzeit — ein Slot zählt auf **seinen Starttag**. `prevented_export_kwh` (F-STRICT-SURPLUS R4) ist das Kontrafaktische „welchen Export haben die Lastläufe an diesem Tag verhindert" (Basis minus Allokation, beides **vor** Support-Eskalation) und beantwortet „warum läuft die Last, obwohl der SOC nie ans Maximum kommt". Bei aktivem Feed-in (v0.23.0) kommt `planned_feedin_kwh` je Tag hinzu (aus `PlanResult.feedin_by_day_wh`) — die Statistikzeile der Karte liest daraus „geplante Einspeisung heute/morgen" |
+| `daily` | Liste je Kalendertag: `{date, lost_surplus_kwh, grid_import_kwh, loads_kwh, prevented_export_kwh}` (`_daily_surplus_breakdown`). Gruppiert nach `slot.start.date()` in Planer-Lokalzeit — ein Slot zählt auf **seinen Starttag**. `prevented_export_kwh` (F-STRICT-SURPLUS R4) ist das Kontrafaktische „welchen Export haben die Lastläufe an diesem Tag verhindert" (Basis minus Allokation, beides **vor** Support-Eskalation) und beantwortet „warum läuft die Last, obwohl der SOC nie ans Maximum kommt". Bei aktivem Feed-in (v0.23.0) kommt `planned_feedin_kwh` je Tag hinzu (aus `PlanResult.feedin_by_day_wh`) — die Statistikzeile der Karte liest daraus „geplante Einspeisung heute/morgen". Seit v0.24.1 zusätzlich `support_dc24_kwh` / `support_dc48_kwh`: die je Tag **gelieferte** PSU-Energie (`flow.psu24/48_delivered_wh`, nicht die Nennleistung), damit die Legende der Karte auch die Stützpfade mit heute/morgen zeigt |
 | `loads_today_kwh`, `loads_tomorrow_kwh` | Überschusslast-Energie heute/morgen (aus `daily[].loads_kwh`). **Appliances sind nicht enthalten** — sie gehen in die AC-Prognose, nie in `extra_ac_wh` |
 | `consumption_profile` | Lern-Diagnostik, siehe §3.4 |
 | `gate_calibration` | 48-V-Gate-Kalibrierbracket, siehe §3.5 |

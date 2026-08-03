@@ -4817,12 +4817,32 @@ def test_feedin_overruns_deadline_as_fast_as_surplus_allows():
     result, inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [8.0])
     residual = plain.trajectory.total_export_wh
     slot0 = inputs.slots[0]
+    # Upper bound: the RAW AC surplus. The booked value sits below it by the
+    # inverter standby and the 48 V give-back the slot keeps to stay
+    # battery-neutral (operator finding 2026-08-04) — the size of that reserve
+    # is the planner's business, the cap is the contract.
     surplus_w = (slot0.pv_wh - slot0.ac_wh) / slot0.duration
-    assert result.feedin_schedule_w[0] == pytest.approx(
-        min(residual / slot0.duration, FEEDIN_2KW.max_w, surplus_w)
-    )
+    booked_w = result.feedin_schedule_w[0]
+    assert 0.0 < booked_w <= min(residual / slot0.duration, FEEDIN_2KW.max_w, surplus_w)
     # The full residual is worked off despite the missed deadline.
     assert _booked_feedin_wh(result, inputs) == pytest.approx(residual, abs=1e-6)
+
+
+def test_feedin_never_discharges_the_battery_for_export():
+    """Requirement 1: the battery IDLES during feed-in — nothing in, nothing
+    out. The booking therefore reserves the inverter standby AND the AC energy
+    the charger needs to put back what the 48 V bus drew from the store.
+    Without that reserve the battery paid for the bus while the whole surplus
+    went to the grid, and the SOC sank through the feature's own min_soc floor
+    (live 2026-08-04 07:00: booked 439 Wh, only 424 servable, 31.3 -> 29.8 %)."""
+    now = datetime(2026, 7, 4, 6, 0)
+    result, _inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [8.0, 9.0, 9.0])
+    booked = [i for i, w in enumerate(result.feedin_schedule_w) if w > 1e-9]
+    assert booked, "the scenario must book feed-in for this test to mean anything"
+    for i in booked:
+        flow = result.trajectory.flows[i]
+        net = flow.battery_charge_wh - flow.battery_discharge_wh
+        assert net >= -1e-6, f"slot {i} discharges the battery for feed-in"
 
 
 def test_feedin_capped_by_max_w():
