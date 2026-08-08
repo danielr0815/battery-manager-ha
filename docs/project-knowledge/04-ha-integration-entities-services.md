@@ -203,8 +203,8 @@ vorsorgliche Drosselung) — sie speisen nur Diagnose und die einmalige
 Klasse `sensor.BatteryManagerSocForecastSensor`, Key `soc_forecast`,
 Einheit %, **kein `state_class`** (eine Prognose darf nie in die
 Langzeitstatistik). `_unrecorded_attributes = {"forecast", "loads",
-"appliances", "consumption_profile"}` hält die dicken Attribute aus dem
-Recorder.
+"appliances", "consumption_profile", "consumption_forecast"}` hält die dicken
+Attribute aus dem Recorder.
 
 **State** = SOC in *einer Stunde* (`curve[1]["soc"]`, ersatzweise `curve[0]`).
 Der eigentliche Wert dieses Sensors sind die Attribute: die mitgelieferte
@@ -279,6 +279,23 @@ unsichtbar (Operator-Wunsch 2026-08-08). Je Eintrag:
 
 Leer, wenn nichts läuft. Die Hover-Chips der Karte zeigen für diese Lanes
 bewusst kein Wh (kein Slot-Wert, nur Lauf-Summe).
+
+### 3.2c `consumption_forecast` — geplanter Verbrauch je Slot (v0.25.5)
+
+Speist die mitgelieferte **Verbrauchs-Card** (`battery-manager-consumption-card`,
+dasselbe JS-Modul, zweite registrierte Card-Type). Liste je Slot:
+
+| Feld | Bedeutung |
+|---|---|
+| `t` | Slot-**Start**, naiv-lokaler ISO-String (§3.1-Zeitstempel-Falle!) |
+| `ac_w` | AC-Verbrauch (Basis-Profil + Appliance-Runs, `slot.ac_wh ÷ duration`) |
+| `dc48_w`, `dc24_w` | DC-Aufteilung **exakt wie der Kern**: erst `native48_base_w` (fix), dann `dc24_share` vom Rest auf die 24-V-Schiene. Näherung ohne eigene 24-V-Messung — eine gelernte 24-V-Reihe wäre ein Folgeschritt (docs/F-CONSUMPTION-PROFILES.md) |
+| `loads_w` | geplante Überschusslasten (`flow.extra_ac_wh ÷ duration`) — eigene Schicht |
+| `src` | Quellen-Markierung je Pfad, `"L/S"`-Format (`L` = gelernt, `S` = statisches Fallback-Profil) — die Card dunkelt Fallback-Slots ab |
+
+Werte sind **Watt** (Stundenmittel), nicht Wh — robust gegenüber der
+Partialstunde von Slot 0. Tages-kWh summiert die Card selbst (W × Slotdauer,
+Letztere aus dem Abstand zum nächsten Slot-Start).
 
 ### 3.3 Kennzahlen und Diagnosen
 

@@ -123,20 +123,28 @@ Two things worth knowing:
   and efficiencies) plus all tuning sections *after* setup — sub-entries and
   learned state are kept, no delete-and-recreate needed.
 
-## Dashboard card (bundled)
+## Dashboard cards (bundled)
 
-The integration ships its own Lovelace card — no extra HACS frontend
-download. It renders the planned SOC trajectory, the inverter threshold T*,
-the reserve zone, the per-load surplus schedule and any detected appliance
-runs (washer, dishwasher, …), all from `sensor.…_soc_forecast`.
+The integration ships its own Lovelace cards — no extra HACS frontend
+download. Both register automatically from one bundled module:
 
-The card registers itself automatically. To add it:
+- **Battery Manager Forecast** renders the planned SOC trajectory, the
+  inverter threshold T*, the reserve zone, the per-load surplus schedule
+  and any detected appliance runs (washer, dishwasher, …), all from
+  `sensor.…_soc_forecast`.
+- **Battery Manager Consumption** (v0.25.5+) renders the planned
+  consumption per hour as stacked bars by voltage level — 230 V AC
+  (base + appliances), 48 V, 24 V — with the planned surplus loads as
+  their own layer and a total line; the legend carries per-day kWh.
+  Bars on the static fallback profile render dimmed.
+
+To add a card:
 
 - **Easiest (HA 2026.6+):** edit a dashboard → *Add card* → pick the
   `…SOC forecast` sensor — **Battery Manager Forecast** appears as a
   suggestion with a live preview.
-- Or search the card picker for *Battery Manager Forecast* (listed under
-  *Community*).
+- Or search the card picker for *Battery Manager Forecast* or *Battery
+  Manager Consumption* (listed under *Community*).
 - Or via YAML:
 
   ```yaml
@@ -145,6 +153,12 @@ The card registers itself automatically. To add it:
   # optional:
   # title: SOC-Prognose
   # hours: 48        # horizon shown (6–96)
+  ```
+
+  ```yaml
+  type: custom:battery-manager-consumption-card
+  entity: sensor.battery_manager_soc_forecast
+  # optional: title / hours as above
   ```
 
 If your dashboard **resources** are managed in YAML mode, the card module is

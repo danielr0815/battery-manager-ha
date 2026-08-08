@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.5] - 2026-08-08
+
+### Added
+- **New bundled card: Battery Manager Consumption** (operator request
+  2026-08-08). A second Lovelace card type in the same auto-registered
+  module — no new resource, it appears in the card picker next to the SOC
+  forecast card. It renders the planned consumption per hour as stacked
+  bars, split by voltage level — **230 V AC** (base profile + appliance
+  runs), **48 V**, **24 V** — with the **planned surplus loads as their
+  own top layer** and a **total line** on top. The legend carries per-day
+  kWh (today/tomorrow) per level; slots whose profile fell back to the
+  static config render dimmed, so a learning gap is visible instead of
+  silently trusted. Hover and arrow keys walk the slots with per-level W
+  values. The data rides on the SOC forecast sensor as the new
+  `consumption_forecast` attribute (`{t, ac_w, dc48_w, dc24_w, loads_w,
+  src}` per slot), so ApexCharts & co. can read it too. Caveat, documented
+  in the attribute contract: the 48 V / 24 V split mirrors the kernel
+  (`native48_base_w`, then `dc24_share` of the remainder) — there is no
+  separate 24 V measurement, so the split is the configured approximation.
+
 ## [0.25.4] - 2026-08-08
 
 ### Fixed

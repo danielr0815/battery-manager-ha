@@ -3388,6 +3388,32 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True)
         ]
 
+        # Consumption forecast for the bundled consumption card (operator
+        # request 2026-08-08): per slot the planned consumption in W, split
+        # by voltage level. ac_w = base profile + appliance runs (slot.ac_wh);
+        # the planned surplus loads ride as their OWN layer (extra_ac_wh).
+        # The DC total splits into 24 V rail / native 48 V exactly like the
+        # kernel (fixed native48 base first, then dc24_share of the
+        # remainder) — an approximation, there is no separate 24 V
+        # measurement. src carries the L(earned)/S(tatic) origin per path so
+        # the card can tint fallback slots.
+        consumption_forecast = []
+        for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
+            dc_w = slot.dc_wh / slot.duration
+            native48_base_w = min(dc_w, config.support.native48_base_w)
+            rail_w = (dc_w - native48_base_w) * config.support.dc24_share
+            consumption_forecast.append(
+                {
+                    "t": slot.start.isoformat(),
+                    "ac_w": round(slot.ac_wh / slot.duration, 1),
+                    "loads_w": round(flow.extra_ac_wh / slot.duration, 1),
+                    "dc24_w": round(rail_w, 1),
+                    "dc48_w": round(dc_w - rail_w, 1),
+                    "src": f"{_series_source(ac_series, slot.index)}"
+                    f"/{_series_source(dc_series, slot.index)}",
+                }
+            )
+
         daily_surplus = self._daily_surplus_breakdown(inputs, result)
         # F-REALIZED-SURPLUS: advance the measured day counters (export meter,
         # per-load energy counters, feed-in integral) against the fresh
@@ -3489,6 +3515,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "consumption_profile": profile_diag,
             "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
+            "consumption_forecast": consumption_forecast,
         }
 
     def _daily_surplus_breakdown(self, inputs, result) -> list[dict[str, Any]]:

@@ -440,7 +440,13 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
     # No state_class: forecast values must not feed long-term statistics.
     # The bulky per-hour attributes are also kept out of the recorder.
     _unrecorded_attributes = frozenset(
-        {"forecast", "loads", "appliances", "consumption_profile"}
+        {
+            "forecast",
+            "loads",
+            "appliances",
+            "consumption_profile",
+            "consumption_forecast",
+        }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:chart-timeline-variant"
@@ -497,6 +503,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             # (operator request 2026-08-08); [] when nothing is running.
             "appliances": data.get("appliance_plans") or [],
             "consumption_profile": data.get("consumption_profile") or {},
+            # Consumption forecast card (v0.25.5): per-slot planned W split
+            # by voltage level (AC / 48 V / 24 V) + planned surplus loads.
+            "consumption_forecast": data.get("consumption_forecast") or [],
             "gate_calibration": data.get("gate_calibration") or {},
             # F-PREDRAIN observability (docs/F-PREDRAIN.md §3.5): per-day PV
             # source, the import the allocation added over base (bounded by the

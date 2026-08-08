@@ -142,6 +142,19 @@ async def test_soc_forecast_sensor_carries_plan_context(hass):
     # Card lanes for detected appliance runs (operator request 2026-08-08).
     assert isinstance(attrs["appliances"], list)
 
+    # Consumption card attribute (v0.25.5): per-slot planned W, split by
+    # voltage level, plus the planned surplus-loads layer.
+    cf = attrs["consumption_forecast"]
+    assert isinstance(cf, list) and len(cf) > 1
+    p0 = cf[0]
+    assert {"t", "ac_w", "dc48_w", "dc24_w", "loads_w", "src"} <= set(p0)
+    assert p0["src"] in {"L/L", "L/S", "S/L", "S/S"}
+    assert any(p["ac_w"] > 0 for p in cf)  # static base load of the fixture
+    # Default config: native48 base 0 W + 100 % of the DC load on the 24 V
+    # rail -> the 48 V layer is exactly zero, the rail carries the DC total.
+    assert all(p["dc48_w"] == 0 for p in cf)
+    assert all(p["dc24_w"] >= 0 for p in cf)
+
 
 async def test_soc_forecast_sensor_exposes_predrain_diagnostics(hass):
     """F-PREDRAIN WP4: the forecast sensor carries the pre-drain observability

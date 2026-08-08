@@ -252,6 +252,15 @@ bleibt 1.0. Bietet eine Entity explizite AC-Attribute (`wh_period_ac` /
 `wh_period_ac_p10` / `wh_period_ac_p90`), werden diese **stattdessen**
 gelesen und nie skaliert.
 
+Semantik-Nuance der BSF-Implementierung (Order-Antwort 2026-08-07): die
+AC-Kurve ist DC × η je Wechselrichtergruppe **plus AC-Clamp am Gruppenlimit**
+(geklampfte Mittags-Slots liegen also unter η × DC), und die Summen-Invariante
+Σ == AC-State gilt nur für tomorrow/day_after — die **Heute**-Kurve behält
+den Intraday-Skalar als Live-Nowcast, während ihre Headline day-ahead-stabil
+bleibt. Für den BM folgt daraus: nach dem BSF-Update plant er die
+Heute-Slots mit dem Nowcast statt mit der auf die Headline normalisierten
+Kurve — gewollt und genauer, aber ein bewusster Semantikwechsel am Übergang.
+
 `_get_pv_hourly` cached **pro Entity** `(median, p10, p90, timestamp)` in
 `_pv_hourly_by_entity` — d.h. Median und Bänder stammen garantiert aus
 demselben Lesevorgang, und eine einzelne unavailable Entity überschreibt die

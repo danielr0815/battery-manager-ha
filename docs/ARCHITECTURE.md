@@ -56,7 +56,7 @@ belongs in the HA layer.
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |
 | `sensor.py`, `binary_sensor.py`, `switch.py`, `entity.py` | The entity platforms + the shared base entity. Device model (HA 2026.8, core PR #175785): one main device per config entry plus one device per subentry (`ensure_devices`, linked `via_device_id`); pre-2026.8 all entities shared the single entry device, which 2026.8.0 broke (registry migration: entry version 2.4 in `__init__.py`). |
 | `const.py` | Config keys, defaults (`DEFAULT_CONFIG`), and tuning constants. Effectively the settings reference. |
-| `frontend/battery-manager-forecast-card.js` | The bundled Lovelace card that renders the SOC forecast + schedule from the `soc_forecast` sensor. |
+| `frontend/battery-manager-forecast-card.js` | The bundled Lovelace cards (SOC forecast + consumption forecast) rendered from the `soc_forecast` sensor — one module, two registered card types. |
 
 ## A planning run (the core, at a glance)
 

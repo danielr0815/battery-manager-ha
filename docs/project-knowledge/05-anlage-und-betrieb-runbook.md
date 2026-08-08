@@ -26,6 +26,7 @@ dabei. **Im Zweifel gilt die Anlage bzw. der Code.**
 | `docs/LOAD_CONTROL.md` | **aktuell**, wird fortgeschrieben (bis §14 `in_house_measurement`, V3 vom 24.07.2026; §15/§16 v0.17.0) | verbindliche Quelle für Schaltsemantik, Floor-Guard, Stale-SOC-Guard, Robust-Power, Seamless-Runs |
 | `docs/F-*.md` | je F-Doc die **Spezifikation seines Features** | bei Konflikt mit den Zusammenfassungen dieser Wissensbasis gilt die Wissensbasis (Code-geprüft); Supersessions werden im F-Doc selbst annotiert |
 | `docs/CONSUMPTION_FORECAST.md` | aktuell für die Lernschicht | D-C-Regeln |
+| `docs/F-CONSUMPTION-PROFILES.md` | **Strategie (2026-08-08), nicht implementiert** — konfigurierbare Verbrauchsprofile (Homeoffice/…) + Jahreszeit-Gewichtung; enthält die Auseinandersetzung mit dem EMHASS-Alternativvorschlag | D-P-Regeln; baut auf D-C auf |
 
 ---
 
