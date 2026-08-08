@@ -127,8 +127,8 @@ Two things worth knowing:
 
 The integration ships its own Lovelace card — no extra HACS frontend
 download. It renders the planned SOC trajectory, the inverter threshold T*,
-the reserve zone and the per-load surplus schedule, all from
-`sensor.…_soc_forecast`.
+the reserve zone, the per-load surplus schedule and any detected appliance
+runs (washer, dishwasher, …), all from `sensor.…_soc_forecast`.
 
 The card registers itself automatically. To add it:
 

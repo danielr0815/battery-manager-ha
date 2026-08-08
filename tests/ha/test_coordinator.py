@@ -1060,6 +1060,68 @@ async def test_appliance_dropout_without_latch_stays_off(hass):
     assert coordinator._get_appliance_runs(now + timedelta(hours=2)) == ()
 
 
+async def test_appliance_run_is_published_for_the_card(hass):
+    """Card lane (operator request 2026-08-08): a detected run lands in
+    data["appliance_plans"] with the subentry title and one block
+    now -> run end carrying the remaining energy."""
+    from datetime import timedelta
+
+    import homeassistant.util.dt as dt_util
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_POWER_THRESHOLD_W,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    _set_input_states(hass)
+    hass.states.async_set("sensor.dw_power", "500")  # appliance running
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.dw_power",
+                    CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 2.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Dishwasher",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    plans = coordinator.data["appliance_plans"]
+    assert len(plans) == 1
+    plan = plans[0]
+    assert plan["name"] == "Dishwasher"
+    assert plan["active"] is True
+    assert len(plan["schedule"]) == 1
+    block = plan["schedule"][0]
+    assert block["wh"] == 1000.0  # full run energy remaining
+    start = dt_util.parse_datetime(block["start"])
+    end = dt_util.parse_datetime(block["end"])
+    assert end - start == timedelta(hours=2.0)
+
+    # A finished appliance publishes no lane.
+    hass.states.async_set("sensor.dw_power", "0")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.data["appliance_plans"] == []
+
+
 # ---------------------------------------------------------------------------
 # F-LOAD-PRIORITY R3/R7: SystemConfig.loads is built in effective priority
 # order (stored per-load priority; legacy fallback: insertion position).

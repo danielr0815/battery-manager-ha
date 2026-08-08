@@ -431,14 +431,17 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
 
     The `forecast` attribute contains [{t, soc}, ...] over the whole planning
     horizon (final trajectory incl. scheduled loads). The remaining attributes
-    carry the full plan context (threshold, SOC limits, per-load schedules)
-    so the bundled forecast card can render everything from this one entity;
-    third-party cards such as ApexCharts work too (see README).
+    carry the full plan context (threshold, SOC limits, per-load schedules,
+    detected appliance runs) so the bundled forecast card can render
+    everything from this one entity; third-party cards such as ApexCharts
+    work too (see README).
     """
 
     # No state_class: forecast values must not feed long-term statistics.
     # The bulky per-hour attributes are also kept out of the recorder.
-    _unrecorded_attributes = frozenset({"forecast", "loads", "consumption_profile"})
+    _unrecorded_attributes = frozenset(
+        {"forecast", "loads", "appliances", "consumption_profile"}
+    )
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:chart-timeline-variant"
     _attr_translation_key = "soc_forecast"
@@ -490,6 +493,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads_today_kwh": per_day_loads["today_kwh"],
             "loads_tomorrow_kwh": per_day_loads["tomorrow_kwh"],
             "loads": loads,
+            # Detected appliance runs (washer, dishwasher, …) as card lanes
+            # (operator request 2026-08-08); [] when nothing is running.
+            "appliances": data.get("appliance_plans") or [],
             "consumption_profile": data.get("consumption_profile") or {},
             "gate_calibration": data.get("gate_calibration") or {},
             # F-PREDRAIN observability (docs/F-PREDRAIN.md §3.5): per-day PV

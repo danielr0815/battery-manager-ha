@@ -139,6 +139,8 @@ async def test_soc_forecast_sensor_carries_plan_context(hass):
     assert attrs["grid_import_kwh"] is not None
     assert attrs["lost_surplus_kwh"] is not None
     assert isinstance(attrs["loads"], list)
+    # Card lanes for detected appliance runs (operator request 2026-08-08).
+    assert isinstance(attrs["appliances"], list)
 
 
 async def test_soc_forecast_sensor_exposes_predrain_diagnostics(hass):

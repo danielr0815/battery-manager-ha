@@ -6,7 +6,7 @@
  * planned SOC trajectory of `sensor.…_soc_forecast` together with the full
  * plan context carried in the sensor's attributes:
  *
- *   forecast                    [{t, soc, dc24, dc48, feedin}, ...]
+ *   forecast                    [{t, soc, feedin}, ...]
  *                                 planned SOC curve; feedin is the planned
  *                                 early grid feed-in power in W per slot
  *   soc_threshold_percent       optimal inverter threshold T*
@@ -18,6 +18,9 @@
  *   loads                       [{name, active, planned_energy_kwh,
  *                                 today_kwh, tomorrow_kwh,
  *                                 schedule: [{start, end}]}]
+ *   appliances                  detected running appliances (washer, …):
+ *                                 [{name, active, schedule: [{start, end,
+ *                                 wh}]}] — one block now -> run end
  *
  * Vanilla web component (no build step, no external dependencies); theming
  * via Home Assistant CSS variables inside an <ha-card>.
@@ -49,18 +52,14 @@ const LOAD_COLORS = [
   "var(--bmpc-load-5-color, #e53935)", // red
   "var(--bmpc-load-6-color, #00897b)", // teal
 ];
-// Grid-support lanes, same treatment (#26a69a sits exactly at 3.0:1 on
-// white, so the safer teal-600 is the fallback).
-const DC24_COLOR = "var(--bmpc-dc24-color, #009688)";
-const DC48_COLOR = "var(--bmpc-dc48-color, #7e57c2)";
 // Early grid feed-in lane (F-FEEDIN): pink-600, >= 3:1 on light and dark
-// card backgrounds and distinct from every load/support lane color.
+// card backgrounds and distinct from every load lane color.
 const FEEDIN_COLOR = "var(--bmpc-feedin-color, #d81b60)";
 
 // Defensive caps: attributes are user-controlled input, and a broken or
 // hostile payload must not freeze the UI with megabytes of SVG.
 const MAX_POINTS = 1000; // forecast samples kept (stride-downsampled)
-const MAX_LANES = 8; // loads + grid-support lanes below the plot
+const MAX_LANES = 8; // load + appliance + feed-in lanes below the plot
 const MAX_BLOCKS = 100; // schedule blocks rendered per lane
 
 const STRINGS = {
@@ -74,8 +73,6 @@ const STRINGS = {
     today_tomorrow: "(kWh · today/tomorrow)",
     nothing_planned: "nothing planned",
     active: "active",
-    support_dc24: "24 V grid support",
-    support_dc48: "48 V grid support",
     feedin_lane: "early feed-in",
     feedin: "planned feed-in",
     realized: "measured",
@@ -100,8 +97,6 @@ const STRINGS = {
     today_tomorrow: "(kWh · heute/morgen)",
     nothing_planned: "nichts geplant",
     active: "aktiv",
-    support_dc24: "24-V-Netzstützung",
-    support_dc48: "48-V-Netzstützung",
     feedin_lane: "vorzeitige Einspeisung",
     feedin: "geplante Einspeisung",
     realized: "Ist",
@@ -503,8 +498,6 @@ class BatteryManagerForecastCard extends HTMLElement {
       .map((p) => ({
         time: new Date(p.t).getTime(),
         soc: Number(p.soc),
-        dc24: !!p.dc24,
-        dc48: !!p.dc48,
         feedin: num(p.feedin) ?? 0,
       }))
       .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.soc));
@@ -549,47 +542,22 @@ class BatteryManagerForecastCard extends HTMLElement {
         // feed-in lane derives it from the point's planned power.
         kind: "load",
       }));
-    // Grid-support lanes (24 V / 48 V): the forecast flags mark the slot
-    // ENDING at each point, so a contiguous run of flagged points is one block
-    // from the start of its first slot to the end of its last.
-    const supportBlocks = (key) => {
-      const blocks = [];
-      let runStart = null;
-      for (let i = 1; i < points.length; i++) {
-        if (points[i][key]) {
-          if (runStart === null) runStart = points[i - 1].time;
-        } else if (runStart !== null) {
-          blocks.push({ start: runStart, end: points[i - 1].time });
-          runStart = null;
-        }
-      }
-      if (runStart !== null) {
-        blocks.push({ start: runStart, end: points[points.length - 1].time });
-      }
-      return blocks;
-    };
-    const supportLanes = [
-      {
-        name: t("support_dc24"),
-        color: DC24_COLOR,
-        key: "dc24",
-        dailyKey: "support_dc24_kwh",
-      },
-      {
-        name: t("support_dc48"),
-        color: DC48_COLOR,
-        key: "dc48",
-        dailyKey: "support_dc48_kwh",
-      },
-    ]
-      .map((d) => ({
-        name: d.name,
-        color: d.color,
-        dailyKey: d.dailyKey,
-        kind: "support",
-        schedule: supportBlocks(d.key),
-      }))
-      .filter((l) => l.schedule.length > 0);
+    // Detected appliance runs (washer, dishwasher, …): the backend ships one
+    // block per run (now -> run end) carrying the run's remaining energy.
+    // Colors continue the load cycle so adjacent lanes differ.
+    const appliances = (Array.isArray(a.appliances) ? a.appliances : [])
+      .filter((ap) => ap && typeof ap === "object")
+      .slice(0, MAX_LANES)
+      .map((ap, i) => ({
+        name: ap.name,
+        active: true,
+        total_wh: num(ap.schedule?.[0]?.wh),
+        schedule: (Array.isArray(ap.schedule) ? ap.schedule : [])
+          .filter((b) => b && typeof b === "object")
+          .slice(0, MAX_BLOCKS),
+        kind: "appliance",
+        color: LOAD_COLORS[(loads.length + i) % LOAD_COLORS.length],
+      }));
     // Early grid feed-in (F-FEEDIN): same slot-ENDING semantics as the
     // support flags, but numeric — a contiguous run of points with
     // feedin > 0 forms one block, labelled with its power in W (single
@@ -641,7 +609,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       : [];
     const lanes = [
       ...loads.filter((l) => l.schedule.length > 0),
-      ...supportLanes,
+      ...appliances.filter((l) => l.schedule.length > 0),
       ...feedinLanes,
     ].slice(0, MAX_LANES);
     this._laneCount = lanes.length;
@@ -881,10 +849,10 @@ class BatteryManagerForecastCard extends HTMLElement {
       })
       .join("");
 
-    // Support and feed-in lanes carry the same heute/morgen figure as the
-    // load entries, read from the `daily` breakdown (operator ask
-    // 2026-08-03). A backend that does not publish the metric yet renders the
-    // plain dot+name entry exactly as before.
+    // The feed-in lane carries the same heute/morgen figure as the load
+    // entries, read from the `daily` breakdown (operator ask 2026-08-03).
+    // A backend that does not publish the metric yet renders the plain
+    // dot+name entry exactly as before.
     const dailyArr = Array.isArray(a.daily) ? a.daily : null;
     const laneDetail = (key) => {
       if (!key || !dailyArr || !dailyArr.length || dailyArr[0]?.[key] == null) {
@@ -894,13 +862,28 @@ class BatteryManagerForecastCard extends HTMLElement {
       const tomorrow = num(dailyArr[1]?.[key]) ?? 0;
       return `${today.toFixed(1)}/${tomorrow.toFixed(1)} kWh`;
     };
-    const supportLegend = [...supportLanes, ...feedinLanes]
+    const feedinLegend = feedinLanes
       .map((l) => {
         const detail = laneDetail(l.dailyKey);
         return `<span><span class="dot" style="background:${l.color}"></span>${esc(
           l.name
         )}${detail ? ` (${detail})` : ""}</span>`;
       })
+      .join("");
+
+    // Appliance runs (operator ask 2026-08-08): dot + name, the run's
+    // remaining energy, and an active marker — every published run IS active.
+    const applianceLegend = appliances
+      .map(
+        (ap) =>
+          `<span><span class="dot" style="background:${ap.color}"></span>${esc(
+            ap.name ?? "?"
+          )}${
+            ap.total_wh != null
+              ? ` (${(ap.total_wh / 1000).toFixed(1)} kWh)`
+              : ""
+          } · <span class="active">${t("active")}</span></span>`
+      )
       .join("");
 
     return `
@@ -913,8 +896,8 @@ class BatteryManagerForecastCard extends HTMLElement {
         t("kbd_hint")
       )}</div>
       ${
-        legend || supportLegend
-          ? `<div class="legend">${legend}${supportLegend}</div>`
+        legend || feedinLegend || applianceLegend
+          ? `<div class="legend">${legend}${feedinLegend}${applianceLegend}</div>`
           : ""
       }
     `;
@@ -1057,7 +1040,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       hour: "2-digit",
       minute: "2-digit",
     });
-    // Which lanes (surplus loads + grid-support paths) cover the shown slot?
+    // Which lanes (surplus loads, appliances, feed-in) cover the shown slot?
     // Blocks are [start, end); the crosshair snaps to `nearest`, so test that
     // point for membership to stay consistent with the marker the user sees.
     const covering = (lane) =>
@@ -1081,15 +1064,15 @@ class BatteryManagerForecastCard extends HTMLElement {
       .map((lane) => {
         // Energy of THIS hour per lane (operator ask 2026-08-03): a load
         // carries it on the covering schedule block, the feed-in lane derives
-        // it from the point's planned power x slot length. Support lanes have
-        // no per-slot figure and stay name-only.
+        // it from the point's planned power x slot length. Appliance lanes
+        // have no per-slot figure and stay name-only.
         let wh = null;
         if (lane.kind === "feedin") {
           const w = num(nearest.feedin) ?? 0;
           if (w > 0 && slotHours > 0) {
             wh = w * slotHours;
           }
-        } else {
+        } else if (lane.kind !== "appliance") {
           const booked = num(covering(lane)?.wh);
           if (booked != null && booked > 0) {
             wh = booked;

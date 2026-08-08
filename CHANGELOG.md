@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.3] - 2026-08-08
+
+### Added
+- **Forecast card: detected appliance runs are now visible.** A running
+  washing machine or dishwasher already shaped the AC consumption forecast,
+  but the card showed nothing of it — the SOC curve dipped for no apparent
+  reason. Each detected run now renders as its own lane below the plot
+  (now → run end) with a legend entry carrying the run's remaining energy
+  and an "active" marker (operator request 2026-08-08). The coordinator
+  publishes `appliance_plans` (name from the subentry, one schedule block
+  with the remaining Wh) and the SOC forecast sensor exposes it as the
+  `appliances` attribute, so custom cards (ApexCharts & co.) can read it
+  too.
+
+### Removed
+- **Forecast card: the 24 V / 48 V grid-support lanes are gone** (operator
+  request: "die Info nützt keinem"). The grid support itself — switches,
+  thresholds, planner behaviour — is untouched; only the chart lanes and
+  their legend entries were dropped. The backend still publishes the
+  `dc24`/`dc48` forecast flags, so third-party dashboards keep working.
+
 ## [0.25.2] - 2026-08-08
 
 ### Fixed

@@ -3440,6 +3440,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             "pv_window_ends": dict(result.pv_window_ends),
             "load_plans": load_plans,
+            # Detected appliance runs (washer, dishwasher, …) for the forecast
+            # card: they already shape the AC consumption forecast but were
+            # invisible on the card (operator request 2026-08-08). One block
+            # per run: now -> now + remaining_hours, carrying the remaining
+            # energy like a load slot's `wh`.
+            "appliance_plans": [
+                {
+                    "name": self.entry.subentries[run.appliance_id].title,
+                    "active": True,
+                    "schedule": [
+                        {
+                            "start": naive_now.isoformat(),
+                            "end": (
+                                naive_now + timedelta(hours=run.remaining_hours)
+                            ).isoformat(),
+                            "wh": round(run.remaining_energy_wh, 1),
+                        }
+                    ],
+                }
+                for run in appliance_runs
+                if run.appliance_id in self.entry.subentries
+            ],
             "soc_forecast": soc_forecast,
             # Static planning context for the bundled forecast card
             "plan_params": {

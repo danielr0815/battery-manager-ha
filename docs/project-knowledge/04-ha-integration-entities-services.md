@@ -203,7 +203,8 @@ vorsorgliche Drosselung) — sie speisen nur Diagnose und die einmalige
 Klasse `sensor.BatteryManagerSocForecastSensor`, Key `soc_forecast`,
 Einheit %, **kein `state_class`** (eine Prognose darf nie in die
 Langzeitstatistik). `_unrecorded_attributes = {"forecast", "loads",
-"consumption_profile"}` hält die dicken Attribute aus dem Recorder.
+"appliances", "consumption_profile"}` hält die dicken Attribute aus dem
+Recorder.
 
 **State** = SOC in *einer Stunde* (`curve[1]["soc"]`, ersatzweise `curve[0]`).
 Der eigentliche Wert dieses Sensors sind die Attribute: die mitgelieferte
@@ -223,7 +224,9 @@ Liste von Punkten, gebaut in `coordinator._async_update_data`:
 - Danach je Slot **ein Punkt am Slot-ENDE** (`slot.start + duration`) mit
   `flow.soc_end_percent`, gerundet auf 0,1.
 - `dc24` / `dc48` erscheinen **nur wenn `True`** (Grid-Support in diesem Slot
-  aktiv), damit das Attribut kompakt bleibt.
+  aktiv), damit das Attribut kompakt bleibt. Die mitgelieferte Karte rendert
+  daraus seit v0.25.3 **keine** Support-Lanes mehr (Operator-Entscheid);
+  die Flags bleiben für Dritt-Karten im Attribut.
 - `feedin` (W, gerundet auf 0,1) erscheint **nur auf Slots mit gebuchtem
   Feed-in** (v0.23.0, F-FEEDIN) — daraus rendert die Karte die Einspeise-Lane
   unter dem SOC-Chart.
@@ -261,13 +264,29 @@ Ein `schedule`-Eintrag:
 `why` ist das schärfste Forensik-Werkzeug am Sensor: es beantwortet
 „warum genau dieser Slot", ohne den Planer nachzurechnen.
 
+### 3.2b `appliances` — erkannte Geräteläufe (v0.25.3)
+
+Liste der **aktuell laufenden** Appliance-Runs (`data["appliance_plans"]`,
+Quelle `_get_appliance_runs`), damit die Karte Waschmaschine & Co. als Lane
+unter dem Chart zeigt — sie formten die AC-Prognose schon immer, waren aber
+unsichtbar (Operator-Wunsch 2026-08-08). Je Eintrag:
+
+| Feld | Bedeutung |
+|---|---|
+| `name` | Subentry-Titel des Geräts |
+| `active` | immer `True` — nur laufende Runs werden publiziert |
+| `schedule` | genau **ein** Block `{start: now, end: now + remaining_hours, wh: verbleibende Energie des Laufs}` (naiv-lokale ISO-Strings, §3.1) |
+
+Leer, wenn nichts läuft. Die Hover-Chips der Karte zeigen für diese Lanes
+bewusst kein Wh (kein Slot-Wert, nur Lauf-Summe).
+
 ### 3.3 Kennzahlen und Diagnosen
 
 | Attribut | Quelle / Bedeutung |
 |---|---|
 | `soc_threshold_percent` | T\* nach Trägheit (wie der eigene Sensor) |
 | `grid_import_kwh`, `lost_surplus_kwh` | **Horizontsummen** (siehe §2.1) |
-| `daily` | Liste je Kalendertag: `{date, lost_surplus_kwh, grid_import_kwh, loads_kwh, prevented_export_kwh}` (`_daily_surplus_breakdown`). Gruppiert nach `slot.start.date()` in Planer-Lokalzeit — ein Slot zählt auf **seinen Starttag**. `prevented_export_kwh` (F-STRICT-SURPLUS R4) ist das Kontrafaktische „welchen Export haben die Lastläufe an diesem Tag verhindert" (Basis minus Allokation, beides **vor** Support-Eskalation) und beantwortet „warum läuft die Last, obwohl der SOC nie ans Maximum kommt". Bei aktivem Feed-in (v0.23.0) kommt `planned_feedin_kwh` je Tag hinzu (aus `PlanResult.feedin_by_day_wh`) — die Statistikzeile der Karte liest daraus „geplante Einspeisung heute/morgen". Seit v0.24.1 zusätzlich `support_dc24_kwh` / `support_dc48_kwh`: die je Tag **gelieferte** PSU-Energie (`flow.psu24/48_delivered_wh`, nicht die Nennleistung), damit die Legende der Karte auch die Stützpfade mit heute/morgen zeigt |
+| `daily` | Liste je Kalendertag: `{date, lost_surplus_kwh, grid_import_kwh, loads_kwh, prevented_export_kwh}` (`_daily_surplus_breakdown`). Gruppiert nach `slot.start.date()` in Planer-Lokalzeit — ein Slot zählt auf **seinen Starttag**. `prevented_export_kwh` (F-STRICT-SURPLUS R4) ist das Kontrafaktische „welchen Export haben die Lastläufe an diesem Tag verhindert" (Basis minus Allokation, beides **vor** Support-Eskalation) und beantwortet „warum läuft die Last, obwohl der SOC nie ans Maximum kommt". Bei aktivem Feed-in (v0.23.0) kommt `planned_feedin_kwh` je Tag hinzu (aus `PlanResult.feedin_by_day_wh`) — die Statistikzeile der Karte liest daraus „geplante Einspeisung heute/morgen". Seit v0.24.1 zusätzlich `support_dc24_kwh` / `support_dc48_kwh`: die je Tag **gelieferte** PSU-Energie (`flow.psu24/48_delivered_wh`, nicht die Nennleistung). Die mitgelieferte Karte zeigt die Stützpfade seit v0.25.3 nicht mehr (Operator-Entscheid); die Schlüssel bleiben für Dritt-Karten |
 | `loads_today_kwh`, `loads_tomorrow_kwh` | Überschusslast-Energie heute/morgen (aus `daily[].loads_kwh`). **Appliances sind nicht enthalten** — sie gehen in die AC-Prognose, nie in `extra_ac_wh` |
 | `consumption_profile` | Lern-Diagnostik, siehe §3.4 |
 | `gate_calibration` | 48-V-Gate-Kalibrierbracket, siehe §3.5 |
