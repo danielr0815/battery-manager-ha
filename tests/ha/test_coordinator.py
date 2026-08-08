@@ -492,6 +492,304 @@ async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
     assert datetime(2026, 7, 10, 11, 0) not in m  # inf skipped
 
 
+# ---------------------------------------------------------------------------
+# AC-side η scaling of the hourly curve (2026-08-07 live audit): a source may
+# publish wh_period as a DC model curve while the entity state is the AC day
+# energy — the AC-side simulation then over-plans PV by the inverter loss.
+# ---------------------------------------------------------------------------
+
+
+async def test_pv_hourly_scales_dc_curve_toward_ac_state(hass):
+    """η scaling: the source publishes wh_period as a DC model curve while the
+    entity state is the AC day energy (balcony_solar_forecast shape). The
+    buckets are scaled by η = state(Wh)/Σ(curve) — median AND bands get the
+    SAME factor, they describe the same physical day."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+    import pytest
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    # Live-verified shape: state 5.649 kWh (AC) vs Σ buckets 6129 Wh (DC, ==
+    # the source's own ..._today_dc sibling) -> η = 5649/6129 ≈ 0.9215.
+    hass.states.async_set(
+        "sensor.pv_today",
+        "5.649",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-07-10 10:00:00": 3000.0,
+                "2026-07-10 11:00:00": 3129.0,
+            },
+            "wh_period_p10": {"2026-07-10 10:00:00": 2000.0},
+            "wh_period_p90": {"2026-07-10 10:00:00": 4000.0},
+        },
+    )
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    eta = 5649.0 / 6129.0
+    median, p10, p90 = coordinator._get_pv_hourly(dt_util.now())
+    assert median[datetime(2026, 7, 10, 10, 0)] == pytest.approx(3000.0 * eta)
+    assert median[datetime(2026, 7, 10, 11, 0)] == pytest.approx(3129.0 * eta)
+    assert p10[datetime(2026, 7, 10, 10, 0)] == pytest.approx(2000.0 * eta)
+    assert p90[datetime(2026, 7, 10, 10, 0)] == pytest.approx(4000.0 * eta)
+
+
+async def test_pv_hourly_consistent_source_stays_unscaled(hass):
+    """A source whose state equals its own curve sum is already consistent
+    with the AC simulation: η = 1 exactly and the buckets pass through
+    untouched."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today",
+        "2500",
+        {
+            "unit_of_measurement": "Wh",
+            "wh_period": {
+                "2026-07-10 10:00:00": 1000.0,
+                "2026-07-10 11:00:00": 1500.0,
+            },
+        },
+    )
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    median, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
+    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0
+    assert median[datetime(2026, 7, 10, 11, 0)] == 1500.0
+
+
+async def test_pv_hourly_underivable_eta_stays_unscaled(hass):
+    """No derivable η — unparsable, non-positive or unit-less state — means
+    the curve is taken as read (η = 1): guessing a factor (e.g. blindly
+    assuming kWh) could halve a perfectly good curve."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today",
+        "n/a",  # not a number -> η underivable
+        {"unit_of_measurement": "kWh", "wh_period": {"2026-07-10 10:00:00": 1000.0}},
+    )
+    hass.states.async_set(
+        "sensor.pv_tomorrow",
+        "0",  # non-positive -> η underivable
+        {"unit_of_measurement": "kWh", "wh_period": {"2026-07-11 11:00:00": 700.0}},
+    )
+    hass.states.async_set(
+        "sensor.pv_day_after",
+        "8.0",  # no unit_of_measurement -> η underivable (no kWh fallback)
+        {"wh_period": {"2026-07-12 12:00:00": 500.0}},
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    median, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
+    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0
+    assert median[datetime(2026, 7, 11, 11, 0)] == 700.0
+    assert median[datetime(2026, 7, 12, 12, 0)] == 500.0
+    # Defensive branch: a vanished entity has no state to derive from at all.
+    assert (
+        coordinator._pv_curve_ac_factor(
+            "sensor.does_not_exist", {datetime(2026, 7, 10, 10, 0): 1000.0}
+        )
+        == 1.0
+    )
+
+
+async def test_pv_hourly_prefers_explicit_ac_curve(hass):
+    """An entity exposing wh_period_ac (+ the p10/p90 variants) is trusted
+    verbatim: those buckets are labelled already-AC, so the DC wh_period is
+    ignored and no η scaling is applied on top. A garbage AC attribute falls
+    back to the plain one (with normal η derivation)."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today",
+        "5.649",
+        {
+            "unit_of_measurement": "kWh",
+            # DC family — must be IGNORED in favour of the explicit AC curves.
+            "wh_period": {"2026-07-10 10:00:00": 3000.0},
+            "wh_period_p10": {"2026-07-10 10:00:00": 2500.0},
+            "wh_period_ac": {
+                "2026-07-10 10:00:00": 2000.0,
+                "2026-07-10 11:00:00": 2100.0,
+            },
+            "wh_period_ac_p10": {"2026-07-10 10:00:00": 1500.0},
+            "wh_period_ac_p90": {"2026-07-10 10:00:00": 2600.0},
+        },
+    )
+    # Garbage AC attribute -> plain wh_period with normal η derivation
+    # (800 Wh state / 1000 Wh curve = 0.8).
+    hass.states.async_set(
+        "sensor.pv_tomorrow",
+        "0.8",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {"2026-07-11 11:00:00": 1000.0},
+            "wh_period_ac": "garbage, not a dict",
+        },
+    )
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    median, p10, p90 = coordinator._get_pv_hourly(dt_util.now())
+    # The explicit AC buckets pass through VERBATIM (no η on top).
+    assert median[datetime(2026, 7, 10, 10, 0)] == 2000.0
+    assert median[datetime(2026, 7, 10, 11, 0)] == 2100.0
+    assert p10 == {datetime(2026, 7, 10, 10, 0): 1500.0}
+    assert p90 == {datetime(2026, 7, 10, 10, 0): 2600.0}
+    # Explicit AC present -> the factor helper never derives against it.
+    assert (
+        coordinator._pv_curve_ac_factor(
+            "sensor.pv_today", {datetime(2026, 7, 10, 10, 0): 2000.0}
+        )
+        == 1.0
+    )
+    # Fallback path: garbage AC attr -> DC buckets with derived η = 0.8.
+    assert median[datetime(2026, 7, 11, 11, 0)] == 800.0
+
+
+async def test_pv_hourly_eta_is_clamped(hass):
+    """η is clamped to [0.5, 1.0]: a state ABOVE the curve sum is no
+    efficiency effect (e.g. the attribute covers only part of the day) -> η=1,
+    untouched; a ratio below 0.5 is no plausible inverter efficiency -> the
+    curve is halved at most, not shredded."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    # State 10 kWh (10000 Wh) vs Σ 2500 Wh -> raw η = 4.0 -> clamped to 1.0.
+    hass.states.async_set(
+        "sensor.pv_today",
+        "10.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-07-10 10:00:00": 1000.0,
+                "2026-07-10 11:00:00": 1500.0,
+            },
+        },
+    )
+    # State 1 kWh (1000 Wh) vs Σ 4000 Wh -> raw η = 0.25 -> clamped to 0.5.
+    hass.states.async_set(
+        "sensor.pv_tomorrow",
+        "1.0",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {"2026-07-11 11:00:00": 4000.0},
+        },
+    )
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    median, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
+    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0  # η > 1: untouched
+    assert median[datetime(2026, 7, 10, 11, 0)] == 1500.0
+    assert median[datetime(2026, 7, 11, 11, 0)] == 2000.0  # η clamped to 0.5
+
+
+async def test_pv_hourly_cache_replay_does_not_rescale(hass):
+    """The FIX-4 per-entity cache stores the ALREADY scaled maps: when the
+    entity drops out, the replayed buckets are identical to the fresh read —
+    a second η application would shrink them again (η²)."""
+    from datetime import datetime
+
+    import homeassistant.util.dt as dt_util
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    hass.states.async_set(
+        "sensor.pv_today",
+        "5.649",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-07-10 10:00:00": 3000.0,
+                "2026-07-10 11:00:00": 3129.0,
+            },
+        },
+    )
+    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = dt_util.now()
+
+    fresh, _p10, _p90 = coordinator._get_pv_hourly(now)
+    assert fresh[datetime(2026, 7, 10, 10, 0)] != 3000.0  # scaled once ...
+
+    hass.states.async_set("sensor.pv_today", "unavailable")
+    replayed, _p10, _p90 = coordinator._get_pv_hourly(now)
+    # ... and the replay serves exactly those scaled values (no η²).
+    assert replayed == fresh
+
+
 async def test_hourly_mode_warns_once_when_no_wh_period(hass, caplog):
     """FIX-10: explicit "hourly" mode logs exactly ONE warning (state-change
     guarded, not per cycle) when no wh_period data is available; it re-arms only
@@ -523,11 +821,17 @@ async def test_hourly_mode_warns_once_when_no_wh_period(hass, caplog):
 
 
 async def test_night_predrain_logs_only_on_change(hass, caplog):
-    """FIX-11: the F-PREDRAIN-BLOCK line is emitted only when the set of
-    (load, block-start, block-end) triples CHANGES, not every 5-min cycle."""
+    """FIX-11 + 2026-08 audit damping: the F-PREDRAIN-BLOCK line is emitted
+    only on a MATERIAL change of the booking (here: block start moved one
+    slot = 1 h, past the 30-min threshold), not every 5-min cycle — and a
+    material change inside the per-block rate window surfaces once the
+    window has passed."""
     import logging
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from homeassistant.util import dt as dt_util
 
     from custom_components.battery_manager.core.model import (
         HourSlot,
@@ -577,7 +881,11 @@ async def test_night_predrain_logs_only_on_change(hass, caplog):
         assert _count() == 1
         coordinator._log_night_predrain(result(0), inputs, config)  # identical set
         assert _count() == 1  # not repeated
-        coordinator._log_night_predrain(result(1), inputs, config)  # changed slot
+        # Changed slot (1 h shift >= the 30-min materiality threshold): logs
+        # once the per-block rate-limit window (1 h) has passed.
+        later = dt_util.utcnow() + timedelta(minutes=61)
+        with patch.object(dt_util, "utcnow", return_value=later):
+            coordinator._log_night_predrain(result(1), inputs, config)
         assert _count() == 2
 
 

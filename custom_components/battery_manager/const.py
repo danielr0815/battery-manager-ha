@@ -288,6 +288,21 @@ CONF_HOUSE_SOC_STALE_EDGE_HIGH_SOC = "house_soc_stale_edge_high_soc"
 PREDRAIN_BLOCK_STABLE_PLANS = 3
 PREDRAIN_BLOCK_STABLE_MINUTES = 10
 
+# F-PREDRAIN-BLOCK log damping (7-day live audit 31.07.–07.08.2026): the
+# change-gated INFO line compared raw (load, start, end) triples, but the
+# block start ratchets with the clock (slot 0 covers "now") and the booked
+# Wh with the forecast — every coordinator cycle looked like a new booking:
+# 4,196 lines in 7 days (1,753 on 08-04 alone, ≈ 1/min), defeating the spec
+# intent (project-knowledge 05 §5.6: one INFO line per CHANGE, no per-cycle
+# spam). A booking change now logs only when MATERIAL vs the last LOGGED
+# state: start shifted >= SHIFT_MIN or energy changed >= ENERGY_WH (a new
+# load/day block always logs), and even material changes are rate-limited to
+# one line per block per RATE_LIMIT_MIN (oscillating forecasts); suppressed
+# changes go to DEBUG. Constants, not config keys (G2 style).
+PREDRAIN_BLOCK_LOG_SHIFT_MIN = 30
+PREDRAIN_BLOCK_LOG_ENERGY_WH = 200.0
+PREDRAIN_BLOCK_LOG_RATE_LIMIT_MIN = 60
+
 # Telemetry-freeze watchdog (F4, 2026-07-24 forensics): a redundant guard for
 # ENERGY-LIMITED loads, independent of the switching path AND the G2 latch. The
 # Fossibot B2 (a recommendation-only load) froze SOC AND input power for 95 h
@@ -299,8 +314,10 @@ PREDRAIN_BLOCK_STABLE_MINUTES = 10
 # is treated as frozen and the load is held unavailable (the same consequence as
 # the G2 stale-SOC guard). A plain last_changed watchdog is deliberately avoided:
 # cached values carry fresh timestamps, so a legitimately idle device would
-# false-positive. In-memory only (a restart re-accumulates). A constant, not a
-# config key.
+# false-positive. The latch and the evidence clock are persisted (7-day live
+# audit 2026-08-02: a coordinator reload dropped the latch and the
+# recommendation duty-cycled an unplugged device for 110 min, ~225 Wh). A
+# constant, not a config key.
 FREEZE_STALE_HOURS = 6
 
 # Dwell x replan flicker continuation (F8, 2026-07-24 forensics): a short plan
@@ -429,6 +446,18 @@ PV_FORECAST_MODES = [
     PV_FORECAST_MODE_DAILY,
 ]
 
+# Lower clamp of the AC-efficiency factor η derived for the hourly wh_period
+# curve (coordinator._pv_curve_ac_factor, upper clamp is 1.0). 2026-08-07 live
+# audit: a forecast source may publish wh_period as a DC model curve while the
+# entity state is the AC day energy (balcony_solar_forecast: Σ buckets ==
+# `..._today_dc`, AC state = Σ × 0.9215 learned inverter η) — feeding the DC
+# curve into the AC-side simulation over-planned PV by ~8.5 % and contributed
+# to an avoidable 0.7 kWh grid import on 2026-08-07. η = state/Σ is a wiring
+# sanity ratio, not a precise instrument: below 0.5 it is no longer a
+# plausible inverter efficiency (more likely a mismatched state), so the
+# scaling stops there instead of shredding the curve.
+PV_CURVE_AC_ETA_MIN = 0.5
+
 # Recommended live fallbacks (NOT the neutral core dataclass defaults). Used as
 # the coordinator absent-key fallback AND the config-flow form default so a
 # no-change reconfigure keeps the pre-drain behaviour unchanged.
@@ -526,8 +555,16 @@ DEFAULT_CONFIG = {
     "battery_discharge_efficiency": 0.97,
     # House-SOC stale watchdog (see HOUSE_SOC_STALE_* above): unexplained
     # expected SOC drift (in % of capacity) before the latch — mid band and
-    # edge bands.
-    CONF_HOUSE_SOC_STALE_MID_PERCENT: 2.0,
+    # edge bands. Mid default 3.0 = 2 % physical drift + 1 % DISPLAY
+    # QUANTIZATION: the Victron SOC source reports in 1 % steps (~50 Wh at
+    # 5 kWh), and the plan-vs-real flow expectation deviates by up to ~2x —
+    # the old 2 % band therefore flapped: 2026-08-07 audit (7 days live):
+    # 37 false latches (~7 h of control blackout), one latch reached 1:58:55 —
+    # only 65 s under the 2-h D-A8 load-shed threshold. Entries that already
+    # PERSISTED this key (an options save auto-persists the vol.Required
+    # default) keep their stored 2.0 — async_migrate_entry deliberately does
+    # not rewrite it; only installs without a stored value pick up 3.0 here.
+    CONF_HOUSE_SOC_STALE_MID_PERCENT: 3.0,
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT: 7.0,
     # ... and the SOC bounds of those edge bands (Victron calibration
     # plateaus live there).

@@ -6,6 +6,7 @@ on; ownership rule / configurable input-off policy; last-known-SOC caching.
 
 from datetime import timedelta
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -248,6 +249,123 @@ async def test_failed_activation_does_not_consume_dwell(hass):
         [(sub_id, data, True, False)], now=dt_util.now()
     )
     assert sub_id not in coordinator._last_load_switch  # dwell NOT consumed
+
+
+async def test_failed_plug_on_rolls_back_enable_gate(hass, caplog):
+    """Audit 2026-08-04: enable ON confirmed but the plug ON fails -> the gate
+    is rolled back OFF immediately (WARNING), else it would stay orphaned ON
+    forever (live: 3.4 days; LOAD_CONTROL.md §3 violation)."""
+    import logging
+
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+
+    async def turn_on(call):
+        eid = call.data["entity_id"]
+        calls.append(("turn_on", eid))
+        if eid == PLUG:
+            raise HomeAssistantError("plug offline")  # BLE-RPC failure
+        hass.states.async_set(eid, "on")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    calls.clear()
+
+    with caplog.at_level(logging.WARNING):
+        caplog.clear()
+        await coordinator._execute_load_switching([(sub_id, data, True, False)])
+    assert calls == [
+        ("turn_on", ENABLE),
+        ("turn_on", PLUG),
+        ("turn_off", ENABLE),  # the rollback
+    ]
+    assert hass.states.get(ENABLE).state == "off"
+    assert coordinator._load_charging_active.get(sub_id, False) is False
+    assert coordinator._load_plug_owned.get(sub_id, False) is False
+    warnings = [r for r in caplog.records if "rolled the gate back OFF" in r.message]
+    assert len(warnings) == 1
+
+
+async def test_failed_enable_on_attempts_no_plug_and_no_rollback(hass):
+    """The rollback only follows a CONFIRMED enable ON: if the gate itself
+    fails, the plug is never attempted and nothing is rolled back."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+
+    async def turn_on(call):
+        eid = call.data["entity_id"]
+        calls.append(("turn_on", eid))
+        if eid == ENABLE:
+            raise HomeAssistantError("enable offline")
+        hass.states.async_set(eid, "on")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    calls.clear()
+
+    await coordinator._execute_load_switching([(sub_id, data, True, False)])
+    assert calls == [("turn_on", ENABLE)]  # no plug try, no rollback OFF
+    assert coordinator._load_charging_active.get(sub_id, False) is False
+
+
+async def test_failed_rollback_off_warns_and_does_not_crash(hass, caplog):
+    """If the rollback OFF itself fails, the executor warns and survives —
+    the orphan sweep in _apply_load_switching keeps retrying every cycle."""
+    import logging
+
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+
+    async def turn_on(call):
+        eid = call.data["entity_id"]
+        calls.append(("turn_on", eid))
+        if eid == PLUG:
+            raise HomeAssistantError("plug offline")
+        hass.states.async_set(eid, "on")
+
+    async def turn_off(call):
+        eid = call.data["entity_id"]
+        calls.append(("turn_off", eid))
+        raise HomeAssistantError("gate offline")  # rollback fails too
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
+    calls.clear()
+
+    with caplog.at_level(logging.WARNING):
+        caplog.clear()
+        await coordinator._execute_load_switching([(sub_id, data, True, False)])
+    assert calls == [
+        ("turn_on", ENABLE),
+        ("turn_on", PLUG),
+        ("turn_off", ENABLE),
+    ]
+    assert coordinator._load_charging_active.get(sub_id, False) is False
+    warnings = [r for r in caplog.records if "rollback OFF failed" in r.message]
+    assert len(warnings) == 1
+
+
+async def test_successful_on_path_never_rolls_back(hass):
+    """The unchanged happy path: enable ON + plug ON, no rollback call."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    calls.clear()
+
+    await coordinator._execute_load_switching([(sub_id, data, True, False)])
+    assert calls == [("turn_on", ENABLE), ("turn_on", PLUG)]
+    assert coordinator._load_charging_active[sub_id] is True
 
 
 async def test_successful_switch_stamps_dwell(hass):
@@ -3189,6 +3307,56 @@ def _inactive_result(sub_id):
     )
 
 
+async def test_orphaned_enable_gate_is_swept_off(hass):
+    """Audit 2026-08-04 reconciliation: a charge-enable gate physically ON
+    while the load neither charges nor shall charge (desired == current ==
+    False) is queued for an OFF every cycle — the live orphan sat ON for 3.4
+    days because no path ever reached it. The plug stays untouched (auto
+    policy, not owned)."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "on")  # orphaned gate
+    await hass.async_block_till_done()  # drain setup-cycle actuations
+    calls.clear()
+
+    await coordinator._apply_load_switching(_inactive_result(sub_id), dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert ("turn_off", ENABLE) in calls
+    assert ("turn_off", PLUG) not in calls  # not ours — stays untouched
+    assert hass.states.get(ENABLE).state == "off"
+
+    # Gate off again -> no further action is queued (no per-cycle churn).
+    calls.clear()
+    await coordinator._apply_load_switching(_inactive_result(sub_id), dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert calls == []
+
+
+async def test_orphan_sweep_leaves_passthrough_plug_alone(hass):
+    """The sweep only ever touches the gate: plug already on for passthrough
+    (foreign ownership) with the gate orphaned ON -> gate OFF, plug ON."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "on")  # operator automation powers the output
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_charging_active[sub_id] = False  # not charging per BM
+    await hass.async_block_till_done()
+    calls.clear()
+
+    await coordinator._apply_load_switching(_inactive_result(sub_id), dt_util.utcnow())
+    await hass.async_block_till_done()
+    # Plug AND gate on reads as charging (LOAD_CONTROL.md §3), so the plan-off
+    # drives the NORMAL OFF path here — still gate-only (plug not owned).
+    assert ("turn_off", ENABLE) in calls
+    assert ("turn_off", PLUG) not in calls
+    assert hass.states.get(PLUG).state == "on"
+
+
 async def test_target_soc_stop_is_dwell_exempt_with_enable_gate(hass):
     """R1/R4a: energy-limited + charge-enable + soc >= target: the plan-driven
     OFF executes although min_runtime has NOT elapsed."""
@@ -3594,6 +3762,243 @@ async def test_telemetry_freeze_recovers_on_change(hass, caplog):
         assert sub_id not in coordinator._load_freeze_stale
         infos = [r for r in caplog.records if "freeze latch cleared" in r.message]
         assert len(infos) == 1
+
+
+# ---------------------------------------------------------------------------
+# Guard persistence (7-day live audit 2026-08-02): the F4/G2 latches and
+# their evidence clocks survive a coordinator reload — a reload that dropped
+# the F4 latch duty-cycled an unplugged Fossibot B2 for 110 min (~225 Wh).
+# The evidence clock persists as ACCUMULATED seconds, so downtime is never
+# credited as freeze evidence.
+# ---------------------------------------------------------------------------
+
+
+async def _roundtrip_guard_state(coordinator):
+    """Persist + wipe + restore the guard state (the reload simulation)."""
+    payload = coordinator._persistent_payload()
+    await coordinator._store.async_save(payload)
+    coordinator._load_soc_frozen.clear()
+    coordinator._load_soc_stale.clear()
+    coordinator._load_freeze_ref.clear()
+    coordinator._load_freeze_stale.clear()
+    await coordinator.async_load_persistent_state()
+    return payload
+
+
+async def test_freeze_latch_survives_reload(hass):
+    """Audit 2026-08-02 (a): a latched F4 freeze keeps suppressing the load
+    after a coordinator reload instead of re-opening the duty-cycle hole."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._get_load_states()
+    ref = coordinator._load_freeze_ref[sub_id]
+    coordinator._load_freeze_ref[sub_id] = (
+        ref[0],
+        ref[1],
+        dt_util.utcnow() - timedelta(hours=6, minutes=1),
+        True,
+    )
+    assert coordinator._get_load_states()[0].available is False  # latched
+
+    payload = await _roundtrip_guard_state(coordinator)
+    guard = payload["load_freeze_guard"][sub_id]
+    assert guard["latched"] is True and guard["soc"] == 87.5
+    assert coordinator._load_freeze_stale == {sub_id}  # latch restored
+    assert sub_id in coordinator._load_freeze_ref  # release reference too
+    # ... and it still suppresses the load (unchanged telemetry, no release).
+    assert coordinator._get_load_states()[0].available is False
+
+
+async def test_freeze_release_works_after_reload(hass, caplog):
+    """Audit 2026-08-02 (b): the 'value changed' release still works on the
+    restored reference values after a reload (INFO once, schedulable again)."""
+    import logging
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._get_load_states()
+    ref = coordinator._load_freeze_ref[sub_id]
+    coordinator._load_freeze_ref[sub_id] = (
+        ref[0],
+        ref[1],
+        dt_util.utcnow() - timedelta(hours=6, minutes=1),
+        True,
+    )
+    assert coordinator._get_load_states()[0].available is False
+    await _roundtrip_guard_state(coordinator)
+    assert sub_id in coordinator._load_freeze_stale
+
+    hass.states.async_set(FOSSI_SOC, "88.0")  # telemetry moves again
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        states = coordinator._get_load_states()
+        assert states[0].available is True
+        assert sub_id not in coordinator._load_freeze_stale
+        infos = [r for r in caplog.records if "freeze latch cleared" in r.message]
+        assert len(infos) == 1
+
+
+async def test_freeze_evidence_clock_excludes_downtime(hass):
+    """Audit 2026-08-02 (c): the 6 h accumulation survives the reload with its
+    ACCUMULATED seconds — the reload/downtime gap itself is not freeze
+    evidence. 5 h saved + 2 h 'down' must NOT latch; 5 h saved + 1 h live
+    after the reload MUST (the evidence continues, it does not restart)."""
+    from unittest.mock import patch
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, with_control_switch=False, energy_limited=True
+    )
+    coordinator._load_plan_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._get_load_states()
+    ref = coordinator._load_freeze_ref[sub_id]
+    coordinator._load_freeze_ref[sub_id] = (
+        ref[0],
+        ref[1],
+        dt_util.utcnow() - timedelta(hours=5),
+        True,
+    )
+
+    payload = coordinator._persistent_payload()
+    guard = payload["load_freeze_guard"][sub_id]
+    assert guard["latched"] is False and guard["rec_seen"] is True
+    assert guard["elapsed_s"] == pytest.approx(5 * 3600, abs=30)
+    await coordinator._store.async_save(payload)
+    coordinator._load_freeze_ref.clear()
+
+    # Restore at +2 h (the reload's downtime): the clock must still read 5 h.
+    down = dt_util.utcnow() + timedelta(hours=2)
+    with patch.object(dt_util, "utcnow", return_value=down):
+        await coordinator.async_load_persistent_state()
+        states = coordinator._get_load_states()
+    assert states[0].available is True  # 5 h, NOT 7 h -> no latch
+    assert sub_id not in coordinator._load_freeze_stale
+
+    # 1 h 1 min of live evidence after the reload crosses the 6 h bar.
+    later = down + timedelta(hours=1, minutes=1)
+    with patch.object(dt_util, "utcnow", return_value=later):
+        states = coordinator._get_load_states()
+    assert states[0].available is False
+    assert sub_id in coordinator._load_freeze_stale
+
+
+async def test_stale_soc_guard_survives_reload(hass):
+    """Audit 2026-08-02 (d), G2 latch: the frozen-SOC latch and its unlatch
+    compare both survive a reload; a vanished subentry is pruned on restore."""
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    hass.states.async_set(FOSSI_SOC, "40")
+    coordinator._get_load_states()
+    coordinator._load_soc_frozen[sub_id] = (
+        40.0,
+        dt_util.utcnow() - timedelta(minutes=13),
+    )
+    assert coordinator._get_load_states()[0].available is False  # latched
+
+    payload = coordinator._persistent_payload()
+    assert payload["load_soc_stale_guard"][sub_id]["latched"] is True
+    # A load deleted before the reload must not inherit its latch.
+    payload["load_soc_stale_guard"]["vanished_sub"] = {
+        "soc": 40.0,
+        "elapsed_s": 900.0,
+        "latched": True,
+    }
+    await coordinator._store.async_save(payload)
+    coordinator._load_soc_frozen.clear()
+    coordinator._load_soc_stale.clear()
+    await coordinator.async_load_persistent_state()
+    assert coordinator._load_soc_stale == {sub_id: 40.0}  # pruned + restored
+    assert coordinator._get_load_states()[0].available is False  # still held
+
+    hass.states.async_set(FOSSI_SOC, "41")  # the sensor moves again
+    states = coordinator._get_load_states()
+    assert states[0].available is True  # release works on restored state
+    assert coordinator._load_soc_stale == {}
+
+
+async def test_stale_soc_evidence_clock_excludes_downtime(hass):
+    """Audit 2026-08-02 (d), G2 evidence: the 12 min clock continues from the
+    saved accumulation after a reload — downtime is not charging evidence."""
+    from unittest.mock import patch
+
+    from homeassistant.util import dt as dt_util
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_charging_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "505")
+    hass.states.async_set(FOSSI_SOC, "40")
+    coordinator._get_load_states()
+    coordinator._load_soc_frozen[sub_id] = (
+        40.0,
+        dt_util.utcnow() - timedelta(minutes=11),
+    )
+
+    payload = coordinator._persistent_payload()
+    guard = payload["load_soc_stale_guard"][sub_id]
+    assert guard["latched"] is False
+    assert guard["elapsed_s"] == pytest.approx(11 * 60, abs=10)
+    await coordinator._store.async_save(payload)
+    coordinator._load_soc_frozen.clear()
+
+    # Restore at +2 h downtime: still 11 min of evidence, not 2 h 11 min.
+    down = dt_util.utcnow() + timedelta(hours=2)
+    with patch.object(dt_util, "utcnow", return_value=down):
+        await coordinator.async_load_persistent_state()
+        states = coordinator._get_load_states()
+    assert states[0].available is True
+    assert sub_id not in coordinator._load_soc_stale
+
+    # 2 min of live charging evidence after the reload crosses the 12 min bar.
+    later = down + timedelta(minutes=2)
+    with patch.object(dt_util, "utcnow", return_value=later):
+        states = coordinator._get_load_states()
+    assert states[0].available is False
+    assert coordinator._load_soc_stale == {sub_id: 40.0}
+
+
+async def test_guard_state_absent_behaves_as_before(hass):
+    """Audit 2026-08-02 (e): without persisted guard keys a reload restores
+    nothing — detection re-arms from scratch exactly like the pre-fix
+    in-memory behaviour."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    payload = coordinator._persistent_payload()
+    assert payload["load_soc_stale_guard"] == {}
+    assert payload["load_freeze_guard"] == {}
+    await coordinator._store.async_save(payload)
+    await coordinator.async_load_persistent_state()
+    assert coordinator._load_soc_stale == {}
+    assert coordinator._load_freeze_stale == set()
+    # A fresh cycle arms evidence but latches nothing (unchanged semantics).
+    coordinator._load_plan_active[sub_id] = True
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    states = coordinator._get_load_states()
+    assert states[0].available is True
+    assert sub_id in coordinator._load_freeze_ref  # evidence armed, not latched
 
 
 # ---------------------------------------------------------------------------

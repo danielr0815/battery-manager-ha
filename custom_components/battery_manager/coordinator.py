@@ -128,9 +128,13 @@ from .const import (
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    PREDRAIN_BLOCK_LOG_ENERGY_WH,
+    PREDRAIN_BLOCK_LOG_RATE_LIMIT_MIN,
+    PREDRAIN_BLOCK_LOG_SHIFT_MIN,
     PREDRAIN_BLOCK_STABLE_MINUTES,
     PREDRAIN_BLOCK_STABLE_PLANS,
     PREDRAIN_PV_CONFIDENCE_DEFAULT,
+    PV_CURVE_AC_ETA_MIN,
     PV_FORECAST_MODE_AUTO,
     PV_FORECAST_MODE_DAILY,
     PV_FORECAST_MODE_HOURLY,
@@ -245,6 +249,17 @@ def _stored_wh(value: Any) -> float:
     return float(value) if isinstance(value, int | float) else 0.0
 
 
+# Explicit AC-side variants of the wh_period family: a forecast source that
+# labels its buckets as already-AC (inverter efficiency applied) is trusted
+# verbatim — the planner simulates AC-side, so no η derivation may touch them
+# (see _pv_curve_ac_factor). Generic contract, not tied to one forecaster.
+_WH_PERIOD_AC_ATTRS = {
+    "wh_period": "wh_period_ac",
+    "wh_period_p10": "wh_period_ac_p10",
+    "wh_period_p90": "wh_period_ac_p90",
+}
+
+
 def ordered_load_subentries(entry: ConfigEntry) -> list[tuple[str, ConfigSubentry]]:
     """Load subentries in effective priority order (F-LOAD-PRIORITY R3).
 
@@ -342,9 +357,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pv_hourly_empty_warned = False
         # Per-day PV source label ("hourly"/"two_window") for WP4 sensor exposure.
         self._pv_source_by_day: dict[str, str] = {}
-        # FIX-11: last-logged set of night-booked (load, slot-start) pairs, so the
-        # F-PREDRAIN night-charge line is emitted only when the booking changes.
-        self._night_predrain_logged: frozenset[tuple[str, ...]] = frozenset()
+        # FIX-11 + 7-day live audit 31.07.–07.08.2026: per pre-drain block
+        # (load + block day) the last LOGGED booking (start, end, Wh) with its
+        # log time. The raw (load, start, end) change-gate ratcheted with the
+        # clock and the forecast — 4,196 INFO lines in 7 days (1,753 on
+        # 08-04 ≈ 1/min). Now only MATERIAL changes log (see
+        # _log_night_predrain), rate-limited per block.
+        self._night_predrain_logged: dict[
+            str, tuple[datetime, datetime, float, datetime]
+        ] = {}
 
         # Hysteresis / switching state (docs/ALGORITHM.md D-A2)
         self._displayed_threshold: float | None = None
@@ -431,14 +452,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_learned_power_w: dict[str, float] = {}
         # Stale-SOC guard (F-EXECUTOR-GUARDS G2): evidence tuple (frozen value,
         # since) while actively charging above the standby bar, and the latch
-        # (frozen value, for the log + unlatch compare). In-memory only — a
-        # restart re-detects within STALE_LOAD_SOC_MIN minutes.
+        # (frozen value, for the log + unlatch compare). Persisted (7-day live
+        # audit 2026-08-02: a coordinator reload dropped the F4 latch and the
+        # recommendation duty-cycled a demonstrably unplugged device for
+        # 110 min, ~225 Wh misbooked) — see _persistent_payload for the
+        # downtime-safe clock semantics.
         self._load_soc_frozen: dict[str, tuple[float, datetime]] = {}
         self._load_soc_stale: dict[str, float] = {}
         # Telemetry-freeze watchdog (F4): per energy-limited load a reference
         # (soc, power, window_start, rec_seen) while SOC AND power sit EXACTLY
-        # still, and the resulting stale latch. In-memory only — a restart
-        # re-accumulates within FREEZE_STALE_HOURS.
+        # still, and the resulting stale latch. Persisted like G2 — the
+        # precedence freeze ran 174.7 h; a reload must not rebuild the 6 h
+        # evidence (FREEZE_STALE_HOURS) from zero.
         self._load_freeze_ref: dict[str, tuple[float, float, datetime, bool]] = {}
         self._load_freeze_stale: set[str] = set()
 
@@ -704,6 +729,50 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for k, v in data.get("load_tank_full_min", {}).items()
                 if k in self.entry.subentries
             }
+            # F-EXECUTOR-GUARDS G2 + F4 (7-day live audit 2026-08-02): restore
+            # latch AND evidence clock. The clock re-arms as now - elapsed_s,
+            # so the reload/downtime gap itself is never credited as freeze
+            # evidence (downtime is not evidence — the payload stores the
+            # ACCUMULATED seconds, not the wall-clock start). Entries whose
+            # load subentry vanished are dropped (a re-created load must not
+            # inherit a stale latch); corrupt entries are skipped like every
+            # other block here.
+            restore_now = dt_util.utcnow()
+            for k, v in data.get("load_soc_stale_guard", {}).items():
+                if k not in self.entry.subentries or not isinstance(v, dict):
+                    continue
+                soc = v.get("soc")
+                elapsed = v.get("elapsed_s")
+                if not isinstance(soc, int | float) or not isinstance(
+                    elapsed, int | float
+                ):
+                    continue
+                self._load_soc_frozen[k] = (
+                    float(soc),
+                    restore_now - timedelta(seconds=max(0.0, float(elapsed))),
+                )
+                if v.get("latched"):
+                    self._load_soc_stale[k] = float(soc)
+            for k, v in data.get("load_freeze_guard", {}).items():
+                if k not in self.entry.subentries or not isinstance(v, dict):
+                    continue
+                soc = v.get("soc")
+                power = v.get("power")
+                elapsed = v.get("elapsed_s")
+                if (
+                    not isinstance(soc, int | float)
+                    or not isinstance(power, int | float)
+                    or not isinstance(elapsed, int | float)
+                ):
+                    continue
+                self._load_freeze_ref[k] = (
+                    float(soc),
+                    float(power),
+                    restore_now - timedelta(seconds=max(0.0, float(elapsed))),
+                    bool(v.get("rec_seen")),
+                )
+                if v.get("latched"):
+                    self._load_freeze_stale.add(k)
             # The tick cursor (_load_run_since) is intentionally not restored —
             # see _persistent_payload; the first tick re-arms it so a restart gap
             # is never credited as runtime.
@@ -870,6 +939,39 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 k: list(v) for k, v in self._load_tank_samples.items()
             },
             "load_tank_full_min": dict(self._load_tank_full_min),
+            # F-EXECUTOR-GUARDS G2 + F4 (7-day live audit 2026-08-02): both
+            # watchdogs survive a coordinator reload — a reload that dropped
+            # the F4 latch re-opened the exact hole it guarded against (the
+            # recommendation duty-cycled a demonstrably unplugged Fossibot B2
+            # for 110 min, ~225 Wh misbooked; the precedence freeze ran
+            # 174.7 h, so re-building the 6 h evidence from zero is not a
+            # shrug). Persisted per load is the reference value(s) the
+            # release compares against PLUS the accumulated evidence in
+            # SECONDS — not the wall-clock window start: downtime is NOT
+            # freeze evidence (while HA is down nothing is observed), so the
+            # restored clock resumes from the saved accumulation and the
+            # restart gap is never credited (the same rule as the runtime
+            # tick cursor). A clean reload flushes on unload
+            # (async_flush_persistent_state); an unclean power loss forfeits
+            # at most the delayed-save window.
+            "load_soc_stale_guard": {
+                k: {
+                    "soc": soc,
+                    "elapsed_s": max(0.0, (dt_util.utcnow() - since).total_seconds()),
+                    "latched": k in self._load_soc_stale,
+                }
+                for k, (soc, since) in self._load_soc_frozen.items()
+            },
+            "load_freeze_guard": {
+                k: {
+                    "soc": ref[0],
+                    "power": ref[1],
+                    "elapsed_s": max(0.0, (dt_util.utcnow() - ref[2]).total_seconds()),
+                    "rec_seen": ref[3],
+                    "latched": k in self._load_freeze_stale,
+                }
+                for k, ref in self._load_freeze_ref.items()
+            },
             # D-A8 stage 2: the data-loss clock and the shed latch survive
             # restarts (see async_load_persistent_state for the rationale).
             "stale_since": (
@@ -1393,6 +1495,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         attributes ``wh_period_p10``/``wh_period_p90`` share the exact same
         format and tolerance rules, F-QUANTILE-BANDS R1).
 
+        When the entity exposes the explicit AC variant of the requested
+        attribute (``wh_period_ac`` etc., see _WH_PERIOD_AC_ATTRS) THAT is
+        parsed instead: the source labels those buckets as already AC-side, so
+        they are used verbatim and excluded from the η scaling in
+        _pv_curve_ac_factor. A garbage/absent AC attribute falls back to the
+        plain one.
+
         Keys are parsed with dt_util.parse_datetime: naive keys are treated as
         LOCAL, aware keys are converted to local and made naive. 15/30-min buckets
         are summed per hour by aggregate_hours. Malformed keys/values are skipped;
@@ -1403,6 +1512,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if state is None or state.state in ("unknown", "unavailable"):
             return {}
         raw = state.attributes.get(attr)
+        ac_attr = _WH_PERIOD_AC_ATTRS.get(attr)
+        if ac_attr is not None:
+            ac_raw = state.attributes.get(ac_attr)
+            if isinstance(ac_raw, dict):
+                raw = ac_raw
         if not isinstance(raw, dict):
             return {}
         entries: list[tuple[datetime, float]] = []
@@ -1437,6 +1551,63 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return aggregate_hours(entries)
 
+    def _pv_curve_ac_factor(
+        self, entity_id: str, curve: dict[datetime, float]
+    ) -> float:
+        """AC-efficiency factor η for ONE forecast entity's hourly curve.
+
+        2026-08-07 live audit (7 days): a source may publish ``wh_period*`` as
+        a DC model curve while the entity STATE is the AC day energy
+        (balcony_solar_forecast: Σ buckets 6.129 kWh == its ``_today_dc``
+        sibling; the AC state 5.649 kWh = Σ × 0.9215 learned inverter η).
+        Feeding the DC curve into the AC-side simulation over-planned PV by
+        ~8.5 % (~1.1 kWh on a normal day) and contributed to an avoidable
+        0.7 kWh grid import on 2026-08-07. η = state(Wh) / Σ(curve), derived
+        from the SAME entity, corrects that generically: sources whose state
+        and curve are consistent get η ≈ 1 (a no-op), a DC-curve/AC-state
+        source is pulled down to its own AC reality.
+
+        The state is converted to Wh via its own unit_of_measurement
+        (REALIZED_ENERGY_UNIT_FACTORS_WH table reused); unlike
+        _energy_unit_factor an UNKNOWN unit does NOT fall back to kWh —
+        guessing 1000x either way could halve a perfectly good curve, so an
+        underivable η stays 1.0 (missing/invalid/non-positive state, unknown
+        unit, empty curve). η is clamped to [PV_CURVE_AC_ETA_MIN, 1.0]: > 1
+        means the curve sums BELOW the state (no efficiency effect — e.g. the
+        attribute covers only part of the day), below 0.5 is no plausible
+        inverter efficiency. An entity carrying the explicit AC curve
+        (``wh_period_ac``, preferred by _read_wh_period) is already AC-side
+        and is never rescaled.
+        """
+        state = self.hass.states.get(entity_id)
+        if state is None or isinstance(
+            state.attributes.get(_WH_PERIOD_AC_ATTRS["wh_period"]), dict
+        ):
+            return 1.0
+        total = sum(curve.values())
+        if total <= 0.0:
+            return 1.0
+        unit_factor = REALIZED_ENERGY_UNIT_FACTORS_WH.get(
+            state.attributes.get("unit_of_measurement")
+        )
+        try:
+            state_value = float(state.state)
+        except TypeError, ValueError:
+            return 1.0
+        if unit_factor is None or not math.isfinite(state_value) or state_value <= 0.0:
+            return 1.0
+        eta = min(max(state_value * unit_factor / total, PV_CURVE_AC_ETA_MIN), 1.0)
+        if eta != 1.0:
+            _LOGGER.debug(
+                "battery_manager: %s hourly PV curve scaled by AC factor %.3f"
+                " (state %.1f Wh / curve sum %.1f Wh)",
+                entity_id,
+                eta,
+                state_value * unit_factor,
+                total,
+            )
+        return eta
+
     def _get_pv_hourly(
         self, now: datetime
     ) -> tuple[
@@ -1453,7 +1624,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         longer overwrites the cached full map with a partial read. The quantile
         maps (F-QUANTILE-BANDS R1) are parsed from ``wh_period_p10``/
         ``wh_period_p90`` on the SAME entities and travel in the same cache
-        entry, so median and bands always come from the same read.
+        entry, so median and bands always come from the same read. Each
+        entity's fresh maps are scaled by its AC factor η
+        (_pv_curve_ac_factor) BEFORE caching: median and bands get the SAME η
+        (they describe the same physical day) and the FIX-4 stale-cache replay
+        serves the already-scaled maps — never a second scaling.
         Absent/empty/garbage quantile attributes simply yield empty maps (never
         an error). The per-entity results merge in the existing (today,
         tomorrow, day-after) order; overlapping days are last-writer-wins (the
@@ -1479,6 +1654,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if fresh:
                 fresh_p10 = self._read_wh_period(conf_key, "wh_period_p10")
                 fresh_p90 = self._read_wh_period(conf_key, "wh_period_p90")
+                # One η per entity per read, applied to median AND bands
+                # alike, then frozen into the cache entry (no re-scale on
+                # replay — the cached maps are already AC-side).
+                eta = self._pv_curve_ac_factor(conf_key, fresh)
+                if eta != 1.0:
+                    fresh = {hour: wh * eta for hour, wh in fresh.items()}
+                    fresh_p10 = {hour: wh * eta for hour, wh in fresh_p10.items()}
+                    fresh_p90 = {hour: wh * eta for hour, wh in fresh_p90.items()}
                 self._pv_hourly_by_entity[conf_key] = (
                     fresh,
                     fresh_p10,
@@ -1637,17 +1820,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         surface it with the load name, the block's [start, end) window and
         the booked energy. Only continuous loads can appear here (pass 3 is
         their pass; energy-limited loads bet slot-wise in pass 2, daylight
-        only). Emitted only when the set of (load, block-start, block-end)
-        triples CHANGES vs the previous log (FIX-11): the plan re-runs every
-        few minutes, so an unchanged block would otherwise spam an identical
-        line every cycle — the stability gate keeps the ACTUATION itself off
-        a flickering block (F-PREDRAIN-BLOCK R7).
+        only). Emitted only on MATERIAL change vs the last LOGGED booking
+        (FIX-11 hardened by the 7-day live audit 31.07.–07.08.2026): the raw
+        (load, start, end) change-gate ratcheted with the clock (slot 0
+        covers "now") and the forecast (booked Wh), so every cycle looked
+        like a new booking — 4,196 lines in 7 days (1,753 on 08-04 ≈ 1/min).
+        Material means: a new block (load + block-day unseen, or re-booked
+        after a gap), the start shifted >= PREDRAIN_BLOCK_LOG_SHIFT_MIN, or
+        the energy changed >= PREDRAIN_BLOCK_LOG_ENERGY_WH; even those are
+        rate-limited to one line per block per PREDRAIN_BLOCK_LOG_RATE_LIMIT_MIN
+        (oscillating forecasts), with suppressed changes at DEBUG. Comparing
+        against the last LOGGED — not last seen — booking means a slowly
+        ratcheting block still surfaces once its cumulative drift crosses a
+        threshold. The stability gate keeps the ACTUATION itself off a
+        flickering block (F-PREDRAIN-BLOCK R7).
         """
         if not result.load_plans:
-            self._night_predrain_logged = frozenset()
+            self._night_predrain_logged.clear()
             return
         booked: list[str] = []
-        triples: set[tuple[str, str, str]] = set()
+        seen: set[str] = set()
+        now = dt_util.utcnow()
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
             if load.energy_limited:
                 continue
@@ -1657,21 +1850,39 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 block_start = inputs.slots[start].start
                 last = inputs.slots[start + count - 1]
                 block_end = last.start + timedelta(hours=last.duration)
-                booked.append(
+                # Per load AND block day (per-day blocks, R1): tomorrow's
+                # block is a separate booking from today's.
+                key = f"{load.load_id}:{block_start.date().isoformat()}"
+                seen.add(key)
+                prev = self._night_predrain_logged.get(key)
+                material = (
+                    prev is None
+                    or abs((block_start - prev[0]).total_seconds())
+                    >= PREDRAIN_BLOCK_LOG_SHIFT_MIN * 60
+                    or abs(wh - prev[2]) >= PREDRAIN_BLOCK_LOG_ENERGY_WH
+                )
+                if not material:
+                    continue
+                line = (
                     f"{load.name} {block_start.strftime('%Y-%m-%d %H:%M')}"
                     f" -> {block_end.strftime('%H:%M')} ({wh:.0f} Wh)"
                 )
-                triples.add(
-                    (load.load_id, block_start.isoformat(), block_end.isoformat())
-                )
-        current = frozenset(triples)
-        if not current:
-            self._night_predrain_logged = frozenset()
-            return
-        if current == self._night_predrain_logged:
-            return  # identical booking already logged — do not spam every cycle
-        self._night_predrain_logged = current
-        _LOGGER.info("F-PREDRAIN-BLOCK: pre-drain booked for %s", "; ".join(booked))
+                if prev is not None and now - prev[3] < timedelta(
+                    minutes=PREDRAIN_BLOCK_LOG_RATE_LIMIT_MIN
+                ):
+                    _LOGGER.debug(
+                        "F-PREDRAIN-BLOCK: rate-limited booking change for %s", line
+                    )
+                    continue
+                booked.append(line)
+                self._night_predrain_logged[key] = (block_start, block_end, wh, now)
+        # Blocks that vanished lose their logged record: a re-booking after
+        # a gap is a NEW booking and logs again.
+        for key in list(self._night_predrain_logged):
+            if key not in seen:
+                del self._night_predrain_logged[key]
+        if booked:
+            _LOGGER.info("F-PREDRAIN-BLOCK: pre-drain booked for %s", "; ".join(booked))
 
     async def _update_power_warnings(self, result, now: datetime) -> None:
         """Per-load power-deviation warning (operator requirement F-L7).
@@ -2270,6 +2481,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if live_soc is not None and live_soc != frozen_value:
                 del self._load_soc_stale[subentry_id]
                 self._load_soc_frozen.pop(subentry_id, None)
+                # Persist the release edge (the latch outlives reloads now).
+                self._save_persistent_state()
                 _LOGGER.info(
                     "Load %s: SOC reports %.1f%% again (was frozen at %.1f%%)"
                     " — stale latch cleared",
@@ -2295,6 +2508,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         if dt_util.utcnow() - evidence[1] >= timedelta(minutes=STALE_LOAD_SOC_MIN):
             self._load_soc_stale[subentry_id] = live_soc
+            # Persist the latch edge immediately (the delayed save coalesces):
+            # a reload must not drop it — audit 2026-08-02.
+            self._save_persistent_state()
             _LOGGER.warning(
                 "Load %s: SOC frozen at %.1f%% for %d+ minutes while actively"
                 " charging — treating the reading as STALE and holding the"
@@ -2340,6 +2556,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 self._load_freeze_stale.discard(subentry_id)
                 self._load_freeze_ref.pop(subentry_id, None)
+                # Persist the release edge (the latch outlives reloads now).
+                self._save_persistent_state()
                 _LOGGER.info(
                     "Load %s: telemetry moving again (SOC %.1f%%, %.0f W) —"
                     " freeze latch cleared",
@@ -2370,6 +2588,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hours=FREEZE_STALE_HOURS
         ):
             self._load_freeze_stale.add(subentry_id)
+            # Persist the latch edge immediately: a coordinator reload must
+            # not drop it — audit 2026-08-02 (110 min duty-cycling, ~225 Wh).
+            self._save_persistent_state()
             _LOGGER.warning(
                 "Load %s: SOC %.1f%% and power %.0f W frozen for %d+ h while the"
                 " recommendation was active — treating the telemetry as STALE"
@@ -5008,6 +5229,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 desired = active_now
                 reason = "plan slot" if active_now else "plan off"
             if desired == current:
+                # Orphan sweep (7-day live audit 2026-08-04): a gate left ON
+                # while the load is NOT charging and shall not charge is
+                # unreachable for every other path (desired == current here),
+                # so without this sweep it would stay on forever — the live
+                # gate sat orphaned for 3.4 days. The ON-path rollback in
+                # _execute_load_switching prevents NEW orphans; this heals a
+                # pre-existing one (and a failed rollback) within a cycle.
+                # LOAD_CONTROL.md §3: the gate may only be on while charging,
+                # so the OFF is always safe — and dwell-exempt like G1 (the
+                # gate switches no load-current path worth protecting). A
+                # failing OFF simply re-queues next cycle (bounded log via
+                # _switch_entity's ERROR, and the state IS broken then).
+                enable_entity = data.get(CONF_LOAD_CHARGE_ENABLE)
+                if not desired and enable_entity and self._entity_is_on(enable_entity):
+                    actions.append(
+                        (
+                            subentry_id,
+                            dict(data),
+                            False,
+                            self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]),
+                            0.0,
+                            False,  # a safety cleanup never seeds a flicker window
+                            "orphaned enable cleanup",
+                        )
+                    )
                 continue
             # Split dwell (R14): ON->OFF is gated by the minimum ON time
             # (min_runtime), OFF->ON by the minimum OFF time (min_off) — the
@@ -5163,6 +5409,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         continue
                     if not plug_was_on:
                         if not await self._switch_entity(plug, True):
+                            # Rollback (7-day live audit 2026-08-04): the gate
+                            # confirmed ON but the plug did not (BLE-RPC
+                            # failure) — without this OFF the gate stays
+                            # orphaned ON FOREVER: charging never becomes
+                            # active, so every later cycle sees desired ==
+                            # current and no path ever switches the gate off
+                            # (live it sat ON for 3.4 days, bypassing the
+                            # legacy automation's 20 % firmware floor). That
+                            # violates LOAD_CONTROL.md §3: the gate may only
+                            # be on while charging. The G4/shed guard drop
+                            # above runs BEFORE the enable ON, so it never
+                            # needs this rollback.
+                            if enable:
+                                if await self._switch_entity(enable, False):
+                                    _LOGGER.warning(
+                                        "Load %s: plug ON failed after the"
+                                        " charge-enable gate confirmed ON —"
+                                        " rolled the gate back OFF",
+                                        label,
+                                    )
+                                else:
+                                    # The gate stays physically on; the
+                                    # orphan sweep in _apply_load_switching
+                                    # retries every cycle until it clears.
+                                    _LOGGER.warning(
+                                        "Load %s: plug ON failed and the"
+                                        " charge-enable rollback OFF failed"
+                                        " too — the gate stays ON for now",
+                                        label,
+                                    )
                             continue
                         # We switched the plug on for charging: ownership
                         # allows the 'auto' policy to switch it off again.

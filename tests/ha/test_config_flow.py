@@ -1480,7 +1480,7 @@ async def test_options_flow_renders_base_dimension_sections(hass):
         "battery_capacity_wh": 5000.0,
         "battery_min_soc_percent": 5.0,
         "battery_max_soc_percent": 95.0,
-        "house_soc_stale_mid_percent": 2.0,
+        "house_soc_stale_mid_percent": 3.0,
         "house_soc_stale_edge_percent": 7.0,
         "house_soc_stale_edge_low_soc": 13.0,
         "house_soc_stale_edge_high_soc": 88.0,
@@ -1516,7 +1516,9 @@ async def test_options_flow_updates_battery_dimensions(hass):
         "battery_capacity_wh": 10000.0,
         "battery_min_soc_percent": 10.0,
         "battery_max_soc_percent": 90.0,
-        "house_soc_stale_mid_percent": 3.0,
+        # 4.0 (not the 3.0 default): the assertion below must be able to tell
+        # a persisted change apart from the DEFAULT_CONFIG fallback.
+        "house_soc_stale_mid_percent": 4.0,
         "house_soc_stale_edge_percent": 8.0,
         "house_soc_stale_edge_low_soc": 11.0,
         "house_soc_stale_edge_high_soc": 86.0,
@@ -1537,7 +1539,7 @@ async def test_options_flow_updates_battery_dimensions(hass):
     # The stale-watchdog tuning lives in the same section and reaches the
     # coordinator through the same flat options merge.
     raw_config = hass.data[DOMAIN][entry.entry_id].raw_config
-    assert raw_config["house_soc_stale_mid_percent"] == 3.0
+    assert raw_config["house_soc_stale_mid_percent"] == 4.0
     assert raw_config["house_soc_stale_edge_percent"] == 8.0
     assert raw_config["house_soc_stale_edge_low_soc"] == 11.0
     assert raw_config["house_soc_stale_edge_high_soc"] == 86.0

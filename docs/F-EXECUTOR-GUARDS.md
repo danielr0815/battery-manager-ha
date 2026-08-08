@@ -82,7 +82,8 @@ eventually break (observed locally on the venv314 HA).
 
 The 20.07 Fossibot B2 incident exposed two blind spots (7-day forensics).
 B2 is a recommendation-only load (no control switch — the operator plugs it
-in by hand, by design); its SOC + total_input froze (87.5 % / 144 W) for 95 h
+in by hand, by design); its SOC + total_input froze (87.5 % / 144 W) for
+174.7 h (20.07 13:30 → 27.07 20:10 CEST — "95 h" was the 24.07 snapshot)
 while the planner re-booked the same ~50 Wh top-up for 4 days and the
 recommendation duty-cycled — with NO warning.
 
@@ -118,7 +119,11 @@ recommendation duty-cycled — with NO warning.
 
 ## 3. Non-goals
 
-No persistence of stale latches (a restart re-detects within minutes). No new
+~~No persistence of stale latches~~ — superseded by the 2026-08-02 live audit:
+latch and evidence clock are persisted now (a coordinator reload dropped the
+F4 latch and the recommendation duty-cycled an unplugged device for 110 min,
+~225 Wh; persisted as accumulated seconds so downtime is not freeze
+evidence). No new
 config keys. No planner change (the guard acts through the existing
 `available` flag). No handling of the fossibot integration's flakiness at its
 source (separate project).

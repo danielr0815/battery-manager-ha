@@ -204,3 +204,179 @@ async def test_evidence_counts_resets_and_enforces_the_time_floor(hass):
     assert coordinator._predrain_block_evidence.get(sub_id) is None
     assert coordinator._predrain_block_stable == set()
     assert PREDRAIN_BLOCK_STABLE_MINUTES >= 1  # documented contract (floor > 0)
+
+
+# ---------------------------------------------------------------------------
+# F-PREDRAIN-BLOCK log damping (7-day live audit 31.07.–07.08.2026): the raw
+# (load, start, end) change-gate ratcheted with clock and forecast — 4,196
+# INFO lines in 7 days. Now: material changes only (start >= 30 min, energy
+# >= 200 Wh, new block), rate-limited to 1/h per block (DEBUG otherwise).
+# ---------------------------------------------------------------------------
+
+
+def _log_inputs(minute_offset=0, n_slots=6, day=19):
+    slots = tuple(
+        HourSlot(
+            index=i,
+            start=datetime(2026, 7, day, 4 + i, minute_offset),
+            duration=1.0,
+            hour_of_day=4 + i,
+            pv_wh=0.0,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
+        for i in range(n_slots)
+    )
+    return SimpleNamespace(slots=slots)
+
+
+def _block_result_wh(sub_id, wh, start_idx=0, count=2, n_slots=6):
+    return SimpleNamespace(
+        load_plans=(
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,) * n_slots,
+                planned_energy_wh=wh,
+                allocations=((start_idx, count, 3, wh),),
+                run_hours=(1.0,) * n_slots,
+            ),
+        ),
+    )
+
+
+def _predrain_info_lines(caplog, level):
+    return [
+        r
+        for r in caplog.records
+        if "F-PREDRAIN-BLOCK" in r.message and r.levelno == level
+    ]
+
+
+async def test_predrain_log_once_per_stable_booking(hass, caplog):
+    """An unchanged booking logs exactly ONE INFO line, not one per cycle
+    (spec project-knowledge 05 §5.6: change-gated, no per-cycle spam)."""
+    import logging
+
+    entry, coordinator = await _setup(hass, [], [])
+    sub_id = next(iter(entry.subentries))
+    config = coordinator.build_system_config()
+    inputs = _log_inputs()
+    result = _block_result_wh(sub_id, 300.0)
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        for _ in range(20):
+            coordinator._log_night_predrain(result, inputs, config)
+    lines = _predrain_info_lines(caplog, logging.INFO)
+    assert len(lines) == 1
+    assert "Load One" in lines[0].message
+
+
+async def test_predrain_log_ignores_subthreshold_ratchet(hass, caplog):
+    """The audit ratchet itself: start minute and booked Wh jittering below
+    the thresholds EVERY cycle (clock/forecast noise) must not re-log —
+    1,753 lines on 08-04 came from exactly this."""
+    import logging
+
+    entry, coordinator = await _setup(hass, [], [])
+    sub_id = next(iter(entry.subentries))
+    config = coordinator.build_system_config()
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        for cycle in range(20):
+            # Alternate 10 min / 50 Wh around the logged booking: every step
+            # is below the 30 min / 200 Wh materiality thresholds.
+            inputs = _log_inputs(minute_offset=10 if cycle % 2 else 0)
+            result = _block_result_wh(sub_id, 350.0 if cycle % 2 else 300.0)
+            coordinator._log_night_predrain(result, inputs, config)
+    assert len(_predrain_info_lines(caplog, logging.INFO)) == 1
+
+
+async def test_predrain_log_material_changes_log(hass, caplog):
+    """A start shift >= 30 min, an energy change >= 200 Wh and a block on a
+    NEW day are each material and log a fresh INFO line."""
+    import logging
+    from unittest.mock import patch
+
+    entry, coordinator = await _setup(hass, [], [])
+    sub_id = next(iter(entry.subentries))
+    config = coordinator.build_system_config()
+    t0 = datetime(2026, 7, 19, 2, 0, tzinfo=UTC)
+
+    def _log(moment, inputs, result):
+        with patch.object(dt_util, "utcnow", return_value=moment):
+            coordinator._log_night_predrain(result, inputs, config)
+
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        _log(t0, _log_inputs(), _block_result_wh(sub_id, 300.0))
+        assert len(_predrain_info_lines(caplog, logging.INFO)) == 1
+
+        # Start shifted 45 min (past the rate window): material -> new line.
+        _log(
+            t0 + timedelta(minutes=61),
+            _log_inputs(minute_offset=45),
+            _block_result_wh(sub_id, 300.0),
+        )
+        assert len(_predrain_info_lines(caplog, logging.INFO)) == 2
+
+        # Energy +250 Wh at the same start (again past the window): new line.
+        _log(
+            t0 + timedelta(minutes=122),
+            _log_inputs(minute_offset=45),
+            _block_result_wh(sub_id, 550.0),
+        )
+        assert len(_predrain_info_lines(caplog, logging.INFO)) == 3
+
+        # A block on a new day is a new booking: logs even inside the window.
+        _log(
+            t0 + timedelta(minutes=123),
+            _log_inputs(day=20),
+            _block_result_wh(sub_id, 550.0),
+        )
+        lines = _predrain_info_lines(caplog, logging.INFO)
+        assert len(lines) == 4
+        assert "2026-07-20" in lines[-1].message
+
+
+async def test_predrain_log_rate_limit_bounds_oscillation(hass, caplog):
+    """A forecast oscillating ACROSS the material threshold every cycle is
+    bounded to one INFO line per block per hour; suppressed changes go to
+    DEBUG and surface once the window passes."""
+    import logging
+    from unittest.mock import patch
+
+    entry, coordinator = await _setup(hass, [], [])
+    sub_id = next(iter(entry.subentries))
+    config = coordinator.build_system_config()
+    t0 = datetime(2026, 7, 19, 2, 0, tzinfo=UTC)
+
+    with caplog.at_level(logging.DEBUG):
+        caplog.clear()
+        with patch.object(dt_util, "utcnow", return_value=t0):
+            coordinator._log_night_predrain(
+                _block_result_wh(sub_id, 300.0), _log_inputs(), config
+            )
+        # Oscillate 04:00 <-> 04:45 (45 min apart: material) every minute.
+        for cycle in range(1, 7):
+            offset = 45 if cycle % 2 else 0
+            with patch.object(
+                dt_util, "utcnow", return_value=t0 + timedelta(minutes=cycle)
+            ):
+                coordinator._log_night_predrain(
+                    _block_result_wh(sub_id, 300.0),
+                    _log_inputs(minute_offset=offset),
+                    config,
+                )
+        # One initial INFO only; the oscillation was rate-limited to DEBUG.
+        assert len(_predrain_info_lines(caplog, logging.INFO)) == 1
+        assert len(_predrain_info_lines(caplog, logging.DEBUG)) >= 1
+        # Once the rate window passes the pending material change logs.
+        with patch.object(dt_util, "utcnow", return_value=t0 + timedelta(minutes=61)):
+            coordinator._log_night_predrain(
+                _block_result_wh(sub_id, 300.0),
+                _log_inputs(minute_offset=45),
+                config,
+            )
+        lines = _predrain_info_lines(caplog, logging.INFO)
+        assert len(lines) == 2
+        assert "04:45" in lines[-1].message

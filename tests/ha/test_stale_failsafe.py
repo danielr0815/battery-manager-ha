@@ -480,7 +480,7 @@ async def test_watchdog_no_false_alarm_at_standby(hass):
 
 async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):
     """Under expected load the SOC MUST move: once the accumulated expected
-    throughput exceeds the mid-band drift allowance (capacity x 2 %) without
+    throughput exceeds the mid-band drift allowance (capacity x 3 %) without
     a SOC change, the reading latches stale and routes into UpdateFailed; the
     first changed reading releases."""
     calls: list[tuple[str, str]] = []
@@ -491,8 +491,8 @@ async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):
     assert expected is not None and abs(expected) >= 300.0, (
         f"midday scenario must expect >= 300 W battery flow, got {expected}"
     )
-    # Deterministic allowance: 5000 Wh x 2 % = 100 Wh; at 1000 W expected
-    # flow that accumulates in 6 min. The plan-derived expectation is
+    # Deterministic allowance: 5000 Wh x 3 % = 150 Wh; at 1000 W expected
+    # flow that accumulates in 9 min. The plan-derived expectation is
     # re-seeded after each successful refresh (each plan recomputes it) so
     # the accumulation below is exactly what is asserted. The setup refresh
     # already seeded the evidence — restart it so t1 is the epoch.
@@ -505,18 +505,43 @@ async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):
 
     coordinator._expected_battery_power_w = 1000.0
     await _refresh_at(hass, coordinator, t1 + timedelta(minutes=5))
-    assert coordinator._house_soc_stale is None  # 83 Wh < 100 Wh allowance
+    assert coordinator._house_soc_stale is None  # 83 Wh < 150 Wh allowance
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
-    assert coordinator._house_soc_stale == 55.0  # 117 Wh > 100 Wh: latched
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=10))
+    assert coordinator._house_soc_stale == 55.0  # 167 Wh > 150 Wh: latched
     assert not coordinator.last_update_success  # routed into UpdateFailed
 
     _set_soc(hass, coordinator, "56")
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=8))
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=11))
     assert coordinator._house_soc_stale is None  # unlatched on the change
     assert coordinator.last_update_success
     assert coordinator._data_stale_since is None  # short episode, no shed
+
+
+async def test_watchdog_mid_band_covers_display_quantization(hass):
+    """The mid-band default is 3 % of capacity (2 % physical drift + 1 %
+    Victron display quantization, const.py CONF_HOUSE_SOC_STALE_MID_PERCENT):
+    the OLD 2 % allowance (100 Wh at 5 kWh) must NOT latch anymore — a frozen
+    reading only proves itself stale past the 150 Wh line."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications)
+
+    coordinator._house_soc_frozen = None
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)  # seeds the frozen evidence
+    assert coordinator._house_soc_stale is None
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=6))
+    # 100 Wh == the pre-fix 2 % allowance: covered by the quantization headroom.
+    assert coordinator._house_soc_stale is None
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=10))
+    assert coordinator._house_soc_stale == 55.0  # 167 Wh > 150 Wh: latched
 
 
 async def test_watchdog_edge_band_needs_larger_drift(hass):
@@ -529,7 +554,7 @@ async def test_watchdog_edge_band_needs_larger_drift(hass):
     _set_soc(hass, coordinator, "90")
 
     # Edge allowance: 5000 Wh x 7 % = 350 Wh; at 1000 W expected flow that
-    # accumulates in 21 min (the mid-band 100 Wh mark passes silently).
+    # accumulates in 21 min (the mid-band 150 Wh mark passes silently).
     coordinator._expected_battery_power_w = 1000.0
     t1 = MIDDAY + timedelta(minutes=2)
     await _refresh_at(hass, coordinator, t1)  # seeds the frozen 90 % evidence
@@ -547,7 +572,7 @@ async def test_watchdog_edge_band_needs_larger_drift(hass):
 async def test_watchdog_band_boundary_87_is_mid(hass):
     """The high edge bound is 88 (the Victron calibration plateau includes
     89): a frozen 87.0 % reading still falls in the mid band and latches at
-    the 2 % allowance."""
+    the 3 % allowance."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
     _entry, coordinator = await _setup(hass, calls, notifications)
@@ -559,8 +584,8 @@ async def test_watchdog_band_boundary_87_is_mid(hass):
     assert coordinator._house_soc_stale is None
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
-    assert coordinator._house_soc_stale == 87.0  # 117 Wh > 100 Wh mid allowance
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=10))
+    assert coordinator._house_soc_stale == 87.0  # 167 Wh > 150 Wh mid allowance
 
 
 async def test_watchdog_band_boundary_88_is_edge(hass):
@@ -588,7 +613,7 @@ async def test_watchdog_band_boundary_88_is_edge(hass):
 
 async def test_watchdog_edge_high_bound_is_configurable(hass):
     """The edge bounds are options: raising the high bound above the reading
-    moves it back into the mid band (2 %)."""
+    moves it back into the mid band (3 %)."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
     _entry, coordinator = await _setup(
@@ -605,7 +630,7 @@ async def test_watchdog_edge_high_bound_is_configurable(hass):
     assert coordinator._house_soc_stale is None
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=10))
     assert coordinator._house_soc_stale == 89.0  # mid band via the option
 
 
@@ -650,8 +675,8 @@ async def test_frozen_soc_escalates_into_stage2_shed(hass):
     t1 = MIDDAY + timedelta(minutes=2)
     await _refresh_at(hass, coordinator, t1)
     coordinator._expected_battery_power_w = 1000.0
-    # 7 min x 1000 W = 117 Wh: past the 100 Wh mid-band allowance.
-    t_latch = t1 + timedelta(minutes=7)
+    # 10 min x 1000 W = 167 Wh: past the 150 Wh mid-band allowance.
+    t_latch = t1 + timedelta(minutes=10)
     await _refresh_at(hass, coordinator, t_latch)
     assert coordinator._house_soc_stale == 55.0
     assert coordinator._data_stale_since == t_latch  # clock starts at latch

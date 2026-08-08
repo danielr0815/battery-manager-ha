@@ -137,17 +137,21 @@ die Empfehlung aus.
 > **⚠ Fossibot-Telemetrie friert ein.** Die Fossibot-Integration liefert
 > **Cached-Values mit frischen Zeitstempeln** — sie wird **nie**
 > `unavailable`, und ein Alters-Check (`last_changed`) greift deshalb nicht.
-> Beobachtet: SOC 87,5 % und Eingangsleistung **exakt 144 W** über **95 h**
-> eingefroren, während der Planer vier Tage lang denselben ~50-Wh-Top-up neu
-> buchte und damit ~0,4 kWh Entfeuchter-Slots verdrängte.
+> Beobachtet: SOC 87,5 % und Eingangsleistung **exakt 144 W** über **174,7 h**
+> (20.07. 13:30 → 27.07. 20:10 CEST; die früher hier notierten 95 h waren nur
+> ein Zwischenstand vom 24.07., Audit 07.08.2026) eingefroren, während der
+> Planer vier Tage lang denselben ~50-Wh-Top-up neu buchte und damit ~0,4 kWh
+> Entfeuchter-Slots verdrängte.
 >
 > Dagegen laufen **zwei** Wächter (Dokument 03):
 > **G2 Stale-SOC** (`STALE_LOAD_SOC_MIN = 12 min` exakt unveränderter SOC
 > während aktiven Ladens über der Standby-Bar) und **F4 Telemetry-Freeze**
 > (`FREEZE_STALE_HOURS = 6 h` SOC **und** Leistung exakt unverändert, während
 > die Empfehlung im Fenster mindestens einmal aktiv war). Beide halten die Last
-> `available = False`. Beide sind **rein in-memory** — ein Neustart baut sie neu
-> auf.
+> `available = False`. Beide sind **persistiert** (Latch + Evidenzuhr als
+> akkumulierte Sekunden — Audit 02.08.2026: ein Coordinator-Reload löschte den
+> F4-Latch, die Empfehlung duty-cyclete danach 110 min für ein abgestecktes
+> Gerät, ~225 Wh Fehlbuchung; Offline-Zeit zählt nicht als Evidenz).
 
 ### 1.6 Grid-Support 24 V / 48 V
 
@@ -255,8 +259,13 @@ History-Punkten korreliert, muss die Umrechnung explizit machen.
 ### 4.2 Logs ziehen
 
 - Supervisor-Endpoint `/api/hassio/core/logs` mit **Range-Header** liefert
-  praktisch **2–3 Tage** zurück. Mehr gibt es nicht — für längere Zeiträume
-  braucht es die Recorder-Historie bzw. Langzeitstatistiken.
+  praktisch **2–3 Tage** zurück — mit großzügigem Range auch deutlich mehr
+  (Audit 07.08.2026: `Range: entries=:-300000:` deckte 7+ Tage / 84 MB ab).
+  Mehr gibt es nicht — für längere Zeiträume braucht es die Recorder-Historie
+  bzw. Langzeitstatistiken.
+- **HA 2026.7:** `/api/error_log` existiert **nicht mehr** (404); das Logbuch
+  liegt unter `/api/logbook/<iso-datetime>` (ohne `period/`,
+  `?end_time=` optional). Die Core-Logs bleiben der Weg für Volltext.
 - Log-Level für die Integration bei Bedarf hochziehen:
   `logger: logs: custom_components.battery_manager: debug`. Auf DEBUG
   protokolliert der Planer je Last die Allokationen
@@ -382,7 +391,10 @@ watchdog latch cleared
 **Bedeutung:** der SOC blieb exakt unverändert, während der letzte gültige
 Plan ≥ 300 W Batteriefluss erwartete — so lange, bis der akkumulierte
 erwartete Durchsatz die Drift-Toleranz des SOC-Bands überstieg (Mitte
-13–89 %: `house_soc_stale_mid_percent`, Standard 2 % der Kapazität; Ränder
+13–89 %: `house_soc_stale_mid_percent`, Standard 3 % der Kapazität = 2 %
+physikalische Drift + 1 % Anzeige-Quantisierung der 1-%-Schritt-Victron-
+Quelle — Live-Audit 07.08.2026: 37 Fehl-Latches in 7 Tagen bei 2 %, einer
+nur 65 s unter der 2-h-Shed-Schwelle; Ränder
 < 13 % / > 89 %: `house_soc_stale_edge_percent`, Standard 7 %, weil
 BMS-Plateaus dort stundenlang normal sein können; unter 300 W pausiert die
 Akkumulation). Danach gilt der SOC als Datenverlust — es greift derselbe
@@ -455,7 +467,16 @@ nahtlos.
 F-PREDRAIN-BLOCK: pre-drain booked for <Last> 2026-08-02 05:00 -> 11:00 (1700 Wh)
 ```
 
-Eine INFO-Zeile **nur bei Änderung** der Buchung (kein Spam je Zyklus). Seit
+Eine INFO-Zeile **nur bei materieller Änderung** der Buchung (kein Spam je
+Zyklus). Der frühere rohe Triple-Vergleich (Last, Start, Ende) ratschte mit
+Uhr (Slot 0 deckt „jetzt") und Prognose (gebuchte Wh) — jede Coordinator-
+Runde sah eine „neue" Buchung: Live-Audit 31.07.–07.08.2026 zählte **4.196
+Zeilen in 7 Tagen** (04.08.: 1.753 ≈ 1/min). Geloggt wird jetzt nur bei
+neuem Block (andere Last/anderes Datum), Startverschiebung ≥ **30 min** oder
+Energieänderung ≥ **200 Wh** — zusätzlich ratenlimitiert auf 1 Zeile je
+Block pro Stunde; unterdrückte Änderungen landen auf DEBUG. Verglichen wird
+gegen die zuletzt **geloggte** Buchung, sodass ein langsam driftender Block
+beim Überschreiten der kumulativen Schwelle doch noch auftaucht. Seit
 v0.19.0 (F-PREDRAIN-BLOCK) ist der Pre-drain endloser Lasten EIN
 zusammenhängender Block bis zum heutigen SOC-Peak (kein Cross-day, keine
 Slot-Einzelwetten mehr); geschaltet wird er erst nach 3 identischen Plänen

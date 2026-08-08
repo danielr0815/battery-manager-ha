@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-07
+
+### Fixed
+- **The planner no longer simulates a DC forecast curve as if it were AC.**
+  Forecast sources whose `wh_period` hourly attributes are a DC model curve
+  while the entity state reports the AC day energy (balcony_solar_forecast
+  v0.25.x, verified live: Σwh_period 6.129 kWh vs. 5.649 kWh AC) fed the
+  AC-side simulation ~8.5 % too much PV — about 1.1 kWh of phantom energy per
+  normal day, which contributed to an avoidable 0.7 kWh grid import on
+  2026-08-07 (SOC fell to 13 %). The hourly maps (median and p10/p90 bands)
+  are now scaled by the ratio η = state / Σ(curve) derived from the same
+  entity, clamped to [0.5, 1.0]; sources whose state and curve are consistent
+  get η ≈ 1 (no-op), and explicit `wh_period_ac` attributes are preferred
+  when a forecaster offers them. Found in the 7-day plant audit
+  (2026-07-31 → 2026-08-07).
+- **The house-SOC stale watchdog no longer flaps against a 1 %-quantized SOC
+  source.** The mid-band drift allowance (2 % of capacity ≈ 100 Wh) sat only
+  two display steps above the Victron source's 1 % quantization, while the
+  planner's expected flow routinely overshoots the real flow by ~2× — the
+  audit counted 37 false latches in 7 days, ~7 h of steering blackout, one
+  episode 65 s short of the 2 h D-A8 load-shed tripwire. The default
+  `house_soc_stale_mid_percent` is now 3.0 (2 % physical drift + 1 % display
+  quantization). Installations with a persisted value keep it.
+- **A failed plug-ON no longer orphans the charge-enable gate.** When the
+  enable switch confirmed ON but the plug switch failed (2026-08-04, BLE RPC
+  error), the gate stayed on forever — no later path ever switched it off
+  (`desired == current`), voiding the firmware's protective threshold
+  (LOAD_CONTROL §3 "Charge enable OFF — always"; on the plant it sat on for
+  3.4 days). The ON sequence now rolls the enable back on plug failure, and a
+  dwell-exempt sweep turns off any gate that is physically on while its load
+  neither charges nor should charge.
+- **The F4 telemetry-freeze and G2 stale-SOC latches survive a reload.** They
+  were in-memory only: a coordinator reload on 2026-08-02 dropped an F4 latch
+  and the recommendation duty-cycled 110 min for a verifiably unplugged load
+  (~225 Wh misbooked). The latches now persist their reference values and
+  accumulated evidence seconds — downtime itself still does not count as
+  freeze evidence.
+- **The F-PREDRAIN-BLOCK log line is back to "on change" instead of once a
+  minute.** The booking signature ratcheted with the clock, producing 4,196
+  INFO lines in 7 days (1,753 on 2026-08-04 alone). A booking now logs only
+  when it materializes or materially changes (start shifted ≥ 30 min or
+  energy ≥ 200 Wh), rate-limited to one line per block per hour; suppressed
+  updates go to DEBUG.
+
 ## [0.24.1] - 2026-08-03
 
 ### Fixed

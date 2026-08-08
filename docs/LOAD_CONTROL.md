@@ -47,7 +47,14 @@ the operator switches via automation.
   1. Remember whether the input was already on (→ "foreign ownership",
      passthrough).
   2. Charge enable ON.
-  3. Input ON (if off).
+  3. Input ON (if off) — on failure after step 2 confirmed, the enable is
+     **rolled back OFF** immediately (WARNING; audit 2026-08-04: without the
+     rollback the gate stayed orphaned ON for 3.4 days — charging never
+     becomes active, so no later path ever reaches the gate — bypassing the
+     legacy automation's 20 % firmware floor and violating the OFF rule
+     below). If the rollback OFF fails too (WARNING), a cyclic sweep in the
+     decision pass turns off any gate that is physically ON while the load
+     neither charges nor shall charge.
 - **Charge end (no more planned hour / load saturated):**
   1. Charge enable OFF — always.
   2. Input OFF — **only if the integration switched it on itself**
@@ -251,7 +258,11 @@ reports a **different** value (charging or not; INFO once). The evidence clock
 measures continuous charging against a frozen value, not wall time: it resets
 when charging stops or the sample bar is not met (an end-of-charge taper never
 accumulates false evidence), and loads without a SOC or power-feedback entity
-never latch. In-memory only — a restart re-detects within minutes. The
+never latch. The latch and the evidence clock **survive restarts/reloads**
+(persisted as accumulated seconds — downtime is not charging evidence, so
+the clock resumes from the survived accumulation; audit 2026-08-02: a reload
+that dropped the sibling F4 telemetry-freeze latch duty-cycled a
+demonstrably unplugged device for 110 min, ~225 Wh misbooked). The
 per-load diagnostics expose `soc_stale`.
 
 ## 11. Floor guard — surplus loads never run grid-fed (v0.13.1)
@@ -382,7 +393,10 @@ accumulation pauses (standby/float — a constant SOC is physically correct
 there, no evidence either way), and only a CHANGED reading resets it, so
 duty-cycled flow still accumulates. The latch fires once the accumulated
 energy exceeds the band's drift allowance: `house_soc_stale_mid_percent`
-(default 2 % of capacity) in the mid band, `house_soc_stale_edge_percent`
+(default 3 % of capacity = 2 % physical drift + 1 % display quantization of
+the 1-%-step Victron SOC source — the 2026-08-07 live audit counted 37 false
+latches in 7 days at the old 2 %, one latch only 65 s short of the 2-h
+stage-2 shed threshold) in the mid band, `house_soc_stale_edge_percent`
 (default 7 %) at the plateau-prone ends. The ends' SOC bounds are options
 too: `house_soc_stale_edge_low_soc` / `house_soc_stale_edge_high_soc`
 (defaults 13 % / 88 %, both INCLUSIVE — the Victron calibration plateau
@@ -444,7 +458,10 @@ block leaves the plan, the normal dwell logic applies, and G4 stays the
 backstop. Block window + stability progress are exposed per load as the
 `predrain_block` sensor attribute; the INFO line is
 `F-PREDRAIN-BLOCK: pre-drain booked for <load> <start> -> <end> (<wh> Wh)`
-(FIX-11 change-only semantics).
+(FIX-11 change-only semantics, hardened after the 2026-08-07 live audit —
+4,196 lines in 7 days from clock/forecast ratcheting: now material changes
+only — new block, start shifted >= 30 min, energy changed >= 200 Wh —
+rate-limited to one line per block per hour, suppressed changes at DEBUG).
 
 ## 18. At-max top-up (F-PEAK-FILL, v0.20.0)
 

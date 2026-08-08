@@ -163,10 +163,12 @@ wird sie dafür neu simuliert.
 
 ### 3.1 Topologie
 
-PV speist die **AC-Seite**. Die Batterie lädt ausschließlich über den
-AC→DC-Charger und entlädt ausschließlich über den DC→AC-Inverter. DC-Lasten
-hängen direkt an der Batterie. `step_hour` mutiert nichts und gibt einen
-`HourFlows` zurück.
+PV speist die **AC-Seite**. (Der Coordinator liefert die Stundenkurve
+bereits AC-skaliert — η-Ableitung aus State vs. Kurvensumme: siehe
+01-architektur-und-datenfluss.md §4.2.) Die Batterie lädt ausschließlich
+über den AC→DC-Charger und entlädt ausschließlich über den DC→AC-Inverter.
+DC-Lasten hängen direkt an der Batterie. `step_hour` mutiert nichts und
+gibt einen `HourFlows` zurück.
 
 ### 3.2 Reihenfolge in `step_hour`
 

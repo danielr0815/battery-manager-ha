@@ -200,7 +200,9 @@ band-abhängige Haus-SOC-Stale-Wächter** (`_update_house_soc_watchdog`, seit
 v0.18.0) erkennt einen mit frischen Zeitstempeln eingefrorenen SOC — erst,
 wenn der akkumulierte erwartete Batteriedurchsatz die Drift-Toleranz des
 SOC-Bands übersteigt (Mitte 13–89 %: `house_soc_stale_mid_percent`, Standard
-2 % der Kapazität; Ränder < 13 % / > 89 %: `house_soc_stale_edge_percent`,
+3 % der Kapazität = 2 % Drift + 1 % Anzeige-Quantisierung, siehe §5.3 in
+05-anlage-und-betrieb-runbook.md; Ränder < 13 % / > 89 %:
+`house_soc_stale_edge_percent`,
 Standard 7 %, weil BMS-Plateaus dort normal sind) — und lässt `_get_soc`
 `None` liefern, und bei anhaltendem Datenverlust feuert die **D-A8-Stufe-2**
 nach `STALE_LOAD_SHED_HOURS = 2` h einmalig das Fail-safe-Abschalten aller
@@ -233,6 +235,22 @@ Zusätzlich liest `_read_wh_period` je Entity drei Attribute:
 Parse-Regeln: Keys über `dt_util.parse_datetime`; naive Keys gelten als
 **lokal**, aware Keys werden nach lokal konvertiert und naiv gemacht. NaN/±inf
 werden verworfen, negative Werte auf 0 geklemmt (FIX-9).
+
+**AC-Skalierung (Live-Audit 31.07.–07.08.2026):** eine Quelle kann
+`wh_period` als **DC-Modellkurve** liefern, während ihr State die
+**AC**-Tagesenergie ist (balcony_solar_forecast: Σ Buckets == sein
+`..._today_dc`-State; AC-State = Σ × 0,9215 gelerntes Wirkungsgrad-Skalar) —
+unverändert übernommen plante die AC-seitige Simulation ~8,5 % zu viel PV
+ein (07.08.: 0,7 kWh vermeidbarer Netzbezug). `_pv_curve_ac_factor` leitet
+darum pro Entity η = State(Wh) / Σ(Kurve) ab und `_get_pv_hourly` skaliert
+Median **und** beide Bänder mit demselben η, bevor der FIX-4-Cache die
+bereits skalierten Maps speichert (kein doppeltes Skalieren beim Replay).
+Konsistente Quellen erhalten η ≈ 1 (No-op); η wird auf [0,5; 1,0] geklemmt
+(`PV_CURVE_AC_ETA_MIN`); nicht ableitbares η (State fehlt/ungültig/≤ 0 oder
+Einheit unbekannt — bewusst kein kWh-Fallback wie bei `_energy_unit_factor`)
+bleibt 1.0. Bietet eine Entity explizite AC-Attribute (`wh_period_ac` /
+`wh_period_ac_p10` / `wh_period_ac_p90`), werden diese **stattdessen**
+gelesen und nie skaliert.
 
 `_get_pv_hourly` cached **pro Entity** `(median, p10, p90, timestamp)` in
 `_pv_hourly_by_entity` — d.h. Median und Bänder stammen garantiert aus
@@ -443,10 +461,13 @@ Inhalt laut `_persistent_payload`:
   würde er die gesamte Ausfallzeit gutschreiben.
 - `_load_deviation_since` — der F-L7-Dwell-Timer (eine noch nicht ausgelöste
   Abweichung wird nicht über die Downtime gerettet).
-- `_load_soc_frozen`/`_load_soc_stale` (G2), `_load_freeze_ref`/
-  `_load_freeze_stale` (F4), `_load_last_off`/`_load_flicker_hist` (F8),
+- `_load_last_off`/`_load_flicker_hist` (F8),
   `_load_latch_hold` (F10), `_floor_guard_active`, `_load_tank_notified` —
   alle rein in-memory, sie bauen sich nach einem Neustart neu auf.
+  (G2 `_load_soc_frozen`/`_load_soc_stale` und F4 `_load_freeze_ref`/
+  `_load_freeze_stale` standen bis zum Live-Audit 02.08.2026 ebenfalls in
+  dieser Liste — seitdem sind Latch + Evidenzuhr persistiert, siehe
+  Dokument 03 §3.2/3.3.)
 - `_realized_last_ts`, `_realized_relearn`, `_realized_runtime_base`
   (F-REALIZED-SURPLUS) — das Zeitfenster des Sprungfilters, die
   Ausfall-Markierungen und die Laufzeit-Checkpoints. Ein wiederhergestelltes

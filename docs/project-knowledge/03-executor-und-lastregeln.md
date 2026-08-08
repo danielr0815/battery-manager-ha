@@ -77,7 +77,15 @@ Latch-Hold hat also Vorrang vor der Deadline-Logik (eine alte Sub-Stunden-
 Deadline aus einem früheren Normallauf wird beim Hold **gelöscht**, damit der
 gehaltene Lauf nicht zwangsabgeschaltet wird), aber **nie** vor G4.
 
-Ist `desired == current`, passiert nichts (`continue`).
+Ist `desired == current`, passiert nichts (`continue`) — mit einer Ausnahme
+(Audit 04.08.2026): steht das Charge-Enable-Gate physisch auf `on`, obwohl
+die Last weder lädt noch laden soll (`desired == current == False`), reiht
+der **Orphan-Sweep** ein OFF ein. Genau dieser Zustand war nach einem
+fehlgeschlagenen Stecker-ON für jeden anderen Pfad unerreichbar — live stand
+das Gate 3,4 Tage verwaist auf AN (LOAD_CONTROL.md §3: das Gate darf nur
+während aktiver Ladung an sein). Der Sweep ist dwell-exempt (das Gate
+schaltet keinen Laststrompfad, G1-Argument in §2.3) und rührt den Stecker
+nicht (Ownership/Policy laufen über den normalen OFF-Zweig).
 
 ### 2.3 Dwell-Auswahl (Split-Dwell, F-SUBHOUR R14)
 
@@ -115,9 +123,14 @@ Unter `self._switch_lock`, je Aktion:
   ON, wird sie verworfen („dropping queued switch-ON") — der Guard kann
   getrippt sein, *nachdem* das ON eingereiht wurde.
 - **ON**: erst Charge-Enable an (bei Fehlschlag Abbruch), dann — falls nicht
-  schon an — den Stecker (Erfolg ⇒ `_load_plug_owned = True`);
-  `charging_active = True`, Dwell-Stempel, `_load_last_off` löschen,
-  Deadline einfrieren (§5), **eine** INFO-Zeile.
+  schon an — den Stecker (Erfolg ⇒ `_load_plug_owned = True`). Schlägt der
+  Stecker-ON fehl, nachdem das Enable bereits AN bestätigt wurde, rollt der
+  Executor das Enable sofort wieder zurück (WARNING) — sonst bliebe das Gate
+  für immer verwaist AN (Audit 04.08.2026: 3,4 Tage live; `charging_active`
+  bleibt False, also erreicht kein späterer Pfad das Gate je wieder).
+  Scheitert auch das Rollback-OFF (erneute WARNING), übernimmt der
+  Orphan-Sweep aus §2.2; `charging_active = True`, Dwell-Stempel,
+  `_load_last_off` löschen, Deadline einfrieren (§5), **eine** INFO-Zeile.
 - **OFF**: Policy prüfen (`INPUT_OFF_POLICY_AUTO` / `ALWAYS` / `KEEP`), erst
   Charge-Enable aus (kein Bestätigung ⇒ Abbruch, Laden läuft ja weiter), dann
   ggf. Stecker aus; danach `plug_owned = False`, `charging_active = False`,
@@ -185,6 +198,12 @@ Power-Entity latchen nie (keine Evidenz, R7).
 **Release**: irgendeine *andere* Live-Lesung, egal ob geladen wird oder nicht
 (INFO einmalig).
 
+**Persistenz** (Audit 02.08.2026): Latch und Evidenzuhr überleben einen
+Coordinator-Reload — persistiert werden der eingefrorene Wert und die
+**akkumulierten Sekunden**, nicht der Wandzeit-Start: Offline-Zeit ist keine
+Ladeevidenz, also läuft die Uhr nach dem Reload mit der überlebten Evidenz
+weiter statt bei null (und ohne die Downtime gutzuschreiben).
+
 **Wirkung**: `available = False` in `_get_load_states` ⇒ der Planer bucht die
 Last nicht mehr gegen ein eingefrorenes `remaining`, und das plan-getriebene
 OFF läuft durch den normalen Executor-Pfad.
@@ -193,7 +212,9 @@ OFF läuft durch den normalen Executor-Pfad.
 
 Redundanter Wächter **nur für energielimitierte Lasten**, unabhängig vom
 Schaltpfad und von G2. Anlass: der Fossibot B2 (Empfehlungslast) fror SOC
-**und** Eingangsleistung 95 h lang bei 87,5 % / exakt 144 W ein, während der
+**und** Eingangsleistung 174,7 h lang bei 87,5 % / exakt 144 W ein (20.07.
+13:30 → 27.07. 20:10 CEST; „95 h" war der Zwischenstand vom 24.07., Audit
+07.08.2026), während der
 Planer vier Tage lang denselben ~50-Wh-Topup neu buchte, die Empfehlung im
 15-Minuten-Raster duty-cyclete und ~0,4 kWh Entfeuchter-Slots verdrängte —
 ohne eine einzige Warnung.
@@ -207,7 +228,12 @@ dieselbe Konsequenz wie G2. Release: irgendeine Änderung von SOC oder Leistung
 Ein simpler `last_changed`-Watchdog ist bewusst vermieden: gecachte Werte
 tragen frische Zeitstempel, ein legitim untätiges Gerät würde falsch
 auslösen. Der Schlüssel ist **exakte Stasis trotz aktiver Empfehlung über
-Stunden**. In-Memory (ein Neustart akkumuliert neu).
+Stunden**. Latch und Evidenzuhr sind persistiert (Audit 02.08.2026: ein
+Coordinator-Reload löschte den Latch, die Empfehlung duty-cyclete danach
+110 min für ein nachweislich abgestecktes Gerät — ~225 Wh Fehlbuchung; der
+Präzedenz-Freeze lief 174,7 h, ein Reload darf die 6-h-Evidenz nicht bei
+null neu aufbauen). Semantik wie G2: akkumulierte Sekunden, Offline-Zeit
+zählt nicht als Freeze-Evidenz.
 
 Beide Latches werden nach außen als `load_plans[id]["soc_stale"]` gemeldet
 (True, wenn G2 **oder** F4 greift).
