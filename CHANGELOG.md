@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-08-08
+
+### Fixed
+- **Appliance detection: a dropout longer than 30 minutes now means "off".**
+  Until now the latched running state of an appliance (washing machine,
+  dishwasher, …) was held for as long as its detection entity stayed
+  `unavailable`/`unknown` — meant to bridge short soak-phase gaps, but a
+  switched-off appliance takes its whole integration offline for hours.
+  Live incident 2026-08-08: the washer finished at 22:00 and its detection
+  entity went offline until 08:43 next morning; the stale latch hid a real
+  08:17 run until ~08:45, so the planner booked early feed-in (re-anchor
+  pulses down to −1010 W) against a load it could not see. The coordinator
+  now tracks the dropout duration per appliance
+  (`APPLIANCE_DETECTION_MAX_DROPOUT_MIN = 30`): below the limit the latch is
+  held as before (soak phases), past it the device is assumed off — latch and
+  persisted start are dropped, no run is planned, and a genuinely new run is
+  anchored fresh the moment the entity reports "running" again.
+
 ## [0.25.1] - 2026-08-08
 
 ### Fixed

@@ -342,7 +342,14 @@ Ist-Leistung sind topologieunabhängig (rohe Watt des Geräts).
 `power_threshold_w`, Halten bis unter `off_threshold_w` (Default = der
 On-Schwelle, also ohne Hysterese, solange nichts Kleineres konfiguriert ist);
 nichtnumerische Entities gegen `APPLIANCE_RUNNING_STATES`. Bei Entity-Dropout
-wird der letzte gelatchte Zustand gehalten.
+wird der letzte gelatchte Zustand gehalten — aber nur bis
+`APPLIANCE_DETECTION_MAX_DROPOUT_MIN` (30 min, Operator-Regel nach Vorfall
+2026-08-08: ein ausgeschaltetes Gerät nimmt seine Integration für Stunden
+offline und darf nicht ewig „running" bleiben). `_get_appliance_runs` zählt
+die Dropout-Dauer je Subentry (`_appliance_dropout_since`); nach Überschreiten
+gilt das Gerät als **aus**: Latch und persistierter Start werden verworfen,
+kein Run geplant. Kommt die Entity später als „running" zurück, wird sauber
+ein frischer Lauf verankert.
 
 `_get_appliance_runs` bildet daraus `ApplianceRun(remaining_energy_wh,
 remaining_hours)`. Der Startzeitpunkt wird persistiert; nach einem Neustart

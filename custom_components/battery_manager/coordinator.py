@@ -25,6 +25,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
     APPLIANCE_RUNNING_STATES,
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_OFF_THRESHOLD_W,
@@ -436,6 +437,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # check in _get_appliance_runs, so a run that finished during downtime
         # cannot pin a genuinely-new run at 0 remaining.
         self._appliance_started_restored: set[str] = set()
+        # Dropout clock per appliance: a switched-off appliance takes its
+        # integration offline for hours (2026-08-08 incident: the washer's
+        # frontlader entities were unavailable 22:00 → 08:43 while a run
+        # started unseen). After APPLIANCE_DETECTION_MAX_DROPOUT_MIN of
+        # continuous dropout the run is treated as OFF (operator rule) —
+        # shorter dropouts keep holding the latch (soak phases).
+        self._appliance_dropout_since: dict[str, datetime] = {}
         # Robust planning-power estimation (docs/F-ROBUST-POWER.md): per load
         # a rolling buffer of ACCEPTED (timestamp, watts) samples — only
         # readings past the v0.6.2 standby bar while the load runs at BM's
@@ -2817,7 +2825,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         on threshold, i.e. no hysteresis unless configured lower). A brief
         sub-threshold dip during a run (e.g. a dishwasher soak between heater
         bursts) therefore does not reset the run clock and re-inject the full
-        energy. During an entity dropout the last (latched) state is held."""
+        energy. During an entity dropout the last (latched) state is held —
+        but only up to APPLIANCE_DETECTION_MAX_DROPOUT_MIN, which the caller
+        (_get_appliance_runs) enforces before delegating here."""
         entity_id = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
         if not entity_id:
             return False
@@ -2838,7 +2848,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
                 continue
             data = subentry.data
-            if self._appliance_is_running(data, subentry_id in self._appliance_started):
+            entity_id = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
+            state = self.hass.states.get(entity_id) if entity_id else None
+            if state is None or state.state in ("unknown", "unavailable"):
+                # Detection dropout (operator rule, incident 2026-08-08 — see
+                # APPLIANCE_DETECTION_MAX_DROPOUT_MIN): hold the latch across
+                # short gaps (a soak phase looks identical), but once the
+                # dropout lasts longer than the limit assume the device is
+                # OFF — a switched-off appliance takes its integration offline
+                # for hours and must not stay "running" (and must not hide a
+                # fresh run once it comes back).
+                since = self._appliance_dropout_since.setdefault(subentry_id, now)
+                if now - since >= timedelta(
+                    minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN
+                ):
+                    self._appliance_started.pop(subentry_id, None)
+                    self._appliance_started_restored.discard(subentry_id)
+                    self._appliance_dropout_since.pop(subentry_id, None)
+                    continue
+                running = subentry_id in self._appliance_started
+            else:
+                self._appliance_dropout_since.pop(subentry_id, None)
+                running = self._appliance_is_running(
+                    data, subentry_id in self._appliance_started
+                )
+            if running:
                 started = self._appliance_started.setdefault(subentry_id, now)
                 duration = float(data[CONF_APPLIANCE_RUN_DURATION_H])
                 elapsed_h = (now - started).total_seconds() / 3600.0

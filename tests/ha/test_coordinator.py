@@ -942,6 +942,124 @@ async def test_appliance_stale_start_reanchors_after_restart(hass):
     assert coordinator._appliance_started[sub_id] == now
 
 
+async def test_appliance_long_dropout_is_treated_as_off(hass):
+    """Operator rule (incident 2026-08-08): a switched-off appliance takes its
+    integration offline, so the detection entity goes unavailable for hours.
+    Short dropouts (< 30 min) keep the latched run (soak-phase gaps), a longer
+    one means OFF: the latch is dropped, no run is planned, and a fresh run is
+    detected cleanly once the entity returns."""
+    from datetime import timedelta
+
+    import homeassistant.util.dt as dt_util
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_POWER_THRESHOLD_W,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    _set_input_states(hass)
+    hass.states.async_set("sensor.dw_power", "500")  # appliance running
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.dw_power",
+                    CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 2.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Dishwasher",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    sub_id = next(iter(entry.subentries))
+    now = dt_util.utcnow()
+    assert len(coordinator._get_appliance_runs(now)) == 1  # latched, run booked
+
+    # Dropout begins; below the limit the latch (and the planned run) is held.
+    hass.states.async_set("sensor.dw_power", "unavailable")
+    t_drop = now + timedelta(minutes=5)
+    assert len(coordinator._get_appliance_runs(t_drop)) == 1
+    short = t_drop + timedelta(minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN - 5)
+    assert len(coordinator._get_appliance_runs(short)) == 1
+
+    # Past the limit the device is assumed off: latch dropped, no run planned.
+    long = t_drop + timedelta(minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN + 1)
+    assert coordinator._get_appliance_runs(long) == ()
+    assert sub_id not in coordinator._appliance_started
+    # A continuing dropout stays off (no stale 30-min re-arming).
+    assert coordinator._get_appliance_runs(long + timedelta(hours=5)) == ()
+
+    # The entity returns running -> a FRESH run is anchored at the return time.
+    hass.states.async_set("sensor.dw_power", "500")
+    t_back = long + timedelta(hours=6)
+    runs = coordinator._get_appliance_runs(t_back)
+    assert len(runs) == 1
+    assert coordinator._appliance_started[sub_id] == t_back
+    assert sub_id not in coordinator._appliance_dropout_since
+
+
+async def test_appliance_dropout_without_latch_stays_off(hass):
+    """A dropout while NO run is latched stays off indefinitely (nothing to
+    hold, nothing to pop) — the 30-min rule only ever releases a latch."""
+    from datetime import timedelta
+
+    import homeassistant.util.dt as dt_util
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_POWER_THRESHOLD_W,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    _set_input_states(hass)
+    hass.states.async_set("sensor.dw_power", "unavailable")  # off from the start
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.dw_power",
+                    CONF_APPLIANCE_POWER_THRESHOLD_W: 20.0,
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 2.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Dishwasher",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = dt_util.utcnow()
+    assert coordinator._get_appliance_runs(now) == ()
+    assert coordinator._get_appliance_runs(now + timedelta(hours=2)) == ()
+
+
 # ---------------------------------------------------------------------------
 # F-LOAD-PRIORITY R3/R7: SystemConfig.loads is built in effective priority
 # order (stored per-load priority; legacy fallback: insertion position).

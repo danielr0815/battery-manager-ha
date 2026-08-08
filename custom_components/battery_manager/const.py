@@ -415,6 +415,15 @@ CONF_APPLIANCE_OPPORTUNISTIC = "opportunistic_start"
 # States of a detection entity considered "running" (non-numeric entities)
 APPLIANCE_RUNNING_STATES = {"on", "run", "running", "washing", "active", "wash"}
 
+# Operator rule (incident 2026-08-08): a switched-off appliance takes its
+# integration offline, so the detection entity goes unavailable for hours — the
+# latch must NOT be held that long (a washer that finished at 22:00 was still
+# "running" at 08:43 next morning and a real 08:17 run was missed until 08:45,
+# letting the planner book early feed-in against an unknown load). Short
+# dropouts (< this many minutes) are soak-phase gaps → keep the latched state;
+# longer ones mean "device off" → drop the latch and plan no run.
+APPLIANCE_DETECTION_MAX_DROPOUT_MIN = 30
+
 # --- F-PREDRAIN two-buffer pre-drain (docs/F-PREDRAIN.md §3, WP3) ---
 # System-level planner options. The core dataclass defaults are NEUTRAL (ratio
 # 0.0, confidences 1.0, gate off) so the goldens stay frozen; these RECOMMENDED
