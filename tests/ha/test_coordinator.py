@@ -1122,6 +1122,55 @@ async def test_appliance_run_is_published_for_the_card(hass):
     assert coordinator.data["appliance_plans"] == []
 
 
+async def test_appliance_cycle_phase_states_count_as_running(hass):
+    """Live incident 2026-08-08: a frontlader/gorenje washer reports its run as
+    running -> rinsing -> spinning. Only "running" matched
+    APPLIANCE_RUNNING_STATES, so the run (and the card lane) vanished
+    mid-cycle although the machine was still working."""
+    import homeassistant.util.dt as dt_util
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_APPLIANCE_DETECTION_ENTITY,
+        CONF_APPLIANCE_RUN_DURATION_H,
+        CONF_APPLIANCE_RUN_ENERGY_WH,
+        SUBENTRY_TYPE_APPLIANCE,
+    )
+
+    _set_input_states(hass)
+    hass.states.async_set("sensor.wm_status", "running")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.wm_status",
+                    CONF_APPLIANCE_RUN_ENERGY_WH: 1000.0,
+                    CONF_APPLIANCE_RUN_DURATION_H: 2.0,
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Washer",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = dt_util.utcnow()
+    assert len(coordinator._get_appliance_runs(now)) == 1
+    for phase in ("rinsing", "spinning", "drying"):
+        hass.states.async_set("sensor.wm_status", phase)
+        runs = coordinator._get_appliance_runs(now)
+        assert len(runs) == 1, phase
+    hass.states.async_set("sensor.wm_status", "off")
+    assert coordinator._get_appliance_runs(now) == ()
+
+
 # ---------------------------------------------------------------------------
 # F-LOAD-PRIORITY R3/R7: SystemConfig.loads is built in effective priority
 # order (stored per-load priority; legacy fallback: insertion position).

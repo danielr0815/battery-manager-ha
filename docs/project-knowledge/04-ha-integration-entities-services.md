@@ -756,7 +756,7 @@ schreibfrei.
 | Feld | Default | Bereich | Wirkung |
 |---|---|---|---|
 | `name` | – | Text | Subentry-Titel |
-| `detection_entity` | – (Pflicht) | beliebige Entity | Erkennungsquelle: numerisch = Leistung, sonst Zustandsvergleich gegen `APPLIANCE_RUNNING_STATES = {on, run, running, washing, active, wash}` |
+| `detection_entity` | – (Pflicht) | beliebige Entity | Erkennungsquelle: numerisch = Leistung, sonst Zustandsvergleich gegen `APPLIANCE_RUNNING_STATES = {on, run, running, washing, active, wash, rinsing, spinning, drying}` (die drei Letzteren seit v0.25.4 — Frontlader-Phasen, sonst bricht die Erkennung mitten im Zyklus ab) |
 | `power_threshold_w` | 10 | 1…3000 W | **Einschalt**schwelle der Lauferkennung |
 | `off_threshold_w` | 5 | 0…3000 W | **Ausschalt**schwelle (Hysterese). **Back-Compat:** fehlt der Schlüssel, ist der Formulardefault die On-Schwelle — also *keine* Hysterese, exakt der Coordinator-Fallback |
 | `run_energy_wh` | 1000 | 10…10 000 Wh | Energie eines vollen Laufs — speist `ApplianceRun.remaining_energy_wh` |

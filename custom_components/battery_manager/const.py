@@ -412,8 +412,22 @@ CONF_APPLIANCE_RUN_ENERGY_WH = "run_energy_wh"
 CONF_APPLIANCE_RUN_DURATION_H = "run_duration_h"
 CONF_APPLIANCE_OPPORTUNISTIC = "opportunistic_start"
 
-# States of a detection entity considered "running" (non-numeric entities)
-APPLIANCE_RUNNING_STATES = {"on", "run", "running", "washing", "active", "wash"}
+# States of a detection entity considered "running" (non-numeric entities).
+# Includes the gorenje/frontlader cycle phases: live evidence 2026-08-08 —
+# the washer reports washing as running -> rinsing -> spinning, and only
+# "running" matched, so the run was dropped mid-cycle (and the just-shipped
+# card lane went empty while the machine was visibly spinning).
+APPLIANCE_RUNNING_STATES = {
+    "on",
+    "run",
+    "running",
+    "washing",
+    "active",
+    "wash",
+    "rinsing",
+    "spinning",
+    "drying",
+}
 
 # Operator rule (incident 2026-08-08): a switched-off appliance takes its
 # integration offline, so the detection entity goes unavailable for hours — the

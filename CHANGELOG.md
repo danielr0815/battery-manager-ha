@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.4] - 2026-08-08
+
+### Fixed
+- **Appliance detection survives the full wash cycle.** A frontlader/gorenje
+  washer reports its run as phase strings — `running` → `rinsing` →
+  `spinning` — and only `running` was in `APPLIANCE_RUNNING_STATES`, so the
+  detected run was silently dropped mid-cycle: the planner stopped reserving
+  the machine's remaining energy and the new card lane went empty while the
+  machine was visibly still spinning (live plant, 2026-08-08). The set now
+  also covers `rinsing`, `spinning` and `drying`. The same set drives the
+  consumption learner, which therefore stops mislearning those hours as
+  base load too.
+
 ## [0.25.3] - 2026-08-08
 
 ### Added
