@@ -96,6 +96,21 @@ Drei strukturelle Defekte dahinter:
   bei umkämpfter Wett-Tiefe haben Energie-limitierte strukturell Vorrang
   (entspricht der stehenden Präferenz „lieber den Fossibot laden");
   Config-Order-Priorität gilt innerhalb Pass 3.
+- **R9 (Kürzung an eigener Buchung statt Verwerfen; v0.25.7, Live-Befund
+  2026-08-08).** Eine eigene Pass-1-Buchung direkt VOR dem Peak ist die
+  nahtlose Fortsetzung des Laufs (Rasterkante F-SEAMLESS-PLAN), keine
+  Kollision: der Block endet an der ersten eigen-belegten Slot-Grenze.
+  Vorher starb der Block GANZ, sobald der Peak hinter eine eigene Buchung
+  sprang — exakt die Kante, an der Pass 1 den Peak-Slot-Export bis auf ein
+  Remnant ≈ 0 frisst und SOC-1-%-Schritte / Slot-0-Erosion /
+  Prognose-Updates das Remnant über/unter 0 kippen lassen. Der Block
+  flatterte so 14× in 45 min rein/raus; die R7-Evidenz wurde bei jedem
+  Wegfall gelöscht (die Last lief nach 08:17 nie wieder), und die
+  Feed-in-Zielmenge sprang bei jeder Flanke um die Block-Energie
+  (Setpoint-Bursts 0↔~1 kW — Antwort darauf: F-FEEDIN R16). Verstreute,
+  nicht schulter-angrenzende eigene Buchungen kapen die Extension
+  weiterhin per `break`; `run_after` (R6) liest die Fortsetzung am
+  Block-ENDE (`end`), nicht mehr zwingend am Peak.
 
 ## 3. Abgrenzung (was bewusst NICHT getan wird)
 
@@ -129,7 +144,8 @@ Drei strukturelle Defekte dahinter:
   energie-limitierte umscope­t; neuer Abschnitt **F-PREDRAIN-BLOCK** (Peak-
   Erkennung, latest-start = ceil(target/power), kein Export heute → kein
   Block, Cross-day-Verbot, Peak in Slot 0, Zwei-Lasten-Priorität,
-  min_runtime, c1-Veto, eigene Pass-1-Buchung begrenzt den Block).
+  min_runtime, c1-Veto, eigene Pass-1-Buchung KÜRZT den Block statt ihn zu
+  verwerfen (R9, v0.25.7), verstreute eigene Buchung kappt die Extension).
 - Goldens: `golden_topology.json` + `golden_night_predrain.json`
   regeneriert (Diff oben §3: kein Szenario importiert mehr).
 - `tests/ha/test_predrain_block.py` — Stabilitäts-Gate: Aktuierung erst

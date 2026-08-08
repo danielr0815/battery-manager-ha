@@ -148,7 +148,7 @@ feed-in.
   Trim writes carry no deadband — but an **unchanged** value is never
   rewritten (a sustained discharge clamps the trim at 0, and re-writing that 0
   every pass flooded the log and hammered the state machine); 0 ↔ >0
-  transitions always write.
+  transitions always write (upward only once the R16 stability brake passes).
 - **R11 (Re-Anchor).** The setpoint is pulled back to the plan slot value once
   the trim increments drifted beyond `FEEDIN_REANCHOR_DEADBAND_W = 25` W — the
   ONLY place this deadband applies (the trim increments are estimates; the
@@ -190,6 +190,21 @@ feed-in.
   simulation, no schedule, and the trajectory chain stays bit-identical to the
   pre-feature plan. The golden snapshots were intentionally NOT regenerated;
   the unchanged goldens ARE the neutrality verification.
+- **R16 (Plan-Stabilitätsbremse, aufwärts nur; v0.25.7).** The plan anchor's
+  slot-0 value is sampled every pass into a sliding
+  `FEEDIN_STABLE_WINDOW_S = 180` s trace; an UPWARD setpoint write (plan
+  slot, 0↔>0 transition, upward trim or re-anchor — any source) is held
+  while the trace spread exceeds `FEEDIN_STABLE_SPREAD_W = 50` W. Downward
+  writes (incl. →0 and every fail-safe) are NEVER braked — in doubt the
+  battery charges, not the grid. Motivation (live 2026-08-08): the pass-3
+  pre-drain block flickered in/out of the plan on the pass-1 remnant edge
+  (fixed in F-PREDRAIN-BLOCK R9), jumping the residual target by the
+  block's ~0.5–0.75 kWh on every flicker; undamped, the setpoint swung
+  0↔~1 kW every 1–2 min while the stability-gated dehumidifier correctly
+  stayed off. A braked write consumes no throttle cursor (it returns before
+  the re-anchor stamp). Engage and release each log exactly one INFO line
+  (change-gated). In-memory only — a restart re-seeds from the first pass,
+  the safe direction (the brake only ever delays upward movement).
 
 ## 3. Abgrenzung (was bewusst NICHT getan wird)
 
@@ -219,7 +234,10 @@ feed-in.
   trims latest-first; empty horizon.
 - Goldens: **no** `gen_golden.py` run — the suite passes without a diff
   (R15 neutrality verification).
-- `tests/ha/test_feedin.py` (24 tests). Fail-safes and write-storm guards
+- `tests/ha/test_feedin.py` (28 tests). R16 stability brake (v0.25.7): a
+  flapping plan value holds every upward write while downward stays
+  immediate (incl. the trim-down), and the anchor write fires once the plan
+  settles — one engage/release INFO line each. Fail-safes and write-storm guards
   (review 2026-08-03): data loss forces the setpoint to 0 exactly once however
   long the outage lasts; the runtime switch writes its 0 even while the inputs
   are stale; an unwired setpoint entity is released to 0 by the reloaded

@@ -819,12 +819,22 @@ Plan-0 wird direkt auf 0 re-anchort, nie getrimmt. Totband
 | Abwärts | `battery_power < −50 W` (Batterie entlädt — nicht erfasster Verbraucher) | Setpoint sofort um den Entladebetrag senken, Boden 0 — **ungedrosselt** (internes `input_number`, kein physischer Aktor) |
 | Aufwärts | `battery_power > +50 W` (Überschuss lädt statt zu exportieren) | Setpoint um den Ladebetrag erhöhen — **gedrosselt** auf eine Erhöhung pro `FEEDIN_UPWARD_MIN_INTERVAL_S = 60` s und gedeckelt auf `min(max_w, verbleibende Tagesmenge / Stunden bis Mitternacht)` |
 
-Trim-Schreibvorgänge tragen **kein** Deadband; 0↔>0-Wechsel schreiben immer.
-Der 5-min-Zyklus zieht den Sollwert auf den Plan-Slot-Wert zurück, sobald der
-Drift > `FEEDIN_REANCHOR_DEADBAND_W = 25` W liegt — die einzige Stelle mit
+Trim-Schreibvorgänge tragen **kein** Deadband; 0↔>0-Wechsel schreiben immer
+(aufwärts nur, sobald die R16-Stabilitätsbremse durchlässt). Der 5-min-Zyklus
+zieht den Sollwert auf den Plan-Slot-Wert zurück, sobald der Drift >
+`FEEDIN_REANCHOR_DEADBAND_W = 25` W liegt — die einzige Stelle mit
 Deadband (R11). Die verbleibende Tagesmenge kommt aus `feedin_by_day_wh` minus
 der in `_feedin_tick` in-memory integrierten gelieferten Energie (Reset um
 Mitternacht).
+
+**Stabilitätsbremse (R16, v0.25.7)**: Jede **Aufwärts**-Schreibung
+(Plan-Slot, 0→>0, Aufwärts-Trim/Re-Anchor) wird gehalten, solange der
+Plan-Slot-0-Wert über das gleitende Fenster `FEEDIN_STABLE_WINDOW_S = 180` s
+um mehr als `FEEDIN_STABLE_SPREAD_W = 50` W streut; **abwärts wird nie
+gebremst** (inkl. →0 und alle Fail-safes). Anlass (live 2026-08-08): das
+Flackern des Pass-3-Blocks (Fix: F-PREDRAIN-BLOCK R9) schwang das Setpoint
+0↔~1 kW im 1–2-min-Takt. Engage/Release loggen je einmal (change-gated);
+in-memory, Neustart seedet neu.
 
 **Manuell-Modus (`_update_feedin_mode`, R9, F-N2-Muster)**: liest die Entity
 einen Wert ≠ dem zuletzt von uns geschriebenen — außerhalb der

@@ -115,6 +115,8 @@ from .const import (
     FEEDIN_REANCHOR_DEADBAND_W,
     FEEDIN_REANCHOR_MIN_INTERVAL_S,
     FEEDIN_SETPOINT_EXPORT_SIGN,
+    FEEDIN_STABLE_SPREAD_W,
+    FEEDIN_STABLE_WINDOW_S,
     FEEDIN_TRIM_DEADBAND_W,
     FEEDIN_UPWARD_MIN_INTERVAL_S,
     FREEZE_STALE_HOURS,
@@ -596,6 +598,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # restart re-arms them, which is the safe direction.
         self._feedin_last_reanchor_at: datetime | None = None
         self._feedin_prev_written_w: float | None = None
+        # R16 stability brake (F-FEEDIN): the plan's slot-0 feed-in value over
+        # a sliding FEEDIN_STABLE_WINDOW_S window. An upward setpoint write is
+        # held while the spread exceeds FEEDIN_STABLE_SPREAD_W (the 2026-08-08
+        # flap swung the setpoint 0<->~1 kW every 1-2 min). In-memory: a
+        # restart re-seeds from the first pass — the safe direction, since the
+        # brake only ever delays upward movement.
+        self._feedin_plan_trace: deque[tuple[datetime, float]] = deque()
+        self._feedin_brake_engaged = False
         # The setpoint entity that currently carries a non-zero value of ours.
         # Persisted: it is the only way to still zero an entity the operator
         # unwired in the options flow (_feedin_release_orphan).
@@ -5990,6 +6000,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and soc > params.min_soc_percent
         )
         plan_w = result.feedin_schedule_w[0] if result.feedin_schedule_w else 0.0
+        # R16 stability trace: one sample of the plan's slot-0 value per pass,
+        # pruned to the sliding window (cadence-free: debounced battery-power
+        # events and the 5-min poll both just append).
+        self._feedin_plan_trace.append((now, plan_w))
+        trace_cutoff = now - timedelta(seconds=FEEDIN_STABLE_WINDOW_S)
+        while self._feedin_plan_trace and self._feedin_plan_trace[0][0] < trace_cutoff:
+            self._feedin_plan_trace.popleft()
+        trace_values = [v for _, v in self._feedin_plan_trace]
+        plan_spread = max(trace_values) - min(trace_values) if trace_values else 0.0
+        if plan_spread <= FEEDIN_STABLE_SPREAD_W and self._feedin_brake_engaged:
+            self._feedin_brake_engaged = False
+            _LOGGER.info(
+                "Feed-in plan value stable again (spread %.0f W over %d s) — "
+                "setpoint brake released (F-FEEDIN R16)",
+                plan_spread,
+                FEEDIN_STABLE_WINDOW_S,
+            )
         if active:
             base_w = min(plan_w, params.max_w)
             reason = "plan slot"
@@ -6087,6 +6114,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             reanchored = write
         if not write:
+            return
+        # R16 stability brake: an UPWARD write (plan slot, 0->>0 transition,
+        # upward trim or re-anchor — any source) follows the plan anchor only
+        # once the plan held within FEEDIN_STABLE_SPREAD_W across the sliding
+        # window; downward writes (incl. ->0 and every fail-safe) are never
+        # braked — in doubt the battery charges, not the grid. A braked write
+        # returns BEFORE the re-anchor stamp: the write never happened, so no
+        # throttle cursor may be consumed by it.
+        current_eff = (
+            current if current is not None else (self._feedin_last_written_w or 0.0)
+        )
+        if desired > current_eff and plan_spread > FEEDIN_STABLE_SPREAD_W:
+            if not self._feedin_brake_engaged:
+                self._feedin_brake_engaged = True
+                _LOGGER.info(
+                    "Feed-in setpoint held at %.0f W — the plan value is "
+                    "unstable (spread %.0f W over %d s, F-FEEDIN R16)",
+                    current_eff,
+                    plan_spread,
+                    FEEDIN_STABLE_WINDOW_S,
+                )
             return
         if reanchored:
             self._feedin_last_reanchor_at = now

@@ -113,10 +113,22 @@ def _result(plan_w, by_day_wh=None):
     )
 
 
-async def _executor_pass(hass, coordinator, result, *, soc=55.0, moment=MORNING):
+async def _executor_pass(
+    hass, coordinator, result, *, soc=55.0, moment=MORNING, seed_plan_trace=True
+):
     """One executor pass pinned to `moment` (mirrors the _async_update_data
-    call site; the background actuation completes inside the pinned window)."""
+    call site; the background actuation completes inside the pinned window).
+
+    `seed_plan_trace`: the R16 stability brake reads the plan value's spread
+    over a sliding window; tests for the trim/re-anchor/fail-safe mechanics
+    predate it and step the plan value deliberately — seeding the trace with
+    the pass's own value keeps them isolated from the brake (spread 0). The
+    brake's own tests pass False and drive the trace themselves."""
     config = coordinator.build_system_config()
+    if seed_plan_trace:
+        plan_w = result.feedin_schedule_w[0] if result.feedin_schedule_w else 0.0
+        coordinator._feedin_plan_trace.clear()
+        coordinator._feedin_plan_trace.append((moment, plan_w))
     with patch.object(dt_util, "now", return_value=moment):
         await coordinator._apply_feedin(result, config, soc, moment)
         await hass.async_block_till_done()
@@ -125,7 +137,10 @@ async def _executor_pass(hass, coordinator, result, *, soc=55.0, moment=MORNING)
 
 async def _refresh_at(hass, coordinator, moment):
     """One full coordinator refresh pinned to `moment` — the feed-in mode
-    judgement and the executor run inside _async_update_data."""
+    judgement and the executor run inside _async_update_data. The R16 plan
+    trace is cleared first: these tests exercise other mechanics, so the
+    planner's own value must not trip the stability brake mid-test."""
+    coordinator._feedin_plan_trace.clear()
     with patch.object(dt_util, "now", return_value=moment):
         await coordinator.async_refresh()
         await hass.async_block_till_done()
@@ -195,6 +210,8 @@ def _reset_executor_baseline(hass, coordinator, call_log):
     coordinator._feedin_prev_written_w = None
     coordinator._feedin_owned_entity = None
     coordinator._feedin_delivered = None
+    coordinator._feedin_plan_trace.clear()
+    coordinator._feedin_brake_engaged = False
     hass.states.async_set(SETPOINT, "0")
     hass.states.async_set(BATT_POWER, "0")
     _cancel_debounce(coordinator)
@@ -987,3 +1004,91 @@ async def test_fast_tracked_input_does_not_starve_the_debounce(hass):
 
     coordinator._listeners_setup = False
     _cancel_debounce(coordinator)
+
+
+# ---------------------------------------------------------------------------
+# R16 plan-value stability brake (2026-08-08 pass-3 flicker incident)
+# ---------------------------------------------------------------------------
+
+
+async def test_plan_value_flap_holds_upward_writes(hass, caplog):
+    """R16 stability brake: while the plan's slot-0 value scatters by more
+    than FEEDIN_STABLE_SPREAD_W over the sliding window, every UPWARD write
+    is held — the 2026-08-08 pass-3 flicker otherwise swung the setpoint
+    0<->~1 kW every 1-2 min. Downward writes are never braked, and once the
+    plan settles the anchor write goes through."""
+    import logging
+
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    t0 = MORNING
+
+    async def pass_at(k_s, plan_w):
+        await _executor_pass(
+            hass,
+            coordinator,
+            _result(plan_w),
+            moment=t0 + timedelta(seconds=k_s),
+            seed_plan_trace=False,
+        )
+
+    with caplog.at_level(logging.INFO):
+        # Stable 300 W plan: the first pass seeds the trace (spread 0), the
+        # anchor write fires immediately.
+        for k in (0, 10, 20):
+            await pass_at(k, 300.0)
+        assert calls == [(SETPOINT, -300.0)]
+
+        # The plan starts flapping 0 <-> 800 W: the drop to 0 writes at once
+        # (downward is never braked); every re-raise is held.
+        await pass_at(30, 0.0)
+        assert calls[-1] == (SETPOINT, 0.0)
+        for k in range(40, 170, 10):
+            await pass_at(k, 800.0 if (k // 10) % 2 == 0 else 0.0)
+        assert all(v > -800.0 for _, v in calls), "no upward burst may pass"
+        assert calls == [(SETPOINT, -300.0), (SETPOINT, 0.0)]
+        assert coordinator._feedin_brake_engaged
+
+        # The plan settles at 800 W; once the flap has aged out of the
+        # window, the anchor write goes through and the brake releases.
+        for k in range(220, 400, 10):
+            await pass_at(k, 800.0)
+        assert calls[-1] == (SETPOINT, -800.0)
+        assert not coordinator._feedin_brake_engaged
+
+    texts = [r.getMessage() for r in caplog.records]
+    assert sum("F-FEEDIN R16" in t and "held at" in t for t in texts) == 1
+    assert sum("brake released" in t for t in texts) == 1
+
+
+async def test_downward_trim_stays_immediate_during_plan_flap(hass):
+    """R16 never brakes the safety direction: with the plan value flapping,
+    a discharging battery still cuts the setpoint immediately and
+    unthrottled."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    t0 = MORNING
+
+    async def pass_at(k_s, plan_w):
+        await _executor_pass(
+            hass,
+            coordinator,
+            _result(plan_w),
+            moment=t0 + timedelta(seconds=k_s),
+            seed_plan_trace=False,
+        )
+
+    # Stable anchor 300 W first (write fires), then the plan starts flapping
+    # (800 W pass held by the brake: trace spread 500 W).
+    for k in (0, 10, 20):
+        await pass_at(k, 300.0)
+    assert calls == [(SETPOINT, -300.0)]
+    await pass_at(30, 800.0)
+    assert calls == [(SETPOINT, -300.0)]  # held
+
+    # Battery discharging 800 W mid-flap: trim down by the discharge amount —
+    # immediate, no brake, no deadband.
+    _set_battery_power(hass, coordinator, "-800")
+    await pass_at(40, 800.0)
+    assert calls[-1] == (SETPOINT, 0.0)
+    assert float(hass.states.get(SETPOINT).state) == 0.0

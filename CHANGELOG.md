@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.7] - 2026-08-08
+
+### Fixed
+- **Pre-drain block no longer dies at its own pass-1 booking** (live
+  incident 2026-08-08). A pass-1 booking directly before the peak slot is
+  the seamless continuation of the run, not a conflict: the pass-3 block
+  now ENDS at the first own-booked slot boundary instead of being
+  discarded wholesale. Before, the pass-1 quantum could eat the peak
+  slot's export down to a hair above/below zero; SOC steps and forecast
+  updates flipped that remnant across zero, the peak jumped past the
+  booked slot, and the block flickered in/out of the plan 14× in 45 min —
+  which reset the block's stability evidence on every flicker (the load
+  never ran) and jumped the feed-in target by the block's energy.
+- **Early feed-in: plan-value stability brake (F-FEEDIN R16).** Upward
+  setpoint writes now follow the plan anchor only once the plan's slot-0
+  value holds within 50 W over a sliding 180 s window. Without damping,
+  the block flicker above swung the grid setpoint 0↔~1 kW every 1-2 min.
+  Downward writes (incl. →0 and every fail-safe) are never braked — in
+  doubt the battery charges, not the grid.
+
 ## [0.25.6] - 2026-08-08
 
 ### Changed

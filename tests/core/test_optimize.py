@@ -2502,12 +2502,15 @@ def test_predrain_block_skipped_when_the_peak_is_now():
 def test_predrain_block_two_continuous_loads_follow_config_order():
     """Priority among continuous loads: the FIRST load's blocks see the
     unmodified (pass-1-adjusted) export and today's block is identical to the
-    one it would book alone; the second load's own pass-1 bookings sit right
-    before the (shifted) peak, so its backward walk immediately hits its own
-    booking and no second block exists. Swapping the config order swaps the
-    winner. (Per-day R1, v0.22.0: the winner ALSO books tomorrow's block —
-    shorter than the solo scenario's, because the loser's pass-1 bookings
-    reshape tomorrow's peak before any block walk runs.)"""
+    one it would book alone. The second load's own pass-1 bookings sit right
+    before the (shifted) peak: since v0.25.7 its backward walk ENDS the block
+    at its own booking (seamless continuation) instead of discarding it, so
+    the loser books a TRUNCATED block whose size the gates set — the winner's
+    1200 Wh stand unchanged, the loser gets the gated remainder (800/400 Wh).
+    Swapping the config order swaps the winner. (Per-day R1, v0.22.0: the
+    winner ALSO books tomorrow's block — shorter than the solo scenario's,
+    because the loser's pass-1 bookings reshape tomorrow's peak before any
+    block walk runs.)"""
     deh1 = replace(DEHUMIDIFIER, load_id="deh1", name="D1")
     deh2 = replace(DEHUMIDIFIER, load_id="deh2", name="D2")
     now = datetime(2026, 7, 4, 4, 0)
@@ -2520,10 +2523,10 @@ def test_predrain_block_two_continuous_loads_follow_config_order():
 
     first = blocks((deh1, deh2))
     assert first["deh1"] == [(2, 3, 3, 1200.0), (25, 3, 3, 1200.0)]
-    assert first["deh2"] == []
+    assert first["deh2"] == [(3, 2, 3, 800.0), (28, 1, 3, 400.0)]
     swapped = blocks((deh2, deh1))
     assert swapped["deh2"] == [(2, 3, 3, 1200.0), (25, 3, 3, 1200.0)]
-    assert swapped["deh1"] == []
+    assert swapped["deh1"] == [(3, 2, 3, 800.0), (28, 1, 3, 400.0)]
 
 
 def test_predrain_block_today_never_predrains_for_tomorrow():
@@ -2563,20 +2566,18 @@ def test_predrain_block_today_never_predrains_for_tomorrow():
 
 def test_predrain_block_shorter_than_min_runtime_is_dropped():
     """R6: a block whose committed run (block hours + an own booking
-    continuing in the peak slot) is shorter than min_runtime is never booked
+    continuing in the end slot) is shorter than min_runtime is never booked
     — the executor dwell would deliver more than the plan accounts. Here the
-    gates accept a two-hour block ending at the 11:00 peak whose thin export
-    never triggered a pass-1 booking (no continuation), and two hours is
-    below the 150 min dwell, so the block is dropped wholesale. (Geometry
-    shifted by the standby accounting fix: the candidate was a single hour
-    ending at the 10:00 peak under the old export trajectory — same drop
-    rule, re-pinned dwell.)"""
+    gates accept only a two-hour block TODAY (below the 150 min dwell →
+    dropped); TOMORROW's walk collides with an own pass-1 booking at its
+    peak's shoulder and is TRUNCATED to a dwell-long 4 h block (since
+    v0.25.7 the collision truncates instead of discarding) — kept."""
     deh150 = replace(DEHUMIDIFIER, min_runtime_min=150)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0, loads=(deh150,))
     now = datetime(2026, 7, 4, 4, 0)
     result, inputs = make_plan(cfg, now, 60.0, [5.5, 11.0])
     lp = result.load_plans[0]
-    assert not _pass3_block(result)
+    assert _pass3_block(result) == [(24, 4, 3, 1600.0)]  # tomorrow only
     today = inputs.slots[0].start.date()
     assert all(
         inputs.slots[i].start.date() != today for i, on in enumerate(lp.schedule) if on
@@ -2663,24 +2664,28 @@ def test_predrain_block_detour_not_repaid_is_refused():
     assert drop < (1.0 - deh.battery_tolerance) * 400.0 * rt
 
 
-def test_predrain_block_stops_at_own_pass1_booking():
-    """R4: the backward walk never crosses a slot the load itself already
-    booked. When pass 1 consumes the export of the slot right before the
-    (shifted) peak, there is no contiguous room for a block at all and none
-    is booked THAT DAY — the block machinery yields to the pass-1 plan
-    instead of double-covering the hour. (Tomorrow, without such an own
-    booking at its peak's shoulder, gets its own block — per-day R1.)"""
+def test_predrain_block_ends_at_own_pass1_booking():
+    """R4/R6: an own pass-1 booking directly before the (shifted) peak is the
+    seamless continuation of the run, not a conflict: the backward walk ENDS
+    the block at the first own-booked slot boundary instead of discarding it
+    wholesale (2026-08-08 live incident: the pass-1 quantum ate the peak
+    slot's export to a hair above/below zero, the peak jumped past the booked
+    slot, and the block vanished 14x in 45 min — flap whipping the stability
+    evidence and the feed-in target). Here pass 1 ate the export of the slot
+    right before today's first still-exporting slot (07:00), so today's block
+    books [04:00, 07:00) — truncated at the own booking, never overlapping
+    it. (Tomorrow, without such a shoulder booking, keeps its full block.)"""
     now = datetime(2026, 7, 4, 4, 0)
     cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
     result, inputs = make_plan(cfg, now, 84.0, [13.0, 11.0])
     lp = result.load_plans[0]
     today = inputs.slots[0].start.date()
     p3 = _pass3_block(result)
-    assert p3 == [(24, 4, 3, 1600.0)]  # tomorrow's own block; none today
-    assert all(inputs.slots[a[0]].start.date() != today for a in p3)
+    assert p3 == [(0, 3, 3, 1200.0), (24, 4, 3, 1600.0)]
     # The slot right before today's first export slot is a pass-1 booking
-    # (07:00): pass 1 ate its export, the peak moved one slot later, and the
-    # walk breaks at the own booking.
+    # (07:00): pass 1 ate its export, the peak sits one slot later, and the
+    # truncated block ends exactly at that booking — covering every free slot
+    # before it, never the booked one.
     peak = next(
         j
         for j, f in enumerate(result.trajectory.flows)
@@ -2688,6 +2693,78 @@ def test_predrain_block_stops_at_own_pass1_booking():
     )
     assert lp.schedule[peak - 1]
     assert any(a[0] == peak - 1 and a[2] == 1 for a in lp.allocations)
+    start, count, _, _ = p3[0]
+    first_p1_today = min(
+        a[0]
+        for a in lp.allocations
+        if a[2] == 1 and inputs.slots[a[0]].start.date() == today
+    )
+    assert start + count == first_p1_today  # ends at the own booking, not past it
+
+
+def test_predrain_block_scattered_own_booking_truncates_the_walk():
+    """R4: a SCATTERED own pass-1 booking inside the walk range (not part of
+    the contiguous shoulder the block ends at) still truncates the backward
+    extension — the block keeps the free slots between the booking and the
+    peak, never overlapping the booked one. Geometry: 08:00 exports just
+    enough for pass 1 to eat it whole (remnant 0), two dark hours, then the
+    clip. The block books the two dark hours; the 08:00 booking stops the
+    walk from reaching slot 0."""
+    deh = SurplusLoad(
+        load_id="deh",
+        name="E",
+        nominal_power_w=400.0,
+        battery_tolerance=0.15,
+        min_runtime_min=30,
+    )
+    control = replace(
+        ControlParams(),
+        import_trade_ratio=0.1,
+        predrain_pv_confidence=1.0,
+        upper_pv_reserve=1.0,
+        strong_pv_cutoff_w=200.0,
+    )
+    cfg = SystemConfig(
+        control=control,
+        loads=(deh,),
+        ac_profile=LoadProfile(50.0, 75.0, 6, 20),
+        dc_profile=LoadProfile(50.0, 25.0, 6, 22),
+    )
+    start = datetime(2026, 7, 4, 7, 0)
+
+    def slot(i, pv, ac=125.0, dc=75.0):
+        return HourSlot(
+            index=i,
+            start=start + timedelta(hours=i),
+            duration=1.0,
+            hour_of_day=(start + timedelta(hours=i)).hour,
+            pv_wh=pv,
+            ac_wh=ac,
+            dc_wh=dc,
+        )
+
+    # 08:00 a small surplus (pass 1 eats it whole), 09:00/10:00 dark, then
+    # the clip from 11:00 on.
+    pvs = [800.0, 2800.0, 100.0, 150.0, 5000.0, 5000.0, 5000.0] + [0.0] * 16
+    slots = tuple(slot(i, pv) for i, pv in enumerate(pvs))
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=45.0,
+        slots=slots,
+        load_states=(SurplusLoadState(load_id="deh"),),
+    )
+    threshold, base = search_threshold(cfg, inputs)
+    load_plans, _extra, _current = allocate_loads(cfg, inputs, threshold, base)
+    lp = load_plans[0]
+    # The own 08:00 booking sits scattered before the peak (11:00): the walk
+    # from the peak books 09:00+10:00 and stops at the booking — block [2, 4).
+    assert (2, 2, 3, 800.0) in [
+        (a[0], a[1], a[2], a[3]) for a in lp.allocations if a[2] == 3
+    ]
+    assert lp.schedule[1]  # the scattered own pass-1 booking
+    assert any(a[0] == 1 and a[2] == 1 for a in lp.allocations)
+    # No overlap anywhere: each booked slot is booked by exactly one pass.
+    assert list(lp.schedule[:7]) == [False, True, True, True, True, True, True]
 
 
 # ---------------------------------------------------------------------------

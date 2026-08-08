@@ -531,6 +531,17 @@ FEEDIN_REANCHOR_MIN_INTERVAL_S = 300.0
 # an operator action, else an active trim (which refreshes the write timestamp
 # every few seconds) would mask every override forever (review 2026-08-03).
 FEEDIN_MANUAL_GRACE_S = 360.0
+# Stability brake for the plan anchor (F-FEEDIN R16): an UPWARD setpoint write
+# (any source — plan slot, 0->>0 transition, upward trim/re-anchor) is held
+# while the plan's slot-0 value scattered more than FEEDIN_STABLE_SPREAD_W
+# over the sliding FEEDIN_STABLE_WINDOW_S window. Without it the 2026-08-08
+# flap (the pass-3 block flickering in/out of the plan on the pass-1 remnant
+# edge) swung the setpoint 0<->~1 kW every 1-2 min. Downward writes (incl.
+# ->0 and every fail-safe) are never braked: in doubt the battery charges,
+# not the grid. Time-based (not plan-count) because the debounced battery-
+# power cadence (~10 s) and the 5-min poll mix freely.
+FEEDIN_STABLE_WINDOW_S = 180
+FEEDIN_STABLE_SPREAD_W = 50.0
 
 # --- F-REALIZED-SURPLUS realized surplus accounting (docs/F-REALIZED-SURPLUS.md) ---
 # Monotone kWh counter of grid export (e.g. the Victron reverse energy

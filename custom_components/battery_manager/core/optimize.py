@@ -1322,6 +1322,20 @@ def allocate_loads(
             )
             if peak is None or peak == day_start:
                 continue  # no clip this day (or it opens the day: pass 1 owns it)
+            # An own pass-1 booking directly BEFORE the peak is not a conflict
+            # but the seamless continuation of the run (F-SEAMLESS-PLAN raster
+            # edge): the block then ends at the first own-booked slot boundary
+            # instead of dying wholesale (2026-08-08: the pass-1 quantum ate
+            # the peak slot's export down to a hair above/below zero; the peak
+            # jumped past the booked slot, the backward walk broke on the own
+            # booking on its FIRST step, and the block vanished entirely 14x
+            # in 45 min — starving the stability evidence and whipping the
+            # feed-in target by the block's energy each time).
+            end = peak
+            while end - 1 >= day_start and schedules[load.load_id][end - 1]:
+                end -= 1
+            if end == day_start:
+                continue  # no free slot before the own booking — no room
             target_wh = sum(
                 current.flows[j].grid_export_wh
                 for j in range(peak, n)
@@ -1336,13 +1350,13 @@ def allocate_loads(
                 tuple[int, list[float], list[tuple[int, float]], Trajectory] | None
             ) = None
             block_wh = 0.0
-            for s in range(peak - 1, day_start - 1, -1):
+            for s in range(end - 1, day_start - 1, -1):
                 if schedules[load.load_id][s]:
-                    break  # the block never overlaps own bookings
+                    break  # the block never overlaps own (scattered) bookings
                 block_wh += power_w * inputs.slots[s].duration
                 trial = list(extra)
                 covered = []  # already typed by the pass-1 unpack above
-                for j in range(s, peak):
+                for j in range(s, end):
                     take = inputs.slots[j].duration
                     trial[j] += power_w * take
                     covered.append((j, take))
@@ -1376,12 +1390,13 @@ def allocate_loads(
                 continue
             s, trial, covered, traj = best
             # R6: the committed run must cover the executor dwell. An own
-            # booking in the peak slot (pass 1) continues the block's run
-            # seamlessly, so it counts toward min_runtime — otherwise a block
-            # ending inside a partial slot 0 would be dropped although the
-            # dwell is delivered (the F-SEAMLESS-PLAN raster-edge case).
+            # booking in the slot the block ends at (pass 1) continues the
+            # block's run seamlessly, so it counts toward min_runtime —
+            # otherwise a block ending inside a partial slot 0 would be
+            # dropped although the dwell is delivered (the F-SEAMLESS-PLAN
+            # raster-edge case).
             block_hours = sum(take for _, take in covered)
-            run_after = run_h[load.load_id][peak] if peak < n else 0.0
+            run_after = run_h[load.load_id][end]
             if block_hours + run_after < load.min_runtime_min / 60.0 - _EPS:
                 continue
             _placed_h, placed_wh = _accept_candidate(
@@ -1393,6 +1408,7 @@ def allocate_loads(
                 f"{inputs.slots[peak].start.strftime('%H:%M')} "
                 f"({round(placed_wh)} Wh against {round(target_wh)} Wh clip), "
                 "latest feasible start"
+                + (", ends at own pass-1 booking" if end < peak else "")
             )
 
     plans = [
