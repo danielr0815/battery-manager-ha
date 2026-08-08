@@ -501,7 +501,7 @@ async def test_migrate_backfills_escalation_thresholds_from_soc_min(hass):
     )
     entry.add_to_hass(hass)
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     # Legacy formula at soc_min=10, buffer=5: floor = 15.
     assert entry.options["support_dc24_activate_soc"] == 15.0
     assert entry.options["support_dc24_recovery_soc"] == 16.0
@@ -523,7 +523,7 @@ async def test_migrate_is_neutral_at_default_soc_min(hass):
     )
     entry.add_to_hass(hass)
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.options["support_dc24_activate_soc"] == 10.0
     assert entry.options["support_dc24_recovery_soc"] == 11.0
     assert entry.options["support_dc48_activate_soc"] == 5.5
@@ -545,7 +545,7 @@ async def test_migrate_preserves_explicit_escalation_values(hass):
     )
     entry.add_to_hass(hass)
     assert await async_migrate_entry(hass, entry)
-    assert entry.minor_version == 3
+    assert entry.minor_version == 4
     assert entry.options["support_dc24_activate_soc"] == 8.0
     assert "support_dc48_activate_soc" not in entry.options
 

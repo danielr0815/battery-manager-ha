@@ -9,7 +9,7 @@
 
 [project]
 name = "battery-manager-ha"
-version = "0.25.0"
+version = "0.25.1"
 description = "Solar-battery optimizer for Home Assistant: SOC forecast, discharge-threshold planning, surplus-load and grid-support control."
 readme = "README.md"
 # Floor matches homeassistant's own requirement (HA >= 2026.3 needs 3.14.2+).
@@ -35,14 +35,17 @@ Changelog = "https://github.com/danielr0815/battery-manager-ha/blob/main/CHANGEL
 # or `uv lock --upgrade`, reviewed in a PR).
 # EXCEPTION: pytest-homeassistant-custom-component stays fully pinned —
 # phacc itself pins homeassistant (and pytest/pytest-cov) exactly, so it
-# carries the effective HA coupling; the next release (0.13.349) would
-# already pull the 2026.8.0b0 beta. phacc therefore leads the HA version.
+# carries the effective HA coupling. 0.13.354 pins homeassistant==2026.8.0
+# final — pinned deliberately: 2026.8.0 enforces one device per config
+# subentry (core PR #175785), which broke the shared-device model here
+# (production incident; fix = one device per subentry + registry migration).
+# phacc therefore leads the HA version.
 [dependency-groups]
 dev = [
     "homeassistant>=2026.7.4",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
-    "pytest-homeassistant-custom-component==0.13.348",
+    "pytest-homeassistant-custom-component==0.13.354",
     "ruff>=0.16.0",
     "mypy>=2.3.0",
 ]

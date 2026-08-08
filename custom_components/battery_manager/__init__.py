@@ -19,6 +19,8 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
 from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -41,6 +43,7 @@ from .const import (
 )
 from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table, format_learned_profiles_table
+from .entity import ensure_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -234,6 +237,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_load_persistent_state()
     await coordinator.async_refresh()
 
+    # HA 2026.8: one device per config subentry (core PR #175785). Created
+    # before the platforms so subentry devices carry via_device_id on the main
+    # device and every entity attaches to an already-existing device.
+    ensure_devices(hass, entry, coordinator.integration_version)
+
     export_schema = vol.Schema(
         {
             vol.Optional("entry_id"): str,
@@ -370,7 +378,58 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entry, options=options, minor_version=3
             )
         _LOGGER.info("Migrated Battery Manager entry to version 2.3")
+    if entry.version == 2 and entry.minor_version < 4:
+        _migrate_to_subentry_devices(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=4)
+        _LOGGER.info("Migrated Battery Manager entry to version 2.4")
     return True
+
+
+def _migrate_to_subentry_devices(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Move subentry entity rows onto per-subentry devices (entry version 2.4).
+
+    HA 2026.8.0 enforces one device per config subentry (core PR #175785, no
+    compat shim; telegram_bot migration: core PR #176606). Before, every
+    entity shared the single entry device, so existing registry rows of
+    subentry entities point at the main device — with config_subentry_id=None
+    (pre-v0.7.19 installs) or already set (v0.7.19+). Both cases are re-pointed
+    to a new device per subentry; entity ids and unique ids stay stable, so
+    dashboards keep working. Rows removed by the broken 2026.8.0 ping-pong are
+    NOT touched: they linger as deleted registry entries and are resurrected
+    with their original entity id when the fixed setup re-adds them.
+    """
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    main = dev_reg.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    if main is None:
+        return  # never fully set up — devices are created on first setup
+    for subentry_id, subentry in entry.subentries.items():
+        sub_device = dev_reg.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            config_subentry_id=subentry_id,
+            identifiers={(DOMAIN, f"{entry.entry_id}_{subentry_id}")},
+            name=subentry.title,
+            via_device_id=main.id,
+        )
+        # Subentry entity unique ids all END with their subentry id
+        # (load_/load_power_warning_/load_runtime_/load_runtime_reset_/
+        # load_control_/appliance_<subentry_id>); entry-level keys never do.
+        for row in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+            if row.unique_id.endswith(subentry_id) and (
+                row.device_id != sub_device.id or row.config_subentry_id != subentry_id
+            ):
+                ent_reg.async_update_entity(
+                    row.entity_id,
+                    device_id=sub_device.id,
+                    config_subentry_id=subentry_id,
+                )
+    # Detach the main device from any subentry LAST: the 2026.8.0 ping-pong may
+    # have left it scoped to the last-added subentry, and clearing that scope
+    # while rows still reference it makes the entity registry remove them
+    # (async_device_modified on the device update event). After the re-pointing
+    # above no row on the main device carries a subentry scope anymore.
+    if main.config_subentry_id is not None:
+        dev_reg.async_update_device(main.id, new_config_subentry_id=None)
 
 
 def _export_coordinator(

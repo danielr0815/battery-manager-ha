@@ -692,7 +692,9 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Multi-step base configuration."""
 
     VERSION = 2
-    MINOR_VERSION = 3
+    # 2.4: one device per config subentry (HA 2026.8 breaking change, core PR
+    # #175785) — registry rows of subentry entities move to their own device.
+    MINOR_VERSION = 4
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}

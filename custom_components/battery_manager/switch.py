@@ -194,7 +194,7 @@ class SurplusLoadControlSwitch(BatteryManagerEntity, SwitchEntity):
     def __init__(
         self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
     ) -> None:
-        super().__init__(coordinator, f"load_control_{subentry_id}")
+        super().__init__(coordinator, f"load_control_{subentry_id}", subentry_id)
         self._subentry_id = subentry_id
         self._attr_translation_placeholders = {"name": title}
 

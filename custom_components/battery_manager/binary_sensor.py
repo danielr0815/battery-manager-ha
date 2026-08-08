@@ -159,7 +159,7 @@ class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
         subentry_id: str,
         title: str,
     ) -> None:
-        super().__init__(coordinator, f"load_{subentry_id}")
+        super().__init__(coordinator, f"load_{subentry_id}", subentry_id)
         self._subentry_id = subentry_id
         self._attr_translation_placeholders = {"name": title}
 
@@ -195,7 +195,7 @@ class LoadPowerWarningSensor(BatteryManagerEntity, BinarySensorEntity):
         subentry_id: str,
         title: str,
     ) -> None:
-        super().__init__(coordinator, f"load_power_warning_{subentry_id}")
+        super().__init__(coordinator, f"load_power_warning_{subentry_id}", subentry_id)
         self._subentry_id = subentry_id
         self._attr_translation_placeholders = {"name": title}
 
@@ -229,7 +229,7 @@ class ApplianceStartWindowSensor(BatteryManagerEntity, BinarySensorEntity):
         subentry_id: str,
         title: str,
     ) -> None:
-        super().__init__(coordinator, f"appliance_{subentry_id}")
+        super().__init__(coordinator, f"appliance_{subentry_id}", subentry_id)
         self._subentry_id = subentry_id
         self._attr_translation_placeholders = {"name": title}
 

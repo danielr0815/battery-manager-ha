@@ -54,7 +54,7 @@ belongs in the HA layer.
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |
-| `sensor.py`, `binary_sensor.py`, `switch.py`, `entity.py` | The entity platforms + the shared base entity/device. |
+| `sensor.py`, `binary_sensor.py`, `switch.py`, `entity.py` | The entity platforms + the shared base entity. Device model (HA 2026.8, core PR #175785): one main device per config entry plus one device per subentry (`ensure_devices`, linked `via_device_id`); pre-2026.8 all entities shared the single entry device, which 2026.8.0 broke (registry migration: entry version 2.4 in `__init__.py`). |
 | `const.py` | Config keys, defaults (`DEFAULT_CONFIG`), and tuning constants. Effectively the settings reference. |
 | `frontend/battery-manager-forecast-card.js` | The bundled Lovelace card that renders the SOC forecast + schedule from the `soc_forecast` sensor. |
 

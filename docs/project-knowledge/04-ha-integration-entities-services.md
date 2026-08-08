@@ -16,13 +16,34 @@ Alle Aussagen sind gegen den Code geprüft (Belege als *Datei::Symbol*).
 
 ## 1. Grundmuster: Gerät, unique_id, Entity-IDs, Verfügbarkeit
 
-- **Ein Config-Entry = ein HA-Gerät.** `entity.BatteryManagerEntity.__init__`
-  setzt `DeviceInfo(identifiers={(DOMAIN, entry_id)}, name=INTEGRATION_NAME
+- **Ein Config-Entry = ein Haupt-Gerät + ein Gerät je Subentry** (HA 2026.8,
+  siehe Kasten unten). `entity.BatteryManagerEntity.__init__` setzt für
+  Entry-Level-Entities unverändert
+  `DeviceInfo(identifiers={(DOMAIN, entry_id)}, name=INTEGRATION_NAME
   ("Battery Manager"), manufacturer="Battery Manager", model="Energy
-  Optimizer", sw_version=coordinator.integration_version)`. Die `sw_version`
-  kommt zur Laufzeit aus `manifest.json` (`__init__.async_setup_entry` →
-  `async_get_integration`), **nicht** aus einer Konstante — die war früher
-  weggedriftet.
+  Optimizer", sw_version=coordinator.integration_version)`; Subentry-Entities
+  bekommen ein eigenes Gerät `identifiers={(DOMAIN,
+  f"{entry_id}_{subentry_id}")}` mit dem Subentry-Titel als Name. Die
+  `sw_version` kommt zur Laufzeit aus `manifest.json`
+  (`__init__.async_setup_entry` → `async_get_integration`), **nicht** aus einer
+  Konstante — die war früher weggedriftet. Alle Geräte legt
+  `entity.ensure_devices` bereits in `async_setup_entry` an (idempotent), damit
+  die Subentry-Geräte `via_device_id` auf das Haupt-Gerät tragen — zur
+  Entity-Konstruktion existiert die Registry-ID des Haupt-Geräts bei einer
+  Neuinstallation noch nicht.
+
+> **HA 2026.8.0 Breaking Change (Produktionsvorfall):** „Devices can only
+> have a single config subentry" (core PR #175785, ohne Compat-Shim;
+> [Blog](https://developers.home-assistant.io/blog/2026/07/21/device-registry-single-config-entry/)).
+> Das alte Shared-Device-Muster (Entry + alle Subentries auf **einem** Gerät)
+> ließ das Gerät bei jedem `async_add_entities(config_subentry_id=…)` zwischen
+> den Scopes hin- und herspringen; die Entity-Registry entfernte bei jedem
+> Sprung die Entities der „alten" Seite — unter 2026.8.0 verschwanden so fast
+> alle BM-Entities aus der State-Machine (nur der zuletzt angelegte
+> Subentry-Switch überlebte). Fix: ein Gerät je Subentry + Migration 2.4
+> (`__init__._migrate_to_subentry_devices` hängt bestehende Registry-Zeilen auf
+> die neuen Geräte um, Entity-IDs bleiben stabil; vom Ping-Pong gelöschte Zeilen
+> stellt HA beim Re-Add mit alter Entity-ID wieder her).
 - **Plattformen** (`__init__.PLATFORMS`): `binary_sensor`, `button`, `sensor`,
   `switch`. Dazu der Diagnostics-Endpoint (keine Plattform) und zwei Services.
 - **Stabiler Schlüssel ist die `unique_id`**, nicht die Entity-ID:

@@ -40,7 +40,7 @@ class SurplusLoadRuntimeResetButton(BatteryManagerEntity, ButtonEntity):
     def __init__(
         self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
     ) -> None:
-        super().__init__(coordinator, f"load_runtime_reset_{subentry_id}")
+        super().__init__(coordinator, f"load_runtime_reset_{subentry_id}", subentry_id)
         self._subentry_id = subentry_id
         self._attr_translation_placeholders = {"name": title}
 

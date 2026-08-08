@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-08-08
+
+### Fixed
+- **Home Assistant 2026.8 compatibility: the integration's entities come
+  back.** HA 2026.8.0 restricts a device to a single config subentry (core
+  PR #175785, no compatibility shim). The Battery Manager attached one shared
+  device to the config entry and every load subentry, so on startup each
+  platform's entity registration moved the device to the latest scope and HA
+  deleted the registry rows of the previous scope — a ping-pong that left
+  only the last platform's entities alive. The coordinator kept planning and
+  switching, but every sensor vanished from the state machine (live incident
+  2026-08-08: `sensor.…soc_forecast` 404, only one BM switch left). Each load
+  subentry now gets its own device linked to the main one via
+  `via_device_id`, and config entry migration 2.4 re-hangs existing entity
+  registry rows onto the per-subentry devices; rows the ping-pong already
+  deleted are resurrected on setup with their original entity ids and user
+  customizations. The test environment moves to HA 2026.8.0
+  (pytest-homeassistant-custom-component 0.13.354) with a regression test
+  that reproduces the exact live failure.
+
 ## [0.25.0] - 2026-08-07
 
 ### Fixed
