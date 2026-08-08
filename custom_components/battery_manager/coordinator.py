@@ -1251,6 +1251,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 max_w=float(cfg.get(CONF_FEEDIN_MAX_W, 1000.0)),
                 min_soc_percent=float(cfg.get(CONF_FEEDIN_MIN_SOC, 30.0)),
                 deadline_hour=int(cfg.get(CONF_FEEDIN_DEADLINE_HOUR, 9)),
+                # Manual mode (R9, operator decision 2026-08-08): the plan and
+                # the chart mirror the operator-owned setpoint for the rest of
+                # today (0 W books nothing); tomorrow plans automatically
+                # again. Unreadable entity -> None -> automatic schedule.
+                manual_w=self._feedin_manual_plan_w(),
             ),
             loads=tuple(loads),
             appliances=tuple(appliances),
@@ -3106,6 +3111,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # loads in this very cycle.
         await self._note_data_recovered()
 
+        # The feed-in manual verdict must precede the config build: in manual
+        # mode the planner books the operator-owned setpoint for the rest of
+        # today (R9, operator decision 2026-08-08), so the plan would be one
+        # cycle stale if the judgement ran after it.
+        self._update_feedin_mode(now)
+
         config = self.build_system_config()
         load_states = self._get_load_states(now)
         appliance_runs = self._get_appliance_runs(now)
@@ -3203,10 +3214,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             shadow_active,
         )
         await self._update_power_warnings(result, now)
-        # F-FEEDIN: manual-override judgement BEFORE the executor pass (F-N2
-        # pattern: the mode gates every write), then the two-phase setpoint
-        # executor incl. the event-driven battery-power trim (R9/R10).
-        self._update_feedin_mode(now)
+        # F-FEEDIN: the manual-override judgement already ran at the top of
+        # the cycle (before build_system_config, so the plan books the
+        # operator-owned setpoint in manual mode); the mode gates every write
+        # of the two-phase setpoint executor incl. the event-driven trim.
         await self._apply_feedin(result, config, soc, now)
         # V6 (F-TANK): after the power warnings settle (their latch edges drive
         # the tank learning/auto-reset), refresh the tank diagnostics and fire
@@ -4335,6 +4346,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and dt_util.now().date() < self._feedin_manual_until
         )
 
+    def _feedin_manual_plan_w(self) -> float | None:
+        """The operator-owned setpoint for the planner (F-FEEDIN R9).
+
+        Only while manual mode is active; a negative entity value means
+        export (FEEDIN_SETPOINT_EXPORT_SIGN, already flipped by
+        _feedin_read_power_w) — a positive setpoint is an IMPORT request and
+        books no feed-in (clamped to 0). Unreadable entity -> None, so the
+        plan falls back to the automatic schedule instead of inventing one.
+        """
+        if not self.feedin_manual():
+            return None
+        value = self._feedin_read_power_w()
+        if value is None:
+            return None
+        return max(0.0, value)
+
     async def async_set_feedin_enabled(self, on: bool) -> None:
         """Runtime on/off switch for early feed-in (F-FEEDIN R6).
 
@@ -4347,6 +4374,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         self._feedin_switch_on = on
         _LOGGER.info("Early feed-in runtime switch turned %s", "on" if on else "off")
+        if on and self._feedin_manual_until is not None:
+            # Operator rule 2026-08-08: a rising edge on the runtime switch
+            # hands the setpoint back to the automation — manual mode ends
+            # NOW instead of at midnight. The operator's last value is
+            # adopted as the baseline so it is not re-judged as an override.
+            self._feedin_manual_until = None
+            self._feedin_last_written_w = self._feedin_read_power_w()
+            self._feedin_last_write_at = None
+            _LOGGER.info(
+                "Feed-in manual mode ended (runtime switch on) — automatic"
+                " control resumes"
+            )
         self._save_persistent_state()
         self.async_update_listeners()
         if not on:

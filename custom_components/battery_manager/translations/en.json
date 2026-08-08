@@ -679,7 +679,7 @@
               "feedin_battery_power_entity": "Battery power sensor (W), Victron convention: positive = charging, negative = discharging. Drives the event-driven trim that holds the battery at ~0 W during feed-in.",
               "feedin_max_w": "Upper cap of the feed-in setpoint (at most 2000 W).",
               "feedin_min_soc_percent": "Feed-in only runs above this SOC (must be above the battery minimum SOC).",
-              "feedin_deadline_hour": "Soft deadline (0-12): the planned rate aims to deliver the day's feed-in by this hour; leftover energy continues past it until the battery is full."
+              "feedin_deadline_hour": "Hard deadline (0-23): early feed-in is only scheduled before this hour; leftover energy is not worked off afterwards (it exports naturally at midday)."
             }
           },
           "surplus_accounting": {

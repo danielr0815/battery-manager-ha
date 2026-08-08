@@ -421,6 +421,13 @@ async def test_external_override_enters_manual_mode_until_midnight(hass):
 
     # Midnight reset: automatic control re-adopts the operator's value as the
     # new baseline and resumes (here: re-anchors the idle-night plan to 0).
+    # The SOC sensor is nudged first: it has been frozen at 55 the whole test,
+    # and a full day's plan drift against a frozen reading is exactly what the
+    # stale watchdog (correctly) fails the cycle with — which would skip the
+    # judgement and with it the reset under test.
+    hass.states.async_set(
+        "sensor.test_soc", "56", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
     midnight = (MORNING + timedelta(days=1)).replace(
         hour=0, minute=0, second=5, microsecond=0
     )
@@ -430,6 +437,74 @@ async def test_external_override_enters_manual_mode_until_midnight(hass):
     assert coordinator._persistent_payload()["feedin_manual_until"] is None
     assert hass.states.get(mode_eid).state == "auto"
     assert float(hass.states.get(SETPOINT).state) == 0.0
+
+
+async def test_runtime_switch_rising_edge_exits_manual_mode(hass):
+    """Operator rule 2026-08-08: manual mode ends on a rising edge of the
+    runtime switch (off -> on) — not only at midnight. The operator's last
+    value is adopted as the baseline (not re-judged as an override), and the
+    resumed automation re-anchors the setpoint to the plan."""
+    calls: list[tuple[str, float]] = []
+    coordinator, entry = await _setup_feedin(hass, calls)
+    registry = er.async_get(hass)
+    switch_eid = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_{ENTITY_FEEDIN_SWITCH}"
+    )
+
+    _set_setpoint(hass, coordinator, "-900")
+    later = MORNING + timedelta(seconds=FEEDIN_MANUAL_GRACE_S + 1)
+    await _refresh_at(hass, coordinator, later)
+    assert coordinator._feedin_manual_until is not None
+    assert calls == []  # hands off while the operator owns the setpoint
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": switch_eid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": switch_eid}, blocking=True
+    )
+    await hass.async_block_till_done()
+    _cancel_debounce(coordinator)
+    assert coordinator._feedin_manual_until is None
+    assert coordinator._persistent_payload()["feedin_manual_until"] is None
+    # The operator's 900 W was adopted as the baseline on the rising edge (so
+    # it is not re-judged as an override), and the resumed automation
+    # re-anchored the setpoint to the plan's idle value in the same refresh.
+    assert calls and calls[-1] == (SETPOINT, 0.0)
+    assert float(hass.states.get(SETPOINT).state) == 0.0
+
+
+async def test_manual_mode_plans_the_operator_value_until_midnight(hass):
+    """The plan mirrors the operator-owned setpoint for the rest of today —
+    so the SOC forecast and the card lane reflect reality — while tomorrow
+    plans automatically again. 0 W books nothing (no chart lane). The
+    executor stays hands-off throughout (operator decision 2026-08-08)."""
+    calls: list[tuple[str, float]] = []
+    coordinator, _entry = await _setup_feedin(hass, calls)
+
+    _set_setpoint(hass, coordinator, "-450")
+    later = MORNING + timedelta(seconds=FEEDIN_MANUAL_GRACE_S + 1)
+    await _refresh_at(hass, coordinator, later)
+    today = later.date()
+    feedins_today = [
+        p.get("feedin", 0.0)
+        for p in coordinator.data["soc_forecast"]
+        if dt_util.parse_datetime(p["t"]).date() == today
+    ]
+    assert any(w == pytest.approx(450.0) for w in feedins_today)
+    assert calls == []  # planned, never written
+
+    # Operator value 0 W: nothing is planned for today — no feed-in lane.
+    _set_setpoint(hass, coordinator, "0")
+    await _refresh_at(hass, coordinator, later + timedelta(minutes=5))
+    feedins_today = [
+        p.get("feedin", 0.0)
+        for p in coordinator.data["soc_forecast"]
+        if dt_util.parse_datetime(p["t"]).date() == today
+    ]
+    assert not any(w > 0.0 for w in feedins_today)
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

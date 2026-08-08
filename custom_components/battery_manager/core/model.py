@@ -380,6 +380,13 @@ class FeedInParams:
     max_w: float = 0.0
     min_soc_percent: float = 0.0
     deadline_hour: int = 9
+    # Operator-owned setpoint (manual mode, F-FEEDIN R9): while the operator
+    # owns the setpoint entity the executor writes nothing, but the plan must
+    # still reflect reality — today's remaining slots book exactly this value
+    # (0 = no feed-in today, nothing in the chart); tomorrow falls back to
+    # the automatic schedule. None (default) = no manual override, pure
+    # automatic planning; the goldens never set it.
+    manual_w: float | None = None
 
     def __post_init__(self) -> None:
         _require(
@@ -395,6 +402,10 @@ class FeedInParams:
             0 <= self.deadline_hour <= 23,
             f"FeedInParams.deadline_hour must be in [0, 23], "
             f"got {self.deadline_hour!r}",
+        )
+        _require(
+            self.manual_w is None or self.manual_w >= 0.0,
+            f"FeedInParams.manual_w must be None or >= 0, got {self.manual_w!r}",
         )
 
 

@@ -55,14 +55,14 @@ feed-in.
 - **R3 (Zielmenge = Median).** The per-day target is the day's residual
   `grid_export` of `alloc_traj` — the MEDIAN amount. The stress vector scales
   only the Z4 brake (R6), never the target.
-- **R4 (Rate & weiche Deadline).** Per slot, ascending from slot 0:
+- **R4 (Rate & harte Deadline).** Per slot, ascending from slot 0:
   `rate = remaining / max(hours until the day's deadline_hour, slot duration)`,
-  capped at `min(feedin_max_w, slot surplus)`. After the deadline the
-  denominator collapses to the slot duration: the rest is worked off **as fast
-  as the surplus allows** — until the amount is delivered **or the battery is
-  full** (a full battery exports naturally; feed-in stops, setpoint 0).
-  Every booking is re-simulated into the trial so the next slot's floor and
-  soc_max checks see the reduced charge.
+  capped at `min(feedin_max_w, slot surplus)`. The deadline is **HARD**
+  (operator decision 2026-08-08, replacing the soft one): slots starting
+  at/after the day's deadline get **no booking** — a leftover is not worked
+  off, it exports naturally at midday. Deliberate export shall not be
+  triggered past the configured hour. Every booking is re-simulated into the
+  trial so the next slot's floor and soc_max checks see the reduced charge.
 - **R5 (min_soc-Floor).** No booking while the trial SOC at slot start is at or
   below `feedin_min_soc_percent` (default 30 %). This is the ABSOLUTE floor of
   the feature; the options flow enforces it above `battery_min_soc_percent`.
@@ -103,6 +103,22 @@ feed-in.
   immediately. Manual reset happens automatically at midnight; the mode is
   visible as `sensor.battery_manager_feedin_mode` (auto/manual) and in
   `coordinator.data["feedin_mode"]`.
+  **Additions (operator decisions 2026-08-08):**
+  - A **rising edge on the runtime switch** (off → on) ends manual mode
+    immediately instead of at midnight: `_feedin_manual_until` is cleared and
+    the operator's current value is adopted as the baseline (so it is not
+    re-judged as an override); the resumed automation re-anchors the setpoint
+    to the plan in the same refresh.
+  - **The plan mirrors the operator-owned setpoint for the rest of today**
+    (`FeedInParams.manual_w`): today's slots book exactly that value — no
+    daily target, no deadline, but the same surplus/SOC guards — so the SOC
+    forecast and the card lane show reality instead of an auto plan nobody
+    executes. **0 W books nothing** (no chart lane). Tomorrow plans
+    automatically again (manual mode ends at midnight). The manual verdict
+    therefore runs at the TOP of the update cycle, before
+    `build_system_config()` — one cycle later the plan would be stale.
+    The executor stays hands-off throughout; this is planning honesty, not
+    actuation.
 - **R10 (Ereignisgesteuerter Trim, beide Richtungen).** The battery-power
   entity is a tracked input: every state update (Victron: typically every few
   seconds) fires the trim path via the debounced refresh, without waiting for
@@ -197,8 +213,9 @@ feed-in.
   slot, series length validated, zero series bit-identical.
 - `tests/core/test_optimize.py` — F-FEEDIN section: disabled ⇒ empty and
   bit-identical; trigger only on residual export after loads; booking into the
-  morning surplus; rate spread towards the deadline; overrun as fast as the
-  surplus allows; `max_w` cap; `min_soc` floor; stop at soc_max; Z4 brake
+  morning surplus; rate spread towards the deadline; HARD deadline books
+  nothing at/after it; `max_w` cap; `min_soc` floor; stop at soc_max; manual
+  mode books the operator value for today only (0 books nothing); Z4 brake
   trims latest-first; empty horizon.
 - Goldens: **no** `gen_golden.py` run — the suite passes without a diff
   (R15 neutrality verification).

@@ -679,7 +679,7 @@
               "feedin_battery_power_entity": "Batterieleistungs-Sensor (W), Victron-Konvention: positiv = ladend, negativ = entladend. Treibt die ereignisgesteuerte Nachregelung, die die Batterie während der Einspeisung bei ~0 W hält.",
               "feedin_max_w": "Obergrenze des Einspeise-Sollwerts (höchstens 2000 W).",
               "feedin_min_soc_percent": "Einspeisung läuft nur oberhalb dieses SOC (muss über dem minimalen Batterie-SOC liegen).",
-              "feedin_deadline_hour": "Weiche Deadline (0-12): die Planrate zielt darauf, die Tagesmenge bis zu dieser Stunde abzugeben; Restmengen laufen darüber hinaus weiter, bis die Batterie voll ist."
+              "feedin_deadline_hour": "Harte Deadline (0-23): vorzeitige Einspeisung wird nur vor dieser Stunde eingeplant; Restmengen werden danach nicht mehr abgearbeitet (sie gehen mittags natürlich ins Netz)."
             }
           },
           "surplus_accounting": {

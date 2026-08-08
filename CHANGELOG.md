@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.6] - 2026-08-08
+
+### Changed
+- **Early feed-in: the deadline is now hard** (operator decision
+  2026-08-08). Until now a leftover amount was worked off *past* the
+  configured deadline hour as fast as the surplus allowed — deliberate
+  export in the afternoon is no longer triggered: slots starting at/after
+  the deadline get no booking; the leftover exports naturally at midday.
+- **Manual feed-in mode is planned honestly and ends on the switch.** Two
+  operator rules: while the operator owns the setpoint (manual mode), the
+  plan and the SOC forecast now mirror the operator's current value for the
+  rest of today — **0 W books nothing, so the card shows no feed-in lane** —
+  and tomorrow's slots plan automatically again (manual mode still ends at
+  midnight). And a **rising edge on `switch.…_early_feed_in`** (off → on)
+  hands control back immediately instead of waiting for midnight: manual
+  mode is cleared, the operator's value is adopted as the baseline (not
+  re-judged as an override), and the automation re-anchors the setpoint to
+  the plan in the same refresh. The executor never writes in manual mode —
+  this is forecast honesty, not actuation. The manual verdict now runs at
+  the top of the update cycle so the same cycle's plan already reflects it.
+
 ## [0.25.5] - 2026-08-08
 
 ### Added

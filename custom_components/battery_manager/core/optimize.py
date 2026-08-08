@@ -1436,11 +1436,17 @@ def plan_feedin(
       exports naturally — setpoint 0), and the slot has PV surplus (same
       notion the simulation uses: PV - house AC - extra AC, before charging).
     - Rate per slot = remaining / max(hours until the day's `deadline_hour`,
-      slot duration) — a SOFT deadline (requirement 4): once it passes, the
-      denominator collapses to the slot duration, so the rest is worked off
-      as fast as the surplus allows. Capped at min(max_w, slot surplus)
-      (requirement 5). Every booking is re-simulated into the trial so the
-      next slot's SOC/SOC-cap checks see the real path.
+      slot duration), capped at min(max_w, slot surplus) (requirement 5).
+      The deadline is HARD (operator decision 2026-08-08): slots starting
+      at/after the day's deadline get NO booking — leftover energy is not
+      worked off afterwards, it exports naturally at midday. Every booking
+      is re-simulated into the trial so the next slot's floor and soc_max
+      checks see the reduced charge.
+    - Manual mode (requirement 9): when `manual_w` is set, the operator owns
+      the setpoint. Today's slots then book exactly that value (no daily
+      target, no deadline — the plan and the chart must mirror reality), 0
+      books nothing at all; the following days plan automatically again
+      (manual mode ends at midnight).
     - Z4 as a BRAKE only (requirement 3): the final WITH-feed-in series is
       re-simulated under the stressed PV vector (same P10/alpha machinery as
       the `_z4_reject` / `_ramped_stress_floors` gates); on a floor violation
@@ -1456,16 +1462,26 @@ def plan_feedin(
     battery = config.battery
     n = len(inputs.slots)
     booked = [0.0] * n
-    if n == 0 or alloc_traj.total_export_wh <= _EPS:
+    manual_w = feedin.manual_w
+    if n == 0 or (manual_w is None and alloc_traj.total_export_wh <= _EPS):
         return tuple(booked), {}
 
     day_slots: dict = {}
     for i, slot in enumerate(inputs.slots):
         day_slots.setdefault(slot.start.date(), []).append(i)
+    today = inputs.slots[0].start.date()
 
     trial = alloc_traj
-    for idxs in day_slots.values():
-        remaining = sum(alloc_traj.flows[j].grid_export_wh for j in idxs)
+    for day, idxs in day_slots.items():
+        manual_today = manual_w is not None and day == today
+        if manual_today:
+            # No daily target in manual mode — the operator's value books
+            # into every servable slot left today.
+            remaining = math.inf
+            if manual_w is None or manual_w <= _EPS:
+                continue  # operator set 0 W: no booking, no chart lane
+        else:
+            remaining = sum(alloc_traj.flows[j].grid_export_wh for j in idxs)
         if remaining <= _EPS:
             continue
         for i in idxs:
@@ -1514,12 +1530,19 @@ def plan_feedin(
             deadline = slot.start.replace(
                 hour=feedin.deadline_hour, minute=0, second=0, microsecond=0
             )
-            if slot.start < deadline:
+            if manual_today:
+                rate_w = min(manual_w, surplus_wh / slot.duration)
+            elif slot.start >= deadline:
+                # HARD deadline (operator decision 2026-08-08): no deliberate
+                # feed-in after the configured hour — the leftover exports
+                # naturally at midday instead of being worked off fast.
+                continue
+            else:
                 hours_left = (deadline - slot.start).total_seconds() / 3600.0
                 denom = max(hours_left, slot.duration)
-            else:
-                denom = slot.duration
-            rate_w = min(remaining / denom, feedin.max_w, surplus_wh / slot.duration)
+                rate_w = min(
+                    remaining / denom, feedin.max_w, surplus_wh / slot.duration
+                )
             take_wh = min(rate_w * slot.duration, remaining)
             booked[i] = take_wh
             remaining -= take_wh

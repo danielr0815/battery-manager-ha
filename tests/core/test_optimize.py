@@ -4808,24 +4808,16 @@ def test_feedin_rate_spreads_towards_deadline():
     assert by_hour[7] < FEEDIN_2KW.max_w
 
 
-def test_feedin_overruns_deadline_as_fast_as_surplus_allows():
-    """Past the deadline the denominator collapses to the slot duration
-    (requirement 4): the remaining amount is worked off immediately, capped
-    only by max_w and the slot surplus."""
+def test_feedin_hard_deadline_books_nothing_after_it():
+    """HARD deadline (operator decision 2026-08-08, replacing the soft one):
+    slots starting at/after the day's deadline get NO booking — the leftover
+    residual is not worked off, it exports naturally at midday."""
     now = datetime(2026, 7, 4, 10, 0)  # after the 09:00 deadline
     plain, _ = make_plan(SystemConfig(), now, 60.0, [8.0])
-    result, inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [8.0])
-    residual = plain.trajectory.total_export_wh
-    slot0 = inputs.slots[0]
-    # Upper bound: the RAW AC surplus. The booked value sits below it by the
-    # inverter standby and the 48 V give-back the slot keeps to stay
-    # battery-neutral (operator finding 2026-08-04) — the size of that reserve
-    # is the planner's business, the cap is the contract.
-    surplus_w = (slot0.pv_wh - slot0.ac_wh) / slot0.duration
-    booked_w = result.feedin_schedule_w[0]
-    assert 0.0 < booked_w <= min(residual / slot0.duration, FEEDIN_2KW.max_w, surplus_w)
-    # The full residual is worked off despite the missed deadline.
-    assert _booked_feedin_wh(result, inputs) == pytest.approx(residual, abs=1e-6)
+    result, _inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [8.0])
+    assert plain.trajectory.total_export_wh > 0.0  # a residual exists…
+    assert sum(result.feedin_schedule_w) == 0.0  # …but nothing is booked
+    assert result.feedin_by_day_wh == {}
 
 
 def test_feedin_never_discharges_the_battery_for_export():
@@ -4846,19 +4838,28 @@ def test_feedin_never_discharges_the_battery_for_export():
 
 
 def test_feedin_capped_by_max_w():
-    """A small max_w stretches the booking over more slots (requirement 5)."""
+    """A small max_w stretches the booking over more slots (requirement 5) —
+    bounded by the HARD deadline: what does not fit before it is not
+    delivered (operator decision 2026-08-08)."""
     feedin = FeedInParams(enabled=True, max_w=300.0, deadline_hour=9)
-    result, _ = _feedin_plan(feedin, datetime(2026, 7, 4, 6, 0), 50.0, [8.0])
-    nonzero = [w for w in result.feedin_schedule_w if w > 1e-9]
+    result, inputs = _feedin_plan(feedin, datetime(2026, 7, 4, 6, 0), 50.0, [8.0])
+    nonzero = [
+        (s, w)
+        for w, s in zip(result.feedin_schedule_w, inputs.slots, strict=True)
+        if w > 1e-9
+    ]
     assert nonzero
-    assert max(nonzero) <= 300.0 + 1e-9
-    assert len(nonzero) >= 3  # the cap needs several slots for the residual
+    assert max(w for _, w in nonzero) <= 300.0 + 1e-9
+    assert len(nonzero) >= 2  # the cap needs several slots for the residual
+    assert all(s.start.hour < 9 for s, _ in nonzero)  # hard deadline
 
 
 def test_feedin_respects_min_soc_floor():
     """The absolute floor (requirement 3): no booking at a slot whose trial
     SOC at slot start is at/below min_soc_percent."""
-    feedin = FeedInParams(enabled=True, max_w=2000.0, min_soc_percent=70.0)
+    feedin = FeedInParams(
+        enabled=True, max_w=2000.0, min_soc_percent=70.0, deadline_hour=12
+    )
     result, _ = _feedin_plan(feedin, datetime(2026, 7, 4, 6, 0), 50.0, [8.0])
     booked_slots = [i for i, w in enumerate(result.feedin_schedule_w) if w > 1e-9]
     assert booked_slots
@@ -4873,6 +4874,42 @@ def test_feedin_stops_at_soc_max():
     assert result.trajectory.total_export_wh > 0.0
     assert sum(result.feedin_schedule_w) == 0.0
     assert result.feedin_by_day_wh == {}
+
+
+def test_feedin_manual_mode_books_the_operator_value_for_today_only():
+    """Manual mode (operator decision 2026-08-08): the operator-owned setpoint
+    is planned for the rest of TODAY — past the auto deadline and without the
+    daily target — while tomorrow follows the automatic schedule again (the
+    manual mode ends at midnight)."""
+    now = datetime(2026, 7, 4, 10, 0)  # AFTER the 09:00 auto deadline
+    feedin = replace(FEEDIN_2KW, manual_w=500.0)
+    result, inputs = _feedin_plan(feedin, now, 60.0, [8.0, 8.0])
+    rows = list(zip(result.feedin_schedule_w, inputs.slots, strict=True))
+    booked_today = [
+        (s, w) for w, s in rows if s.start.date() == now.date() and w > 1e-9
+    ]
+    assert booked_today, "the operator value must be planned for today"
+    assert all(w <= 500.0 + 1e-9 for _, w in booked_today)
+    assert any(w == pytest.approx(500.0) for _, w in booked_today)
+    # …including slots past the (auto) deadline — the operator's export is
+    # physical reality until midnight, not a BM trigger.
+    assert any(s.start.hour >= 9 for s, _ in booked_today)
+    booked_tomorrow = [
+        (s, w) for w, s in rows if s.start.date() != now.date() and w > 1e-9
+    ]
+    assert booked_tomorrow, "tomorrow plans automatically again"
+    assert all(s.start.hour < 9 for s, _ in booked_tomorrow)  # hard deadline
+
+
+def test_feedin_manual_zero_plans_nothing_today():
+    """Manual 0 W: nothing booked for today — the card shows no feed-in lane —
+    and tomorrow plans automatically again (operator decision 2026-08-08)."""
+    now = datetime(2026, 7, 4, 7, 0)  # BEFORE the deadline: auto would book
+    feedin = replace(FEEDIN_2KW, manual_w=0.0)
+    result, _ = _feedin_plan(feedin, now, 60.0, [8.0, 8.0])
+    assert now.date().isoformat() not in result.feedin_by_day_wh
+    tomorrow = (now + timedelta(days=1)).date().isoformat()
+    assert result.feedin_by_day_wh.get(tomorrow, 0.0) > 0.0
 
 
 def _feedin_z4_plan(alpha):
