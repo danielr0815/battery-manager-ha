@@ -409,6 +409,13 @@ switched back on so that the rail is not dead). Details:
 - In manual mode the **simulation treats the path as permanently
   active** (24 V: DC load from the grid; 48 V: constant feed-in) —
   the SOC forecast thus matches real winter operation.
+- The fixed manual schedule is already visible to surplus-load allocation,
+  not injected only afterwards: if the support path makes the battery reach
+  its ceiling earlier, controllable loads can consume the resulting clip.
+  Automatic emergency escalation remains the later D-A9 stage.
+- The simulated 48 V voltage gate defaults to **40 % SOC**: delivery is
+  possible only below it and is 0 W at/above it. Explicit 100 % disables the
+  SOC proxy when the operator intentionally wants an always-open simulation.
 - Per PSU there is a **mode sensor** (`sensor. … support mode`,
   enum automatic/manual) for dashboards and notifications.
 - Grace period: within `min_switch_interval_s` after our own

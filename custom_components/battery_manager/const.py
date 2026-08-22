@@ -152,7 +152,8 @@ CONF_PSU48_OUTPUT_VOLTAGE_V = "psu48_output_voltage_v"
 CONF_PSU48_EFFICIENCY = "psu48_efficiency"
 CONF_PSU48_MAX_CURRENT_A = "psu48_max_current_a"
 # 48 V PSU voltage gate as an SOC proxy (phase 3): the PSU only delivers
-# while the battery SOC is below this value. 100 = always open (neutral).
+# while the battery SOC is below this value. Default 40 % models the physical
+# voltage crossover; 100 % remains the explicit "gate disabled" escape hatch.
 # Calibrate from the observed voltage-crossing bracket (diagnostic).
 CONF_GATE_SOC_PERCENT = "gate_soc_percent"
 # Series cell count (informational: derives V/cell for the gate hint).
@@ -669,7 +670,7 @@ DEFAULT_CONFIG = {
     CONF_PSU48_OUTPUT_VOLTAGE_V: 49.56,
     CONF_PSU48_EFFICIENCY: 1.0,
     CONF_PSU48_MAX_CURRENT_A: 0.0,
-    CONF_GATE_SOC_PERCENT: 100.0,  # 100 = gate always open (neutral)
+    CONF_GATE_SOC_PERCENT: 40.0,
     CONF_BATTERY_CELLS_SERIES: 16,
     CONF_PSU48_ON_VOLTAGE_V: 49.56,
     CONF_PSU48_OFF_VOLTAGE_V: 49.8,

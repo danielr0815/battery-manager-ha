@@ -1,11 +1,12 @@
 """Golden-plan snapshots that lock planner behaviour across the F-N3
 two-bus refactor (docs/DC_TOPOLOGY.md phase 1).
 
-The two-bus model is introduced behaviour-neutral: with the neutral
-defaults (efficiencies 1.0, uncapped currents, gate open, dc24 share
-100 %) every plan must stay byte-identical to the pre-F-N3 behaviour.
+The two-bus model is introduced behaviour-neutral: with efficiencies 1.0,
+uncapped currents, an explicitly open gate, and dc24 share 100 %, every plan
+must stay byte-identical to the pre-F-N3 behaviour.  Since v0.25.8 the physical
+gate default is 40 %, so these topology-only scenarios pin 100 % deliberately.
 `golden_topology.json` is the frozen baseline; regenerate it ONLY for an
-intentional, reviewed behaviour change (scratchpad/gen_golden.py).
+intentional, reviewed behaviour change (scripts/gen_golden.py).
 """
 
 import json
@@ -77,9 +78,9 @@ def _run(config, now, soc, fc, states=()):
 def _scenarios():
     base = SystemConfig()
     loads_cfg = SystemConfig(loads=(FOSSIBOT, DEHUMID))
-    sup = SystemConfig(support=SupportParams(configured=True))
+    sup = SystemConfig(support=SupportParams(configured=True, gate_soc_percent=100.0))
     sup_dc = SystemConfig(
-        support=SupportParams(configured=True),
+        support=SupportParams(configured=True, gate_soc_percent=100.0),
         dc_profile=LoadProfile(base_w=150.0, variable_w=0.0),
     )
     short_peak = SystemConfig(
@@ -150,14 +151,26 @@ def _scenarios():
             (),
         ),
         "forced_dc24": (
-            SystemConfig(support=SupportParams(configured=True, dc24_forced_on=True)),
+            SystemConfig(
+                support=SupportParams(
+                    configured=True,
+                    dc24_forced_on=True,
+                    gate_soc_percent=100.0,
+                )
+            ),
             datetime(2026, 7, 3, 22, 0),
             50.0,
             [0.0, 2.0, 2.0],
             (),
         ),
         "forced_dc48": (
-            SystemConfig(support=SupportParams(configured=True, dc48_forced_on=True)),
+            SystemConfig(
+                support=SupportParams(
+                    configured=True,
+                    dc48_forced_on=True,
+                    gate_soc_percent=100.0,
+                )
+            ),
             datetime(2026, 7, 3, 22, 0),
             50.0,
             [0.0, 2.0, 2.0],

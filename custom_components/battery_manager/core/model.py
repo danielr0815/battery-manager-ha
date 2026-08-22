@@ -277,7 +277,7 @@ class SupportParams:
     psu48_eta: float = 1.0
     psu48_max_power_w: float | None = None
     psu48_output_voltage_v: float = 49.56
-    gate_soc_percent: float | None = None
+    gate_soc_percent: float | None = 40.0
 
     def __post_init__(self) -> None:
         _require(
@@ -294,6 +294,11 @@ class SupportParams:
                 0.0 < eta <= 1.0,
                 f"SupportParams.{name} must be in (0, 1], got {eta!r}",
             )
+        _require(
+            self.gate_soc_percent is None or 0.0 <= self.gate_soc_percent <= 100.0,
+            "SupportParams.gate_soc_percent must be in [0, 100] or None, "
+            f"got {self.gate_soc_percent!r}",
+        )
         for name in ("dcdc_max_power_w", "psu24_max_power_w", "psu48_max_power_w"):
             cap = getattr(self, name)
             _require(
@@ -613,9 +618,9 @@ class PlanResult:
     threshold_horizon_end: datetime | None = None
     # Per calendar day (ISO date -> Wh): the export the load allocation
     # PREVENTED that day (F-STRICT-SURPLUS R4) — max(0, base_export -
-    # alloc_export), both taken PRE support-escalation so a winter support PSU
-    # cannot deflate the figure (base = no loads / no PSUs; alloc = with loads,
-    # before support_escalation). The counterfactual that makes "why is a load
+    # alloc_export), both simulated WITHOUT support so even a manually fixed
+    # winter PSU cannot deflate the figure (base = no loads / no PSUs; alloc =
+    # accepted loads / no PSUs). The counterfactual that makes "why is a load
     # running although SOC never reaches max?" answerable on the dashboard.
     prevented_export_by_day_wh: dict[str, float] = field(default_factory=dict)
     # --- F-FEEDIN early feed-in (docs/F-FEEDIN.md) ---

@@ -616,13 +616,15 @@ und die Schwellenleiter muss stimmen (`_validate_support_hysteresis`): je Stufe
 `support_dc48_recovery_not_above_activate`, `support_dc48_activate_above_dc24`,
 `support_dc48_recovery_above_dc24`.
 
-**Sektion `dc_devices`** (F-N3, `_device_param_fields`) — **alle Defaults
-neutral**, die Planung ändert sich erst mit echten Werten:
+**Sektion `dc_devices`** (F-N3, `_device_param_fields`) — Wirkungsgrade,
+Stromgrenzen und Rail-Anteil bleiben neutral; das 48-V-SOC-Gate hat seit
+v0.25.8 den physischen Default 40 %:
 `battery_voltage_entity` (optional), `native48_base_w` (0),
 `dc24_share_percent` (100), je Wandler ein Tripel Spannung/η/Max-Strom
 (`dcdc_*` 24 V/1,0/0 A, `psu24_*` 24 V/1,0/0 A, `psu48_*` **49,56 V**/1,0/0 A;
-**0 A = ungedeckelt**), `battery_cells_series` (16), `gate_soc_percent` (100 =
-Gate immer offen) sowie der R2-Regler: `psu48_on_voltage_v` (49,56),
+**0 A = ungedeckelt**), `battery_cells_series` (16), `gate_soc_percent` (**40**;
+unterhalb Lieferung möglich, ab Schwelle 0 W; 100 = Gate deaktiviert/immer
+offen) sowie der R2-Regler: `psu48_on_voltage_v` (49,56),
 `psu48_off_voltage_v` (49,8), `psu48_controller_log_only` (**True** — erst nach
 einem Shakedown scharf schalten). Validierung `_validate_controller_voltages`:
 `off <= on` ⇒ `controller_off_below_on` (das Hystereseband würde kollabieren

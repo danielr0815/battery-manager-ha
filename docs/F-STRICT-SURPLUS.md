@@ -85,7 +85,10 @@ real import with rescued export. Supersedes F-PREDRAIN §3.2 F2 (Z2'
 proportional trade) and §3.7, and F-GATE-PARITY §7 risk acceptance 3.
 `import_trade_ratio` is retired: ignored by the planner, removed from the
 options UI; stored config entries keep parsing. `import_trade_used_wh` stays
-as a diagnostic and is now bounded by the slack.
+as a diagnostic and is now bounded by the slack. Since v0.25.8, when a
+manually forced support path is known for the horizon, `base` and every
+`trial` carry that identical fixed schedule; the gate therefore still measures
+only import caused by the candidate load.
 
 **R2 — planner floor-guard parity (planner-G4).** No booking may cover a
 slot that, in the TRIAL trajectory, is GRID-FED or touches the cutoff:
@@ -127,9 +130,9 @@ stress-window escape. The `stressed_min_soc` diagnostic uses the same
 function, so the sensor keeps reporting what the gate protected.
 
 **R4 — counterfactual transparency.** `PlanResult.prevented_export_by_day_wh`
-= max(0, base-day export − alloc-day export), BOTH taken PRE support-escalation
-(base = no loads; alloc = the allocation trajectory before support_escalation,
-so a winter support PSU cannot deflate it). The coordinator surfaces it as
+= max(0, base-day export − alloc-day export), BOTH taken WITHOUT support
+(base = no loads; alloc = accepted loads re-simulated without PSUs, so even a
+manually fixed winter support PSU cannot deflate it). The coordinator surfaces it as
 `prevented_export_kwh` in the per-day `daily` breakdown and the card stats
 line: the export the plan's load runs prevent that day. This answers "why is a
 load running although SOC never reaches max?" directly on the dashboard —

@@ -115,10 +115,8 @@ async def test_unload_releases_listeners(hass):
     assert coordinator._unsub_state_listener is None
 
 
-async def test_default_config_builds_neutral_support_params(hass):
-    """F-N3 phase 2: an entry without device params yields NEUTRAL
-    SupportParams (share 1.0, efficiencies 1.0, uncapped) — the upgrade
-    must not change planning until the operator enters real values."""
+async def test_default_config_builds_support_params_with_40_percent_gate(hass):
+    """Device topology stays neutral, while the physical PSU gate defaults 40 %."""
     entry = await _setup_entry(hass)
     coordinator = hass.data[DOMAIN][entry.entry_id]
     sp = coordinator.build_system_config().support
@@ -127,7 +125,7 @@ async def test_default_config_builds_neutral_support_params(hass):
     assert sp.dcdc_max_power_w is None
     assert sp.psu24_max_power_w is None
     assert sp.psu48_max_power_w is None
-    assert sp.gate_soc_percent is None
+    assert sp.gate_soc_percent == 40.0
 
 
 async def test_device_params_map_current_to_power_cap(hass):
@@ -203,6 +201,7 @@ async def test_gate_soc_maps_and_full_open(hass):
             },
             title="Battery Manager",
             version=2,
+            minor_version=5,
         )
         entry.add_to_hass(hass)
         _set_input_states(hass)

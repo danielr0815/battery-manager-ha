@@ -166,14 +166,24 @@ def test_gate_closed_during_net_charging():
     assert flow.psu48_delivered_wh < _EPS
 
 
-def test_gate_open_when_not_charging():
-    """Contrast: with no PV surplus the gate stays open and the PSU delivers."""
+def test_gate_open_when_not_charging_below_default_soc_gate():
+    """No PV surplus and SOC < default 40 %: the PSU gate stays open."""
     config = SystemConfig(support=SupportParams(configured=True))
     flow = step_hour(
-        config, 50.0, _slot(pv=0.0, ac=0.0, dc=200.0), 99.0, dc48_support=True
+        config, 30.0, _slot(pv=0.0, ac=0.0, dc=200.0), 99.0, dc48_support=True
     )
     assert flow.gate_open is True
     assert flow.psu48_delivered_wh > 0.0
+
+
+def test_default_gate_closes_at_40_percent_soc_without_pv():
+    """At the default 40 % threshold the physical PSU gate delivers 0 W."""
+    config = SystemConfig(support=SupportParams(configured=True))
+    flow = step_hour(
+        config, 40.0, _slot(pv=0.0, ac=0.0, dc=200.0), 99.0, dc48_support=True
+    )
+    assert flow.gate_open is False
+    assert flow.psu48_delivered_wh < _EPS
 
 
 # --- #9 gate-edge taper ---
@@ -461,7 +471,8 @@ def test_psu48_offsets_bus_load_without_battery_roundtrip():
     """A concurrent 48 V bus load is covered by the PSU directly — it is not
     drained from and re-charged into the battery."""
     config = _dc_config(
-        SupportParams(configured=True, dc48_power_w=100.0), dc_base_w=60.0
+        SupportParams(configured=True, dc48_power_w=100.0, gate_soc_percent=100.0),
+        dc_base_w=60.0,
     )
     flow = _first_flow(config, soc=80.0, dc48=True)
     # 60 Wh bus load covered directly; the battery is not discharged for it.

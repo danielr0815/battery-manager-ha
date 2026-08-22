@@ -667,8 +667,11 @@ def allocate_loads(
     inputs: PlanInputs,
     threshold: float,
     base_trajectory: Trajectory,
+    *,
+    dc24_schedule: tuple[bool, ...] | None = None,
+    dc48_schedule: tuple[bool, ...] | None = None,
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
-    """Assign surplus loads to hours in two passes.
+    """Assign surplus loads to hours in three passes.
 
     Pass 1 fills hours with direct surplus (battery share within the load's
     tolerance across the committed runtime), LOAD-OUTER in config order
@@ -691,6 +694,11 @@ def allocate_loads(
     Every candidate is evaluated with the energy the executor will really
     deliver (`_committed_hours`), and the saturation gate is floored at the
     nominal power so a decayed/empty feedback EMA can never weaken it.
+
+    Manually forced support paths are known exogenous inputs, so the caller
+    supplies their fixed schedules here.  Every candidate and gate then sees
+    the same winter-support trajectory as the published forecast; automatic
+    emergency escalation remains a later planning stage.
 
     Loads run in parallel when surplus suffices; config order = priority when
     it does not (order = the configured per-load priority since v0.8.2, default
@@ -881,7 +889,14 @@ def allocate_loads(
         candidate is vetoed, else the trial trajectory for the caller's
         pass-specific gates / acceptance.
         """
-        traj = simulate(config, inputs, threshold, extra_ac_wh=trial_ac)
+        traj = simulate(
+            config,
+            inputs,
+            threshold,
+            extra_ac_wh=trial_ac,
+            dc24_schedule=dc24_schedule,
+            dc48_schedule=dc48_schedule,
+        )
         if not import_ok(traj):  # Z2''
             return None
         if not slots_serviceable(traj, covered):  # R2 planner-G4
@@ -1048,6 +1063,8 @@ def allocate_loads(
                 inputs,
                 threshold,
                 extra_ac_wh=tuple(extra),
+                dc24_schedule=dc24_schedule,
+                dc48_schedule=dc48_schedule,
                 pv_scale=optimism_vec,
             )
             if c2_active
@@ -1167,6 +1184,8 @@ def allocate_loads(
                             inputs,
                             threshold,
                             extra_ac_wh=trial_tuple,
+                            dc24_schedule=dc24_schedule,
+                            dc48_schedule=dc48_schedule,
                             pv_scale=optimism_vec,
                         )
                         drop_beta = (
@@ -1204,6 +1223,8 @@ def allocate_loads(
                             inputs,
                             threshold,
                             extra_ac_wh=trial_tuple,
+                            dc24_schedule=dc24_schedule,
+                            dc48_schedule=dc48_schedule,
                             pv_scale=scale_vec,
                         )
                         trial_wmin = _windowed_min_soc(trial_stress, i, hi)
@@ -1214,6 +1235,8 @@ def allocate_loads(
                                 inputs,
                                 threshold,
                                 extra_ac_wh=tuple(extra),
+                                dc24_schedule=dc24_schedule,
+                                dc48_schedule=dc48_schedule,
                                 pv_scale=scale_vec,
                             )
                             stress_base[key] = _windowed_min_soc(base_stress, i, hi)
@@ -1232,6 +1255,8 @@ def allocate_loads(
                                 inputs,
                                 threshold,
                                 extra_ac_wh=tuple(extra),
+                                dc24_schedule=dc24_schedule,
+                                dc48_schedule=dc48_schedule,
                                 pv_scale=optimism_vec,
                             )
                         )
@@ -1431,6 +1456,9 @@ def plan_feedin(
     threshold: float,
     extra_ac: tuple[float, ...],
     alloc_traj: Trajectory,
+    *,
+    dc24_schedule: tuple[bool, ...] | None = None,
+    dc48_schedule: tuple[bool, ...] | None = None,
 ) -> tuple[tuple[float, ...], dict[str, float]]:
     """Pre-shift the UNAVOIDABLE export into the morning surplus (F-FEEDIN).
 
@@ -1469,8 +1497,10 @@ def plan_feedin(
       the LATEST feed-in slot at/before the violation is handed back,
       iterated (bounded: one slot per pass) until the floors hold.
 
-    Returns the booked Wh per slot plus the per-day booked Wh. The caller
-    re-simulates the published trajectory with the series; the
+    Manually forced support schedules are carried through every re-simulation
+    so the target and all SOC/floor checks stay on the same trajectory as the
+    surplus allocator. Returns the booked Wh per slot plus the per-day booked
+    Wh. The caller re-simulates the published trajectory with the series; the
     `prevented_export_by_day_wh` counterfactual deliberately keeps comparing
     base vs. alloc WITHOUT feed-in.
     """
@@ -1564,7 +1594,13 @@ def plan_feedin(
             remaining -= take_wh
             # Re-simulate so the next slot's SOC checks see the reduced charge.
             trial = simulate(
-                config, inputs, threshold, extra_ac_wh=extra_ac, feedin_wh=tuple(booked)
+                config,
+                inputs,
+                threshold,
+                extra_ac_wh=extra_ac,
+                dc24_schedule=dc24_schedule,
+                dc48_schedule=dc48_schedule,
+                feedin_wh=tuple(booked),
             )
 
     # Z4 brake: the stress must not push the reserve through the ramped floors
@@ -1577,7 +1613,13 @@ def plan_feedin(
     if any(s < 1.0 - _EPS for s in stress_vec) and any(b > _EPS for b in booked):
         floors = _ramped_stress_floors(config, inputs, stress_vec)
         base_stress = simulate(
-            config, inputs, threshold, extra_ac_wh=extra_ac, pv_scale=stress_vec
+            config,
+            inputs,
+            threshold,
+            extra_ac_wh=extra_ac,
+            dc24_schedule=dc24_schedule,
+            dc48_schedule=dc48_schedule,
+            pv_scale=stress_vec,
         )
         for _ in range(sum(b > _EPS for b in booked) + 1):
             stressed = simulate(
@@ -1585,6 +1627,8 @@ def plan_feedin(
                 inputs,
                 threshold,
                 extra_ac_wh=extra_ac,
+                dc24_schedule=dc24_schedule,
+                dc48_schedule=dc48_schedule,
                 feedin_wh=tuple(booked),
                 pv_scale=stress_vec,
             )
@@ -1782,10 +1826,51 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """
     control = config.control
     threshold, base_traj = search_threshold(config, inputs)
-    load_plans, extra_ac, traj = allocate_loads(config, inputs, threshold, base_traj)
-    # Capture the allocation trajectory BEFORE support escalation: the import
-    # trade is a property of the load allocation, not of the last-resort PSUs.
+    # F-N2 manual support is a KNOWN, horizon-wide operating condition, not an
+    # automatic emergency decision.  Make those fixed schedules visible to the
+    # allocator so surplus created by their higher SOC path can be absorbed by
+    # loads instead of appearing only after allocation as stranded export.
+    n = len(inputs.slots)
+    forced_on = (True,) * n
+    forced_dc24 = (
+        forced_on
+        if config.support.configured and config.support.dc24_forced_on
+        else None
+    )
+    forced_dc48 = (
+        forced_on
+        if config.support.configured and config.support.dc48_forced_on
+        else None
+    )
+    allocation_base = base_traj
+    if forced_dc24 is not None or forced_dc48 is not None:
+        allocation_base = simulate(
+            config,
+            inputs,
+            threshold,
+            dc24_schedule=forced_dc24,
+            dc48_schedule=forced_dc48,
+        )
+    load_plans, extra_ac, traj = allocate_loads(
+        config,
+        inputs,
+        threshold,
+        allocation_base,
+        dc24_schedule=forced_dc24,
+        dc48_schedule=forced_dc48,
+    )
+    # `alloc_traj` is the real allocation trajectory, including any manually
+    # forced support.  R4 deliberately retains its established WITHOUT-support
+    # counterfactual, so reconstruct that one from the accepted load series only
+    # when fixed support changed the gate baseline.  The import-trade diagnostic
+    # below instead compares the real supported trajectories because those are
+    # the trajectories protected by the allocator's absolute 50 Wh gate.
     alloc_traj = traj
+    metric_alloc_traj = (
+        simulate(config, inputs, threshold, extra_ac_wh=extra_ac)
+        if forced_dc24 is not None or forced_dc48 is not None
+        else alloc_traj
+    )
     # F-FEEDIN: pre-shift the unavoidable residual export into the morning
     # surplus. Runs AFTER allocate_loads (it needs the alloc residual = the
     # unavoidable amount, requirement 2) and BEFORE support escalation, so the
@@ -1796,13 +1881,25 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     feedin_by_day_wh: dict[str, float] = {}
     if config.feedin.enabled and config.feedin.max_w > _EPS:
         feedin_wh, feedin_by_day_wh = plan_feedin(
-            config, inputs, threshold, extra_ac, alloc_traj
+            config,
+            inputs,
+            threshold,
+            extra_ac,
+            alloc_traj,
+            dc24_schedule=forced_dc24,
+            dc48_schedule=forced_dc48,
         )
         # The published trajectory is the WITH-feed-in one (requirement: the
         # flat morning SOC must show in the forecast); the pass-through moves
         # export earlier 1:1, so the totals stay invariant.
         traj = simulate(
-            config, inputs, threshold, extra_ac_wh=extra_ac, feedin_wh=feedin_wh
+            config,
+            inputs,
+            threshold,
+            extra_ac_wh=extra_ac,
+            dc24_schedule=forced_dc24,
+            dc48_schedule=forced_dc48,
+            feedin_wh=feedin_wh,
         )
     dc24, dc48, traj = support_escalation(
         config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
@@ -1833,7 +1930,7 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     # F-PREDRAIN diagnostics (§3.5): the traded import, the stressed reserve, and
     # the derived PV absorption windows (WP4 exposes these as sensor attributes).
     import_trade_used_wh = max(
-        0.0, alloc_traj.total_import_wh - base_traj.total_import_wh
+        0.0, alloc_traj.total_import_wh - allocation_base.total_import_wh
     )
     stressed_min_soc: float | None = None
     alpha = control.predrain_pv_confidence
@@ -1870,7 +1967,13 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                 stress_vec[j] if i0 <= j <= recovery else 1.0 for j in range(n)
             ]
             stressed = simulate(
-                config, inputs, threshold, extra_ac_wh=extra_ac, pv_scale=scale_vec
+                config,
+                inputs,
+                threshold,
+                extra_ac_wh=extra_ac,
+                dc24_schedule=forced_dc24,
+                dc48_schedule=forced_dc48,
+                pv_scale=scale_vec,
             )
             stressed_min_soc = _windowed_min_soc(stressed, i0, recovery)
     window_ends = {
@@ -1880,13 +1983,14 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         ).items()
     }
     # F-STRICT-SURPLUS R4: per-day export the loads PREVENTED — base (no loads)
-    # minus alloc (with loads), BOTH pre support-escalation (alloc_traj is
-    # captured before support_escalation), so a support PSU never deflates the
-    # counterfactual. The dashboard shows max(0, ...) per day.
+    # minus alloc (with loads), BOTH without support.  `metric_alloc_traj`
+    # removes even manually forced support from this established R4 diagnostic,
+    # so a winter PSU never deflates the counterfactual. The dashboard shows
+    # max(0, ...) per day.
     base_exp_day: dict[str, float] = {}
     alloc_exp_day: dict[str, float] = {}
     for slot, base_flow, alloc_flow in zip(
-        inputs.slots, base_traj.flows, alloc_traj.flows, strict=True
+        inputs.slots, base_traj.flows, metric_alloc_traj.flows, strict=True
     ):
         day = slot.start.date().isoformat()
         base_exp_day[day] = base_exp_day.get(day, 0.0) + base_flow.grid_export_wh

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.8] - 2026-08-22
+
+### Fixed
+- **Manually forced support is now visible to surplus-load allocation.** The
+  allocator, feed-in planner and their trial/stress simulations carry the
+  fixed 24/48 V schedules from the start. This lets lower-priority continuous
+  loads consume clip headroom that only exists because winter support lifted
+  the house SOC, while the absolute 50 Wh no-import gate and the established
+  without-support `prevented_export` counterfactual keep their meanings.
+
+### Changed
+- **The 48 V PSU SOC gate now defaults to 40 %.** Below the threshold the PSU
+  may deliver; at/above it delivery is 0 W, modelling the battery voltage
+  overtaking the PSU voltage. Explicit 100 % still disables the gate. Config
+  entry migration v2.5 moves the legacy auto-persisted 100 % default to 40 %
+  and preserves calibrated values below 100 %.
+
 ## [0.25.7] - 2026-08-08
 
 ### Fixed

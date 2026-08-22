@@ -107,7 +107,7 @@ Zwei eingefrorene Plan-Schnappschüsse im Kern:
 
 | Datei | Was sie einfriert | Regenerieren |
 |---|---|---|
-| `tests/core/golden_topology.json` (**11 Szenarien**: `s1_evening_sunny`, `s2_cloudy_reserve`, `s3_loads_night`, `s3_low_soc_5am`, `s4_midday_full`, `short_peak_preempt`, `support_dc24_escalate`, `support_dc48_escalate`, `support_none_healthy`, `forced_dc24`, `forced_dc48`) | Die **Verhaltensneutralität** des F-N3-Zwei-Bus-Refactors: mit den neutralen Dataclass-Defaults (η = 1,0, Ströme ungedeckelt, Gate offen, `dc24_share` 100 %) muss jeder Plan **bit-identisch** zum Vor-F-N3-Verhalten bleiben | `scratchpad/gen_golden.py` |
+| `tests/core/golden_topology.json` (**11 Szenarien**: `s1_evening_sunny`, `s2_cloudy_reserve`, `s3_loads_night`, `s3_low_soc_5am`, `s4_midday_full`, `short_peak_preempt`, `support_dc24_escalate`, `support_dc48_escalate`, `support_none_healthy`, `forced_dc24`, `forced_dc48`) | Die **Verhaltensneutralität** des F-N3-Zwei-Bus-Refactors: η = 1,0, Ströme ungedeckelt, Gate **explizit 100 %/offen**, `dc24_share` 100 %. Seit v0.25.8 ist der physische Dataclass-Default 40 %, deshalb pinnen die Topologie-Szenarien das neutrale Gate ausdrücklich | `scripts/gen_golden.py` |
 | `tests/core/golden_night_predrain.json` | Das Pre-Drain-Verhalten mit den **empfohlenen Live-Parametern** (α 0,5, β 1,2) — bewusst **nicht** neutral, deshalb eine eigene Datei; die topology-Goldens müssen unter den neutralen Defaults eingefroren bleiben | `python tests/core/test_golden_night_predrain.py` (das Modul hat einen `__main__`-Zweig und setzt sich seinen `sys.path` selbst) |
 
 **Der Anspruch ist Bit-Identität, nicht „ungefähr gleich".** Der Digest umfasst
@@ -120,8 +120,9 @@ beabsichtigte, reviewte Verhaltensänderung neu erzeugt — danach **den Diff
 lesen**. Ein guter Change fasst nur an, was man erwartet hat; überrascht der
 Diff, ist der Change falsch, nicht das Golden. Diese Regel ist der Grund, warum
 die *Dataclass*-Defaults in `core/model.ControlParams` neutral sind (α = β = 1,0,
-Pre-Drain-Ratio 0) und die empfohlenen Live-Werte in `const.DEFAULT_CONFIG`
-stehen: sonst würde jede Default-Änderung die Goldens verschieben.
+Pre-Drain-Ratio 0) und die Topologie-Szenarien nicht-neutrale physische Defaults
+wie das 40-%-Gate explizit auf ihren neutralen Wert pinnen: sonst würde jede
+Default-Änderung die Goldens verschieben.
 
 ### 1.5 Executor-Test-Lektion: „Listener kappen statt drainen"
 

@@ -28,6 +28,7 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_AS_TABLE,
+    CONF_GATE_SOC_PERCENT,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
@@ -382,6 +383,24 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _migrate_to_subentry_devices(hass, entry)
         hass.config_entries.async_update_entry(entry, minor_version=4)
         _LOGGER.info("Migrated Battery Manager entry to version 2.4")
+    if entry.version == 2 and entry.minor_version < 5:
+        # The original voltage-gate rollout auto-persisted 100 % as its neutral
+        # default.  It is indistinguishable from an explicit selection, so move
+        # only that exact legacy value to the new physical default; every
+        # calibrated value below 100 % remains operator-owned and untouched.
+        data = dict(entry.data)
+        options = dict(entry.options)
+        if options.get(CONF_GATE_SOC_PERCENT) == 100.0:
+            options[CONF_GATE_SOC_PERCENT] = 40.0
+        elif (
+            CONF_GATE_SOC_PERCENT not in options
+            and data.get(CONF_GATE_SOC_PERCENT) == 100.0
+        ):
+            data[CONF_GATE_SOC_PERCENT] = 40.0
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, minor_version=5
+        )
+        _LOGGER.info("Migrated Battery Manager entry to version 2.5")
     return True
 
 

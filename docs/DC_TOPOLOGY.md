@@ -115,6 +115,9 @@ snapshots prove bit-equality under neutral defaults.
   3.245 V × 15), so only a small line drop; the earlier "bus sags far
   below the cells" concern was a 16s calculation error.
 - **Simulation (SOC grid):** configurable `gate_soc_percent` as a proxy.
+  Default **40 %**: below it the PSU may deliver; at/above it the simulated
+  battery voltage has crossed the PSU voltage and delivery is **0 W**.
+  An explicit 100 % disables the SOC gate (always open).
   Calibration via a concurrent **14-day diagnostic** (SOC at observed
   threshold crossings, as an attribute of the mode sensor).
   **Explicitly calibrate in season** (Jury-Gap #3: LiFePO4 OCV and sag
@@ -177,9 +180,9 @@ dc48 manual mode:
 
 ## 8. Configuration (base flow, support step)
 
-New fields — ALL with behaviour-neutral defaults (η = 1.0, caps
-unlimited, gate open, `dc24_share` = 100 %): the upgrade changes nothing
-until the operator enters real values (rollback = clear the fields):
+New fields — η, caps and rail share have behaviour-neutral defaults (η = 1.0,
+caps unlimited, `dc24_share` = 100 %). Since v0.25.8 the voltage-gate proxy
+uses the physical default 40 % instead of the former neutral/open default:
 
 > **Dating note (review 2026-07):** the column *"Live value (operator)"* is a
 > **planning snapshot of 2026-07-05**, not today's live configuration. The
@@ -195,7 +198,7 @@ until the operator enters real values (rollback = clear the fields):
 | `psu24_output_voltage_v` / `psu24_max_current_a` / `psu24_eta` | — / — / 1.0 | **24.05** / **25** / 0.89 | 2 |
 | `dcdc_output_voltage_v` / `dcdc_eta` / `dcdc_max_current_a` | 24 / 1.0 / — | **24.3** / **0.93** / **20** | 2 |
 | `psu48_off_voltage_v` (controller OFF) / `psu48_on_voltage_v` (ON) | 49.8 / 49.56 | 49.8 / 49.56 | 5 |
-| `gate_soc_percent` | 100 (= open) | calibrated (phase 3) | 3 |
+| `gate_soc_percent` | **40** (100 = disabled/open) | calibrated (phase 3) | 3 |
 | `dc24_share_percent` | 100 | estimate | 2 |
 
 `rail24_voltage_entity` (optional): `sensor.victron_dcsystem_starter_voltage_229`

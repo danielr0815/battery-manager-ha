@@ -233,7 +233,7 @@
               "psu48_efficiency": "48 V PSU efficiency (1.0 = lossless).",
               "psu48_max_current_a": "48 V PSU max output current. 0 = uncapped.",
               "battery_cells_series": "Series cell count (e.g. 15 for Pylontech US5000). Informational: derives volts per cell as a calibration aid.",
-              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor.",
+              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). Default: 40 %. At or above the threshold it delivers 0 W. 100 % disables the gate (always open). Read the value from the gate calibration on the SOC forecast sensor.",
               "psu48_on_voltage_v": "In manual 48 V mode: below this battery voltage the controller switches the PSU ON. Requires the battery voltage sensor.",
               "psu48_off_voltage_v": "In manual 48 V mode: at or above this battery voltage the controller switches the PSU OFF. Must be above the turn-on voltage (hysteresis).",
               "psu48_controller_log_only": "On = controller only logs its decisions without switching (dry run). Off = controller actively switches the 48 V PSU."
@@ -656,7 +656,7 @@
               "psu48_efficiency": "48 V PSU efficiency (1.0 = lossless).",
               "psu48_max_current_a": "48 V PSU max output current. 0 = uncapped.",
               "battery_cells_series": "Series cell count (e.g. 15 for Pylontech US5000). Informational: derives volts per cell as a calibration aid.",
-              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). 100 % = always open (off). Read the value from the gate calibration on the SOC forecast sensor.",
+              "gate_soc_percent": "The 48 V PSU only delivers below this SOC (proxy for the voltage threshold). Default: 40 %. At or above the threshold it delivers 0 W. 100 % disables the gate (always open). Read the value from the gate calibration on the SOC forecast sensor.",
               "psu48_on_voltage_v": "In manual 48 V mode: below this battery voltage the controller switches the PSU ON. Requires the battery voltage sensor.",
               "psu48_off_voltage_v": "In manual 48 V mode: at or above this battery voltage the controller switches the PSU OFF. Must be above the turn-on voltage (hysteresis).",
               "psu48_controller_log_only": "On = controller only logs its decisions without switching (dry run). Off = controller actively switches the 48 V PSU."

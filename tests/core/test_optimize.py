@@ -20,6 +20,7 @@ from core.model import (
     SystemConfig,
 )
 from core.optimize import (
+    IMPORT_ARTIFACT_SLACK_WH,
     MERGE_TERMINAL_RAMP_WH,
     _committed_hours,
     _crossday_daytime_bet,
@@ -277,7 +278,12 @@ def test_appliance_window_evaluated_under_support_policy():
     )
     config = SystemConfig(
         appliances=(washer,),
-        support=SupportParams(configured=True, dc48_forced_on=True, dc48_power_w=600.0),
+        support=SupportParams(
+            configured=True,
+            dc48_forced_on=True,
+            dc48_power_w=600.0,
+            gate_soc_percent=100.0,
+        ),
     )
     now = datetime(2026, 7, 4, 12, 0)
     inputs = build_slots(config, now, 95.0, [1.0, 0.0])
@@ -1405,6 +1411,103 @@ def _pass3_block(result, load_id="dehumidifier"):
     F-PREDRAIN-BLOCK)."""
     lp = next(p for p in result.load_plans if p.load_id == load_id)
     return [a for a in lp.allocations if a[2] == 3]
+
+
+def test_live_20260823_continuous_load_uses_remaining_clip_window():
+    """Forced 48 V support must be visible to the surplus allocator.
+
+    Reduced from the live 2026-08-22 plan for 2026-08-23: both 499/498 W
+    Fossibots consume their remaining target budgets, while the manually forced
+    48 V PSU has lifted the house SOC before the PV slot.  Without the forced
+    schedule the Fossibots consume the complete clip and the dehumidifier sees
+    none; with the real schedule another ~0.25 kWh exports.  The dehumidifier
+    must absorb that remainder without adding import.
+    """
+    fossil_b = SurplusLoad(
+        load_id="fossil_b",
+        name="Fossibot B",
+        nominal_power_w=499.0,
+        energy_limited=True,
+        capacity_wh=2000.0,
+        target_soc_percent=90.0,
+        gate_stop_capable=True,
+        battery_tolerance=0.05,
+        min_runtime_min=5,
+    )
+    fossil_b2 = replace(
+        fossil_b,
+        load_id="fossil_b2",
+        name="Fossibot B2",
+        nominal_power_w=498.0,
+    )
+    dehumidifier = replace(DEHUMIDIFIER, nominal_power_w=421.0, min_runtime_min=15)
+    config = SystemConfig(
+        support=SupportParams(
+            configured=True,
+            dc48_forced_on=True,
+            dc48_power_w=60.0,
+            native48_base_w=35.0,
+            dc24_share=1.0,
+            dcdc_eta=0.93,
+            dcdc_max_power_w=486.0,
+            dcdc_output_voltage_v=24.3,
+            psu48_eta=0.89,
+            psu48_max_power_w=56.994,
+            psu48_output_voltage_v=49.56,
+            gate_soc_percent=100.0,
+        ),
+        loads=(fossil_b, fossil_b2, dehumidifier),
+    )
+    start = datetime(2026, 8, 22, 20, 0)
+    starts = tuple(start + timedelta(hours=i) for i in range(4)) + (
+        datetime(2026, 8, 23, 10, 0),
+    )
+    slots = tuple(
+        HourSlot(
+            index=i,
+            start=slot_start,
+            duration=1.0,
+            hour_of_day=slot_start.hour,
+            pv_wh=1304.0 if i == 4 else 0.0,
+            ac_wh=0.0,
+            dc_wh=0.0,
+        )
+        for i, slot_start in enumerate(starts)
+    )
+    inputs = PlanInputs(
+        now=start,
+        start_soc_percent=80.0,
+        slots=slots,
+        load_states=(
+            SurplusLoadState(
+                load_id="fossil_b", soc_percent=83.75, learned_power_w=499.0
+            ),
+            SurplusLoadState(
+                load_id="fossil_b2", soc_percent=83.75, learned_power_w=498.0
+            ),
+            SurplusLoadState(load_id="dehumidifier", learned_power_w=421.0),
+        ),
+    )
+
+    result = plan(config, inputs)
+    deh_plan = next(p for p in result.load_plans if p.load_id == "dehumidifier")
+    early_wh = 421.0 * deh_plan.run_hours[4]
+    assert early_wh > 0.0, (
+        "the dehumidifier must absorb the support-created 10:00 remainder"
+    )
+    supported_base = simulate(
+        config,
+        inputs,
+        result.threshold_percent,
+        dc48_schedule=(True,) * len(slots),
+    )
+    assert (
+        result.trajectory.total_import_wh - supported_base.total_import_wh
+        <= IMPORT_ARTIFACT_SLACK_WH + 1e-6
+    )
+    assert all(
+        abs(plan.planned_energy_wh - 125.0) <= 0.5 for plan in result.load_plans[:2]
+    )
 
 
 def test_t1_night_predrain_books_on_artifact_slack_ratio_ignored():
@@ -3531,14 +3634,15 @@ def test_r4_prevented_export_reports_the_no_loads_counterfactual():
         assert abs(prevented[day] - max(0.0, base_by_day[day] - final[day])) < 1e-6
 
 
-def test_r4_prevented_export_uses_pre_escalation_alloc_not_final():
-    """R4 discriminator (re-review finding: the pre-escalation capture was
-    unpinned). With a forced 48 V support PSU active, the FINAL trajectory
-    exports more than the pre-escalation allocation (the PSU lifts SOC and
-    fills sooner), so `prevented_export_by_day_wh` computed from `alloc_traj`
-    (pre-escalation) must DIFFER from the post-escalation `base - final` — a
-    maintainer swapping `alloc_traj` for the final trajectory would deflate the
-    counterfactual and this test would catch it."""
+def test_r4_prevented_export_uses_without_support_alloc_not_final():
+    """R4 discriminator: the counterfactual deliberately strips support.
+
+    With a forced 48 V PSU active, the FINAL trajectory exports more because
+    the PSU lifts SOC and fills sooner. `prevented_export_by_day_wh` must use
+    the accepted load series re-simulated WITHOUT support and therefore differ
+    from `base - final`; using the supported final trajectory would deflate the
+    counterfactual.
+    """
     from core.model import SupportParams
 
     deh = SurplusLoad(
@@ -3557,7 +3661,12 @@ def test_r4_prevented_export_uses_pre_escalation_alloc_not_final():
         ),
         loads=(deh,),
         battery=BatteryParams(capacity_wh=5000.0, soc_max_percent=95.0),
-        support=SupportParams(configured=True, dc48_forced_on=True, dc48_power_w=300.0),
+        support=SupportParams(
+            configured=True,
+            dc48_forced_on=True,
+            dc48_power_w=300.0,
+            gate_soc_percent=100.0,
+        ),
         ac_profile=LoadProfile(200.0, 100.0, 6, 22),
         dc_profile=LoadProfile(300.0, 0.0, 0, 0),
     )
@@ -3591,8 +3700,8 @@ def test_r4_prevented_export_uses_pre_escalation_alloc_not_final():
     base_exp = sum(f.grid_export_wh for f in base.flows)
     final_exp = sum(f.grid_export_wh for f in result.trajectory.flows)
     post_would_be = max(0.0, base_exp - final_exp)
-    # The reported (pre-escalation) prevented export is strictly larger than
-    # the post-escalation figure the swap would yield.
+    # The reported without-support counterfactual is strictly larger than the
+    # supported-final figure the mistaken swap would yield.
     assert result.prevented_export_by_day_wh[day] > post_would_be + 100.0
 
 

@@ -21,20 +21,26 @@ bei einem Konflikt mit dieser Zusammenfassung gilt die Wissensbasis, weil sie
 
 ```
 1. threshold, base_traj = search_threshold(config, inputs)      # T*-Suche
-2. load_plans, extra_ac, traj = allocate_loads(..., base_traj)  # Pass 1 + Pass 2
-3. alloc_traj = traj                                            # VOR Support festhalten
-4. feedin_wh, feedin_by_day = plan_feedin(..., alloc_traj)      # F-FEEDIN (nur wenn enabled)
+2. fixed_support = horizonweite Schedules manuell erzwungener PSUs (F-N2)
+   allocation_base = simulate(..., fixed_support)               # sonst base_traj
+3. load_plans, extra_ac, traj = allocate_loads(                 # Pass 1–3
+       ..., allocation_base, fixed_support)
+4. alloc_traj = traj                                            # MIT festem Support
+5. feedin_wh, feedin_by_day = plan_feedin(..., alloc_traj, fixed_support)
    traj = simulate(..., feedin_wh=feedin_wh)                    # publizierte Trajektorie MIT Feed-in
-5. dc24, dc48, traj = support_escalation(...)                   # Notfall-Netzteile
-6. windows = appliance_windows(...)                             # Advisor (G3)
-7. Diagnostik: import_trade_used_wh, stressed_min_soc,
+6. dc24, dc48, traj = support_escalation(...)                   # automatische Notfall-Netzteile
+7. windows = appliance_windows(...)                             # Advisor (G3)
+8. Diagnostik: import_trade_used_wh, stressed_min_soc,
    pv_window_ends, threshold_horizon_end, prevented_export_by_day_wh
 ```
 
-Wichtig: `alloc_traj` wird **vor** der Support-Eskalation festgehalten. Der
-Import-Trade und die verhinderte Ausfuhr sind Eigenschaften der
-*Lastallokation*, nicht der Notfall-Netzteile — ein Winter-PSU darf die
-Kennzahlen nicht schönrechnen bzw. entwerten.
+Wichtig: Nur ein **manuell erzwungener**, also vorab bekannter Supportpfad
+gehört schon in jede Allokationsprobe. Damit sieht der Planer dieselbe
+SOC-/Clip-Trajektorie wie die veröffentlichte Prognose. Automatische
+Notfall-Eskalation bleibt nachgelagert. `prevented_export_by_day_wh` wird als
+separater Ohne-Support-Gegenvergleich rekonstruiert, damit ein Winter-PSU die
+Kennzahl nicht entwertet; `import_trade_used_wh` vergleicht dagegen die zwei
+realen Allokationstrajektorien mit demselben festen Support.
 
 Ein Planlauf ist **zustandslos**: keine Hysterese, kein Gedächtnis über Läufe
 hinweg. Alles Stabilisierende (Schwellen-Trägheit, Dwells, Latches) sitzt im
@@ -621,22 +627,26 @@ Die Tagessummen ergeben (Rundung beiseite) die Horizontsummen.
 prevented[day] = max(0, base_export[day] - alloc_export[day])
 ```
 
-Beide Seiten **vor** der Support-Eskalation: `base_traj` = ohne Lasten und ohne
-PSUs, `alloc_traj` = mit Lasten, aber vor `support_escalation`. So kann ein
-Winter-PSU die Zahl nicht deflationieren. Diese Kennzahl beantwortet die
-Betreiberfrage „Warum läuft eine Last, obwohl der SOC nie das Maximum
-erreicht?".
+Beide Seiten **ohne** Support: `base_traj` = ohne Lasten/PSUs; bei manuell
+erzwungenem Support wird für die Metrik aus der akzeptierten Lastserie eigens
+eine `metric_alloc_traj` ohne PSUs rekonstruiert. So kann ein Winter-PSU die
+Zahl nicht deflationieren, obwohl seine reale Trajektorie bereits die
+Lastallokation steuert. Diese Kennzahl beantwortet die Betreiberfrage „Warum
+läuft eine Last, obwohl der SOC nie das Maximum erreicht?".
 
 ### 8.3 `import_trade_used_wh`
 
 ```
-max(0, alloc_traj.total_import_wh - base_traj.total_import_wh)
+max(0, alloc_traj.total_import_wh - allocation_base.total_import_wh)
 ```
 
 Seit F-STRICT-SURPLUS R1 ist das **kein Tausch** mehr gegen geretteten Export,
 sondern durch `IMPORT_ARTIFACT_SLACK_WH` (50 Wh) begrenzt. Ein
 Nacht-Pre-Drain mit Default-Parametern liest hier typischerweise **bis ~50 Wh**
 (das Charger-Standby-Artefakt, das auf dem Slack reitet) — **nicht** 0.0.
+Bei manuell festem Support enthalten beide Seiten exakt dasselbe
+Support-Schedule; die Kennzahl misst weiterhin ausschließlich den Mehrimport
+der Überschusslasten.
 
 ### 8.4 Weitere Felder
 
@@ -694,9 +704,12 @@ Defaults: 5.5 / 10 / 10 / 11
 
 Stufe 1 ersetzt den DC/DC durch das 24 V-Netzteil, Stufe 2 legt das
 48 V-Netzteil obendrauf. Manuell übersteuerte PSUs (`dc24_forced_on`/
-`dc48_forced_on`, F-N2) gelten als permanent aktiv, damit die SOC-Prognose zum
-realen Winterbetrieb passt. Ausführung und der R2-Spannungsregler: Dokument 03
-und `docs/DC_TOPOLOGY.md`.
+`dc48_forced_on`, F-N2) gelten als permanent aktiv und werden bereits in der
+Lastallokation mitgeführt, damit Prognose, Clip-Erkennung und Lastplanung zum
+realen Winterbetrieb passen. Die 48-V-Simulation liefert standardmäßig nur
+unterhalb `gate_soc_percent = 40`; 100 % bedeutet bewusst „Gate deaktiviert".
+Ausführung und der R2-Spannungsregler: Dokument 03 und
+`docs/DC_TOPOLOGY.md`.
 
 ---
 
@@ -713,8 +726,9 @@ die Golden-Tests:
   identisch zum Skalar-Zeitalter bei denselben α/β (F-QUANTILE-BANDS R8).
 - **Ganzer Slot als erster Kandidat** in `_quantised_hours` ⇒ eine
   Voll-Stunden-Platzierung ist bit-identisch zum Vor-F-SUBHOUR-Verhalten.
-- **F-N3-Neutraldefaults** (Share 100 %, η = 1.0, 0 A = uncapped, Gate offen)
-  ⇒ `simulate` reproduziert das Ein-Bus-Modell exakt.
+- **F-N3-Neutraldefaults** für Share (100 %), η (1.0) und Caps (0 A =
+  uncapped) reproduzieren das Ein-Bus-Modell. Das 48-V-SOC-Gate ist seit
+  v0.25.8 absichtlich nicht neutral: Default 40 %, explizit 100 % = offen.
 - **Merge-Rampen-Endpunkte**: bei margin 0 und bei margin ≥ 250 Wh verhält sich
   der Scan exakt wie vor F-MERGE-HYSTERESIS.
 - **F-FEEDIN-Neutraldefault** (`FeedInParams.enabled = False` / `max_w = 0`,
