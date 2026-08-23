@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
 
 def _require(condition: bool, message: str) -> None:
@@ -185,6 +186,17 @@ class SurplusLoadState:
     # The learned/measured fields stay untouched, so the release restores the
     # normal planning power in the same cycle.
     saturated_power_w: float | None = None
+    # Cascade planning may provisionally use a persisted SOC, but execution
+    # must distinguish it from a genuinely fresh device observation.  Neutral
+    # defaults preserve every legacy constructor and code path.
+    soc_observed_at: datetime | None = None
+    soc_source: Literal["live", "cache", "missing"] = "live"
+
+    def __post_init__(self) -> None:
+        _require(
+            self.soc_source in ("live", "cache", "missing"),
+            f"SurplusLoadState.soc_source is invalid: {self.soc_source!r}",
+        )
 
     def remaining_energy_wh(self, load: SurplusLoad) -> float | None:
         """Energy still absorbable, or None if unlimited."""
@@ -415,6 +427,151 @@ class FeedInParams:
 
 
 @dataclass(frozen=True)
+class CascadeMember:
+    """One storage in a linear AC-output cascade, ordered root to leaf."""
+
+    load_id: str
+    discharge_floor_soc_percent: float
+    recovery_soc_percent: float
+    eta_charge: float = 1.0
+    eta_discharge: float = 1.0
+    max_charge_power_w: float | None = None
+    max_output_power_w: float | None = None
+    max_passthrough_power_w: float | None = None
+    output_overhead_w: float = 0.0
+
+    def __post_init__(self) -> None:
+        _require(bool(self.load_id), "CascadeMember.load_id must not be empty")
+        _require(
+            0.0 <= self.discharge_floor_soc_percent <= 100.0,
+            "CascadeMember.discharge_floor_soc_percent must be in [0, 100]",
+        )
+        _require(
+            0.0 <= self.recovery_soc_percent <= 100.0,
+            "CascadeMember.recovery_soc_percent must be in [0, 100]",
+        )
+        _require(
+            self.discharge_floor_soc_percent < self.recovery_soc_percent,
+            "CascadeMember requires discharge floor < recovery SOC",
+        )
+        for field_name, value in (
+            ("eta_charge", self.eta_charge),
+            ("eta_discharge", self.eta_discharge),
+        ):
+            _require(
+                0.0 < value <= 1.0,
+                f"CascadeMember.{field_name} must be in (0, 1]",
+            )
+        for field_name, optional_value in (
+            ("max_charge_power_w", self.max_charge_power_w),
+            ("max_output_power_w", self.max_output_power_w),
+            ("max_passthrough_power_w", self.max_passthrough_power_w),
+        ):
+            _require(
+                optional_value is None or optional_value > 0.0,
+                f"CascadeMember.{field_name} must be None or > 0",
+            )
+        _require(
+            self.output_overhead_w >= 0.0,
+            "CascadeMember.output_overhead_w must be >= 0",
+        )
+
+
+@dataclass(frozen=True)
+class LoadCascade:
+    """A disjoint linear storage chain ending in one continuous load."""
+
+    cascade_id: str
+    members: tuple[CascadeMember, ...]
+    terminal_load_id: str
+
+    def __post_init__(self) -> None:
+        _require(bool(self.cascade_id), "LoadCascade.cascade_id must not be empty")
+        _require(bool(self.members), "LoadCascade.members must not be empty")
+        ids = tuple(member.load_id for member in self.members)
+        _require(len(ids) == len(set(ids)), "LoadCascade member IDs must be unique")
+        _require(
+            bool(self.terminal_load_id),
+            "LoadCascade.terminal_load_id must not be empty",
+        )
+        _require(
+            self.terminal_load_id not in ids,
+            "LoadCascade terminal must not also be a storage member",
+        )
+
+
+@dataclass(frozen=True)
+class CascadeRuntimeState:
+    """Persisted daily state supplied to the otherwise stateless planner."""
+
+    cascade_id: str
+    episode_day: date | None = None
+    phase: Literal["idle", "running", "recovering", "complete"] = "idle"
+    source_cursor: int = 0
+    active_source_id: str | None = None
+    recovery_pending_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CascadeSourceSegment:
+    """One source serving the terminal during part of one forecast slot."""
+
+    slot_index: int
+    start_offset_h: float
+    run_hours: float
+    source: Literal["direct_pv", "aux", "house_battery"]
+    source_load_id: str | None
+    root_input_on: bool
+    terminal_energy_wh: float
+
+
+@dataclass(frozen=True)
+class CascadeMemberFlow:
+    """One member's storage and boundary energy during a forecast slot."""
+
+    load_id: str
+    soc_start_percent: float
+    soc_end_percent: float
+    input_wh: float = 0.0
+    output_wh: float = 0.0
+    own_charge_input_wh: float = 0.0
+    battery_charge_wh: float = 0.0
+    battery_discharge_wh: float = 0.0
+
+
+@dataclass(frozen=True)
+class CascadeSlotFlow:
+    """Root and internal cascade flows for one slot."""
+
+    root_input_wh: float = 0.0
+    terminal_served_wh: float = 0.0
+    aux_terminal_wh: float = 0.0
+    segments: tuple[CascadeSourceSegment, ...] = ()
+    member_flows: tuple[CascadeMemberFlow, ...] = ()
+
+
+@dataclass(frozen=True)
+class CascadePlan:
+    """Planner/executor contract for one configured storage cascade."""
+
+    cascade_id: str
+    terminal_load_id: str
+    schedule: tuple[bool, ...]
+    run_hours: tuple[float, ...]
+    flows: tuple[CascadeSlotFlow, ...]
+    planned_root_energy_wh: float = 0.0
+    planned_aux_energy_wh: float = 0.0
+    recovery_deadline: datetime | None = None
+    recovery_reached_at: tuple[tuple[str, datetime | None], ...] = ()
+    aggregate_soc_percent: float | None = None
+    aggregate_soc_stale: bool = False
+    provisional_live_soc_required: bool = False
+    close_after_min_runtime: bool = False
+    warning: str | None = None
+    proposed_runtime: CascadeRuntimeState | None = None
+
+
+@dataclass(frozen=True)
 class SystemConfig:
     """Complete static system description."""
 
@@ -437,6 +594,52 @@ class SystemConfig:
     feedin: FeedInParams = field(default_factory=FeedInParams)
     loads: tuple[SurplusLoad, ...] = ()
     appliances: tuple[Appliance, ...] = ()
+    cascades: tuple[LoadCascade, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.cascades:
+            return
+        loads = {load.load_id: load for load in self.loads}
+        used: set[str] = set()
+        cascade_ids: set[str] = set()
+        for cascade in self.cascades:
+            _require(
+                cascade.cascade_id not in cascade_ids,
+                f"Duplicate cascade ID {cascade.cascade_id!r}",
+            )
+            cascade_ids.add(cascade.cascade_id)
+            for member in cascade.members:
+                load = loads.get(member.load_id)
+                _require(load is not None, f"Unknown cascade member {member.load_id!r}")
+                assert load is not None
+                _require(
+                    load.energy_limited and load.capacity_wh > 0.0,
+                    f"Cascade member {member.load_id!r} must be energy-limited",
+                )
+                _require(
+                    member.recovery_soc_percent <= load.target_soc_percent,
+                    f"Cascade member {member.load_id!r} requires recovery <= target",
+                )
+                _require(
+                    member.load_id not in used,
+                    f"Cascade load {member.load_id!r} is used more than once",
+                )
+                used.add(member.load_id)
+            terminal = loads.get(cascade.terminal_load_id)
+            _require(
+                terminal is not None,
+                f"Unknown cascade terminal {cascade.terminal_load_id!r}",
+            )
+            assert terminal is not None
+            _require(
+                not terminal.energy_limited,
+                f"Cascade terminal {cascade.terminal_load_id!r} must be continuous",
+            )
+            _require(
+                terminal.load_id not in used,
+                f"Cascade load {terminal.load_id!r} is used more than once",
+            )
+            used.add(terminal.load_id)
 
 
 @dataclass(frozen=True)
@@ -467,6 +670,7 @@ class PlanInputs:
     slots: tuple[HourSlot, ...]
     load_states: tuple[SurplusLoadState, ...] = ()
     appliance_runs: tuple[ApplianceRun, ...] = ()
+    cascade_runtime_states: tuple[CascadeRuntimeState, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -544,6 +748,7 @@ class LoadPlan:
     # Empty default keeps every legacy constructor valid; consumers must not
     # assume it is populated.
     reasons: tuple[str, ...] = ()
+    managed_by_cascade: bool = False
 
     @property
     def active_now(self) -> bool:
@@ -632,3 +837,4 @@ class PlanResult:
     # Per calendar day (ISO date -> Wh): the feed-in actually booked that day
     # (shaped like `prevented_export_by_day_wh`; days without feed-in absent).
     feedin_by_day_wh: dict[str, float] = field(default_factory=dict)
+    cascade_plans: tuple[CascadePlan, ...] = ()

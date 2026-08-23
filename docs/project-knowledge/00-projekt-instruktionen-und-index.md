@@ -1,5 +1,11 @@
 # Projekt-Instruktionen & Index
 
+Für lineare Speicher-Kaskaden sind
+[`../F-CASCADE-STORAGE.md`](../F-CASCADE-STORAGE.md) (Spezifikation) und
+[`../CASCADE-STORAGE-DESIGN.md`](../CASCADE-STORAGE-DESIGN.md) (Design) die
+aktuellen Quellen. Core-Planung: `core/cascade.py`; HA-Actor-Besitz:
+`cascade_manager.py`.
+
 **Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Diese Datei ist der Einstieg in die
 Wissensbasis zum Repository **`danielr0815/battery-manager-ha`**
 (<https://github.com/danielr0815/battery-manager-ha>). Sie erklärt, was das

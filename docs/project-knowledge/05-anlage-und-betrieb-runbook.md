@@ -1,5 +1,15 @@
 # Anlage & Betriebs-Runbook
 
+## Speicher-Kaskade in Betrieb nehmen
+
+Storage-Lasten mit SOC, Charge-Gate, Output-Aktor/-Leistung, Floor/Recovery und
+Actor-Modus konfigurieren; nur B1 erhält Input-Control. Danach Cascade-Subentry
+Root→Leaf plus Endlast anlegen, Fremdautomationen auf exklusiven Aktoren
+(insbesondere `automation.f2400_b_ac_out_off`) deaktivieren und erst nach
+plausibler Vorschau Automation einschalten. Bei Fault: Ursache prüfen,
+Fault-Reset, anschließend bewusst AUS→AN. `shared` bedeutet vollständiges
+Hands-off nach einer Fremdänderung.
+
 **Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument beschreibt die
 **konkrete Referenz-Anlage des Betreibers** (Batterie, PV, Messkreis, Lasten,
 Stützpfade, Legacy-Automatisierungen) und die **Handgriffe im Betrieb**:

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-23
+
+### Added
+- **Lineare Speicher-Kaskaden für Überschusslasten.** Disjunkte
+  Root→Storage→…→Endlast-Ketten werden als gemeinsamer SOC-Vektor geplant und
+  durch einen zentralen Actor-Manager mit Wake, 60-s-Leistungsnachweis, Floors,
+  Recovery, täglicher Episode, Safe-OFF, Retry und Fault/Hands-off gesteuert.
+- Neue Kaskaden-Entities und `battery-manager-cascade-card`; Root-/Aux- und
+  gemessene Aux-Energie bleiben getrennt. Spezifikation und Design stehen in
+  `docs/F-CASCADE-STORAGE.md` und `docs/CASCADE-STORAGE-DESIGN.md`.
+
+### Changed
+- Runtime-Store v2 übernimmt die defensiv gelesene v1-Payload. Kompatible
+  Member-/Leaf-Empfehlungen sind in Kaskaden AUS und markiert.
+- Neue Kaskaden starten mit Automation AUS. Bei exklusiver Nutzung muss
+  `automation.f2400_b_ac_out_off` deaktiviert oder der Actor bewusst auf
+  `shared` gestellt werden.
+
 ## [0.25.8] - 2026-08-22
 
 ### Fixed

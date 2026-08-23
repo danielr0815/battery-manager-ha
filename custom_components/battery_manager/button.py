@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN, SUBENTRY_TYPE_LOAD
+from .const import DOMAIN, SUBENTRY_TYPE_CASCADE, SUBENTRY_TYPE_LOAD
 from .coordinator import BatteryManagerCoordinator
 from .entity import BatteryManagerEntity, async_add_by_subentry
 
@@ -27,6 +27,10 @@ async def async_setup_entry(
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
             per_subentry[subentry_id] = [
                 SurplusLoadRuntimeResetButton(coordinator, subentry_id, subentry.title)
+            ]
+        elif subentry.subentry_type == SUBENTRY_TYPE_CASCADE:
+            per_subentry[subentry_id] = [
+                CascadeFaultResetButton(coordinator, subentry_id, subentry.title)
             ]
     async_add_by_subentry(async_add_entities, [], per_subentry)
 
@@ -51,3 +55,24 @@ class SurplusLoadRuntimeResetButton(BatteryManagerEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.reset_load_runtime(self._subentry_id)
+
+
+class CascadeFaultResetButton(BatteryManagerEntity, ButtonEntity):
+    """Safe-off a cascade and clear its hard fault on success."""
+
+    _attr_translation_key = "cascade_fault_reset"
+    _attr_icon = "mdi:shield-refresh"
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
+    ) -> None:
+        super().__init__(coordinator, f"cascade_fault_reset_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_reset_cascade_fault(self._subentry_id)

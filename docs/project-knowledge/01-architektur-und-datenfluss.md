@@ -1,5 +1,10 @@
 # Architektur & Datenfluss
 
+Seit v0.26.0 ergänzt `core/cascade.py` den Root-Allokator um gemeinsame
+Storage-SOC- und Recovery-Pläne. `cascade_manager.py` ist alleiniger
+HA-Actor-Besitzer; interne Flüsse werden nie in die Root-Bilanz addiert. Siehe
+[`../CASCADE-STORAGE-DESIGN.md`](../CASCADE-STORAGE-DESIGN.md).
+
 **Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument ist der Code-Wegweiser
 für die Integration `battery_manager`: welches Modul ist wofür zuständig, in
 welcher Reihenfolge läuft ein Update-Zyklus, woher kommt jeder Eingangswert und

@@ -43,6 +43,7 @@ from .const import (
     ENTITY_SUPPORT_DC24_MODE,
     ENTITY_SUPPORT_DC48_MODE,
     ENTITY_TRUE_EXPORT_ENERGY,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
     SUPPORT_MODE_AUTO,
     SUPPORT_MODE_MANUAL,
@@ -242,7 +243,69 @@ async def async_setup_entry(
             per_subentry[subentry_id] = [
                 SurplusLoadRuntimeSensor(coordinator, subentry_id, subentry.title)
             ]
+        elif subentry.subentry_type == SUBENTRY_TYPE_CASCADE:
+            per_subentry[subentry_id] = [
+                CascadeModeSensor(coordinator, subentry_id, subentry.title),
+                CascadeSocSensor(coordinator, subentry_id, subentry.title),
+            ]
     async_add_by_subentry(async_add_entities, entities, per_subentry)
+
+
+class CascadeModeSensor(BatteryManagerEntity, SensorEntity):
+    """Executor phase and energy/recovery diagnostics for a cascade."""
+
+    _attr_icon = "mdi:source-branch"
+    _attr_translation_key = "cascade_mode"
+
+    def __init__(self, coordinator, subentry_id: str, title: str) -> None:
+        super().__init__(coordinator, f"cascade_mode_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    def _plan(self) -> dict[str, Any]:
+        return ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
+            self._subentry_id, {}
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        return self._plan().get("phase")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._plan()
+
+
+class CascadeSocSensor(BatteryManagerEntity, SensorEntity):
+    """Capacity-weighted member SOC, with explicit cache staleness."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_translation_key = "cascade_soc"
+
+    def __init__(self, coordinator, subentry_id: str, title: str) -> None:
+        super().__init__(coordinator, f"cascade_soc_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    def _plan(self) -> dict[str, Any]:
+        return ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
+            self._subentry_id, {}
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        value = self._plan().get("aggregate_soc_percent")
+        return round(float(value), 1) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        plan = self._plan()
+        return {
+            "stale": bool(plan.get("aggregate_soc_stale")),
+            "members": plan.get("members", []),
+        }
 
 
 class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
@@ -446,6 +509,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "appliances",
             "consumption_profile",
             "consumption_forecast",
+            "cascades",
         }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -481,6 +545,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                 "schedule": plan.get("schedule") or [],
             }
             for plan in (data.get("load_plans") or {}).values()
+            if not plan.get("managed_by_cascade")
         ]
         daily = data.get("daily_surplus") or []
         per_day_loads = _per_day_attrs(daily, "loads_kwh")
@@ -499,6 +564,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads_today_kwh": per_day_loads["today_kwh"],
             "loads_tomorrow_kwh": per_day_loads["tomorrow_kwh"],
             "loads": loads,
+            "cascades": list((data.get("cascade_plans") or {}).values()),
             # Detected appliance runs (washer, dishwasher, …) as card lanes
             # (operator request 2026-08-08); [] when nothing is running.
             "appliances": data.get("appliance_plans") or [],

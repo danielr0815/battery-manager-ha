@@ -177,6 +177,7 @@ DC48_CTRL_VOLTAGE_MAX = 60.0
 
 # --- Surplus load subentry keys ---
 SUBENTRY_TYPE_LOAD = "surplus_load"
+SUBENTRY_TYPE_CASCADE = "cascade"
 CONF_LOAD_NAME = "name"
 # Explicit per-load priority (int >= 1, 1 = highest; F-LOAD-PRIORITY R1).
 # Deliberately NOT in DEFAULT_LOAD_CONFIG: the effective order is resolved
@@ -203,6 +204,33 @@ CONF_LOAD_AVAILABILITY_ENTITY = "availability_entity"
 CONF_LOAD_CONTROL_SWITCH = "control_switch_entity"
 CONF_LOAD_CHARGE_ENABLE = "charge_enable_entity"
 CONF_LOAD_INPUT_OFF_POLICY = "input_off_policy"
+CONF_LOAD_OUTPUT_SWITCH = "output_switch_entity"
+CONF_LOAD_OUTPUT_POWER_ENTITY = "output_power_entity"
+CONF_LOAD_DISCHARGE_FLOOR_SOC = "discharge_floor_soc_percent"
+CONF_LOAD_RECOVERY_SOC = "recovery_soc_percent"
+CONF_LOAD_WAKE_TIMEOUT_S = "wake_timeout_s"
+CONF_LOAD_HANDOVER_MIN_POWER_W = "handover_min_power_w"
+CONF_LOAD_HANDOVER_TIMEOUT_S = "handover_timeout_s"
+CONF_LOAD_INPUT_ACTOR_MODE = "input_actor_mode"
+CONF_LOAD_GATE_ACTOR_MODE = "gate_actor_mode"
+CONF_LOAD_OUTPUT_ACTOR_MODE = "output_actor_mode"
+CONF_LOAD_ETA_CHARGE = "cascade_charge_efficiency"
+CONF_LOAD_ETA_DISCHARGE = "cascade_discharge_efficiency"
+CONF_LOAD_MAX_CHARGE_POWER_W = "cascade_max_charge_power_w"
+CONF_LOAD_MAX_OUTPUT_POWER_W = "cascade_max_output_power_w"
+CONF_LOAD_MAX_PASSTHROUGH_POWER_W = "cascade_max_passthrough_power_w"
+CONF_LOAD_OUTPUT_OVERHEAD_W = "cascade_output_overhead_w"
+CONF_LOAD_IDLE_POWER_W = "output_idle_power_w"
+CONF_LOAD_IDLE_DURATION_MIN = "output_idle_duration_min"
+
+ACTOR_MODE_EXCLUSIVE = "exclusive"
+ACTOR_MODE_SHARED = "shared"
+ACTOR_MODES = (ACTOR_MODE_EXCLUSIVE, ACTOR_MODE_SHARED)
+
+# --- Linear storage cascade subentry keys ---
+CONF_CASCADE_MEMBER_IDS = "member_load_ids"
+CONF_CASCADE_TERMINAL_LOAD_ID = "terminal_load_id"
+CONF_CASCADE_ACTOR_TIMEOUT_S = "actor_confirmation_timeout_s"
 # Load location relative to the grid-consumption measurement point (§2.3;
 # V3 semantics, 2026-07-24). This flag governs ONLY the baseline (Grundlast)
 # learning in history_profile.py — it decides whether the load's own draw is
@@ -401,7 +429,7 @@ CONF_WARNING_NOTIFY_TARGETS = "power_warning_notify_targets"
 CONF_WARNING_NOTIFY_ON_RESOLVE = "power_warning_notify_on_resolve"
 
 # Persistent state (SOC cache, plug ownership) survives HA restarts
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 
 # --- Appliance subentry keys ---
 SUBENTRY_TYPE_APPLIANCE = "appliance"
@@ -705,6 +733,17 @@ DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_ENERGY_LIMITED: False,
     CONF_LOAD_CAPACITY_WH: 2000.0,
     CONF_LOAD_TARGET_SOC: 100.0,
+    CONF_LOAD_DISCHARGE_FLOOR_SOC: 20.0,
+    CONF_LOAD_RECOVERY_SOC: 50.0,
+    CONF_LOAD_WAKE_TIMEOUT_S: 60,
+    CONF_LOAD_HANDOVER_MIN_POWER_W: 10.0,
+    CONF_LOAD_HANDOVER_TIMEOUT_S: 180,
+    CONF_LOAD_INPUT_ACTOR_MODE: ACTOR_MODE_EXCLUSIVE,
+    CONF_LOAD_GATE_ACTOR_MODE: ACTOR_MODE_EXCLUSIVE,
+    CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_EXCLUSIVE,
+    CONF_LOAD_ETA_CHARGE: 1.0,
+    CONF_LOAD_ETA_DISCHARGE: 1.0,
+    CONF_LOAD_OUTPUT_OVERHEAD_W: 0.0,
     CONF_LOAD_INPUT_OFF_POLICY: INPUT_OFF_POLICY_AUTO,
     CONF_LOAD_IN_HOUSE: True,
     # Off by default (0 %); the operator opts a load in per device. Existing

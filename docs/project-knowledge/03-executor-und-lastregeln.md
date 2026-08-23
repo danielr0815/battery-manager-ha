@@ -1,5 +1,10 @@
 # Executor & Lastregeln
 
+Kaskadenmitglieder tragen `managed_by_cascade` und umgehen den unabhängigen
+Load-Executor. Wake, Leistungsnachweis, Handover, Floor, Ownership, Retry und
+Safe-OFF liegen in `CascadeManager`; siehe
+[`../F-CASCADE-STORAGE.md`](../F-CASCADE-STORAGE.md).
+
 **Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument beschreibt die
 Ausführungsschicht in `coordinator.py`: was die Empfehlungs-Entities wirklich
 zeigen, in welcher Reihenfolge der Schaltpfad entscheidet, und welche Gates,

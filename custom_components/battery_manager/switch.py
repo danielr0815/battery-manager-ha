@@ -20,6 +20,7 @@ from .const import (
     ENTITY_SUPPORT_DC24_MANUAL,
     ENTITY_SUPPORT_DC48_MANUAL,
     ENTITY_VACATION_MODE,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
 from .coordinator import BatteryManagerCoordinator
@@ -71,6 +72,10 @@ async def async_setup_entry(
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
             per_subentry[subentry_id] = [
                 SurplusLoadControlSwitch(coordinator, subentry_id, subentry.title)
+            ]
+        elif subentry.subentry_type == SUBENTRY_TYPE_CASCADE:
+            per_subentry[subentry_id] = [
+                CascadeAutomationSwitch(coordinator, subentry_id, subentry.title)
             ]
 
     async_add_by_subentry(async_add_entities, entities, per_subentry)
@@ -216,3 +221,33 @@ class SurplusLoadControlSwitch(BatteryManagerEntity, SwitchEntity):
         self.coordinator.set_load_enabled(self._subentry_id, False)
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
+
+
+class CascadeAutomationSwitch(BatteryManagerEntity, SwitchEntity):
+    """Explicit opt-in for physical control of one configured cascade."""
+
+    _attr_translation_key = "cascade_automation"
+    _attr_icon = "mdi:link-variant"
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
+    ) -> None:
+        super().__init__(coordinator, f"cascade_automation_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.cascade_enabled(self._subentry_id)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        if await self.coordinator.async_set_cascade_enabled(self._subentry_id, True):
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_cascade_enabled(self._subentry_id, False)
+        self.async_write_ha_state()

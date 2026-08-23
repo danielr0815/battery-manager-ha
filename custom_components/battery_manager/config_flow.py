@@ -18,6 +18,7 @@ from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 
 from .const import (
+    ACTOR_MODES,
     CONF_AC_BALANCE_IN,
     CONF_AC_BALANCE_OUT,
     CONF_AC_LOAD_ENTITY,
@@ -32,6 +33,9 @@ from .const import (
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
+    CONF_CASCADE_ACTOR_TIMEOUT_S,
+    CONF_CASCADE_MEMBER_IDS,
+    CONF_CASCADE_TERMINAL_LOAD_ID,
     CONF_DC24_SHARE_PERCENT,
     CONF_DC_BALANCE_IN,
     CONF_DC_BALANCE_OUT,
@@ -59,21 +63,39 @@ from .const import (
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_DISCHARGE_FLOOR_SOC,
     CONF_LOAD_ENERGY_ENTITY,
     CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_ETA_CHARGE,
+    CONF_LOAD_ETA_DISCHARGE,
+    CONF_LOAD_GATE_ACTOR_MODE,
+    CONF_LOAD_HANDOVER_MIN_POWER_W,
+    CONF_LOAD_HANDOVER_TIMEOUT_S,
+    CONF_LOAD_IDLE_DURATION_MIN,
+    CONF_LOAD_IDLE_POWER_W,
     CONF_LOAD_IN_HOUSE,
+    CONF_LOAD_INPUT_ACTOR_MODE,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_MAX_CHARGE_POWER_W,
+    CONF_LOAD_MAX_OUTPUT_POWER_W,
+    CONF_LOAD_MAX_PASSTHROUGH_POWER_W,
     CONF_LOAD_MIN_OFF_MIN,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_NAME,
+    CONF_LOAD_OUTPUT_ACTOR_MODE,
+    CONF_LOAD_OUTPUT_OVERHEAD_W,
+    CONF_LOAD_OUTPUT_POWER_ENTITY,
+    CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_LOAD_POWER_WARNING_DWELL_MIN,
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
+    CONF_LOAD_RECOVERY_SOC,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
+    CONF_LOAD_WAKE_TIMEOUT_S,
     CONF_NATIVE48_BASE_W,
     CONF_PREDRAIN_PV_CONFIDENCE,
     CONF_PROFILE_HALF_LIFE_DAYS,
@@ -114,6 +136,7 @@ from .const import (
     INPUT_OFF_POLICY_KEEP,
     PV_FORECAST_MODES,
     SUBENTRY_TYPE_APPLIANCE,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
 from .coordinator import ordered_load_subentries
@@ -712,6 +735,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         return {
             SUBENTRY_TYPE_LOAD: SurplusLoadSubentryFlow,
             SUBENTRY_TYPE_APPLIANCE: ApplianceSubentryFlow,
+            SUBENTRY_TYPE_CASCADE: CascadeSubentryFlow,
         }
 
     async def async_step_user(
@@ -1170,10 +1194,28 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     _STORAGE_KEYS = (
         CONF_LOAD_CAPACITY_WH,
         CONF_LOAD_TARGET_SOC,
+        CONF_LOAD_DISCHARGE_FLOOR_SOC,
+        CONF_LOAD_RECOVERY_SOC,
+        CONF_LOAD_WAKE_TIMEOUT_S,
+        CONF_LOAD_HANDOVER_MIN_POWER_W,
+        CONF_LOAD_HANDOVER_TIMEOUT_S,
+        CONF_LOAD_INPUT_ACTOR_MODE,
+        CONF_LOAD_GATE_ACTOR_MODE,
+        CONF_LOAD_OUTPUT_ACTOR_MODE,
+        CONF_LOAD_ETA_CHARGE,
+        CONF_LOAD_ETA_DISCHARGE,
+        CONF_LOAD_OUTPUT_OVERHEAD_W,
     )
     _STORAGE_ENTITY_KEYS = (
         CONF_LOAD_SOC_ENTITY,
         CONF_LOAD_CHARGE_ENABLE,
+        CONF_LOAD_OUTPUT_SWITCH,
+        CONF_LOAD_OUTPUT_POWER_ENTITY,
+        CONF_LOAD_MAX_CHARGE_POWER_W,
+        CONF_LOAD_MAX_OUTPUT_POWER_W,
+        CONF_LOAD_MAX_PASSTHROUGH_POWER_W,
+        CONF_LOAD_IDLE_POWER_W,
+        CONF_LOAD_IDLE_DURATION_MIN,
     )
 
     def _basic_schema(self, data: dict[str, Any]) -> vol.Schema:
@@ -1290,14 +1332,67 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             vol.Required(
                 CONF_LOAD_TARGET_SOC, default=dv(CONF_LOAD_TARGET_SOC)
             ): _number(0, 100, 1, "%"),
+            vol.Required(
+                CONF_LOAD_DISCHARGE_FLOOR_SOC,
+                default=dv(CONF_LOAD_DISCHARGE_FLOOR_SOC),
+            ): _number(0, 99, 1, "%"),
+            vol.Required(
+                CONF_LOAD_RECOVERY_SOC, default=dv(CONF_LOAD_RECOVERY_SOC)
+            ): _number(1, 100, 1, "%"),
+            vol.Required(
+                CONF_LOAD_WAKE_TIMEOUT_S, default=dv(CONF_LOAD_WAKE_TIMEOUT_S)
+            ): _number(1, 1800, 1, "s"),
+            vol.Required(
+                CONF_LOAD_HANDOVER_MIN_POWER_W,
+                default=dv(CONF_LOAD_HANDOVER_MIN_POWER_W),
+            ): _number(0, 10_000, 1, "W"),
+            vol.Required(
+                CONF_LOAD_HANDOVER_TIMEOUT_S,
+                default=dv(CONF_LOAD_HANDOVER_TIMEOUT_S),
+            ): _number(60, 3600, 1, "s"),
+            vol.Required(
+                CONF_LOAD_ETA_CHARGE, default=dv(CONF_LOAD_ETA_CHARGE)
+            ): _number(0.01, 1.0, 0.01),
+            vol.Required(
+                CONF_LOAD_ETA_DISCHARGE, default=dv(CONF_LOAD_ETA_DISCHARGE)
+            ): _number(0.01, 1.0, 0.01),
+            vol.Required(
+                CONF_LOAD_OUTPUT_OVERHEAD_W,
+                default=dv(CONF_LOAD_OUTPUT_OVERHEAD_W),
+            ): _number(0, 1000, 1, "W"),
         }
         for key, domain in (
             (CONF_LOAD_SOC_ENTITY, "sensor"),
             (CONF_LOAD_CHARGE_ENABLE, ["input_boolean", "switch"]),
+            (CONF_LOAD_OUTPUT_SWITCH, "switch"),
+            (CONF_LOAD_OUTPUT_POWER_ENTITY, "sensor"),
         ):
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
+        actor_selector = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=list(ACTOR_MODES),
+                translation_key="cascade_actor_mode",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        )
+        for key in (
+            CONF_LOAD_INPUT_ACTOR_MODE,
+            CONF_LOAD_GATE_ACTOR_MODE,
+            CONF_LOAD_OUTPUT_ACTOR_MODE,
+        ):
+            schema[vol.Required(key, default=dv(key))] = actor_selector
+        for key, maximum, unit in (
+            (CONF_LOAD_MAX_CHARGE_POWER_W, 10_000, "W"),
+            (CONF_LOAD_MAX_OUTPUT_POWER_W, 10_000, "W"),
+            (CONF_LOAD_MAX_PASSTHROUGH_POWER_W, 10_000, "W"),
+            (CONF_LOAD_IDLE_POWER_W, 1000, "W"),
+            (CONF_LOAD_IDLE_DURATION_MIN, 1440, "min"),
+        ):
+            schema[
+                vol.Optional(key, description={"suggested_value": data.get(key)})
+            ] = _number(0.1, maximum, 0.1, unit)
         return vol.Schema(schema)
 
     def _finish(self, storage_input: dict[str, Any]) -> SubentryFlowResult:
@@ -1438,7 +1533,17 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         if user_input is not None:
             # Validate the FULL charging path: control switch + off policy come
             # from the basic step, charge-enable from this one.
-            error = _validate_load_control({**self._basic, **user_input})
+            combined = {**self._basic, **user_input}
+            error = _validate_load_control(combined)
+            floor = float(combined.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 0.0))
+            recovery = float(combined.get(CONF_LOAD_RECOVERY_SOC, 0.0))
+            target = float(combined.get(CONF_LOAD_TARGET_SOC, 100.0))
+            if error is None and not floor < recovery <= target:
+                error = "cascade_soc_order"
+            idle_power = combined.get(CONF_LOAD_IDLE_POWER_W)
+            idle_duration = combined.get(CONF_LOAD_IDLE_DURATION_MIN)
+            if error is None and (idle_power is None) != (idle_duration is None):
+                error = "cascade_idle_pair"
             if error is None:
                 return self._finish(user_input)
             errors["base"] = error
@@ -1540,4 +1645,180 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
         data = {**subentry.data, CONF_APPLIANCE_NAME: subentry.title}
         return self.async_show_form(
             step_id="reconfigure", data_schema=self._schema(data)
+        )
+
+
+class CascadeSubentryFlow(ConfigSubentryFlow):
+    """Configure a disjoint, ordered storage-output cascade."""
+
+    def _load_options(self, energy_limited: bool) -> list[dict[str, str]]:
+        return [
+            {"value": subentry_id, "label": subentry.title}
+            for subentry_id, subentry in self._get_entry().subentries.items()
+            if subentry.subentry_type == SUBENTRY_TYPE_LOAD
+            and bool(subentry.data.get(CONF_LOAD_ENERGY_LIMITED, False))
+            is energy_limited
+        ]
+
+    def _schema(self, data: dict[str, Any]) -> vol.Schema:
+        storage_options = self._load_options(True)
+        terminal_options = self._load_options(False)
+        return vol.Schema(
+            {
+                vol.Required(CONF_LOAD_NAME, default=data.get(CONF_LOAD_NAME, "")): str,
+                vol.Required(
+                    CONF_CASCADE_MEMBER_IDS,
+                    default=data.get(CONF_CASCADE_MEMBER_IDS, []),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=storage_options,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(
+                    CONF_CASCADE_TERMINAL_LOAD_ID,
+                    default=data.get(
+                        CONF_CASCADE_TERMINAL_LOAD_ID,
+                        terminal_options[0]["value"] if terminal_options else "",
+                    ),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=terminal_options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required(
+                    CONF_CASCADE_ACTOR_TIMEOUT_S,
+                    default=data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30),
+                ): _number(1, 1800, 1, "s"),
+            }
+        )
+
+    def _validate(self, data: dict[str, Any], edited_id: str | None) -> str | None:
+        entry = self._get_entry()
+        member_ids = list(data.get(CONF_CASCADE_MEMBER_IDS, []))
+        terminal_id = data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+        if not str(data.get(CONF_LOAD_NAME, "")).strip():
+            return "name_required"
+        if not member_ids:
+            return "cascade_members_required"
+        if len(member_ids) != len(set(member_ids)) or terminal_id in member_ids:
+            return "cascade_duplicate_member"
+
+        loads = {
+            subentry_id: subentry
+            for subentry_id, subentry in entry.subentries.items()
+            if subentry.subentry_type == SUBENTRY_TYPE_LOAD
+        }
+        terminal = loads.get(terminal_id)
+        if terminal is None or terminal.data.get(CONF_LOAD_ENERGY_LIMITED, False):
+            return "cascade_terminal_invalid"
+
+        used: set[str] = set()
+        used_actors: set[str] = set()
+        for subentry_id, subentry in entry.subentries.items():
+            if (
+                subentry.subentry_type != SUBENTRY_TYPE_CASCADE
+                or subentry_id == edited_id
+            ):
+                continue
+            used.update(subentry.data.get(CONF_CASCADE_MEMBER_IDS, []))
+            other_terminal = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+            if other_terminal:
+                used.add(other_terminal)
+            for load_id in subentry.data.get(CONF_CASCADE_MEMBER_IDS, []):
+                load = loads.get(load_id)
+                if load is None:
+                    continue
+                for key in (
+                    CONF_LOAD_CONTROL_SWITCH,
+                    CONF_LOAD_CHARGE_ENABLE,
+                    CONF_LOAD_OUTPUT_SWITCH,
+                ):
+                    if load.data.get(key):
+                        used_actors.add(load.data[key])
+        if used.intersection((*member_ids, terminal_id)):
+            return "cascade_member_in_use"
+
+        actors: list[str] = []
+        for index, member_id in enumerate(member_ids):
+            subentry = loads.get(member_id)
+            if subentry is None or not subentry.data.get(
+                CONF_LOAD_ENERGY_LIMITED, False
+            ):
+                return "cascade_member_invalid"
+            values = subentry.data
+            if not all(
+                values.get(key)
+                for key in (
+                    CONF_LOAD_SOC_ENTITY,
+                    CONF_LOAD_CHARGE_ENABLE,
+                    CONF_LOAD_OUTPUT_SWITCH,
+                    CONF_LOAD_OUTPUT_POWER_ENTITY,
+                )
+            ):
+                return "cascade_member_incomplete"
+            if index == 0 and not values.get(CONF_LOAD_CONTROL_SWITCH):
+                return "cascade_root_input_required"
+            if index > 0 and values.get(CONF_LOAD_CONTROL_SWITCH):
+                return "cascade_nonroot_input_forbidden"
+            floor = float(values.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 20.0))
+            recovery = float(values.get(CONF_LOAD_RECOVERY_SOC, 50.0))
+            target = float(values.get(CONF_LOAD_TARGET_SOC, 100.0))
+            if not 0.0 <= floor < recovery <= target <= 100.0:
+                return "cascade_soc_order"
+            if float(values.get(CONF_LOAD_HANDOVER_TIMEOUT_S, 180)) < 60.0:
+                return "cascade_handover_timeout"
+            for key in (
+                CONF_LOAD_CONTROL_SWITCH,
+                CONF_LOAD_CHARGE_ENABLE,
+                CONF_LOAD_OUTPUT_SWITCH,
+            ):
+                actor = values.get(key)
+                if actor:
+                    actors.append(actor)
+        leaf_actor = terminal.data.get(CONF_LOAD_CONTROL_SWITCH)
+        if leaf_actor:
+            actors.append(leaf_actor)
+        if len(actors) != len(set(actors)) or used_actors.intersection(actors):
+            return "cascade_actor_in_use"
+        return None
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = self._validate(user_input, None)
+            if error is None:
+                title = str(user_input.pop(CONF_LOAD_NAME)).strip()
+                return self.async_create_entry(title=title, data=user_input)
+            errors["base"] = error
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self._schema(user_input or {}),
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        subentry = self._get_reconfigure_subentry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = self._validate(user_input, subentry.subentry_id)
+            if error is None:
+                title = str(user_input.pop(CONF_LOAD_NAME)).strip()
+                return self.async_update_and_abort(
+                    self._get_entry(), subentry, title=title, data=user_input
+                )
+            errors["base"] = error
+        data = (
+            user_input
+            if user_input is not None
+            else {**subentry.data, CONF_LOAD_NAME: subentry.title}
+        )
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=self._schema(data), errors=errors
         )

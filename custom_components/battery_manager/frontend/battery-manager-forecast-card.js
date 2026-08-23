@@ -48,6 +48,7 @@
 const CARD_VERSION =
   new URL(import.meta.url).searchParams.get("v") || "dev";
 const CARD_TYPE = "battery-manager-forecast-card";
+const CASCADE_CARD_TYPE = "battery-manager-cascade-card";
 const DOCS_URL = "https://github.com/danielr0815/battery-manager-ha";
 
 // Lane palette as theme-overridable custom properties. The fallbacks were
@@ -1845,5 +1846,59 @@ if (!customElements.get(CONSUMPTION_CARD_TYPE)) {
       }
       return null;
     },
+  });
+}
+
+class BatteryManagerCascadeCard extends HTMLElement {
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(value) {
+    this._hass = value;
+    this._render();
+  }
+
+  getCardSize() {
+    return Math.max(1, this._cascades().length + 1);
+  }
+
+  _cascades() {
+    const state = this._hass?.states?.[this._config?.entity];
+    const cascades = state?.attributes?.cascades;
+    return Array.isArray(cascades) ? cascades.slice(0, 20) : [];
+  }
+
+  _render() {
+    if (!this._config || !this._hass) return;
+    const rows = this._cascades()
+      .map((item) => {
+        const soc = num(item?.aggregate_soc_percent);
+        const root = num(item?.planned_root_energy_kwh) ?? 0;
+        const aux = num(item?.planned_aux_energy_kwh) ?? 0;
+        const actual = num(item?.actual_aux_energy_kwh) ?? 0;
+        const fault = item?.fault ? ` · ⚠ ${esc(item.fault)}` : "";
+        return `<div class="row"><div><b>${esc(item?.name || "Cascade")}</b>` +
+          `<span>${esc(item?.phase || "idle")} · ${esc(item?.source || "Root")}${fault}</span></div>` +
+          `<div class="soc">${soc == null ? "?" : soc.toFixed(1)} %${item?.aggregate_soc_stale ? "*" : ""}</div>` +
+          `<div class="energy">Root ${root.toFixed(2)} kWh · Aux ${aux.toFixed(2)} kWh · Ist ${actual.toFixed(2)} kWh</div></div>`;
+      })
+      .join("");
+    this.innerHTML = `<ha-card header="Battery Manager Cascades"><style>` +
+      `.wrap{padding:0 16px 16px}.row{display:grid;grid-template-columns:1fr auto;gap:4px 16px;padding:12px 0;border-top:1px solid var(--divider-color)}span,.energy{display:block;color:var(--secondary-text-color);font-size:.85em}.energy{grid-column:1/-1}.soc{font-variant-numeric:tabular-nums}</style>` +
+      `<div class="wrap">${rows || "No cascades configured."}</div></ha-card>`;
+  }
+}
+
+if (!customElements.get(CASCADE_CARD_TYPE)) {
+  customElements.define(CASCADE_CARD_TYPE, BatteryManagerCascadeCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: CASCADE_CARD_TYPE,
+    name: "Battery Manager Cascades",
+    description: "Storage SOC, active source, Root/Aux energy, recovery and faults.",
+    preview: true,
+    documentationURL: DOCS_URL,
   });
 }

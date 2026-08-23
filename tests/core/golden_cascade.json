@@ -1,0 +1,30 @@
+{
+ "b1_to_b2": {
+  "aux_wh": 150.0,
+  "first_source": "b1",
+  "root_wh": 150.0
+ },
+ "direct_pv": {
+  "aux_wh": 0,
+  "direct_pv_segments": 5
+ },
+ "house_battery_return": {
+  "first_source": "house_battery",
+  "root_wh": 1800.0
+ },
+ "recovery": {
+  "deadline": "2026-08-23T12:00:00",
+  "members_reached": 2
+ },
+ "root_balance": {
+  "extra_ac_wh": 1800.0,
+  "root_wh": 1800.0
+ },
+ "skip": {
+  "aggregate_soc": 76.0,
+  "aux_wh": 150.0,
+  "first_source": "b2",
+  "root_wh": 175.0,
+  "stale": true
+ }
+}

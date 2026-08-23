@@ -4,6 +4,14 @@
 > Extends REQUIREMENTS.md (L requirements) and ALGORITHM.md with direct
 > actuation of powerstation charging paths by the integration.
 
+## Kaskadenbesitz (v0.26.0)
+
+Ist eine Last Mitglied oder Endlast einer Speicher-Kaskade, setzt ihr
+`LoadPlan` `managed_by_cascade`. Die unabhängige Aktuation ist vollständig
+unterdrückt; ausschließlich `CascadeManager` darf Input, Lade-Gate, Output und
+Endlast schalten. Ablauf und Safe-OFF-Regeln sind in
+[F-CASCADE-STORAGE.md](F-CASCADE-STORAGE.md) normativ beschrieben.
+
 ## 1. Starting point (operator description, F2400-B as an example)
 
 - The 230 V **input** of the Fossibot hangs on a switchable socket

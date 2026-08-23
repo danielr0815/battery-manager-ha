@@ -360,13 +360,73 @@
             "capacity_wh": "Speicherkapazität (Wh)",
             "target_soc_percent": "Ziel-SOC (%)",
             "soc_entity": "SOC-Sensor (optional)",
-            "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)"
+            "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
+            "discharge_floor_soc_percent": "Entlade-Floor (%)",
+            "recovery_soc_percent": "Recovery-Ziel (%)",
+            "wake_timeout_s": "Wake-Timeout (s)",
+            "handover_min_power_w": "Leistungsnachweis mindestens (W)",
+            "handover_timeout_s": "Handover-Timeout (s)",
+            "cascade_charge_efficiency": "Ladewirkungsgrad",
+            "cascade_discharge_efficiency": "Entladewirkungsgrad",
+            "cascade_output_overhead_w": "Output-Eigenverbrauch (W)",
+            "output_switch_entity": "Output-Aktor",
+            "output_power_entity": "Output-Leistungssensor",
+            "input_actor_mode": "Besitzmodus Eingang",
+            "gate_actor_mode": "Besitzmodus Lade-Gate",
+            "output_actor_mode": "Besitzmodus Output",
+            "cascade_max_charge_power_w": "Maximale Ladeleistung (W, optional)",
+            "cascade_max_output_power_w": "Maximale Output-Leistung (W, optional)",
+            "cascade_max_passthrough_power_w": "Maximale Passthrough-Leistung (W, optional)",
+            "output_idle_power_w": "Standalone-Idle-Schwelle (W, optional)",
+            "output_idle_duration_min": "Standalone-Idle-Dauer (min, optional)"
           },
           "data_description": {
             "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
             "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
             "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
             "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden."
+          }
+        }
+      }
+    },
+    "cascade": {
+      "entry_type": "Speicher-Kaskade",
+      "error": {
+        "name_required": "Bitte gib einen Namen für die Kaskade ein.",
+        "cascade_members_required": "Wähle mindestens einen Speicher.",
+        "cascade_duplicate_member": "Jede Last darf nur einmal vorkommen.",
+        "cascade_terminal_invalid": "Die Endlast muss eine Nicht-Speicher-Last sein.",
+        "cascade_member_in_use": "Eine ausgewählte Last wird bereits von einer Kaskade verwendet.",
+        "cascade_member_invalid": "Ein Mitglied ist kein gültiger Speicher.",
+        "cascade_member_incomplete": "Jeder Speicher benötigt SOC, Lade-Gate, Output-Aktor und Output-Leistung.",
+        "cascade_root_input_required": "Der erste Speicher benötigt einen Eingangsschalter.",
+        "cascade_nonroot_input_forbidden": "Nur der erste Speicher darf einen Eingangsschalter besitzen.",
+        "cascade_soc_order": "Es muss Floor < Recovery <= Ziel-SOC gelten.",
+        "cascade_handover_timeout": "Der Handover-Timeout muss mindestens 60 Sekunden betragen.",
+        "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein."
+      },
+      "initiate_flow": {
+        "user": "Speicher-Kaskade hinzufügen",
+        "reconfigure": "Speicher-Kaskade anpassen"
+      },
+      "step": {
+        "user": {
+          "title": "Speicher-Kaskade",
+          "description": "Ordne Speicher vom Root bis zum Leaf und wähle die abschließende Last. Die Automation startet aus Sicherheitsgründen AUS.",
+          "data": {
+            "name": "Name",
+            "member_load_ids": "Speicher (Root → Leaf)",
+            "terminal_load_id": "Abschließende Last",
+            "actor_confirmation_timeout_s": "Aktor-Bestätigungs-Timeout (s)"
+          }
+        },
+        "reconfigure": {
+          "title": "Speicher-Kaskade",
+          "data": {
+            "name": "Name",
+            "member_load_ids": "Speicher (Root → Leaf)",
+            "terminal_load_id": "Abschließende Last",
+            "actor_confirmation_timeout_s": "Aktor-Bestätigungs-Timeout (s)"
           }
         }
       }
@@ -794,6 +854,12 @@
       },
       "load_runtime": {
         "name": "{name} aktive Laufzeit"
+      },
+      "cascade_mode": {
+        "name": "{name} Modus"
+      },
+      "cascade_soc": {
+        "name": "{name} SOC"
       }
     },
     "binary_sensor": {
@@ -814,6 +880,12 @@
       },
       "load_power_warning": {
         "name": "{name} Leistungswarnung"
+      },
+      "cascade_recommendation": {
+        "name": "{name} Root-Empfehlung"
+      },
+      "cascade_fault": {
+        "name": "{name} Störung"
       }
     },
     "switch": {
@@ -831,11 +903,17 @@
       },
       "early_feed_in": {
         "name": "Vorzeitige Netzeinspeisung"
+      },
+      "cascade_automation": {
+        "name": "{name} Automation"
       }
     },
     "button": {
       "load_runtime_reset": {
         "name": "{name} Laufzeit zurücksetzen"
+      },
+      "cascade_fault_reset": {
+        "name": "{name} Störung zurücksetzen"
       }
     }
   },
@@ -843,6 +921,14 @@
     "learning_no_statistics": {
       "title": "Verbrauchslernen: Langzeitstatistik fehlt",
       "description": "Für folgende Mess-Entitäten existiert keine Langzeitstatistik (fehlende state_class oder Recorder-Ausschluss): {entity_ids}. Der betroffene Pfad nutzt weiterhin das statische Lastprofil."
+    },
+    "cascade_fault": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Die Kaskade wurde wegen „{reason}“ sicher beendet. Prüfe Aktoren und Telemetrie und verwende anschließend den Störungs-Reset."
+    },
+    "cascade_recovery_missed": {
+      "title": "Recovery-Ziel der Speicher-Kaskade verfehlt",
+      "description": "Mindestens ein Speicher hat sein Recovery-Ziel bis zum Ende des letzten heutigen PV-Slots nicht erreicht. Die Automation bleibt für künftige Tage verfügbar; prüfe Prognose, Priorität und Ladepfad."
     },
     "learning_bias": {
       "title": "Verbrauchslernen: systematische Abweichung",

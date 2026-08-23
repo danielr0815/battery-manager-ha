@@ -24,6 +24,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .cascade_manager import CascadeManager
 from .const import (
     APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
     APPLIANCE_RUNNING_STATES,
@@ -37,6 +38,8 @@ from .const import (
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
+    CONF_CASCADE_MEMBER_IDS,
+    CONF_CASCADE_TERMINAL_LOAD_ID,
     CONF_DC24_SHARE_PERCENT,
     CONF_DCDC_EFFICIENCY,
     CONF_DCDC_MAX_CURRENT_A,
@@ -59,17 +62,27 @@ from .const import (
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_DISCHARGE_FLOOR_SOC,
     CONF_LOAD_ENERGY_ENTITY,
     CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_ETA_CHARGE,
+    CONF_LOAD_ETA_DISCHARGE,
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_MAX_CHARGE_POWER_W,
+    CONF_LOAD_MAX_OUTPUT_POWER_W,
+    CONF_LOAD_MAX_PASSTHROUGH_POWER_W,
     CONF_LOAD_MIN_OFF_MIN,
     CONF_LOAD_MIN_RUNTIME_MIN,
+    CONF_LOAD_OUTPUT_OVERHEAD_W,
+    CONF_LOAD_OUTPUT_POWER_ENTITY,
+    CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_LOAD_POWER_WARNING_DWELL_MIN,
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
+    CONF_LOAD_RECOVERY_SOC,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
@@ -155,6 +168,7 @@ from .const import (
     STORAGE_VERSION,
     STRONG_PV_CUTOFF_W_DEFAULT,
     SUBENTRY_TYPE_APPLIANCE,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
     SUPPORT_MODE_AUTO,
     SUPPORT_MODE_MANUAL,
@@ -169,9 +183,12 @@ from .core import (
     Appliance,
     ApplianceRun,
     BatteryParams,
+    CascadeMember,
+    CascadeRuntimeState,
     ControlParams,
     ConverterParams,
     FeedInParams,
+    LoadCascade,
     LoadProfile,
     PVParams,
     SupportParams,
@@ -209,7 +226,7 @@ class _RuntimeStore(Store):
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: Any
     ) -> Any:
-        if old_major_version == STORAGE_VERSION:
+        if old_major_version in (1, STORAGE_VERSION):
             # Same envelope major: minor diffs are compatible — the payload
             # is a flat dict whose keys are each restored defensively
             # (.get + isinstance checks) in async_load_persistent_state.
@@ -238,6 +255,12 @@ def _power_cap(voltage_v: Any, current_a: Any) -> float | None:
     if current <= 0:
         return None
     return float(voltage_v) * current
+
+
+def _optional_positive(values: Any, key: str) -> float | None:
+    """Translate an optional positive numeric config field into the core."""
+    value = values.get(key)
+    return float(value) if value not in (None, "") else None
 
 
 def _gate_soc(percent: Any) -> float | None:
@@ -535,6 +558,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # and actuates the load; False holds it UNAVAILABLE (planner drops it,
         # executor switches it off) without touching the control-switch config.
         self._load_bm_enabled: dict[str, bool] = {}
+        # F-CASCADE-STORAGE: the manager owns every actor in configured
+        # chains.  Its serialisable state is restored below; new cascades are
+        # deliberately disabled until the operator explicitly enables them.
+        self._cascade_state: dict[str, dict[str, Any]] = {}
+        self.cascade_manager = CascadeManager(self)
         # F-PREDRAIN-BLOCK stability gate: per continuous load the current
         # block signature (start, end) with the count of consecutive identical
         # plans and its first-seen time; and the set of loads whose block may
@@ -715,6 +743,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_bm_enabled = {
                 k: bool(v) for k, v in data.get("load_bm_enabled", {}).items()
             }
+            cascade_state = data.get("cascade_state")
+            if isinstance(cascade_state, dict):
+                self._cascade_state = {
+                    str(k): dict(v)
+                    for k, v in cascade_state.items()
+                    if isinstance(v, dict)
+                }
             self._load_runtime_seconds = {
                 k: float(v) for k, v in data.get("load_runtime_seconds", {}).items()
             }
@@ -922,6 +957,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 k: v.isoformat() for k, v in self._load_run_deadline.items()
             },
             "load_bm_enabled": dict(self._load_bm_enabled),
+            "cascade_state": self._cascade_state,
             # Only the accumulated total is persisted; the in-progress tick cursor
             # is deliberately NOT — restoring it would credit the whole restart
             # gap (up to the tick cap) as runtime the device may never have run.
@@ -1076,17 +1112,33 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # planning cycle (same event-driven pattern as the feed-in trim).
         if cfg.get(CONF_EXPORT_METER_ENTITY):
             entities.append(cfg[CONF_EXPORT_METER_ENTITY])
-        for subentry in self.entry.subentries.values():
+        cascade_member_ids = {
+            load_id
+            for subentry in self.entry.subentries.values()
+            if subentry.subentry_type == SUBENTRY_TYPE_CASCADE
+            for load_id in subentry.data.get(CONF_CASCADE_MEMBER_IDS, [])
+        }
+        for subentry_id, subentry in self.entry.subentries.items():
             data = subentry.data
             if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
-                for key in (
+                keys = [
                     CONF_LOAD_SOC_ENTITY,
                     CONF_LOAD_POWER_ENTITY,
                     CONF_LOAD_AVAILABILITY_ENTITY,
                     # F-REALIZED-SURPLUS: the per-load kWh counter (when wired)
                     # feeds the realized accounting on every state change.
                     CONF_LOAD_ENERGY_ENTITY,
-                ):
+                ]
+                if subentry_id in cascade_member_ids:
+                    keys.extend(
+                        (
+                            CONF_LOAD_CONTROL_SWITCH,
+                            CONF_LOAD_CHARGE_ENABLE,
+                            CONF_LOAD_OUTPUT_SWITCH,
+                            CONF_LOAD_OUTPUT_POWER_ENTITY,
+                        )
+                    )
+                for key in keys:
                     if data.get(key):
                         entities.append(data[key])
             elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE and data.get(
@@ -1100,6 +1152,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cfg = self.raw_config
         loads = []
         appliances = []
+        cascades = []
         # F-LOAD-PRIORITY R3: the planner core reads priority from the ORDER of
         # SystemConfig.loads, so the loads are built in effective priority order
         # (stored per-load priority, legacy fallback: insertion position).
@@ -1142,6 +1195,56 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         opportunistic_start=bool(
                             data.get(CONF_APPLIANCE_OPPORTUNISTIC, False)
                         ),
+                    )
+                )
+
+        load_subentries = self.entry.subentries
+        for cascade_id, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            members = []
+            for member_id in subentry.data.get(CONF_CASCADE_MEMBER_IDS, []):
+                member_entry = load_subentries.get(member_id)
+                if member_entry is None:
+                    # Invalid references remain stored and fail closed in the
+                    # executor.  Excluding them here keeps the pure core from
+                    # accepting a topology it cannot model.
+                    members = []
+                    break
+                values = member_entry.data
+
+                members.append(
+                    CascadeMember(
+                        load_id=member_id,
+                        discharge_floor_soc_percent=float(
+                            values.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 20.0)
+                        ),
+                        recovery_soc_percent=float(
+                            values.get(CONF_LOAD_RECOVERY_SOC, 50.0)
+                        ),
+                        eta_charge=float(values.get(CONF_LOAD_ETA_CHARGE, 1.0)),
+                        eta_discharge=float(values.get(CONF_LOAD_ETA_DISCHARGE, 1.0)),
+                        max_charge_power_w=_optional_positive(
+                            values, CONF_LOAD_MAX_CHARGE_POWER_W
+                        ),
+                        max_output_power_w=_optional_positive(
+                            values, CONF_LOAD_MAX_OUTPUT_POWER_W
+                        ),
+                        max_passthrough_power_w=_optional_positive(
+                            values, CONF_LOAD_MAX_PASSTHROUGH_POWER_W
+                        ),
+                        output_overhead_w=float(
+                            values.get(CONF_LOAD_OUTPUT_OVERHEAD_W, 0.0)
+                        ),
+                    )
+                )
+            terminal_id = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+            if members and terminal_id in load_subentries:
+                cascades.append(
+                    LoadCascade(
+                        cascade_id=cascade_id,
+                        members=tuple(members),
+                        terminal_load_id=terminal_id,
                     )
                 )
 
@@ -1269,7 +1372,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             loads=tuple(loads),
             appliances=tuple(appliances),
+            cascades=tuple(cascades),
         )
+
+    def _cascade_runtime_state(self, cascade_id: str) -> CascadeRuntimeState:
+        """Expose the persisted executor episode to the stateless core."""
+        return self.cascade_manager.runtime_state(cascade_id)
+
+    def cascade_enabled(self, cascade_id: str) -> bool:
+        return self.cascade_manager.enabled(cascade_id)
+
+    async def async_set_cascade_enabled(self, cascade_id: str, enabled: bool) -> bool:
+        changed = await self.cascade_manager.async_set_enabled(cascade_id, enabled)
+        await self.async_request_refresh()
+        return changed
+
+    async def async_reset_cascade_fault(self, cascade_id: str) -> bool:
+        changed = await self.cascade_manager.async_reset_fault(cascade_id)
+        await self.async_request_refresh()
+        return changed
 
     # ------------------------------------------------------------------
     # Input reading
@@ -2828,6 +2949,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     measured_power_w=measured,
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
                     saturated_power_w=saturated_power_w,
+                    soc_observed_at=(
+                        now
+                        if live_soc is not None
+                        else dt_util.parse_datetime(cached.get("ts"))
+                        if soc is not None and cached is not None
+                        else None
+                    ),
+                    soc_source=(
+                        "live"
+                        if live_soc is not None
+                        else "cache"
+                        if soc is not None
+                        else "missing"
+                    ),
                 )
             )
         return tuple(states)
@@ -3153,6 +3288,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_hourly_p10=pv_hourly_p10,
             pv_hourly_p90=pv_hourly_p90,
         )
+        inputs = replace(
+            inputs,
+            cascade_runtime_states=tuple(
+                self._cascade_runtime_state(cascade.cascade_id)
+                for cascade in config.cascades
+            ),
+        )
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
         # soon as any learned quantiles exist. Only soc_buffer_percent is
         # overridden here; the grid-support escalation reads its own absolute
@@ -3223,6 +3365,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_power_w,
             shadow_active,
         )
+        await self.cascade_manager.async_apply(config, result, load_states, now)
         await self._update_power_warnings(result, now)
         # F-FEEDIN: the manual-override judgement already ran at the top of
         # the cycle (before build_system_config, so the plan books the
@@ -3350,6 +3493,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     for slot, on in zip(inputs.slots, load_plan.schedule, strict=True)
                     if on
                 ],
+                "managed_by_cascade": (
+                    next(
+                        (
+                            cascade.cascade_id
+                            for cascade in config.cascades
+                            if load_plan.load_id
+                            in (
+                                *(member.load_id for member in cascade.members),
+                                cascade.terminal_load_id,
+                            )
+                        ),
+                        None,
+                    )
+                    if load_plan.managed_by_cascade
+                    else None
+                ),
             }
 
         naive_now = now.replace(tzinfo=None)
@@ -3487,6 +3646,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             "pv_window_ends": dict(result.pv_window_ends),
             "load_plans": load_plans,
+            "cascade_plans": self.cascade_manager.payload(result, config),
             # Detected appliance runs (washer, dishwasher, …) for the forecast
             # card: they already shape the AC consumption forecast but were
             # invisible on the card (operator request 2026-08-08). One block
@@ -5259,6 +5419,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             data = subentry.data
             plan = plans_by_id.get(subentry_id)
+            if plan is not None and getattr(plan, "managed_by_cascade", False):
+                # F-CASCADE-STORAGE: the central manager is the sole actor
+                # owner. Compatibility recommendation entities remain present
+                # but publish OFF with a managed_by_cascade marker.
+                self._load_charging_active[subentry_id] = False
+                self._load_run_deadline.pop(subentry_id, None)
+                self._cancel_off_timer(subentry_id)
+                continue
             if not data.get(CONF_LOAD_CONTROL_SWITCH):
                 # Recommendation-only load: no switch to drive, but F-SUBHOUR R12
                 # still needs a sub-hour cap so the published `active` (which the

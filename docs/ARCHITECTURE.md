@@ -38,11 +38,12 @@ belongs in the HA layer.
 
 | File | Role |
 |---|---|
-| `model.py` | All the frozen dataclasses: `SystemConfig`, `BatteryParams`, `ControlParams`, `SupportParams`, `FeedInParams`, `LoadProfile`, `PVParams`, `SurplusLoad`, `Appliance`, and the per-hour `HourSlot` / `HourFlows` / `Trajectory`. The data contract between the layers. |
+| `model.py` | All frozen dataclasses, including cascade topology/runtime/flow contracts. The data contract between the layers. |
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
 | `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the early feed-in pass (`plan_feedin`, F-FEEDIN), the appliance-window advisor, and the last-resort grid-support escalation. |
+| `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and nominal/stress recovery proof. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 
@@ -52,6 +53,7 @@ belongs in the HA layer.
 |---|---|
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
+| `cascade_manager.py` | Sole actor owner for storage chains: wake, proof, handover, Root return, Safe-OFF and daily state. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |
 | `sensor.py`, `binary_sensor.py`, `switch.py`, `entity.py` | The entity platforms + the shared base entity. Device model (HA 2026.8, core PR #175785): one main device per config entry plus one device per subentry (`ensure_devices`, linked `via_device_id`); pre-2026.8 all entities shared the single entry device, which 2026.8.0 broke (registry migration: entry version 2.4 in `__init__.py`). |
@@ -160,6 +162,7 @@ The comments and design docs use short decision codes. Each maps to a doc:
 | `F-L1 … F-L7` | Load-control features | [LOAD_CONTROL.md](LOAD_CONTROL.md) |
 | `F-FEEDIN` | Early grid feed-in (pre-shifted unavoidable export), planner pass + setpoint executor | [F-FEEDIN.md](F-FEEDIN.md) |
 | `F-REALIZED-SURPLUS` | Measured ("Ist") surplus accounting from the energy counters, corrected true export | [F-REALIZED-SURPLUS.md](F-REALIZED-SURPLUS.md) |
+| `F-CASCADE-STORAGE` | Linear storage chains ending in one terminal load | [F-CASCADE-STORAGE.md](F-CASCADE-STORAGE.md) |
 | "review round N" | An adversarial code-review pass; the comment records the finding it fixed | (in code) |
 
 ## Recommended reading order

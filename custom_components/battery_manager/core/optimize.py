@@ -7,6 +7,7 @@ import math
 from dataclasses import replace
 from datetime import timedelta
 
+from .cascade import augment_cascade_plans
 from .model import (
     LoadPlan,
     PlanInputs,
@@ -1809,7 +1810,7 @@ def support_escalation(
     return tuple(dc24), tuple(dc48), traj
 
 
-def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
+def _plan_legacy(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2).
 
     The `stressed_min_soc_percent` diagnostic (§3.5, v2) reports the WINDOWED
@@ -2038,3 +2039,15 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         feedin_schedule_w=feedin_schedule_w,
         feedin_by_day_wh=feedin_by_day_wh,
     )
+
+
+def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
+    """Plan the system, retaining an exact fast path for non-cascade setups."""
+    if not config.cascades:
+        return _plan_legacy(config, inputs)
+    legacy_config = replace(config, cascades=())
+
+    def replan(trial_inputs: PlanInputs) -> PlanResult:
+        return _plan_legacy(legacy_config, trial_inputs)
+
+    return augment_cascade_plans(config, inputs, replan(inputs), replan)

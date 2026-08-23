@@ -76,12 +76,10 @@ async def test_store_newer_envelope_does_not_crash(hass, hass_storage, caplog):
     assert coordinator._load_soc_cache == {}
 
 
-async def test_store_envelope_major_migration_discards(
+async def test_store_envelope_v1_migrates_to_v2(
     hass, hass_storage, monkeypatch, caplog
 ):
-    """The code bumped the envelope major while an old file exists — HA's
-    default migrate would raise NotImplementedError and kill the entry
-    setup; ours discards the re-derivable cache with a warning instead."""
+    """v0.26 explicitly carries the defensively read v1 payload into v2."""
     entry = _make_entry(hass)
     key = f"{DOMAIN}.{entry.entry_id}"
     hass_storage[key] = {
@@ -98,9 +96,9 @@ async def test_store_envelope_major_migration_discards(
         await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
-    assert "unsupported store envelope version 1.1" in caplog.text
+    assert "unsupported store envelope version 1.1" not in caplog.text
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    assert coordinator._load_soc_cache == {}
+    assert coordinator._load_soc_cache == LOAD_SOC
 
 
 async def test_store_same_major_minor_diff_passes_through(hass, hass_storage):
@@ -109,8 +107,8 @@ async def test_store_same_major_minor_diff_passes_through(hass, hass_storage):
     entry = _make_entry(hass)
     key = f"{DOMAIN}.{entry.entry_id}"
     hass_storage[key] = {
-        "version": 1,
-        "minor_version": 2,  # code runs 1.1
+        "version": 2,
+        "minor_version": 2,
         "key": key,
         "data": {"load_soc": LOAD_SOC},
     }

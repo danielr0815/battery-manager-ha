@@ -1,5 +1,9 @@
 # HA-Integration: Entities, Attribute, Config-Flow
 
+Eine Cascade-Subentry erzeugt Root-Empfehlung, Mode/Forecast, gewichteten SOC,
+Automation, Fault und Fault-Reset. Der SOC-Prognose-Sensor liefert `cascades`;
+`custom:battery-manager-cascade-card` rendert diesen Vertrag.
+
 **Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument ist die
 **Außenschnittstelle** der Integration `battery_manager`: welche Entities je
 Plattform entstehen, welchen Vertrag ihre Attribute haben (insbesondere der

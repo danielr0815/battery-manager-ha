@@ -1833,3 +1833,101 @@ async def test_options_flow_saves_feedin_section(hass):
         registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_feedin_mode")
         is not None
     )
+
+
+async def test_cascade_subentry_creates_ordered_topology(hass):
+    """A complete storage plus terminal can be bound into one safe chain."""
+    from homeassistant.config_entries import ConfigSubentryData
+
+    from custom_components.battery_manager.const import (
+        CONF_CASCADE_ACTOR_TIMEOUT_S,
+        CONF_CASCADE_MEMBER_IDS,
+        CONF_CASCADE_TERMINAL_LOAD_ID,
+        CONF_LOAD_CAPACITY_WH,
+        CONF_LOAD_CHARGE_ENABLE,
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_OUTPUT_POWER_ENTITY,
+        CONF_LOAD_OUTPUT_SWITCH,
+        CONF_LOAD_POWER_W,
+        CONF_LOAD_SOC_ENTITY,
+        CONF_LOAD_TARGET_SOC,
+        SUBENTRY_TYPE_CASCADE,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=ENTRY_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data={
+                    CONF_LOAD_POWER_W: 300.0,
+                    CONF_LOAD_ENERGY_LIMITED: True,
+                    CONF_LOAD_CAPACITY_WH: 2000.0,
+                    CONF_LOAD_TARGET_SOC: 90.0,
+                    CONF_LOAD_SOC_ENTITY: "sensor.b1_soc",
+                    CONF_LOAD_CONTROL_SWITCH: "switch.b1_input",
+                    CONF_LOAD_CHARGE_ENABLE: "switch.b1_charge",
+                    CONF_LOAD_OUTPUT_SWITCH: "switch.b1_output",
+                    CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b1_output_power",
+                },
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="B1",
+                unique_id=None,
+            ),
+            ConfigSubentryData(
+                data={
+                    CONF_LOAD_POWER_W: 300.0,
+                    CONF_LOAD_ENERGY_LIMITED: False,
+                    CONF_LOAD_CONTROL_SWITCH: "switch.dehumidifier",
+                },
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="Dehumidifier",
+                unique_id=None,
+            ),
+        ],
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("sensor.test_soc", "55")
+    hass.states.async_set("sensor.b1_soc", "90")
+    hass.states.async_set("sensor.b1_output_power", "0")
+    for entity_id in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(entity_id, "10")
+    for entity_id in (
+        "switch.b1_input",
+        "switch.b1_charge",
+        "switch.b1_output",
+        "switch.dehumidifier",
+    ):
+        hass.states.async_set(entity_id, "off")
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    storage_id = next(sid for sid, sub in entry.subentries.items() if sub.title == "B1")
+    terminal_id = next(
+        sid for sid, sub in entry.subentries.items() if sub.title == "Dehumidifier"
+    )
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_CASCADE), context={"source": "user"}
+    )
+    assert result["type"] == "form"
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        {
+            "name": "B1 → Dehumidifier",
+            CONF_CASCADE_MEMBER_IDS: [storage_id],
+            CONF_CASCADE_TERMINAL_LOAD_ID: terminal_id,
+            CONF_CASCADE_ACTOR_TIMEOUT_S: 30,
+        },
+    )
+    assert result["type"] == "create_entry"
+    cascade = next(
+        sub
+        for sub in entry.subentries.values()
+        if sub.subentry_type == SUBENTRY_TYPE_CASCADE
+    )
+    assert cascade.data[CONF_CASCADE_MEMBER_IDS] == [storage_id]
+    assert cascade.data[CONF_CASCADE_TERMINAL_LOAD_ID] == terminal_id

@@ -97,7 +97,7 @@ The base config flow asks for:
 - **Emergency support** (optional): switch entities for the 48 V support PSU
   (fixed power, default 60 W) and the 24 V PSU replacing the DC/DC converter.
 
-**Surplus loads** and **appliances** are added as sub-entries on the
+**Surplus loads**, **storage cascades** and **appliances** are added as sub-entries on the
 integration card (*Add surplus load* / *Add appliance*):
 
 - Surplus load: nominal power, allowed battery share (default 15 %),
@@ -107,6 +107,10 @@ integration card (*Add surplus load* / *Add appliance*):
   parallel when the surplus suffices.
 - Appliance: detection entity (power sensor or state), energy + duration per
   run, optional start-window advisor entity.
+- Storage cascade: ordered Root→Leaf storage loads followed by one continuous
+  terminal load. New cascades start with automation **off**. See the
+  [specification](docs/F-CASCADE-STORAGE.md) and
+  [design](docs/CASCADE-STORAGE-DESIGN.md).
 
 For loads with a configured control switch the integration switches the
 charging path **itself** (input plug + charge-enable gate, see

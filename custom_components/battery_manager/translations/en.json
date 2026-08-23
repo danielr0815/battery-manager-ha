@@ -360,13 +360,73 @@
             "capacity_wh": "Storage capacity (Wh)",
             "target_soc_percent": "Target SOC (%)",
             "soc_entity": "SOC sensor (optional)",
-            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)"
+            "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
+            "discharge_floor_soc_percent": "Discharge floor (%)",
+            "recovery_soc_percent": "Recovery target (%)",
+            "wake_timeout_s": "Wake timeout (s)",
+            "handover_min_power_w": "Minimum proof power (W)",
+            "handover_timeout_s": "Handover timeout (s)",
+            "cascade_charge_efficiency": "Charging efficiency",
+            "cascade_discharge_efficiency": "Discharging efficiency",
+            "cascade_output_overhead_w": "Output overhead (W)",
+            "output_switch_entity": "Output actor",
+            "output_power_entity": "Output power sensor",
+            "input_actor_mode": "Input ownership mode",
+            "gate_actor_mode": "Charge-gate ownership mode",
+            "output_actor_mode": "Output ownership mode",
+            "cascade_max_charge_power_w": "Maximum charge power (W, optional)",
+            "cascade_max_output_power_w": "Maximum output power (W, optional)",
+            "cascade_max_passthrough_power_w": "Maximum passthrough power (W, optional)",
+            "output_idle_power_w": "Standalone idle threshold (W, optional)",
+            "output_idle_duration_min": "Standalone idle duration (min, optional)"
           },
           "data_description": {
             "capacity_wh": "Storage size of the load (only relevant if energy limited), e.g. 2000 for a 2 kWh powerstation.",
             "target_soc_percent": "The load is charged up to this state of charge; above it, it counts as full and is no longer scheduled.",
             "soc_entity": "State-of-charge sensor of the load. If the device sleeps (sensor unavailable), planning continues with the last known value.",
             "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery."
+          }
+        }
+      }
+    },
+    "cascade": {
+      "entry_type": "Storage cascade",
+      "error": {
+        "name_required": "Please enter a name for the cascade.",
+        "cascade_members_required": "Select at least one storage.",
+        "cascade_duplicate_member": "Each load may occur only once.",
+        "cascade_terminal_invalid": "The terminal must be a non-storage load.",
+        "cascade_member_in_use": "A selected load is already used by a cascade.",
+        "cascade_member_invalid": "A member is not a valid storage.",
+        "cascade_member_incomplete": "Every storage needs SOC, charge gate, output actor and output power.",
+        "cascade_root_input_required": "The first storage needs an input switch.",
+        "cascade_nonroot_input_forbidden": "Only the first storage may have an input switch.",
+        "cascade_soc_order": "Floor < recovery <= target SOC is required.",
+        "cascade_handover_timeout": "Handover timeout must be at least 60 seconds.",
+        "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only."
+      },
+      "initiate_flow": {
+        "user": "Add storage cascade",
+        "reconfigure": "Reconfigure storage cascade"
+      },
+      "step": {
+        "user": {
+          "title": "Storage cascade",
+          "description": "Order storage devices from Root to Leaf and select the terminal load. Automation starts OFF for safety.",
+          "data": {
+            "name": "Name",
+            "member_load_ids": "Storage devices (Root → Leaf)",
+            "terminal_load_id": "Terminal load",
+            "actor_confirmation_timeout_s": "Actor confirmation timeout (s)"
+          }
+        },
+        "reconfigure": {
+          "title": "Storage cascade",
+          "data": {
+            "name": "Name",
+            "member_load_ids": "Storage devices (Root → Leaf)",
+            "terminal_load_id": "Terminal load",
+            "actor_confirmation_timeout_s": "Actor confirmation timeout (s)"
           }
         }
       }
@@ -794,6 +854,12 @@
       },
       "load_runtime": {
         "name": "{name} active runtime"
+      },
+      "cascade_mode": {
+        "name": "{name} mode"
+      },
+      "cascade_soc": {
+        "name": "{name} SOC"
       }
     },
     "binary_sensor": {
@@ -814,6 +880,12 @@
       },
       "load_power_warning": {
         "name": "{name} power warning"
+      },
+      "cascade_recommendation": {
+        "name": "{name} Root recommendation"
+      },
+      "cascade_fault": {
+        "name": "{name} fault"
       }
     },
     "switch": {
@@ -831,11 +903,17 @@
       },
       "early_feed_in": {
         "name": "Early feed-in"
+      },
+      "cascade_automation": {
+        "name": "{name} automation"
       }
     },
     "button": {
       "load_runtime_reset": {
         "name": "{name} reset runtime"
+      },
+      "cascade_fault_reset": {
+        "name": "{name} reset fault"
       }
     }
   },
@@ -843,6 +921,14 @@
     "learning_no_statistics": {
       "title": "Consumption learning: long-term statistics missing",
       "description": "The following measurement entities have no long-term statistics (missing state_class or excluded from the recorder): {entity_ids}. The affected path keeps using the static load profile."
+    },
+    "cascade_fault": {
+      "title": "Storage cascade stopped safely",
+      "description": "The cascade was stopped safely because of “{reason}”. Check actors and telemetry, then use the fault reset."
+    },
+    "cascade_recovery_missed": {
+      "title": "Storage cascade recovery target missed",
+      "description": "At least one storage did not reach its recovery target by the end of today's last PV slot. Automation remains available for future days; check forecast, priority and charging path."
     },
     "learning_bias": {
       "title": "Consumption learning: systematic bias",

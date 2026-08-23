@@ -32,6 +32,7 @@ from .const import (
     ENTITY_SUPPORT_DC24,
     ENTITY_SUPPORT_DC48,
     SUBENTRY_TYPE_APPLIANCE,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
 from .coordinator import BatteryManagerCoordinator
@@ -117,6 +118,11 @@ async def async_setup_entry(
                 )
                 if stale:
                     ent_reg.async_remove(stale)
+        elif subentry.subentry_type == SUBENTRY_TYPE_CASCADE:
+            per_subentry[subentry_id] = [
+                CascadeRecommendationSensor(coordinator, subentry_id, subentry.title),
+                CascadeFaultSensor(coordinator, subentry_id, subentry.title),
+            ]
 
     async_add_by_subentry(async_add_entities, entities, per_subentry)
 
@@ -170,6 +176,8 @@ class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         load_plan = self._plan()
+        if load_plan and load_plan.get("managed_by_cascade"):
+            return False
         return load_plan["active"] if load_plan else None
 
     @property
@@ -178,7 +186,59 @@ class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
         return {
             ATTR_PLANNED_HOURS: load_plan.get("planned_hours"),
             ATTR_PLANNED_ENERGY_KWH: load_plan.get("planned_energy_kwh"),
+            "managed_by_cascade": load_plan.get("managed_by_cascade"),
         }
+
+
+class CascadeRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
+    """Root-related recommendation for a whole cascade."""
+
+    _attr_translation_key = "cascade_recommendation"
+
+    def __init__(self, coordinator, subentry_id: str, title: str) -> None:
+        super().__init__(coordinator, f"cascade_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    def _plan(self) -> dict[str, Any]:
+        return ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
+            self._subentry_id, {}
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        plan = self._plan()
+        return bool(plan.get("planned_root_energy_kwh", 0.0)) if plan else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._plan()
+
+
+class CascadeFaultSensor(BatteryManagerEntity, BinarySensorEntity):
+    """Hard-fault indicator for one cascade executor."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_translation_key = "cascade_fault"
+
+    def __init__(self, coordinator, subentry_id: str, title: str) -> None:
+        super().__init__(coordinator, f"cascade_fault_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    @property
+    def is_on(self) -> bool:
+        plan = ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
+            self._subentry_id, {}
+        )
+        return bool(plan.get("fault"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        plan = ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
+            self._subentry_id, {}
+        )
+        return {"reason": plan.get("fault"), "hands_off": plan.get("hands_off")}
 
 
 class LoadPowerWarningSensor(BatteryManagerEntity, BinarySensorEntity):
