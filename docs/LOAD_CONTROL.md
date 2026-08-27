@@ -333,6 +333,18 @@ learn at all. No nominal clamp (levels above nominal are legitimate); a
 untouched by all of this: their planning always uses the DECLARED run
 energy/duration — measured power only feeds their on/off detection.**
 
+### Manual redetermination (v0.27.0)
+
+`docs/F-POWER-CALIBRATION.md`: every load exposes the exact current planning
+power as a W sensor and in the forecast-card legend. Eligible energy-limited,
+directly controlled loads also expose a calibration button. It runs the load
+outside the plan for at most four minutes (explicitly grid-power-capable),
+starts measuring after a >= 20 %-of-nominal rise or after 60 s, accepts only
+new sensor publications at >= 5 s spacing, and persists their median after
+four samples or 90 s. Abort/failure preserves the prior learned value; release
+always replans immediately and an interrupted persisted probe is stopped on
+reload.
+
 ## 13. Seamless quantum boundaries (v0.14.0)
 
 docs/F-SEAMLESS-RUNS.md, operator min_off model 2026-07-18: min_off arms

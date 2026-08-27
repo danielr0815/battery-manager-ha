@@ -56,6 +56,22 @@ async def test_setup_without_lovelace_does_not_break(hass):
     assert hass.data[DOMAIN][entry.entry_id].last_update_success
 
 
+async def test_soc_forecast_sensor_single_point_and_empty_fallback(hass):
+    """The forecast entity also has defined states before a full curve exists."""
+    from custom_components.battery_manager.sensor import (
+        BatteryManagerSocForecastSensor,
+    )
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    sensor = BatteryManagerSocForecastSensor(coordinator)
+
+    coordinator.data = {"soc_forecast": [{"soc": 42.0}]}
+    assert sensor.native_value == 42.0
+    coordinator.data = {"soc_forecast": []}
+    assert sensor.native_value is None
+
+
 async def test_card_resource_created_updated_never_duplicated(hass):
     """Storage mode: resource is created once and updated on version change."""
 

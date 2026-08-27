@@ -2497,13 +2497,15 @@ async def test_removing_load_subentry_cleans_up_its_entities(hass):
     entry = coordinator.entry
     reg = er.async_get(hass)
 
-    # All five per-load entities exist and are scoped to the load subentry.
+    # All seven per-load entities exist and are scoped to the load subentry.
     expected = [
         ("binary_sensor", f"load_{sub_id}"),
         ("binary_sensor", f"load_power_warning_{sub_id}"),
         ("switch", f"load_control_{sub_id}"),
         ("sensor", f"load_runtime_{sub_id}"),
+        ("sensor", f"load_planning_power_{sub_id}"),
         ("button", f"load_runtime_reset_{sub_id}"),
+        ("button", f"load_power_calibrate_{sub_id}"),
     ]
     eids = {}
     for platform, key in expected:
@@ -3122,6 +3124,233 @@ async def test_floor_guard_caps_published_active(hass):
 # planned at its real power instead of the nominal; the v0.6.2 standby bar
 # stays the single sample gate.
 # ---------------------------------------------------------------------------
+
+
+async def _wait_for_state(hass, entity_id: str, expected: str) -> None:
+    """Yield until an async switch service has published its confirmed state."""
+    import asyncio
+
+    for _ in range(200):
+        state = hass.states.get(entity_id)
+        if state is not None and state.state == expected:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"{entity_id} did not become {expected}")
+
+
+async def test_manual_power_calibration_bypasses_plan_and_learns_median(
+    hass, monkeypatch
+):
+    """F-POWER-CALIBRATION: an idle energy-limited load starts even under G4,
+    accepts only sensor publications at the bounded cadence, commits a robust
+    median after four values, and returns actor ownership to a fresh plan."""
+    import asyncio
+
+    import custom_components.battery_manager.coordinator as coordinator_module
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    coordinator._floor_guard_active = True
+    calls.clear()
+
+    # Preserve all production relationships while shrinking wall-clock time.
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_POLL_S", 0.002)
+    monkeypatch.setattr(
+        coordinator_module, "POWER_CALIBRATION_MIN_SAMPLE_INTERVAL_S", 0.01
+    )
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MIN_SAMPLES", 4)
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MIN_MEASURE_S", 10.0)
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MAX_TOTAL_S", 1.0)
+
+    await coordinator.async_toggle_load_power_calibration(sub_id)
+    task = coordinator._load_power_calibration_task
+    assert task is not None
+    await _wait_for_state(hass, ENABLE, "on")
+    assert ("turn_on", ENABLE) in calls  # G4 was deliberately bypassed
+
+    # The first high value is a transfer/inrush outlier. Three further sensor
+    # publications carry the SAME stable state: last_reported (not last_updated)
+    # must count them as real measurements. Their median is 505 W.
+    for watts in (900, 505, 505, 505):
+        hass.states.async_set(POWER_FEEDBACK, str(watts))
+        await asyncio.sleep(0.015)
+    await task
+
+    assert coordinator._load_learned_power_w[sub_id] == 505.0
+    diag = coordinator.load_power_calibration_diagnostics(sub_id)
+    assert diag["state"] == "successful"
+    assert diag["samples"] == 4
+    assert diag["result_w"] == 505.0
+    await _wait_for_state(hass, ENABLE, "off")  # floor-guarded fresh plan is off
+    assert sub_id not in coordinator._load_power_calibration_release
+
+
+async def test_manual_power_calibration_abort_keeps_old_value(hass, monkeypatch):
+    """A second button press aborts, releases the actor and changes no learning."""
+    import custom_components.battery_manager.coordinator as coordinator_module
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    coordinator._floor_guard_active = True
+    coordinator._load_learned_power_w[sub_id] = 400.0
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_POLL_S", 0.01)
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MAX_TOTAL_S", 10.0)
+
+    await coordinator.async_toggle_load_power_calibration(sub_id)
+    await _wait_for_state(hass, ENABLE, "on")
+    await coordinator.async_toggle_load_power_calibration(sub_id)  # second press
+
+    assert coordinator._load_learned_power_w[sub_id] == 400.0
+    assert coordinator.load_power_calibration_diagnostics(sub_id)["state"] == "aborted"
+    await _wait_for_state(hass, ENABLE, "off")
+
+
+async def test_manual_power_calibration_rejects_invalid_start_states(hass):
+    """The explicit grid override is available only from a readable idle state."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+
+    with pytest.raises(HomeAssistantError, match="energy-limited"):
+        await coordinator.async_toggle_load_power_calibration("missing")
+
+    hass.states.async_set(POWER_FEEDBACK, "unavailable")
+    with pytest.raises(HomeAssistantError, match="unavailable"):
+        await coordinator.async_toggle_load_power_calibration(sub_id)
+
+    hass.states.async_set(POWER_FEEDBACK, "100")
+    with pytest.raises(HomeAssistantError, match="already draws power"):
+        await coordinator.async_toggle_load_power_calibration(sub_id)
+
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    with pytest.raises(HomeAssistantError, match="not charging"):
+        await coordinator.async_toggle_load_power_calibration(sub_id)
+
+
+async def test_manual_power_calibration_timeout_preserves_value(hass, monkeypatch):
+    """No published charging samples within the cap fails closed and releases."""
+    import custom_components.battery_manager.coordinator as coordinator_module
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    coordinator._floor_guard_active = True
+    coordinator._load_learned_power_w[sub_id] = 400.0
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_POLL_S", 0.002)
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_START_WAIT_S", 0.005)
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MAX_TOTAL_S", 0.03)
+
+    await coordinator.async_toggle_load_power_calibration(sub_id)
+    task = coordinator._load_power_calibration_task
+    assert task is not None
+    await task
+
+    assert coordinator._load_learned_power_w[sub_id] == 400.0
+    diag = coordinator.load_power_calibration_diagnostics(sub_id)
+    assert diag["state"] == "failed"
+    assert "four-minute limit" in diag["error"]
+    await _wait_for_state(hass, ENABLE, "off")
+
+
+async def test_manual_power_calibration_requires_confirmed_activation(
+    hass, monkeypatch
+):
+    """An unconfirmed actor start fails before sampling and never changes power."""
+    from unittest.mock import AsyncMock
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._load_learned_power_w[sub_id] = 400.0
+    coordinator._actuation_shutdown = True
+    monkeypatch.setattr(coordinator, "_execute_load_switching", AsyncMock())
+
+    await coordinator._run_load_power_calibration(sub_id, data, 0.0)
+
+    assert coordinator._load_learned_power_w[sub_id] == 400.0
+    diag = coordinator.load_power_calibration_diagnostics(sub_id)
+    assert diag["state"] == "failed"
+    assert "confirm charging active" in diag["error"]
+
+
+async def test_interrupted_power_calibration_is_stopped_before_planning(hass):
+    """A persisted active marker owns a fail-closed OFF before first planning."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_plug_owned[sub_id] = True
+    coordinator._load_charging_active[sub_id] = True
+    coordinator._load_power_calibration_restored = sub_id
+    calls.clear()
+
+    await coordinator.async_recover_power_calibration()
+
+    assert ("turn_off", ENABLE) in calls
+    assert hass.states.get(ENABLE).state == "off"
+    assert hass.states.get(PLUG).state == "off"
+    assert coordinator._load_power_calibration_restored is None
+
+
+async def test_planning_power_sensor_and_calibration_button_entities(hass):
+    """Every load exposes exact planning W; only eligible loads get the button."""
+    from homeassistant.helpers import entity_registry as er
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    coordinator._load_learned_power_w[sub_id] = 505.4
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    reg = er.async_get(hass)
+    entry_id = coordinator.entry.entry_id
+    sensor_eid = reg.async_get_entity_id(
+        "sensor", DOMAIN, f"{entry_id}_load_planning_power_{sub_id}"
+    )
+    button_eid = reg.async_get_entity_id(
+        "button", DOMAIN, f"{entry_id}_load_power_calibrate_{sub_id}"
+    )
+    assert sensor_eid is not None
+    assert button_eid is not None
+    power_state = hass.states.get(sensor_eid)
+    assert float(power_state.state) == 505.4
+    assert power_state.attributes["source"] == "learned"
+    assert power_state.attributes["configured_power_w"] == 300.0
+
+
+async def test_continuous_load_has_power_sensor_but_no_calibration_button(hass):
+    from homeassistant.helpers import entity_registry as er
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls, energy_limited=False)
+    reg = er.async_get(hass)
+    entry_id = coordinator.entry.entry_id
+    assert (
+        reg.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry_id}_load_planning_power_{sub_id}"
+        )
+        is not None
+    )
+    assert (
+        reg.async_get_entity_id(
+            "button", DOMAIN, f"{entry_id}_load_power_calibrate_{sub_id}"
+        )
+        is None
+    )
 
 
 async def test_learned_power_is_robust_estimate(hass):

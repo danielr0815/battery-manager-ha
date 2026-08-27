@@ -25,6 +25,20 @@ UPDATE_INTERVAL_SECONDS = 300
 INITIAL_UPDATE_INTERVAL_SECONDS = 30
 DEBOUNCE_SECONDS = 5
 STARTUP_RETRY_ATTEMPTS = 5
+
+# F-POWER-CALIBRATION: an operator-requested grid-powered probe determines the
+# current draw of an energy-limited surplus load without waiting for a planned
+# run. Sensor publications, not coordinator polls, are the samples; the 5 s
+# floor prevents a chatty entity from outweighing a sparse one. The 20 % edge
+# is measured from the pre-start baseline in absolute watts of the configured
+# nominal power (normally: 0 W -> at least 20 % of nominal).
+POWER_CALIBRATION_START_WAIT_S = 60.0
+POWER_CALIBRATION_MIN_SAMPLE_INTERVAL_S = 5.0
+POWER_CALIBRATION_MIN_SAMPLES = 4
+POWER_CALIBRATION_MIN_MEASURE_S = 90.0
+POWER_CALIBRATION_MAX_TOTAL_S = 240.0
+POWER_CALIBRATION_JUMP_FRACTION = 0.20
+POWER_CALIBRATION_POLL_S = 1.0
 # V8 (2026-07-23 incident): grace window after the first refresh during which a
 # not-yet-available SOC source (e.g. the Victron sensor still booting after an
 # HA restart) does NOT escalate to an ERROR + UpdateFailed. Within it the

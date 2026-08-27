@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-27
+
+### Added
+- Jede Überschusslast zeigt ihre tatsächlich verwendete Planungsleistung als
+  eigenen W-Sensor und in der Last-Legende der SOC-Prognosekarte; die Quelle
+  (`live`, `learned`, `configured` oder `saturated`) bleibt diagnostizierbar.
+- Energielimitierte, direkt steuerbare Lasten mit Leistungssensor können ihre
+  Ladeleistung per Button bzw. `button.press` neu bestimmen. Der bewusst
+  netzstromfähige Lauf ist auf vier Minuten begrenzt, wartet höchstens 60 s auf
+  den 20-%-Leistungssprung, filtert ausschließlich neue Sensorpublikationen per
+  Median und gibt die Last anschließend an einen sofort neuen Plan zurück.
+
+### Changed
+- Ein abgebrochener, fehlgeschlagener oder durch einen Reload unterbrochener
+  Kalibrierlauf überschreibt den bisherigen Lernwert nie und wird sicher
+  freigegeben beziehungsweise ausgeschaltet.
+
 ## [0.26.0] - 2026-08-23
 
 ### Added

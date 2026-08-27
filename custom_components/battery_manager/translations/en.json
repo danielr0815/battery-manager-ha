@@ -855,6 +855,9 @@
       "load_runtime": {
         "name": "{name} active runtime"
       },
+      "load_planning_power": {
+        "name": "{name} planning power"
+      },
       "cascade_mode": {
         "name": "{name} mode"
       },
@@ -911,6 +914,9 @@
     "button": {
       "load_runtime_reset": {
         "name": "{name} reset runtime"
+      },
+      "load_power_calibrate": {
+        "name": "{name} redetermine charging power"
       },
       "cascade_fault_reset": {
         "name": "{name} reset fault"

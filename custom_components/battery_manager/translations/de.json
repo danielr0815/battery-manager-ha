@@ -855,6 +855,9 @@
       "load_runtime": {
         "name": "{name} aktive Laufzeit"
       },
+      "load_planning_power": {
+        "name": "{name} Planungsleistung"
+      },
       "cascade_mode": {
         "name": "{name} Modus"
       },
@@ -911,6 +914,9 @@
     "button": {
       "load_runtime_reset": {
         "name": "{name} Laufzeit zurücksetzen"
+      },
+      "load_power_calibrate": {
+        "name": "{name} Ladeleistung neu bestimmen"
       },
       "cascade_fault_reset": {
         "name": "{name} Störung zurücksetzen"

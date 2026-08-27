@@ -236,6 +236,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Restore SOC cache / plug ownership, then first refresh; a refresh
     # failure is tolerated (fast retry interval during startup).
     await coordinator.async_load_persistent_state()
+    await coordinator.async_recover_power_calibration()
     await coordinator.async_refresh()
 
     # HA 2026.8: one device per config subentry (core PR #175785). Created

@@ -714,6 +714,19 @@ verfällt ein langer Ausfall in den Warm-up-Zustand (`None`) statt zu einem
 stale Wert. Endet der Lauf (oder wird das Gerät außerhalb des Plans benutzt),
 wird der Puffer **verworfen**; der gelernte Write-Through-Wert trägt weiter.
 
+### Manuelle Neubestimmung (v0.27.0)
+
+Für energielimitierte, direkt steuerbare Nicht-Kaskadenlasten mit
+Leistungssensor startet der per-Last-Button einen höchstens vierminütigen,
+bewusst netzstromfähigen Messlauf außerhalb des Plans. Die Messphase startet
+beim Sprung von mindestens 20 % der konfigurierten Leistung gegenüber der
+Idle-Baseline, spätestens nach 60 s. Nur neue Sensorpublikationen im Abstand
+von mindestens 5 s gehen in den Buffer; vier Samples oder 90 s Messzeit mit
+mindestens einem Sample genügen. Der Median wird atomar gelernt. Bis dahin ist
+der normale Learner für diese Last gesperrt, sodass Abbruch/Fehler den alten
+Wert nicht verändern. Release → sofortiger Replan; Reload-Recovery stoppt einen
+persistiert unterbrochenen Lauf. Vollvertrag: `docs/F-POWER-CALIBRATION.md`.
+
 ---
 
 ## 11. Grid-Support 24 V / 48 V (Kurzfassung)

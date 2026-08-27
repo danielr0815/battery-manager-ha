@@ -1310,6 +1310,8 @@ async def test_load_plan_dict_carries_why_and_learned_power(hass):
 
     plan_dict = coordinator.data["load_plans"][sub_id]
     assert plan_dict["learned_power_w"] == 505.4  # R5 diagnostics
+    assert plan_dict["planning_power_w"] == 505.4
+    assert plan_dict["planning_power_source"] == "learned"
     schedule = plan_dict["schedule"]
     assert schedule, "scenario must book at least one slot"
     for entry_row in schedule:
@@ -1322,6 +1324,8 @@ async def test_load_plan_dict_carries_why_and_learned_power(hass):
     )
     assert eid is not None
     attrs = hass.states.get(eid).attributes
+    assert attrs["loads"][0]["planning_power_w"] == 505.4
+    assert attrs["loads"][0]["planning_power_source"] == "learned"
     sensor_schedule = attrs["loads"][0]["schedule"]
     assert sensor_schedule and all("why" in row for row in sensor_schedule)
 

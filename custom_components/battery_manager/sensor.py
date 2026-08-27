@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfTime
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import Entity
@@ -241,7 +241,10 @@ async def async_setup_entry(
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
             per_subentry[subentry_id] = [
-                SurplusLoadRuntimeSensor(coordinator, subentry_id, subentry.title)
+                SurplusLoadRuntimeSensor(coordinator, subentry_id, subentry.title),
+                SurplusLoadPlanningPowerSensor(
+                    coordinator, subentry_id, subentry.title
+                ),
             ]
         elif subentry.subentry_type == SUBENTRY_TYPE_CASCADE:
             per_subentry[subentry_id] = [
@@ -537,6 +540,8 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                 "name": plan.get("name"),
                 "active": plan.get("active"),
                 "planned_energy_kwh": plan.get("planned_energy_kwh"),
+                "planning_power_w": plan.get("planning_power_w"),
+                "planning_power_source": plan.get("planning_power_source"),
                 # Per-load today/tomorrow planned energy (coordinator, plan
                 # slot-0 anchored) so the card renders a per-load heute/morgen
                 # split just like the aggregate surplus figures.
@@ -635,3 +640,37 @@ class SurplusLoadRuntimeSensor(BatteryManagerEntity, SensorEntity):
         # runtime and the sample count — present only when the tank model is
         # opted in for this load (else None, no attributes).
         return self.coordinator.tank_diagnostics(self._subentry_id)
+
+
+class SurplusLoadPlanningPowerSensor(BatteryManagerEntity, SensorEntity):
+    """Exact power scalar consumed by the latest plan for one surplus load."""
+
+    _attr_translation_key = "load_planning_power"
+    _attr_icon = "mdi:flash-outline"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
+    ) -> None:
+        super().__init__(coordinator, f"load_planning_power_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    @property
+    def native_value(self) -> float | None:
+        value = self.coordinator.load_planning_power_diagnostics(self._subentry_id).get(
+            "planning_power_w"
+        )
+        return round(float(value), 1) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        diag = self.coordinator.load_planning_power_diagnostics(self._subentry_id)
+        return {
+            "source": diag["source"],
+            "configured_power_w": diag["configured_power_w"],
+            "learned_power_w": diag["learned_power_w"],
+            "calibration": diag["calibration"],
+        }

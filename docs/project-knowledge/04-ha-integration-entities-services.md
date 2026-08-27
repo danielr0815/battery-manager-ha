@@ -92,6 +92,14 @@ Alle Aussagen sind gegen den Code geprüft (Belege als *Datei::Symbol*).
 
 ## 2. Sensoren (`sensor.py`)
 
+> **Nachtrag v0.27.0:** Jede Überschusslast besitzt zusätzlich
+> `sensor.…_planning_power` (W), den im letzten Plan exakt verwendeten Skalar.
+> Attribute: Quelle (`live`/`learned`/`configured`/`saturated`), konfigurierter
+> und gelernter Wert sowie der volatile Kalibrierstatus. Geeignete
+> energielimitierte Direktlasten besitzen außerdem
+> `button.…_redetermine_charging_power`; ein zweiter Druck bricht ab. Derselbe
+> Wert steht in der Last-Legende der gebündelten SOC-Prognosekarte.
+
 ### 2.1 Die fünf einfachen Planwerte
 
 Alle aus `SENSOR_DESCRIPTIONS`, Klasse `BatteryManagerSensor`,

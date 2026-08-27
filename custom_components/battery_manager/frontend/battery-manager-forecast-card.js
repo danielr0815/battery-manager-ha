@@ -858,6 +858,9 @@ class BatteryManagerForecastCard extends HTMLElement {
           : planned
           ? `${planned.toFixed(1)} kWh`
           : t("nothing_planned");
+        const planningPower = num(load.planning_power_w);
+        const powerDetail =
+          planningPower !== undefined ? ` · ${Math.round(planningPower)} W` : "";
         const active = load.active
           ? ` · <span class="active">${t("active")}</span>`
           : "";
@@ -877,7 +880,7 @@ class BatteryManagerForecastCard extends HTMLElement {
             : "";
         return `<span><span class="dot" style="background:${load.color}"></span>${esc(
           load.name ?? "?"
-        )} (${detail})${active}${offWindow}</span>`;
+        )} (${detail}${powerDetail})${active}${offWindow}</span>`;
       })
       .join("");
 

@@ -14,7 +14,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import UnsupportedStorageVersionError
+from homeassistant.exceptions import HomeAssistantError, UnsupportedStorageVersionError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -144,6 +144,13 @@ from .const import (
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    POWER_CALIBRATION_JUMP_FRACTION,
+    POWER_CALIBRATION_MAX_TOTAL_S,
+    POWER_CALIBRATION_MIN_MEASURE_S,
+    POWER_CALIBRATION_MIN_SAMPLE_INTERVAL_S,
+    POWER_CALIBRATION_MIN_SAMPLES,
+    POWER_CALIBRATION_POLL_S,
+    POWER_CALIBRATION_START_WAIT_S,
     PREDRAIN_BLOCK_LOG_ENERGY_WH,
     PREDRAIN_BLOCK_LOG_RATE_LIMIT_MIN,
     PREDRAIN_BLOCK_LOG_SHIFT_MIN,
@@ -483,6 +490,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # deliberately no clamp — levels above nominal can be legitimate).
         self._load_power_overrun_warned: set[str] = set()
         self._load_learned_power_w: dict[str, float] = {}
+        # F-POWER-CALIBRATION: one explicit operator probe may own a controlled
+        # energy-limited load at a time. It deliberately bypasses the planner
+        # and G4 (the operator authorised a bounded grid-powered measurement),
+        # while the normal executor skips exactly that load. The active marker
+        # is persisted so a clean restart can stop an interrupted probe before
+        # the first plan. Samples/diagnostics are volatile; a failed or aborted
+        # probe never changes the persisted learned value.
+        self._load_power_calibration_id: str | None = None
+        self._load_power_calibration_task: asyncio.Task | None = None
+        self._load_power_calibration_restored: str | None = None
+        self._load_power_calibration_release: set[str] = set()
+        self._load_power_calibration_diag: dict[str, dict[str, Any]] = {}
+        self._actuation_shutdown = False
         # Stale-SOC guard (F-EXECUTOR-GUARDS G2): evidence tuple (frozen value,
         # since) while actively charging above the standby bar, and the latch
         # (frozen value, for the log + unlatch compare). Persisted (7-day live
@@ -761,6 +781,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for k, v in data.get("load_learned_power", {}).items()
                 if k in self.entry.subentries
             }
+            restored_calibration = data.get("load_power_calibration_active")
+            if isinstance(
+                restored_calibration, str
+            ) and self.power_calibration_supported(restored_calibration):
+                self._load_power_calibration_restored = restored_calibration
             # F-L7 latched power warning: restore per-load, dropping entries
             # whose subentry vanished (a re-created load must not inherit a
             # stale warning). The dwell timer is intentionally NOT restored.
@@ -970,6 +995,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # volatile, see async_load_persistent_state); spike-proof by the
             # estimator's median + warm-up construction.
             "load_learned_power": dict(self._load_learned_power_w),
+            # The samples are intentionally volatile. Only the actor-ownership
+            # marker survives so setup can force an interrupted grid-powered
+            # probe OFF before the normal planner starts.
+            "load_power_calibration_active": (
+                self._load_power_calibration_id or self._load_power_calibration_restored
+            ),
             # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
             # does not re-latch at `now` and re-inject the full run energy.
             "appliance_started": {
@@ -2442,6 +2473,300 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_bm_enabled[load_id] = bool(enabled)
         self._save_persistent_state()
 
+    def power_calibration_supported(self, load_id: str) -> bool:
+        """Whether a load has every actor/sensor needed for a manual probe."""
+        subentry = self.entry.subentries.get(load_id)
+        if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+            return False
+        data = subentry.data
+        if not (
+            data.get(CONF_LOAD_ENERGY_LIMITED)
+            and data.get(CONF_LOAD_CONTROL_SWITCH)
+            and data.get(CONF_LOAD_POWER_ENTITY)
+        ):
+            return False
+        # A cascade has exactly one actor owner. A per-member calibration must
+        # never bypass CascadeManager's wake/handover/safe-off state machine.
+        return not any(
+            load_id in cascade.data.get(CONF_CASCADE_MEMBER_IDS, [])
+            for cascade in self.entry.subentries.values()
+            if cascade.subentry_type == SUBENTRY_TYPE_CASCADE
+        )
+
+    def power_calibration_button_available(self, load_id: str) -> bool:
+        """The active load's button remains available so a second press aborts."""
+        return self.power_calibration_supported(load_id) and (
+            self._load_power_calibration_id in (None, load_id)
+        )
+
+    def load_power_calibration_diagnostics(self, load_id: str) -> dict[str, Any]:
+        """Volatile progress/result details exposed on the planning-power sensor."""
+        return dict(self._load_power_calibration_diag.get(load_id, {"state": "idle"}))
+
+    def load_planning_power_diagnostics(self, load_id: str) -> dict[str, Any]:
+        """Exact scalar and source used by the latest published plan."""
+        plan_data = ((self.data or {}).get("load_plans") or {}).get(load_id, {})
+        subentry = self.entry.subentries.get(load_id)
+        configured = (
+            float(subentry.data.get(CONF_LOAD_POWER_W, 0.0)) if subentry else None
+        )
+        return {
+            "planning_power_w": plan_data.get("planning_power_w"),
+            "source": plan_data.get("planning_power_source"),
+            "configured_power_w": configured,
+            "learned_power_w": self._load_learned_power_w.get(load_id),
+            "calibration": self.load_power_calibration_diagnostics(load_id),
+        }
+
+    def _set_power_calibration_diag(self, load_id: str, **values: Any) -> None:
+        diag = dict(self._load_power_calibration_diag.get(load_id, {}))
+        diag.update(values)
+        self._load_power_calibration_diag[load_id] = diag
+        self.async_update_listeners()
+
+    async def async_toggle_load_power_calibration(self, load_id: str) -> None:
+        """Start a bounded manual probe, or abort it on a second button press."""
+        task = self._load_power_calibration_task
+        if task is not None and not task.done():
+            if self._load_power_calibration_id != load_id:
+                raise HomeAssistantError(
+                    "Another surplus-load power calibration is already running"
+                )
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            return
+        if not self.power_calibration_supported(load_id):
+            raise HomeAssistantError(
+                "Power calibration needs an energy-limited, directly controlled "
+                "load with a power-feedback sensor and no cascade ownership"
+            )
+        data = self.entry.subentries[load_id].data
+        if self._charging_is_active(data):
+            raise HomeAssistantError(
+                "Power calibration can only start while the load is not charging"
+            )
+        baseline = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+        if baseline is None:
+            raise HomeAssistantError("The load power-feedback sensor is unavailable")
+        if baseline >= self._load_standby_bar(data):
+            raise HomeAssistantError(
+                "The load already draws power; calibration needs an idle baseline"
+            )
+
+        self._load_power_calibration_id = load_id
+        self._load_power_calibration_restored = None
+        self._set_power_calibration_diag(
+            load_id,
+            state="starting",
+            samples=0,
+            baseline_w=round(baseline, 1),
+            result_w=None,
+            error=None,
+        )
+        # Persist actor ownership BEFORE applying grid power. A clean reload can
+        # then stop a probe interrupted between any two awaits below.
+        await self.async_flush_persistent_state()
+        self._load_power_calibration_task = self.entry.async_create_background_task(
+            self.hass,
+            self._run_load_power_calibration(load_id, dict(data), baseline),
+            name=f"battery_manager_power_calibration_{load_id}",
+        )
+
+    async def _run_load_power_calibration(
+        self, load_id: str, data: dict[str, Any], baseline_w: float
+    ) -> None:
+        """Actuate, sample new sensor publications, learn their median, release."""
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+        measurement_started_at: float | None = None
+        samples: list[float] = []
+        power_entity = data[CONF_LOAD_POWER_ENTITY]
+        baseline_state = self.hass.states.get(power_entity)
+        last_buffered_update = (
+            baseline_state.last_reported if baseline_state is not None else None
+        )
+        last_buffered_at: float | None = None
+        activation_attempted = False
+        cancelled = False
+        try:
+            plug_was_on = self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH])
+            activation_attempted = True
+            await self._execute_load_switching(
+                [
+                    (
+                        load_id,
+                        data,
+                        True,
+                        plug_was_on,
+                        0.0,
+                        False,
+                        "manual power calibration",
+                        True,  # explicit operator-authorised G4/plan bypass
+                    )
+                ]
+            )
+            if self._charging_is_active(data) is not True:
+                raise HomeAssistantError("The load did not confirm charging active")
+            self._set_power_calibration_diag(load_id, state="waiting_for_power")
+
+            while loop.time() - started_at < POWER_CALIBRATION_MAX_TOTAL_S:
+                await asyncio.sleep(POWER_CALIBRATION_POLL_S)
+                now_mono = loop.time()
+                raw = self._read_float(power_entity)
+                state = self.hass.states.get(power_entity)
+                if raw is None or state is None:
+                    continue
+
+                jump_w = abs(raw - baseline_w)
+                jump_threshold_w = POWER_CALIBRATION_JUMP_FRACTION * float(
+                    data[CONF_LOAD_POWER_W]
+                )
+                if measurement_started_at is None and (
+                    jump_w >= jump_threshold_w
+                    or now_mono - started_at >= POWER_CALIBRATION_START_WAIT_S
+                ):
+                    measurement_started_at = now_mono
+                    self._set_power_calibration_diag(load_id, state="measuring")
+
+                if measurement_started_at is None:
+                    continue
+                # last_reported advances even when the sensor publishes the
+                # same numeric value again; last_updated intentionally does
+                # not. A stable 500 W report every 30 s is still four real
+                # measurements and must therefore fill the buffer.
+                is_new_publication = state.last_reported != last_buffered_update
+                sample_interval_ok = (
+                    last_buffered_at is None
+                    or now_mono - last_buffered_at
+                    >= POWER_CALIBRATION_MIN_SAMPLE_INTERVAL_S
+                )
+                if (
+                    is_new_publication
+                    and sample_interval_ok
+                    and raw >= self._load_standby_bar(data)
+                ):
+                    samples.append(raw)
+                    last_buffered_update = state.last_reported
+                    last_buffered_at = now_mono
+                    self._set_power_calibration_diag(
+                        load_id, samples=len(samples), last_sample_w=round(raw, 1)
+                    )
+
+                measured_for = now_mono - measurement_started_at
+                enough = len(samples) >= POWER_CALIBRATION_MIN_SAMPLES or (
+                    measured_for >= POWER_CALIBRATION_MIN_MEASURE_S and bool(samples)
+                )
+                if enough:
+                    learned = round(float(median(samples)), 1)
+                    self._load_learned_power_w[load_id] = learned
+                    self._load_power_samples.pop(load_id, None)
+                    self._warn_estimate_overrun(
+                        load_id,
+                        self.entry.subentries[load_id].title,
+                        learned,
+                        data,
+                    )
+                    self._set_power_calibration_diag(
+                        load_id,
+                        state="successful",
+                        samples=len(samples),
+                        result_w=learned,
+                        completed_at=dt_util.now().isoformat(),
+                    )
+                    break
+            else:
+                raise HomeAssistantError(
+                    "No usable power samples arrived within the four-minute limit"
+                )
+        except asyncio.CancelledError:
+            cancelled = True
+            self._set_power_calibration_diag(load_id, state="aborted")
+            raise
+        except Exception as err:  # actuator/sensor failure must not poison learning
+            _LOGGER.warning("Load power calibration for %s failed: %s", load_id, err)
+            self._set_power_calibration_diag(
+                load_id, state="failed", error=str(err), samples=len(samples)
+            )
+        finally:
+            # Release ownership to a FRESH plan. While the marker is present the
+            # executor skipped this load, so no normal plan could terminate the
+            # grid-powered probe halfway through its measurement.
+            self._load_power_calibration_id = None
+            self._load_power_calibration_restored = (
+                load_id if activation_attempted else None
+            )
+            if activation_attempted:
+                self._load_power_calibration_release.add(load_id)
+            await self.async_flush_persistent_state()
+            if activation_attempted:
+                if not self._actuation_shutdown:
+                    with contextlib.suppress(Exception):
+                        await self.async_request_refresh()
+                    switch_task = self._load_switch_task
+                    if switch_task is not None and not switch_task.done():
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await switch_task
+                # A failed refresh never reached the release branch. Do not
+                # leave an explicitly grid-powered probe running indefinitely.
+                if load_id in self._load_power_calibration_release:
+                    await self._execute_load_switching(
+                        [
+                            (
+                                load_id,
+                                data,
+                                False,
+                                self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]),
+                                0.0,
+                                False,
+                                "power calibration release fallback",
+                                True,
+                            )
+                        ]
+                    )
+            else:
+                self._load_power_calibration_release.discard(load_id)
+                await self.async_flush_persistent_state()
+            if self._load_power_calibration_task is asyncio.current_task():
+                self._load_power_calibration_task = None
+            if cancelled:
+                _LOGGER.info("Load power calibration for %s aborted", load_id)
+            self.async_update_listeners()
+
+    def _complete_power_calibration_release(self, load_id: str) -> None:
+        self._load_power_calibration_release.discard(load_id)
+        if self._load_power_calibration_restored == load_id:
+            self._load_power_calibration_restored = None
+        self._save_persistent_state()
+
+    async def async_recover_power_calibration(self) -> None:
+        """Stop a probe that was persisted active across an integration reload."""
+        load_id = self._load_power_calibration_restored
+        if load_id is None or not self.power_calibration_supported(load_id):
+            return
+        data = dict(self.entry.subentries[load_id].data)
+        await self._execute_load_switching(
+            [
+                (
+                    load_id,
+                    data,
+                    False,
+                    self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]),
+                    0.0,
+                    False,
+                    "interrupted power calibration recovery",
+                    True,
+                )
+            ]
+        )
+        if self._charging_is_active(data) is False:
+            self._complete_power_calibration_release(load_id)
+            await self.async_flush_persistent_state()
+        else:
+            _LOGGER.error(
+                "Interrupted power calibration for %s could not be stopped", load_id
+            )
+
     def _load_is_running(
         self, load_id: str, data: dict[str, Any], now: datetime
     ) -> bool:
@@ -2842,7 +3167,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 min_sample_w = self._load_standby_bar(data)
                 bm_active = self._bm_load_active(subentry_id)
                 buf = self._load_power_samples.get(subentry_id)
-                if raw is not None and raw >= min_sample_w and bm_active:
+                calibrating = self._load_power_calibration_id == subentry_id
+                if calibrating:
+                    # The manual probe owns its own publication-aware buffer
+                    # and commits atomically on success. Feeding the normal
+                    # learner here could change the persisted value before an
+                    # abort, violating the probe's all-or-nothing contract.
+                    self._load_power_samples.pop(subentry_id, None)
+                elif raw is not None and raw >= min_sample_w and bm_active:
                     # F-ROBUST-POWER: append the accepted sample and serve the
                     # time-weighted windowed median. During warm-up (< 5 min
                     # accepted coverage) the estimate is None — start-up
@@ -3388,12 +3720,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.update_interval = timedelta(seconds=UPDATE_INTERVAL_SECONDS)
 
         load_plans: dict[str, dict[str, Any]] = {}
+        load_states_by_id = {state.load_id: state for state in load_states}
         # Anchor for the per-load today/tomorrow split: the plan's slot-0 day
         # (same convention as the aggregate _daily_surplus_breakdown / the
         # sensor's _per_day_attrs) — NOT each load's own first booking day, so a
         # load that only runs tomorrow correctly reads today=0.0.
         day_anchor = inputs.slots[0].start.date() if inputs.slots else None
         for load_plan, load in zip(result.load_plans, config.loads, strict=True):
+            load_state = load_states_by_id[load_plan.load_id]
+            planning_power_w = load_state.planning_power_w(load)
+            if load_state.saturated_power_w is not None:
+                planning_power_source = "saturated"
+            elif load_state.measured_power_w is not None and (
+                load_state.measured_power_w > 0
+            ):
+                planning_power_source = "live"
+            elif load_state.learned_power_w is not None and (
+                load_state.learned_power_w > 0
+            ):
+                planning_power_source = "learned"
+            else:
+                planning_power_source = "configured"
             pass_by_slot: dict[int, int] = {}
             for start, count, pass_no, _wh in load_plan.allocations:
                 for j in range(start, start + count):
@@ -3463,6 +3810,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # F-PLANNER-HONESTY R5: the run-max learned planning power an
                 # OFF load is evaluated with (None until the first learned run).
                 "learned_power_w": self._load_learned_power_w.get(load_plan.load_id),
+                # The exact scalar consumed by this planning run, not merely
+                # the persisted learned fallback. During a run the robust live
+                # estimate wins; F5 may temporarily supply saturated (~0 W).
+                "planning_power_w": round(planning_power_w, 1),
+                "planning_power_source": planning_power_source,
                 # F-EXECUTOR-GUARDS R8: True while a stale guard holds the load
                 # unavailable — the G2 stale-SOC latch (frozen reading during
                 # active charging) OR the F4 telemetry-freeze watchdog (SOC and
@@ -5413,7 +5765,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # a re-ON without valid data.
         force_off = floor_guard or self._stale_shed_active
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
-        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool, str]] = []
+        actions: list[tuple[Any, ...]] = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
@@ -5440,6 +5792,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Entity dropout: keep the last known charging state.
                 current = self._load_charging_active.get(subentry_id, False)
             self._load_charging_active[subentry_id] = current
+            if self._load_power_calibration_id == subentry_id:
+                # Explicit operator ownership: the bounded task below samples
+                # this load outside the plan (and may knowingly buy grid power).
+                # Every other load continues through the normal executor.
+                self._load_run_deadline.pop(subentry_id, None)
+                self._cancel_off_timer(subentry_id)
+                continue
+            calibration_release = subentry_id in self._load_power_calibration_release
             active_now = bool(plan and plan.active_now)
             # F-PREDRAIN-BLOCK stability gate (R7): a pass-3 slot-0 only
             # starts an OFF load after the block held stable (plans + time
@@ -5529,6 +5889,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 desired = active_now
                 reason = "plan slot" if active_now else "plan off"
             if desired == current:
+                if calibration_release:
+                    if desired and plan is not None:
+                        # The fresh plan keeps the already-running probe load:
+                        # take it over seamlessly and restore the usual frozen
+                        # run deadline that the calibration ON deliberately did
+                        # not create.
+                        run_h = plan.active_run_hours(slot_durations)
+                        if run_h > 0.0:
+                            off_min = max(
+                                int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
+                                round(run_h * 60.0),
+                            )
+                            off_at = now + timedelta(minutes=off_min)
+                            self._load_run_deadline[subentry_id] = off_at
+                            self._arm_off_timer(subentry_id, off_at)
+                    self._complete_power_calibration_release(subentry_id)
                 # Orphan sweep (7-day live audit 2026-08-04): a gate left ON
                 # while the load is NOT charging and shall not charge is
                 # unreachable for every other path (desired == current here),
@@ -5576,6 +5952,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # (compressor protection).
                     dwell_min = 0
                     flicker_eligible = False
+                elif calibration_release:
+                    # Releasing a bounded manual probe is not a plan flicker;
+                    # its short duration must not be amplified to min_runtime.
+                    dwell_min = 0
+                    flicker_eligible = False
+                    reason = "power calibration complete"
                 elif subentry_id in self._load_latch_hold:
                     # F10: a gate-loss stop that ends a latch hold is NOT a
                     # recommendation-driven flap — it must not seed an F8
@@ -5618,6 +6000,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30),
                     )
                 )
+                if calibration_release:
+                    dwell_min = 0
+                    reason = "power calibration plan takeover"
                 # F8 flicker continuation: a short plan flicker at a slot/
                 # quantum boundary (the recommendation drops for seconds-to-
                 # minutes and returns) would else be amplified into a full
@@ -5665,7 +6050,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _execute_load_switching(
         self,
-        actions: list[tuple[str, dict[str, Any], bool, bool, float, bool, str]],
+        actions: list[tuple[Any, ...]],
         now: datetime | None = None,
     ) -> None:
         if now is None:
@@ -5686,11 +6071,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if len(action) > 6
                     else ("plan slot" if activate else "plan off")
                 )
+                bypass_guards = bool(action[7]) if len(action) > 7 else False
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
                 subentry = self.entry.subentries.get(subentry_id)
                 label = subentry.title if subentry else subentry_id
-                if activate and (self._floor_guard_active or self._stale_shed_active):
+                if (
+                    activate
+                    and not bypass_guards
+                    and (self._floor_guard_active or self._stale_shed_active)
+                ):
                     # G4 floor guard / D-A8 stale shed, in-flight race: the
                     # guard may have tripped AFTER this ON was queued (a
                     # debounced SOC refresh returns early while this task is
@@ -5774,6 +6164,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # V9a: exactly one INFO line per confirmed switch action,
                     # carrying the anlass derived at the decision point.
                     _LOGGER.info("Load %s -> ON (%s)", label, reason)
+                    if subentry_id in self._load_power_calibration_release:
+                        self._complete_power_calibration_release(subentry_id)
                 else:
                     policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
                     if not enable and policy == INPUT_OFF_POLICY_KEEP:
@@ -5826,6 +6218,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         reason,
                         "off" if turn_plug_off else "stays on",
                     )
+                    if subentry_id in self._load_power_calibration_release:
+                        self._complete_power_calibration_release(subentry_id)
         self._save_persistent_state()
         if self.data:
             plans = self.data.get("load_plans") or {}
@@ -6428,6 +6822,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Cancelling mid-sequence is safe: a make-before-break leaves at worst both
         sources on (never sourceless) and the reload re-reads and heals.
         """
+        self._actuation_shutdown = True
         # F-SUBHOUR: drop any pending force-OFF timers before flush/unload so a
         # detached point-in-time callback cannot fire after teardown (R13).
         for load_id in list(self._load_off_timer):
@@ -6439,6 +6834,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._dcdc_restore_task,
             self._stale_shed_task,
             self._feedin_task,
+            self._load_power_calibration_task,
         ]
         for task in tasks:
             if task is not None and not task.done():

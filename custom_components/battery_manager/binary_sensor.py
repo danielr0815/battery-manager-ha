@@ -186,6 +186,8 @@ class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
         return {
             ATTR_PLANNED_HOURS: load_plan.get("planned_hours"),
             ATTR_PLANNED_ENERGY_KWH: load_plan.get("planned_energy_kwh"),
+            "planning_power_w": load_plan.get("planning_power_w"),
+            "planning_power_source": load_plan.get("planning_power_source"),
             "managed_by_cascade": load_plan.get("managed_by_cascade"),
         }
 

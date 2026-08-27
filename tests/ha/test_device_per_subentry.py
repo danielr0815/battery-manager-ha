@@ -105,8 +105,9 @@ async def test_entities_survive_setup(hass, caplog):
     dev_reg = dr.async_get(hass)
     rows = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
     # Entry-level (7 sensors, inverter binary sensor, vacation switch) plus
-    # per-load rows (recommendation, power warning, runtime, control, reset).
-    assert len(rows) == 14
+    # per-load rows (recommendation, power warning, runtime, planning power,
+    # control, runtime reset and power calibration).
+    assert len(rows) == 16
     missing = [row.entity_id for row in rows if hass.states.get(row.entity_id) is None]
     assert not missing, f"entities missing from the state machine: {missing}"
 
