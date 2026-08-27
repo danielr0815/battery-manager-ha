@@ -144,6 +144,7 @@ from .const import (
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S,
     POWER_CALIBRATION_JUMP_FRACTION,
     POWER_CALIBRATION_MAX_TOTAL_S,
     POWER_CALIBRATION_MIN_MEASURE_S,
@@ -2606,8 +2607,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     )
                 ]
             )
-            if self._charging_is_active(data) is not True:
-                raise HomeAssistantError("The load did not confirm charging active")
+            # A blocking HA service call only waits for the service handler; a
+            # physical Shelly may publish its new state seconds later. The
+            # v0.27.0 live Fossibot-B probe checked exactly once here, mistook
+            # that propagation delay for an actor failure and immediately ran
+            # the release OFF before the power station could wake. Keep the
+            # overall four-minute cap, but give both plug and optional gate a
+            # bounded confirmation window before sampling starts.
+            self._set_power_calibration_diag(load_id, state="waiting_for_actor")
+            actor_deadline = loop.time() + POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S
+            while self._charging_is_active(data) is not True:
+                if loop.time() >= actor_deadline:
+                    raise HomeAssistantError(
+                        "The load did not confirm charging active within "
+                        f"{POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S:g} seconds"
+                    )
+                await asyncio.sleep(POWER_CALIBRATION_POLL_S)
             self._set_power_calibration_diag(load_id, state="waiting_for_power")
 
             while loop.time() - started_at < POWER_CALIBRATION_MAX_TOTAL_S:

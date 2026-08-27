@@ -32,6 +32,7 @@ STARTUP_RETRY_ATTEMPTS = 5
 # floor prevents a chatty entity from outweighing a sparse one. The 20 % edge
 # is measured from the pre-start baseline in absolute watts of the configured
 # nominal power (normally: 0 W -> at least 20 % of nominal).
+POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S = 30.0
 POWER_CALIBRATION_START_WAIT_S = 60.0
 POWER_CALIBRATION_MIN_SAMPLE_INTERVAL_S = 5.0
 POWER_CALIBRATION_MIN_SAMPLES = 4

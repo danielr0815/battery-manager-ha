@@ -714,18 +714,22 @@ verfällt ein langer Ausfall in den Warm-up-Zustand (`None`) statt zu einem
 stale Wert. Endet der Lauf (oder wird das Gerät außerhalb des Plans benutzt),
 wird der Puffer **verworfen**; der gelernte Write-Through-Wert trägt weiter.
 
-### Manuelle Neubestimmung (v0.27.0)
+### Manuelle Neubestimmung (v0.27.0; Actor-Wartezeit v0.27.1)
 
 Für energielimitierte, direkt steuerbare Nicht-Kaskadenlasten mit
 Leistungssensor startet der per-Last-Button einen höchstens vierminütigen,
 bewusst netzstromfähigen Messlauf außerhalb des Plans. Die Messphase startet
-beim Sprung von mindestens 20 % der konfigurierten Leistung gegenüber der
-Idle-Baseline, spätestens nach 60 s. Nur neue Sensorpublikationen im Abstand
-von mindestens 5 s gehen in den Buffer; vier Samples oder 90 s Messzeit mit
-mindestens einem Sample genügen. Der Median wird atomar gelernt. Bis dahin ist
-der normale Learner für diese Last gesperrt, sodass Abbruch/Fehler den alten
-Wert nicht verändern. Release → sofortiger Replan; Reload-Recovery stoppt einen
-persistiert unterbrochenen Lauf. Vollvertrag: `docs/F-POWER-CALIBRATION.md`.
+erst nach bestätigtem Eingangsschalter und Lade-Gate; seit v0.27.1 wartet der
+Coordinator dafür bis zu 30 s auf verzögert publizierte Shelly-Zustände statt
+unmittelbar nach Rückkehr des Servicehandlers fälschlich abzubrechen. Danach
+startet die Messphase beim Sprung von mindestens 20 % der konfigurierten
+Leistung gegenüber der Idle-Baseline, spätestens nach 60 s. Nur neue
+Sensorpublikationen im Abstand von mindestens 5 s gehen in den Buffer; vier
+Samples oder 90 s Messzeit mit mindestens einem Sample genügen. Der Median wird
+atomar gelernt. Bis dahin ist der normale Learner für diese Last gesperrt,
+sodass Abbruch/Fehler den alten Wert nicht verändern. Release → sofortiger
+Replan; Reload-Recovery stoppt einen persistiert unterbrochenen Lauf.
+Vollvertrag: `docs/F-POWER-CALIBRATION.md`.
 
 ---
 

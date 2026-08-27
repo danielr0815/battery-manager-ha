@@ -3211,6 +3211,58 @@ async def test_manual_power_calibration_abort_keeps_old_value(hass, monkeypatch)
     await _wait_for_state(hass, ENABLE, "off")
 
 
+async def test_manual_power_calibration_waits_for_delayed_actor_confirmation(
+    hass, monkeypatch
+):
+    """A service return may precede the Shelly state publication in live HA."""
+    import asyncio
+
+    import custom_components.battery_manager.coordinator as coordinator_module
+
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, _data = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    coordinator._floor_guard_active = True
+    coordinator._load_learned_power_w[sub_id] = 400.0
+    calls.clear()
+
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_POLL_S", 0.002)
+    monkeypatch.setattr(
+        coordinator_module, "POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S", 0.1
+    )
+
+    async def delayed_switch(entity_id: str, turn_on: bool) -> bool:
+        calls.append(("turn_on" if turn_on else "turn_off", entity_id))
+        if turn_on:
+            asyncio.get_running_loop().call_later(
+                0.02, hass.states.async_set, entity_id, "on"
+            )
+        else:
+            hass.states.async_set(entity_id, "off")
+        return True
+
+    monkeypatch.setattr(coordinator, "_switch_entity", delayed_switch)
+
+    await coordinator.async_toggle_load_power_calibration(sub_id)
+    task = coordinator._load_power_calibration_task
+    assert task is not None
+    await _wait_for_state(hass, PLUG, "on")
+    await _wait_for_state(hass, ENABLE, "on")
+    await asyncio.sleep(0.005)
+
+    assert not task.done()
+    assert coordinator.load_power_calibration_diagnostics(sub_id)["state"] == (
+        "waiting_for_power"
+    )
+    assert coordinator._load_learned_power_w[sub_id] == 400.0
+
+    await coordinator.async_toggle_load_power_calibration(sub_id)
+    assert coordinator.load_power_calibration_diagnostics(sub_id)["state"] == "aborted"
+    await _wait_for_state(hass, ENABLE, "off")
+
+
 async def test_manual_power_calibration_rejects_invalid_start_states(hass):
     """The explicit grid override is available only from a readable idle state."""
     from homeassistant.exceptions import HomeAssistantError
@@ -3271,12 +3323,18 @@ async def test_manual_power_calibration_requires_confirmed_activation(
     """An unconfirmed actor start fails before sampling and never changes power."""
     from unittest.mock import AsyncMock
 
+    import custom_components.battery_manager.coordinator as coordinator_module
+
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, data = await _setup(hass, calls)
     hass.states.async_set(PLUG, "off")
     hass.states.async_set(ENABLE, "off")
     coordinator._load_learned_power_w[sub_id] = 400.0
     coordinator._actuation_shutdown = True
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_POLL_S", 0.002)
+    monkeypatch.setattr(
+        coordinator_module, "POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S", 0.01
+    )
     monkeypatch.setattr(coordinator, "_execute_load_switching", AsyncMock())
 
     await coordinator._run_load_power_calibration(sub_id, data, 0.0)

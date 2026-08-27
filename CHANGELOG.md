@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-08-27
+
+### Fixed
+- Die manuelle Ladeleistungskalibrierung wartet nach dem Einschaltauftrag bis
+  zu 30 Sekunden auf die bestätigten Zustände von Eingangsschalter und
+  Lade-Gate. Ein Shelly, der seinen neuen Zustand erst nach Rückkehr des
+  Home-Assistant-Servicehandlers veröffentlicht, löst damit keinen sofortigen
+  Fehlversuch mehr aus; erst nach der Actor-Bestätigung beginnt die getrennte
+  Fossibot-Aufwach- und Leistungsmessphase.
+
 ## [0.27.0] - 2026-08-27
 
 ### Added

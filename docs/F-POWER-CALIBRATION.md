@@ -46,7 +46,10 @@ nur eine Kalibrierung gleichzeitig laufen.
 2. Die Kalibrierung übernimmt die Last exklusiv und schaltet sie sofort ein.
    Der normale Executor überspringt nur diese Last. Dieser explizite
    Betreiberlauf darf Planung, G4 und Strict-Surplus umgehen und bis zu vier
-   Minuten Netzstrom beziehen.
+   Minuten Netzstrom beziehen. Nach Rückkehr der Schaltservices wartet der
+   Lauf bis zu 30 Sekunden auf die tatsächlich veröffentlichten `on`-Zustände
+   von Eingangsschalter und optionalem Lade-Gate; ein verzögert meldender
+   Shelly gilt nicht vorschnell als fehlgeschlagen.
 3. Die Messphase beginnt beim ersten Leistungssprung
    `abs(Ist − Baseline) >= 20 % × konfigurierte Defaultleistung`, spätestens
    aber 60 Sekunden nach dem Einschalten.
@@ -66,6 +69,9 @@ nur eine Kalibrierung gleichzeitig laufen.
 ## Fehler- und Neustartsemantik
 
 Ein erfolgloser oder abgebrochener Versuch verändert den alten Lernwert nicht.
+Bestätigt ein Actor seinen `on`-Zustand auch nach 30 Sekunden nicht, scheitert
+der Lauf vor der Messphase; fehlende Fossibot-Leistungstelemetrie dagegen wird
+innerhalb des normalen Vier-Minuten-Budgets weiter abgewartet.
 Der aktive Actor-Marker wird vor dem Einschalten synchron persistiert. Bei
 Integration-Reload oder sauberem Home-Assistant-Neustart wird ein
 unterbrochener Messlauf vor dem ersten normalen Plan sicher beendet. Gelingt

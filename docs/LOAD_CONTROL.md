@@ -339,6 +339,8 @@ energy/duration — measured power only feeds their on/off detection.**
 power as a W sensor and in the forecast-card legend. Eligible energy-limited,
 directly controlled loads also expose a calibration button. It runs the load
 outside the plan for at most four minutes (explicitly grid-power-capable),
+waits up to 30 s for the plug and optional charge gate to publish their real
+ON state (v0.27.1 Shelly propagation-delay fix),
 starts measuring after a >= 20 %-of-nominal rise or after 60 s, accepts only
 new sensor publications at >= 5 s spacing, and persists their median after
 four samples or 90 s. Abort/failure preserves the prior learned value; release
