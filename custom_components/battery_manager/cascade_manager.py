@@ -215,12 +215,7 @@ class CascadeManager:
     ) -> None:
         """Accept an external Shared-OFF when the fresh plan is already idle."""
         state = self._state(cascade_id)
-        if not state.get("enabled") or state.get("phase") in (
-            "waking",
-            "waking_socs",
-            "proving",
-            "running",
-        ):
+        if not state.get("enabled"):
             return
         flow = plan.flows[0] if plan.flows else None
         if flow is not None and (
@@ -685,6 +680,18 @@ class CascadeManager:
             return
 
         if state.get("phase") == "running":
+            if desired_source is None:
+                # A freshly replanned slot can withdraw Aux immediately (for
+                # example after the load was satisfied during the wake/proof
+                # window).  `running` describes the old physical episode and
+                # must never keep that path energised without a matching new
+                # segment.
+                pending = bool(state.get("recovery_pending"))
+                await self.async_safe_off(cascade_id, "Aux plan withdrawn")
+                if state.get("phase") != "fault":
+                    state["phase"] = "recovering" if pending else "complete"
+                    self.coordinator._save_persistent_state()
+                return
             source = state.get("source")
             source_state = next(
                 (item for item in load_states if item.load_id == source), None
@@ -759,8 +766,18 @@ class CascadeManager:
             return
 
         # No auxiliary or Root segment now: all physical actors stay safe-off.
-        if state.get("phase") not in ("recovering", "complete"):
-            await self.async_safe_off(cascade_id, "no active cascade segment")
+        # `complete` and `recovering` are informative terminal phases, not
+        # permission to leave the last Aux path powered.  Preserve the phase
+        # across the idempotent Safe-OFF operation so the UI can still explain
+        # why the chain is idle.
+        terminal_phase = state.get("phase")
+        await self.async_safe_off(cascade_id, "no active cascade segment")
+        if (
+            terminal_phase in ("recovering", "complete")
+            and state.get("phase") != "fault"
+        ):
+            state["phase"] = terminal_phase
+            self.coordinator._save_persistent_state()
 
     async def async_apply(
         self,
@@ -803,25 +820,62 @@ class CascadeManager:
         terminal_name = (
             terminal.title if terminal is not None else cascade.terminal_load_id
         )
+        member_names = {
+            member.load_id: (
+                subentries[member.load_id].title
+                if member.load_id in subentries
+                else member.load_id
+            )
+            for member in cascade.members
+        }
+        member_indexes = {
+            member.load_id: index for index, member in enumerate(cascade.members)
+        }
         schedule: list[dict[str, Any]] = []
         for slot, flow in zip(slots, plan.flows, strict=False):
             activities: list[dict[str, Any]] = []
             for member_flow in flow.member_flows:
                 charge_wh = float(member_flow.own_charge_input_wh)
-                if charge_wh <= 0.0:
-                    continue
-                member = subentries.get(member_flow.load_id)
-                activities.append(
-                    {
-                        "kind": "charge",
-                        "load_id": member_flow.load_id,
-                        "name": (
-                            member.title if member is not None else member_flow.load_id
-                        ),
-                        "energy_wh": round(charge_wh, 1),
-                        "source": "root",
-                    }
-                )
+                if charge_wh > 0.0:
+                    activities.append(
+                        {
+                            "kind": "charge",
+                            "load_id": member_flow.load_id,
+                            "name": member_names.get(
+                                member_flow.load_id, member_flow.load_id
+                            ),
+                            "energy_wh": round(charge_wh, 1),
+                            "stored_energy_wh": round(
+                                float(member_flow.battery_charge_wh), 1
+                            ),
+                            "soc_start_percent": round(
+                                float(member_flow.soc_start_percent), 1
+                            ),
+                            "soc_end_percent": round(
+                                float(member_flow.soc_end_percent), 1
+                            ),
+                            "source": "root",
+                        }
+                    )
+                discharge_wh = float(member_flow.battery_discharge_wh)
+                if discharge_wh > 0.0:
+                    activities.append(
+                        {
+                            "kind": "discharge",
+                            "load_id": member_flow.load_id,
+                            "name": member_names.get(
+                                member_flow.load_id, member_flow.load_id
+                            ),
+                            "energy_wh": round(discharge_wh, 1),
+                            "soc_start_percent": round(
+                                float(member_flow.soc_start_percent), 1
+                            ),
+                            "soc_end_percent": round(
+                                float(member_flow.soc_end_percent), 1
+                            ),
+                            "source": "aux",
+                        }
+                    )
             for segment in flow.segments:
                 terminal_wh = float(segment.terminal_energy_wh)
                 if terminal_wh <= 0.0:
@@ -847,7 +901,56 @@ class CascadeManager:
                 )
             if not activities and float(flow.root_input_wh) <= 0.0:
                 continue
-            sources = list(dict.fromkeys(item["source"] for item in activities))
+            sources = list(
+                dict.fromkeys(
+                    item["source"]
+                    for item in activities
+                    if item["kind"] in ("charge", "discharge", "terminal")
+                )
+            )
+
+            # Publish the planned AC-output path explicitly.  The frontend
+            # must not have to reconstruct electrical topology from energy
+            # totals: Root terminal service needs every output, charging a
+            # deeper member needs its upstream outputs, and an Aux source
+            # needs its own plus every downstream output.
+            active_output_indexes: set[int] = set()
+            output_sources: dict[int, set[str]] = {}
+
+            def mark_outputs(
+                indexes: range,
+                source: str,
+                active_indexes: set[int] = active_output_indexes,
+                sources_by_index: dict[int, set[str]] = output_sources,
+            ) -> None:
+                for index in indexes:
+                    active_indexes.add(index)
+                    sources_by_index.setdefault(index, set()).add(source)
+
+            for activity in activities:
+                if activity["kind"] == "charge":
+                    member_index = member_indexes.get(activity["load_id"])
+                    if member_index is not None:
+                        mark_outputs(range(member_index), "root")
+                elif activity["kind"] == "terminal":
+                    if activity["source"] == "root":
+                        mark_outputs(range(len(cascade.members)), "root")
+                    else:
+                        source_index = member_indexes.get(activity["source_load_id"])
+                        if source_index is not None:
+                            mark_outputs(
+                                range(source_index, len(cascade.members)), "aux"
+                            )
+            for index in sorted(active_output_indexes):
+                member = cascade.members[index]
+                activities.append(
+                    {
+                        "kind": "output",
+                        "load_id": member.load_id,
+                        "name": member_names[member.load_id],
+                        "sources": sorted(output_sources[index]),
+                    }
+                )
             schedule.append(
                 {
                     "start": slot.start.isoformat(),
@@ -905,6 +1008,12 @@ class CascadeManager:
                 "enabled": bool(state["enabled"]),
                 "phase": state["phase"],
                 "source": state["source"],
+                "source_name": (
+                    self.coordinator.entry.subentries[state["source"]].title
+                    if state.get("source")
+                    and state["source"] in self.coordinator.entry.subentries
+                    else None
+                ),
                 "fault": state["fault"],
                 "warning": state.get("warning"),
                 "hands_off": bool(state["hands_off"]),
@@ -927,7 +1036,23 @@ class CascadeManager:
                     else None
                 ),
                 "members": [member.load_id for member in cascade.members],
+                "member_details": [
+                    {
+                        "load_id": member.load_id,
+                        "name": (
+                            self.coordinator.entry.subentries[member.load_id].title
+                            if member.load_id in self.coordinator.entry.subentries
+                            else member.load_id
+                        ),
+                    }
+                    for member in cascade.members
+                ],
                 "terminal_load_id": cascade.terminal_load_id,
+                "terminal_name": (
+                    self.coordinator.entry.subentries[cascade.terminal_load_id].title
+                    if cascade.terminal_load_id in self.coordinator.entry.subentries
+                    else cascade.terminal_load_id
+                ),
                 # F-CASCADE-STORAGE: normal load lanes are intentionally
                 # suppressed while the cascade owns them.  This dedicated
                 # timeline preserves the per-slot plan instead of leaving the

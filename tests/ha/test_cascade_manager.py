@@ -126,7 +126,19 @@ class _Coordinator:
 def _aux_plan(now: datetime):
     segment = CascadeSourceSegment(0, 0.0, 0.5, "aux", "b1", False, 150.0)
     return SimpleNamespace(
-        flows=(CascadeSlotFlow(segments=(segment,)),),
+        flows=(
+            CascadeSlotFlow(
+                segments=(segment,),
+                member_flows=(
+                    CascadeMemberFlow(
+                        "b1",
+                        90,
+                        85,
+                        battery_discharge_wh=160,
+                    ),
+                ),
+            ),
+        ),
         provisional_live_soc_required=False,
         recovery_deadline=now + timedelta(hours=6),
         aggregate_soc_percent=90.0,
@@ -144,7 +156,13 @@ def _root_plan(now: datetime):
                 root_input_wh=600.0,
                 segments=(segment,),
                 member_flows=(
-                    CascadeMemberFlow("b1", 50, 60, own_charge_input_wh=300),
+                    CascadeMemberFlow(
+                        "b1",
+                        50,
+                        60,
+                        own_charge_input_wh=300,
+                        battery_charge_wh=270,
+                    ),
                 ),
             ),
         ),
@@ -406,6 +424,43 @@ async def test_shared_auto_off_is_adopted_when_fresh_plan_is_idle() -> None:
     assert coordinator.calls == []
 
 
+async def test_running_shared_auto_off_converges_when_plan_is_withdrawn() -> None:
+    """A stale runtime phase cannot turn a fresh Safe-OFF plan into hands-off."""
+    now = datetime(2026, 8, 30, 0, 8)
+    coordinator = _Coordinator(now, shared=True)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "running",
+            "source": "b1",
+            "episode_day": now.date().isoformat(),
+            "recovery_pending": ["b1"],
+            "claims": {"switch.output": True},
+        }
+    )
+    # The external zero-power automation was faster than the coordinator; the
+    # fresh plan agrees that the chain is now idle.
+    coordinator.hass.states.values["switch.output"].state = "off"
+    idle_plan = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=now + timedelta(hours=6),
+    )
+
+    await manager._apply_one(
+        "chain",
+        idle_plan,
+        (SurplusLoadState("b1", soc_percent=40), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["enabled"]
+    assert not state["hands_off"]
+    assert state["phase"] == "recovering"
+    assert state["claims"]["switch.output"] is False
+
+
 async def test_enable_requires_all_off_and_fresh_soc() -> None:
     now = datetime(2026, 8, 23, 6)
     coordinator = _Coordinator(now)
@@ -445,6 +500,84 @@ async def test_running_integrates_aux_then_stops_at_floor() -> None:
     await manager._apply_one("chain", _aux_plan(now), floor, now + timedelta(minutes=6))
     assert state["phase"] == "recovering"
     assert state["source"] is None
+
+
+async def test_running_path_is_stopped_when_aux_plan_is_withdrawn() -> None:
+    """A completed wake must not outlive the fresh plan that requested it."""
+    now = datetime(2026, 8, 30, 0, 8)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "running",
+            "source": "b1",
+            "episode_day": now.date().isoformat(),
+            "recovery_pending": ["b1"],
+            "claims": {
+                "switch.output": True,
+                "switch.leaf": True,
+            },
+        }
+    )
+    coordinator.hass.states.values["switch.output"].state = "on"
+    coordinator.hass.states.values["switch.leaf"].state = "on"
+    idle_plan = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=now + timedelta(hours=6),
+    )
+    below_recovery = (
+        SurplusLoadState("b1", soc_percent=40),
+        SurplusLoadState("leaf"),
+    )
+
+    await manager._apply_one("chain", idle_plan, below_recovery, now)
+
+    assert state["phase"] == "recovering"
+    assert state["source"] is None
+    assert coordinator.calls[:2] == [
+        ("switch.leaf", False),
+        ("switch.output", False),
+    ]
+
+
+async def test_complete_phase_still_enforces_safe_off() -> None:
+    """Complete is a diagnosis, never permission for stale outputs to stay on."""
+    now = datetime(2026, 8, 30, 0, 8)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "complete",
+            "claims": {
+                "switch.output": True,
+                "switch.leaf": True,
+            },
+        }
+    )
+    coordinator.hass.states.values["switch.output"].state = "on"
+    coordinator.hass.states.values["switch.leaf"].state = "on"
+    idle_plan = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=None,
+    )
+
+    await manager._apply_one(
+        "chain",
+        idle_plan,
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["phase"] == "complete"
+    assert state["source"] is None
+    assert coordinator.calls[:2] == [
+        ("switch.leaf", False),
+        ("switch.output", False),
+    ]
 
 
 async def test_stationary_telemetry_loss_gets_ten_minute_grace() -> None:
@@ -497,9 +630,12 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     slots = (HourSlot(0, now, 1.0, 6, 0.0, 0.0, 0.0),)
     payload = manager.payload(result, config, slots)["chain"]
     assert payload["fault"] == "demo"
+    assert payload["source_name"] is None
     assert payload["planned_aux_energy_kwh"] == 0.15
     assert payload["actual_aux_energy_kwh"] == 0.125
     assert payload["members"] == ["b1"]
+    assert payload["member_details"] == [{"load_id": "b1", "name": "B1"}]
+    assert payload["terminal_name"] == "Leaf"
     assert payload["assumed_state_actors"] == ["switch.input"]
     assert payload["schedule"] == [
         {
@@ -510,6 +646,15 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "sources": ["aux"],
             "activities": [
                 {
+                    "kind": "discharge",
+                    "load_id": "b1",
+                    "name": "B1",
+                    "energy_wh": 160.0,
+                    "soc_start_percent": 90.0,
+                    "soc_end_percent": 85.0,
+                    "source": "aux",
+                },
+                {
                     "kind": "terminal",
                     "load_id": "leaf",
                     "name": "Leaf",
@@ -517,7 +662,13 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
                     "source": "aux",
                     "source_load_id": "b1",
                     "source_name": "B1",
-                }
+                },
+                {
+                    "kind": "output",
+                    "load_id": "b1",
+                    "name": "B1",
+                    "sources": ["aux"],
+                },
             ],
         }
     ]
@@ -530,6 +681,9 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "load_id": "b1",
             "name": "B1",
             "energy_wh": 300.0,
+            "stored_energy_wh": 270.0,
+            "soc_start_percent": 50.0,
+            "soc_end_percent": 60.0,
             "source": "root",
         },
         {
@@ -540,6 +694,12 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "source": "root",
             "source_load_id": None,
             "source_name": None,
+        },
+        {
+            "kind": "output",
+            "load_id": "b1",
+            "name": "B1",
+            "sources": ["root"],
         },
     ]
 
@@ -553,6 +713,68 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
         now,
     )
     assert coordinator.calls == []
+
+
+def test_schedule_payload_exposes_two_member_output_path() -> None:
+    """The card receives the real B1→B2 path instead of guessing from Wh."""
+    now = datetime(2026, 8, 30, 10)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    cascade = LoadCascade(
+        "chain",
+        (CascadeMember("b1", 20, 50), CascadeMember("b2", 20, 50)),
+        "leaf",
+    )
+    slots = (HourSlot(0, now, 1.0, 10, 0.0, 0.0, 0.0),)
+
+    # Charging B2 from Root only needs B1's upstream AC output.
+    charge_plan = SimpleNamespace(
+        flows=(
+            CascadeSlotFlow(
+                root_input_wh=300,
+                member_flows=(
+                    CascadeMemberFlow(
+                        "b2",
+                        50,
+                        55,
+                        own_charge_input_wh=300,
+                        battery_charge_wh=270,
+                    ),
+                ),
+            ),
+        )
+    )
+    charge_activities = manager._schedule_payload(cascade, charge_plan, slots)[0][
+        "activities"
+    ]
+    assert [
+        item["load_id"] for item in charge_activities if item["kind"] == "output"
+    ] == ["b1"]
+
+    # B1 as Aux source feeds through both B1 and B2 before the terminal load.
+    segment = CascadeSourceSegment(0, 0.0, 0.5, "aux", "b1", False, 150)
+    aux_plan = SimpleNamespace(
+        flows=(
+            CascadeSlotFlow(
+                segments=(segment,),
+                member_flows=(
+                    CascadeMemberFlow(
+                        "b1",
+                        90,
+                        85,
+                        battery_discharge_wh=160,
+                    ),
+                ),
+            ),
+        )
+    )
+    aux_activities = manager._schedule_payload(cascade, aux_plan, slots)[0][
+        "activities"
+    ]
+    assert [item["load_id"] for item in aux_activities if item["kind"] == "output"] == [
+        "b1",
+        "b2",
+    ]
 
 
 async def test_handover_power_edge_cases_and_fault_reset(

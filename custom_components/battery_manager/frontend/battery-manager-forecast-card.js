@@ -1,9 +1,9 @@
 /**
- * Battery Manager Forecast Card + Consumption Card
+ * Battery Manager Forecast, Consumption + Cascade Cards
  *
  * Bundled with the battery_manager integration and registered as a Lovelace
  * resource automatically — no HACS frontend download needed. This module
- * registers TWO card types, both reading `sensor.…_soc_forecast`:
+ * registers three card types, all reading `sensor.…_soc_forecast`:
  *
  *   battery-manager-forecast-card
  *                                 the planned SOC trajectory with the full
@@ -14,6 +14,8 @@
  *                                 the planned surplus loads as their own
  *                                 layer (attribute `consumption_forecast`,
  *                                 backend >= v0.25.5)
+ *   battery-manager-cascade-card  the internal Root/charge/discharge/output/
+ *                                 terminal timeline of every storage cascade
  *
  * The forecast card renders from these sensor attributes:
  *
@@ -32,9 +34,9 @@
  *   appliances                  detected running appliances (washer, …):
  *                                 [{name, active, schedule: [{start, end,
  *                                 wh}]}] — one block now -> run end
- *   cascades                    storage cascades with one dedicated timeline
- *                                 lane each; blocks expose Root/Aux source,
- *                                 member charging and terminal service
+ *   cascades                    storage cascades: the SOC chart shows only
+ *                                 their Root-boundary energy; the dedicated
+ *                                 cascade card renders internal activity
  *
  * Vanilla web component (no build step, no external dependencies); theming
  * via Home Assistant CSS variables inside an <ha-card>.
@@ -70,6 +72,11 @@ const LOAD_COLORS = [
 // Early grid feed-in lane (F-FEEDIN): pink-600, >= 3:1 on light and dark
 // card backgrounds and distinct from every load lane color.
 const FEEDIN_COLOR = "var(--bmpc-feedin-color, #d81b60)";
+const CASCADE_ROOT_COLOR = "var(--bmpc-cascade-root-color, #1976d2)";
+const CASCADE_CHARGE_COLOR = "var(--bmpc-cascade-charge-color, #43a047)";
+const CASCADE_DISCHARGE_COLOR = "var(--bmpc-cascade-discharge-color, #ef6c00)";
+const CASCADE_OUTPUT_COLOR = "var(--bmpc-cascade-output-color, #8e24aa)";
+const CASCADE_TERMINAL_COLOR = "var(--bmpc-cascade-terminal-color, #00897b)";
 
 // Defensive caps: attributes are user-controlled input, and a broken or
 // hostile payload must not freeze the UI with megabytes of SVG.
@@ -111,6 +118,16 @@ const STRINGS = {
     charging: "charging",
     root: "Root",
     aux: "Aux",
+    cascade_chart_label: "Cascade schedule",
+    cascade_no_data: "No cascade activity planned in this horizon.",
+    cascade_root_input: "Root → cascade",
+    discharging: "discharging",
+    output: "AC output",
+    terminal_load: "terminal load",
+    on: "ON",
+    stored: "stored",
+    source: "source",
+    soc: "SOC",
     total: "total",
     static_hint: "dimmed bars = static fallback profile",
     no_consumption:
@@ -150,6 +167,16 @@ const STRINGS = {
     charging: "laden",
     root: "Root",
     aux: "Aux",
+    cascade_chart_label: "Kaskaden-Zeitplan",
+    cascade_no_data: "In diesem Zeitraum ist keine Kaskadenaktivität geplant.",
+    cascade_root_input: "Root → Kaskade",
+    discharging: "entladen",
+    output: "AC-Ausgang",
+    terminal_load: "Endlast",
+    on: "AN",
+    stored: "gespeichert",
+    source: "Quelle",
+    soc: "SOC",
     total: "Summe",
     static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
     no_consumption:
@@ -585,31 +612,27 @@ class BatteryManagerForecastCard extends HTMLElement {
         // feed-in lane derives it from the point's planned power.
         kind: "load",
       }));
-    // Cascade-managed loads do not appear in `loads`: the cascade owns their
-    // actors and publishes one separate lane with exact per-slot activities.
-    // Keeping the activities on the block lets hover answer both WHEN and WHAT
-    // without multiplying one physical chain into several misleading lanes.
+    // Cascade-managed loads do not appear in `loads`: this chart treats the
+    // complete chain as one black-box consumer at its Root boundary. Internal
+    // charge/discharge/output details belong exclusively to the cascade card.
     const cascades = (Array.isArray(a.cascades) ? a.cascades : [])
       .filter((cascade) => cascade && typeof cascade === "object")
       .slice(0, MAX_LANES)
       .map((cascade, i) => ({
         name: `${t("cascade")} ${cascade.name ?? "?"}`,
-        phase: cascade.phase,
-        enabled: Boolean(cascade.enabled),
         planned_root_energy_kwh: num(cascade.planned_root_energy_kwh) ?? 0,
-        planned_aux_energy_kwh: num(cascade.planned_aux_energy_kwh) ?? 0,
         schedule: (Array.isArray(cascade.schedule) ? cascade.schedule : [])
-          .filter((block) => block && typeof block === "object")
+          .filter(
+            (block) =>
+              block &&
+              typeof block === "object" &&
+              (num(block.root_input_wh) ?? 0) > 0
+          )
           .slice(0, MAX_BLOCKS)
           .map((block) => ({
             ...block,
-            activities: (Array.isArray(block.activities)
-              ? block.activities
-              : []
-            ).filter((activity) => activity && typeof activity === "object"),
-            label: (Array.isArray(block.sources) ? block.sources : [])
-              .map((source) => (source === "aux" ? t("aux") : t("root")))
-              .join("/"),
+            wh: num(block.root_input_wh) ?? 0,
+            label: `${t("root")} ${Math.round(num(block.root_input_wh) ?? 0)} Wh`,
           })),
         kind: "cascade",
         color: LOAD_COLORS[(loads.length + i) % LOAD_COLORS.length],
@@ -966,13 +989,9 @@ class BatteryManagerForecastCard extends HTMLElement {
     const cascadeLegend = cascades
       .map((cascade) => {
         const root = cascade.planned_root_energy_kwh.toFixed(2);
-        const aux = cascade.planned_aux_energy_kwh.toFixed(2);
-        const active = cascade.enabled
-          ? ` · <span class="active">${esc(cascade.phase ?? t("active"))}</span>`
-          : "";
         return `<span><span class="dot" style="background:${cascade.color}"></span>${esc(
           cascade.name
-        )} (${t("root")} ${root} kWh · ${t("aux")} ${aux} kWh)${active}</span>`;
+        )} (${t("root")} ${root} kWh)</span>`;
       })
       .join("");
 
@@ -1156,25 +1175,11 @@ class BatteryManagerForecastCard extends HTMLElement {
       .map((lane) => {
         const block = covering(lane);
         if (lane.kind === "cascade") {
-          const details = (block?.activities || [])
-            .map((activity) => {
-              const wh = num(activity.energy_wh);
-              const energy = wh != null ? ` ${Math.round(wh)} Wh` : "";
-              if (activity.kind === "charge") {
-                return `${esc(activity.name ?? "?")} ${t("charging")}${energy}`;
-              }
-              const source =
-                activity.source === "aux"
-                  ? `${t("aux")}${
-                      activity.source_name ? ` ${esc(activity.source_name)}` : ""
-                    }`
-                  : t("root");
-              return `${esc(activity.name ?? "?")} ${source}${energy}`;
-            })
-            .join(" + ");
+          const wh = num(block?.root_input_wh) ?? num(block?.wh);
+          const energy = wh != null ? ` ${Math.round(wh)} Wh` : "";
           return `<span class="chip"><span class="dot" style="background:${lane.color}"></span>${esc(
             lane.name ?? "?"
-          )}${details ? `: ${details}` : ""}</span>`;
+          )}: ${t("root")}${energy}</span>`;
         }
         // Energy of THIS hour per lane (operator ask 2026-08-03): a load
         // carries it on the covering schedule block, the feed-in lane derives
@@ -1932,44 +1937,447 @@ if (!customElements.get(CONSUMPTION_CARD_TYPE)) {
 }
 
 class BatteryManagerCascadeCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = undefined;
+    this._hass = undefined;
+    this._lastState = undefined;
+    this._width = 0;
+    this._charts = [];
+    this._resizeObserver = new ResizeObserver(() => {
+      const width = this.getBoundingClientRect().width;
+      if (width && Math.abs(width - this._width) > 4) {
+        this._width = width;
+        this._render();
+      }
+    });
+  }
+
+  connectedCallback() {
+    this._resizeObserver.observe(this);
+  }
+
+  disconnectedCallback() {
+    this._resizeObserver.disconnect();
+  }
+
   setConfig(config) {
-    this._config = { ...config };
+    if (!config || typeof config !== "object") {
+      throw new Error("Invalid configuration");
+    }
+    if (config.entity != null && typeof config.entity !== "string") {
+      throw new Error(
+        `${CASCADE_CARD_TYPE}: "entity" must be an entity id string`
+      );
+    }
+    if (
+      config.hours != null &&
+      (typeof config.hours !== "number" || !Number.isFinite(config.hours))
+    ) {
+      throw new Error(`${CASCADE_CARD_TYPE}: "hours" must be a finite number`);
+    }
+    this._config = { hours: 48, ...config };
+    this._lastState = undefined;
     this._render();
   }
 
   set hass(value) {
     this._hass = value;
-    this._render();
+    const state = value.states[this._entityId()];
+    if (state !== this._lastState) {
+      this._lastState = state;
+      this._render();
+    }
   }
 
   getCardSize() {
-    return Math.max(1, this._cascades().length + 1);
+    const rows = this._cascades().reduce(
+      (sum, cascade) =>
+        sum + 2 + 3 * this._memberDetails(cascade).length,
+      0
+    );
+    return Math.max(3, 2 + Math.ceil(rows / 3));
+  }
+
+  getGridOptions() {
+    return { rows: 6, columns: 12, min_rows: 4, min_columns: 6 };
+  }
+
+  static getStubConfig(hass, entities, entitiesFallback) {
+    return {
+      entity:
+        findForecastEntity(hass, entities) ||
+        findForecastEntity(hass, entitiesFallback),
+      hours: 48,
+    };
+  }
+
+  static getConfigForm() {
+    return {
+      schema: [
+        {
+          name: "entity",
+          required: true,
+          selector: { entity: { domain: "sensor" } },
+        },
+        { name: "title", selector: { text: {} } },
+        {
+          name: "hours",
+          default: 48,
+          selector: { number: { min: 6, max: 96, step: 1, mode: "box" } },
+        },
+      ],
+    };
+  }
+
+  _entityId() {
+    if (this._config?.entity) return this._config.entity;
+    if (!this._hass) return "";
+    // Compatibility for cards created before v0.29.0: those picker entries
+    // carried only `type`. Auto-discovery makes them useful immediately while
+    // the editor now persists an explicit entity for new cards.
+    return findForecastEntity(this._hass, Object.keys(this._hass.states));
   }
 
   _cascades() {
-    const state = this._hass?.states?.[this._config?.entity];
+    const state = this._hass?.states?.[this._entityId()];
     const cascades = state?.attributes?.cascades;
     return Array.isArray(cascades) ? cascades.slice(0, 20) : [];
   }
 
+  _memberDetails(cascade) {
+    const explicit = Array.isArray(cascade?.member_details)
+      ? cascade.member_details.filter(
+          (item) => item && typeof item === "object" && item.load_id
+        )
+      : [];
+    if (explicit.length) return explicit.slice(0, 12);
+    const names = new Map();
+    for (const block of Array.isArray(cascade?.schedule)
+      ? cascade.schedule
+      : []) {
+      for (const activity of Array.isArray(block?.activities)
+        ? block.activities
+        : []) {
+        if (
+          activity?.load_id &&
+          activity.load_id !== cascade?.terminal_load_id &&
+          activity.kind !== "terminal"
+        ) {
+          names.set(activity.load_id, activity.name || activity.load_id);
+        }
+      }
+    }
+    for (const id of Array.isArray(cascade?.members) ? cascade.members : []) {
+      if (typeof id === "string" && !names.has(id)) names.set(id, id);
+    }
+    return [...names].slice(0, 12).map(([load_id, name]) => ({
+      load_id,
+      name,
+    }));
+  }
+
+  _detail(activity, fallbackName) {
+    const t = (key) => localize(this._hass, key);
+    const name = activity?.name || fallbackName || "?";
+    const wh = num(activity?.energy_wh);
+    const energy = wh == null ? "" : ` ${Math.round(wh)} Wh`;
+    const startSoc = num(activity?.soc_start_percent);
+    const endSoc = num(activity?.soc_end_percent);
+    const soc =
+      startSoc == null || endSoc == null
+        ? ""
+        : ` · ${t("soc")} ${startSoc.toFixed(1)}→${endSoc.toFixed(1)} %`;
+    if (activity?.kind === "charge") {
+      const stored = num(activity.stored_energy_wh);
+      return `${name} · ${t("charging")}${energy}${
+        stored == null ? "" : ` · ${t("stored")} ${Math.round(stored)} Wh`
+      }${soc}`;
+    }
+    if (activity?.kind === "discharge") {
+      return `${name} · ${t("discharging")}${energy}${soc}`;
+    }
+    if (activity?.kind === "output") {
+      const sources = (Array.isArray(activity.sources)
+        ? activity.sources
+        : []
+      )
+        .map((source) => (source === "aux" ? t("aux") : t("root")))
+        .join("/");
+      return `${name} · ${t("output")} ${t("on")}${
+        sources ? ` · ${t("source")} ${sources}` : ""
+      }`;
+    }
+    const source =
+      activity?.source === "aux"
+        ? `${t("aux")}${activity.source_name ? ` ${activity.source_name}` : ""}`
+        : t("root");
+    return `${name} · ${t("terminal_load")}${energy} · ${t("source")} ${source}`;
+  }
+
+  _chart(cascade, index) {
+    const t = (key) => localize(this._hass, key);
+    const rawSchedule = (Array.isArray(cascade?.schedule)
+      ? cascade.schedule
+      : []
+    )
+      .filter((block) => {
+        const start = new Date(block?.start).getTime();
+        const end = new Date(block?.end).getTime();
+        return Number.isFinite(start) && Number.isFinite(end) && end > start;
+      })
+      .slice(0, MAX_BLOCKS);
+    const starts = rawSchedule.map((block) => new Date(block.start).getTime());
+    const hourMs = 3600000;
+    const t0 = starts.length
+      ? Math.min(...starts)
+      : Math.floor(Date.now() / hourMs) * hourMs;
+    const t1 = t0 + Math.max(6, Math.min(96, this._config.hours)) * hourMs;
+    const schedule = rawSchedule.filter(
+      (block) =>
+        new Date(block.end).getTime() > t0 &&
+        new Date(block.start).getTime() < t1
+    );
+    const members = this._memberDetails(cascade);
+    const activityBlocks = (kind, loadId) =>
+      schedule.flatMap((block) =>
+        (Array.isArray(block.activities) ? block.activities : [])
+          .filter(
+            (activity) =>
+              activity &&
+              typeof activity === "object" &&
+              activity.kind === kind &&
+              (loadId == null || activity.load_id === loadId)
+          )
+          .map((activity) => ({
+            start: block.start,
+            end: block.end,
+            activity,
+            wh: num(activity.energy_wh),
+            detail: this._detail(activity),
+          }))
+      );
+    const rows = [
+      {
+        label: t("cascade_root_input"),
+        color: CASCADE_ROOT_COLOR,
+        blocks: schedule
+          .filter((block) => (num(block.root_input_wh) ?? 0) > 0)
+          .map((block) => {
+            const wh = num(block.root_input_wh) ?? 0;
+            return {
+              start: block.start,
+              end: block.end,
+              wh,
+              detail: `${t("cascade_root_input")} · ${Math.round(wh)} Wh`,
+            };
+          }),
+      },
+    ];
+    for (const member of members) {
+      rows.push(
+        {
+          label: `${member.name} · ${t("charging")}`,
+          color: CASCADE_CHARGE_COLOR,
+          blocks: activityBlocks("charge", member.load_id),
+        },
+        {
+          label: `${member.name} · ${t("discharging")}`,
+          color: CASCADE_DISCHARGE_COLOR,
+          blocks: activityBlocks("discharge", member.load_id),
+        },
+        {
+          label: `${member.name} · ${t("output")}`,
+          color: CASCADE_OUTPUT_COLOR,
+          blocks: activityBlocks("output", member.load_id),
+        }
+      );
+    }
+    const terminalName = cascade?.terminal_name || cascade?.terminal_load_id || "?";
+    rows.push({
+      label: `${terminalName} · ${t("terminal_load")}`,
+      color: CASCADE_TERMINAL_COLOR,
+      blocks: activityBlocks("terminal", cascade?.terminal_load_id),
+    });
+
+    const width = 900;
+    const labelWidth = 205;
+    const right = 12;
+    const plotWidth = width - labelWidth - right;
+    const rowHeight = 25;
+    const top = 22;
+    const bottom = 24;
+    const height = top + rows.length * rowHeight + bottom;
+    const x = (time) =>
+      labelWidth + ((time - t0) / (t1 - t0)) * plotWidth;
+    const svg = [];
+    const fmtTick = new Intl.DateTimeFormat(this._hass?.language || "en", {
+      weekday: "short",
+      hour: "2-digit",
+    });
+    for (let tick = t0; tick <= t1; tick += 6 * hourMs) {
+      const px = x(tick);
+      svg.push(
+        `<line x1="${px}" y1="${top - 8}" x2="${px}" y2="${height - bottom}" class="grid"/>`,
+        `<text x="${px + 3}" y="12" class="axis">${esc(fmtTick.format(tick))}</text>`
+      );
+    }
+    rows.forEach((row, rowIndex) => {
+      const y = top + rowIndex * rowHeight;
+      svg.push(
+        `<text x="4" y="${y + 16}" class="label">${esc(row.label)}</text>`,
+        `<line x1="${labelWidth}" y1="${y + rowHeight}" x2="${width - right}" y2="${y + rowHeight}" class="rowline"/>`
+      );
+      for (const block of row.blocks) {
+        const start = Math.max(t0, new Date(block.start).getTime());
+        const end = Math.min(t1, new Date(block.end).getTime());
+        const bx = x(start);
+        const bw = Math.max(2, x(end) - bx);
+        const label = block.wh == null ? t("on") : `${Math.round(block.wh)} Wh`;
+        svg.push(
+          `<rect x="${bx}" y="${y + 5}" width="${bw}" height="15" rx="3" fill="${row.color}"><title>${esc(block.detail)}</title></rect>`,
+          bw > 42
+            ? `<text x="${bx + 4}" y="${y + 16}" class="block-label">${esc(label)}</text>`
+            : ""
+        );
+      }
+    });
+    svg.push(`<g id="marker-${index}"></g>`);
+    const slots = [...new Set(schedule.map((block) => new Date(block.start).getTime()))]
+      .filter((time) => time >= t0 && time < t1)
+      .sort((a, b) => a - b);
+    this._charts[index] = {
+      t0,
+      t1,
+      labelWidth,
+      plotWidth,
+      top,
+      height,
+      bottom,
+      rows,
+      slots,
+      kbIndex: null,
+    };
+    const hasActivity = rows.some((row) => row.blocks.length);
+    return `<svg id="chart-${index}" viewBox="0 0 ${width} ${height}" role="img" tabindex="0" aria-label="${esc(
+      `${t("cascade_chart_label")}: ${cascade?.name || "Cascade"}`
+    )}">${svg.join("")}</svg><div id="readout-${index}" class="readout" aria-live="polite">${
+      hasActivity ? "&nbsp;" : esc(t("cascade_no_data"))
+    }</div>`;
+  }
+
+  _showSlot(chartIndex, time) {
+    const chart = this._charts[chartIndex];
+    const marker = this.shadowRoot?.getElementById(`marker-${chartIndex}`);
+    const readout = this.shadowRoot?.getElementById(`readout-${chartIndex}`);
+    if (!chart || !marker || !readout) return;
+    const clamped = Math.max(chart.t0, Math.min(chart.t1, time));
+    const px =
+      chart.labelWidth +
+      ((clamped - chart.t0) / (chart.t1 - chart.t0)) * chart.plotWidth;
+    marker.innerHTML = `<line x1="${px}" y1="${chart.top - 8}" x2="${px}" y2="${chart.height - chart.bottom}" class="marker"/>`;
+    const details = chart.rows.flatMap((row) =>
+      row.blocks
+        .filter((block) => {
+          const start = new Date(block.start).getTime();
+          const end = new Date(block.end).getTime();
+          return clamped >= start && clamped < end;
+        })
+        .map((block) => block.detail)
+    );
+    const fmt = new Intl.DateTimeFormat(this._hass?.language || "en", {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    readout.textContent = `${fmt.format(clamped)}${
+      details.length ? ` · ${details.join(" · ")}` : ""
+    }`;
+  }
+
+  _bindCharts() {
+    this._charts.forEach((chart, index) => {
+      const svg = this.shadowRoot?.getElementById(`chart-${index}`);
+      if (!svg) return;
+      svg.addEventListener("pointermove", (event) => {
+        const rect = svg.getBoundingClientRect();
+        if (!(rect.width > 0)) return;
+        const viewX = ((event.clientX - rect.left) / rect.width) * 900;
+        const fraction = Math.max(
+          0,
+          Math.min(1, (viewX - chart.labelWidth) / chart.plotWidth)
+        );
+        this._showSlot(index, chart.t0 + fraction * (chart.t1 - chart.t0));
+      });
+      svg.addEventListener("keydown", (event) => {
+        if (!chart.slots.length) return;
+        let kbIndex = chart.kbIndex;
+        if (event.key === "ArrowLeft") {
+          kbIndex = kbIndex == null ? 0 : Math.max(0, kbIndex - 1);
+        } else if (event.key === "ArrowRight") {
+          kbIndex =
+            kbIndex == null
+              ? 0
+              : Math.min(chart.slots.length - 1, kbIndex + 1);
+        } else if (event.key === "Home") {
+          kbIndex = 0;
+        } else if (event.key === "End") {
+          kbIndex = chart.slots.length - 1;
+        } else {
+          return;
+        }
+        event.preventDefault();
+        chart.kbIndex = kbIndex;
+        this._showSlot(index, chart.slots[kbIndex]);
+      });
+    });
+  }
+
   _render() {
     if (!this._config || !this._hass) return;
-    const rows = this._cascades()
-      .map((item) => {
+    const entityId = this._entityId();
+    const state = this._hass.states[entityId];
+    const t = (key) => localize(this._hass, key);
+    let body = "";
+    this._charts = [];
+    if (!entityId) {
+      body = `<div class="message">${esc(t("no_entity"))}</div>`;
+    } else if (!state) {
+      body = `<div class="message">${esc(t("not_found"))} ${esc(entityId)}</div>`;
+    } else {
+      body = this._cascades()
+        .map((item, index) => {
         const soc = num(item?.aggregate_soc_percent);
         const root = num(item?.planned_root_energy_kwh) ?? 0;
         const aux = num(item?.planned_aux_energy_kwh) ?? 0;
         const actual = num(item?.actual_aux_energy_kwh) ?? 0;
         const fault = item?.fault ? ` · ⚠ ${esc(item.fault)}` : "";
-        return `<div class="row"><div><b>${esc(item?.name || "Cascade")}</b>` +
-          `<span>${esc(item?.phase || "idle")} · ${esc(item?.source || "Root")}${fault}</span></div>` +
-          `<div class="soc">${soc == null ? "?" : soc.toFixed(1)} %${item?.aggregate_soc_stale ? "*" : ""}</div>` +
-          `<div class="energy">Root ${root.toFixed(2)} kWh · Aux ${aux.toFixed(2)} kWh · Ist ${actual.toFixed(2)} kWh</div></div>`;
-      })
-      .join("");
-    this.innerHTML = `<ha-card header="Battery Manager Cascades"><style>` +
-      `.wrap{padding:0 16px 16px}.row{display:grid;grid-template-columns:1fr auto;gap:4px 16px;padding:12px 0;border-top:1px solid var(--divider-color)}span,.energy{display:block;color:var(--secondary-text-color);font-size:.85em}.energy{grid-column:1/-1}.soc{font-variant-numeric:tabular-nums}</style>` +
-      `<div class="wrap">${rows || "No cascades configured."}</div></ha-card>`;
+          return `<section><div class="summary"><div><b>${esc(item?.name || "Cascade")}</b>` +
+            `<span>${esc(item?.phase || "idle")} · ${esc(item?.source_name || item?.source || "Root")}${fault}</span></div>` +
+            `<div class="soc">${soc == null ? "?" : soc.toFixed(1)} %${item?.aggregate_soc_stale ? "*" : ""}</div>` +
+            `<div class="energy">Root ${root.toFixed(2)} kWh · Aux ${aux.toFixed(2)} kWh · Ist ${actual.toFixed(2)} kWh</div></div>` +
+            `<div class="chart-wrap">${this._chart(item, index)}</div></section>`;
+        })
+        .join("");
+      if (!body) body = `<div class="message">No cascades configured.</div>`;
+    }
+    this.shadowRoot.innerHTML = `<ha-card header="${esc(
+      this._config.title || "Battery Manager Cascades"
+    )}"><style>
+      .wrap{padding:0 16px 16px}section{padding:12px 0;border-top:1px solid var(--divider-color)}
+      .summary{display:grid;grid-template-columns:1fr auto;gap:4px 16px;margin-bottom:8px}
+      .summary span,.energy{display:block;color:var(--secondary-text-color);font-size:.85em}
+      .energy{grid-column:1/-1}.soc{font-variant-numeric:tabular-nums}
+      .chart-wrap{overflow-x:auto}svg{display:block;width:100%;min-width:620px;height:auto;touch-action:none;outline:none}
+      svg:focus{outline:2px solid var(--primary-color);outline-offset:2px}
+      .grid{stroke:var(--divider-color);stroke-width:1;stroke-dasharray:2 3}.rowline{stroke:var(--divider-color);stroke-width:.7}
+      .axis,.label{fill:var(--secondary-text-color);font:12px sans-serif}.label{fill:var(--primary-text-color)}
+      .block-label{fill:white;font:10px sans-serif;pointer-events:none}.marker{stroke:var(--primary-text-color);stroke-width:1;stroke-dasharray:3 3}
+      .readout{min-height:2.6em;margin:6px 4px 0;color:var(--secondary-text-color);font-size:.82em;line-height:1.3}
+      .message{padding:20px 0;color:var(--secondary-text-color)}
+    </style><div class="wrap">${body}</div></ha-card>`;
+    this._bindCharts();
   }
 }
 
@@ -1982,5 +2390,16 @@ if (!customElements.get(CASCADE_CARD_TYPE)) {
     description: "Storage SOC, active source, Root/Aux energy, recovery and faults.",
     preview: true,
     documentationURL: DOCS_URL,
+    getEntitySuggestion: (hass, entityId) => {
+      if (
+        entityId.startsWith("sensor.") &&
+        isForecastEntity(hass.states[entityId])
+      ) {
+        return {
+          config: { type: `custom:${CASCADE_CARD_TYPE}`, entity: entityId },
+        };
+      }
+      return null;
+    },
   });
 }

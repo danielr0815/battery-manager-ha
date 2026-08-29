@@ -130,14 +130,16 @@ Two things worth knowing:
 ## Dashboard cards (bundled)
 
 The integration ships its own Lovelace cards — no extra HACS frontend
-download. Both register automatically from one bundled module:
+download. All three register automatically from one bundled module:
 
 - **Battery Manager Forecast** renders the planned SOC trajectory, the
   inverter threshold T*, the reserve zone, the per-load surplus schedule
   and any detected appliance runs (washer, dishwasher, …), all from
-  `sensor.…_soc_forecast`. Storage cascades get one separate timeline lane;
-  hovering a slot shows its Root/Aux source, charging members and terminal
-  load energy.
+  `sensor.…_soc_forecast`. Storage cascades appear as one black-box timeline
+  lane containing only their Root-boundary energy per slot.
+- **Battery Manager Cascades** renders a separate detailed timeline with rows
+  for Root input, charge, discharge and AC output of every storage member plus
+  the terminal load. Hovering shows Wh, Root/Aux source and planned SOC change.
 - **Battery Manager Consumption** (v0.25.5+) renders the planned
   consumption per hour as stacked bars by voltage level — 230 V AC
   (base + appliances), 48 V, 24 V — with the planned surplus loads as
@@ -149,8 +151,8 @@ To add a card:
 - **Easiest (HA 2026.6+):** edit a dashboard → *Add card* → pick the
   `…SOC forecast` sensor — **Battery Manager Forecast** appears as a
   suggestion with a live preview.
-- Or search the card picker for *Battery Manager Forecast* or *Battery
-  Manager Consumption* (listed under *Community*).
+- Or search the card picker for *Battery Manager Forecast*, *Battery Manager
+  Cascades* or *Battery Manager Consumption* (listed under *Community*).
 - Or via YAML:
 
   ```yaml
@@ -163,6 +165,12 @@ To add a card:
 
   ```yaml
   type: custom:battery-manager-consumption-card
+  entity: sensor.battery_manager_soc_forecast
+  # optional: title / hours as above
+  ```
+
+  ```yaml
+  type: custom:battery-manager-cascade-card
   entity: sensor.battery_manager_soc_forecast
   # optional: title / hours as above
   ```

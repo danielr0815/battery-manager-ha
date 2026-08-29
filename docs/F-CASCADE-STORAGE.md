@@ -102,14 +102,23 @@ Automation, Fault und Fault-Reset. Alte Member-/Leaf-Empfehlungen bleiben für
 API-Kompatibilität vorhanden, sind aber AUS und tragen
 `managed_by_cascade=<id>`.
 
-Der Forecast-Sensor veröffentlicht je Kaskade zusätzlich `schedule`: genau ein
-Block pro belegtem Plan-Slot mit `start`/`end`, Root-Grenzenergie, terminaler
-Energie, den Quellen `root`/`aux` und einer Aktivitätsliste. Eine Aktivität
-benennt entweder die Ladeenergie eines Mitglieds oder die von Root bzw. einem
-Aux-Speicher gelieferte Energie der Endlast. Die Forecast-Card rendert daraus
-eine eigene Zeitspur je Kaskade; Kaskadenmitglieder bleiben aus den normalen
-Lastspuren ausgeschlossen, damit eine physische Kette nicht als mehrere
-unabhängige Lasten erscheint.
+Der Forecast-Sensor veröffentlicht je Kaskade zusätzlich den lesbaren
+`source_name`, `member_details`, `terminal_name` und `schedule`: genau ein
+Block pro belegtem Plan-Slot mit
+`start`/`end`, Root-Grenzenergie, terminaler Energie, den Quellen `root`/`aux`
+und einer Aktivitätsliste. Aktivitäten unterscheiden Mitgliedsladung,
+Mitgliedsentladung, benötigte AC-Ausgänge und die von Root bzw. einem
+Aux-Speicher gelieferte Endlastenergie. Lade-/Entladeaktivitäten tragen die
+Slot-SOC-Grenzen; Laden nennt zusätzlich die gespeicherte Energie.
+
+Die SOC-Forecast-Card behandelt die gesamte Kaskade als Black Box: Eine
+einzige Spur zeigt ausschließlich Slots mit Root-Aufnahme und deren Wh.
+Aux-only-Aktivität und interne Details erscheinen dort nicht. Die separate
+`battery-manager-cascade-card` zeichnet Root-Aufnahme, Laden, Entladen und
+AC-Ausgang jedes Mitglieds sowie die Endlast als eigene Zeilen. Damit bleibt
+der elektrische Außenbezug im Gesamtbild eindeutig, während die eigene
+Kaskaden-Zeitspur den vollständigen internen Plan erklärt. Kaskadenmitglieder
+bleiben aus den normalen Lastspuren ausgeschlossen.
 
 Ein Slot ohne Mitgliedsladung und ohne Endlastsegment hat exakt `0 Wh`
 Root-Energie. Insbesondere darf der interne Output-Overhead bei der
@@ -121,6 +130,11 @@ Aux-Energie. Root-/Surplusbilanz wird ausschließlich am Root-Messpunkt gebucht;
 interne Zähler werden nie summiert. Topologie, Automation, Episode, Quelle,
 Recovery, Claims, Fault/Hands-off, Retry, SOC-Cache und Tagesenergie werden
 persistiert; Powerfenster und HA-Offline-Zeit nicht.
+
+Die Executor-Phasen `recovering` und `complete` sind reine Diagnosen, keine
+Actor-Freigabe. Auch in diesen Phasen wird Safe-OFF idempotent durchgesetzt.
+Entfällt ein Aux-Segment während `running`, wird der Pfad sofort beendet und
+wechselt abhängig vom offenen Recovery-Ziel nach `recovering` oder `complete`.
 
 ## Migration und Betrieb
 

@@ -4,11 +4,14 @@ Eine Cascade-Subentry erzeugt Root-Empfehlung, Mode/Forecast, gewichteten SOC,
 Automation, Fault und Fault-Reset. Der SOC-Prognose-Sensor liefert `cascades`;
 `custom:battery-manager-cascade-card` rendert diesen Vertrag.
 
-Seit v0.28.0 enthält jeder `cascades[]`-Eintrag außerdem eine per-Slot
-`schedule` für die eigene Kaskaden-Zeitspur der Forecast-Card. Jeder Block
-trägt `start`, `end`, `root_input_wh`, `terminal_energy_wh`, `sources` und
-`activities`; letztere unterscheiden Mitgliedsladung (`kind: charge`) von
-Endlastversorgung (`kind: terminal`) und nennen Energie sowie Root/Aux-Quelle.
+Seit v0.29.0 enthält jeder `cascades[]`-Eintrag `source_name`, `member_details`,
+`terminal_name` und eine per-Slot `schedule`. Jeder Block trägt `start`, `end`,
+`root_input_wh`, `terminal_energy_wh`, `sources` und `activities`; letztere
+unterscheiden Mitgliedsladung (`charge`), Mitgliedsentladung (`discharge`),
+benötigten AC-Ausgang (`output`) und Endlastversorgung (`terminal`). Laden und
+Entladen nennen Energie und SOC-Verlauf, Laden zusätzlich gespeicherte Energie.
+Die Forecast-Card zeigt die Kaskade ausschließlich als Root-Black-Box-Spur;
+die separate Cascade-Card zeichnet alle internen Aktivitäten zeilenweise.
 Der Kaskaden-Automationsschalter zeigt `phase`, `hands_off` und `fault` als
 Attribute. `hands_off=true` bei ausgeschalteter Automation bedeutet bei einem
 Shared Actor eine externe Zustandsänderung gegen einen weiterhin benötigten

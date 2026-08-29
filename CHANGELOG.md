@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-30
+
+### Added
+- Die separate Kaskadenkarte zeigt einen grafischen 6–96-Stunden-Zeitplan mit
+  eigenen Zeilen für Root-Aufnahme, Laden, Entladen und AC-Ausgang jedes
+  Speichers sowie für die Endlast. Der Zeit-Hover nennt Wh, Root-/Aux-Quelle,
+  gespeicherte Energie und den geplanten SOC-Verlauf.
+- Der Kaskaden-Zeitplandatenvertrag veröffentlicht Mitgliedsnamen, Endlastname,
+  Lade-/Entladeflüsse, SOC-Grenzen und den explizit benötigten AC-Ausgangspfad.
+  Karten aus älteren Versionen ohne `entity` finden den Forecast-Sensor
+  automatisch; der Karten-Picker und Editor setzen ihn künftig explizit.
+
+### Changed
+- Die SOC-Prognose behandelt jede Kaskade als Black Box: Ihre einzelne Spur
+  zeigt ausschließlich wann und mit wie vielen Wh sie am Root Energie
+  aufnimmt. Interne Aux- und Mitgliedsdetails stehen nur noch in der
+  Kaskadenkarte.
+
+### Fixed
+- Wird ein Aux-Plan während einer laufenden Episode zurückgezogen oder ist die
+  Kaskade bereits `complete`, erzwingt der Executor weiterhin idempotentes
+  Safe-OFF. Fossibot-Ausgänge und Endlast bleiben nach Planende dadurch nicht
+  mehr eingeschaltet; die aussagekräftige Phase `recovering` bzw. `complete`
+  bleibt trotzdem sichtbar.
+
 ## [0.28.0] - 2026-08-30
 
 ### Added
