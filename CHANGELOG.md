@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-08-29
+
+### Fixed
+- Shared-Aktoren akzeptieren nun die vom Kaskaden-Manager selbst geplante
+  Zustandsänderung nach einem vorherigen Claim. Echte externe Abweichungen
+  führen weiterhin ohne Rollback in den Hands-off-Zustand.
+
 ## [0.27.1] - 2026-08-27
 
 ### Fixed

@@ -208,20 +208,15 @@ class CascadeManager:
         cascade_id: str,
         entity_id: str | None,
         turn_on: bool,
-        actor_mode: str = ACTOR_MODE_EXCLUSIVE,
     ) -> bool:
         if not entity_id:
             return True
         state = self._state(cascade_id)
-        if actor_mode == ACTOR_MODE_SHARED and state["claims"].get(entity_id) not in (
-            None,
-            turn_on,
-        ):
-            state["hands_off"] = True
-            state["enabled"] = False
-            state["claims"] = {}
-            self.coordinator._save_persistent_state()
-            return False
+        # Shared ownership only changes how an *external* deviation from our
+        # last claim is handled.  It must not reject our own next transition
+        # merely because the desired state differs from that previous claim.
+        # `_foreign_override` performs the actual-state comparison before a
+        # plan is applied and enters hands-off without rollback when needed.
         cascade = self.coordinator.entry.subentries.get(cascade_id)
         timeout_s = int(
             cascade.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30) if cascade else 30
@@ -269,21 +264,18 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_OUTPUT_SWITCH),
                 False,
-                data.get(CONF_LOAD_OUTPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             )
         for _load_id, data in topology["members"]:
             ok &= await self._actor(
                 cascade_id,
                 data.get(CONF_LOAD_CHARGE_ENABLE),
                 False,
-                data.get(CONF_LOAD_GATE_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             )
         root = topology["members"][0][1]
         ok &= await self._actor(
             cascade_id,
             root.get(CONF_LOAD_CONTROL_SWITCH),
             False,
-            root.get(CONF_LOAD_INPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
         )
         self._proof.pop(cascade_id, None)
         state = self._state(cascade_id)
@@ -314,14 +306,12 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_OUTPUT_SWITCH),
                 False,
-                data.get(CONF_LOAD_OUTPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         if not await self._actor(
             cascade_id,
             root_data.get(CONF_LOAD_CONTROL_SWITCH),
             False,
-            root_data.get(CONF_LOAD_INPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
         ):
             return False
         state = self._state(cascade_id)
@@ -346,7 +336,6 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_CHARGE_ENABLE),
                 False,
-                data.get(CONF_LOAD_GATE_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         root_data = topology["members"][0][1]
@@ -354,7 +343,6 @@ class CascadeManager:
             cascade_id,
             root_data.get(CONF_LOAD_CONTROL_SWITCH),
             True,
-            root_data.get(CONF_LOAD_INPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
         ):
             return False
         for _load_id, data in topology["members"]:
@@ -362,7 +350,6 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_OUTPUT_SWITCH),
                 True,
-                data.get(CONF_LOAD_OUTPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         state["source"] = source_id
@@ -403,7 +390,6 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_CHARGE_ENABLE),
                 False,
-                data.get(CONF_LOAD_GATE_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         root = topology["members"][0][1]
@@ -411,7 +397,6 @@ class CascadeManager:
             cascade_id,
             root.get(CONF_LOAD_CONTROL_SWITCH),
             True,
-            root.get(CONF_LOAD_INPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
         ):
             return False
         for index, (_load_id, data) in enumerate(topology["members"]):
@@ -420,7 +405,6 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_OUTPUT_SWITCH),
                 output_needed,
-                data.get(CONF_LOAD_OUTPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
@@ -437,7 +421,6 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_CHARGE_ENABLE),
                 charging,
-                data.get(CONF_LOAD_GATE_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         self._state(cascade_id)["phase"] = (
@@ -462,7 +445,6 @@ class CascadeManager:
                 cascade_id,
                 data.get(CONF_LOAD_OUTPUT_SWITCH),
                 needed,
-                data.get(CONF_LOAD_OUTPUT_ACTOR_MODE, ACTOR_MODE_EXCLUSIVE),
             ):
                 return False
         state = self._state(cascade_id)

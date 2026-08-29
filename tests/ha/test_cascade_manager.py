@@ -15,6 +15,7 @@ from custom_components.battery_manager.const import (
     CONF_CASCADE_TERMINAL_LOAD_ID,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_INPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
     CONF_LOAD_OUTPUT_SWITCH,
@@ -50,7 +51,13 @@ class _States:
 
 
 class _Coordinator:
-    def __init__(self, now: datetime, *, shared: bool = False) -> None:
+    def __init__(
+        self,
+        now: datetime,
+        *,
+        shared: bool = False,
+        shared_input: bool = False,
+    ) -> None:
         storage_data = {
             CONF_LOAD_SOC_ENTITY: "sensor.soc",
             CONF_LOAD_CONTROL_SWITCH: "switch.input",
@@ -60,6 +67,8 @@ class _Coordinator:
         }
         if shared:
             storage_data[CONF_LOAD_OUTPUT_ACTOR_MODE] = ACTOR_MODE_SHARED
+        if shared_input:
+            storage_data[CONF_LOAD_INPUT_ACTOR_MODE] = ACTOR_MODE_SHARED
         self.entry = SimpleNamespace(
             entry_id="entry",
             subentries={
@@ -120,6 +129,23 @@ def _aux_plan(now: datetime):
         aggregate_soc_stale=False,
         planned_root_energy_wh=0.0,
         planned_aux_energy_wh=150.0,
+    )
+
+
+def _root_plan(now: datetime):
+    segment = CascadeSourceSegment(0, 0.0, 1.0, "direct_pv", None, True, 300.0)
+    return SimpleNamespace(
+        flows=(
+            CascadeSlotFlow(
+                root_input_wh=600.0,
+                segments=(segment,),
+                member_flows=(
+                    CascadeMemberFlow("b1", 50, 60, own_charge_input_wh=300),
+                ),
+            ),
+        ),
+        provisional_live_soc_required=False,
+        recovery_deadline=now + timedelta(hours=6),
     )
 
 
@@ -198,23 +224,9 @@ async def test_root_passthrough_and_safe_off_order() -> None:
     coordinator = _Coordinator(now)
     manager = CascadeManager(coordinator)
     manager._state("chain")["enabled"] = True
-    root_segment = CascadeSourceSegment(0, 0.0, 1.0, "direct_pv", None, True, 300.0)
-    root_plan = SimpleNamespace(
-        flows=(
-            CascadeSlotFlow(
-                root_input_wh=600.0,
-                segments=(root_segment,),
-                member_flows=(
-                    CascadeMemberFlow("b1", 50, 60, own_charge_input_wh=300),
-                ),
-            ),
-        ),
-        provisional_live_soc_required=False,
-        recovery_deadline=now + timedelta(hours=6),
-    )
     await manager._apply_one(
         "chain",
-        root_plan,
+        _root_plan(now),
         (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
         now,
     )
@@ -231,6 +243,33 @@ async def test_root_passthrough_and_safe_off_order() -> None:
         ("switch.gate", False),
         ("switch.input", False),
     ]
+
+
+async def test_shared_actor_allows_manager_owned_state_transition() -> None:
+    """A new plan may intentionally reverse the manager's previous claim."""
+    now = datetime(2026, 8, 23, 6)
+    coordinator = _Coordinator(now, shared_input=True)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+
+    assert await manager.async_safe_off("chain", "test setup")
+    assert state["claims"]["switch.input"] is False
+    coordinator.calls.clear()
+
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["enabled"]
+    assert not state["hands_off"]
+    assert state["fault"] is None
+    assert state["phase"] == "root"
+    assert state["claims"]["switch.input"] is True
+    assert ("switch.input", True) in coordinator.calls
 
 
 async def test_shared_foreign_change_enters_hands_off() -> None:
