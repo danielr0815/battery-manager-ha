@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-08-29
+
+### Fixed
+- Kaskaden-Aktoren mit echter Zustandsrückmeldung erhalten ihren Claim erst,
+  nachdem Home Assistant den angeforderten Zustand innerhalb des konfigurierten
+  Timeouts bestätigt hat. Verzögerte Fossibot-Outputs lösen beim Kettenstart
+  dadurch keinen falschen exklusiven Fremdeingriff mehr aus.
+- Bereits bestätigte Actor-Zustände werden ohne erneuten Service-Aufruf
+  übernommen. Wiederholtes Safe-OFF kann toggle-artige Fossibot-Outputs daher
+  nicht mehr in eine synchrone Ein-/Aus-Schleife versetzen.
+
 ## [0.27.2] - 2026-08-29
 
 ### Fixed

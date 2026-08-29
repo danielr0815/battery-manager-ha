@@ -31,6 +31,11 @@ Der Devcontainer ist **CI-verifiziert**: der `devcontainer`-Job in
 mypy darin aus (`devcontainers/ci`); lokal geht das mit der devcontainer-CLI
 (`devcontainer up` / `devcontainer exec`) genauso.
 
+## Live-Systemzugriff
+
+- Live-Prüfungen in Home Assistant mit **Playwright** über MCP durchführen.
+- Ziel: `hass.rsn.ro-la.de:8123/`.
+
 ## Tests
 
 ```bash

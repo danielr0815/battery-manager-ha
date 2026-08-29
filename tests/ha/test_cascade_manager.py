@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from custom_components.battery_manager import cascade_manager as cascade_manager
 from custom_components.battery_manager.cascade_manager import CascadeManager
 from custom_components.battery_manager.const import (
     ACTOR_MODE_SHARED,
+    CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
     CONF_LOAD_CHARGE_ENABLE,
@@ -162,7 +164,6 @@ async def test_wake_order_and_two_sample_power_proof() -> None:
         now,
     )
     assert coordinator.calls == [
-        ("switch.gate", False),
         ("switch.input", True),
         ("switch.output", True),
         ("switch.leaf", True),
@@ -203,7 +204,6 @@ async def test_sleeping_member_wakes_before_terminal_is_energised() -> None:
     state = manager._state("chain")
     assert state["phase"] == "waking_socs"
     assert coordinator.calls == [
-        ("switch.gate", False),
         ("switch.input", True),
         ("switch.output", True),
     ]
@@ -243,6 +243,67 @@ async def test_root_passthrough_and_safe_off_order() -> None:
         ("switch.gate", False),
         ("switch.input", False),
     ]
+
+
+async def test_root_start_waits_for_delayed_output_confirmation() -> None:
+    """Delayed Fossibot feedback is our transition, not an external override."""
+    now = datetime(2026, 8, 29, 23)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+
+    async def delayed_switch(entity_id: str, turn_on: bool) -> bool:
+        coordinator.calls.append((entity_id, turn_on))
+        entity = coordinator.hass.states.values[entity_id]
+        if entity_id == "switch.output" and turn_on:
+            asyncio.get_running_loop().call_later(0.02, setattr, entity, "state", "on")
+        else:
+            entity.state = "on" if turn_on else "off"
+        return True
+
+    coordinator._switch_entity = delayed_switch
+    live = (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    # A second immediate pass used to see output=off against claim=True and
+    # hard-fault the exclusive actor before its delayed state publication.
+    await manager._apply_one("chain", _root_plan(now), live, now)
+
+    assert state["fault"] is None
+    assert state["enabled"]
+    assert state["phase"] == "root"
+    assert state["claims"]["switch.output"] is True
+
+
+async def test_repeated_safe_off_does_not_rewrite_confirmed_off_actors() -> None:
+    """Inactive refreshes cannot turn a toggle-like output into an ON/OFF loop."""
+    now = datetime(2026, 8, 29, 23)
+    coordinator = _Coordinator(now)
+    coordinator.hass.states.values["switch.output"].state = "on"
+    manager = CascadeManager(coordinator)
+
+    assert await manager.async_safe_off("chain", "first")
+    assert await manager.async_safe_off("chain", "second")
+
+    assert coordinator.calls == [("switch.output", False)]
+    assert coordinator.hass.states.values["switch.output"].state == "off"
+
+
+async def test_actor_requires_confirmation_before_claiming() -> None:
+    now = datetime(2026, 8, 29, 23)
+    coordinator = _Coordinator(now)
+    coordinator.entry.subentries["chain"].data[CONF_CASCADE_ACTOR_TIMEOUT_S] = 0.01
+    manager = CascadeManager(coordinator)
+
+    async def unconfirmed_switch(entity_id: str, turn_on: bool) -> bool:
+        coordinator.calls.append((entity_id, turn_on))
+        return True
+
+    coordinator._switch_entity = unconfirmed_switch
+
+    assert not await manager._actor("chain", "switch.output", True)
+    assert "switch.output" not in manager._state("chain")["claims"]
 
 
 async def test_shared_actor_allows_manager_owned_state_transition() -> None:
@@ -388,20 +449,16 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     assert payload["members"] == ["b1"]
     assert payload["assumed_state_actors"] == ["switch.input"]
 
-    # Inactive/faulted apply still executes the central safe-off contract and
-    # exercises the per-chain parallel lock/gather wrapper.
+    # Inactive/faulted apply still evaluates the central safe-off contract and
+    # exercises the per-chain parallel lock/gather wrapper. Actors already
+    # confirmed OFF receive no redundant service calls.
     await manager.async_apply(
         config,
         result,
         (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
         now,
     )
-    assert coordinator.calls[-4:] == [
-        ("switch.leaf", False),
-        ("switch.output", False),
-        ("switch.gate", False),
-        ("switch.input", False),
-    ]
+    assert coordinator.calls == []
 
 
 async def test_handover_power_edge_cases_and_fault_reset(

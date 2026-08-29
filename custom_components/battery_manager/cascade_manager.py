@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 _PROOF_SECONDS = 60
 _RETRY_DELAY = timedelta(minutes=15)
+_ACTOR_CONFIRM_POLL_S = 0.1
 
 
 class CascadeManager:
@@ -217,20 +218,41 @@ class CascadeManager:
         # merely because the desired state differs from that previous claim.
         # `_foreign_override` performs the actual-state comparison before a
         # plan is applied and enters hands-off without rollback when needed.
+        target_state = "on" if turn_on else "off"
+        current = self.coordinator.hass.states.get(entity_id)
+        if current is not None and current.state == target_state:
+            # Live incident 2026-08-29: both Fossibot outputs reported slow,
+            # effectively toggle-like behaviour under repeated writes.
+            # Re-sending OFF on every inactive plan pass made both outputs
+            # oscillate every ~12 s.  A confirmed target state is already a
+            # successful, adoptable transition and must never be rewritten.
+            state["claims"][entity_id] = turn_on
+            return True
         cascade = self.coordinator.entry.subentries.get(cascade_id)
-        timeout_s = int(
+        timeout_s = float(
             cascade.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30) if cascade else 30
         )
         try:
             async with asyncio.timeout(timeout_s):
                 ok = await self.coordinator._switch_entity(entity_id, turn_on)
+                if not ok:
+                    return False
+                while True:
+                    current = self.coordinator.hass.states.get(entity_id)
+                    if current is not None and current.attributes.get("assumed_state"):
+                        # A completed service call is the strongest evidence an
+                        # assumed-state actor exposes; it cannot confirm more.
+                        break
+                    if current is not None and current.state == target_state:
+                        break
+                    await asyncio.sleep(_ACTOR_CONFIRM_POLL_S)
         except TimeoutError:
-            ok = False
-        if ok:
-            # `assumed_state` actors explicitly use logical confirmation: a
-            # completed service call is the strongest evidence they expose.
-            state["claims"][entity_id] = turn_on
-        return ok
+            return False
+        # Only a confirmed (or explicitly assumed-state) transition becomes a
+        # claim.  Otherwise the next plan could mistake delayed feedback for
+        # an exclusive external override during cascade startup.
+        state["claims"][entity_id] = turn_on
+        return True
 
     async def _fault(self, cascade_id: str, reason: str) -> None:
         state = self._state(cascade_id)

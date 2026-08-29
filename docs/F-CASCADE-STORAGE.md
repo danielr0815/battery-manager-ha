@@ -82,6 +82,11 @@ Der Erst-Wake ist geordnet:
 Der vollständige Wake erhält genau einen Retry nach 15 Minuten. Ein
 erfolgreicher Service-Aufruf bestätigt einen `assumed_state`-Actor logisch; die
 fehlende physische Rückmeldung ist als Diagnoseeinschränkung zu verstehen.
+Bei Actoren mit echter Zustandsrückmeldung gilt der Service-Aufruf allein
+dagegen nicht als Bestätigung: Der Manager wartet innerhalb des konfigurierten
+Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst dann seinen
+Claim. Ein bereits bestätigter Zielzustand wird ohne redundanten Service-Aufruf
+übernommen; damit bleibt insbesondere wiederholtes Safe-OFF idempotent.
 
 Floor- und Safety-Abbrüche übersteuern Dwell. Safe-OFF schaltet die Endlast,
 Outputs downstream→upstream, Charge-Gates und Root aus. Ein Safe-OFF-Fehler
@@ -110,4 +115,3 @@ v1-Payload. Vor Aktivierung im exklusiven Modus müssen Fremdautomationen auf
 denselben Aktoren deaktiviert werden, insbesondere die bekannte
 `automation.f2400_b_ac_out_off`; alternativ wird der betreffende Actor bewusst
 auf `shared` gestellt.
-
