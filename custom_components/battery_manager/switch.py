@@ -244,6 +244,17 @@ class CascadeAutomationSwitch(BatteryManagerEntity, SwitchEntity):
     def is_on(self) -> bool:
         return self.coordinator.cascade_enabled(self._subentry_id)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        plan = ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
+            self._subentry_id, {}
+        )
+        return {
+            "phase": plan.get("phase"),
+            "hands_off": bool(plan.get("hands_off")),
+            "fault": plan.get("fault"),
+        }
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         if await self.coordinator.async_set_cascade_enabled(self._subentry_id, True):
             self.async_write_ha_state()

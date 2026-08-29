@@ -30,9 +30,11 @@ from custom_components.battery_manager.core import (
     CascadeMemberFlow,
     CascadeSlotFlow,
     CascadeSourceSegment,
+    HourSlot,
     LoadCascade,
     SurplusLoadState,
 )
+from custom_components.battery_manager.switch import CascadeAutomationSwitch
 
 
 class _States:
@@ -149,6 +151,27 @@ def _root_plan(now: datetime):
         provisional_live_soc_required=False,
         recovery_deadline=now + timedelta(hours=6),
     )
+
+
+def test_automation_switch_exposes_hands_off_reason() -> None:
+    entity = SimpleNamespace(
+        coordinator=SimpleNamespace(
+            data={
+                "cascade_plans": {
+                    "chain": {
+                        "phase": "hands_off",
+                        "hands_off": True,
+                        "fault": None,
+                    }
+                }
+            }
+        ),
+        _subentry_id="chain",
+    )
+
+    attrs = CascadeAutomationSwitch.extra_state_attributes.fget(entity)
+
+    assert attrs == {"phase": "hands_off", "hands_off": True, "fault": None}
 
 
 async def test_wake_order_and_two_sample_power_proof() -> None:
@@ -354,6 +377,35 @@ async def test_shared_foreign_change_enters_hands_off() -> None:
     assert coordinator.calls == []
 
 
+async def test_shared_auto_off_is_adopted_when_fresh_plan_is_idle() -> None:
+    """A zero-power plug's expected OFF is convergence, not a takeover."""
+    now = datetime(2026, 8, 29, 23, 28)
+    coordinator = _Coordinator(now, shared_input=True)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    state["phase"] = "root"
+    state["claims"] = {"switch.input": True}
+    coordinator.hass.states.values["switch.input"].state = "off"
+    idle_plan = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=None,
+    )
+
+    await manager._apply_one(
+        "chain",
+        idle_plan,
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["enabled"]
+    assert not state["hands_off"]
+    assert state["phase"] == "idle"
+    assert state["claims"]["switch.input"] is False
+    assert coordinator.calls == []
+
+
 async def test_enable_requires_all_off_and_fresh_soc() -> None:
     now = datetime(2026, 8, 23, 6)
     coordinator = _Coordinator(now)
@@ -442,12 +494,54 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     result = SimpleNamespace(cascade_plans=(cascade_plan,))
     config = SimpleNamespace(cascades=(core_cascade,))
     coordinator.hass.states.values["switch.input"].attributes["assumed_state"] = True
-    payload = manager.payload(result, config)["chain"]
+    slots = (HourSlot(0, now, 1.0, 6, 0.0, 0.0, 0.0),)
+    payload = manager.payload(result, config, slots)["chain"]
     assert payload["fault"] == "demo"
     assert payload["planned_aux_energy_kwh"] == 0.15
     assert payload["actual_aux_energy_kwh"] == 0.125
     assert payload["members"] == ["b1"]
     assert payload["assumed_state_actors"] == ["switch.input"]
+    assert payload["schedule"] == [
+        {
+            "start": now.isoformat(),
+            "end": (now + timedelta(hours=1)).isoformat(),
+            "root_input_wh": 0.0,
+            "terminal_energy_wh": 150.0,
+            "sources": ["aux"],
+            "activities": [
+                {
+                    "kind": "terminal",
+                    "load_id": "leaf",
+                    "name": "Leaf",
+                    "energy_wh": 150.0,
+                    "source": "aux",
+                    "source_load_id": "b1",
+                    "source_name": "B1",
+                }
+            ],
+        }
+    ]
+    root_schedule = manager._schedule_payload(core_cascade, _root_plan(now), slots)
+    assert root_schedule[0]["sources"] == ["root"]
+    assert root_schedule[0]["root_input_wh"] == 600.0
+    assert root_schedule[0]["activities"] == [
+        {
+            "kind": "charge",
+            "load_id": "b1",
+            "name": "B1",
+            "energy_wh": 300.0,
+            "source": "root",
+        },
+        {
+            "kind": "terminal",
+            "load_id": "leaf",
+            "name": "Leaf",
+            "energy_wh": 300.0,
+            "source": "root",
+            "source_load_id": None,
+            "source_name": None,
+        },
+    ]
 
     # Inactive/faulted apply still evaluates the central safe-off contract and
     # exercises the per-chain parallel lock/gather wrapper. Actors already

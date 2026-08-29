@@ -35,7 +35,13 @@ from .const import (
     DOMAIN,
     SUBENTRY_TYPE_CASCADE,
 )
-from .core import CascadeRuntimeState, PlanResult, SurplusLoadState, SystemConfig
+from .core import (
+    CascadeRuntimeState,
+    HourSlot,
+    PlanResult,
+    SurplusLoadState,
+    SystemConfig,
+)
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -203,6 +209,48 @@ class CascadeManager:
             if actual != bool(claimed):
                 return modes.get(entity_id, ACTOR_MODE_EXCLUSIVE)
         return None
+
+    def _adopt_shared_safe_off(
+        self, cascade_id: str, topology: dict[str, Any], plan: Any
+    ) -> None:
+        """Accept an external Shared-OFF when the fresh plan is already idle."""
+        state = self._state(cascade_id)
+        if not state.get("enabled") or state.get("phase") in (
+            "waking",
+            "waking_socs",
+            "proving",
+            "running",
+        ):
+            return
+        flow = plan.flows[0] if plan.flows else None
+        if flow is not None and (
+            flow.root_input_wh > 0.0
+            or any(
+                segment.source == "aux" and segment.terminal_energy_wh > 0.0
+                for segment in flow.segments
+            )
+        ):
+            return
+        # The reference Root plug intentionally auto-switches off at zero
+        # power.  Once the fresh slot plan also wants Safe-OFF, that Shared
+        # transition is convergence, not an operator takeover.  Only OFF is
+        # adopted: an unexpected external ON still enters hands-off.
+        for _load_id, data in topology["members"]:
+            for actor_key, mode_key in (
+                (CONF_LOAD_CONTROL_SWITCH, CONF_LOAD_INPUT_ACTOR_MODE),
+                (CONF_LOAD_CHARGE_ENABLE, CONF_LOAD_GATE_ACTOR_MODE),
+                (CONF_LOAD_OUTPUT_SWITCH, CONF_LOAD_OUTPUT_ACTOR_MODE),
+            ):
+                entity_id = data.get(actor_key)
+                if not entity_id or data.get(mode_key) != ACTOR_MODE_SHARED:
+                    continue
+                current = self.coordinator.hass.states.get(entity_id)
+                if (
+                    state["claims"].get(entity_id) is True
+                    and current is not None
+                    and current.state == "off"
+                ):
+                    state["claims"][entity_id] = False
 
     async def _actor(
         self,
@@ -540,6 +588,7 @@ class CascadeManager:
         if topology is None:
             await self.async_safe_off(cascade_id, "invalid topology")
             return
+        self._adopt_shared_safe_off(cascade_id, topology, plan)
         foreign_mode = self._foreign_override(cascade_id, topology)
         if foreign_mode == ACTOR_MODE_SHARED:
             state["hands_off"] = True
@@ -740,7 +789,89 @@ class CascadeManager:
         if tasks:
             await asyncio.gather(*tasks)
 
-    def payload(self, result: PlanResult, config: SystemConfig) -> dict[str, Any]:
+    def _schedule_payload(
+        self,
+        cascade: Any,
+        plan: Any,
+        slots: tuple[HourSlot, ...],
+    ) -> list[dict[str, Any]]:
+        """Publish one inspectable timeline block per occupied cascade slot."""
+        if plan is None:
+            return []
+        subentries = self.coordinator.entry.subentries
+        terminal = subentries.get(cascade.terminal_load_id)
+        terminal_name = (
+            terminal.title if terminal is not None else cascade.terminal_load_id
+        )
+        schedule: list[dict[str, Any]] = []
+        for slot, flow in zip(slots, plan.flows, strict=False):
+            activities: list[dict[str, Any]] = []
+            for member_flow in flow.member_flows:
+                charge_wh = float(member_flow.own_charge_input_wh)
+                if charge_wh <= 0.0:
+                    continue
+                member = subentries.get(member_flow.load_id)
+                activities.append(
+                    {
+                        "kind": "charge",
+                        "load_id": member_flow.load_id,
+                        "name": (
+                            member.title if member is not None else member_flow.load_id
+                        ),
+                        "energy_wh": round(charge_wh, 1),
+                        "source": "root",
+                    }
+                )
+            for segment in flow.segments:
+                terminal_wh = float(segment.terminal_energy_wh)
+                if terminal_wh <= 0.0:
+                    continue
+                source = "aux" if segment.source == "aux" else "root"
+                source_entry = (
+                    subentries.get(segment.source_load_id)
+                    if segment.source_load_id
+                    else None
+                )
+                activities.append(
+                    {
+                        "kind": "terminal",
+                        "load_id": cascade.terminal_load_id,
+                        "name": terminal_name,
+                        "energy_wh": round(terminal_wh, 1),
+                        "source": source,
+                        "source_load_id": segment.source_load_id,
+                        "source_name": (
+                            source_entry.title if source_entry is not None else None
+                        ),
+                    }
+                )
+            if not activities and float(flow.root_input_wh) <= 0.0:
+                continue
+            sources = list(dict.fromkeys(item["source"] for item in activities))
+            schedule.append(
+                {
+                    "start": slot.start.isoformat(),
+                    "end": (slot.start + timedelta(hours=slot.duration)).isoformat(),
+                    "root_input_wh": round(float(flow.root_input_wh), 1),
+                    "terminal_energy_wh": round(
+                        sum(
+                            float(segment.terminal_energy_wh)
+                            for segment in flow.segments
+                        ),
+                        1,
+                    ),
+                    "sources": sources,
+                    "activities": activities,
+                }
+            )
+        return schedule
+
+    def payload(
+        self,
+        result: PlanResult,
+        config: SystemConfig,
+        slots: tuple[HourSlot, ...] = (),
+    ) -> dict[str, Any]:
         plans = {plan.cascade_id: plan for plan in result.cascade_plans}
         payload: dict[str, Any] = {}
         for cascade in config.cascades:
@@ -797,5 +928,10 @@ class CascadeManager:
                 ),
                 "members": [member.load_id for member in cascade.members],
                 "terminal_load_id": cascade.terminal_load_id,
+                # F-CASCADE-STORAGE: normal load lanes are intentionally
+                # suppressed while the cascade owns them.  This dedicated
+                # timeline preserves the per-slot plan instead of leaving the
+                # operator with horizon totals only.
+                "schedule": self._schedule_payload(cascade, plan, slots),
             }
         return payload

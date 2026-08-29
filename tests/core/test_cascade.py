@@ -227,6 +227,21 @@ def test_legacy_result_remains_without_cascade_payload() -> None:
     assert not any(item.managed_by_cascade for item in legacy.load_plans)
 
 
+def test_idle_slot_has_no_phantom_root_overhead() -> None:
+    """No active cascade path means zero Root energy even with two outputs."""
+    config, inputs = _system(members=2, socs=(90.0, 90.0), caps=True)
+    inputs = replace(
+        inputs,
+        cascade_runtime_states=(CascadeRuntimeState("chain", NOW.date(), "complete"),),
+    )
+
+    result = plan(config, inputs)
+
+    assert all(not load_plan.schedule[0] for load_plan in result.load_plans)
+    assert result.cascade_plans[0].flows[0].root_input_wh == 0.0
+    assert result.cascade_plans[0].flows[0].segments == ()
+
+
 def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     config, inputs = _system()
     legacy_config = replace(config, cascades=())

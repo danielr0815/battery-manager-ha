@@ -102,6 +102,20 @@ Automation, Fault und Fault-Reset. Alte Member-/Leaf-Empfehlungen bleiben für
 API-Kompatibilität vorhanden, sind aber AUS und tragen
 `managed_by_cascade=<id>`.
 
+Der Forecast-Sensor veröffentlicht je Kaskade zusätzlich `schedule`: genau ein
+Block pro belegtem Plan-Slot mit `start`/`end`, Root-Grenzenergie, terminaler
+Energie, den Quellen `root`/`aux` und einer Aktivitätsliste. Eine Aktivität
+benennt entweder die Ladeenergie eines Mitglieds oder die von Root bzw. einem
+Aux-Speicher gelieferte Energie der Endlast. Die Forecast-Card rendert daraus
+eine eigene Zeitspur je Kaskade; Kaskadenmitglieder bleiben aus den normalen
+Lastspuren ausgeschlossen, damit eine physische Kette nicht als mehrere
+unabhängige Lasten erscheint.
+
+Ein Slot ohne Mitgliedsladung und ohne Endlastsegment hat exakt `0 Wh`
+Root-Energie. Insbesondere darf der interne Output-Overhead bei der
+Sentinel-Position `deepest = -1` keine Phantomenergie erzeugen und B1 dadurch
+ohne geplante Aktivität starten.
+
 `cascade_plans` trennt geplante Root- und Aux-Energie sowie tatsächliche
 Aux-Energie. Root-/Surplusbilanz wird ausschließlich am Root-Messpunkt gebucht;
 interne Zähler werden nie summiert. Topologie, Automation, Episode, Quelle,
@@ -115,3 +129,13 @@ v1-Payload. Vor Aktivierung im exklusiven Modus müssen Fremdautomationen auf
 denselben Aktoren deaktiviert werden, insbesondere die bekannte
 `automation.f2400_b_ac_out_off`; alternativ wird der betreffende Actor bewusst
 auf `shared` gestellt.
+
+Wird ein `shared` Actor entgegen dem letzten Manager-Claim extern geändert,
+obwohl der frische Slotplan den geclaimten Zustand weiterhin benötigt, ist
+Automation AUS bei `hands_off=true` eine kontrollierte Besitzübergabe und kein
+Hard-Fault. Ein externes AUS, das bei einem inzwischen unbelegten Slot bereits
+dem frischen Safe-OFF-Ziel entspricht, wird dagegen als Konvergenz übernommen;
+das unterstützt insbesondere Root-Steckdosen mit normalem Nullleistungs-
+Auto-Off. Bei `exclusive` bleibt eine Abweichung ein Fault. Der
+Automation-Schalter veröffentlicht `phase`, `hands_off` und `fault` direkt als
+Attribute; nach Safe-OFF kann `shared` bewusst wieder aktiviert werden.

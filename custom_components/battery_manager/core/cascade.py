@@ -305,8 +305,17 @@ def _root_slot_energy(
             member_index = active_ids.index(load_id)
             deepest = max(deepest, member_index)
     overhead_h = inputs.slots[index].duration
-    overhead_wh = sum(
-        member.output_overhead_w * overhead_h for member in cascade.members[:deepest]
+    # F-CASCADE-STORAGE idle-slot observability: ``deepest == -1`` means that no member or
+    # terminal load is active.  Python's ``members[:-1]`` would otherwise count
+    # every output except the last as phantom Root energy, which started B1 even
+    # though the whole cascade schedule was idle (live incident 2026-08-29).
+    overhead_wh = (
+        sum(
+            member.output_overhead_w * overhead_h
+            for member in cascade.members[:deepest]
+        )
+        if deepest >= 0
+        else 0.0
     )
     return own_wh + overhead_wh, terminal_wh
 

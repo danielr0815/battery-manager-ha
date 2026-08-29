@@ -4013,7 +4013,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             "pv_window_ends": dict(result.pv_window_ends),
             "load_plans": load_plans,
-            "cascade_plans": self.cascade_manager.payload(result, config),
+            "cascade_plans": self.cascade_manager.payload(result, config, inputs.slots),
             # Detected appliance runs (washer, dishwasher, …) for the forecast
             # card: they already shape the AC consumption forecast but were
             # invisible on the card (operator request 2026-08-08). One block

@@ -135,7 +135,9 @@ download. Both register automatically from one bundled module:
 - **Battery Manager Forecast** renders the planned SOC trajectory, the
   inverter threshold T*, the reserve zone, the per-load surplus schedule
   and any detected appliance runs (washer, dishwasher, …), all from
-  `sensor.…_soc_forecast`.
+  `sensor.…_soc_forecast`. Storage cascades get one separate timeline lane;
+  hovering a slot shows its Root/Aux source, charging members and terminal
+  load energy.
 - **Battery Manager Consumption** (v0.25.5+) renders the planned
   consumption per hour as stacked bars by voltage level — 230 V AC
   (base + appliances), 48 V, 24 V — with the planned surplus loads as

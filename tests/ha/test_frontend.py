@@ -72,6 +72,38 @@ async def test_soc_forecast_sensor_single_point_and_empty_fallback(hass):
     assert sensor.native_value is None
 
 
+async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
+    """Cascade schedules survive as their own lane instead of normal loads."""
+    from custom_components.battery_manager.sensor import (
+        BatteryManagerSocForecastSensor,
+    )
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    sensor = BatteryManagerSocForecastSensor(coordinator)
+    block = {
+        "start": "2026-08-30T10:00:00",
+        "end": "2026-08-30T11:00:00",
+        "sources": ["root"],
+        "activities": [{"kind": "charge", "name": "B2", "energy_wh": 166.0}],
+    }
+    coordinator.data = {
+        "load_plans": {
+            "b2": {
+                "name": "B2",
+                "managed_by_cascade": "chain",
+                "schedule": [block],
+            }
+        },
+        "cascade_plans": {"chain": {"name": "Bad", "schedule": [block]}},
+    }
+
+    attrs = sensor.extra_state_attributes
+
+    assert attrs["loads"] == []
+    assert attrs["cascades"] == [{"name": "Bad", "schedule": [block]}]
+
+
 async def test_card_resource_created_updated_never_duplicated(hass):
     """Storage mode: resource is created once and updated on version change."""
 

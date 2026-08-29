@@ -32,6 +32,9 @@
  *   appliances                  detected running appliances (washer, …):
  *                                 [{name, active, schedule: [{start, end,
  *                                 wh}]}] — one block now -> run end
+ *   cascades                    storage cascades with one dedicated timeline
+ *                                 lane each; blocks expose Root/Aux source,
+ *                                 member charging and terminal service
  *
  * Vanilla web component (no build step, no external dependencies); theming
  * via Home Assistant CSS variables inside an <ha-card>.
@@ -71,7 +74,7 @@ const FEEDIN_COLOR = "var(--bmpc-feedin-color, #d81b60)";
 // Defensive caps: attributes are user-controlled input, and a broken or
 // hostile payload must not freeze the UI with megabytes of SVG.
 const MAX_POINTS = 1000; // forecast samples kept (stride-downsampled)
-const MAX_LANES = 8; // load + appliance + feed-in lanes below the plot
+const MAX_LANES = 12; // load + cascade + appliance + feed-in lanes below the plot
 const MAX_BLOCKS = 100; // schedule blocks rendered per lane
 
 const STRINGS = {
@@ -104,6 +107,10 @@ const STRINGS = {
     level_dc48: "48 V DC",
     level_dc24: "24 V DC",
     planned_loads: "planned loads",
+    cascade: "Cascade",
+    charging: "charging",
+    root: "Root",
+    aux: "Aux",
     total: "total",
     static_hint: "dimmed bars = static fallback profile",
     no_consumption:
@@ -139,6 +146,10 @@ const STRINGS = {
     level_dc48: "48 V DC",
     level_dc24: "24 V DC",
     planned_loads: "geplante Lasten",
+    cascade: "Kaskade",
+    charging: "laden",
+    root: "Root",
+    aux: "Aux",
     total: "Summe",
     static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
     no_consumption:
@@ -574,6 +585,35 @@ class BatteryManagerForecastCard extends HTMLElement {
         // feed-in lane derives it from the point's planned power.
         kind: "load",
       }));
+    // Cascade-managed loads do not appear in `loads`: the cascade owns their
+    // actors and publishes one separate lane with exact per-slot activities.
+    // Keeping the activities on the block lets hover answer both WHEN and WHAT
+    // without multiplying one physical chain into several misleading lanes.
+    const cascades = (Array.isArray(a.cascades) ? a.cascades : [])
+      .filter((cascade) => cascade && typeof cascade === "object")
+      .slice(0, MAX_LANES)
+      .map((cascade, i) => ({
+        name: `${t("cascade")} ${cascade.name ?? "?"}`,
+        phase: cascade.phase,
+        enabled: Boolean(cascade.enabled),
+        planned_root_energy_kwh: num(cascade.planned_root_energy_kwh) ?? 0,
+        planned_aux_energy_kwh: num(cascade.planned_aux_energy_kwh) ?? 0,
+        schedule: (Array.isArray(cascade.schedule) ? cascade.schedule : [])
+          .filter((block) => block && typeof block === "object")
+          .slice(0, MAX_BLOCKS)
+          .map((block) => ({
+            ...block,
+            activities: (Array.isArray(block.activities)
+              ? block.activities
+              : []
+            ).filter((activity) => activity && typeof activity === "object"),
+            label: (Array.isArray(block.sources) ? block.sources : [])
+              .map((source) => (source === "aux" ? t("aux") : t("root")))
+              .join("/"),
+          })),
+        kind: "cascade",
+        color: LOAD_COLORS[(loads.length + i) % LOAD_COLORS.length],
+      }));
     // Detected appliance runs (washer, dishwasher, …): the backend ships one
     // block per run (now -> run end) carrying the run's remaining energy.
     // Colors continue the load cycle so adjacent lanes differ.
@@ -588,7 +628,8 @@ class BatteryManagerForecastCard extends HTMLElement {
           .filter((b) => b && typeof b === "object")
           .slice(0, MAX_BLOCKS),
         kind: "appliance",
-        color: LOAD_COLORS[(loads.length + i) % LOAD_COLORS.length],
+        color:
+          LOAD_COLORS[(loads.length + cascades.length + i) % LOAD_COLORS.length],
       }));
     // Early grid feed-in (F-FEEDIN): same slot-ENDING semantics as the
     // support flags, but numeric — a contiguous run of points with
@@ -641,6 +682,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       : [];
     const lanes = [
       ...loads.filter((l) => l.schedule.length > 0),
+      ...cascades.filter((l) => l.schedule.length > 0),
       ...appliances.filter((l) => l.schedule.length > 0),
       ...feedinLanes,
     ].slice(0, MAX_LANES);
@@ -921,6 +963,19 @@ class BatteryManagerForecastCard extends HTMLElement {
       )
       .join("");
 
+    const cascadeLegend = cascades
+      .map((cascade) => {
+        const root = cascade.planned_root_energy_kwh.toFixed(2);
+        const aux = cascade.planned_aux_energy_kwh.toFixed(2);
+        const active = cascade.enabled
+          ? ` · <span class="active">${esc(cascade.phase ?? t("active"))}</span>`
+          : "";
+        return `<span><span class="dot" style="background:${cascade.color}"></span>${esc(
+          cascade.name
+        )} (${t("root")} ${root} kWh · ${t("aux")} ${aux} kWh)${active}</span>`;
+      })
+      .join("");
+
     return `
       <svg id="chart" role="img" tabindex="0" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -931,8 +986,8 @@ class BatteryManagerForecastCard extends HTMLElement {
         t("kbd_hint")
       )}</div>
       ${
-        legend || feedinLegend || applianceLegend
-          ? `<div class="legend">${legend}${feedinLegend}${applianceLegend}</div>`
+        legend || cascadeLegend || feedinLegend || applianceLegend
+          ? `<div class="legend">${legend}${cascadeLegend}${feedinLegend}${applianceLegend}</div>`
           : ""
       }
     `;
@@ -1032,16 +1087,17 @@ class BatteryManagerForecastCard extends HTMLElement {
       ((px - meta.margin.left) /
         (svg.viewBox.baseVal.width - meta.margin.left - 10)) *
         (meta.t1 - meta.t0);
-    let nearest = 0;
+    // Forecast points are slot boundaries: point 0 starts slot 0, point 1
+    // starts slot 1 while also carrying slot 0's ending SOC.  Selecting the
+    // last boundary at/before the pointer keeps the whole visible schedule
+    // rectangle mapped to its own block; nearest-point snapping lost the
+    // details over the right half of every lane block.
+    let slotIndex = 0;
     for (let i = 1; i < meta.points.length; i++) {
-      if (
-        Math.abs(meta.points[i].time - time) <
-        Math.abs(meta.points[nearest].time - time)
-      ) {
-        nearest = i;
-      }
+      if (meta.points[i].time > time) break;
+      slotIndex = i;
     }
-    this._showSlot(nearest);
+    this._showSlot(slotIndex);
   }
 
   _showSlot(index) {
@@ -1075,6 +1131,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       hour: "2-digit",
       minute: "2-digit",
     });
+    const t = (key) => localize(this._hass, key);
     // Which lanes (surplus loads, appliances, feed-in) cover the shown slot?
     // Blocks are [start, end); the crosshair snaps to `nearest`, so test that
     // point for membership to stay consistent with the marker the user sees.
@@ -1097,6 +1154,28 @@ class BatteryManagerForecastCard extends HTMLElement {
     const when = esc(`${fmt.format(nearest.time)} · ${nearest.soc} %`);
     const chips = activeLanes
       .map((lane) => {
+        const block = covering(lane);
+        if (lane.kind === "cascade") {
+          const details = (block?.activities || [])
+            .map((activity) => {
+              const wh = num(activity.energy_wh);
+              const energy = wh != null ? ` ${Math.round(wh)} Wh` : "";
+              if (activity.kind === "charge") {
+                return `${esc(activity.name ?? "?")} ${t("charging")}${energy}`;
+              }
+              const source =
+                activity.source === "aux"
+                  ? `${t("aux")}${
+                      activity.source_name ? ` ${esc(activity.source_name)}` : ""
+                    }`
+                  : t("root");
+              return `${esc(activity.name ?? "?")} ${source}${energy}`;
+            })
+            .join(" + ");
+          return `<span class="chip"><span class="dot" style="background:${lane.color}"></span>${esc(
+            lane.name ?? "?"
+          )}${details ? `: ${details}` : ""}</span>`;
+        }
         // Energy of THIS hour per lane (operator ask 2026-08-03): a load
         // carries it on the covering schedule block, the feed-in lane derives
         // it from the point's planned power x slot length. Appliance lanes
@@ -1108,7 +1187,7 @@ class BatteryManagerForecastCard extends HTMLElement {
             wh = w * slotHours;
           }
         } else if (lane.kind !== "appliance") {
-          const booked = num(covering(lane)?.wh);
+          const booked = num(block?.wh);
           if (booked != null && booked > 0) {
             wh = booked;
           }

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-30
+
+### Added
+- Die SOC-Prognosekarte zeigt jede Speicher-Kaskade in einer eigenen Zeitspur.
+  Der Hover nennt pro Slot Root-/Aux-Quelle, geladene Mitglieder und die
+  Energie der terminalen Last.
+- Der Kaskaden-Automationsschalter veröffentlicht Phase, Hands-off und Fault
+  als Diagnoseattribute. Eine Abschaltung wegen eines Shared-Eingriffs gegen
+  den weiterhin benötigten Planzustand ist damit direkt als kontrollierte
+  Besitzübergabe erkennbar.
+
+### Fixed
+- Ein vollständig unbelegter Kaskaden-Slot zählt keinen Output-Overhead mehr
+  als Phantom-Root-Energie. B1 wird dadurch nicht mehr ohne geplante Last
+  eingeschaltet und kann nicht anschließend durch ein externes Auto-Off
+  unnötig in Hands-off geraten.
+- Das normale Nullleistungs-Auto-Off eines Shared Actors wird übernommen, wenn
+  der frische Slotplan ebenfalls Safe-OFF verlangt. Nur eine Abweichung von
+  einem weiterhin benötigten Zustand führt noch zu Hands-off.
+
 ## [0.27.3] - 2026-08-29
 
 ### Fixed
