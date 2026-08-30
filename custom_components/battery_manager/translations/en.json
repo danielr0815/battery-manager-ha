@@ -361,8 +361,8 @@
             "target_soc_percent": "Target SOC (%)",
             "soc_entity": "SOC sensor (optional)",
             "charge_enable_entity": "Charge-enable entity (optional, e.g. input_boolean)",
-            "discharge_floor_soc_percent": "Discharge floor (%)",
-            "recovery_soc_percent": "Recovery target (%)",
+            "discharge_floor_soc_percent": "Safety floor (%)",
+            "recovery_soc_percent": "Cascade discharge target (%)",
             "wake_timeout_s": "Wake timeout (s)",
             "handover_min_power_w": "Minimum proof power (W)",
             "handover_timeout_s": "Handover timeout (s)",
@@ -383,6 +383,8 @@
           "data_description": {
             "capacity_wh": "Storage size of the load (only relevant if energy limited), e.g. 2000 for a 2 kWh powerstation.",
             "target_soc_percent": "The load is charged up to this state of charge; above it, it counts as full and is no longer scheduled.",
+            "discharge_floor_soc_percent": "Lower safety boundary. Normal cascade operation stops discharging at the cascade discharge target.",
+            "recovery_soc_percent": "The cascade may discharge the storage through its terminal load down to this SOC. Energy above the target may be used without proving same-day recharge.",
             "soc_entity": "State-of-charge sensor of the load. If the device sleeps (sensor unavailable), planning continues with the last known value.",
             "charge_enable_entity": "\"Battery may charge\" gate: switched together with the input. Allows powering the powerstation's output from the grid (passthrough) without charging the battery."
           }
@@ -401,7 +403,7 @@
         "cascade_member_incomplete": "Every storage needs SOC, charge gate, output actor and output power.",
         "cascade_root_input_required": "The first storage needs an input switch.",
         "cascade_nonroot_input_forbidden": "Only the first storage may have an input switch.",
-        "cascade_soc_order": "Floor < recovery <= target SOC is required.",
+        "cascade_soc_order": "Safety floor < cascade discharge target <= charge target SOC is required.",
         "cascade_handover_timeout": "Handover timeout must be at least 60 seconds.",
         "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only."
       },

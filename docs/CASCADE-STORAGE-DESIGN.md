@@ -1,16 +1,17 @@
 # Cascade storage design
 
 Status: Implementierungsdesign zu [F-CASCADE-STORAGE](F-CASCADE-STORAGE.md),
-v0.26.0.
+aktualisiert für v0.30.0.
 
 ## Schichten und Verantwortungen
 
 `core/model.py` definiert ausschließlich frozen Dataclasses. `core/cascade.py`
 legt die Kaskadenplanung um den bestehenden Allokator: Der Legacy-Plan wird
-zuerst unverändert erzeugt, ein Aux-Kandidat verändert den gemeinsamen
-Storage-SOC-Vektor, anschließend beweisen nominaler und gestresster Replan die
-Recovery bei normaler globaler Priorität. Erst dann wird der Kandidat
-angenommen. Der Pfad `SystemConfig.cascades == ()` ruft ausschließlich den
+zuerst unverändert erzeugt. Ein Aux-Kandidat darf ausschließlich Energie
+oberhalb der Kaskaden-Entladeziele nutzen und verändert den gemeinsamen
+Storage-SOC-Vektor; ein Replan verteilt spätere Root-Energie weiterhin nach der
+normalen globalen Priorität. Eine Wiederaufladung am selben Tag ist keine
+Vorbedingung. Der Pfad `SystemConfig.cascades == ()` ruft ausschließlich den
 alten Planner auf und ist der Kompatibilitätsanker für vorhandene Goldens.
 
 ```text
@@ -18,9 +19,7 @@ HA states → PlanInputs + persisted CascadeRuntimeState
                   │
           legacy Root allocation
                   │
-          candidate Aux discharge
-                  │
-       nominal + stressed recovery proof
+       Aux discharge above target
                   │
              CascadePlan
                   │
@@ -41,10 +40,11 @@ Aux-Batterieenergie bleiben interne `CascadeSlotFlow`-Daten. So bleiben
 Energiekarten frei von Doppelzählung.
 
 Die physische Quellenreihenfolge darf die globale Lastpriorität nicht umgehen.
-Deshalb besitzt der Kaskadenlayer keinen separaten Surplus-Allocator. Er nutzt
-das Ergebnis und denselben Replan des bestehenden Optimizers. Recovery wird
-nicht künstlich vorgezogen: Reicht die normale Priorität unter Nominal- oder
-Stress-PV nicht, findet kein Aux-Start statt.
+Deshalb besitzt der Kaskadenlayer keinen separaten Root-Surplus-Allocator. Er
+nutzt das Ergebnis und denselben Replan des bestehenden Optimizers. Die
+Kaskaden-Endlast darf unabhängig von heutigem PV Energie oberhalb der
+Mitgliedsziele nutzen; Root-Ladung bis zum höheren Ladeziel bleibt danach eine
+normale priorisierte Überschusslast.
 
 ## Executor-Zustände
 
@@ -60,20 +60,26 @@ bei unbekannter Leistung, Transition oder Restart verworfen. Persistiert werden
 nur bestätigte Claims und stabile Episode-/Fault-Evidenz, wodurch HA-Downtime
 keine Timeout- oder Energie-Gutschrift erzeugt.
 
+Bewusstes Automation-AUS führt einmal Safe-OFF aus und gibt die Actors danach
+frei. Ein Shared-Fremdeingriff wechselt ohne spätere Rücknahme in `hands_off`.
+Faults bleiben dagegen bis zum Reset fail-closed; Automation-AN übernimmt eine
+Kette nur, wenn alle Actors AUS sind und frische Mitglieds-SOCs vorliegen.
+
 ## Fehler- und Recovery-Modell
 
-Jeder Übergang ist fail-closed. Wake-Fehler führen zunächst zu Safe-OFF und
-einem einmaligen 15-Minuten-Retry; ein zweiter Fehler wird zum Hard-Fault.
-Floor, ungültige Topologie und fehlgeschlagenes Safe-OFF beenden die Episode.
-Recovery-Deadline ist das Ende des letzten lokalen heutigen Slots mit
-`pv_wh > 0`; ein Miss erzeugt Diagnose/Repair, blockiert aber spätere Tage
-nicht.
+Jeder automatische Übergang ist fail-closed. Wake-Fehler führen zunächst zu
+Safe-OFF und einem einmaligen 15-Minuten-Retry; ein zweiter Fehler wird zum
+Hard-Fault. Entladeziel, Floor, ungültige Topologie und fehlgeschlagenes
+Safe-OFF beenden die Episode. `recovery_deadline` bleibt aus
+Vertragskompatibilität im Payload, ist für zielbegrenzte Aux-Episoden aber
+`None`; eine Tages-Recovery-Warnung wird nicht mehr erzeugt.
 
 `assumed_state` kann nur logische Bestätigung liefern. Das Design akzeptiert
 dies ausdrücklich, markiert die eingeschränkte physische Garantie aber in
 Diagnose und Dokumentation. `shared` ist ein bewusster vollständiger
 Kontrollverzicht nach erkannter Fremdänderung, nicht eine schwächere Variante
-des exklusiven Rollbacks.
+des exklusiven Rollbacks. Dieselbe Freigabe gilt nach einem bewusst
+ausgeschalteten Automationsschalter auch für exklusiv konfigurierte Actors.
 
 ## Erweiterungspunkte und Tests
 
@@ -83,6 +89,5 @@ Verzweigungen erfordern ein neues Fluss- und Claim-Modell und dürfen nicht durc
 zusätzliche IDs in diesem Vertrag emuliert werden.
 
 Tests sind entlang der Schichtgrenze aufgebaut: Core testet Physik, Priorität,
-Recovery, Cache und Legacy-Neutralität; HA testet Service-Reihenfolge,
+Entladeziel, Cache und Legacy-Neutralität; HA testet Service-Reihenfolge,
 Bestätigungsfenster, Retry, Ownership, Safe-OFF, Persistenz und Entity-Vertrag.
-

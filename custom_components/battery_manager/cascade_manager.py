@@ -564,6 +564,15 @@ class CascadeManager:
             state["aux_energy_day"] = day
             state["aux_today_wh"] = 0.0
             self._aux_tick.pop(cascade_id, None)
+        # Disabled and Shared-hands-off cascades no longer own their actors.
+        # Check that before rollover/topology maintenance, otherwise a later
+        # local-day refresh could unexpectedly undo a manual operator change.
+        # Faults deliberately remain fail-closed until their explicit reset.
+        if state.get("fault"):
+            await self.async_safe_off(cascade_id, "cascade fault")
+            return
+        if not state["enabled"] or state.get("hands_off"):
+            return
         if (
             state.get("episode_day")
             and state.get("episode_day") != day
@@ -632,10 +641,6 @@ class CascadeManager:
         ) or not self.coordinator.load_bm_enabled(topology["terminal_id"]):
             await self.async_safe_off(cascade_id, "member automation disabled")
             return
-        if not state["enabled"] or state.get("fault") or state.get("hands_off"):
-            await self.async_safe_off(cascade_id, "cascade inactive")
-            return
-
         aux_segments = [
             segment
             for flow in plan.flows[:1]
@@ -669,7 +674,15 @@ class CascadeManager:
                 state["phase"] = "running"
                 state["episode_day"] = day
                 state["recovery_pending"] = [
-                    load_id for load_id, _data in topology["members"]
+                    load_id
+                    for load_id, data in topology["members"]
+                    if (
+                        (member_state := by_id.get(load_id)) is None
+                        or member_state.soc_source != "live"
+                        or member_state.soc_percent is None
+                        or member_state.soc_percent
+                        < float(data.get(CONF_LOAD_RECOVERY_SOC, 50.0))
+                    )
                 ]
                 state["retry_used"] = False
                 state["retry_at"] = None
@@ -700,6 +713,10 @@ class CascadeManager:
                 data for load_id, data in topology["members"] if load_id == source
             )
             floor = float(source_data.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 20.0))
+            target = max(
+                floor,
+                float(source_data.get(CONF_LOAD_RECOVERY_SOC, 50.0)),
+            )
             leaf_power_entity = topology["members"][-1][1].get(
                 CONF_LOAD_OUTPUT_POWER_ENTITY
             )
@@ -731,14 +748,15 @@ class CascadeManager:
                         (previous[1] + leaf_power) / 2.0 * elapsed / 3600.0
                     )
             self._aux_tick[cascade_id] = (now, leaf_power)
-            if source_state.soc_percent <= floor:
+            if source_state.soc_percent <= target:
                 if desired_source and desired_source != source:
                     if not await self._handover(cascade_id, desired_source):
-                        await self._fault(cascade_id, "handover_failed_at_floor")
+                        await self._fault(cascade_id, "handover_failed_at_target")
                         await self.async_safe_off(cascade_id, "handover failure")
                 else:
-                    await self.async_safe_off(cascade_id, "source floor")
-                    state["phase"] = "recovering"
+                    pending = bool(state.get("recovery_pending"))
+                    await self.async_safe_off(cascade_id, "source target")
+                    state["phase"] = "recovering" if pending else "complete"
             return
 
         if desired_source and state.get("episode_day") != day:

@@ -1,7 +1,9 @@
 # Architektur & Datenfluss
 
 Seit v0.26.0 ergänzt `core/cascade.py` den Root-Allokator um gemeinsame
-Storage-SOC- und Recovery-Pläne. `cascade_manager.py` ist alleiniger
+Storage-SOC- und Kaskaden-Entladepläne. Seit v0.30.0 darf Energie oberhalb des
+konfigurierten Entladeziels ohne Tages-Recovery-Nachweis genutzt werden.
+`cascade_manager.py` ist alleiniger
 HA-Actor-Besitzer; interne Flüsse werden nie in die Root-Bilanz addiert. Siehe
 [`../CASCADE-STORAGE-DESIGN.md`](../CASCADE-STORAGE-DESIGN.md).
 

@@ -222,6 +222,8 @@ CONF_LOAD_INPUT_OFF_POLICY = "input_off_policy"
 CONF_LOAD_OUTPUT_SWITCH = "output_switch_entity"
 CONF_LOAD_OUTPUT_POWER_ENTITY = "output_power_entity"
 CONF_LOAD_DISCHARGE_FLOOR_SOC = "discharge_floor_soc_percent"
+# Persisted compatibility key: since v0.30 this is the normal cascade discharge
+# target.  Keeping the key avoids a lossy config-entry migration.
 CONF_LOAD_RECOVERY_SOC = "recovery_soc_percent"
 CONF_LOAD_WAKE_TIMEOUT_S = "wake_timeout_s"
 CONF_LOAD_HANDOVER_MIN_POWER_W = "handover_min_power_w"

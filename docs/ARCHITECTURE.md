@@ -43,7 +43,7 @@ belongs in the HA layer.
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
 | `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the early feed-in pass (`plan_feedin`, F-FEEDIN), the appliance-window advisor, and the last-resort grid-support escalation. |
-| `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and nominal/stress recovery proof. |
+| `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and target-limited Aux discharge without a same-day recharge requirement. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 

@@ -1,10 +1,10 @@
 """Pure cascade planning layered on the legacy surplus allocator.
 
 The legacy planner remains the source of truth for Root-boundary allocation and
-global load priority.  This module adds isolated auxiliary discharge only when
-a second legacy allocation, started from the post-discharge member SOCs, proves
-that every member can recover under its normal priority before the local solar
-day ends.  That structure deliberately avoids a second priority universe.
+global load priority.  This module adds isolated auxiliary discharge down to
+each member's configured cascade target.  Energy above that target is available
+without a same-day recharge promise; later Root charging still follows the
+ordinary global load priority.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from .model import (
-    CascadeMember,
     CascadeMemberFlow,
     CascadePlan,
     CascadeRuntimeState,
@@ -25,7 +24,6 @@ from .model import (
     LoadPlan,
     PlanInputs,
     PlanResult,
-    SurplusLoad,
     SurplusLoadState,
     SystemConfig,
 )
@@ -49,27 +47,6 @@ def _usable_soc(
     return state.soc_percent, False
 
 
-def _recovery_deadline(inputs: PlanInputs) -> datetime | None:
-    """End of today's last slot with positive PV, in planner-local time."""
-    day = inputs.now.date()
-    candidates = [
-        slot.start + timedelta(hours=slot.duration)
-        for slot in inputs.slots
-        if slot.start.date() == day and slot.pv_wh > _EPS
-    ]
-    return max(candidates, default=None)
-
-
-def _hours_to_deadline(inputs: PlanInputs, deadline: datetime | None) -> set[int]:
-    if deadline is None:
-        return set()
-    return {
-        index
-        for index, slot in enumerate(inputs.slots)
-        if slot.start < deadline and slot.start.date() == inputs.now.date()
-    }
-
-
 def _runtime_for(inputs: PlanInputs, cascade_id: str) -> CascadeRuntimeState | None:
     return next(
         (
@@ -85,83 +62,13 @@ def _plan_by_id(result: PlanResult) -> dict[str, LoadPlan]:
     return {plan.load_id: plan for plan in result.load_plans}
 
 
-def _charge_energy_before(
-    plan: LoadPlan,
-    load: SurplusLoad,
-    member: CascadeMember,
-    state: SurplusLoadState,
-    inputs: PlanInputs,
-    covered: set[int],
-) -> float:
-    power = state.planning_power_w(load)
-    if member.max_charge_power_w is not None:
-        power = min(power, member.max_charge_power_w)
-    hours = sum(
-        (
-            plan.run_hours[index]
-            if plan.run_hours and index < len(plan.run_hours)
-            else inputs.slots[index].duration
-        )
-        for index in covered
-        if index < len(plan.schedule) and plan.schedule[index]
-    )
-    return power * hours * member.eta_charge
-
-
-def _verify_recovery(
-    cascade: LoadCascade,
-    config: SystemConfig,
-    inputs: PlanInputs,
-    result: PlanResult,
-    end_soc: dict[str, float],
-    deadline: datetime | None,
-) -> bool:
-    """All members recover by the deadline at their ordinary load priority."""
-    covered = _hours_to_deadline(inputs, deadline)
-    if not covered:
-        return False
-    loads = {load.load_id: load for load in config.loads}
-    states = {state.load_id: state for state in inputs.load_states}
-    plans = _plan_by_id(result)
-    for member in cascade.members:
-        load = loads[member.load_id]
-        state = states.get(member.load_id)
-        plan = plans.get(member.load_id)
-        if state is None or plan is None:
-            return False
-        if (
-            not state.available
-            and end_soc[member.load_id] < member.recovery_soc_percent
-        ):
-            return False
-        stored = load.capacity_wh * end_soc[member.load_id] / 100.0
-        stored += _charge_energy_before(plan, load, member, state, inputs, covered)
-        recovery = load.capacity_wh * member.recovery_soc_percent / 100.0
-        if stored + _EPS < recovery:
-            return False
-    return True
-
-
-def _stress_inputs(config: SystemConfig, inputs: PlanInputs) -> PlanInputs:
-    alpha = config.control.predrain_pv_confidence
-    slots = []
-    for slot in inputs.slots:
-        stressed_pv = (
-            slot.pv_p10_wh
-            if slot.pv_p10_wh is not None and slot.pv_p10_wh <= slot.pv_wh
-            else slot.pv_wh * alpha
-        )
-        slots.append(replace(slot, pv_wh=max(0.0, stressed_pv)))
-    return replace(inputs, slots=tuple(slots))
-
-
 def _allocate_aux_now(
     cascade: LoadCascade,
     config: SystemConfig,
     inputs: PlanInputs,
     result: PlanResult,
 ) -> tuple[tuple[CascadeSourceSegment, ...], dict[str, float], bool] | None:
-    """Allocate one full terminal dwell from storage sources, root to leaf."""
+    """Allocate terminal service above the member targets, root to leaf."""
     if not inputs.slots:
         return None
     runtime = _runtime_for(inputs, cascade.cascade_id)
@@ -185,7 +92,20 @@ def _allocate_aux_now(
     loads = {load.load_id: load for load in config.loads}
     states = {state.load_id: state for state in inputs.load_states}
     terminal = loads[cascade.terminal_load_id]
-    required_h = max(_SOURCE_PROOF_H, terminal.min_runtime_min / 60.0)
+    continuing = (
+        runtime is not None
+        and runtime.phase in ("running", "proving")
+        and runtime.episode_day in (None, today)
+    )
+    # Operator rule 2026-08-30: once the terminal has started, keep consuming
+    # the remaining energy above the cascade targets instead of demanding a
+    # fresh full dwell on every rolling replan.  A new episode still needs the
+    # configured terminal dwell; every handover retains its proof minute.
+    required_h = (
+        _SOURCE_PROOF_H
+        if continuing
+        else max(_SOURCE_PROOF_H, terminal.min_runtime_min / 60.0)
+    )
     remaining_h = required_h
     offset_h = 0.0
     segments: list[CascadeSourceSegment] = []
@@ -197,7 +117,7 @@ def _allocate_aux_now(
         state = states.get(member.load_id)
         soc, stale = _usable_soc(state, inputs.now)
         if soc is None:
-            return None  # every member is part of the recovery guarantee
+            return None  # every member is part of the protected target vector
         provisional = provisional or stale
         end_soc[member.load_id] = soc
         if state is None or not state.available or remaining_h <= _EPS:
@@ -220,9 +140,14 @@ def _allocate_aux_now(
         if not passthrough_ok:
             continue
 
+        # Recovery SOC is now the deliberate Aux discharge target.  Unlike the
+        # old recovery guarantee, energy above it may be spent without proving
+        # that today's PV can refill it.  The lower discharge floor remains a
+        # validation/safety boundary, but normal planning never aims below the
+        # target.
         usable_store = max(
             0.0,
-            (soc - member.discharge_floor_soc_percent) / 100.0 * load.capacity_wh,
+            (soc - member.recovery_soc_percent) / 100.0 * load.capacity_wh,
         )
         available_h = usable_store * member.eta_discharge / source_power
         if available_h + _EPS < _SOURCE_PROOF_H:
@@ -246,7 +171,7 @@ def _allocate_aux_now(
         )
         drawn = source_power * take_h / member.eta_discharge
         end_soc[member.load_id] = max(
-            member.discharge_floor_soc_percent,
+            member.recovery_soc_percent,
             soc - 100.0 * drawn / load.capacity_wh,
         )
         remaining_h -= take_h
@@ -483,7 +408,17 @@ def _build_plan(
                 if member.load_id == aux_segments[0].source_load_id
             ),
             active_source_id=aux_segments[0].source_load_id,
-            recovery_pending_ids=tuple(member.load_id for member in cascade.members),
+            recovery_pending_ids=tuple(
+                member.load_id
+                for member in cascade.members
+                if (
+                    soc := _usable_soc(states.get(member.load_id), original_inputs.now)[
+                        0
+                    ]
+                )
+                is not None
+                and soc + _EPS < member.recovery_soc_percent
+            ),
         )
     elif runtime is None:
         runtime = CascadeRuntimeState(cascade_id=cascade.cascade_id)
@@ -496,7 +431,7 @@ def _build_plan(
         flows=tuple(flows),
         planned_root_energy_wh=planned_root,
         planned_aux_energy_wh=planned_aux,
-        recovery_deadline=_recovery_deadline(original_inputs),
+        recovery_deadline=None,
         recovery_reached_at=tuple(recovery_reached.items()),
         aggregate_soc_percent=(
             weighted / capacity if aggregate_ok and capacity else None
@@ -521,9 +456,6 @@ def augment_cascade_plans(
     working_result = base_result
     accepted: dict[str, tuple[tuple[CascadeSourceSegment, ...], bool]] = {}
     for cascade in config.cascades:
-        deadline = _recovery_deadline(working_inputs)
-        if deadline is None:
-            continue
         allocation = _allocate_aux_now(cascade, config, working_inputs, working_result)
         if allocation is None:
             continue
@@ -532,16 +464,6 @@ def augment_cascade_plans(
         trial_result = replan(trial_inputs)
         # A newly available Root booking outranks the isolated candidate.
         if _plan_by_id(trial_result)[cascade.terminal_load_id].active_now:
-            continue
-        if not _verify_recovery(
-            cascade, config, trial_inputs, trial_result, end_soc, deadline
-        ):
-            continue
-        stressed_inputs = _stress_inputs(config, trial_inputs)
-        stressed_result = replan(stressed_inputs)
-        if not _verify_recovery(
-            cascade, config, stressed_inputs, stressed_result, end_soc, deadline
-        ):
             continue
         accepted[cascade.cascade_id] = (segments, provisional)
         working_inputs = trial_inputs

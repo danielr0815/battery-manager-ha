@@ -428,7 +428,13 @@ class FeedInParams:
 
 @dataclass(frozen=True)
 class CascadeMember:
-    """One storage in a linear AC-output cascade, ordered root to leaf."""
+    """One storage in a linear AC-output cascade, ordered root to leaf.
+
+    ``recovery_soc_percent`` keeps its persisted compatibility name but is the
+    normal Aux discharge target: the planner may spend energy above it without
+    promising a same-day refill.  ``discharge_floor_soc_percent`` is the lower
+    safety boundary and must therefore remain below that target.
+    """
 
     load_id: str
     discharge_floor_soc_percent: float
@@ -452,7 +458,7 @@ class CascadeMember:
         )
         _require(
             self.discharge_floor_soc_percent < self.recovery_soc_percent,
-            "CascadeMember requires discharge floor < recovery SOC",
+            "CascadeMember requires safety floor < cascade discharge target",
         )
         for field_name, value in (
             ("eta_charge", self.eta_charge),
@@ -618,7 +624,8 @@ class SystemConfig:
                 )
                 _require(
                     member.recovery_soc_percent <= load.target_soc_percent,
-                    f"Cascade member {member.load_id!r} requires recovery <= target",
+                    f"Cascade member {member.load_id!r} requires cascade discharge "
+                    "target <= charge target",
                 )
                 _require(
                     member.load_id not in used,

@@ -86,7 +86,7 @@ def _system(
     return config, PlanInputs(NOW, 5.0, _slots(0, 1000, 1000, 1000, 1000, 1000), states)
 
 
-def test_one_storage_aux_episode_and_recovery() -> None:
+def test_one_storage_aux_episode_targets_without_recovery_deadline() -> None:
     config, inputs = _system()
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
@@ -94,13 +94,13 @@ def test_one_storage_aux_episode_and_recovery() -> None:
     assert cascade.planned_aux_energy_wh == 150.0
     assert cascade.flows[0].segments[0].source_load_id == "b1"
     assert cascade.flows[0].member_flows[0].soc_end_percent == 82.5
-    assert cascade.recovery_deadline == NOW + timedelta(hours=6)
+    assert cascade.recovery_deadline is None
     assert cascade.proposed_runtime == CascadeRuntimeState(
         cascade_id="chain",
         episode_day=NOW.date(),
         phase="running",
         active_source_id="b1",
-        recovery_pending_ids=("b1",),
+        recovery_pending_ids=(),
     )
     assert all(item.managed_by_cascade for item in result.load_plans)
     assert result.trajectory.flows[0].extra_ac_wh == 0.0
@@ -158,10 +158,10 @@ def test_missing_stale_or_unavailable_source_is_not_started(
     assert plan(config, inputs).cascade_plans[0].planned_aux_energy_wh == expected_aux
 
 
-def test_no_pv_deadline_and_completed_episode_block_aux() -> None:
+def test_no_pv_is_required_but_completed_episode_still_blocks_aux() -> None:
     config, inputs = _system()
     no_pv = replace(inputs, slots=_slots(0, 0))
-    assert plan(config, no_pv).cascade_plans[0].planned_aux_energy_wh == 0
+    assert plan(config, no_pv).cascade_plans[0].planned_aux_energy_wh == 150
 
     complete = replace(
         inputs,
@@ -248,10 +248,6 @@ def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     base = plan(legacy_config, inputs)
     cascade = config.cascades[0]
 
-    assert cascade_core._hours_to_deadline(inputs, None) == set()
-    assert not cascade_core._verify_recovery(
-        cascade, config, inputs, base, {"b1": 20.0}, None
-    )
     assert (
         cascade_core._allocate_aux_now(cascade, config, replace(inputs, slots=()), base)
         is None
@@ -261,39 +257,6 @@ def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
             legacy_config, inputs, base, lambda _inputs: base
         )
         is base
-    )
-
-    no_member_state = replace(inputs, load_states=(SurplusLoadState("leaf"),))
-    assert not cascade_core._verify_recovery(
-        cascade,
-        config,
-        no_member_state,
-        base,
-        {"b1": 20.0},
-        NOW + timedelta(hours=2),
-    )
-    unavailable = replace(
-        inputs,
-        load_states=(
-            replace(inputs.load_states[0], available=False),
-            inputs.load_states[1],
-        ),
-    )
-    assert not cascade_core._verify_recovery(
-        cascade,
-        config,
-        unavailable,
-        base,
-        {"b1": 20.0},
-        NOW + timedelta(hours=2),
-    )
-    assert not cascade_core._verify_recovery(
-        cascade,
-        config,
-        inputs,
-        base,
-        {"b1": 20.0},
-        NOW + timedelta(hours=2),
     )
 
     allocation = (
@@ -310,18 +273,48 @@ def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert rejected.cascade_plans[0].planned_aux_energy_wh == 0
 
-    monkeypatch.setattr(cascade_core, "_verify_recovery", lambda *_args: False)
-    rejected = cascade_core.augment_cascade_plans(
-        config, inputs, base, lambda _inputs: base
-    )
-    assert rejected.cascade_plans[0].planned_aux_energy_wh == 0
 
-    verdicts = iter((True, False))
-    monkeypatch.setattr(cascade_core, "_verify_recovery", lambda *_args: next(verdicts))
-    rejected = cascade_core.augment_cascade_plans(
-        config, inputs, base, lambda _inputs: base
+def test_aux_moves_to_next_member_and_finishes_at_target() -> None:
+    config, inputs = _system(members=2, socs=(50.0, 90.0))
+    no_pv = replace(inputs, slots=_slots(0, 0))
+
+    result = plan(config, no_pv).cascade_plans[0]
+
+    assert result.flows[0].segments[0].source_load_id == "b2"
+    assert result.flows[0].member_flows[0].soc_end_percent == 50.0
+
+    target_config, target_inputs = _system(members=2, socs=(50.0, 50.0))
+    assert (
+        plan(target_config, target_inputs).cascade_plans[0].planned_aux_energy_wh == 0
     )
-    assert rejected.cascade_plans[0].planned_aux_energy_wh == 0
+
+    # A new episode may not start for a sub-dwell residual, but a running one
+    # consumes the tail instead of abandoning the configured 50 % target.
+    tail_config, tail_inputs = _system(socs=(54.0,))
+    tail_inputs = replace(tail_inputs, slots=_slots(0, 0))
+    assert plan(tail_config, tail_inputs).cascade_plans[0].planned_aux_energy_wh == 0
+    tail_inputs = replace(
+        tail_inputs,
+        cascade_runtime_states=(
+            CascadeRuntimeState("chain", NOW.date(), "running", active_source_id="b1"),
+        ),
+    )
+    soc = 54.0
+    for _ in range(20):
+        rolling = replace(
+            tail_inputs,
+            load_states=(
+                SurplusLoadState("b1", soc_percent=soc),
+                SurplusLoadState("leaf"),
+            ),
+        )
+        tail = plan(tail_config, rolling).cascade_plans[0]
+        if tail.planned_aux_energy_wh == 0:
+            break
+        soc = tail.flows[0].member_flows[0].soc_end_percent
+
+    assert soc == pytest.approx(50.0)
+    assert tail.planned_aux_energy_wh == 0
 
 
 def test_source_caps_and_too_short_tail_are_skipped() -> None:
@@ -391,7 +384,7 @@ def test_cascade_golden_snapshot() -> None:
             "root_wh": root.planned_root_energy_wh,
         },
         "recovery": {
-            "deadline": aux.recovery_deadline.isoformat(),
+            "deadline": aux.recovery_deadline,
             "members_reached": sum(
                 value is not None for _, value in aux.recovery_reached_at
             ),
@@ -415,7 +408,7 @@ def test_cascade_golden_snapshot() -> None:
 
     # B1 can supply 0.49 h of the 0.50 h dwell. The 0.01 h remainder is
     # shorter than B2's mandatory proof window and is therefore rejected.
-    tail_config, short_tail_inputs = _system(members=2, socs=(29.49375, 90), caps=True)
+    tail_config, short_tail_inputs = _system(members=2, socs=(59.49375, 90), caps=True)
     tail_base = plan(replace(tail_config, cascades=()), short_tail_inputs)
     assert (
         cascade_core._allocate_aux_now(

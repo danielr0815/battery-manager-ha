@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-30
+
+### Changed
+- Das bisherige Kaskaden-Recovery-Ziel ist jetzt das echte Entladeziel. Die
+  Endlast darf Speicherenergie oberhalb dieses SOC auch dann verbrauchen, wenn
+  für denselben Tag keine PV-Wiederaufladung bewiesen werden kann. Eine laufende
+  Episode arbeitet kleine Restmengen bis zum Ziel ab und wechselt dort zum
+  nächsten Kaskadenmitglied; der niedrigere Floor bleibt Sicherheitsgrenze.
+- Bewusstes Ausschalten der Kaskaden-Automation führt einmal Safe-OFF aus und
+  gibt danach Eingang, Lade-Gates, Outputs und Endlast für manuelle Bedienung
+  frei. Automation-AN übernimmt weiterhin nur eine vollständig ausgeschaltete
+  Kette mit frischen SOCs.
+
+### Fixed
+- Ein Shared-Fremdeingriff bleibt nun wirklich `hands_off`: Nach der
+  kontrollierten Besitzübergabe sendet ein späterer Coordinator-Lauf kein
+  verzögertes Safe-OFF mehr. Exklusive Fremdeingriffe bei aktiver Automation
+  bleiben unverändert fail-closed.
+
 ## [0.29.0] - 2026-08-30
 
 ### Added

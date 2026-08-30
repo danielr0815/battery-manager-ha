@@ -230,7 +230,7 @@ async def test_wake_order_and_two_sample_power_proof() -> None:
     state = manager._state("chain")
     assert state["phase"] == "running"
     assert state["episode_day"] == "2026-08-23"
-    assert state["recovery_pending"] == ["b1"]
+    assert state["recovery_pending"] == []
 
 
 async def test_sleeping_member_wakes_before_terminal_is_energised() -> None:
@@ -394,6 +394,17 @@ async def test_shared_foreign_change_enters_hands_off() -> None:
     assert state["phase"] == "hands_off"
     assert coordinator.calls == []
 
+    # Hands-off is a lasting ownership handover.  A later coordinator refresh
+    # must not roll the operator's Shared-ON back to Safe-OFF.
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now + timedelta(seconds=15),
+    )
+    assert coordinator.hass.states.values["switch.output"].state == "on"
+    assert coordinator.calls == []
+
 
 async def test_shared_auto_off_is_adopted_when_fresh_plan_is_idle() -> None:
     """A zero-power plug's expected OFF is convergence, not a takeover."""
@@ -477,8 +488,23 @@ async def test_enable_requires_all_off_and_fresh_soc() -> None:
     assert await manager.async_set_enabled("chain", False)
     assert not manager.enabled("chain")
 
+    coordinator.calls.clear()
+    coordinator.hass.states.values["switch.output"].state = "on"
+    state = manager._state("chain")
+    state["episode_day"] = now.date().isoformat()
+    state["phase"] = "running"
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now + timedelta(days=1),
+    )
+    assert coordinator.hass.states.values["switch.output"].state == "on"
+    assert coordinator.calls == []
+    assert manager._state("chain")["fault"] is None
 
-async def test_running_integrates_aux_then_stops_at_floor() -> None:
+
+async def test_running_integrates_aux_then_stops_at_target() -> None:
     now = datetime(2026, 8, 23, 6)
     coordinator = _Coordinator(now)
     manager = CascadeManager(coordinator)
@@ -496,9 +522,11 @@ async def test_running_integrates_aux_then_stops_at_floor() -> None:
     await manager._apply_one("chain", _aux_plan(now), live, now + timedelta(minutes=5))
     assert state["aux_today_wh"] == 25.0
 
-    floor = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
-    await manager._apply_one("chain", _aux_plan(now), floor, now + timedelta(minutes=6))
-    assert state["phase"] == "recovering"
+    target = (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf"))
+    await manager._apply_one(
+        "chain", _aux_plan(now), target, now + timedelta(minutes=6)
+    )
+    assert state["phase"] == "complete"
     assert state["source"] is None
 
 

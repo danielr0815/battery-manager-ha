@@ -361,8 +361,8 @@
             "target_soc_percent": "Ziel-SOC (%)",
             "soc_entity": "SOC-Sensor (optional)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
-            "discharge_floor_soc_percent": "Entlade-Floor (%)",
-            "recovery_soc_percent": "Recovery-Ziel (%)",
+            "discharge_floor_soc_percent": "Sicherheits-Floor (%)",
+            "recovery_soc_percent": "Kaskaden-Entladeziel (%)",
             "wake_timeout_s": "Wake-Timeout (s)",
             "handover_min_power_w": "Leistungsnachweis mindestens (W)",
             "handover_timeout_s": "Handover-Timeout (s)",
@@ -383,6 +383,8 @@
           "data_description": {
             "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
             "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
+            "discharge_floor_soc_percent": "Untere Sicherheitsgrenze. Der normale Kaskadenbetrieb beendet die Entladung bereits am Kaskaden-Entladeziel.",
+            "recovery_soc_percent": "Bis zu diesem SOC darf die Kaskade den Speicher über die Endlast entladen. Energie oberhalb des Ziels darf auch ohne Wiederauflade-Nachweis für denselben Tag genutzt werden.",
             "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
             "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden."
           }
@@ -401,7 +403,7 @@
         "cascade_member_incomplete": "Jeder Speicher benötigt SOC, Lade-Gate, Output-Aktor und Output-Leistung.",
         "cascade_root_input_required": "Der erste Speicher benötigt einen Eingangsschalter.",
         "cascade_nonroot_input_forbidden": "Nur der erste Speicher darf einen Eingangsschalter besitzen.",
-        "cascade_soc_order": "Es muss Floor < Recovery <= Ziel-SOC gelten.",
+        "cascade_soc_order": "Es muss Sicherheits-Floor < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
         "cascade_handover_timeout": "Der Handover-Timeout muss mindestens 60 Sekunden betragen.",
         "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein."
       },

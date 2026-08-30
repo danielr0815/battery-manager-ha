@@ -2,7 +2,8 @@
 
 ## Speicher-Kaskade in Betrieb nehmen
 
-Storage-Lasten mit SOC, Charge-Gate, Output-Aktor/-Leistung, Floor/Recovery und
+Storage-Lasten mit SOC, Charge-Gate, Output-Aktor/-Leistung,
+Sicherheits-Floor/Kaskaden-Entladeziel und
 Actor-Modus konfigurieren; nur B1 erhält Input-Control. Danach Cascade-Subentry
 Root→Leaf plus Endlast anlegen, Fremdautomationen auf exklusiven Aktoren
 (insbesondere `automation.f2400_b_ac_out_off`) deaktivieren und erst nach
