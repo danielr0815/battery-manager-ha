@@ -1,6 +1,6 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
-Status: normative Feature-Spezifikation für v0.26.0.
+Status: normative Feature-Spezifikation, aktualisiert für v0.32.0.
 
 ## Ziel und Geltungsbereich
 
@@ -52,6 +52,15 @@ heutiger PV-Slot oder der Nachweis einer Wiederaufladung am selben Tag ist
 nicht erforderlich: Das Entladeziel ist die bewusst verfügbare Reservegrenze.
 Späteres Laden bis zum höheren normalen Ladeziel nutzt weiterhin die normale
 globale Priorität.
+
+Die Vorschau reserviert nicht nur die minimale Startlaufzeit, sondern die
+gesamte ab jetzt zusammenhängend mögliche Aux-Episode bis zu den Entladezielen
+aller Mitglieder. Nur Slot 0 ist unmittelbar ausführbar; spätere Segmente
+werden bei jedem Rolling Replan erneut bewertet. Der folgende globale Replan
+sieht dadurch die vollständige zusätzliche Ladekapazität, bevor unvermeidbarer
+Überschuss für die vorzeitige Einspeisung gebucht wird. Ein später neu
+gebuchter Root-/PV-Slot beendet die Aux-Vorschau vorher: Root-Aufnahme und
+Aux-Entladung dürfen weder real noch in der Prognose gleichzeitig auftreten.
 
 Der Core simuliert die Speicher-SOCs mit Lade-/Entladewirkungsgrad, Charge-,
 Output- und Passthrough-Caps sowie Output-Overhead. `HourFlows.extra_ac_wh`
@@ -142,7 +151,9 @@ globalen SOC-Trajektorie entfernt. Eine fehlerfreie Kaskade mit bewusst
 ausgeschalteter Automation behält ihre Vorschau für die Inbetriebnahme.
 
 Der Forecast-Sensor veröffentlicht je Kaskade zusätzlich den lesbaren
-`source_name`, `member_details`, `terminal_name` und `schedule`: genau ein
+`source_name`, `member_details`, `terminal_name` und `schedule`.
+`member_details` enthält für jeden Speicher Namen, aktuellen SOC,
+Kaskaden-Entladeziel und die vollständige SOC-Zeitreihe. `schedule` enthält genau ein
 Block pro belegtem Plan-Slot mit
 `start`/`end`, Root-Grenzenergie, terminaler Energie, den Quellen `root`/`aux`
 und einer Aktivitätsliste. Aktivitäten unterscheiden Mitgliedsladung,
@@ -153,11 +164,14 @@ Slot-SOC-Grenzen; Laden nennt zusätzlich die gespeicherte Energie.
 Die SOC-Forecast-Card behandelt die gesamte Kaskade als Black Box: Eine
 einzige Spur zeigt ausschließlich Slots mit Root-Aufnahme und deren Wh.
 Aux-only-Aktivität und interne Details erscheinen dort nicht. Die separate
-`battery-manager-cascade-card` zeichnet Root-Aufnahme, Laden, Entladen und
-AC-Ausgang jedes Mitglieds sowie die Endlast als eigene Zeilen. Damit bleibt
-der elektrische Außenbezug im Gesamtbild eindeutig, während die eigene
-Kaskaden-Zeitspur den vollständigen internen Plan erklärt. Kaskadenmitglieder
-bleiben aus den normalen Lastspuren ausgeschlossen.
+`battery-manager-cascade-card` zeichnet die SOC-Verläufe aller Mitglieder
+übereinander und darunter Root-Aufnahme, Laden, Entladen, AC-Ausgänge sowie die
+Endlast. Aktueller SOC und Entladeziel stehen direkt an jeder SOC-Kurve. Die
+Kopfzeile beschreibt Phase sowie geplante Energie kurz als Speicher- bzw.
+Root-Bezug; der Slot-Hover unterdrückt redundante Output- und Root-Angaben.
+Damit bleibt der elektrische Außenbezug im Gesamtbild eindeutig, während die
+eigene Kaskaden-Zeitspur den vollständigen internen Plan erklärt.
+Kaskadenmitglieder bleiben aus den normalen Lastspuren ausgeschlossen.
 
 Ein Slot ohne Mitgliedsladung und ohne Endlastsegment hat exakt `0 Wh`
 Root-Energie. Insbesondere darf der interne Output-Overhead bei der

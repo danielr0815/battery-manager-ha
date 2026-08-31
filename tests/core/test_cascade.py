@@ -12,6 +12,7 @@ import pytest
 from custom_components.battery_manager.core import (
     CascadeMember,
     CascadeRuntimeState,
+    FeedInParams,
     HourSlot,
     LoadCascade,
     PlanInputs,
@@ -91,9 +92,16 @@ def test_one_storage_aux_episode_targets_without_recovery_deadline() -> None:
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
 
-    assert cascade.planned_aux_energy_wh == 150.0
+    assert cascade.planned_aux_energy_wh == 800.0
     assert cascade.flows[0].segments[0].source_load_id == "b1"
-    assert cascade.flows[0].member_flows[0].soc_end_percent == 82.5
+    assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) == 50.0
+    assert all(
+        not (
+            any(segment.source == "aux" for segment in flow.segments)
+            and flow.member_flows[0].battery_charge_wh > 0
+        )
+        for flow in cascade.flows
+    )
     assert cascade.recovery_deadline is None
     assert cascade.proposed_runtime == CascadeRuntimeState(
         cascade_id="chain",
@@ -126,7 +134,7 @@ def test_two_storage_skip_caps_efficiency_and_cache() -> None:
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
 
-    assert cascade.planned_aux_energy_wh == 150.0
+    assert cascade.planned_aux_energy_wh == pytest.approx(629.5081967213115)
     assert cascade.flows[0].segments[0].source_load_id == "b2"
     assert cascade.aggregate_soc_percent == pytest.approx(76.0)
     assert cascade.aggregate_soc_stale
@@ -161,7 +169,9 @@ def test_missing_stale_or_unavailable_source_is_not_started(
 def test_no_pv_is_required_but_completed_episode_still_blocks_aux() -> None:
     config, inputs = _system()
     no_pv = replace(inputs, slots=_slots(0, 0))
-    assert plan(config, no_pv).cascade_plans[0].planned_aux_energy_wh == 150
+    cascade = plan(config, no_pv).cascade_plans[0]
+    assert cascade.planned_aux_energy_wh == 600
+    assert cascade.flows[-1].member_flows[0].soc_end_percent == 60
 
     complete = replace(
         inputs,
@@ -264,14 +274,23 @@ def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
         {"b1": 82.5},
         False,
     )
-    monkeypatch.setattr(cascade_core, "_allocate_aux_now", lambda *_args: allocation)
     # Root becoming available in the replan rejects auxiliary service.
     root_inputs = replace(inputs, start_soc_percent=50.0)
     root_result = plan(legacy_config, root_inputs)
+    allocations = iter((allocation, None))
+    monkeypatch.setattr(
+        cascade_core, "_allocate_aux_now", lambda *_args: next(allocations)
+    )
     rejected = cascade_core.augment_cascade_plans(
         config, inputs, base, lambda _inputs: root_result
     )
     assert rejected.cascade_plans[0].planned_aux_energy_wh == 0
+
+    monkeypatch.setattr(cascade_core, "_allocate_aux_now", lambda *_args: allocation)
+    still_rejected = cascade_core.augment_cascade_plans(
+        config, inputs, base, lambda _inputs: root_result
+    )
+    assert still_rejected.cascade_plans[0].planned_aux_energy_wh == 0
 
 
 def test_aux_moves_to_next_member_and_finishes_at_target() -> None:
@@ -317,6 +336,68 @@ def test_aux_moves_to_next_member_and_finishes_at_target() -> None:
     assert tail.planned_aux_energy_wh == 0
 
 
+def test_aux_headroom_is_used_before_avoidable_early_feedin() -> None:
+    """Recharge demand for the 50 % targets outranks early grid feed-in."""
+    config, inputs = _system(members=2)
+    config = replace(
+        config,
+        feedin=FeedInParams(
+            enabled=True,
+            max_w=2000.0,
+            min_soc_percent=20.0,
+            deadline_hour=20,
+        ),
+    )
+    inputs = replace(
+        inputs,
+        slots=_slots(0, 0, 0, 0, 0, 0, 1200, 1200, 1200, 1200, 1200),
+    )
+
+    without_cascade = plan(replace(config, cascades=()), inputs)
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+
+    assert cascade.planned_aux_energy_wh == 1600
+    assert [
+        min(flow.member_flows[index].soc_end_percent for flow in cascade.flows)
+        for index in range(2)
+    ] == pytest.approx([50, 50])
+    cascade_feedin = sum(flow.feedin_wh for flow in result.trajectory.flows)
+    baseline_feedin = sum(flow.feedin_wh for flow in without_cascade.trajectory.flows)
+    assert baseline_feedin > 0
+    assert cascade_feedin < baseline_feedin
+    assert cascade_feedin < 100
+
+
+@pytest.mark.parametrize(
+    "pv",
+    [
+        (0, 1000, 1000, 1000, 1000, 1000),
+        (0, 0, 0, 1000, 1000, 1000),
+        (0, 0, 500, 1500, 500, 0),
+    ],
+)
+def test_aux_discharge_never_overlaps_member_charge(
+    pv: tuple[float, ...],
+) -> None:
+    config, inputs = _system(members=2)
+    cascade = plan(config, replace(inputs, slots=_slots(*pv))).cascade_plans[0]
+
+    for flow in cascade.flows:
+        aux_source_ids = {
+            segment.source_load_id
+            for segment in flow.segments
+            if segment.source == "aux"
+        }
+        if aux_source_ids:
+            assert flow.root_input_wh == 0
+        assert all(
+            member_flow.own_charge_input_wh == 0
+            for member_flow in flow.member_flows
+            if aux_source_ids
+        )
+
+
 def test_proving_episode_keeps_rolling_tail_instead_of_restarting_dwell() -> None:
     """The proof minute already belongs to the active terminal episode."""
     config, inputs = _system(socs=(54.0,))
@@ -353,6 +434,42 @@ def test_source_caps_and_too_short_tail_are_skipped() -> None:
     )
     assert allocation is not None
     assert allocation[0][0].source_load_id == "b2"
+
+
+def test_aux_episode_stops_at_midnight_and_skips_sub_proof_capacity() -> None:
+    config, inputs = _system(members=2, socs=(64.925, 90.0))
+    one_slot = replace(inputs, slots=_slots(0))
+    base = plan(replace(config, cascades=()), one_slot)
+
+    allocation = cascade_core._allocate_aux_now(
+        config.cascades[0], config, one_slot, base
+    )
+
+    assert allocation is not None
+    assert {segment.source_load_id for segment in allocation[0]} == {"b1"}
+
+    today_slot = _slots(0)[0]
+    tomorrow_slot = replace(
+        today_slot,
+        index=1,
+        start=NOW + timedelta(days=1),
+    )
+    across_midnight = replace(inputs, slots=(today_slot, tomorrow_slot))
+    across_base = plan(replace(config, cascades=()), across_midnight)
+    midnight_allocation = cascade_core._allocate_aux_now(
+        config.cascades[0], config, across_midnight, across_base
+    )
+    assert midnight_allocation is not None
+    assert {segment.slot_index for segment in midnight_allocation[0]} == {0}
+
+    tomorrow_only = replace(inputs, slots=(tomorrow_slot,))
+    tomorrow_base = plan(replace(config, cascades=()), tomorrow_only)
+    assert (
+        cascade_core._allocate_aux_now(
+            config.cascades[0], config, tomorrow_only, tomorrow_base
+        )
+        is None
+    )
 
 
 def test_cascade_golden_snapshot() -> None:
@@ -422,16 +539,14 @@ def test_cascade_golden_snapshot() -> None:
     golden = json.loads(Path(__file__).with_name("golden_cascade.json").read_text())
     assert snapshot == golden
 
-    # B1 can supply 0.49 h of the 0.50 h dwell. The 0.01 h remainder is
-    # shorter than B2's mandatory proof window and is therefore rejected.
+    # B1 can supply only 0.49 h, but the full target episode continues with B2.
     tail_config, short_tail_inputs = _system(members=2, socs=(59.49375, 90), caps=True)
     tail_base = plan(replace(tail_config, cascades=()), short_tail_inputs)
-    assert (
-        cascade_core._allocate_aux_now(
-            tail_config.cascades[0], tail_config, short_tail_inputs, tail_base
-        )
-        is None
+    allocation = cascade_core._allocate_aux_now(
+        tail_config.cascades[0], tail_config, short_tail_inputs, tail_base
     )
+    assert allocation is not None
+    assert [segment.source_load_id for segment in allocation[0]][:2] == ["b1", "b2"]
 
     blocked_passthrough = replace(
         tail_config,

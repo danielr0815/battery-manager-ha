@@ -68,7 +68,13 @@ def _allocate_aux_now(
     inputs: PlanInputs,
     result: PlanResult,
 ) -> tuple[tuple[CascadeSourceSegment, ...], dict[str, float], bool] | None:
-    """Allocate terminal service above the member targets, root to leaf."""
+    """Allocate one contiguous terminal episode down to all member targets.
+
+    Only slot 0 is executable now; later segments are a rolling forecast.  The
+    full episode is nevertheless required here so the following legacy replan
+    sees the recharge headroom before it decides that residual PV must be sent
+    to early feed-in.
+    """
     if not inputs.slots:
         return None
     runtime = _runtime_for(inputs, cascade.cascade_id)
@@ -106,11 +112,24 @@ def _allocate_aux_now(
         if continuing
         else max(_SOURCE_PROOF_H, terminal.min_runtime_min / 60.0)
     )
-    remaining_h = required_h
-    offset_h = 0.0
     segments: list[CascadeSourceSegment] = []
     end_soc: dict[str, float] = {}
     provisional = False
+
+    # An Aux episode starts now and stays contiguous until Root/PV takes the
+    # terminal load over.  Restrict it to the local day: the persisted daily
+    # episode contract is evaluated again after midnight.
+    slot_capacity_h: list[float] = []
+    today = inputs.now.date()
+    for index, slot in enumerate(inputs.slots):
+        if slot.start.date() != today:
+            break
+        if index < len(terminal_plan.schedule) and terminal_plan.schedule[index]:
+            break
+        slot_capacity_h.append(slot.duration)
+    if not slot_capacity_h:
+        return None
+    used_h = [0.0] * len(slot_capacity_h)
 
     for member_index, member in enumerate(cascade.members):
         load = loads[member.load_id]
@@ -120,7 +139,7 @@ def _allocate_aux_now(
             return None  # every member is part of the protected target vector
         provisional = provisional or stale
         end_soc[member.load_id] = soc
-        if state is None or not state.available or remaining_h <= _EPS:
+        if state is None or not state.available:
             continue
 
         downstream_overhead = sum(
@@ -152,32 +171,43 @@ def _allocate_aux_now(
         available_h = usable_store * member.eta_discharge / source_power
         if available_h + _EPS < _SOURCE_PROOF_H:
             continue
-        take_h = min(remaining_h, available_h)
-        # Never spend a switching cycle on a source that cannot carry its
+        episode_capacity_h = sum(
+            max(0.0, capacity_h - used_h[index])
+            for index, capacity_h in enumerate(slot_capacity_h)
+        )
+        take_h = min(episode_capacity_h, available_h)
+        # Never spend a switching cycle on a source that cannot carry its own
         # mandatory proof window.
         if take_h + _EPS < _SOURCE_PROOF_H:
             continue
-        terminal_wh = terminal.nominal_power_w * take_h
-        segments.append(
-            CascadeSourceSegment(
-                slot_index=0,
-                start_offset_h=offset_h,
-                run_hours=take_h,
-                source="aux",
-                source_load_id=member.load_id,
-                root_input_on=False,
-                terminal_energy_wh=terminal_wh,
+        remaining_source_h = take_h
+        for slot_index, capacity_h in enumerate(slot_capacity_h):
+            free_h = max(0.0, capacity_h - used_h[slot_index])
+            if free_h <= _EPS:
+                continue
+            segment_h = min(free_h, remaining_source_h)
+            segments.append(
+                CascadeSourceSegment(
+                    slot_index=slot_index,
+                    start_offset_h=used_h[slot_index],
+                    run_hours=segment_h,
+                    source="aux",
+                    source_load_id=member.load_id,
+                    root_input_on=False,
+                    terminal_energy_wh=terminal.nominal_power_w * segment_h,
+                )
             )
-        )
+            used_h[slot_index] += segment_h
+            remaining_source_h -= segment_h
+            if remaining_source_h <= _EPS:
+                break
         drawn = source_power * take_h / member.eta_discharge
         end_soc[member.load_id] = max(
             member.recovery_soc_percent,
             soc - 100.0 * drawn / load.capacity_wh,
         )
-        remaining_h -= take_h
-        offset_h += take_h
 
-    if remaining_h > _EPS:
+    if sum(segment.run_hours for segment in segments) + _EPS < required_h:
         return None
     return tuple(segments), end_soc, provisional
 
@@ -310,8 +340,9 @@ def _build_plan(
                     terminal_energy_wh=terminal_root_wh,
                 )
             )
-        if index == 0:
-            slot_segments.extend(aux_segments)
+        slot_segments.extend(
+            segment for segment in aux_segments if segment.slot_index == index
+        )
 
         member_flows: list[CascadeMemberFlow] = []
         for member in cascade.members:
@@ -335,22 +366,21 @@ def _build_plan(
             input_wh = power * charge_h
             stored = input_wh * member.eta_charge
             discharged = 0.0
-            if index == 0:
-                for segment in aux_segments:
-                    if segment.source_load_id == member.load_id:
-                        overhead = sum(
-                            item.output_overhead_w
-                            for item in cascade.members[
-                                next(
-                                    i
-                                    for i, item in enumerate(cascade.members)
-                                    if item.load_id == member.load_id
-                                ) :
-                            ]
-                        )
-                        discharged += (
-                            segment.terminal_energy_wh + overhead * segment.run_hours
-                        ) / member.eta_discharge
+            for segment in slot_segments:
+                if segment.source == "aux" and segment.source_load_id == member.load_id:
+                    overhead = sum(
+                        item.output_overhead_w
+                        for item in cascade.members[
+                            next(
+                                i
+                                for i, item in enumerate(cascade.members)
+                                if item.load_id == member.load_id
+                            ) :
+                        ]
+                    )
+                    discharged += (
+                        segment.terminal_energy_wh + overhead * segment.run_hours
+                    ) / member.eta_discharge
             energy = load.capacity_wh * start / 100.0 + stored - discharged
             energy = min(load.capacity_wh * load.target_soc_percent / 100.0, energy)
             floor_energy = load.capacity_wh * member.discharge_floor_soc_percent / 100.0
@@ -462,9 +492,45 @@ def augment_cascade_plans(
         segments, end_soc, provisional = allocation
         trial_inputs = _replace_soc_states(working_inputs, end_soc)
         trial_result = replan(trial_inputs)
-        # A newly available Root booking outranks the isolated candidate.
-        if _plan_by_id(trial_result)[cascade.terminal_load_id].active_now:
-            continue
+        trial_plans = _plan_by_id(trial_result)
+        cascade_load_ids = (
+            *(member.load_id for member in cascade.members),
+            cascade.terminal_load_id,
+        )
+        conflict_indexes = [
+            segment.slot_index
+            for segment in segments
+            if any(
+                segment.slot_index < len(trial_plans[load_id].schedule)
+                and trial_plans[load_id].schedule[segment.slot_index]
+                for load_id in cascade_load_ids
+            )
+        ]
+        if conflict_indexes:
+            # Root is electrically exclusive with Aux.  Rebuild the candidate
+            # only up to its first newly booked Root slot, then let the legacy
+            # planner value exactly that smaller discharge headroom.
+            first_conflict = min(conflict_indexes)
+            shortened_inputs = replace(
+                working_inputs,
+                slots=working_inputs.slots[:first_conflict],
+            )
+            allocation = _allocate_aux_now(
+                cascade, config, shortened_inputs, working_result
+            )
+            if allocation is None:
+                continue
+            segments, end_soc, provisional = allocation
+            trial_inputs = _replace_soc_states(working_inputs, end_soc)
+            trial_result = replan(trial_inputs)
+            trial_plans = _plan_by_id(trial_result)
+            if any(
+                segment.slot_index < len(trial_plans[load_id].schedule)
+                and trial_plans[load_id].schedule[segment.slot_index]
+                for segment in segments
+                for load_id in cascade_load_ids
+            ):
+                continue
         accepted[cascade.cascade_id] = (segments, provisional)
         working_inputs = trial_inputs
         working_result = trial_result

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-31
+
+### Added
+- Die Kaskadenkarte zeigt den geplanten SOC jedes beteiligten Speichers in
+  einer eigenen, übereinander angeordneten Kurve samt aktuellem Wert und
+  konfiguriertem 50-%-Entladeziel.
+
+### Changed
+- Eine Aux-Episode plant jetzt die zusammenhängende Entladung aller
+  Kaskadenspeicher bis zu ihrem Ziel-SOC voraus. Dadurch berücksichtigt die
+  anschließende Überschussplanung die gesamte neue Ladekapazität, bevor sie
+  vermeidbare Energie für die vorzeitige Einspeisung reserviert; ausgeführt
+  wird unverändert nur der aktuelle Rolling-Replan-Schritt.
+- Die Kaskadenkarte beschreibt Phase und Energieströme als kurze
+  Bedieneraussagen. Der Zeit-Hover lässt redundante AC-Ausgangs- und
+  Root-Details weg und konzentriert sich auf SOC, Laden, Entladen und Endlast.
+
+### Fixed
+- Die frühere 30-Minuten-Vorschau ließ Speicher trotz eines Entladeziels von
+  50 % fast voll erscheinen und konnte deshalb gleichzeitig unnötige frühe
+  Einspeisung planen.
+- Eine vorausgeplante Aux-Entladung endet jetzt vor dem ersten später neu
+  gebuchten Root-Slot. Die Vorschau zeigt damit keine elektrisch unmögliche
+  gleichzeitige Root-Aufnahme und Speicherentladung mehr.
+
 ## [0.31.1] - 2026-08-31
 
 ### Fixed

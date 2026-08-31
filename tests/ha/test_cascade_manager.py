@@ -902,10 +902,25 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     assert payload["actual_aux_energy_kwh"] == 0.125
     assert payload["aggregate_soc_percent"] == 90.0
     assert payload["members"] == ["b1"]
-    assert payload["member_details"] == [{"load_id": "b1", "name": "B1"}]
+    assert payload["member_details"] == [
+        {
+            "load_id": "b1",
+            "name": "B1",
+            "soc_percent": 90.0,
+            "target_soc_percent": 50,
+            "soc_forecast": [],
+        }
+    ]
     assert payload["terminal_name"] == "Leaf"
     assert payload["assumed_state_actors"] == ["switch.input"]
     assert payload["schedule"] == []
+    state["fault"] = None
+    state["hands_off"] = False
+    active_payload = manager.payload(result, config, slots)["chain"]
+    assert active_payload["member_details"][0]["soc_forecast"] == [
+        {"t": now.isoformat(), "soc": 90.0},
+        {"t": (now + timedelta(hours=1)).isoformat(), "soc": 85.0},
+    ]
     assert manager._schedule_payload(core_cascade, cascade_plan, slots) == [
         {
             "start": now.isoformat(),

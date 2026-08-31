@@ -77,6 +77,12 @@ const CASCADE_CHARGE_COLOR = "var(--bmpc-cascade-charge-color, #43a047)";
 const CASCADE_DISCHARGE_COLOR = "var(--bmpc-cascade-discharge-color, #ef6c00)";
 const CASCADE_OUTPUT_COLOR = "var(--bmpc-cascade-output-color, #8e24aa)";
 const CASCADE_TERMINAL_COLOR = "var(--bmpc-cascade-terminal-color, #00897b)";
+const CASCADE_SOC_COLORS = [
+  "var(--bmpc-cascade-soc-1-color, #039be5)",
+  "var(--bmpc-cascade-soc-2-color, #ef6c00)",
+  "var(--bmpc-cascade-soc-3-color, #8e24aa)",
+  "var(--bmpc-cascade-soc-4-color, #43a047)",
+];
 
 // Defensive caps: attributes are user-controlled input, and a broken or
 // hostile payload must not freeze the UI with megabytes of SVG.
@@ -129,6 +135,18 @@ const STRINGS = {
     source: "source",
     soc: "SOC",
     total: "total",
+    cascade_phase_idle: "waiting",
+    cascade_phase_proving: "checking source",
+    cascade_phase_running: "discharging storage",
+    cascade_phase_recovering: "charging storage",
+    cascade_phase_complete: "discharge target reached",
+    cascade_phase_fault: "fault",
+    cascade_phase_hands_off: "manual control",
+    cascade_plan: "Plan",
+    cascade_from_storage: "from storage",
+    cascade_via_root: "from PV / Root",
+    cascade_used_today: "used today",
+    cascade_discharge_target: "discharge target",
     static_hint: "dimmed bars = static fallback profile",
     no_consumption:
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
@@ -178,6 +196,18 @@ const STRINGS = {
     source: "Quelle",
     soc: "SOC",
     total: "Summe",
+    cascade_phase_idle: "wartet",
+    cascade_phase_proving: "prüft Speicher",
+    cascade_phase_running: "entlädt Speicher",
+    cascade_phase_recovering: "lädt Speicher",
+    cascade_phase_complete: "Entladeziel erreicht",
+    cascade_phase_fault: "Störung",
+    cascade_phase_hands_off: "manuelle Steuerung",
+    cascade_plan: "Plan",
+    cascade_from_storage: "aus Speichern",
+    cascade_via_root: "aus PV / Root",
+    cascade_used_today: "heute genutzt",
+    cascade_discharge_target: "Entladeziel",
     static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
     no_consumption:
       "Keine Verbrauchsprognose im Sensor — benötigt Battery Manager v0.25.5+.",
@@ -2090,13 +2120,10 @@ class BatteryManagerCascadeCard extends HTMLElement {
         ? ""
         : ` · ${t("soc")} ${startSoc.toFixed(1)}→${endSoc.toFixed(1)} %`;
     if (activity?.kind === "charge") {
-      const stored = num(activity.stored_energy_wh);
-      return `${name} · ${t("charging")}${energy}${
-        stored == null ? "" : ` · ${t("stored")} ${Math.round(stored)} Wh`
-      }${soc}`;
+      return `${name}: ${t("charging")}${energy}${soc}`;
     }
     if (activity?.kind === "discharge") {
-      return `${name} · ${t("discharging")}${energy}${soc}`;
+      return `${name}: ${t("discharging")}${energy}${soc}`;
     }
     if (activity?.kind === "output") {
       const sources = (Array.isArray(activity.sources)
@@ -2105,7 +2132,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       )
         .map((source) => (source === "aux" ? t("aux") : t("root")))
         .join("/");
-      return `${name} · ${t("output")} ${t("on")}${
+      return `${name}: ${t("output")} ${t("on")}${
         sources ? ` · ${t("source")} ${sources}` : ""
       }`;
     }
@@ -2113,7 +2140,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       activity?.source === "aux"
         ? `${t("aux")}${activity.source_name ? ` ${activity.source_name}` : ""}`
         : t("root");
-    return `${name} · ${t("terminal_load")}${energy} · ${t("source")} ${source}`;
+    return `${name}:${energy} · ${t("source")} ${source}`;
   }
 
   _chart(cascade, index) {
@@ -2128,7 +2155,15 @@ class BatteryManagerCascadeCard extends HTMLElement {
         return Number.isFinite(start) && Number.isFinite(end) && end > start;
       })
       .slice(0, MAX_BLOCKS);
-    const starts = rawSchedule.map((block) => new Date(block.start).getTime());
+    const members = this._memberDetails(cascade);
+    const starts = [
+      ...rawSchedule.map((block) => new Date(block.start).getTime()),
+      ...members.flatMap((member) =>
+        (Array.isArray(member.soc_forecast) ? member.soc_forecast : []).map(
+          (point) => new Date(point?.t).getTime()
+        )
+      ),
+    ].filter(Number.isFinite);
     const hourMs = 3600000;
     const t0 = starts.length
       ? Math.min(...starts)
@@ -2139,7 +2174,39 @@ class BatteryManagerCascadeCard extends HTMLElement {
         new Date(block.end).getTime() > t0 &&
         new Date(block.start).getTime() < t1
     );
-    const members = this._memberDetails(cascade);
+    const socSeries = members.map((member, memberIndex) => {
+      const current = num(member.soc_percent);
+      const target = num(member.target_soc_percent);
+      let points = (Array.isArray(member.soc_forecast)
+        ? member.soc_forecast
+        : []
+      )
+        .map((point) => ({
+          time: new Date(point?.t).getTime(),
+          soc: num(point?.soc),
+        }))
+        .filter(
+          (point) =>
+            Number.isFinite(point.time) &&
+            point.soc != null &&
+            point.time >= t0 &&
+            point.time <= t1
+        )
+        .slice(0, MAX_POINTS);
+      if (!points.length && current != null) {
+        points = [
+          { time: t0, soc: current },
+          { time: t1, soc: current },
+        ];
+      }
+      return {
+        name: member.name,
+        current,
+        target,
+        points,
+        color: CASCADE_SOC_COLORS[memberIndex % CASCADE_SOC_COLORS.length],
+      };
+    });
     const activityBlocks = (kind, loadId) =>
       schedule.flatMap((block) =>
         (Array.isArray(block.activities) ? block.activities : [])
@@ -2160,6 +2227,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       );
     const rows = [
       {
+        kind: "root",
         label: t("cascade_root_input"),
         color: CASCADE_ROOT_COLOR,
         blocks: schedule
@@ -2178,16 +2246,19 @@ class BatteryManagerCascadeCard extends HTMLElement {
     for (const member of members) {
       rows.push(
         {
+          kind: "charge",
           label: `${member.name} · ${t("charging")}`,
           color: CASCADE_CHARGE_COLOR,
           blocks: activityBlocks("charge", member.load_id),
         },
         {
+          kind: "discharge",
           label: `${member.name} · ${t("discharging")}`,
           color: CASCADE_DISCHARGE_COLOR,
           blocks: activityBlocks("discharge", member.load_id),
         },
         {
+          kind: "output",
           label: `${member.name} · ${t("output")}`,
           color: CASCADE_OUTPUT_COLOR,
           blocks: activityBlocks("output", member.load_id),
@@ -2196,6 +2267,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     }
     const terminalName = cascade?.terminal_name || cascade?.terminal_load_id || "?";
     rows.push({
+      kind: "terminal",
       label: `${terminalName} · ${t("terminal_load")}`,
       color: CASCADE_TERMINAL_COLOR,
       blocks: activityBlocks("terminal", cascade?.terminal_load_id),
@@ -2206,9 +2278,11 @@ class BatteryManagerCascadeCard extends HTMLElement {
     const right = 12;
     const plotWidth = width - labelWidth - right;
     const rowHeight = 25;
+    const socRowHeight = 66;
     const top = 22;
     const bottom = 24;
-    const height = top + rows.length * rowHeight + bottom;
+    const activityTop = top + socSeries.length * socRowHeight;
+    const height = activityTop + rows.length * rowHeight + bottom;
     const x = (time) =>
       labelWidth + ((time - t0) / (t1 - t0)) * plotWidth;
     const svg = [];
@@ -2223,8 +2297,38 @@ class BatteryManagerCascadeCard extends HTMLElement {
         `<text x="${px + 3}" y="12" class="axis">${esc(fmtTick.format(tick))}</text>`
       );
     }
+    socSeries.forEach((series, seriesIndex) => {
+      const y = top + seriesIndex * socRowHeight;
+      const plotBottom = y + 55;
+      const socY = (value) =>
+        plotBottom - (Math.max(0, Math.min(100, value)) / 100) * 50;
+      const value = series.current == null ? "?" : `${series.current.toFixed(1)} %`;
+      const target =
+        series.target == null
+          ? ""
+          : ` · ${t("cascade_discharge_target")} ${series.target.toFixed(0)} %`;
+      svg.push(
+        `<text x="4" y="${y + 20}" class="label">${esc(series.name)}</text>`,
+        `<text x="4" y="${y + 39}" class="soc-value">${esc(`${value}${target}`)}</text>`,
+        `<line x1="${labelWidth}" y1="${socY(50)}" x2="${width - right}" y2="${socY(50)}" class="soc-grid"/>`,
+        `<line x1="${labelWidth}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}" class="rowline"/>`
+      );
+      if (series.target != null) {
+        svg.push(
+          `<line x1="${labelWidth}" y1="${socY(series.target)}" x2="${width - right}" y2="${socY(series.target)}" class="soc-target"><title>${esc(`${t("cascade_discharge_target")} ${series.target.toFixed(0)} %`)}</title></line>`
+        );
+      }
+      if (series.points.length) {
+        const points = series.points
+          .map((point) => `${x(point.time)},${socY(point.soc)}`)
+          .join(" ");
+        svg.push(
+          `<polyline points="${points}" fill="none" stroke="${series.color}" class="soc-line"><title>${esc(`${series.name} ${t("soc")}`)}</title></polyline>`
+        );
+      }
+    });
     rows.forEach((row, rowIndex) => {
-      const y = top + rowIndex * rowHeight;
+      const y = activityTop + rowIndex * rowHeight;
       svg.push(
         `<text x="4" y="${y + 16}" class="label">${esc(row.label)}</text>`,
         `<line x1="${labelWidth}" y1="${y + rowHeight}" x2="${width - right}" y2="${y + rowHeight}" class="rowline"/>`
@@ -2244,7 +2348,14 @@ class BatteryManagerCascadeCard extends HTMLElement {
       }
     });
     svg.push(`<g id="marker-${index}"></g>`);
-    const slots = [...new Set(schedule.map((block) => new Date(block.start).getTime()))]
+    const slots = [
+      ...new Set([
+        ...schedule.map((block) => new Date(block.start).getTime()),
+        ...socSeries.flatMap((series) =>
+          series.points.map((point) => point.time)
+        ),
+      ]),
+    ]
       .filter((time) => time >= t0 && time < t1)
       .sort((a, b) => a - b);
     this._charts[index] = {
@@ -2256,10 +2367,13 @@ class BatteryManagerCascadeCard extends HTMLElement {
       height,
       bottom,
       rows,
+      socSeries,
       slots,
       kbIndex: null,
     };
-    const hasActivity = rows.some((row) => row.blocks.length);
+    const hasActivity =
+      socSeries.some((series) => series.points.length) ||
+      rows.some((row) => row.blocks.length);
     return `<svg id="chart-${index}" viewBox="0 0 ${width} ${height}" role="img" tabindex="0" aria-label="${esc(
       `${t("cascade_chart_label")}: ${cascade?.name || "Cascade"}`
     )}">${svg.join("")}</svg><div id="readout-${index}" class="readout" aria-live="polite">${
@@ -2277,15 +2391,28 @@ class BatteryManagerCascadeCard extends HTMLElement {
       chart.labelWidth +
       ((clamped - chart.t0) / (chart.t1 - chart.t0)) * chart.plotWidth;
     marker.innerHTML = `<line x1="${px}" y1="${chart.top - 8}" x2="${px}" y2="${chart.height - chart.bottom}" class="marker"/>`;
-    const details = chart.rows.flatMap((row) =>
-      row.blocks
-        .filter((block) => {
-          const start = new Date(block.start).getTime();
-          const end = new Date(block.end).getTime();
-          return clamped >= start && clamped < end;
-        })
-        .map((block) => block.detail)
-    );
+    const activeRows = chart.rows
+      .filter((row) => row.kind !== "output")
+      .flatMap((row) =>
+        row.blocks
+          .filter((block) => {
+            const start = new Date(block.start).getTime();
+            const end = new Date(block.end).getTime();
+            return clamped >= start && clamped < end;
+          })
+          .map((block) => ({ kind: row.kind, detail: block.detail }))
+      );
+    const hasSpecificActivity = activeRows.some((item) => item.kind !== "root");
+    const activityDetails = activeRows
+      .filter((item) => !hasSpecificActivity || item.kind !== "root")
+      .map((item) => item.detail);
+    const socDetails = chart.socSeries.flatMap((series) => {
+      const point = [...series.points]
+        .reverse()
+        .find((candidate) => candidate.time <= clamped);
+      return point ? [`${series.name}: ${localize(this._hass, "soc")} ${point.soc.toFixed(1)} %`] : [];
+    });
+    const details = [...new Set([...socDetails, ...activityDetails])];
     const fmt = new Intl.DateTimeFormat(this._hass?.language || "en", {
       weekday: "short",
       hour: "2-digit",
@@ -2348,19 +2475,31 @@ class BatteryManagerCascadeCard extends HTMLElement {
     } else {
       body = this._cascades()
         .map((item, index) => {
-        const soc = num(item?.aggregate_soc_percent);
         const root = num(item?.planned_root_energy_kwh) ?? 0;
         const aux = num(item?.planned_aux_energy_kwh) ?? 0;
         const actual = num(item?.actual_aux_energy_kwh) ?? 0;
         const detail = item?.fault_detail;
         const actor = detail?.entity_id
-          ? ` (${esc(detail.entity_id)} → ${esc(detail.target_state || "?")}, ${esc(detail.kind || "failed")}, Ist ${esc(detail.observed_state ?? "?")})`
+          ? `${detail.entity_id} → ${detail.target_state || "?"}; ${detail.kind || "failed"}; Ist ${detail.observed_state ?? "?"}`
           : "";
-        const fault = item?.fault ? ` · ⚠ ${esc(item.fault)}${actor}` : "";
-          return `<section><div class="summary"><div><b>${esc(item?.name || "Cascade")}</b>` +
-            `<span>${esc(item?.phase || "idle")} · ${esc(item?.source_name || item?.source || "Root")}${fault}</span></div>` +
-            `<div class="soc">${soc == null ? "?" : soc.toFixed(1)} %${item?.aggregate_soc_stale ? "*" : ""}</div>` +
-            `<div class="energy">Root ${root.toFixed(2)} kWh · Aux ${aux.toFixed(2)} kWh · Ist ${actual.toFixed(2)} kWh</div></div>` +
+        const phase = item?.hands_off
+          ? "hands_off"
+          : item?.fault
+            ? "fault"
+            : item?.phase || "idle";
+        const phaseText = t(`cascade_phase_${phase}`);
+        const source = item?.source_name || item?.source;
+        const sourceText =
+          source && ["proving", "running", "recovering"].includes(phase)
+            ? ` · ${source}`
+            : "";
+        const fault = item?.fault ? ` · ⚠ ${item.fault}` : "";
+        const actualText = actual > 0
+          ? ` · ${actual.toFixed(2)} kWh ${t("cascade_used_today")}`
+          : "";
+          return `<section><div class="summary"><b>${esc(item?.name || "Cascade")}</b>` +
+            `<span title="${esc(actor)}">${esc(phaseText)}${esc(sourceText)}${esc(fault)}</span>` +
+            `<div class="energy">${esc(t("cascade_plan"))}: ${aux.toFixed(2)} kWh ${esc(t("cascade_from_storage"))} · ${root.toFixed(2)} kWh ${esc(t("cascade_via_root"))}${actualText}</div></div>` +
             `<div class="chart-wrap">${this._chart(item, index)}</div></section>`;
         })
         .join("");
@@ -2370,13 +2509,15 @@ class BatteryManagerCascadeCard extends HTMLElement {
       this._config.title || "Battery Manager Cascades"
     )}"><style>
       .wrap{padding:0 16px 16px}section{padding:12px 0;border-top:1px solid var(--divider-color)}
-      .summary{display:grid;grid-template-columns:1fr auto;gap:4px 16px;margin-bottom:8px}
+      .summary{display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:8px}
       .summary span,.energy{display:block;color:var(--secondary-text-color);font-size:.85em}
-      .energy{grid-column:1/-1}.soc{font-variant-numeric:tabular-nums}
+      .energy{font-variant-numeric:tabular-nums}
       .chart-wrap{overflow-x:auto}svg{display:block;width:100%;min-width:620px;height:auto;touch-action:none;outline:none}
       svg:focus{outline:2px solid var(--primary-color);outline-offset:2px}
       .grid{stroke:var(--divider-color);stroke-width:1;stroke-dasharray:2 3}.rowline{stroke:var(--divider-color);stroke-width:.7}
       .axis,.label{fill:var(--secondary-text-color);font:12px sans-serif}.label{fill:var(--primary-text-color)}
+      .soc-value{fill:var(--secondary-text-color);font:11px sans-serif}.soc-grid{stroke:var(--divider-color);stroke-width:.6}
+      .soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1.2;stroke-dasharray:5 4}.soc-line{stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
       .block-label{fill:white;font:10px sans-serif;pointer-events:none}.marker{stroke:var(--primary-text-color);stroke-width:1;stroke-dasharray:3 3}
       .readout{min-height:2.6em;margin:6px 4px 0;color:var(--secondary-text-color);font-size:.82em;line-height:1.3}
       .message{padding:20px 0;color:var(--secondary-text-color)}

@@ -1,6 +1,6 @@
 {
  "b1_to_b2": {
-  "aux_wh": 150.0,
+  "aux_wh": 1500.0,
   "first_source": "b1",
   "root_wh": 150.0
  },
@@ -22,7 +22,7 @@
  },
  "skip": {
   "aggregate_soc": 76.0,
-  "aux_wh": 150.0,
+  "aux_wh": 629.5081967213115,
   "first_source": "b2",
   "root_wh": 150.0,
   "stale": true

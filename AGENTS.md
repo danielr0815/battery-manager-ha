@@ -33,7 +33,11 @@ mypy darin aus (`devcontainers/ci`); lokal geht das mit der devcontainer-CLI
 
 ## Live-Systemzugriff
 
-- Live-Prüfungen in Home Assistant mit **Playwright** über MCP durchführen.
+- Live-Prüfungen in Home Assistant ausschließlich mit dem lokalen
+  **Playwright-MCP** (`mcp__playwright__browser_*`) durchführen.
+- Nie den In-App-Browser, Browser-Plugin-Runtime oder eine nicht verbundene
+  Browser-Instanz als Ersatz initialisieren. Ist der lokale Playwright-MCP
+  nicht verfügbar, dies klar melden und die Live-Prüfung pausieren.
 - Ziel: `hass.rsn.ro-la.de:8123/`.
 
 ## Tests

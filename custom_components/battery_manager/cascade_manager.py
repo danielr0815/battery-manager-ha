@@ -1339,6 +1339,53 @@ class CascadeManager:
                 is not None
                 and actor_state.attributes.get("assumed_state")
             ]
+            member_details = []
+            for member_index, member in enumerate(cascade.members):
+                current_soc = None
+                if plan and plan.flows:
+                    first_members = plan.flows[0].member_flows
+                    if member_index < len(first_members):
+                        current_soc = round(
+                            float(first_members[member_index].soc_start_percent), 1
+                        )
+                soc_forecast = []
+                if effective_plan:
+                    for slot_index, (slot, flow) in enumerate(
+                        zip(slots, effective_plan.flows, strict=False)
+                    ):
+                        if member_index >= len(flow.member_flows):
+                            continue
+                        member_flow = flow.member_flows[member_index]
+                        if slot_index == 0:
+                            soc_forecast.append(
+                                {
+                                    "t": slot.start.isoformat(),
+                                    "soc": round(
+                                        float(member_flow.soc_start_percent), 1
+                                    ),
+                                }
+                            )
+                        soc_forecast.append(
+                            {
+                                "t": (
+                                    slot.start + timedelta(hours=slot.duration)
+                                ).isoformat(),
+                                "soc": round(float(member_flow.soc_end_percent), 1),
+                            }
+                        )
+                member_details.append(
+                    {
+                        "load_id": member.load_id,
+                        "name": (
+                            self.coordinator.entry.subentries[member.load_id].title
+                            if member.load_id in self.coordinator.entry.subentries
+                            else member.load_id
+                        ),
+                        "soc_percent": current_soc,
+                        "target_soc_percent": member.recovery_soc_percent,
+                        "soc_forecast": soc_forecast,
+                    }
+                )
             payload[cascade.cascade_id] = {
                 "name": self.coordinator.entry.subentries[cascade.cascade_id].title,
                 "enabled": bool(state["enabled"]),
@@ -1377,17 +1424,7 @@ class CascadeManager:
                     else None
                 ),
                 "members": [member.load_id for member in cascade.members],
-                "member_details": [
-                    {
-                        "load_id": member.load_id,
-                        "name": (
-                            self.coordinator.entry.subentries[member.load_id].title
-                            if member.load_id in self.coordinator.entry.subentries
-                            else member.load_id
-                        ),
-                    }
-                    for member in cascade.members
-                ],
+                "member_details": member_details,
                 "terminal_load_id": cascade.terminal_load_id,
                 "terminal_name": (
                     self.coordinator.entry.subentries[cascade.terminal_load_id].title
