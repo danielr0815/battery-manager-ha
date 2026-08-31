@@ -78,12 +78,21 @@ Der Erst-Wake ist geordnet:
 
 1. alle Charge-Gates AUS;
 2. Root-Eingang AN;
-3. Outputs B1 bis Bn AN;
-4. frische numerische SOCs abwarten und neu planen;
-5. optionalen Endlast-Aktor AN;
+3. eine neue numerische SOC-Publikation von B1 nach Root-AN abwarten;
+4. B1-Output AN, danach eine neue SOC-Publikation von B2 abwarten und dieses
+   Muster bis zum letzten für den Pfad benötigten Mitglied fortsetzen;
+5. erst nach dessen Aufwachnachweis Charge-Gate bzw. optionalen Endlast-Aktor
+   AN;
 6. übersprungene Upstream-Outputs trennen, Root AUS;
 7. gewählte Quelle mit zwei ausschließlich nach der Umschaltung beobachteten,
    mindestens 60 Sekunden getrennten Leistungssamples bestätigen.
+
+Ein bereits vor dem Zuschalten vorhandener numerischer SOC gilt dabei nur als
+Baseline und niemals als Aufwachnachweis. Maßgeblich ist eine nach der jeweils
+vorgelagerten Schalthandlung erfolgte HA-Publikation; auch ein unveränderter
+SOC zählt über `last_reported`. Jede Stufe besitzt ihr eigenes konfiguriertes
+Wake-Timeout. Dadurch erhält insbesondere B2 seinen AC-Ausgangsbefehl erst,
+nachdem B2 durch B1 tatsächlich versorgt wurde und wieder Telemetrie sendet.
 
 Der vollständige Wake erhält genau einen Retry nach 15 Minuten. Ein
 erfolgreicher Service-Aufruf bestätigt einen `assumed_state`-Actor logisch; die
@@ -97,7 +106,10 @@ Claim. Ein bereits bestätigter Zielzustand wird ohne redundanten Service-Aufruf
 Ziel-, Floor- und Safety-Abbrüche übersteuern Dwell. Safe-OFF schaltet die
 Endlast, Outputs downstream→upstream, Charge-Gates und Root aus. Ein
 Safe-OFF-Fehler setzt einen Hard-Fault und Repair; Reset versucht Safe-OFF erneut, löscht nur
-bei Erfolg und lässt Automation AUS. `exclusive` wertet Fremdänderungen bei
+bei Erfolg und lässt Automation AUS. Nach einem erfolgreich abgeschlossenen,
+faultbedingten Safe-OFF bleibt der Fault sichtbar und sperrt Automation-AN,
+aber der Manager gibt die Actors für manuelle Diagnose frei und wiederholt
+Safe-OFF nicht bei jedem Refresh. `exclusive` wertet Fremdänderungen bei
 aktiver Automation als Fault. `shared` beendet Claims und Automation ohne
 Rollback (Hands-off); Wiederaufnahme erfordert bewusst AUS→AN. Bewusstes
 Automation-AUS führt genau einmal Safe-OFF aus und gibt danach alle Actors für

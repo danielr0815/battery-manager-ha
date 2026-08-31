@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-08-31
+
+### Fixed
+- Kaskaden schalten Fossibot-Ausgänge jetzt stufenweise: Erst eine nach dem
+  Einschalten der jeweiligen Versorgung veröffentlichte numerische SOC-Meldung
+  bestätigt, dass das Mitglied wach ist. Insbesondere erhält B2 seinen
+  AC-Ausgangsbefehl nicht mehr vor dem Aufwachen; jedes Mitglied verwendet
+  dabei sein eigenes Wake-Timeout.
+- Ein Hard-Fault führt weiterhin vollständig Safe-OFF aus, wiederholt dieses
+  nach erfolgreichem Abschluss aber nicht mehr bei jedem Coordinator-Lauf.
+  Die ausgeschaltete Automation lässt damit die Root-/Waschmaschinensteckdose
+  und die übrigen Kaskadenaktoren für manuelle Diagnose frei, während der Fault
+  bis zum Reset sichtbar bleibt.
+
 ## [0.31.0] - 2026-08-31
 
 ### Changed

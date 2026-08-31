@@ -44,7 +44,12 @@ class _States:
             "switch.gate": SimpleNamespace(state="off", attributes={}),
             "switch.output": SimpleNamespace(state="off", attributes={}),
             "switch.leaf": SimpleNamespace(state="off", attributes={}),
-            "sensor.soc": SimpleNamespace(state="90", attributes={}, last_updated=now),
+            "sensor.soc": SimpleNamespace(
+                state="90",
+                attributes={},
+                last_updated=now,
+                last_reported=now,
+            ),
             "sensor.output_power": SimpleNamespace(
                 state="300", attributes={}, last_updated=now
             ),
@@ -171,6 +176,18 @@ def _root_plan(now: datetime):
     )
 
 
+def _publish_soc(
+    coordinator: _Coordinator,
+    entity_id: str,
+    value: str,
+    observed_at: datetime,
+) -> None:
+    state = coordinator.hass.states.values[entity_id]
+    state.state = value
+    state.last_updated = observed_at
+    state.last_reported = observed_at
+
+
 def test_automation_switch_exposes_hands_off_reason() -> None:
     entity = SimpleNamespace(
         coordinator=SimpleNamespace(
@@ -208,6 +225,16 @@ async def test_wake_order_and_two_sample_power_proof() -> None:
         _aux_plan(now),
         (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
         now,
+    )
+    assert coordinator.calls == [("switch.input", True)]
+    assert manager._state("chain")["phase"] == "waking_members"
+
+    _publish_soc(coordinator, "sensor.soc", "90", now + timedelta(seconds=1))
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now + timedelta(seconds=1),
     )
     assert coordinator.calls == [
         ("switch.input", True),
@@ -248,13 +275,10 @@ async def test_sleeping_member_wakes_before_terminal_is_energised() -> None:
 
     await manager._apply_one("chain", _aux_plan(now), states, now)
     state = manager._state("chain")
-    assert state["phase"] == "waking_socs"
-    assert coordinator.calls == [
-        ("switch.input", True),
-        ("switch.output", True),
-    ]
+    assert state["phase"] == "waking_members"
+    assert coordinator.calls == [("switch.input", True)]
 
-    coordinator.hass.states.values["sensor.soc"].state = "90"
+    _publish_soc(coordinator, "sensor.soc", "90", now + timedelta(seconds=30))
     await manager._apply_one(
         "chain", _aux_plan(now), states, now + timedelta(seconds=30)
     )
@@ -275,6 +299,14 @@ async def test_root_passthrough_and_safe_off_order() -> None:
         _root_plan(now),
         (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
         now,
+    )
+    assert manager._state("chain")["phase"] == "waking_members"
+    _publish_soc(coordinator, "sensor.soc", "50", now + timedelta(seconds=1))
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now + timedelta(seconds=1),
     )
     assert ("switch.input", True) in coordinator.calls
     assert ("switch.output", True) in coordinator.calls
@@ -312,6 +344,8 @@ async def test_root_start_waits_for_delayed_output_confirmation() -> None:
     live = (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf"))
 
     await manager._apply_one("chain", _root_plan(now), live, now)
+    _publish_soc(coordinator, "sensor.soc", "50", now + timedelta(seconds=1))
+    await manager._apply_one("chain", _root_plan(now), live, now + timedelta(seconds=1))
     # A second immediate pass used to see output=off against claim=True and
     # hard-fault the exclusive actor before its delayed state publication.
     await manager._apply_one("chain", _root_plan(now), live, now)
@@ -320,6 +354,141 @@ async def test_root_start_waits_for_delayed_output_confirmation() -> None:
     assert state["enabled"]
     assert state["phase"] == "root"
     assert state["claims"]["switch.output"] is True
+
+
+async def test_root_wakes_each_member_before_its_output_is_enabled() -> None:
+    """B2 cannot receive its AC-output command while it is still asleep."""
+    now = datetime(2026, 8, 31, 9)
+    coordinator = _Coordinator(now)
+    coordinator.entry.subentries["b2"] = SimpleNamespace(
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        data={
+            CONF_LOAD_SOC_ENTITY: "sensor.soc_b2",
+            CONF_LOAD_CHARGE_ENABLE: "switch.gate_b2",
+            CONF_LOAD_OUTPUT_SWITCH: "switch.output_b2",
+            CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.output_power_b2",
+        },
+        title="B2",
+    )
+    coordinator.entry.subentries["chain"].data[CONF_CASCADE_MEMBER_IDS] = [
+        "b1",
+        "b2",
+    ]
+    coordinator.hass.states.values.update(
+        {
+            "sensor.soc_b2": SimpleNamespace(
+                state="50",
+                attributes={},
+                last_updated=now,
+                last_reported=now,
+            ),
+            "switch.gate_b2": SimpleNamespace(state="off", attributes={}),
+            "switch.output_b2": SimpleNamespace(state="off", attributes={}),
+            "sensor.output_power_b2": SimpleNamespace(
+                state="0", attributes={}, last_updated=now
+            ),
+        }
+    )
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (
+        SurplusLoadState("b1", soc_percent=50),
+        SurplusLoadState("b2", soc_percent=50),
+        SurplusLoadState("leaf"),
+    )
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    assert coordinator.calls == [("switch.input", True)]
+
+    _publish_soc(coordinator, "sensor.soc", "50", now + timedelta(seconds=1))
+    await manager._apply_one("chain", _root_plan(now), live, now + timedelta(seconds=1))
+    assert coordinator.calls[-1] == ("switch.output", True)
+    assert ("switch.output_b2", True) not in coordinator.calls
+    assert state["wake_member_index"] == 1
+
+    _publish_soc(coordinator, "sensor.soc_b2", "50", now + timedelta(seconds=2))
+    await manager._apply_one("chain", _root_plan(now), live, now + timedelta(seconds=2))
+    assert ("switch.output_b2", True) in coordinator.calls
+    assert coordinator.calls.index(("switch.output", True)) < coordinator.calls.index(
+        ("switch.output_b2", True)
+    )
+    assert state["phase"] == "root"
+
+
+async def test_root_wake_timeout_faults_without_real_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 31, 9)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
+    )
+
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now,
+    )
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now + timedelta(seconds=61),
+    )
+
+    assert state["fault"] == "root_transition_failed"
+    assert state["fault_detail"] == {
+        "entity_id": "sensor.soc",
+        "target_state": "fresh_numeric_publication",
+        "observed_state": "90",
+        "kind": "wake_timeout",
+    }
+    assert state["fault_safe_off_complete"] is True
+    assert not state["enabled"]
+
+
+async def test_completed_fault_safe_off_releases_actors_for_manual_use() -> None:
+    """A latched fault diagnoses the chain but does not fight the operator."""
+    now = datetime(2026, 8, 31, 10)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": False,
+            "phase": "fault",
+            "fault": "root_transition_failed",
+            "fault_safe_off_complete": False,
+        }
+    )
+    coordinator.hass.states.values["switch.input"].state = "on"
+
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now,
+    )
+    assert coordinator.hass.states.values["switch.input"].state == "off"
+    assert state["fault_safe_off_complete"] is True
+
+    coordinator.calls.clear()
+    coordinator.hass.states.values["switch.input"].state = "on"
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now + timedelta(seconds=15),
+    )
+
+    assert coordinator.calls == []
+    assert coordinator.hass.states.values["switch.input"].state == "on"
+    assert state["fault"] == "root_transition_failed"
 
 
 async def test_repeated_safe_off_does_not_rewrite_confirmed_off_actors() -> None:
@@ -384,6 +553,13 @@ async def test_root_fault_exposes_failed_actor_detail(
         (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
         now,
     )
+    _publish_soc(coordinator, "sensor.soc", "50", now + timedelta(seconds=1))
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now + timedelta(seconds=1),
+    )
 
     assert state["fault"] == "root_transition_failed"
     assert state["fault_detail"] == {
@@ -411,6 +587,13 @@ async def test_shared_actor_allows_manager_owned_state_transition() -> None:
         _root_plan(now),
         (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
         now,
+    )
+    _publish_soc(coordinator, "sensor.soc", "50", now + timedelta(seconds=1))
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now + timedelta(seconds=1),
     )
 
     assert state["enabled"]

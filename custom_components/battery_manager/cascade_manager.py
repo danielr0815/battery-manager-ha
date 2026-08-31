@@ -71,6 +71,7 @@ class CascadeManager:
         state.setdefault("claims", {})
         state.setdefault("fault", None)
         state.setdefault("fault_detail", None)
+        state.setdefault("fault_safe_off_complete", False)
         state.setdefault("hands_off", False)
         state.setdefault("retry_used", False)
         state.setdefault("retry_at", None)
@@ -165,6 +166,7 @@ class CascadeManager:
             return False
         state["fault"] = None
         state["fault_detail"] = None
+        state["fault_safe_off_complete"] = False
         state.pop("last_actor_error", None)
         state["hands_off"] = False
         state["retry_used"] = False
@@ -204,6 +206,66 @@ class CascadeManager:
             if not entity_id or self.coordinator._read_float(entity_id) is None:
                 return False
         return True
+
+    def _member_soc_reported_at(self, data: dict[str, Any]) -> datetime | None:
+        """Return the latest SOC publication, including unchanged values."""
+        entity_id = data.get(CONF_LOAD_SOC_ENTITY)
+        entity_state = (
+            self.coordinator.hass.states.get(entity_id) if entity_id else None
+        )
+        if entity_state is None:
+            return None
+        return getattr(entity_state, "last_reported", entity_state.last_updated)
+
+    def _wait_for_member_wake(
+        self,
+        cascade_id: str,
+        topology: dict[str, Any],
+        member_index: int,
+        baseline: datetime | None,
+        now: datetime,
+        mode: str,
+    ) -> None:
+        """Remember the publication that must be superseded after power-on."""
+        _load_id, data = topology["members"][member_index]
+        timeout_s = int(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60))
+        state = self._state(cascade_id)
+        state["phase"] = "waking_members"
+        state["wake_mode"] = mode
+        state["wake_member_index"] = member_index
+        state["wake_soc_reported_at"] = baseline.isoformat() if baseline else None
+        state["wake_deadline"] = (now + timedelta(seconds=timeout_s)).isoformat()
+
+    def _member_woke(self, cascade_id: str, topology: dict[str, Any]) -> bool:
+        """Require a new numeric SOC publication after upstream power arrived."""
+        state = self._state(cascade_id)
+        index = int(state.get("wake_member_index", -1))
+        if not 0 <= index < len(topology["members"]):
+            return False
+        _load_id, data = topology["members"][index]
+        entity_id = data.get(CONF_LOAD_SOC_ENTITY)
+        if not entity_id or self.coordinator._read_float(entity_id) is None:
+            return False
+        reported_at = self._member_soc_reported_at(data)
+        if reported_at is None:
+            return False
+        baseline_value = state.get("wake_soc_reported_at")
+        if not baseline_value:
+            return True
+        try:
+            return reported_at > datetime.fromisoformat(baseline_value)
+        except ValueError:
+            return False
+
+    def _clear_member_wake(self, cascade_id: str) -> None:
+        state = self._state(cascade_id)
+        for key in (
+            "wake_mode",
+            "wake_member_index",
+            "wake_soc_reported_at",
+            "wake_deadline",
+        ):
+            state.pop(key, None)
 
     def _all_actors_off(self, topology: dict[str, Any]) -> bool:
         entities = []
@@ -362,6 +424,7 @@ class CascadeManager:
         state["fault_detail"] = state.get("last_actor_error")
         state["phase"] = "fault"
         state["enabled"] = False
+        state["fault_safe_off_complete"] = False
         display_reason = reason
         if detail := state.get("fault_detail"):
             display_reason = (
@@ -411,12 +474,18 @@ class CascadeManager:
             False,
         )
         self._proof.pop(cascade_id, None)
+        self._clear_member_wake(cascade_id)
         state = self._state(cascade_id)
         state["source"] = None
         if state.get("phase") != "fault":
             state["phase"] = "idle"
         if not ok:
             await self._fault(cascade_id, f"safe_off_failed:{reason}")
+        elif state.get("fault"):
+            # The fault stays visible and blocks re-enabling, but the completed
+            # break sequence ends actor ownership. Reapplying Safe-OFF on every
+            # refresh used to undo intentional manual operation.
+            state["fault_safe_off_complete"] = True
         self.coordinator._save_persistent_state()
         return ok
 
@@ -431,14 +500,17 @@ class CascadeManager:
         even though the executor correctly refuses to wake it again.
         """
         state = self._state(cascade_id)
+        if state.get("fault") and state.get("fault_safe_off_complete"):
+            return True
         if not state.get("enabled") and not state.get("fault"):
             return True
-        aux_active = state.get("phase") in (
+        phase = state.get("phase")
+        aux_active = phase in (
             "waking",
             "waking_socs",
             "proving",
             "running",
-        )
+        ) or (phase == "waking_members" and state.get("wake_mode") == "aux")
         ok = await self.async_safe_off(cascade_id, reason)
         if ok and aux_active and not state.get("fault"):
             if not state.get("episode_day") and now is not None:
@@ -498,7 +570,7 @@ class CascadeManager:
         state = self._state(cascade_id)
         state["source"] = source_id
         state["phase"] = "proving"
-        state.pop("wake_deadline", None)
+        self._clear_member_wake(cascade_id)
         self._proof.pop(cascade_id, None)
         return True
 
@@ -510,9 +582,9 @@ class CascadeManager:
             return False
         state = self._state(cascade_id)
         state["phase"] = "waking"
-        # Exact make sequence: gates off, Root on, outputs root-to-leaf. A
-        # sleeping device gets the full sum of member wake budgets to publish
-        # fresh SOC; terminal energising and Root isolation happen afterwards.
+        # Each member must publish SOC after its upstream supply was made.
+        # A cached numeric value is not evidence that a sleeping Fossibot can
+        # already receive its own AC-output command.
         for _load_id, data in topology["members"]:
             if not await self._actor(
                 cascade_id,
@@ -521,36 +593,21 @@ class CascadeManager:
             ):
                 return False
         root_data = topology["members"][0][1]
+        baseline = self._member_soc_reported_at(root_data)
         if not await self._actor(
             cascade_id,
             root_data.get(CONF_LOAD_CONTROL_SWITCH),
             True,
         ):
             return False
-        for _load_id, data in topology["members"]:
-            if not await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_OUTPUT_SWITCH),
-                True,
-            ):
-                return False
         state["source"] = source_id
-        wake_seconds = sum(
-            int(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60))
-            for _load_id, data in topology["members"]
-        )
-        state["wake_deadline"] = (now + timedelta(seconds=wake_seconds)).isoformat()
-        if self._fresh_member_socs(topology):
-            return await self._finish_wake(cascade_id, source_id)
-        state["phase"] = "waking_socs"
+        self._wait_for_member_wake(cascade_id, topology, 0, baseline, now, "aux")
         return True
 
-    async def _apply_root(self, cascade_id: str, plan: Any) -> bool:
-        """Apply one Root-fed slot without counting internal passthrough."""
-        self._begin_actor_sequence(cascade_id)
-        topology = self._topology(cascade_id)
-        if topology is None or not plan.flows:
-            return False
+    def _root_targets(
+        self, topology: dict[str, Any], plan: Any
+    ) -> tuple[dict[str, Any], bool, int, int]:
+        """Return member flows, terminal target and wake/output path lengths."""
         flow = plan.flows[0]
         member_flows = {item.load_id: item for item in flow.member_flows}
         terminal_root = any(
@@ -564,30 +621,22 @@ class CascadeManager:
                 and member_flows[load_id].own_charge_input_wh > 0
             ):
                 deepest = max(deepest, index)
-        if terminal_root:
-            deepest = len(topology["members"])
+        output_count = len(topology["members"]) if terminal_root else max(deepest, 0)
+        wake_count = output_count if terminal_root else deepest + 1
+        return member_flows, terminal_root, output_count, wake_count
 
-        # Disable charging before changing the passthrough path.
-        for _load_id, data in topology["members"]:
-            if not await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_CHARGE_ENABLE),
-                False,
-            ):
-                return False
-        root = topology["members"][0][1]
-        if not await self._actor(
-            cascade_id,
-            root.get(CONF_LOAD_CONTROL_SWITCH),
-            True,
-        ):
-            return False
+    async def _finish_root(
+        self, cascade_id: str, topology: dict[str, Any], plan: Any
+    ) -> bool:
+        """Apply Root consumers after every newly supplied member woke."""
+        member_flows, terminal_root, output_count, _wake_count = self._root_targets(
+            topology, plan
+        )
         for index, (_load_id, data) in enumerate(topology["members"]):
-            output_needed = index < deepest
             if not await self._actor(
                 cascade_id,
                 data.get(CONF_LOAD_OUTPUT_SWITCH),
-                output_needed,
+                index < output_count,
             ):
                 return False
         terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
@@ -606,10 +655,142 @@ class CascadeManager:
                 charging,
             ):
                 return False
+        self._clear_member_wake(cascade_id)
         self._state(cascade_id)["phase"] = (
             "recovering" if self._state(cascade_id).get("recovery_pending") else "root"
         )
         return True
+
+    async def _apply_root(self, cascade_id: str, plan: Any, now: datetime) -> bool:
+        """Apply one Root-fed slot without counting internal passthrough."""
+        self._begin_actor_sequence(cascade_id)
+        topology = self._topology(cascade_id)
+        if topology is None or not plan.flows:
+            return False
+        _member_flows, _terminal_root, output_count, wake_count = self._root_targets(
+            topology, plan
+        )
+
+        # Disable charging before changing the passthrough path.
+        for _load_id, data in topology["members"]:
+            if not await self._actor(
+                cascade_id,
+                data.get(CONF_LOAD_CHARGE_ENABLE),
+                False,
+            ):
+                return False
+        root = topology["members"][0][1]
+        root_actor = root.get(CONF_LOAD_CONTROL_SWITCH)
+        root_was_on = bool(root_actor and self.coordinator._entity_is_on(root_actor))
+        baseline = self._member_soc_reported_at(root) if not root_was_on else None
+        if not await self._actor(
+            cascade_id,
+            root_actor,
+            True,
+        ):
+            return False
+        if not wake_count:
+            return await self._finish_root(cascade_id, topology, plan)
+        first_missing = next(
+            (
+                index
+                for index, (_load_id, data) in enumerate(
+                    topology["members"][:output_count]
+                )
+                if not self.coordinator._entity_is_on(data.get(CONF_LOAD_OUTPUT_SWITCH))
+            ),
+            None,
+        )
+        if not root_was_on:
+            first_missing = 0
+        if first_missing is None:
+            return await self._finish_root(cascade_id, topology, plan)
+        # A path containing a gap is rebuilt from that point so no sleeping
+        # downstream member receives a premature command.
+        for _load_id, data in reversed(topology["members"][first_missing + 1 :]):
+            if not await self._actor(
+                cascade_id, data.get(CONF_LOAD_OUTPUT_SWITCH), False
+            ):
+                return False
+        if baseline is None:
+            baseline = self._member_soc_reported_at(
+                topology["members"][first_missing][1]
+            )
+        self._wait_for_member_wake(
+            cascade_id, topology, first_missing, baseline, now, "root"
+        )
+        return True
+
+    async def _continue_member_wake(
+        self,
+        cascade_id: str,
+        topology: dict[str, Any],
+        plan: Any,
+        now: datetime,
+    ) -> bool:
+        """Advance exactly one electrically ordered wake step."""
+        state = self._state(cascade_id)
+        index = int(state.get("wake_member_index", -1))
+        deadline_value = state.get("wake_deadline")
+        try:
+            deadline = datetime.fromisoformat(deadline_value)
+        except TypeError, ValueError:
+            deadline = now
+        if not self._member_woke(cascade_id, topology):
+            if now < deadline:
+                return True
+            _load_id, data = topology["members"][index]
+            entity_id = data.get(CONF_LOAD_SOC_ENTITY)
+            observed = (
+                self.coordinator.hass.states.get(entity_id) if entity_id else None
+            )
+            state["last_actor_error"] = {
+                "entity_id": entity_id,
+                "target_state": "fresh_numeric_publication",
+                "observed_state": observed.state if observed is not None else None,
+                "kind": "wake_timeout",
+            }
+            return False
+
+        mode = state.get("wake_mode")
+        if mode == "aux":
+            output_count = len(topology["members"])
+            wake_count = output_count
+        elif mode == "root":
+            _flows, _terminal, output_count, wake_count = self._root_targets(
+                topology, plan
+            )
+        else:
+            return False
+
+        if index < output_count:
+            next_index = index + 1
+            next_baseline = (
+                self._member_soc_reported_at(topology["members"][next_index][1])
+                if next_index < wake_count
+                else None
+            )
+            if not await self._actor(
+                cascade_id,
+                topology["members"][index][1].get(CONF_LOAD_OUTPUT_SWITCH),
+                True,
+            ):
+                return False
+            if next_index < wake_count:
+                self._wait_for_member_wake(
+                    cascade_id,
+                    topology,
+                    next_index,
+                    next_baseline,
+                    now,
+                    mode,
+                )
+                return True
+
+        if mode == "aux":
+            source_id = state.get("source")
+            return bool(source_id) and await self._finish_wake(cascade_id, source_id)
+        return await self._finish_root(cascade_id, topology, plan)
 
     async def _handover(self, cascade_id: str, source_id: str) -> bool:
         """Break skipped upstream outputs before proving the next source."""
@@ -687,9 +868,11 @@ class CascadeManager:
         # Disabled and Shared-hands-off cascades no longer own their actors.
         # Check that before rollover/topology maintenance, otherwise a later
         # local-day refresh could unexpectedly undo a manual operator change.
-        # Faults deliberately remain fail-closed until their explicit reset.
+        # A fault remains latched until reset, but a successful fault-triggered
+        # Safe-OFF releases actor ownership for manual troubleshooting.
         if state.get("fault"):
-            await self.async_safe_off(cascade_id, "cascade fault")
+            if not state.get("fault_safe_off_complete"):
+                await self.async_safe_off(cascade_id, "cascade fault")
             return
         if not state["enabled"] or state.get("hands_off"):
             return
@@ -704,6 +887,7 @@ class CascadeManager:
                 "running",
                 "proving",
                 "waking",
+                "waking_members",
             )
         ):
             await self.async_safe_off(cascade_id, "local day rollover")
@@ -771,24 +955,24 @@ class CascadeManager:
             if segment.source == "aux"
         ]
         desired_source = aux_segments[0].source_load_id if aux_segments else None
-        if state.get("phase") == "waking_socs":
-            deadline_value = state.get("wake_deadline")
-            deadline = (
-                datetime.fromisoformat(deadline_value)
-                if isinstance(deadline_value, str)
-                else now
-            )
-            if self._fresh_member_socs(topology) and desired_source:
-                if await self._finish_wake(cascade_id, desired_source):
-                    return
-            elif now < deadline:
+        if state.get("phase") == "waking_members":
+            mode = state.get("wake_mode")
+            matching_plan = (
+                mode == "aux" and desired_source == state.get("source")
+            ) or (mode == "root" and plan.flows and plan.flows[0].root_input_wh > 0.0)
+            if matching_plan and await self._continue_member_wake(
+                cascade_id, topology, plan, now
+            ):
                 return
-            await self.async_safe_off(cascade_id, "fresh SOC wake timeout")
-            if not state["retry_used"]:
-                state["retry_used"] = True
-                state["retry_at"] = (now + _RETRY_DELAY).isoformat()
+            if mode == "root":
+                await self._fault(cascade_id, "root_transition_failed")
             else:
-                await self._fault(cascade_id, "wake_failed_after_retry")
+                if state["retry_used"]:
+                    await self._fault(cascade_id, "wake_failed_after_retry")
+                else:
+                    state["retry_used"] = True
+                    state["retry_at"] = (now + _RETRY_DELAY).isoformat()
+            await self.async_safe_off(cascade_id, "member wake failure")
             self.coordinator._save_persistent_state()
             return
         if state.get("phase") == "proving":
@@ -901,7 +1085,7 @@ class CascadeManager:
             return
 
         if plan.flows and plan.flows[0].root_input_wh > 0.0:
-            if not await self._apply_root(cascade_id, plan):
+            if not await self._apply_root(cascade_id, plan, now):
                 await self._fault(cascade_id, "root_transition_failed")
                 await self.async_safe_off(cascade_id, "Root transition")
             return
