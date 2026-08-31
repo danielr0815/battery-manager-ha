@@ -89,10 +89,11 @@ async def test_activation_turns_psu_on_before_dcdc_off(hass):
     hass.states.async_set(DCDC, "on")
     calls.clear()
 
-    with patch("asyncio.sleep", return_value=None):
+    with patch("asyncio.sleep", return_value=None) as delay:
         assert await coordinator._sequence_dc24(True, PSU) is True
 
     assert calls == [("turn_on", PSU), ("turn_off", DCDC)]
+    delay.assert_awaited_once_with(1.0)
 
 
 async def test_deactivation_turns_dcdc_on_before_psu_off(hass):
@@ -102,10 +103,11 @@ async def test_deactivation_turns_dcdc_on_before_psu_off(hass):
     hass.states.async_set(DCDC, "off")
     calls.clear()
 
-    with patch("asyncio.sleep", return_value=None):
+    with patch("asyncio.sleep", return_value=None) as delay:
         assert await coordinator._sequence_dc24(False, PSU) is True
 
     assert calls == [("turn_on", DCDC), ("turn_off", PSU)]
+    delay.assert_awaited_once_with(1.0)
 
 
 async def test_unconfirmed_new_supply_aborts_switchover(hass):
@@ -411,7 +413,12 @@ async def test_manual_switch_off_restores_auto_dc48(hass):
 
 async def test_manual_switch_dc24_uses_make_before_break(hass):
     """Entering 24 V manual mode must keep the rail sourced: PSU on before
-    the DC/DC goes off; exiting reverses it."""
+    the DC/DC goes off; exiting reverses it.
+
+    The lower-level sequence tests cover the configured delay. This integration
+    test verifies routing, order and state and therefore must not spend two
+    seconds waiting on the production wall clock.
+    """
     calls: list[tuple[str, str]] = []
     coordinator = await _setup(hass, calls)
     coordinator._support_manual["dc24"] = False
@@ -419,18 +426,20 @@ async def test_manual_switch_dc24_uses_make_before_break(hass):
     hass.states.async_set(DCDC, "on")
     calls.clear()
 
-    await coordinator.async_set_support_manual("dc24", True)
-    await hass.async_block_till_done()
-    assert calls.index(("turn_on", PSU)) < calls.index(("turn_off", DCDC))
-    assert coordinator.support_manual("dc24") is True
-    assert coordinator.build_system_config().support.dc24_forced_on is True
+    with patch("asyncio.sleep", return_value=None) as delay:
+        await coordinator.async_set_support_manual("dc24", True)
+        await hass.async_block_till_done()
+        assert calls.index(("turn_on", PSU)) < calls.index(("turn_off", DCDC))
+        assert coordinator.support_manual("dc24") is True
+        assert coordinator.build_system_config().support.dc24_forced_on is True
 
-    calls.clear()
-    await coordinator.async_set_support_manual("dc24", False)
-    await hass.async_block_till_done()
+        calls.clear()
+        await coordinator.async_set_support_manual("dc24", False)
+        await hass.async_block_till_done()
     # Restore: DC/DC on before the PSU goes off.
     assert calls.index(("turn_on", DCDC)) < calls.index(("turn_off", PSU))
     assert coordinator.support_manual("dc24") is False
+    assert delay.await_count >= 2
 
 
 async def test_manual_switch_is_idempotent(hass):
@@ -521,8 +530,10 @@ async def test_unload_cancels_actuation_tasks_before_flush(hass):
     calls: list[tuple[str, str]] = []
     coordinator = await _setup(hass, calls)
 
+    never_finishes = asyncio.Event()
+
     async def _slow() -> None:
-        await asyncio.sleep(100)
+        await never_finishes.wait()
 
     coordinator._switch_task = hass.async_create_task(_slow())
     coordinator._dc48_ctrl_task = hass.async_create_task(_slow())

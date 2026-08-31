@@ -253,6 +253,7 @@ class CascadeAutomationSwitch(BatteryManagerEntity, SwitchEntity):
             "phase": plan.get("phase"),
             "hands_off": bool(plan.get("hands_off")),
             "fault": plan.get("fault"),
+            "fault_detail": plan.get("fault_detail"),
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:

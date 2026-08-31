@@ -189,7 +189,12 @@ def test_automation_switch_exposes_hands_off_reason() -> None:
 
     attrs = CascadeAutomationSwitch.extra_state_attributes.fget(entity)
 
-    assert attrs == {"phase": "hands_off", "hands_off": True, "fault": None}
+    assert attrs == {
+        "phase": "hands_off",
+        "hands_off": True,
+        "fault": None,
+        "fault_detail": None,
+    }
 
 
 async def test_wake_order_and_two_sample_power_proof() -> None:
@@ -345,6 +350,48 @@ async def test_actor_requires_confirmation_before_claiming() -> None:
 
     assert not await manager._actor("chain", "switch.output", True)
     assert "switch.output" not in manager._state("chain")["claims"]
+    assert manager._state("chain")["last_actor_error"] == {
+        "entity_id": "switch.output",
+        "target_state": "on",
+        "observed_state": "off",
+        "kind": "confirmation_timeout",
+    }
+
+
+async def test_root_fault_exposes_failed_actor_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 29, 23)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
+    )
+
+    async def fail_gate(entity_id: str, turn_on: bool) -> bool:
+        coordinator.calls.append((entity_id, turn_on))
+        if entity_id == "switch.gate" and turn_on:
+            return False
+        coordinator.hass.states.values[entity_id].state = "on" if turn_on else "off"
+        return True
+
+    coordinator._switch_entity = fail_gate
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["fault"] == "root_transition_failed"
+    assert state["fault_detail"] == {
+        "entity_id": "switch.gate",
+        "target_state": "on",
+        "observed_state": "off",
+        "kind": "service_failed",
+    }
 
 
 async def test_shared_actor_allows_manager_owned_state_transition() -> None:
@@ -649,6 +696,13 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     assert runtime.episode_day is None
     assert runtime.phase == "idle"
 
+    state["phase"] = "proving"
+    runtime = manager.runtime_state("chain")
+    assert runtime.phase == "proving"
+
+    assert manager.planning_blocked_load_ids() == {"b1", "leaf"}
+    assert manager.managed_load_ids() == {"b1", "leaf"}
+
     core_cascade = LoadCascade("chain", (CascadeMember("b1", 20, 50),), "leaf")
     cascade_plan = _aux_plan(now)
     cascade_plan.cascade_id = "chain"
@@ -658,14 +712,18 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     slots = (HourSlot(0, now, 1.0, 6, 0.0, 0.0, 0.0),)
     payload = manager.payload(result, config, slots)["chain"]
     assert payload["fault"] == "demo"
+    assert payload["fault_detail"] is None
     assert payload["source_name"] is None
-    assert payload["planned_aux_energy_kwh"] == 0.15
+    assert payload["planned_root_energy_kwh"] == 0.0
+    assert payload["planned_aux_energy_kwh"] == 0.0
     assert payload["actual_aux_energy_kwh"] == 0.125
+    assert payload["aggregate_soc_percent"] == 90.0
     assert payload["members"] == ["b1"]
     assert payload["member_details"] == [{"load_id": "b1", "name": "B1"}]
     assert payload["terminal_name"] == "Leaf"
     assert payload["assumed_state_actors"] == ["switch.input"]
-    assert payload["schedule"] == [
+    assert payload["schedule"] == []
+    assert manager._schedule_payload(core_cascade, cascade_plan, slots) == [
         {
             "start": now.isoformat(),
             "end": (now + timedelta(hours=1)).isoformat(),
@@ -741,6 +799,41 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
         now,
     )
     assert coordinator.calls == []
+
+
+async def test_global_safety_gate_safe_offs_active_but_not_manual_cascade() -> None:
+    now = datetime(2026, 8, 30, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "running", "source": "b1"})
+    for entity_id in ("switch.input", "switch.gate", "switch.output", "switch.leaf"):
+        coordinator.hass.states.values[entity_id].state = "on"
+
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+        safety_reason="G4 floor guard",
+    )
+
+    assert coordinator.calls == [
+        ("switch.leaf", False),
+        ("switch.output", False),
+        ("switch.gate", False),
+        ("switch.input", False),
+    ]
+    assert state["enabled"] is True
+    assert state["phase"] == "complete"
+    assert state["episode_day"] == now.date().isoformat()
+
+    coordinator.calls.clear()
+    state.update({"enabled": False, "phase": "idle", "episode_day": None})
+    coordinator.hass.states.values["switch.output"].state = "on"
+    await manager.async_safety_off_active("stale-data load shed", now)
+    assert coordinator.calls == []
+    assert coordinator.hass.states.values["switch.output"].state == "on"
 
 
 def test_schedule_payload_exposes_two_member_output_path() -> None:

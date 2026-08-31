@@ -231,7 +231,7 @@ uv run pytest tests/core -p no:homeassistant
 
 # Full suite incl. Home Assistant layer (needs Linux/WSL — the HA test
 # helpers do not install on Windows):
-uv run pytest tests
+uv run pytest tests -n 4 --dist=loadscope
 
 uv run ruff check custom_components tests
 ```

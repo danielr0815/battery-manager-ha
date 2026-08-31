@@ -2206,6 +2206,19 @@ async def test_load_control_switch_gates_availability(hass):
     assert states[sub_id].available is True
 
 
+async def test_faulted_cascade_load_is_removed_from_effective_plan(hass, monkeypatch):
+    coordinator, sub_id, _ = await _setup(hass, [])
+    monkeypatch.setattr(
+        coordinator.cascade_manager,
+        "planning_blocked_load_ids",
+        lambda: {sub_id},
+    )
+
+    states = {state.load_id: state for state in coordinator._get_load_states()}
+
+    assert states[sub_id].available is False
+
+
 async def test_load_control_switch_entity_created_and_toggles(hass):
     """The switch entity exists per load, defaults on, and toggling it drives
     the coordinator flag."""
@@ -3138,6 +3151,18 @@ async def _wait_for_state(hass, entity_id: str, expected: str) -> None:
     raise AssertionError(f"{entity_id} did not become {expected}")
 
 
+async def _wait_for_calibration_state(coordinator, load_id: str, expected: str) -> None:
+    """Yield until the calibration task publishes the requested phase."""
+    import asyncio
+
+    for _ in range(200):
+        state = coordinator.load_power_calibration_diagnostics(load_id)["state"]
+        if state == expected:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"calibration did not enter {expected}")
+
+
 async def test_manual_power_calibration_bypasses_plan_and_learns_median(
     hass, monkeypatch
 ):
@@ -3163,7 +3188,9 @@ async def test_manual_power_calibration_bypasses_plan_and_learns_median(
     )
     monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MIN_SAMPLES", 4)
     monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MIN_MEASURE_S", 10.0)
-    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MAX_TOTAL_S", 1.0)
+    # Leave scheduling headroom for xdist workers. Individual publications are
+    # acknowledged below, so this cap is only a failure bound, not a sleep.
+    monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_MAX_TOTAL_S", 2.0)
 
     await coordinator.async_toggle_load_power_calibration(sub_id)
     task = coordinator._load_power_calibration_task
@@ -3174,9 +3201,20 @@ async def test_manual_power_calibration_bypasses_plan_and_learns_median(
     # The first high value is a transfer/inrush outlier. Three further sensor
     # publications carry the SAME stable state: last_reported (not last_updated)
     # must count them as real measurements. Their median is 505 W.
-    for watts in (900, 505, 505, 505):
+    for expected_samples, watts in enumerate((900, 505, 505, 505), start=1):
         hass.states.async_set(POWER_FEEDBACK, str(watts))
-        await asyncio.sleep(0.015)
+        # Do not replace a publication until the calibration loop consumed it.
+        # A fixed 15 ms delay raced under parallel CI load and occasionally
+        # coalesced all four values into a single last_reported state.
+        for _ in range(200):
+            if (
+                coordinator.load_power_calibration_diagnostics(sub_id)["samples"]
+                >= expected_samples
+            ):
+                break
+            await asyncio.sleep(0.005)
+        else:
+            pytest.fail(f"calibration did not consume sample {expected_samples}")
     await task
 
     assert coordinator._load_learned_power_w[sub_id] == 505.0
@@ -3229,8 +3267,10 @@ async def test_manual_power_calibration_waits_for_delayed_actor_confirmation(
     calls.clear()
 
     monkeypatch.setattr(coordinator_module, "POWER_CALIBRATION_POLL_S", 0.002)
+    # Failure bound only: leave enough scheduler headroom for parallel workers;
+    # the observed actor/diagnostic states below end the test immediately.
     monkeypatch.setattr(
-        coordinator_module, "POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S", 0.1
+        coordinator_module, "POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S", 1.0
     )
 
     async def delayed_switch(entity_id: str, turn_on: bool) -> bool:
@@ -3250,7 +3290,7 @@ async def test_manual_power_calibration_waits_for_delayed_actor_confirmation(
     assert task is not None
     await _wait_for_state(hass, PLUG, "on")
     await _wait_for_state(hass, ENABLE, "on")
-    await asyncio.sleep(0.005)
+    await _wait_for_calibration_state(coordinator, sub_id, "waiting_for_power")
 
     assert not task.done()
     assert coordinator.load_power_calibration_diagnostics(sub_id)["state"] == (

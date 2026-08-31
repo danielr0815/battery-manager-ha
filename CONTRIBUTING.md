@@ -57,8 +57,17 @@ Windows:
 uv run pytest tests/core -p no:homeassistant
 
 # Full suite incl. the HA layer — needs Linux or WSL (this is what CI runs).
-uv run pytest tests
+uv run pytest tests -n 4 --dist=loadscope
 ```
+
+HA tests replace the coordinator's production five-second entity debounce with
+an immediate yield in `tests/ha/conftest.py`; a dedicated mock-based test keeps
+the production delay covered without adding real wall-clock sleeps. Four xdist
+workers keep each module and its HA fixtures together while combining coverage.
+Never make a test wait through a production-scale seconds/minutes delay: mock or
+advance the clock and cover the configured delay separately. Polling in tests
+must stop on an observed state/publication, not assume that a fixed millisecond
+sleep gave a background task enough CPU time.
 
 (Without uv, activate `.venv` and call `python -m pytest …` instead.)
 

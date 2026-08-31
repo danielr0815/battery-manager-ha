@@ -400,7 +400,7 @@ once-only accounting.
 circuit, so leaving it on would make the learner subtract a draw that is not in
 the measured house load and skew the AC baseline.
 
-## 15. House-battery SOC stale watchdog (v0.17.0; energy-based bands since v0.18.0)
+## 15. House-battery SOC stale watchdog (v0.17.0; 21-89 % window since v0.31.0)
 
 G2 (§10) watches the *loads'* SOC sensors; the **house** battery SOC had the
 same blind spot: a BMS serving a cached, frozen SOC with fresh timestamps
@@ -413,15 +413,21 @@ while `|expected| >= HOUSE_SOC_STALE_POWER_W = 300 W`, a frozen reading
 accumulates the expected energy (`|expected| × Δt`); below the bar the
 accumulation pauses (standby/float — a constant SOC is physically correct
 there, no evidence either way), and only a CHANGED reading resets it, so
-duty-cycled flow still accumulates. The latch fires once the accumulated
-energy exceeds the band's drift allowance: `house_soc_stale_mid_percent`
+duty-cycled flow still accumulates. A frozen reading is evaluated only in the
+inclusive **21-89 % plausibility window**. Below 21 % and above 89 %, BMS
+calibration, balancing and charge/discharge clamping can legitimately hold the
+displayed value despite substantial flow; the watchdog therefore discards all
+accumulated evidence there and immediately clears an existing latch. Within
+the window, the latch fires once the accumulated energy exceeds the band's
+drift allowance: `house_soc_stale_mid_percent`
 (default 3 % of capacity = 2 % physical drift + 1 % display quantization of
 the 1-%-step Victron SOC source — the 2026-08-07 live audit counted 37 false
 latches in 7 days at the old 2 %, one latch only 65 s short of the 2-h
 stage-2 shed threshold) in the mid band, `house_soc_stale_edge_percent`
 (default 7 %) at the plateau-prone ends. The ends' SOC bounds are options
 too: `house_soc_stale_edge_low_soc` / `house_soc_stale_edge_high_soc`
-(defaults 13 % / 88 %, both INCLUSIVE — the Victron calibration plateau
+(defaults 13 % / 88 %, both INCLUSIVE and only effective where they overlap
+the 21-89 % plausibility window — the Victron calibration plateau
 covers 88.0 and 89.0; 2026-08-02 incident: a real 89.0 with an idle battery
 latched after ~107 Wh in the mid band, so the bound moved 89 → 88). While
 latched, `_get_soc` treats the reading as invalid,

@@ -402,14 +402,17 @@ watchdog latch cleared
 
 **Bedeutung:** der SOC blieb exakt unverändert, während der letzte gültige
 Plan ≥ 300 W Batteriefluss erwartete — so lange, bis der akkumulierte
-erwartete Durchsatz die Drift-Toleranz des SOC-Bands überstieg (Mitte
-13–89 %: `house_soc_stale_mid_percent`, Standard 3 % der Kapazität = 2 %
+erwartete Durchsatz die Drift-Toleranz des SOC-Bands überstieg. Die Prüfung
+findet ausschließlich im inklusiven Fenster 21–89 % statt; unter 21 % und
+über 89 % werden wegen legitimer BMS-Plateaus weder Evidenz aufgebaut noch
+vorhandene Latches gehalten. Innerhalb des Fensters gilt
+`house_soc_stale_mid_percent`, Standard 3 % der Kapazität = 2 %
 physikalische Drift + 1 % Anzeige-Quantisierung der 1-%-Schritt-Victron-
 Quelle — Live-Audit 07.08.2026: 37 Fehl-Latches in 7 Tagen bei 2 %, einer
-nur 65 s unter der 2-h-Shed-Schwelle; Ränder
-< 13 % / > 89 %: `house_soc_stale_edge_percent`, Standard 7 %, weil
-BMS-Plateaus dort stundenlang normal sein können; unter 300 W pausiert die
-Akkumulation). Danach gilt der SOC als Datenverlust — es greift derselbe
+nur 65 s unter der 2-h-Shed-Schwelle. Konfigurierte Randbänder innerhalb des
+Prüffensters verwenden `house_soc_stale_edge_percent`, Standard 7 %; unter
+300 W pausiert die Akkumulation). Danach gilt der SOC als Datenverlust — es
+greift derselbe
 Pfad wie bei fehlenden Daten (§5.7 `stale_data_load_shed`).
 
 ### 5.4 Schaltprotokoll (V9a: genau eine INFO-Zeile je bestätigter Aktion)

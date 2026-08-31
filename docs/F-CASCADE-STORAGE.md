@@ -96,8 +96,7 @@ Claim. Ein bereits bestätigter Zielzustand wird ohne redundanten Service-Aufruf
 
 Ziel-, Floor- und Safety-Abbrüche übersteuern Dwell. Safe-OFF schaltet die
 Endlast, Outputs downstream→upstream, Charge-Gates und Root aus. Ein
-Safe-OFF-Fehler
-setzt einen Hard-Fault und Repair; Reset versucht Safe-OFF erneut, löscht nur
+Safe-OFF-Fehler setzt einen Hard-Fault und Repair; Reset versucht Safe-OFF erneut, löscht nur
 bei Erfolg und lässt Automation AUS. `exclusive` wertet Fremdänderungen bei
 aktiver Automation als Fault. `shared` beendet Claims und Automation ohne
 Rollback (Hands-off); Wiederaufnahme erfordert bewusst AUS→AN. Bewusstes
@@ -105,12 +104,30 @@ Automation-AUS führt genau einmal Safe-OFF aus und gibt danach alle Actors für
 manuelle Bedienung frei. Vor einem erneuten Automation-AN muss die Kette
 vollständig AUS sein.
 
+Der globale G4-Floor-Guard und der Datenverlust-Shed gelten unverändert für
+Kaskaden. Weil der unabhängige Load-Executor Kaskadenmitglieder nie besitzt,
+delegiert der Coordinator beide Zwangsstopps an den `CascadeManager`; dieser
+führt dieselbe vollständige geordnete Safe-OFF-Sequenz dwell-frei aus. Eine
+bewusst deaktivierte oder bereits hands-off übergebene Kaskade wird dabei nicht
+berührt. Ein unterbrochener Aux-Lauf gilt für den lokalen Tag als beendet.
+
+`proving` wird dem Core als bereits laufende Episode gemeldet: Während des
+Leistungsnachweises fließt schon Endlastenergie, daher darf ein Rolling Replan
+nicht erneut eine vollständige Mindestlaufzeit als Startbedingung verlangen.
+
 ## HA-Datenvertrag
 
 Je Kaskade entstehen Root-Empfehlung, Mode/Forecast, kapazitätsgewichteter SOC,
 Automation, Fault und Fault-Reset. Alte Member-/Leaf-Empfehlungen bleiben für
 API-Kompatibilität vorhanden, sind aber AUS und tragen
 `managed_by_cascade=<id>`.
+
+Ein Hard-Fault veröffentlicht zusätzlich `fault_detail` mit Actor-Entity,
+Zielzustand, zuletzt beobachtetem Zustand und Fehlerart. Fault- und
+Hands-off-Kaskaden tragen sofort keine geplante Root-/Aux-Energie und keinen
+ausführbaren Zeitplan mehr; im folgenden Replan werden ihre Lasten auch aus der
+globalen SOC-Trajektorie entfernt. Eine fehlerfreie Kaskade mit bewusst
+ausgeschalteter Automation behält ihre Vorschau für die Inbetriebnahme.
 
 Der Forecast-Sensor veröffentlicht je Kaskade zusätzlich den lesbaren
 `source_name`, `member_details`, `terminal_name` und `schedule`: genau ein

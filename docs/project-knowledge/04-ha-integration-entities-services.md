@@ -12,8 +12,13 @@ benötigten AC-Ausgang (`output`) und Endlastversorgung (`terminal`). Laden und
 Entladen nennen Energie und SOC-Verlauf, Laden zusätzlich gespeicherte Energie.
 Die Forecast-Card zeigt die Kaskade ausschließlich als Root-Black-Box-Spur;
 die separate Cascade-Card zeichnet alle internen Aktivitäten zeilenweise.
-Der Kaskaden-Automationsschalter zeigt `phase`, `hands_off` und `fault` als
-Attribute. `hands_off=true` bei ausgeschalteter Automation bedeutet bei einem
+Der Kaskaden-Automationsschalter zeigt `phase`, `hands_off`, `fault` und
+`fault_detail` als Attribute. Letzteres nennt bei einem Aktorfehler Entity,
+Zielzustand, beobachteten Zustand und Fehlerart. Fault-/Hands-off-Kaskaden
+publizieren keine ausführbare Energie oder Timeline und werden im folgenden
+Replan aus der wirksamen SOC-Trajektorie entfernt; bewusstes Automation-AUS
+ohne Fault behält die Inbetriebnahme-Vorschau. `hands_off=true` bei
+ausgeschalteter Automation bedeutet bei einem
 Shared Actor eine externe Zustandsänderung gegen einen weiterhin benötigten
 Planzustand und damit kontrollierte Besitzübergabe, nicht Hard-Fault. Ein
 externes Shared-AUS bei bereits leerem frischem Slotplan wird als Safe-OFF

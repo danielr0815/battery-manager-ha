@@ -40,8 +40,14 @@ mypy darin aus (`devcontainers/ci`); lokal geht das mit der devcontainer-CLI
 
 ```bash
 uv run pytest tests/core -p no:homeassistant   # Kern-Suite, läuft überall
-uv run pytest tests                            # volle Suite (561 Tests), Linux/WSL
+uv run pytest tests -n 4 --dist=loadscope      # volle Suite (753 Tests), Linux/WSL
 ```
+
+**Zeitregel für Tests:** Produktive Sekunden-/Minuten-Delays nie real abwarten.
+Zeit per Mock/virtueller Uhr kontrollieren und den echten Delay-Wert in einem
+separaten Vertragstest prüfen. Kurze Poll-Schleifen sind nur für tatsächliche
+Async-Publikationen zulässig und müssen auf beobachtete Zustände statt auf ein
+angenommenes Scheduler-Timing synchronisieren.
 
 **Coverage-Gates** (CI bricht bei Unterschreiten; laufen im `tests`-Job und
 im Devcontainer von `validate.yml`):
@@ -52,7 +58,7 @@ uv run pytest tests/core -p no:homeassistant \
     --cov=custom_components/battery_manager/core --cov-fail-under=100
 # Gesamt 95 % — fail_under in [tool.coverage.report], greift bei jedem
 # Lauf mit --cov:
-uv run pytest tests --cov
+uv run pytest tests -n 4 --dist=loadscope --cov
 ```
 
 Planner-Verhalten ist durch **Golden Snapshots** eingefroren

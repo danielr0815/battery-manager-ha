@@ -4,6 +4,10 @@ Kaskadenmitglieder tragen `managed_by_cascade` und umgehen den unabhängigen
 Load-Executor. Wake, Leistungsnachweis, Handover, Floor, Ownership, Retry und
 Safe-OFF liegen in `CascadeManager`; siehe
 [`../F-CASCADE-STORAGE.md`](../F-CASCADE-STORAGE.md).
+G4 und der globale Datenverlust-Shed werden deshalb ausdrücklich an diesen
+alleinigen Actor-Besitzer delegiert und führen dort die vollständige
+downstream→upstream Safe-OFF-Sequenz aus; der generische Lastpfad überspringt
+auch bei diesen Zwangsstopps sämtliche Kaskadenmitglieder.
 
 **Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument beschreibt die
 Ausführungsschicht in `coordinator.py`: was die Empfehlungs-Entities wirklich

@@ -14,7 +14,7 @@
 ## How was it tested?
 
 - [ ] Core suite: `python -m pytest tests/core -p no:homeassistant`
-- [ ] Full suite (Linux/WSL): `python -m pytest tests`
+- [ ] Full suite (Linux/WSL): `python -m pytest tests -n 4 --dist=loadscope`
 - [ ] Lint: `ruff check custom_components tests` and `ruff format --check .`
 - [ ] Golden snapshots regenerated **and the diff reviewed** (only if planner
       behaviour changed): `python scripts/gen_golden.py`

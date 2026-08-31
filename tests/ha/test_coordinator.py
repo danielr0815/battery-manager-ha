@@ -2,7 +2,8 @@
 
 import logging
 from datetime import UTC, timedelta
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -11,6 +12,7 @@ from custom_components.battery_manager.const import (
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_SOC_ENTITY,
+    DEBOUNCE_SECONDS,
     DOMAIN,
     STARTUP_SOC_GRACE_S,
 )
@@ -101,6 +103,30 @@ async def test_entity_change_schedules_debounced_update(hass):
 
     assert coordinator._debounce_task is not None
     coordinator._debounce_task.cancel()
+
+
+async def test_debounced_update_uses_production_delay() -> None:
+    """The speed fixture must not erase the production debounce contract."""
+    refresh = AsyncMock()
+    coordinator = SimpleNamespace(async_request_refresh=refresh)
+    with (
+        patch(
+            "custom_components.battery_manager.coordinator.DEBOUNCE_SECONDS",
+            DEBOUNCE_SECONDS,
+        ),
+        patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep,
+    ):
+        from custom_components.battery_manager.coordinator import (
+            BatteryManagerCoordinator,
+        )
+
+        await BatteryManagerCoordinator._debounced_update(coordinator)
+
+    sleep.assert_awaited_once_with(DEBOUNCE_SECONDS)
+    refresh.assert_awaited_once_with()
 
 
 async def test_unload_releases_listeners(hass):
@@ -1360,6 +1386,14 @@ async def test_refresh_at_floor_soc_activates_guard_end_to_end(hass):
     coordinator, _titles = await _setup_entry_with_load_data(
         hass, [("F1", {"power_w": 300.0})]
     )
+    cascade_safety: list[str | None] = []
+    real_cascade_apply = coordinator.cascade_manager.async_apply
+
+    async def observed_cascade_apply(*args, **kwargs):
+        cascade_safety.append(kwargs.get("safety_reason"))
+        return await real_cascade_apply(*args, **kwargs)
+
+    coordinator.cascade_manager.async_apply = observed_cascade_apply
     hass.states.async_set(
         "sensor.test_soc", "19", {"unit_of_measurement": "%", "device_class": "battery"}
     )
@@ -1369,6 +1403,7 @@ async def test_refresh_at_floor_soc_activates_guard_end_to_end(hass):
     data = coordinator.data
     assert data["floor_guard_active"] is True
     assert coordinator._floor_guard_active is True
+    assert cascade_safety[-1] == "G4 floor guard"
     for lp in data["load_plans"].values():
         assert lp["active"] is False
     # appliance advisory gating is pinned load-bearingly (baseline True ->

@@ -512,7 +512,7 @@ class CascadeRuntimeState:
 
     cascade_id: str
     episode_day: date | None = None
-    phase: Literal["idle", "running", "recovering", "complete"] = "idle"
+    phase: Literal["idle", "proving", "running", "recovering", "complete"] = "idle"
     source_cursor: int = 0
     active_source_id: str | None = None
     recovery_pending_ids: tuple[str, ...] = ()

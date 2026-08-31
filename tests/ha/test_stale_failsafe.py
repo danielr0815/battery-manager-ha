@@ -4,10 +4,10 @@
   SOC / PV forecasts) all controlled surplus loads are force-switched OFF once
   (repair issue + push), the latch blocks any re-ON, and recovery resumes
   normal operation. The data-loss clock and the latch survive restarts.
-- House-SOC stale watchdog: a frozen house-battery SOC is latched stale once
-  the plan's expected battery throughput exceeds the band's drift allowance
-  (mid band vs. plateau-prone edge bands); the latch routes into UpdateFailed
-  and thus into stage 2.
+- House-SOC stale watchdog: within 21-89 % a frozen house-battery SOC is
+  latched stale once the plan's expected battery throughput exceeds the
+  band's drift allowance; values outside that window are exempt. The latch
+  routes into UpdateFailed and thus into stage 2.
 - F7/U5: three consecutive support-switch failures raise a repair issue +
   push; the first success resets the streak and resolves the issue.
 """
@@ -281,6 +281,36 @@ async def test_shed_after_two_hours_switches_loads_off_and_raises_issue(hass):
     assert hass.states.get(PLUG).state == "on"
 
 
+async def test_shed_delegates_cascade_owned_loads_to_their_actor_owner(
+    hass, monkeypatch
+):
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    entry, coordinator = await _setup(hass, calls, notifications)
+    sub_id = next(iter(entry.subentries))
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    calls.clear()
+    delegated: list[tuple[str, datetime]] = []
+
+    async def safety_off(reason: str, now: datetime) -> None:
+        delegated.append((reason, now))
+
+    monkeypatch.setattr(
+        coordinator.cascade_manager, "async_safety_off_active", safety_off
+    )
+    monkeypatch.setattr(
+        coordinator.cascade_manager, "managed_load_ids", lambda: {sub_id}
+    )
+
+    await coordinator._execute_stale_load_shed()
+
+    assert delegated and delegated[0][0] == "stale-data load shed"
+    assert calls == []
+    assert hass.states.get(PLUG).state == "on"
+    assert hass.states.get(ENABLE).state == "on"
+
+
 async def test_shed_respects_keep_on_policy_for_the_plug(hass):
     """Fail-safe semantics: the charge-enable gate is switched off in ANY
     case (stopping the energy flow takes precedence), but the PLUG still
@@ -544,29 +574,41 @@ async def test_watchdog_mid_band_covers_display_quantization(hass):
     assert coordinator._house_soc_stale == 55.0  # 167 Wh > 150 Wh: latched
 
 
-async def test_watchdog_edge_band_needs_larger_drift(hass):
-    """At the plateau-prone SOC end (> 89 %) the watchdog allows the larger
-    edge drift (7 % of capacity): a frozen 90 % reading does NOT latch at the
-    mid-band allowance but only once the edge allowance is exceeded too."""
+async def test_watchdog_above_89_is_not_checked(hass):
+    """A frozen SOC above 89 % is plausible while charging/balancing."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
     _entry, coordinator = await _setup(hass, calls, notifications)
-    _set_soc(hass, coordinator, "90")
+    _set_soc(hass, coordinator, "89.1")
 
-    # Edge allowance: 5000 Wh x 7 % = 350 Wh; at 1000 W expected flow that
-    # accumulates in 21 min (the mid-band 150 Wh mark passes silently).
     coordinator._expected_battery_power_w = 1000.0
     t1 = MIDDAY + timedelta(minutes=2)
-    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 90 % evidence
+    await _refresh_at(hass, coordinator, t1)
     assert coordinator._house_soc_stale is None
+    assert coordinator._house_soc_frozen is None
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=20))
-    assert coordinator._house_soc_stale is None  # 333 Wh: past mid, under edge
+    await _refresh_at(hass, coordinator, t1 + timedelta(hours=12))
+    assert coordinator._house_soc_stale is None
+    assert coordinator._house_soc_frozen is None
+    assert coordinator.last_update_success
 
+
+async def test_watchdog_exact_upper_boundary_89_is_still_checked(hass):
+    """The explicit exemption is > 89 %, so exactly 89 % remains checked."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "89")
+
+    coordinator._house_soc_frozen = None
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)
     coordinator._expected_battery_power_w = 1000.0
     await _refresh_at(hass, coordinator, t1 + timedelta(minutes=22))
-    assert coordinator._house_soc_stale == 90.0  # 367 Wh > 350 Wh: latched
+
+    assert coordinator._house_soc_stale == 89.0
 
 
 async def test_watchdog_band_boundary_87_is_mid(hass):
@@ -634,26 +676,57 @@ async def test_watchdog_edge_high_bound_is_configurable(hass):
     assert coordinator._house_soc_stale == 89.0  # mid band via the option
 
 
-async def test_watchdog_low_edge_band(hass):
-    """The low plateau is symmetric: 10 % (< 13) is the edge band and holds
-    past the mid-band allowance before latching."""
+async def test_watchdog_below_21_is_not_checked(hass):
+    """A frozen SOC below 21 % is exempt regardless of expected throughput."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
     _entry, coordinator = await _setup(hass, calls, notifications)
-    _set_soc(hass, coordinator, "10")
+    _set_soc(hass, coordinator, "20.9")
 
     coordinator._expected_battery_power_w = 1000.0
     t1 = MIDDAY + timedelta(minutes=2)
-    await _refresh_at(hass, coordinator, t1)  # seeds the frozen 10 % evidence
+    await _refresh_at(hass, coordinator, t1)
     assert coordinator._house_soc_stale is None
+    assert coordinator._house_soc_frozen is None
 
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=20))
-    assert coordinator._house_soc_stale is None  # 333 Wh: past mid, under edge
+    await _refresh_at(hass, coordinator, t1 + timedelta(hours=12))
+    assert coordinator._house_soc_stale is None
+    assert coordinator._house_soc_frozen is None
+    assert coordinator.last_update_success
 
+
+async def test_watchdog_exact_lower_boundary_21_is_still_checked(hass):
+    """The explicit exemption is < 21 %, so exactly 21 % remains checked."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications)
+    _set_soc(hass, coordinator, "21")
+
+    coordinator._house_soc_frozen = None
     coordinator._expected_battery_power_w = 1000.0
-    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=22))
-    assert coordinator._house_soc_stale == 10.0  # 367 Wh > 350 Wh: latched
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=10))
+
+    assert coordinator._house_soc_stale == 21.0
+
+
+async def test_watchdog_exempt_soc_clears_an_existing_latch(hass):
+    """Deploying the relaxed policy recovers a latched edge SOC immediately."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    _entry, coordinator = await _setup(hass, calls, notifications, pinned=NIGHT)
+    _set_soc(hass, coordinator, "99")
+    coordinator._house_soc_stale = 99.0
+    coordinator._house_soc_frozen = (99.0, NIGHT, 1000.0)
+
+    await _refresh_at(hass, coordinator, NIGHT + timedelta(minutes=1))
+
+    assert coordinator._house_soc_stale is None
+    assert coordinator._house_soc_frozen is None
+    assert coordinator.last_update_success
 
 
 async def test_frozen_soc_escalates_into_stage2_shed(hass):

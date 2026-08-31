@@ -53,7 +53,7 @@ class _HungRecorder:
     """Recorder stand-in whose executor jobs never finish (hung DB)."""
 
     def async_add_executor_job(self, job, *args):
-        return asyncio.sleep(3600)
+        return asyncio.Event().wait()
 
 
 async def test_recorder_timeout_creates_issue_and_frees_lock(hass, monkeypatch, caplog):
@@ -77,7 +77,7 @@ async def test_recorder_timeout_creates_issue_and_frees_lock(hass, monkeypatch, 
 
     # A later run is not blocked by the timed-out one (watchdog on the test
     # itself: without the released lock this await would hang).
-    await asyncio.wait_for(learner.async_run_learning(), timeout=5)
+    await asyncio.wait_for(learner.async_run_learning(), timeout=1)
     assert not learner._lock.locked()
 
 

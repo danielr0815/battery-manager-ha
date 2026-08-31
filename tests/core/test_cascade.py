@@ -317,6 +317,22 @@ def test_aux_moves_to_next_member_and_finishes_at_target() -> None:
     assert tail.planned_aux_energy_wh == 0
 
 
+def test_proving_episode_keeps_rolling_tail_instead_of_restarting_dwell() -> None:
+    """The proof minute already belongs to the active terminal episode."""
+    config, inputs = _system(socs=(54.0,))
+    no_pv = replace(inputs, slots=_slots(0, 0))
+    assert plan(config, no_pv).cascade_plans[0].planned_aux_energy_wh == 0
+
+    proving = replace(
+        no_pv,
+        cascade_runtime_states=(
+            CascadeRuntimeState("chain", None, "proving", active_source_id="b1"),
+        ),
+    )
+
+    assert plan(config, proving).cascade_plans[0].planned_aux_energy_wh > 0
+
+
 def test_source_caps_and_too_short_tail_are_skipped() -> None:
     config, inputs = _system(members=2, socs=(90, 90), caps=True)
     base = plan(replace(config, cascades=()), inputs)

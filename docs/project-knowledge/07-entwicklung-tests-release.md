@@ -70,8 +70,13 @@ das es dort nicht gibt. Deshalb ist der Testbaum zweigeteilt:
 **Volle Suite (das, was CI fährt) — nur unter WSL:**
 
 ```
-wsl -e bash -lc "cd /mnt/c/Users/jj/claude_space/battery-manager-ha && ~/bmha-venv/bin/python -m pytest tests -q"
+wsl -e bash -lc "cd /mnt/c/Users/jj/claude_space/battery-manager-ha && ~/bmha-venv/bin/python -m pytest tests -q -n 4 --dist=loadscope"
 ```
+
+Die HA-Suite setzt über eine Autouse-Fixture ausschließlich im Testprozess den
+5-s-Entity-Debounce auf `0`; ein separater Mock-Test hält den produktiven Wert
+im Vertrag. `--dist=loadscope` verteilt ganze Module auf vier xdist-Worker, so
+bleiben HA-Fixtures isoliert und pytest-cov kann die Worker-Daten kombinieren.
 
 **Nur der Kern — geht nativ unter Windows:**
 
@@ -163,7 +168,7 @@ exakt im Lock; einzig phacc ist voll gepinnt, weil es die HA-Kopplung führt):
 | Job | Was er tut |
 |---|---|
 | **`lint` (Lint (ruff + mypy))** | `uv run ruff check custom_components tests`, **`uv run ruff format --check .`**, **mypy-Baseline** (`uv run mypy` — meldet nur Fehler in `core/`, Scope-Begründung in `[tool.mypy]`) und das **Versions-Gate** |
-| **`tests` (Tests (pytest))** | `uv run pytest tests --cov --cov-report=term --cov-report=xml` — die **volle** Suite inkl. HA-Schicht; Coverage-Quelle aus `[tool.coverage.run]`, das XML landet als **Artifact** (`actions/upload-artifact@v7`, `coverage-xml`, kein externer Dienst) |
+| **`tests` (Tests (pytest))** | `uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=term --cov-report=xml` — die **volle** Suite inkl. HA-Schicht; vier xdist-Worker halten Module samt HA-Fixtures zusammen, Coverage wird kombiniert und das XML landet als **Artifact** (`actions/upload-artifact@v7`, `coverage-xml`, kein externer Dienst) |
 | **`devcontainer`** | Baut `.devcontainer/devcontainer.json` via `devcontainers/ci` (inkl. `postCreateCommand` = `uv sync`) und führt im Container aus: volle Suite, `ruff check`, `ruff format --check .`, `mypy` — ein kaputter Devcontainer fällt sofort auf. `lint`/`tests` bleiben das schnellere Feedback (setup-uv); kein `cacheFrom`, weil der Devcontainer image-basiert ist (kein Dockerfile, keine eigenen Layer) |
 | **`validate-hacs`** | `hacs/action@22.5.0` (gepinnter Tag statt `@main`), `category: integration`, `ignore: brands` |
 | **`validate-hassfest`** | `home-assistant/actions/hassfest@e3fb68e…` — gepinnter master-**SHA** statt `@master` (upstream existieren keine nutzbaren Tags; manuell bumpen, Kommentar im Workflow) |
@@ -412,7 +417,7 @@ Commit nach einem Review**.
 1. ruff format .            (Scratchpad-Treffer ignorieren, s. §2.3)
 2. ruff check custom_components tests
 3. wsl -e bash -lc "cd /mnt/c/Users/jj/claude_space/battery-manager-ha \
-     && ~/bmha-venv/bin/python -m pytest tests -q"
+     && ~/bmha-venv/bin/python -m pytest tests -q -n 4 --dist=loadscope"
 4. grep -rn MUTANT custom_components tests      (nach Agenten-Reviews)
 5. Goldens: unbeabsichtigt gewandert?  -> Change prüfen, nicht Golden
 6. manifest.json == pyproject.toml     (Versions-Gate)

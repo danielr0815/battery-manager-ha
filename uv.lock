@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "battery-manager-ha"
-version = "0.26.0"
+version = "0.31.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
@@ -398,6 +398,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-homeassistant-custom-component" },
+    { name = "pytest-xdist" },
     { name = "ruff" },
 ]
 
@@ -410,6 +411,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-homeassistant-custom-component", specifier = "==0.13.354" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.16.0" },
 ]
 

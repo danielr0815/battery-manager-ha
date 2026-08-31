@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-31
+
+### Changed
+- Die laufende Kaskadenphase `proving` bleibt im Rolling Replan als begonnene
+  Aux-Episode erhalten. Der Leistungsnachweis fordert dadurch nicht erneut die
+  vollständige Mindestlaufzeit und bricht knappe, aber zulässige Entladungen
+  nicht vor `running` ab.
+- Fault- und Hands-off-Kaskaden reservieren keine Energie mehr in der wirksamen
+  Planung. Eine absichtlich ausgeschaltete, fehlerfreie Kaskade behält dagegen
+  ihre Inbetriebnahme-Vorschau.
+
+### Fixed
+- Die Hausakku-SOC-Plausibilisierung ist außerhalb von 21–89 % vollständig
+  deaktiviert. Legitime BMS-Plateaus unter 21 % oder über 89 % können den
+  Coordinator dadurch nicht mehr fälschlich in `UpdateFailed` versetzen und
+  alle planungsabhängigen Entitäten unverfügbar machen.
+- G4-Floor-Guard und der globale Datenverlust-Shed führen jetzt auch für
+  Kaskaden die vollständige geordnete Safe-OFF-Sequenz aus. Kaskadenmitglieder
+  werden dabei nicht mehr parallel vom normalen Load-Executor geschaltet.
+- Kaskaden-Aktorfehler veröffentlichen Entity, Zielzustand, beobachteten Zustand
+  und Fehlerart (`service_failed` oder `confirmation_timeout`). Fault- und
+  Hands-off-Payloads zeigen sofort 0 kWh und keinen ausführbaren Zeitplan.
+
 ## [0.30.0] - 2026-08-30
 
 ### Changed

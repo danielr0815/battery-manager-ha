@@ -2352,7 +2352,11 @@ class BatteryManagerCascadeCard extends HTMLElement {
         const root = num(item?.planned_root_energy_kwh) ?? 0;
         const aux = num(item?.planned_aux_energy_kwh) ?? 0;
         const actual = num(item?.actual_aux_energy_kwh) ?? 0;
-        const fault = item?.fault ? ` · ⚠ ${esc(item.fault)}` : "";
+        const detail = item?.fault_detail;
+        const actor = detail?.entity_id
+          ? ` (${esc(detail.entity_id)} → ${esc(detail.target_state || "?")}, ${esc(detail.kind || "failed")}, Ist ${esc(detail.observed_state ?? "?")})`
+          : "";
+        const fault = item?.fault ? ` · ⚠ ${esc(item.fault)}${actor}` : "";
           return `<section><div class="summary"><div><b>${esc(item?.name || "Cascade")}</b>` +
             `<span>${esc(item?.phase || "idle")} · ${esc(item?.source_name || item?.source || "Root")}${fault}</span></div>` +
             `<div class="soc">${soc == null ? "?" : soc.toFixed(1)} %${item?.aggregate_soc_stale ? "*" : ""}</div>` +

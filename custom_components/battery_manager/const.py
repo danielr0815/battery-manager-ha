@@ -308,6 +308,14 @@ STALE_LOAD_SOC_MIN = 12
 # pauses (standby/float: a constant SOC is physically correct there, no
 # evidence either way). A constant, not a config key (like G2).
 HOUSE_SOC_STALE_POWER_W = 300.0
+# Outside this inclusive plausibility window, an unchanged SOC is not useful
+# evidence: BMS calibration, balancing and hard charge/discharge limits can
+# legitimately hold the displayed value despite substantial energy flow.  The
+# bounds themselves remain checkable; only values below/above them are exempt.
+# Constants rather than options: accepting a frozen value at the physical SOC
+# ends is a safety invariant, not an operator-tunable sensitivity preference.
+HOUSE_SOC_STALE_CHECK_MIN_PERCENT = 21.0
+HOUSE_SOC_STALE_CHECK_MAX_PERCENT = 89.0
 # BMS plateaus (2026-07-31 incident: 10 false latches in 90 min at SOC
 # 87-89 %): near the SOC ends the reading can sit on one value for a long time
 # while power keeps flowing (balancing/clamping — Victron calibrates the SOC

@@ -70,6 +70,7 @@ class CascadeManager:
         state.setdefault("recovery_pending", [])
         state.setdefault("claims", {})
         state.setdefault("fault", None)
+        state.setdefault("fault_detail", None)
         state.setdefault("hands_off", False)
         state.setdefault("retry_used", False)
         state.setdefault("retry_at", None)
@@ -84,7 +85,11 @@ class CascadeManager:
         except ValueError:
             parsed_day = None
         phase = state.get("phase", "idle")
-        if phase not in ("idle", "running", "recovering", "complete"):
+        # ``proving`` already consumes terminal energy.  Reporting it as idle
+        # made the rolling planner demand a fresh full dwell during the proof
+        # minute, so a valid marginal Aux episode could disappear before it
+        # reached ``running``.
+        if phase not in ("idle", "proving", "running", "recovering", "complete"):
             phase = "idle"
         return CascadeRuntimeState(
             cascade_id=cascade_id,
@@ -96,6 +101,39 @@ class CascadeManager:
 
     def enabled(self, cascade_id: str) -> bool:
         return bool(self._state(cascade_id)["enabled"])
+
+    def managed_load_ids(self) -> set[str]:
+        """Return every load reserved by a configured cascade.
+
+        This intentionally reads the stored references instead of the pure-core
+        configuration: an invalid topology must remain fail-closed and may not
+        fall back to independent load actuation merely because the core omitted
+        it from ``SystemConfig.cascades``.
+        """
+        managed: set[str] = set()
+        for subentry in self.coordinator.entry.subentries.values():
+            if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            managed.update(subentry.data.get(CONF_CASCADE_MEMBER_IDS, []))
+            terminal_id = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+            if terminal_id:
+                managed.add(terminal_id)
+        return managed
+
+    def planning_blocked_load_ids(self) -> set[str]:
+        """Loads whose cascade cannot currently execute its published plan."""
+        blocked: set[str] = set()
+        for cascade_id, subentry in self.coordinator.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            state = self._state(cascade_id)
+            if not state.get("fault") and not state.get("hands_off"):
+                continue
+            blocked.update(subentry.data.get(CONF_CASCADE_MEMBER_IDS, []))
+            terminal_id = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+            if terminal_id:
+                blocked.add(terminal_id)
+        return blocked
 
     async def async_set_enabled(self, cascade_id: str, enabled: bool) -> bool:
         state = self._state(cascade_id)
@@ -126,6 +164,8 @@ class CascadeManager:
         if not await self.async_safe_off(cascade_id, "fault reset"):
             return False
         state["fault"] = None
+        state["fault_detail"] = None
+        state.pop("last_actor_error", None)
         state["hands_off"] = False
         state["retry_used"] = False
         state["retry_at"] = None
@@ -279,6 +319,14 @@ class CascadeManager:
             async with asyncio.timeout(timeout_s):
                 ok = await self.coordinator._switch_entity(entity_id, turn_on)
                 if not ok:
+                    state["last_actor_error"] = {
+                        "entity_id": entity_id,
+                        "target_state": target_state,
+                        "observed_state": current.state
+                        if current is not None
+                        else None,
+                        "kind": "service_failed",
+                    }
                     return False
                 while True:
                     current = self.coordinator.hass.states.get(entity_id)
@@ -290,6 +338,13 @@ class CascadeManager:
                         break
                     await asyncio.sleep(_ACTOR_CONFIRM_POLL_S)
         except TimeoutError:
+            current = self.coordinator.hass.states.get(entity_id)
+            state["last_actor_error"] = {
+                "entity_id": entity_id,
+                "target_state": target_state,
+                "observed_state": current.state if current is not None else None,
+                "kind": "confirmation_timeout",
+            }
             return False
         # Only a confirmed (or explicitly assumed-state) transition becomes a
         # claim.  Otherwise the next plan could mistake delayed feedback for
@@ -297,11 +352,23 @@ class CascadeManager:
         state["claims"][entity_id] = turn_on
         return True
 
+    def _begin_actor_sequence(self, cascade_id: str) -> None:
+        """Discard stale transition evidence before a new ordered sequence."""
+        self._state(cascade_id).pop("last_actor_error", None)
+
     async def _fault(self, cascade_id: str, reason: str) -> None:
         state = self._state(cascade_id)
         state["fault"] = reason
+        state["fault_detail"] = state.get("last_actor_error")
         state["phase"] = "fault"
         state["enabled"] = False
+        display_reason = reason
+        if detail := state.get("fault_detail"):
+            display_reason = (
+                f"{reason}: {detail.get('entity_id')} -> "
+                f"{detail.get('target_state')} ({detail.get('kind')}, "
+                f"observed={detail.get('observed_state')})"
+            )
         ir.async_create_issue(
             self.coordinator.hass,
             DOMAIN,
@@ -309,12 +376,13 @@ class CascadeManager:
             is_fixable=True,
             severity=ir.IssueSeverity.ERROR,
             translation_key="cascade_fault",
-            translation_placeholders={"reason": reason},
+            translation_placeholders={"reason": display_reason},
         )
         self.coordinator._save_persistent_state()
 
     async def async_safe_off(self, cascade_id: str, reason: str) -> bool:
         """Break the load path downstream-to-upstream and keep Root open."""
+        self._begin_actor_sequence(cascade_id)
         topology = self._topology(cascade_id)
         if topology is None:
             await self._fault(cascade_id, "invalid_topology")
@@ -352,6 +420,54 @@ class CascadeManager:
         self.coordinator._save_persistent_state()
         return ok
 
+    async def async_safety_off(
+        self, cascade_id: str, reason: str, now: datetime | None = None
+    ) -> bool:
+        """Dwell-exempt Safe-OFF for a BM-controlled cascade.
+
+        Deliberately disabled/hands-off cascades have released their actors and
+        are not touched.  An interrupted Aux episode is complete for the local
+        day; otherwise the next rolling plan could advertise a second episode
+        even though the executor correctly refuses to wake it again.
+        """
+        state = self._state(cascade_id)
+        if not state.get("enabled") and not state.get("fault"):
+            return True
+        aux_active = state.get("phase") in (
+            "waking",
+            "waking_socs",
+            "proving",
+            "running",
+        )
+        ok = await self.async_safe_off(cascade_id, reason)
+        if ok and aux_active and not state.get("fault"):
+            if not state.get("episode_day") and now is not None:
+                state["episode_day"] = now.date().isoformat()
+            state["phase"] = "complete"
+            self.coordinator._save_persistent_state()
+        return ok
+
+    async def async_safety_off_active(self, reason: str, now: datetime) -> None:
+        """Apply the global fail-safe to every configured active cascade."""
+        tasks = []
+        for cascade_id, subentry in self.coordinator.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            state = self._state(cascade_id)
+            if not state.get("enabled") and not state.get("fault"):
+                continue
+            lock = self._locks.setdefault(cascade_id, asyncio.Lock())
+
+            async def run_one(
+                cid: str = cascade_id, owned: asyncio.Lock = lock
+            ) -> None:
+                async with owned:
+                    await self.async_safety_off(cid, reason, now)
+
+            tasks.append(run_one())
+        if tasks:
+            await asyncio.gather(*tasks)
+
     async def _finish_wake(self, cascade_id: str, source_id: str) -> bool:
         """Energise the terminal only after every member published live SOC."""
         topology = self._topology(cascade_id)
@@ -387,6 +503,7 @@ class CascadeManager:
         return True
 
     async def _wake(self, cascade_id: str, source_id: str, now: datetime) -> bool:
+        self._begin_actor_sequence(cascade_id)
         topology = self._topology(cascade_id)
         if topology is None:
             await self._fault(cascade_id, "invalid_topology")
@@ -430,6 +547,7 @@ class CascadeManager:
 
     async def _apply_root(self, cascade_id: str, plan: Any) -> bool:
         """Apply one Root-fed slot without counting internal passthrough."""
+        self._begin_actor_sequence(cascade_id)
         topology = self._topology(cascade_id)
         if topology is None or not plan.flows:
             return False
@@ -495,6 +613,7 @@ class CascadeManager:
 
     async def _handover(self, cascade_id: str, source_id: str) -> bool:
         """Break skipped upstream outputs before proving the next source."""
+        self._begin_actor_sequence(cascade_id)
         topology = self._topology(cascade_id)
         if topology is None:
             return False
@@ -557,6 +676,7 @@ class CascadeManager:
         plan: Any,
         load_states: tuple[SurplusLoadState, ...],
         now: datetime,
+        safety_reason: str | None = None,
     ) -> None:
         state = self._state(cascade_id)
         day = now.date().isoformat()
@@ -572,6 +692,9 @@ class CascadeManager:
             await self.async_safe_off(cascade_id, "cascade fault")
             return
         if not state["enabled"] or state.get("hands_off"):
+            return
+        if safety_reason is not None:
+            await self.async_safety_off(cascade_id, safety_reason, now)
             return
         if (
             state.get("episode_day")
@@ -803,6 +926,7 @@ class CascadeManager:
         result: PlanResult,
         load_states: tuple[SurplusLoadState, ...],
         now: datetime,
+        safety_reason: str | None = None,
     ) -> None:
         plans = {plan.cascade_id: plan for plan in result.cascade_plans}
         tasks = []
@@ -818,7 +942,9 @@ class CascadeManager:
                 owned: asyncio.Lock = lock,
             ) -> None:
                 async with owned:
-                    await self._apply_one(cid, item, load_states, now)
+                    await self._apply_one(
+                        cid, item, load_states, now, safety_reason=safety_reason
+                    )
 
             tasks.append(run_one())
         if tasks:
@@ -998,6 +1124,14 @@ class CascadeManager:
         for cascade in config.cascades:
             plan = plans.get(cascade.cascade_id)
             state = self._state(cascade.cascade_id)
+            # Keep aggregate SOC visible for diagnosis, but never advertise
+            # executable energy or schedule blocks after a hard fault/hands-off.
+            # The following refresh also removes these loads from the global
+            # trajectory through ``planning_blocked_load_ids``; this immediate
+            # payload gate closes the UI seam in the faulting refresh itself.
+            effective_plan = (
+                None if state.get("fault") or state.get("hands_off") else plan
+            )
             topology = self._topology(cascade.cascade_id)
             actors = []
             if topology is not None:
@@ -1033,6 +1167,7 @@ class CascadeManager:
                     else None
                 ),
                 "fault": state["fault"],
+                "fault_detail": state.get("fault_detail"),
                 "warning": state.get("warning"),
                 "hands_off": bool(state["hands_off"]),
                 "assumed_state_actors": assumed_state_actors,
@@ -1040,10 +1175,14 @@ class CascadeManager:
                 "aggregate_soc_percent": plan.aggregate_soc_percent if plan else None,
                 "aggregate_soc_stale": plan.aggregate_soc_stale if plan else False,
                 "planned_root_energy_kwh": (
-                    round(plan.planned_root_energy_wh / 1000.0, 3) if plan else 0.0
+                    round(effective_plan.planned_root_energy_wh / 1000.0, 3)
+                    if effective_plan
+                    else 0.0
                 ),
                 "planned_aux_energy_kwh": (
-                    round(plan.planned_aux_energy_wh / 1000.0, 3) if plan else 0.0
+                    round(effective_plan.planned_aux_energy_wh / 1000.0, 3)
+                    if effective_plan
+                    else 0.0
                 ),
                 "actual_aux_energy_kwh": round(
                     float(state.get("aux_today_wh", 0.0)) / 1000.0, 3
@@ -1075,6 +1214,6 @@ class CascadeManager:
                 # suppressed while the cascade owns them.  This dedicated
                 # timeline preserves the per-slot plan instead of leaving the
                 # operator with horizon totals only.
-                "schedule": self._schedule_payload(cascade, plan, slots),
+                "schedule": self._schedule_payload(cascade, effective_plan, slots),
             }
         return payload

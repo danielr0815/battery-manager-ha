@@ -133,6 +133,8 @@ from .const import (
     FEEDIN_TRIM_DEADBAND_W,
     FEEDIN_UPWARD_MIN_INTERVAL_S,
     FREEZE_STALE_HOURS,
+    HOUSE_SOC_STALE_CHECK_MAX_PERCENT,
+    HOUSE_SOC_STALE_CHECK_MIN_PERCENT,
     HOUSE_SOC_STALE_POWER_W,
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
@@ -1483,19 +1485,40 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         physically correct there, no evidence either way) and while no valid
         plan exists (no expectation, nothing to prove a freeze against). Only
         a CHANGED reading resets the evidence — a pause keeps it, so
-        duty-cycled flow still accumulates. Bands (2026-07-31 incident: 10
-        false latches in 90 min while the BMS sat at its 87-89 % plateau):
-        near the SOC ends (< HOUSE_SOC_STALE_EDGE_LOW_PERCENT or >
-        HOUSE_SOC_STALE_EDGE_HIGH_PERCENT) the reading can legitimately sit on
-        one value for a long time (balancing/clamping), so the edge bands
-        allow more unexplained drift (house_soc_stale_edge_percent) than the
-        mid band (house_soc_stale_mid_percent).
+        duty-cycled flow still accumulates. Values below 21 % or above 89 %
+        are exempt altogether: balancing and charge/discharge clamping make a
+        constant displayed SOC physically plausible there regardless of the
+        expected flow. Inside the inclusive 21-89 % plausibility window, the
+        configurable edge bands still allow more unexplained drift
+        (house_soc_stale_edge_percent) than the mid band
+        (house_soc_stale_mid_percent).
         Unlatch: any DIFFERENT live reading (INFO once, G2 pattern).
         In-memory only — a restart re-accumulates the evidence energy.
         """
         raw = self._read_float(self.raw_config[CONF_SOC_ENTITY])
         if raw is not None and not 0.0 <= raw <= 100.0:
             raw = None  # implausible: the normal path rejects it the same way
+        if raw is not None and (
+            raw < HOUSE_SOC_STALE_CHECK_MIN_PERCENT
+            or raw > HOUSE_SOC_STALE_CHECK_MAX_PERCENT
+        ):
+            # 2026-08-30 incident: the absolute plan-flow proxy repeatedly
+            # latched valid Victron plateaus (14/17/18/99 %) and made every
+            # coordinator-backed entity unavailable. Do not even retain
+            # evidence outside the useful window. Clearing an existing latch
+            # here also makes a deployed fix recover without waiting for the
+            # displayed SOC to change first.
+            if self._house_soc_stale is not None:
+                _LOGGER.info(
+                    "House battery SOC stale-watchdog latch cleared at %.1f%%"
+                    " — outside the %.1f-%.1f%% plausibility window",
+                    raw,
+                    HOUSE_SOC_STALE_CHECK_MIN_PERCENT,
+                    HOUSE_SOC_STALE_CHECK_MAX_PERCENT,
+                )
+            self._house_soc_stale = None
+            self._house_soc_frozen = None
+            return
         frozen_value = self._house_soc_stale
         if frozen_value is not None:
             if raw is not None and raw != frozen_value:
@@ -3116,6 +3139,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if now is None:
             now = dt_util.utcnow()
         states = []
+        # A hard-faulted or hands-off cascade cannot execute its hypothetical
+        # schedule.  Remove its members and terminal from the effective plan so
+        # the house-SOC trajectory and competing load allocations do not reserve
+        # energy for actors that have deliberately been released or failed.
+        # A clean, deliberately disabled cascade keeps its commissioning preview.
+        cascade_blocked = self.cascade_manager.planning_blocked_load_ids()
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
@@ -3130,6 +3159,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             if not self._load_bm_enabled.get(subentry_id, True):
                 available = False  # per-load "BM control" switch off (v0.7.17)
+            if subentry_id in cascade_blocked:
+                available = False
             soc = None
             live_soc = None  # validated LIVE reading only (stale guard input)
             if data.get(CONF_LOAD_SOC_ENTITY):
@@ -3712,7 +3743,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_power_w,
             shadow_active,
         )
-        await self.cascade_manager.async_apply(config, result, load_states, now)
+        cascade_safety_reason = (
+            "G4 floor guard"
+            if floor_guard
+            else "stale-data load shed"
+            if self._stale_shed_active
+            else None
+        )
+        await self.cascade_manager.async_apply(
+            config,
+            result,
+            load_states,
+            now,
+            safety_reason=cascade_safety_reason,
+        )
         await self._update_power_warnings(result, now)
         # F-FEEDIN: the manual-override judgement already ran at the top of
         # the cycle (before build_system_config, so the plan books the
@@ -5780,13 +5824,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # a re-ON without valid data.
         force_off = floor_guard or self._stale_shed_active
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
+        cascade_managed = self.cascade_manager.managed_load_ids()
         actions: list[tuple[Any, ...]] = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
             data = subentry.data
             plan = plans_by_id.get(subentry_id)
-            if plan is not None and getattr(plan, "managed_by_cascade", False):
+            if subentry_id in cascade_managed or (
+                plan is not None and getattr(plan, "managed_by_cascade", False)
+            ):
                 # F-CASCADE-STORAGE: the central manager is the sole actor
                 # owner. Compatibility recommendation entities remain present
                 # but publish OFF with a managed_by_cascade marker.
@@ -6269,9 +6316,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         or a recovery + new outage), never on a timer.
         """
         now = dt_util.now()
+        # Cascade actors have stricter ordering than independent loads: terminal
+        # first, outputs leaf-to-root, gates, then Root.  Let the sole owner run
+        # that complete sequence before the generic load loop, and exclude its
+        # members below so two executors never race the same switches.
+        await self.cascade_manager.async_safety_off_active("stale-data load shed", now)
+        cascade_managed = self.cascade_manager.managed_load_ids()
         async with self._switch_lock:
             for subentry_id, subentry in self.entry.subentries.items():
                 if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+                    continue
+                if subentry_id in cascade_managed:
                     continue
                 data = subentry.data
                 plug = data.get(CONF_LOAD_CONTROL_SWITCH)

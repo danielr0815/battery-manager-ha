@@ -240,7 +240,11 @@ class CascadeFaultSensor(BatteryManagerEntity, BinarySensorEntity):
         plan = ((self.coordinator.data or {}).get("cascade_plans") or {}).get(
             self._subentry_id, {}
         )
-        return {"reason": plan.get("fault"), "hands_off": plan.get("hands_off")}
+        return {
+            "reason": plan.get("fault"),
+            "detail": plan.get("fault_detail"),
+            "hands_off": plan.get("hands_off"),
+        }
 
 
 class LoadPowerWarningSensor(BatteryManagerEntity, BinarySensorEntity):
