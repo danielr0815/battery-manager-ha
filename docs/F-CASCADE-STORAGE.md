@@ -1,6 +1,6 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
-Status: normative Feature-Spezifikation, aktualisiert für v0.32.0.
+Status: normative Feature-Spezifikation, aktualisiert für v0.33.0.
 
 ## Ziel und Geltungsbereich
 
@@ -45,13 +45,27 @@ Die globale Load-Reihenfolge bleibt die äußerste Prioritätsordnung. Innerhalb
 einer terminalen Kaskadenlast gilt die Quellenfolge Root/PV, B1 … Bn und danach
 Root aus der Hausbatterie unter den bestehenden No-Import-, Batterieanteil-,
 Stress- und G4-Gates. Ein neuer Aux-Start ist nur zulässig, wenn die
-vollständige Mindestlaufzeit aus der Energie oberhalb der konfigurierten
-Kaskaden-Entladeziele erbracht werden kann. Eine bereits laufende Episode darf
-ihren Rest bis zum Ziel in nachgewiesenen Quellenfenstern fortsetzen. Ein
-heutiger PV-Slot oder der Nachweis einer Wiederaufladung am selben Tag ist
-nicht erforderlich: Das Entladeziel ist die bewusst verfügbare Reservegrenze.
-Späteres Laden bis zum höheren normalen Ladeziel nutzt weiterhin die normale
-globale Priorität.
+vollständige Mindestlaufzeit erbracht werden kann. Dabei gelten zwei
+Reservestufen:
+
+1. Energie oberhalb des Kaskaden-Entladeziels (standardmäßig 50 %) ist
+   bedingungslos verfügbar. Dafür ist weder ein heutiger PV-Slot noch eine
+   Wiederaufladezusage erforderlich.
+2. Energie zwischen Entladeziel und Sicherheits-Floor (standardmäßig 20 %)
+   darf nur vorab genutzt werden, wenn der globale Replan ansonsten späteren
+   Grid-Export ausweist, die zusätzliche Speicheraufnahme diesen Export
+   tatsächlich reduziert, keinen zusätzlichen Netzimport erzeugt und alle so
+   abgesenkten Mitglieder spätestens am Ende des ersten betroffenen
+   Exporttages wieder mindestens das Entladeziel erreichen. Die nutzbare
+   Energie wird inklusive Ladewirkungsgrad auf genau den noch exportierten
+   AC-Betrag begrenzt.
+
+Eine bereits laufende Episode darf ihren Rest bis zum jeweils aktuellen
+Slot-Ziel in nachgewiesenen Quellenfenstern fortsetzen. Auch ein beim Rolling
+Replan bereits unter 50 % liegendes Mitglied darf deshalb weiter bis zu dem
+exportgedeckten Ziel laufen; ohne verbleibenden Exportnachweis wird der
+zusätzliche Tiefenhub sofort zurückgezogen. Späteres Laden bis zum höheren
+normalen Ladeziel nutzt weiterhin die normale globale Priorität.
 
 Die Vorschau reserviert nicht nur die minimale Startlaufzeit, sondern die
 gesamte ab jetzt zusammenhängend mögliche Aux-Episode bis zu den Entladezielen
@@ -70,11 +84,12 @@ Aktuation der Mitglieder und der Endlast.
 
 Pro lokalem Kalendertag ist eine Aux-Entladeepisode zulässig. Direkter
 PV-Takeover und Root-Return sind one-way. Ein Block über Mitternacht wird sicher
-beendet und für den neuen Tag neu bewertet. Cache-SOCs bis sieben Tage dürfen
-Vorschau und Aggregat speisen; vor Entladung sind neue numerische Live-SOCs
-aller Mitglieder zwingend. Die normale Aux-Planung entlädt nie unter das
-Kaskaden-Entladeziel; der niedrigere Floor bleibt eine zusätzliche
-Sicherheitsgrenze gegen Telemetrie- oder Schaltfehler.
+beendet und für den neuen Tag neu bewertet. Eine dabei offene
+Wiederaufladezusage bleibt jedoch erhalten und sperrt eine neue Aux-Episode,
+bis alle betroffenen Mitglieder wieder das Entladeziel erreicht haben.
+Cache-SOCs bis sieben Tage dürfen Vorschau und Aggregat speisen; vor Entladung
+sind neue numerische Live-SOCs aller Mitglieder zwingend. Der
+Sicherheits-Floor bleibt in Planung und Ausführung die absolute Untergrenze.
 
 ## Executor- und Safety-Vertrag
 
@@ -111,6 +126,14 @@ dagegen nicht als Bestätigung: Der Manager wartet innerhalb des konfigurierten
 Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst dann seinen
 Claim. Ein bereits bestätigter Zielzustand wird ohne redundanten Service-Aufruf
 übernommen; damit bleibt insbesondere wiederholtes Safe-OFF idempotent.
+
+Der Executor stoppt jede Aux-Quelle am SOC-Endwert des aktuellen Planslots,
+begrenzt diesen aber immer durch den Sicherheits-Floor. Dadurch kann ein
+exportgedeckter Plan unter 50 % tatsächlich ausgeführt werden, ohne dass ein
+veraltetes festes 50-%-Laufzeitlimit den Core-Plan vorzeitig abbricht. Sobald
+ein Plan eine Unterschreitung des Entladeziels vorsieht, wird die
+Wiederaufladezusage bereits beim Leistungsnachweis persistiert und nicht erst
+nach dem gemessenen SOC-Abfall.
 
 Ziel-, Floor- und Safety-Abbrüche übersteuern Dwell. Safe-OFF schaltet die
 Endlast, Outputs downstream→upstream, Charge-Gates und Root aus. Ein

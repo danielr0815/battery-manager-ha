@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -367,6 +367,68 @@ def test_aux_headroom_is_used_before_avoidable_early_feedin() -> None:
     assert baseline_feedin > 0
     assert cascade_feedin < baseline_feedin
     assert cascade_feedin < 100
+
+
+def test_export_backed_predrain_may_cross_target_but_recovers_next_day() -> None:
+    """50 % is unconditional; forecast-backed headroom may use the 20 % floor."""
+    # Mirrors the live incident: B1 still has unconditional energy while B2 is
+    # already just below the ordinary cascade target.
+    config, inputs = _system(members=2, socs=(84.9, 48.0))
+    now = datetime(2026, 8, 23, 18)
+    slots = tuple(
+        HourSlot(
+            index,
+            now + timedelta(hours=index),
+            1.0,
+            (18 + index) % 24,
+            1200.0 if 16 <= index <= 21 else 0.0,
+            0.0,
+            0.0,
+        )
+        for index in range(30)
+    )
+    inputs = replace(inputs, now=now, start_soc_percent=95.0, slots=slots)
+
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    b1_soc = [flow.member_flows[0].soc_end_percent for flow in cascade.flows]
+
+    assert min(b1_soc) < 50.0
+    assert min(b1_soc) >= 20.0
+    assert cascade.recovery_deadline == datetime(2026, 8, 25)
+    assert all(flow.soc_end_percent >= 50.0 for flow in cascade.flows[-1].member_flows)
+    reached = dict(cascade.recovery_reached_at)
+    assert reached["b1"] is not None
+    assert reached["b1"].date() == date(2026, 8, 24)
+    assert reached["b2"] is not None
+    assert reached["b2"].date() == date(2026, 8, 24)
+    assert cascade.proposed_runtime is not None
+    assert cascade.proposed_runtime.recovery_pending_ids == ("b1", "b2")
+
+
+def test_export_backed_predrain_can_continue_when_already_below_target() -> None:
+    """Rolling replans keep using only the still-exported recovery budget."""
+    config, inputs = _system(socs=(48.0,))
+    now = datetime(2026, 8, 23, 18)
+    slots = tuple(
+        HourSlot(
+            index,
+            now + timedelta(hours=index),
+            1.0,
+            (18 + index) % 24,
+            1200.0 if 16 <= index <= 21 else 0.0,
+            0.0,
+            0.0,
+        )
+        for index in range(30)
+    )
+    inputs = replace(inputs, now=now, start_soc_percent=95.0, slots=slots)
+
+    cascade = plan(config, inputs).cascade_plans[0]
+
+    assert cascade.planned_aux_energy_wh > 0.0
+    assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) < 48.0
+    assert cascade.flows[-1].member_flows[0].soc_end_percent >= 50.0
 
 
 @pytest.mark.parametrize(

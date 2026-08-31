@@ -128,7 +128,12 @@ class _Coordinator:
         return True
 
 
-def _aux_plan(now: datetime):
+def _aux_plan(
+    now: datetime,
+    *,
+    soc_start_percent: float = 90.0,
+    soc_end_percent: float = 85.0,
+):
     segment = CascadeSourceSegment(0, 0.0, 0.5, "aux", "b1", False, 150.0)
     return SimpleNamespace(
         flows=(
@@ -137,8 +142,8 @@ def _aux_plan(now: datetime):
                 member_flows=(
                     CascadeMemberFlow(
                         "b1",
-                        90,
-                        85,
+                        soc_start_percent,
+                        soc_end_percent,
                         battery_discharge_wh=160,
                     ),
                 ),
@@ -263,6 +268,32 @@ async def test_wake_order_and_two_sample_power_proof() -> None:
     assert state["phase"] == "running"
     assert state["episode_day"] == "2026-08-23"
     assert state["recovery_pending"] == []
+
+
+async def test_power_proof_tracks_forecast_recovery_below_fifty_percent() -> None:
+    """A future below-target slot creates recovery debt before SOC falls."""
+    now = datetime(2026, 8, 23, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    deep_plan = _aux_plan(now, soc_start_percent=90.0, soc_end_percent=40.0)
+    live = (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", deep_plan, live, now)
+    _publish_soc(coordinator, "sensor.soc", "90", now + timedelta(seconds=1))
+    await manager._apply_one("chain", deep_plan, live, now + timedelta(seconds=1))
+    await manager._apply_one("chain", deep_plan, live, now)
+    power = coordinator.hass.states.get("sensor.output_power")
+    power.last_updated = now + timedelta(seconds=61)
+    power.state = "310"
+    await manager._apply_one("chain", deep_plan, live, now + timedelta(seconds=61))
+
+    assert manager._state("chain")["phase"] == "running"
+    assert manager._state("chain")["recovery_pending"] == ["b1"]
+    assert (
+        manager._state("chain")["recovery_deadline"]
+        == (now + timedelta(hours=6)).isoformat()
+    )
 
 
 async def test_sleeping_member_wakes_before_terminal_is_energised() -> None:
@@ -758,6 +789,151 @@ async def test_running_integrates_aux_then_stops_at_target() -> None:
     )
     assert state["phase"] == "complete"
     assert state["source"] is None
+
+
+async def test_running_uses_export_backed_slot_target_below_recovery_soc() -> None:
+    """The executor follows the planned target while retaining the hard floor."""
+    now = datetime(2026, 8, 23, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "running",
+            "source": "b1",
+            "episode_day": now.date().isoformat(),
+            "recovery_pending": ["b1"],
+        }
+    )
+    deep_plan = _aux_plan(now, soc_start_percent=45.0, soc_end_percent=40.0)
+
+    await manager._apply_one(
+        "chain",
+        deep_plan,
+        (SurplusLoadState("b1", soc_percent=45), SurplusLoadState("leaf")),
+        now,
+    )
+    assert state["phase"] == "running"
+
+    await manager._apply_one(
+        "chain",
+        deep_plan,
+        (SurplusLoadState("b1", soc_percent=40), SurplusLoadState("leaf")),
+        now + timedelta(minutes=1),
+    )
+    assert state["phase"] == "recovering"
+    assert state["source"] is None
+
+
+async def test_day_rollover_preserves_below_target_recovery_debt() -> None:
+    """Midnight stops Aux but cannot erase the promised recovery."""
+    now = datetime(2026, 8, 24, 0, 1)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "running",
+            "source": "b1",
+            "episode_day": "2026-08-23",
+            "recovery_pending": ["b1"],
+            "recovery_deadline": (now + timedelta(hours=12)).isoformat(),
+        }
+    )
+    idle_plan = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=None,
+    )
+
+    await manager._apply_one(
+        "chain",
+        idle_plan,
+        (SurplusLoadState("b1", soc_percent=40), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["phase"] == "recovering"
+    assert state["episode_day"] == "2026-08-24"
+    assert state["recovery_pending"] == ["b1"]
+    assert state["recovery_deadline"] == (now + timedelta(hours=12)).isoformat()
+
+
+async def test_recovery_finishing_after_midnight_completes_current_day(
+    monkeypatch,
+) -> None:
+    """A stopped prior-day episode cannot remain recovering or restart Aux."""
+    now = datetime(2026, 8, 24, 10)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    monkeypatch.setattr(
+        "custom_components.battery_manager.cascade_manager.ir.async_delete_issue",
+        lambda *_args, **_kwargs: None,
+    )
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "recovering",
+            "episode_day": "2026-08-23",
+            "recovery_pending": ["b1"],
+            "recovery_deadline": (now + timedelta(hours=6)).isoformat(),
+        }
+    )
+    # A stale rolling preview still proposes Aux.  Recovery ownership must
+    # suppress it before a new current-day plan is available.
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["phase"] == "complete"
+    assert state["episode_day"] == "2026-08-24"
+    assert state["recovery_pending"] == []
+    assert state["recovery_deadline"] is None
+    assert state["source"] is None
+
+
+async def test_persisted_recovery_deadline_survives_withdrawn_plan(
+    monkeypatch,
+) -> None:
+    """A rolling plan without Aux cannot erase an overdue recovery promise."""
+    now = datetime(2026, 8, 24, 18)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    created = []
+    monkeypatch.setattr(
+        "custom_components.battery_manager.cascade_manager.ir.async_create_issue",
+        lambda *_args, **kwargs: created.append(kwargs),
+    )
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "recovering",
+            "episode_day": now.date().isoformat(),
+            "recovery_pending": ["b1"],
+            "recovery_deadline": (now - timedelta(minutes=1)).isoformat(),
+        }
+    )
+    idle_plan = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=None,
+    )
+
+    await manager._apply_one(
+        "chain",
+        idle_plan,
+        (SurplusLoadState("b1", soc_percent=40), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert state["phase"] == "recovering"
+    assert state["recovery_pending"] == ["b1"]
+    assert created[0]["translation_key"] == "cascade_recovery_missed"
 
 
 async def test_running_path_is_stopped_when_aux_plan_is_withdrawn() -> None:

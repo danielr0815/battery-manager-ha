@@ -432,8 +432,9 @@ class CascadeMember:
 
     ``recovery_soc_percent`` keeps its persisted compatibility name but is the
     normal Aux discharge target: the planner may spend energy above it without
-    promising a same-day refill.  ``discharge_floor_soc_percent`` is the lower
-    safety boundary and must therefore remain below that target.
+    promising a refill.  Energy below it is available only when otherwise
+    exported energy demonstrably restores the target.  The lower
+    ``discharge_floor_soc_percent`` remains the absolute safety boundary.
     """
 
     load_id: str

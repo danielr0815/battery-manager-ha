@@ -70,9 +70,11 @@ Kette nur, wenn alle Actors AUS sind und frische Mitglieds-SOCs vorliegen.
 Jeder automatische Übergang ist fail-closed. Wake-Fehler führen zunächst zu
 Safe-OFF und einem einmaligen 15-Minuten-Retry; ein zweiter Fehler wird zum
 Hard-Fault. Entladeziel, Floor, ungültige Topologie und fehlgeschlagenes
-Safe-OFF beenden die Episode. `recovery_deadline` bleibt aus
-Vertragskompatibilität im Payload, ist für zielbegrenzte Aux-Episoden aber
-`None`; eine Tages-Recovery-Warnung wird nicht mehr erzeugt.
+Safe-OFF beenden die Episode. `recovery_deadline` ist für die bedingungslos bis
+zum Entladeziel laufende Episode `None`. Nutzt der Planner exportgedeckt die
+Reserve darunter, bezeichnet es dagegen das Ende des ersten Exporttages, bis
+zu dem der globale Replan die Rückkehr aller Mitglieder zum Entladeziel
+nachgewiesen hat; eine verfehlte Zusage erzeugt die Recovery-Warnung.
 
 `assumed_state` kann nur logische Bestätigung liefern. Das Design akzeptiert
 dies ausdrücklich, markiert die eingeschränkte physische Garantie aber in

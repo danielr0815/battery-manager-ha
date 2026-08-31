@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-31
+
+### Added
+- Kaskadenspeicher dürfen nun exportgedeckt unter ihr normales 50-%-Entladeziel
+  bis zum konfigurierten Sicherheits-Floor entladen werden. Der Planner nutzt
+  dafür höchstens die Ladekapazität, die der erste noch exportierende
+  Prognosetag wieder auffüllen kann.
+
+### Changed
+- Die Energie oberhalb von 50 % bleibt ohne Wiederaufladeversprechen nutzbar.
+  Reserve darunter wird dagegen nur freigegeben, wenn der globale Replan damit
+  den prognostizierten Export tatsächlich reduziert, keinen Netzimport erhöht
+  und alle betroffenen Speicher bis zum Ende des Exporttages wieder mindestens
+  50 % erreichen.
+- Der Kaskaden-Executor folgt dem SOC-Endwert des aktuellen Planslots statt
+  einem fest verdrahteten 50-%-Stopp; der konfigurierte 20-%-Floor bleibt die
+  absolute Untergrenze.
+
+### Fixed
+- Rolling Replans können eine bereits unter 50 % liegende exportgedeckte
+  Entladung fortsetzen, solange noch entsprechender Export und eine belastbare
+  Wiederaufladung prognostiziert sind.
+- Wiederaufladepflicht und -frist bleiben über Planrückzug, Home-Assistant-
+  Neustart und Mitternacht erhalten. Eine offene Recovery kann dadurch weder
+  still verschwinden noch am Folgetag eine zweite Aux-Episode zulassen.
+
 ## [0.32.0] - 2026-08-31
 
 ### Added

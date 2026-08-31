@@ -68,6 +68,7 @@ class CascadeManager:
         state.setdefault("source", None)
         state.setdefault("episode_day", None)
         state.setdefault("recovery_pending", [])
+        state.setdefault("recovery_deadline", None)
         state.setdefault("claims", {})
         state.setdefault("fault", None)
         state.setdefault("fault_detail", None)
@@ -77,6 +78,20 @@ class CascadeManager:
         state.setdefault("retry_at", None)
         state.setdefault("aux_today_wh", 0.0)
         return state
+
+    @staticmethod
+    def _recovery_deadline(state: dict[str, Any], plan: Any) -> datetime | None:
+        """Keep a promised deadline visible after the rolling plan withdraws."""
+        deadline = getattr(plan, "recovery_deadline", None)
+        if isinstance(deadline, datetime):
+            return deadline
+        persisted = state.get("recovery_deadline")
+        if not isinstance(persisted, str):
+            return None
+        try:
+            return datetime.fromisoformat(persisted)
+        except ValueError:
+            return None
 
     def runtime_state(self, cascade_id: str) -> CascadeRuntimeState:
         state = self._state(cascade_id)
@@ -890,8 +905,14 @@ class CascadeManager:
                 "waking_members",
             )
         ):
+            pending = bool(state.get("recovery_pending"))
             await self.async_safe_off(cascade_id, "local day rollover")
-            state["recovery_pending"] = []
+            if pending and state.get("phase") != "fault":
+                # Export-backed discharge may legitimately cross midnight.
+                # Preserve its recovery contract and prevent a second Aux
+                # episode until the members have reached 50 % again.
+                state["episode_day"] = day
+                state["phase"] = "recovering"
         if state.get("episode_day") != day:
             state["retry_used"] = False
             state["retry_at"] = None
@@ -914,6 +935,11 @@ class CascadeManager:
             return
         by_id = {item.load_id: item for item in load_states}
         if state.get("recovery_pending"):
+            # A stopped episode can remain in ``recovering`` across midnight.
+            # Carrying the old episode day into the Core would make it eligible
+            # for another Aux start before the promised refill has completed.
+            if state.get("episode_day") != day:
+                state["episode_day"] = day
             still_pending = []
             for load_id, data in topology["members"]:
                 member_state = by_id.get(load_id)
@@ -926,14 +952,17 @@ class CascadeManager:
                 ):
                     still_pending.append(load_id)
             state["recovery_pending"] = still_pending
-            if not still_pending and state.get("episode_day") == day:
+            if not still_pending:
                 state["phase"] = "complete"
+                state["recovery_deadline"] = None
                 ir.async_delete_issue(
                     self.coordinator.hass,
                     DOMAIN,
                     f"cascade_recovery_{self.coordinator.entry.entry_id}_{cascade_id}",
                 )
-            elif plan.recovery_deadline and now > plan.recovery_deadline:
+            elif (
+                deadline := self._recovery_deadline(state, plan)
+            ) is not None and now > deadline:
                 ir.async_create_issue(
                     self.coordinator.hass,
                     DOMAIN,
@@ -982,15 +1011,26 @@ class CascadeManager:
                 state["episode_day"] = day
                 state["recovery_pending"] = [
                     load_id
-                    for load_id, data in topology["members"]
+                    for member_index, (load_id, data) in enumerate(topology["members"])
                     if (
                         (member_state := by_id.get(load_id)) is None
                         or member_state.soc_source != "live"
                         or member_state.soc_percent is None
                         or member_state.soc_percent
                         < float(data.get(CONF_LOAD_RECOVERY_SOC, 50.0))
+                        or any(
+                            member_index < len(flow.member_flows)
+                            and flow.member_flows[member_index].soc_end_percent
+                            < float(data.get(CONF_LOAD_RECOVERY_SOC, 50.0))
+                            for flow in plan.flows
+                        )
                     )
                 ]
+                state["recovery_deadline"] = (
+                    plan.recovery_deadline.isoformat()
+                    if state["recovery_pending"] and plan.recovery_deadline
+                    else None
+                )
                 state["retry_used"] = False
                 state["retry_at"] = None
                 self.coordinator._save_persistent_state()
@@ -1020,9 +1060,23 @@ class CascadeManager:
                 data for load_id, data in topology["members"] if load_id == source
             )
             floor = float(source_data.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 20.0))
+            planned_source = next(
+                (
+                    member_flow
+                    for flow in plan.flows[:1]
+                    for member_flow in flow.member_flows
+                    if member_flow.load_id == source
+                ),
+                None,
+            )
             target = max(
                 floor,
-                float(source_data.get(CONF_LOAD_RECOVERY_SOC, 50.0)),
+                min(
+                    float(source_data.get(CONF_LOAD_RECOVERY_SOC, 50.0)),
+                    planned_source.soc_end_percent
+                    if planned_source is not None
+                    else float(source_data.get(CONF_LOAD_RECOVERY_SOC, 50.0)),
+                ),
             )
             leaf_power_entity = topology["members"][-1][1].get(
                 CONF_LOAD_OUTPUT_POWER_ENTITY
@@ -1419,8 +1473,8 @@ class CascadeManager:
                     float(state.get("aux_today_wh", 0.0)) / 1000.0, 3
                 ),
                 "recovery_deadline": (
-                    plan.recovery_deadline.isoformat()
-                    if plan and plan.recovery_deadline
+                    deadline.isoformat()
+                    if (deadline := self._recovery_deadline(state, plan))
                     else None
                 ),
                 "members": [member.load_id for member in cascade.members],
