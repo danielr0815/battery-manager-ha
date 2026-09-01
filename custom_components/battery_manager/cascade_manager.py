@@ -9,6 +9,8 @@ restart a still-consistent chain has to prove its source again.
 from __future__ import annotations
 
 import asyncio
+import logging
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -47,9 +49,15 @@ from .core import (
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
 
+_LOGGER = logging.getLogger(__name__)
 _PROOF_SECONDS = 60
 _RETRY_DELAY = timedelta(minutes=15)
+_RESTART_ACTOR_WAIT = timedelta(seconds=60)
 _ACTOR_CONFIRM_POLL_S = 0.1
+_TRANSIENT_PHASES = frozenset({"waking", "waking_members", "proving"})
+_STABLE_PHASES = frozenset(
+    {"idle", "root", "running", "recovering", "complete", "fault", "hands_off"}
+)
 
 
 class CascadeManager:
@@ -61,6 +69,7 @@ class CascadeManager:
         self._proof: dict[str, dict[str, Any]] = {}
         self._aux_tick: dict[str, tuple[datetime, float]] = {}
         self._telemetry_unknown_since: dict[str, datetime] = {}
+        self._restart_actor_unknown_since: dict[str, datetime] = {}
 
     def _state(self, cascade_id: str) -> dict[str, Any]:
         state = self.coordinator._cascade_state.setdefault(cascade_id, {})
@@ -75,11 +84,113 @@ class CascadeManager:
         state.setdefault("fault_detail", None)
         state.setdefault("fault_safe_off_complete", False)
         state.setdefault("hands_off", False)
+        state.setdefault("activation_blocked_reason", None)
+        state.setdefault("activation_blocked_actors", [])
         state.setdefault("retry_used", False)
         state.setdefault("retry_at", None)
         state.setdefault("retry_day", None)
         state.setdefault("aux_today_wh", 0.0)
         return state
+
+    def _idle_phase(self, state: dict[str, Any]) -> str:
+        """Return the stable de-energised phase without losing recovery debt."""
+        return "recovering" if state.get("recovery_pending") else "idle"
+
+    def _clear_transient_state(self, cascade_id: str, *, fresh_retry: bool) -> None:
+        """Discard evidence that is valid only inside one live actor sequence."""
+        state = self._state(cascade_id)
+        self._clear_member_wake(cascade_id)
+        self._proof.pop(cascade_id, None)
+        self._aux_tick.pop(cascade_id, None)
+        self._telemetry_unknown_since.pop(cascade_id, None)
+        self._restart_actor_unknown_since.pop(cascade_id, None)
+        state.pop("last_actor_error", None)
+        state.pop("restart_reconcile_pending", None)
+        state.pop("restart_safe_off_pending", None)
+        state.pop("restart_source_hint", None)
+        state["claims"] = {}
+        state["source"] = None
+        state["phase"] = self._idle_phase(state)
+        if fresh_retry:
+            state["retry_used"] = False
+            state["retry_at"] = None
+
+    def normalize_restored_state(self) -> None:
+        """Make persisted executor state safe before the first live refresh.
+
+        Wake deadlines and proof windows are not durable evidence.  Every
+        enabled chain therefore reclassifies its live actor topology against
+        the fresh plan before execution resumes.  Coherent physical states are
+        adopted without switching; only an incoherent state falls back to an
+        ordered Safe-OFF.  A disabled chain is merely released because its
+        actors belong to the operator.
+        """
+        for cascade_id in tuple(self.coordinator._cascade_state):
+            state = self._state(cascade_id)
+            phase = state.get("phase")
+            transient = phase in _TRANSIENT_PHASES or phase not in _STABLE_PHASES
+            # Wake metadata is invalid across HA downtime even when a corrupt
+            # or old store paired it with an otherwise stable phase.
+            self._clear_member_wake(cascade_id)
+            state.pop("last_actor_error", None)
+            self._proof.pop(cascade_id, None)
+            self._aux_tick.pop(cascade_id, None)
+            self._telemetry_unknown_since.pop(cascade_id, None)
+            if state.get("enabled") and not state.get("fault"):
+                if transient and state.get("source"):
+                    # Keep only the intended Aux source so the first fresh plan
+                    # still treats an interrupted proof as a continuing run.
+                    state["restart_source_hint"] = state["source"]
+                # Old claims are kept only until the first live classification;
+                # they are never compared as ownership evidence beforehand.
+                state["restart_reconcile_pending"] = True
+                state.pop("restart_safe_off_pending", None)
+            else:
+                state.pop("restart_reconcile_pending", None)
+                state.pop("restart_safe_off_pending", None)
+                state.pop("restart_source_hint", None)
+                if transient:
+                    state["claims"] = {}
+            if transient:
+                state["source"] = None
+                state["phase"] = self._idle_phase(state)
+
+    def persistent_state_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return durable cascade evidence without in-flight wake timestamps."""
+        snapshot = deepcopy(self.coordinator._cascade_state)
+        wake_keys = {
+            "wake_mode",
+            "wake_member_index",
+            "wake_telemetry_reported_at",
+            "wake_soc_reported_at",
+            "wake_deadline",
+            "wake_evidence_entity",
+            "wake_evidence_at",
+            "last_actor_error",
+        }
+        for state in snapshot.values():
+            for key in wake_keys:
+                state.pop(key, None)
+            phase = state.get("phase")
+            if phase in _TRANSIENT_PHASES or phase not in _STABLE_PHASES:
+                source = state.get("source")
+                state["phase"] = (
+                    "recovering" if state.get("recovery_pending") else "idle"
+                )
+                state["source"] = None
+                if state.get("enabled") and not state.get("fault"):
+                    if source:
+                        state["restart_source_hint"] = source
+                    state["restart_reconcile_pending"] = True
+                    state.pop("restart_safe_off_pending", None)
+                else:
+                    state["claims"] = {}
+                    state.pop("restart_reconcile_pending", None)
+                    state.pop("restart_safe_off_pending", None)
+                    state.pop("restart_source_hint", None)
+            elif not state.get("enabled") or state.get("fault"):
+                state.pop("restart_source_hint", None)
+        return snapshot
 
     @staticmethod
     def _recovery_deadline(state: dict[str, Any], plan: Any) -> datetime | None:
@@ -103,6 +214,13 @@ class CascadeManager:
         except ValueError:
             parsed_day = None
         phase = state.get("phase", "idle")
+        restart_source = (
+            state.get("restart_source_hint")
+            if state.get("restart_reconcile_pending")
+            else None
+        )
+        if restart_source:
+            phase = "proving"
         # ``proving`` already consumes terminal energy.  Reporting it as idle
         # made the rolling planner demand a fresh full dwell during the proof
         # minute, so a valid marginal Aux episode could disappear before it
@@ -113,7 +231,7 @@ class CascadeManager:
             cascade_id=cascade_id,
             episode_day=parsed_day,
             phase=phase,
-            active_source_id=state.get("source"),
+            active_source_id=restart_source or state.get("source"),
             recovery_pending_ids=tuple(state.get("recovery_pending", [])),
         )
 
@@ -154,29 +272,75 @@ class CascadeManager:
         return blocked
 
     async def async_set_enabled(self, cascade_id: str, enabled: bool) -> bool:
+        lock = self._locks.setdefault(cascade_id, asyncio.Lock())
+        async with lock:
+            return await self._set_enabled_locked(cascade_id, enabled)
+
+    async def _set_enabled_locked(self, cascade_id: str, enabled: bool) -> bool:
+        """Change automation ownership while holding the cascade actor lock."""
         state = self._state(cascade_id)
         if not enabled:
             state["enabled"] = False
             await self.async_safe_off(cascade_id, "automation disabled")
+            state["activation_blocked_reason"] = None
+            state["activation_blocked_actors"] = []
             self.coordinator._save_persistent_state()
             return True
-        if state.get("hands_off"):
-            # A deliberate OFF -> ON is the sole hands-off reset gesture.
-            state["hands_off"] = False
         if state.get("fault"):
+            state["activation_blocked_reason"] = "fault"
+            state["activation_blocked_actors"] = []
+            self.coordinator._save_persistent_state()
+            _LOGGER.info("Cascade %s activation rejected: fault is latched", cascade_id)
             return False
         topology = self._topology(cascade_id)
-        if topology is None or not self._fresh_member_socs(topology):
+        if topology is None:
+            state["activation_blocked_reason"] = "invalid_topology"
+            state["activation_blocked_actors"] = []
+            self.coordinator._save_persistent_state()
+            _LOGGER.info("Cascade %s activation rejected: invalid topology", cascade_id)
+            return False
+        if not self._fresh_member_socs(topology):
+            state["activation_blocked_reason"] = "member_soc_unavailable"
+            state["activation_blocked_actors"] = []
+            self.coordinator._save_persistent_state()
+            _LOGGER.info(
+                "Cascade %s activation rejected: member SOC unavailable", cascade_id
+            )
             return False
         # A fully off chain is always safe to adopt.  A non-idle physical
         # state is only adopted by the normal plan pass after enabling.
-        if not self._all_actors_off(topology):
+        blocked_actors = self._actors_not_confirmed_off(topology)
+        if blocked_actors:
+            state["activation_blocked_reason"] = "actors_not_off"
+            state["activation_blocked_actors"] = blocked_actors
+            self.coordinator._save_persistent_state()
+            _LOGGER.info(
+                "Cascade %s activation rejected: actors not confirmed OFF: %s",
+                cascade_id,
+                ", ".join(blocked_actors),
+            )
             return False
+        # A deliberate successful OFF -> ON is a fresh takeover.  Old wake
+        # deadlines and claims describe an earlier ownership episode and must
+        # never steer the new one (live incident 2026-09-01).
+        self._clear_transient_state(cascade_id, fresh_retry=True)
+        state["hands_off"] = False
+        state["activation_blocked_reason"] = None
+        state["activation_blocked_actors"] = []
         state["enabled"] = True
         self.coordinator._save_persistent_state()
+        _LOGGER.info(
+            "Cascade %s automation enabled from confirmed Safe-OFF", cascade_id
+        )
         return True
 
     async def async_reset_fault(self, cascade_id: str) -> bool:
+        lock = self._locks.setdefault(cascade_id, asyncio.Lock())
+        async with lock:
+            return await self._reset_fault_locked(cascade_id)
+
+    async def _reset_fault_locked(self, cascade_id: str) -> bool:
+        """Reset a fault while holding the same lock as actor transitions."""
         state = self._state(cascade_id)
         state["enabled"] = False
         if not await self.async_safe_off(cascade_id, "fault reset"):
@@ -186,6 +350,8 @@ class CascadeManager:
         state["fault_safe_off_complete"] = False
         state.pop("last_actor_error", None)
         state["hands_off"] = False
+        state["activation_blocked_reason"] = None
+        state["activation_blocked_actors"] = []
         state["retry_used"] = False
         state["retry_at"] = None
         ir.async_delete_issue(
@@ -316,7 +482,8 @@ class CascadeManager:
         ):
             state.pop(key, None)
 
-    def _all_actors_off(self, topology: dict[str, Any]) -> bool:
+    def _actors_not_confirmed_off(self, topology: dict[str, Any]) -> list[str]:
+        """Return actors whose live state is not an explicit ``off``."""
         entities = []
         for _load_id, data in topology["members"]:
             entities.extend(
@@ -331,7 +498,146 @@ class CascadeManager:
         terminal = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
         if terminal:
             entities.append(terminal)
-        return all(not self.coordinator._entity_is_on(entity) for entity in entities)
+        blocked = []
+        for entity_id in dict.fromkeys(entities):
+            current = self.coordinator.hass.states.get(entity_id)
+            if current is None or current.state != "off":
+                blocked.append(entity_id)
+        return blocked
+
+    def _all_actors_off(self, topology: dict[str, Any]) -> bool:
+        return not self._actors_not_confirmed_off(topology)
+
+    def _live_actor_states(
+        self, topology: dict[str, Any]
+    ) -> tuple[dict[str, bool], list[str]]:
+        """Return confirmed ON/OFF states and actors not ready after startup."""
+        entities = []
+        root = topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH)
+        if root:
+            entities.append(root)
+        for _load_id, data in topology["members"]:
+            for key in (CONF_LOAD_CHARGE_ENABLE, CONF_LOAD_OUTPUT_SWITCH):
+                if entity_id := data.get(key):
+                    entities.append(entity_id)
+        terminal = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+        if terminal:
+            entities.append(terminal)
+        states: dict[str, bool] = {}
+        unknown = []
+        for entity_id in dict.fromkeys(entities):
+            current = self.coordinator.hass.states.get(entity_id)
+            if current is None or current.state not in ("on", "off"):
+                unknown.append(entity_id)
+            else:
+                states[entity_id] = current.state == "on"
+        return states, unknown
+
+    @staticmethod
+    def _set_actor_target(
+        targets: dict[str, bool], entity_id: str | None, enabled: bool
+    ) -> None:
+        if entity_id:
+            targets[entity_id] = enabled
+
+    def _aux_targets(self, topology: dict[str, Any], source_id: str) -> dict[str, bool]:
+        """Return the stable actor vector for one proven auxiliary source."""
+        targets: dict[str, bool] = {}
+        root = topology["members"][0][1]
+        self._set_actor_target(targets, root.get(CONF_LOAD_CONTROL_SWITCH), False)
+        source_index = next(
+            index
+            for index, (load_id, _data) in enumerate(topology["members"])
+            if load_id == source_id
+        )
+        for index, (_load_id, data) in enumerate(topology["members"]):
+            self._set_actor_target(targets, data.get(CONF_LOAD_CHARGE_ENABLE), False)
+            self._set_actor_target(
+                targets, data.get(CONF_LOAD_OUTPUT_SWITCH), index >= source_index
+            )
+        self._set_actor_target(
+            targets,
+            topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH),
+            True,
+        )
+        return targets
+
+    def _root_actor_targets(
+        self, topology: dict[str, Any], plan: Any
+    ) -> dict[str, bool]:
+        """Return the final actor vector for the fresh Root-fed slot."""
+        member_flows, terminal_root, output_count, _wake_count = self._root_targets(
+            topology, plan
+        )
+        targets: dict[str, bool] = {}
+        root = topology["members"][0][1]
+        self._set_actor_target(targets, root.get(CONF_LOAD_CONTROL_SWITCH), True)
+        for index, (load_id, data) in enumerate(topology["members"]):
+            self._set_actor_target(
+                targets,
+                data.get(CONF_LOAD_CHARGE_ENABLE),
+                bool(
+                    member_flows.get(load_id)
+                    and member_flows[load_id].own_charge_input_wh > 0
+                ),
+            )
+            self._set_actor_target(
+                targets, data.get(CONF_LOAD_OUTPUT_SWITCH), index < output_count
+            )
+        self._set_actor_target(
+            targets,
+            topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH),
+            terminal_root,
+        )
+        return targets
+
+    def _is_ordered_wake_prefix(
+        self, topology: dict[str, Any], states: dict[str, bool]
+    ) -> bool:
+        """Return whether the live vector is a safe Root-fed wake prefix."""
+        root = topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH)
+        terminal = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+        if root and not states[root]:
+            return False
+        if terminal and states[terminal]:
+            return False
+        if any(
+            states[data[CONF_LOAD_CHARGE_ENABLE]]
+            for _load_id, data in topology["members"]
+        ):
+            return False
+        seen_off = False
+        for _load_id, data in topology["members"]:
+            enabled = states[data[CONF_LOAD_OUTPUT_SWITCH]]
+            if seen_off and enabled:
+                return False
+            seen_off |= not enabled
+        return True
+
+    def _can_finish_aux(
+        self,
+        topology: dict[str, Any],
+        states: dict[str, bool],
+        source_id: str,
+    ) -> bool:
+        """Return whether only the ordered break side of Aux remains."""
+        terminal = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+        if terminal and not states[terminal]:
+            return False
+        if any(
+            states[data[CONF_LOAD_CHARGE_ENABLE]]
+            for _load_id, data in topology["members"]
+        ):
+            return False
+        source_index = next(
+            index
+            for index, (load_id, _data) in enumerate(topology["members"])
+            if load_id == source_id
+        )
+        return all(
+            states[data[CONF_LOAD_OUTPUT_SWITCH]]
+            for _load_id, data in topology["members"][source_index:]
+        )
 
     def _foreign_override(
         self, cascade_id: str, topology: dict[str, Any]
@@ -461,6 +767,14 @@ class CascadeManager:
         # claim.  Otherwise the next plan could mistake delayed feedback for
         # an exclusive external override during cascade startup.
         state["claims"][entity_id] = turn_on
+        cascade = self.coordinator.entry.subentries.get(cascade_id)
+        _LOGGER.info(
+            "Cascade %s actor %s -> %s (phase=%s)",
+            cascade.title if cascade is not None else cascade_id,
+            entity_id,
+            target_state.upper(),
+            state.get("phase"),
+        )
         return True
 
     def _begin_actor_sequence(self, cascade_id: str) -> None:
@@ -489,6 +803,12 @@ class CascadeManager:
             severity=ir.IssueSeverity.ERROR,
             translation_key="cascade_fault",
             translation_placeholders={"reason": display_reason},
+        )
+        cascade = self.coordinator.entry.subentries.get(cascade_id)
+        _LOGGER.error(
+            "Cascade %s entered fault: %s",
+            cascade.title if cascade is not None else cascade_id,
+            display_reason,
         )
         self.coordinator._save_persistent_state()
 
@@ -674,6 +994,183 @@ class CascadeManager:
         wake_count = output_count if terminal_root else deepest + 1
         return member_flows, terminal_root, output_count, wake_count
 
+    async def _resume_aux_after_restart(
+        self,
+        cascade_id: str,
+        topology: dict[str, Any],
+        source_id: str,
+        now: datetime,
+    ) -> bool:
+        """Resume an observed Root-fed Aux wake without cycling the chain."""
+        self._begin_actor_sequence(cascade_id)
+        for _load_id, data in topology["members"]:
+            if not await self._actor(
+                cascade_id, data.get(CONF_LOAD_CHARGE_ENABLE), False
+            ):
+                return False
+        root = topology["members"][0][1]
+        if not await self._actor(cascade_id, root.get(CONF_LOAD_CONTROL_SWITCH), True):
+            return False
+        first_missing = next(
+            (
+                index
+                for index, (_load_id, data) in enumerate(topology["members"])
+                if not self.coordinator._entity_is_on(data.get(CONF_LOAD_OUTPUT_SWITCH))
+            ),
+            None,
+        )
+        # Even when every output survived the restart, require one fresh
+        # publication from the deepest member before energising the terminal.
+        wake_index = (
+            first_missing if first_missing is not None else len(topology["members"]) - 1
+        )
+        baseline = self._member_telemetry_reported_at(
+            topology["members"][wake_index][1]
+        )[0]
+        state = self._state(cascade_id)
+        state["source"] = source_id
+        self._wait_for_member_wake(
+            cascade_id, topology, wake_index, baseline, now, "aux"
+        )
+        return True
+
+    async def _reconcile_after_restart(
+        self,
+        cascade_id: str,
+        topology: dict[str, Any],
+        plan: Any,
+        now: datetime,
+    ) -> bool:
+        """Adopt a coherent live topology; return if this refresh is handled."""
+        state = self._state(cascade_id)
+        live, unknown = self._live_actor_states(topology)
+        if unknown:
+            state["restart_reconcile_actors"] = unknown
+            first_wait = cascade_id not in self._restart_actor_unknown_since
+            since = self._restart_actor_unknown_since.setdefault(cascade_id, now)
+            if first_wait:
+                _LOGGER.info(
+                    "Cascade %s restart reconciliation waiting for actors: %s",
+                    cascade_id,
+                    ", ".join(unknown),
+                )
+            if now - since < _RESTART_ACTOR_WAIT:
+                return True
+            # Integrations publish restored/cached switch states at different
+            # times during HA startup.  Only after that bounded grace period is
+            # an unavailable actor treated as an unsafe topology.
+            state.pop("restart_reconcile_pending", None)
+            state.pop("restart_safe_off_pending", None)
+            state.pop("restart_reconcile_actors", None)
+            state.pop("restart_source_hint", None)
+            self._restart_actor_unknown_since.pop(cascade_id, None)
+            _LOGGER.warning(
+                "Cascade %s restart actors stayed unavailable; applying Safe-OFF",
+                cascade_id,
+            )
+            await self.async_safe_off(cascade_id, "restart actors unavailable")
+            return True
+
+        self._restart_actor_unknown_since.pop(cascade_id, None)
+        state.pop("restart_reconcile_pending", None)
+        state.pop("restart_safe_off_pending", None)
+        state.pop("restart_reconcile_actors", None)
+        state.pop("restart_source_hint", None)
+        # Claims from before HA stopped cannot establish current ownership.
+        # Rebuild them only from the now-confirmed physical vector.
+        state["claims"] = dict(live)
+        safe_off = dict.fromkeys(live, False)
+        flow = plan.flows[0] if plan.flows else None
+        desired_source = (
+            next(
+                (
+                    segment.source_load_id
+                    for segment in flow.segments
+                    if segment.source == "aux" and segment.source_load_id
+                ),
+                None,
+            )
+            if flow is not None
+            else None
+        )
+        root_wanted = bool(flow is not None and flow.root_input_wh > 0.0)
+
+        if live == safe_off:
+            state["source"] = None
+            state["phase"] = self._idle_phase(state)
+            self.coordinator._save_persistent_state()
+            _LOGGER.info(
+                "Cascade %s adopted confirmed Safe-OFF after restart", cascade_id
+            )
+            return False
+
+        if desired_source and live == self._aux_targets(topology, desired_source):
+            # The electrical Aux path survived HA.  Keep it energised but do
+            # not trust the old proof window: two fresh power samples must
+            # prove the source again before it becomes ``running``.
+            state["source"] = desired_source
+            state["phase"] = "proving"
+            self._proof.pop(cascade_id, None)
+            self.coordinator._save_persistent_state()
+            _LOGGER.info(
+                "Cascade %s adopted Aux source %s after restart; proving again",
+                cascade_id,
+                desired_source,
+            )
+            return False
+
+        if root_wanted and live == self._root_actor_targets(topology, plan):
+            state["source"] = None
+            state["phase"] = self._idle_phase(state)
+            self.coordinator._save_persistent_state()
+            _LOGGER.info(
+                "Cascade %s adopted complete Root topology after restart", cascade_id
+            )
+            return False
+
+        if desired_source and self._can_finish_aux(topology, live, desired_source):
+            state["source"] = desired_source
+            _LOGGER.info(
+                "Cascade %s completing Aux break sequence after restart", cascade_id
+            )
+            if not await self._finish_wake(cascade_id, desired_source):
+                await self._fault(cascade_id, "restart_aux_reconciliation_failed")
+                await self.async_safe_off(cascade_id, "restart Aux reconciliation")
+            return True
+
+        if (desired_source or root_wanted) and self._is_ordered_wake_prefix(
+            topology, live
+        ):
+            _LOGGER.info(
+                "Cascade %s continuing ordered %s wake after restart",
+                cascade_id,
+                "Aux" if desired_source else "Root",
+            )
+            if desired_source:
+                ok = await self._resume_aux_after_restart(
+                    cascade_id, topology, desired_source, now
+                )
+            else:
+                ok = await self._apply_root(cascade_id, plan, now)
+            if not ok:
+                await self._fault(cascade_id, "restart_wake_reconciliation_failed")
+                await self.async_safe_off(cascade_id, "restart wake reconciliation")
+            return True
+
+        # The actor vector is known but cannot occur at a safe boundary of the
+        # current plan.  This is the sole restart path that deliberately breaks
+        # the whole chain instead of adopting or continuing it.
+        _LOGGER.warning(
+            "Cascade %s restart topology is incoherent with the fresh plan; "
+            "applying Safe-OFF",
+            cascade_id,
+        )
+        pending_recovery = bool(state.get("recovery_pending"))
+        if await self.async_safe_off(cascade_id, "incoherent restart topology"):
+            state["phase"] = "recovering" if pending_recovery else "idle"
+            self.coordinator._save_persistent_state()
+        return True
+
     async def _finish_root(
         self, cascade_id: str, topology: dict[str, Any], plan: Any
     ) -> bool:
@@ -716,6 +1213,16 @@ class CascadeManager:
         topology = self._topology(cascade_id)
         if topology is None or not plan.flows:
             return False
+        live, unknown = self._live_actor_states(topology)
+        if not unknown and live == self._root_actor_targets(topology, plan):
+            # A rolling refresh (and especially the first one after restart)
+            # must not cycle charge gates merely to rebuild the same topology.
+            state = self._state(cascade_id)
+            state["claims"] = dict(live)
+            state["source"] = None
+            self._clear_member_wake(cascade_id)
+            state["phase"] = "recovering" if state.get("recovery_pending") else "root"
+            return True
         _member_flows, _terminal_root, output_count, wake_count = self._root_targets(
             topology, plan
         )
@@ -932,6 +1439,15 @@ class CascadeManager:
         if safety_reason is not None:
             await self.async_safety_off(cascade_id, safety_reason, now)
             return
+        if state.get("restart_reconcile_pending") or state.get(
+            "restart_safe_off_pending"
+        ):
+            topology = self._topology(cascade_id)
+            if topology is None:
+                await self.async_safe_off(cascade_id, "invalid restart topology")
+                return
+            if await self._reconcile_after_restart(cascade_id, topology, plan, now):
+                return
         if (
             state.get("episode_day")
             and state.get("episode_day") != day
@@ -1526,6 +2042,17 @@ class CascadeManager:
                 "fault_detail": state.get("fault_detail"),
                 "warning": state.get("warning"),
                 "hands_off": bool(state["hands_off"]),
+                "activation_blocked_reason": state.get("activation_blocked_reason"),
+                "activation_blocked_actors": list(
+                    state.get("activation_blocked_actors", [])
+                ),
+                "restart_reconcile_pending": bool(
+                    state.get("restart_reconcile_pending")
+                    or state.get("restart_safe_off_pending")
+                ),
+                "restart_reconcile_actors": list(
+                    state.get("restart_reconcile_actors", [])
+                ),
                 "assumed_state_actors": assumed_state_actors,
                 "retry_at": state["retry_at"],
                 # Keep an in-flight wake inspectable from the Root

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from custom_components.battery_manager import cascade_manager as cascade_manager_module
+from custom_components.battery_manager.binary_sensor import CascadeRecommendationSensor
 from custom_components.battery_manager.cascade_manager import CascadeManager
 from custom_components.battery_manager.const import (
     ACTOR_MODE_SHARED,
@@ -35,6 +36,7 @@ from custom_components.battery_manager.core import (
     LoadCascade,
     SurplusLoadState,
 )
+from custom_components.battery_manager.sensor import CascadeModeSensor
 from custom_components.battery_manager.switch import CascadeAutomationSwitch
 
 
@@ -227,6 +229,21 @@ def test_automation_switch_exposes_hands_off_reason() -> None:
         "hands_off": True,
         "fault": None,
         "fault_detail": None,
+        "activation_blocked_reason": None,
+        "activation_blocked_actors": [],
+        "restart_reconcile_pending": False,
+        "restart_reconcile_actors": [],
+    }
+
+
+def test_bulky_cascade_timelines_are_not_recorded() -> None:
+    assert CascadeRecommendationSensor._unrecorded_attributes == {
+        "member_details",
+        "schedule",
+    }
+    assert CascadeModeSensor._unrecorded_attributes == {
+        "member_details",
+        "schedule",
     }
 
 
@@ -803,9 +820,15 @@ async def test_enable_requires_all_off_and_fresh_soc() -> None:
     coordinator.hass.states.values["sensor.soc"].state = "90"
     coordinator.hass.states.values["switch.output"].state = "on"
     assert not await manager.async_set_enabled("chain", True)
+    assert manager._state("chain")["activation_blocked_reason"] == "actors_not_off"
+    assert manager._state("chain")["activation_blocked_actors"] == ["switch.output"]
+    coordinator.hass.states.values["switch.output"].state = "unavailable"
+    assert not await manager.async_set_enabled("chain", True)
+    assert manager._state("chain")["activation_blocked_actors"] == ["switch.output"]
     coordinator.hass.states.values["switch.output"].state = "off"
     assert await manager.async_set_enabled("chain", True)
     assert manager.enabled("chain")
+    assert manager._state("chain")["activation_blocked_reason"] is None
 
     assert await manager.async_set_enabled("chain", False)
     assert not manager.enabled("chain")
@@ -824,6 +847,362 @@ async def test_enable_requires_all_off_and_fresh_soc() -> None:
     assert coordinator.hass.states.values["switch.output"].state == "on"
     assert coordinator.calls == []
     assert manager._state("chain")["fault"] is None
+
+
+async def test_enable_discards_stale_wake_state_before_fresh_takeover() -> None:
+    """Live 2026-09-01: OFF -> ON must not resume an old waking_members FSM."""
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": False,
+            "phase": "waking_members",
+            "source": "b1",
+            "claims": {"switch.input": True},
+            "retry_used": True,
+            "retry_at": (now + timedelta(minutes=15)).isoformat(),
+            "wake_mode": "root",
+            "wake_member_index": 0,
+            "wake_telemetry_reported_at": now.isoformat(),
+            "wake_deadline": (now + timedelta(seconds=60)).isoformat(),
+        }
+    )
+
+    assert await manager.async_set_enabled("chain", True)
+
+    assert state["enabled"] is True
+    assert state["phase"] == "idle"
+    assert state["source"] is None
+    assert state["claims"] == {}
+    assert state["retry_used"] is False
+    assert state["retry_at"] is None
+    assert "wake_mode" not in state
+    assert "wake_deadline" not in state
+
+
+async def test_restored_aux_state_is_adopted_without_switching() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "waking_members",
+            "source": "b1",
+            "claims": {"switch.input": True, "switch.output": True},
+            "wake_mode": "root",
+            "wake_member_index": 0,
+            "wake_deadline": (now + timedelta(seconds=60)).isoformat(),
+        }
+    )
+    for entity_id in ("switch.output", "switch.leaf"):
+        coordinator.hass.states.values[entity_id].state = "on"
+
+    manager.normalize_restored_state()
+
+    assert state["phase"] == "idle"
+    assert state["restart_reconcile_pending"] is True
+    assert state["restart_source_hint"] == "b1"
+    runtime = manager.runtime_state("chain")
+    assert runtime.phase == "proving"
+    assert runtime.active_source_id == "b1"
+    assert "wake_mode" not in state
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+    assert coordinator.calls == []
+    assert state["enabled"] is True
+    assert state["phase"] == "proving"
+    assert state["source"] == "b1"
+    assert state["claims"] == {
+        "switch.input": False,
+        "switch.gate": False,
+        "switch.output": True,
+        "switch.leaf": True,
+    }
+    assert "restart_reconcile_pending" not in state
+
+
+async def test_restored_root_wake_continues_without_power_cycle() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "waking_members"})
+    coordinator.hass.states.values["switch.input"].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == []
+    assert state["phase"] == "waking_members"
+    assert state["wake_mode"] == "root"
+    assert state["wake_member_index"] == 0
+    assert "restart_reconcile_pending" not in state
+
+
+async def test_restored_aux_wake_waits_for_fresh_telemetry_without_power_cycle() -> (
+    None
+):
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "waking_members", "source": "b1"})
+    coordinator.hass.states.values["switch.input"].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == []
+    assert state["phase"] == "waking_members"
+    assert state["wake_mode"] == "aux"
+    assert state["wake_member_index"] == 0
+    _publish_soc(coordinator, "sensor.soc", "90", now + timedelta(seconds=1))
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now + timedelta(seconds=1),
+    )
+
+    assert coordinator.calls == [
+        ("switch.output", True),
+        ("switch.leaf", True),
+        ("switch.input", False),
+    ]
+    assert state["phase"] == "proving"
+
+
+async def test_restored_aux_break_side_finishes_without_full_safe_off() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "proving", "source": "b1"})
+    for entity_id in ("switch.input", "switch.output", "switch.leaf"):
+        coordinator.hass.states.values[entity_id].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == [("switch.input", False)]
+    assert state["phase"] == "proving"
+    assert state["source"] == "b1"
+
+
+async def test_restored_safe_off_vector_replans_without_reconciliation_cycle() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "idle"})
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == [("switch.input", True)]
+    assert state["phase"] == "waking_members"
+    assert "restart_reconcile_pending" not in state
+
+
+async def test_restored_complete_root_vector_is_adopted_without_switching() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "root"})
+    for entity_id in (
+        "switch.input",
+        "switch.gate",
+        "switch.output",
+        "switch.leaf",
+    ):
+        coordinator.hass.states.values[entity_id].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == []
+    assert state["phase"] == "root"
+    assert state["claims"] == {
+        "switch.input": True,
+        "switch.gate": True,
+        "switch.output": True,
+        "switch.leaf": True,
+    }
+
+
+async def test_incoherent_restored_actor_vector_falls_back_to_safe_off() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "proving", "source": "b1"})
+    coordinator.hass.states.values["switch.gate"].state = "on"
+    coordinator.hass.states.values["switch.output"].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == [
+        ("switch.output", False),
+        ("switch.gate", False),
+    ]
+    assert state["phase"] == "idle"
+    assert state["claims"] == {
+        "switch.input": False,
+        "switch.gate": False,
+        "switch.output": False,
+        "switch.leaf": False,
+    }
+
+
+async def test_restart_waits_for_actor_states_before_safe_off_fallback() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "running", "source": "b1"})
+    coordinator.hass.states.values["switch.input"].state = "unavailable"
+    coordinator.hass.states.values["switch.output"].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+
+    assert coordinator.calls == []
+    assert state["restart_reconcile_actors"] == ["switch.input"]
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now + timedelta(seconds=61),
+    )
+
+    assert coordinator.calls == [
+        ("switch.output", False),
+        ("switch.input", False),
+    ]
+    assert state["phase"] == "idle"
+    assert "restart_reconcile_pending" not in state
+
+
+async def test_restart_adopts_actor_states_published_during_grace_period() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "phase": "running", "source": "b1"})
+    coordinator.hass.states.values["switch.input"].state = "unavailable"
+    coordinator.hass.states.values["switch.output"].state = "on"
+    coordinator.hass.states.values["switch.leaf"].state = "on"
+
+    manager.normalize_restored_state()
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now,
+    )
+    coordinator.hass.states.values["switch.input"].state = "off"
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf")),
+        now + timedelta(seconds=10),
+    )
+
+    assert coordinator.calls == []
+    assert state["phase"] == "proving"
+    assert "restart_reconcile_actors" not in state
+
+
+def test_persistent_snapshot_strips_inflight_wake_evidence() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain").update(
+        {
+            "enabled": True,
+            "phase": "proving",
+            "source": "b1",
+            "claims": {"switch.output": True},
+            "wake_mode": "aux",
+            "wake_deadline": (now + timedelta(seconds=60)).isoformat(),
+            "last_actor_error": {"kind": "old"},
+        }
+    )
+
+    saved = manager.persistent_state_snapshot()["chain"]
+
+    assert saved["phase"] == "idle"
+    assert saved["source"] is None
+    assert saved["restart_reconcile_pending"] is True
+    assert saved["restart_source_hint"] == "b1"
+    assert saved["claims"] == {"switch.output": True}
+    assert "wake_mode" not in saved
+    assert "wake_deadline" not in saved
+    assert "last_actor_error" not in saved
+
+
+async def test_manual_disable_waits_for_cascade_actor_lock() -> None:
+    now = datetime(2026, 9, 1, 10, 49)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    lock = manager._locks.setdefault("chain", asyncio.Lock())
+    await lock.acquire()
+    task = asyncio.create_task(manager.async_set_enabled("chain", False))
+    await asyncio.sleep(0)
+
+    assert not task.done()
+    assert state["enabled"] is True
+
+    lock.release()
+    assert await task
+    assert state["enabled"] is False
 
 
 async def test_running_integrates_aux_then_stops_at_target() -> None:
@@ -1403,7 +1782,9 @@ async def test_handover_power_edge_cases_and_fault_reset(
     state["hands_off"] = True
     state["fault"] = "demo"
     assert not await manager.async_set_enabled("chain", True)
-    assert not state["hands_off"]
+    # A rejected activation is atomic: it must not silently clear hands-off.
+    assert state["hands_off"]
+    assert state["activation_blocked_reason"] == "fault"
 
     deleted = []
     monkeypatch.setattr(

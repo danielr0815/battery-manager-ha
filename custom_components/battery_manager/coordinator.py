@@ -773,6 +773,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     for k, v in cascade_state.items()
                     if isinstance(v, dict)
                 }
+                # Wake indexes, deadlines and proof phases describe one live
+                # process and are invalid after HA downtime.  The manager
+                # releases a disabled chain or reclassifies an enabled chain's
+                # confirmed live actor vector before execution resumes.
+                self.cascade_manager.normalize_restored_state()
             self._load_runtime_seconds = {
                 k: float(v) for k, v in data.get("load_runtime_seconds", {}).items()
             }
@@ -985,7 +990,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 k: v.isoformat() for k, v in self._load_run_deadline.items()
             },
             "load_bm_enabled": dict(self._load_bm_enabled),
-            "cascade_state": self._cascade_state,
+            "cascade_state": self.cascade_manager.persistent_state_snapshot(),
             # Only the accumulated total is persisted; the in-progress tick cursor
             # is deliberately NOT — restoring it would credit the whole restart
             # gap (up to the tick cap) as runtime the device may never have run.

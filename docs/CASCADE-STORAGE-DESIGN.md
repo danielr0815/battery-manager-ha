@@ -1,7 +1,7 @@
 # Cascade storage design
 
 Status: Implementierungsdesign zu [F-CASCADE-STORAGE](F-CASCADE-STORAGE.md),
-aktualisiert für v0.34.0.
+aktualisiert für v0.34.1.
 
 ## Schichten und Verantwortungen
 
@@ -61,8 +61,9 @@ laufende oder im Leistungsnachweis befindliche Episode bleibt zwingend in Slot
 
 ## Executor-Zustände
 
-Stabile Zustände sind `idle`, `running`, `recovering`, `complete`, `fault` und
-`hands_off`; `waking` und `proving` sind transient. Nach Neustart werden
+Stabile Zustände sind `idle`, `root`, `running`, `recovering`, `complete`,
+`fault` und `hands_off`; `waking`, `waking_members` und `proving` sind
+transient. Nach Neustart werden
 transiente Zustände nie blind fortgesetzt. Der aktuelle physische Zustand wird
 entweder sicher beendet oder bei konsistenter frischer Telemetrie durch ein
 neues 60-s-Fenster bewiesen.
@@ -70,8 +71,29 @@ neues 60-s-Fenster bewiesen.
 Actor-Claims werden pro Kaskade in einem Lock serialisiert. Disjunkte Ketten
 verwenden getrennte Locks. Ein Proof-Fenster existiert nur im Speicher und wird
 bei unbekannter Leistung, Transition oder Restart verworfen. Persistiert werden
-nur bestätigte Claims und stabile Episode-/Fault-Evidenz, wodurch HA-Downtime
-keine Timeout- oder Energie-Gutschrift erzeugt.
+nur bestätigte Claims und stabile Episode-/Fault-Evidenz. Bei einem
+unterbrochenen Aux-Wake bleibt die beabsichtigte Quelle als ausdrücklicher
+Restart-Hinweis erhalten, damit der erste Rolling Plan die bereits begonnene
+Episode nicht als neuen Start behandelt; der Hinweis selbst gilt weder als
+Actor-Claim noch als Leistungsnachweis. Dadurch erzeugt HA-Downtime keine
+Timeout- oder Energie-Gutschrift.
+
+Der persistierte Snapshot ersetzt `waking`, `waking_members`, `proving` und
+sonstige unbekannte Phasen durch einen stabilen logischen Ausgangszustand,
+behauptet damit aber keinen physischen Safe-OFF. Nach dem Neustart wartet eine
+aktive Kette bis zu 60 Sekunden auf explizite ON-/OFF-Zustände aller Actors und
+klassifiziert dann den vollständigen Live-Vektor gegen den frischen Plan.
+Vollständige Root- und Aux-Pfade werden ohne Schalten übernommen; Aux beginnt
+ein neues Proof-Fenster. Ein geordneter Root-gespeister Wake-Präfix setzt mit
+einer frischen Gerätepublikation an der ersten noch offenen Stufe fort. Auch die
+bereits begonnene geordnete Break-Seite eines Aux-Takeovers darf abgeschlossen
+werden. Nur unbekannt gebliebene oder keinem sicheren Übergang entsprechende
+Vektoren führen zum geordneten Safe-OFF. Eine deaktivierte Kette erhält keine
+Reconciliation, weil ihre Actors bereits dem Operator gehören. Eine
+erfolgreiche manuelle Aktivierung aus bestätigt vollständig AUS löscht
+unabhängig davon sämtliche transiente Evidenz und beginnt als neue
+Besitzepisode. Alle drei Bedienpfade (AN, AUS, Fault-Reset) laufen unter
+demselben Per-Kaskaden-Lock wie der automatische Executor.
 
 Bewusstes Automation-AUS führt einmal Safe-OFF aus und gibt die Actors danach
 frei. Ein Shared-Fremdeingriff wechselt ohne spätere Rücknahme in `hands_off`.

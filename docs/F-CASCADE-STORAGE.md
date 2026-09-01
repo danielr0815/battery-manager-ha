@@ -1,6 +1,6 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
-Status: normative Feature-Spezifikation, aktualisiert für v0.34.0.
+Status: normative Feature-Spezifikation, aktualisiert für v0.34.1.
 
 ## Ziel und Geltungsbereich
 
@@ -182,6 +182,15 @@ Aux-Lauf gilt für den lokalen Tag als beendet.
 Leistungsnachweises fließt schon Endlastenergie, daher darf ein Rolling Replan
 nicht erneut eine vollständige Mindestlaufzeit als Startbedingung verlangen.
 
+Eine erfolgreiche bewusste Aktivierung aus vollständig bestätigtem Safe-OFF
+ist immer eine neue Besitzepisode. Alte Wake-Indizes, Deadlines, Claims,
+Quellen- und Retry-Evidenz werden davor verworfen. `unknown`, `unavailable`
+oder fehlende Actor-Zustände gelten dabei nicht als AUS. Aktivierung,
+Deaktivierung, Fault-Reset und automatische Übergänge verwenden denselben
+Kaskaden-Lock. Eine abgelehnte Aktivierung veröffentlicht einen
+maschinenlesbaren Grund sowie gegebenenfalls die nicht als AUS bestätigten
+Actor-Entity-IDs.
+
 ## HA-Datenvertrag
 
 Je Kaskade entstehen Root-Empfehlung, Mode/Forecast, kapazitätsgewichteter SOC,
@@ -229,11 +238,21 @@ Aux-Energie. `today_kwh`, `tomorrow_kwh` und `daily` teilen die geplante
 Root-Grenzenergie nach lokalem Slot-Starttag auf und entsprechen damit dem
 Tagesvertrag normaler Lastspuren. Root-/Surplusbilanz wird ausschließlich am
 Root-Messpunkt gebucht; interne Zähler werden nie summiert. Topologie,
-Automation, Episode, Quelle, Zielunterschreitungen, Claims, Fault/Hands-off,
-Retry, SOC-Cache und Tagesenergie werden persistiert; Powerfenster und
-HA-Offline-Zeit nicht. Ein laufender Wake veröffentlicht Modus, Member-Index,
-Baseline, Deadline und die zuletzt akzeptierte Telemetrie-Evidenz für die
-Live-Diagnose.
+Automation, stabile Episode, Zielunterschreitungen, bestätigte Claims,
+Fault/Hands-off, Retry, SOC-Cache und Tagesenergie werden persistiert;
+Wake-Indizes, Wake-Deadlines, Proof-Fenster und HA-Offline-Zeit nicht. Nur die
+beabsichtigte Aux-Quelle bleibt als nicht beweisender Restart-Hinweis erhalten,
+damit der erste Rolling Plan die begonnene Episode weiter einplant. Beim
+Neustart werden alte Claims nicht blind verwendet, sondern aus expliziten
+Live-ON-/OFF-Zuständen aller Actors rekonstruiert. Dafür wartet der Executor
+beim HA-Start höchstens 60 Sekunden auf deren Publikation. Ein zum frischen
+Plan passender vollständiger Root-/Aux-Pfad bleibt unverändert; Aux durchläuft
+ein neues 60-s-Leistungsfenster. Ein elektrisch geordneter Wake-Präfix wird ab
+der ersten noch offenen Stufe mit einer neuen Gerätepublikation fortgesetzt.
+Nur ein widersprüchlicher oder weiterhin unbekannter Vektor führt zum
+geordneten Safe-OFF. Eine bewusst deaktivierte Kaskade bleibt unangetastet. Ein
+laufender Wake veröffentlicht Modus, Member-Index, Baseline, Deadline und die
+zuletzt akzeptierte Telemetrie-Evidenz ausschließlich für die Live-Diagnose.
 
 Die Executor-Phasen `recovering` und `complete` sind bei aktiver Automation
 reine Diagnosen, keine Actor-Freigabe. Auch in diesen Phasen wird Safe-OFF

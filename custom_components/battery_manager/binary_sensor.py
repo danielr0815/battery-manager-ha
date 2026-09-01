@@ -195,6 +195,9 @@ class SurplusLoadRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
 class CascadeRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
     """Root-related recommendation for a whole cascade."""
 
+    # The live card still receives the complete timeline, but Recorder must
+    # not store two multi-day copies every ten seconds (live 16-KiB warning).
+    _unrecorded_attributes = frozenset({"member_details", "schedule"})
     _attr_translation_key = "cascade_recommendation"
 
     def __init__(self, coordinator, subentry_id: str, title: str) -> None:

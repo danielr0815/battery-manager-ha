@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-09-01
+
+### Fixed
+- Eine bewusst aus vollständig bestätigtem Safe-OFF aktivierte Kaskade verwirft
+  jetzt alte Wake-Indizes, Deadlines, Claims und Retry-Evidenz. Dadurch kann ein
+  vor dem manuellen Abschalten gespeichertes `waking_members` nicht mehr beim
+  nächsten Einschalten fortgesetzt werden und Root-Aktoren gegeneinander
+  takten.
+- Transiente Wake-/Proof-Zustände werden nicht mehr unverändert persistiert.
+  Nach einem HA-Neustart rekonstruiert eine aktive Kaskade ihre Claims aus den
+  bestätigten Live-Schalterzuständen: vollständige Root-/Aux-Pfade bleiben
+  unverändert, geordnete Wake-Präfixe werden mit frischer Telemetrie
+  fortgesetzt und Aux-Quellen erneut über 60 Sekunden bewiesen. Erst ein
+  widersprüchlicher Zustand fällt auf geordnetes Safe-OFF zurück; beim
+  HA-Start noch unbekannte Actors erhalten dafür 60 Sekunden Publikationszeit.
+  Eine bewusst deaktivierte Kaskade bleibt vollständig in manueller Hand.
+- Ein bereits vollständig aufgebauter Root-Pfad wird jetzt bei Rolling
+  Refreshes idempotent übernommen, statt aktive Charge-Gates in jedem Zyklus
+  kurz AUS und wieder AN zu schalten.
+- Aktivieren, Deaktivieren und Fault-Reset verwenden nun denselben
+  Kaskaden-Lock wie automatische Actor-Übergänge. Eine Aktivierung akzeptiert
+  außerdem nur noch explizit als `off` bestätigte Aktoren und veröffentlicht
+  bei Ablehnung Grund und betroffene Entity-IDs.
+- Die großen Kaskadenattribute `member_details` und `schedule` bleiben für die
+  Live-Anzeige verfügbar, werden aber nicht mehr alle zehn Sekunden im Recorder
+  dupliziert und überschreiten damit nicht mehr dessen 16-KiB-Attributgrenze.
+
 ## [0.34.0] - 2026-09-01
 
 ### Changed

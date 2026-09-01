@@ -257,6 +257,7 @@ async def async_setup_entry(
 class CascadeModeSensor(BatteryManagerEntity, SensorEntity):
     """Executor phase and energy/recovery diagnostics for a cascade."""
 
+    _unrecorded_attributes = frozenset({"member_details", "schedule"})
     _attr_icon = "mdi:source-branch"
     _attr_translation_key = "cascade_mode"
 
