@@ -5,7 +5,8 @@ global load priority.  This module adds isolated auxiliary discharge down to
 each member's configured cascade target.  Energy above that target is available
 without a recharge promise; a second pass may use the hard-floor reserve only
 when the global plan proves that otherwise-exported energy restores the target.
-Later Root charging still follows the ordinary global load priority.
+At the cascade's global priority position, direct terminal use precedes later
+Root charging so useful consumption does not take a lossy storage detour.
 """
 
 from __future__ import annotations

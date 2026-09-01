@@ -10,6 +10,8 @@ Seit v0.29.0 enthält jeder `cascades[]`-Eintrag `source_name`, `member_details`
 unterscheiden Mitgliedsladung (`charge`), Mitgliedsentladung (`discharge`),
 benötigten AC-Ausgang (`output`) und Endlastversorgung (`terminal`). Laden und
 Entladen nennen Energie und SOC-Verlauf, Laden zusätzlich gespeicherte Energie.
+`today_kwh`, `tomorrow_kwh` und `daily` teilen ausschließlich die externe
+Root-Grenzenergie nach Slot-Starttag auf.
 Die Forecast-Card zeigt die Kaskade ausschließlich als Root-Black-Box-Spur;
 die separate Cascade-Card zeichnet alle internen Aktivitäten zeilenweise.
 Der Kaskaden-Automationsschalter zeigt `phase`, `hands_off`, `fault` und

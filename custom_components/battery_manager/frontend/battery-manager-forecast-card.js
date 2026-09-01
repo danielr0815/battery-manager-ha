@@ -145,6 +145,7 @@ const STRINGS = {
     cascade_plan: "Plan",
     cascade_from_storage: "from storage",
     cascade_via_root: "from PV / Root",
+    cascade_root_today_tomorrow: "Root today/tomorrow",
     cascade_used_today: "used today",
     cascade_discharge_target: "discharge target",
     static_hint: "dimmed bars = static fallback profile",
@@ -206,6 +207,7 @@ const STRINGS = {
     cascade_plan: "Plan",
     cascade_from_storage: "aus Speichern",
     cascade_via_root: "aus PV / Root",
+    cascade_root_today_tomorrow: "Root heute/morgen",
     cascade_used_today: "heute genutzt",
     cascade_discharge_target: "Entladeziel",
     static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
@@ -651,6 +653,8 @@ class BatteryManagerForecastCard extends HTMLElement {
       .map((cascade, i) => ({
         name: `${t("cascade")} ${cascade.name ?? "?"}`,
         planned_root_energy_kwh: num(cascade.planned_root_energy_kwh) ?? 0,
+        today_kwh: num(cascade.today_kwh),
+        tomorrow_kwh: num(cascade.tomorrow_kwh),
         schedule: (Array.isArray(cascade.schedule) ? cascade.schedule : [])
           .filter(
             (block) =>
@@ -1018,7 +1022,13 @@ class BatteryManagerForecastCard extends HTMLElement {
 
     const cascadeLegend = cascades
       .map((cascade) => {
-        const root = cascade.planned_root_energy_kwh.toFixed(2);
+        const hasPerDay =
+          typeof cascade.today_kwh === "number" &&
+          typeof cascade.tomorrow_kwh === "number" &&
+          (cascade.today_kwh > 0 || cascade.tomorrow_kwh > 0);
+        const root = hasPerDay
+          ? `${cascade.today_kwh.toFixed(1)}/${cascade.tomorrow_kwh.toFixed(1)}`
+          : cascade.planned_root_energy_kwh.toFixed(2);
         return `<span><span class="dot" style="background:${cascade.color}"></span>${esc(
           cascade.name
         )} (${t("root")} ${root} kWh)</span>`;
@@ -2476,6 +2486,8 @@ class BatteryManagerCascadeCard extends HTMLElement {
       body = this._cascades()
         .map((item, index) => {
         const root = num(item?.planned_root_energy_kwh) ?? 0;
+        const rootToday = num(item?.today_kwh);
+        const rootTomorrow = num(item?.tomorrow_kwh);
         const aux = num(item?.planned_aux_energy_kwh) ?? 0;
         const actual = num(item?.actual_aux_energy_kwh) ?? 0;
         const detail = item?.fault_detail;
@@ -2497,9 +2509,13 @@ class BatteryManagerCascadeCard extends HTMLElement {
         const actualText = actual > 0
           ? ` · ${actual.toFixed(2)} kWh ${t("cascade_used_today")}`
           : "";
+        const rootText =
+          rootToday !== undefined && rootTomorrow !== undefined
+            ? `${esc(t("cascade_root_today_tomorrow"))} ${rootToday.toFixed(1)}/${rootTomorrow.toFixed(1)} kWh`
+            : `${root.toFixed(2)} kWh ${esc(t("cascade_via_root"))}`;
           return `<section><div class="summary"><b>${esc(item?.name || "Cascade")}</b>` +
             `<span title="${esc(actor)}">${esc(phaseText)}${esc(sourceText)}${esc(fault)}</span>` +
-            `<div class="energy">${esc(t("cascade_plan"))}: ${aux.toFixed(2)} kWh ${esc(t("cascade_from_storage"))} · ${root.toFixed(2)} kWh ${esc(t("cascade_via_root"))}${actualText}</div></div>` +
+            `<div class="energy">${esc(t("cascade_plan"))}: ${aux.toFixed(2)} kWh ${esc(t("cascade_from_storage"))} · ${rootText}${actualText}</div></div>` +
             `<div class="chart-wrap">${this._chart(item, index)}</div></section>`;
         })
         .join("");

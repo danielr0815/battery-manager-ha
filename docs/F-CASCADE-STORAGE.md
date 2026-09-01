@@ -41,12 +41,17 @@ oder Löschen der Kaskade behoben werden.
 
 ## Planungsregeln
 
-Die globale Load-Reihenfolge bleibt die äußerste Prioritätsordnung. Innerhalb
-einer terminalen Kaskadenlast gilt die Quellenfolge Root/PV, B1 … Bn und danach
-Root aus der Hausbatterie unter den bestehenden No-Import-, Batterieanteil-,
-Stress- und G4-Gates. Ein neuer Aux-Start ist nur zulässig, wenn die
-vollständige Mindestlaufzeit erbracht werden kann. Dabei gelten zwei
-Reservestufen:
+Die globale Load-Reihenfolge bleibt die äußerste Prioritätsordnung. Die
+Kaskade belegt dabei die Position ihres ersten konfigurierten Teilnehmers;
+innerhalb dieses Verbunds hat die direkte Endlast Vorrang vor zusätzlichem
+Laden der Mitglieder. Damit wird nutzbare Energie nicht verlustbehaftet in
+einem Fossibot zwischengespeichert, während die Endlast pausiert. Nur der nach
+der Endlast verbleibende Root-Überschuss lädt Mitglieder über ihr
+Kaskaden-Entladeziel hinaus. Innerhalb einer terminalen Kaskadenlast gilt die
+Quellenfolge Root/PV, B1 … Bn und danach Root aus der Hausbatterie unter den
+bestehenden No-Import-, Batterieanteil-, Stress- und G4-Gates. Ein neuer
+Aux-Start ist nur zulässig, wenn die vollständige Mindestlaufzeit erbracht
+werden kann. Dabei gelten zwei Reservestufen:
 
 1. Energie oberhalb des Kaskaden-Entladeziels (standardmäßig 50 %) ist
    bedingungslos verfügbar. Dafür ist weder ein heutiger PV-Slot noch eine
@@ -202,11 +207,13 @@ Sentinel-Position `deepest = -1` keine Phantomenergie erzeugen und B1 dadurch
 ohne geplante Aktivität starten.
 
 `cascade_plans` trennt geplante Root- und Aux-Energie sowie tatsächliche
-Aux-Energie. Root-/Surplusbilanz wird ausschließlich am Root-Messpunkt gebucht;
-interne Zähler werden nie summiert. Topologie, Automation, Episode, Quelle,
-Zielunterschreitungen, Claims, Fault/Hands-off, Retry, SOC-Cache und
-Tagesenergie werden
-persistiert; Powerfenster und HA-Offline-Zeit nicht.
+Aux-Energie. `today_kwh`, `tomorrow_kwh` und `daily` teilen die geplante
+Root-Grenzenergie nach lokalem Slot-Starttag auf und entsprechen damit dem
+Tagesvertrag normaler Lastspuren. Root-/Surplusbilanz wird ausschließlich am
+Root-Messpunkt gebucht; interne Zähler werden nie summiert. Topologie,
+Automation, Episode, Quelle, Zielunterschreitungen, Claims, Fault/Hands-off,
+Retry, SOC-Cache und Tagesenergie werden persistiert; Powerfenster und
+HA-Offline-Zeit nicht.
 
 Die Executor-Phasen `recovering` und `complete` sind bei aktiver Automation
 reine Diagnosen, keine Actor-Freigabe. Auch in diesen Phasen wird Safe-OFF

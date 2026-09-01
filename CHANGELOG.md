@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-09-01
+
+### Changed
+- Innerhalb einer Kaskade hat die direkte Endlast jetzt Vorrang vor
+  zusätzlichem Laden der beteiligten Speicher. Damit pausiert der Entfeuchter
+  nicht mehr zugunsten eines verlustbehafteten AC→Speicher→AC-Umwegs; nur der
+  verbleibende Überschuss lädt die Fossibots weiter.
+
+### Fixed
+- Kaskaden veröffentlichen ihre Root-Grenzenergie nun wie normale Lasten als
+  heute/morgen und Tagesliste. Forecast- und Kaskadenkarte zeigen dadurch
+  verständliche Tageswerte statt ausschließlich der gesamten Horizontsumme.
+
 ## [0.33.0] - 2026-08-31
 
 ### Added

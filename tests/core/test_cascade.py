@@ -198,6 +198,39 @@ def test_root_service_is_reported_without_aux_double_counting() -> None:
     )
 
 
+def test_terminal_direct_use_precedes_additional_member_charging() -> None:
+    """Contested Root surplus serves the useful terminal before storage loss."""
+    config, inputs = _system(socs=(50.0,))
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(300.0, 300.0),
+        load_states=(
+            SurplusLoadState("b1", soc_percent=50.0),
+            SurplusLoadState("leaf"),
+        ),
+    )
+
+    result = plan(config, inputs)
+    plans = {item.load_id: item for item in result.load_plans}
+
+    # The planner may use a private priority order, but its public tuple keeps
+    # SystemConfig order for Coordinator consumers that zip both contracts.
+    assert [item.load_id for item in result.load_plans] == ["b1", "leaf"]
+    assert plans["leaf"].planned_energy_wh == 300.0
+    assert plans["b1"].planned_energy_wh == 150.0
+    assert plans["leaf"].planned_energy_wh > plans["b1"].planned_energy_wh
+    assert (
+        sum(
+            segment.terminal_energy_wh
+            for flow in result.cascade_plans[0].flows
+            for segment in flow.segments
+            if segment.source == "direct_pv"
+        )
+        == 300.0
+    )
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

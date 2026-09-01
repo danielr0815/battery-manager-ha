@@ -1074,6 +1074,9 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     assert payload["fault_detail"] is None
     assert payload["source_name"] is None
     assert payload["planned_root_energy_kwh"] == 0.0
+    assert payload["today_kwh"] == 0.0
+    assert payload["tomorrow_kwh"] == 0.0
+    assert payload["daily"] == []
     assert payload["planned_aux_energy_kwh"] == 0.0
     assert payload["actual_aux_energy_kwh"] == 0.125
     assert payload["aggregate_soc_percent"] == 90.0
@@ -1132,6 +1135,7 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             ],
         }
     ]
+
     root_schedule = manager._schedule_payload(core_cascade, _root_plan(now), slots)
     assert root_schedule[0]["sources"] == ["root"]
     assert root_schedule[0]["root_input_wh"] == 600.0
@@ -1173,6 +1177,32 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
         now,
     )
     assert coordinator.calls == []
+
+
+def test_root_energy_is_split_into_today_tomorrow_and_daily() -> None:
+    """The black-box Root lane has the same daily contract as normal loads."""
+    today = datetime(2026, 8, 31, 23)
+    tomorrow = today + timedelta(hours=1)
+    day_after = tomorrow + timedelta(days=1)
+    slots = tuple(
+        HourSlot(index, start, 1.0, start.hour, 0.0, 0.0, 0.0)
+        for index, start in enumerate((today, tomorrow, day_after))
+    )
+    plan = SimpleNamespace(
+        flows=tuple(
+            CascadeSlotFlow(root_input_wh=root_wh) for root_wh in (100.0, 350.0, 225.0)
+        )
+    )
+
+    assert CascadeManager._root_per_day_kwh(plan, slots) == {
+        "today_kwh": 0.1,
+        "tomorrow_kwh": 0.35,
+        "daily": [
+            {"date": "2026-08-31", "kwh": 0.1},
+            {"date": "2026-09-01", "kwh": 0.35},
+            {"date": "2026-09-02", "kwh": 0.225},
+        ],
+    }
 
 
 async def test_global_safety_gate_safe_offs_active_but_not_manual_cascade() -> None:

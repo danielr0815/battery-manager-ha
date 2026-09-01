@@ -581,7 +581,7 @@ einen akzeptierten Lauf nicht heimlich in einen netzgespeisten verwandeln.
 | Sättigungs-Gate | Pass 1 + Pass 2 | Überspringen, wenn `rem < max(power_w, nominal) * commit_h` |
 | **Gate-Topup** | `_quantised_hours`, `GATE_TOPUP_MIN_WH = 50.0` | Nur mit `gate_stop_capable` (= Charge-Enable-Entity konfiguriert): ein einziger finaler Kandidat unter Quantumsgröße, damit die Last nicht dauerhaft unter Ziel-SOC parkt (das „Stall-Band"). Legitim, weil G1s dwell-freier Ziel-Stopp exakt `rem` liefert. |
 | Tageslicht-Regel | Pass 2 | Keine Null-PV-Slots, kein Spill in die Nacht |
-| Priorität | Reihenfolge in `config.loads` | „Lieber den Fossibot laden als den Entfeuchter betreiben, wenn die Wahl besteht" |
+| Priorität | Reihenfolge in `config.loads` | Außerhalb einer Kaskade entscheidet die konfigurierte Reihenfolge. Innerhalb einer Kaskade steht die direkte Endlast vor zusätzlichem Laden der Mitglieder, weil der Speicherweg zusätzliche Wandlungsverluste verursacht. |
 
 Das `final top-up to target`-Label im `why`-String erscheint genau dann, wenn
 `commit_h < min_runtime_min/60 - _EPS` **und** es kein Seamless-Trim war.

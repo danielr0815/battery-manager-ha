@@ -1351,6 +1351,37 @@ class CascadeManager:
             )
         return schedule
 
+    @staticmethod
+    def _root_per_day_kwh(
+        plan: Any,
+        slots: tuple[HourSlot, ...],
+    ) -> dict[str, Any]:
+        """Split a cascade's Root-boundary plan like an ordinary load lane."""
+        by_day: dict[str, float] = {}
+        order: list[str] = []
+        if plan is not None:
+            for slot, flow in zip(slots, plan.flows, strict=False):
+                root_wh = max(0.0, float(flow.root_input_wh))
+                if root_wh <= 0.0:
+                    continue
+                day = slot.start.date().isoformat()
+                if day not in by_day:
+                    by_day[day] = 0.0
+                    order.append(day)
+                by_day[day] += root_wh
+        daily = [{"date": day, "kwh": round(by_day[day] / 1000.0, 3)} for day in order]
+        by_date = {item["date"]: item["kwh"] for item in daily}
+        anchor = slots[0].start.date() if slots else None
+        today = anchor.isoformat() if anchor is not None else None
+        tomorrow = (
+            (anchor + timedelta(days=1)).isoformat() if anchor is not None else None
+        )
+        return {
+            "today_kwh": by_date.get(today, 0.0),
+            "tomorrow_kwh": by_date.get(tomorrow, 0.0),
+            "daily": daily,
+        }
+
     def payload(
         self,
         result: PlanResult,
@@ -1370,6 +1401,7 @@ class CascadeManager:
             effective_plan = (
                 None if state.get("fault") or state.get("hands_off") else plan
             )
+            root_per_day = self._root_per_day_kwh(effective_plan, slots)
             topology = self._topology(cascade.cascade_id)
             actors = []
             if topology is not None:
@@ -1464,6 +1496,10 @@ class CascadeManager:
                     if effective_plan
                     else 0.0
                 ),
+                # Same heute/morgen contract as an ordinary load, but strictly
+                # at the cascade's external Root boundary.  Internal charge
+                # and Aux energy must never be added a second time.
+                **root_per_day,
                 "planned_aux_energy_kwh": (
                     round(effective_plan.planned_aux_energy_wh / 1000.0, 3)
                     if effective_plan

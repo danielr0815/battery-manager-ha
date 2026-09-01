@@ -710,8 +710,9 @@ def allocate_loads(
     GATE PARITY (F-GATE-PARITY, operator decision 2026-07-17): both load
     classes face the IDENTICAL gate set — one Z2' trade invariant, c1-rt/c2
     opportunity gates and the Z4 stress floor — so the priority order alone
-    decides who gets contested energy ("lieber den Fossibot laden, als den
-    Luftentfeuchter betreiben, wenn die Wahl besteht"). Since F-PREDRAIN-BLOCK
+    decides who gets contested energy.  The cascade wrapper deliberately
+    presents its terminal before additional member charging, while ordinary
+    loads retain their configured order. Since F-PREDRAIN-BLOCK
     (v0.19.0) pass 2 bets are ENERGY-LIMITED ONLY (incl. the daylight rule:
     they never book zero-PV night slots): continuous loads no longer bet
     slot-wise at all — pass 3 books their pre-drain as ONE contiguous block
@@ -2045,9 +2046,45 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """Plan the system, retaining an exact fast path for non-cascade setups."""
     if not config.cascades:
         return _plan_legacy(config, inputs)
-    legacy_config = replace(config, cascades=())
+
+    # F-CASCADE-STORAGE direct-use priority (operator decision 2026-08-31):
+    # a cascade member stores AC energy with conversion losses, whereas its
+    # terminal consumes the same Root surplus directly.  Treat the complete
+    # cascade as occupying the priority position of its first configured
+    # participant, but plan the terminal before additional member charging.
+    # Unrelated loads retain their relative order.  The result is restored to
+    # SystemConfig order because HA consumers deliberately zip both tuples.
+    priority_loads = list(config.loads)
+    for cascade in config.cascades:
+        participant_ids = {
+            *(member.load_id for member in cascade.members),
+            cascade.terminal_load_id,
+        }
+        first = min(
+            index
+            for index, load in enumerate(priority_loads)
+            if load.load_id in participant_ids
+        )
+        terminal_index = next(
+            index
+            for index, load in enumerate(priority_loads)
+            if load.load_id == cascade.terminal_load_id
+        )
+        terminal = priority_loads.pop(terminal_index)
+        priority_loads.insert(first, terminal)
+    legacy_config = replace(config, loads=tuple(priority_loads), cascades=())
+    result_order = {load.load_id: index for index, load in enumerate(config.loads)}
 
     def replan(trial_inputs: PlanInputs) -> PlanResult:
-        return _plan_legacy(legacy_config, trial_inputs)
+        result = _plan_legacy(legacy_config, trial_inputs)
+        return replace(
+            result,
+            load_plans=tuple(
+                sorted(
+                    result.load_plans,
+                    key=lambda load_plan: result_order[load_plan.load_id],
+                )
+            ),
+        )
 
     return augment_cascade_plans(config, inputs, replan(inputs), replan)
