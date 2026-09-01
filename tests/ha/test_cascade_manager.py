@@ -21,6 +21,7 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_OUTPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
     CONF_LOAD_OUTPUT_SWITCH,
+    CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_SOC_ENTITY,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
@@ -51,7 +52,16 @@ class _States:
                 last_reported=now,
             ),
             "sensor.output_power": SimpleNamespace(
-                state="300", attributes={}, last_updated=now
+                state="300",
+                attributes={},
+                last_updated=now,
+                last_reported=now,
+            ),
+            "sensor.input_power": SimpleNamespace(
+                state="0",
+                attributes={},
+                last_updated=now,
+                last_reported=now,
             ),
         }
 
@@ -73,6 +83,7 @@ class _Coordinator:
             CONF_LOAD_CHARGE_ENABLE: "switch.gate",
             CONF_LOAD_OUTPUT_SWITCH: "switch.output",
             CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.output_power",
+            CONF_LOAD_POWER_ENTITY: "sensor.input_power",
         }
         if shared:
             storage_data[CONF_LOAD_OUTPUT_ACTOR_MODE] = ACTOR_MODE_SHARED
@@ -318,6 +329,56 @@ async def test_sleeping_member_wakes_before_terminal_is_energised() -> None:
         ("switch.leaf", True),
         ("switch.input", False),
     ]
+
+
+async def test_fresh_numeric_power_telemetry_proves_member_awake() -> None:
+    """A slow unchanged SOC must not hide otherwise live Fossibot telemetry."""
+    now = datetime(2026, 9, 1, 7, 48)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    states = (SurplusLoadState("b1", soc_percent=85), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _aux_plan(now), states, now)
+    assert coordinator.calls == [("switch.input", True)]
+
+    # Live incident: total-input resumed publishing after Root-ON while SOC's
+    # own last_reported remained on its slower cadence.
+    _publish_soc(
+        coordinator,
+        "sensor.input_power",
+        "0",
+        now + timedelta(seconds=8),
+    )
+    await manager._apply_one(
+        "chain", _aux_plan(now), states, now + timedelta(seconds=10)
+    )
+
+    assert ("switch.output", True) in coordinator.calls
+    assert manager._state("chain")["phase"] == "proving"
+
+
+async def test_aux_wake_retry_survives_refreshes_before_episode_day_exists() -> None:
+    """A timed-out wake waits 15 minutes instead of cycling Root each refresh."""
+    now = datetime(2026, 9, 1, 7, 48)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=85), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _aux_plan(now), live, now)
+    await manager._apply_one("chain", _aux_plan(now), live, now + timedelta(seconds=61))
+    assert state["phase"] == "idle"
+    assert state["retry_used"] is True
+    retry_at = state["retry_at"]
+    coordinator.calls.clear()
+
+    await manager._apply_one("chain", _aux_plan(now), live, now + timedelta(seconds=70))
+
+    assert state["retry_used"] is True
+    assert state["retry_at"] == retry_at
+    assert coordinator.calls == []
 
 
 async def test_root_passthrough_and_safe_off_order() -> None:
@@ -1049,6 +1110,12 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "hands_off": True,
             "retry_at": now.isoformat(),
             "aux_today_wh": 125.0,
+            "wake_mode": "aux",
+            "wake_member_index": 0,
+            "wake_telemetry_reported_at": now.isoformat(),
+            "wake_deadline": (now + timedelta(minutes=1)).isoformat(),
+            "wake_evidence_entity": "sensor.input_power",
+            "wake_evidence_at": (now + timedelta(seconds=8)).isoformat(),
         }
     )
     runtime = manager.runtime_state("chain")
@@ -1092,6 +1159,12 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     ]
     assert payload["terminal_name"] == "Leaf"
     assert payload["assumed_state_actors"] == ["switch.input"]
+    assert payload["wake_mode"] == "aux"
+    assert payload["wake_member_index"] == 0
+    assert payload["wake_baseline_at"] == now.isoformat()
+    assert payload["wake_deadline"] == (now + timedelta(minutes=1)).isoformat()
+    assert payload["wake_evidence_entity"] == "sensor.input_power"
+    assert payload["wake_evidence_at"] == (now + timedelta(seconds=8)).isoformat()
     assert payload["schedule"] == []
     state["fault"] = None
     state["hands_off"] = False

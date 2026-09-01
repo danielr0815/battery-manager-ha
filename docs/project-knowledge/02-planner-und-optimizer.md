@@ -582,6 +582,7 @@ einen akzeptierten Lauf nicht heimlich in einen netzgespeisten verwandeln.
 | **Gate-Topup** | `_quantised_hours`, `GATE_TOPUP_MIN_WH = 50.0` | Nur mit `gate_stop_capable` (= Charge-Enable-Entity konfiguriert): ein einziger finaler Kandidat unter Quantumsgröße, damit die Last nicht dauerhaft unter Ziel-SOC parkt (das „Stall-Band"). Legitim, weil G1s dwell-freier Ziel-Stopp exakt `rem` liefert. |
 | Tageslicht-Regel | Pass 2 | Keine Null-PV-Slots, kein Spill in die Nacht |
 | Priorität | Reihenfolge in `config.loads` | Außerhalb einer Kaskade entscheidet die konfigurierte Reihenfolge. Innerhalb einer Kaskade steht die direkte Endlast vor zusätzlichem Laden der Mitglieder, weil der Speicherweg zusätzliche Wandlungsverluste verursacht. |
+| Kaskaden-PV-only | internes `direct_surplus_only_load_ids` | Kaskadenmitglieder dürfen nur laden, wenn jeder belegte Slotabschnitt vollständig durch dessen aktuellen Restexport gedeckt ist. Batterie-Toleranz, Pass 2 und At-Max-Topup bleiben für sie gesperrt; normale Lasten und die Kaskaden-Endlast ändern sich nicht. |
 
 Das `final top-up to target`-Label im `why`-String erscheint genau dann, wenn
 `commit_h < min_runtime_min/60 - _EPS` **und** es kein Seamless-Trim war.

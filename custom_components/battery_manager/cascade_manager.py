@@ -29,6 +29,7 @@ from .const import (
     CONF_LOAD_OUTPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
     CONF_LOAD_OUTPUT_SWITCH,
+    CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_RECOVERY_SOC,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_WAKE_TIMEOUT_S,
@@ -76,6 +77,7 @@ class CascadeManager:
         state.setdefault("hands_off", False)
         state.setdefault("retry_used", False)
         state.setdefault("retry_at", None)
+        state.setdefault("retry_day", None)
         state.setdefault("aux_today_wh", 0.0)
         return state
 
@@ -222,15 +224,35 @@ class CascadeManager:
                 return False
         return True
 
-    def _member_soc_reported_at(self, data: dict[str, Any]) -> datetime | None:
-        """Return the latest SOC publication, including unchanged values."""
-        entity_id = data.get(CONF_LOAD_SOC_ENTITY)
-        entity_state = (
-            self.coordinator.hass.states.get(entity_id) if entity_id else None
-        )
-        if entity_state is None:
-            return None
-        return getattr(entity_state, "last_reported", entity_state.last_updated)
+    def _member_telemetry_reported_at(
+        self, data: dict[str, Any]
+    ) -> tuple[datetime | None, str | None]:
+        """Return the newest numeric publication proving the member is awake.
+
+        The live F2400-B incident on 2026-09-01 showed that its configured
+        input/output power entities resumed publishing well before the SOC
+        entity's roughly 32-second cadence.  All three values originate from
+        the same power station, so any fresh numeric publication after upstream
+        power arrived proves that the device can receive its AC-output command.
+        """
+        newest: tuple[datetime, str] | None = None
+        for key in (
+            CONF_LOAD_SOC_ENTITY,
+            CONF_LOAD_POWER_ENTITY,
+            CONF_LOAD_OUTPUT_POWER_ENTITY,
+        ):
+            entity_id = data.get(key)
+            if not entity_id or self.coordinator._read_float(entity_id) is None:
+                continue
+            entity_state = self.coordinator.hass.states.get(entity_id)
+            if entity_state is None:
+                continue
+            reported_at = getattr(
+                entity_state, "last_reported", entity_state.last_updated
+            )
+            if newest is None or reported_at > newest[0]:
+                newest = (reported_at, entity_id)
+        return newest if newest is not None else (None, None)
 
     def _wait_for_member_wake(
         self,
@@ -248,8 +270,10 @@ class CascadeManager:
         state["phase"] = "waking_members"
         state["wake_mode"] = mode
         state["wake_member_index"] = member_index
-        state["wake_soc_reported_at"] = baseline.isoformat() if baseline else None
+        state["wake_telemetry_reported_at"] = baseline.isoformat() if baseline else None
         state["wake_deadline"] = (now + timedelta(seconds=timeout_s)).isoformat()
+        state.pop("wake_evidence_entity", None)
+        state.pop("wake_evidence_at", None)
 
     def _member_woke(self, cascade_id: str, topology: dict[str, Any]) -> bool:
         """Require a new numeric SOC publication after upstream power arrived."""
@@ -258,27 +282,37 @@ class CascadeManager:
         if not 0 <= index < len(topology["members"]):
             return False
         _load_id, data = topology["members"][index]
-        entity_id = data.get(CONF_LOAD_SOC_ENTITY)
-        if not entity_id or self.coordinator._read_float(entity_id) is None:
-            return False
-        reported_at = self._member_soc_reported_at(data)
+        reported_at, evidence_entity = self._member_telemetry_reported_at(data)
         if reported_at is None:
             return False
-        baseline_value = state.get("wake_soc_reported_at")
+        # Accept an in-flight wake persisted by v0.31-v0.33 as well.  The old
+        # field stored the same HA publication timestamp, only SOC-specific.
+        baseline_value = state.get("wake_telemetry_reported_at") or state.get(
+            "wake_soc_reported_at"
+        )
         if not baseline_value:
+            state["wake_evidence_entity"] = evidence_entity
+            state["wake_evidence_at"] = reported_at.isoformat()
             return True
         try:
-            return reported_at > datetime.fromisoformat(baseline_value)
-        except ValueError:
+            woke = reported_at > datetime.fromisoformat(baseline_value)
+        except TypeError, ValueError:
             return False
+        if woke:
+            state["wake_evidence_entity"] = evidence_entity
+            state["wake_evidence_at"] = reported_at.isoformat()
+        return woke
 
     def _clear_member_wake(self, cascade_id: str) -> None:
         state = self._state(cascade_id)
         for key in (
             "wake_mode",
             "wake_member_index",
+            "wake_telemetry_reported_at",
             "wake_soc_reported_at",
             "wake_deadline",
+            "wake_evidence_entity",
+            "wake_evidence_at",
         ):
             state.pop(key, None)
 
@@ -608,7 +642,7 @@ class CascadeManager:
             ):
                 return False
         root_data = topology["members"][0][1]
-        baseline = self._member_soc_reported_at(root_data)
+        baseline = self._member_telemetry_reported_at(root_data)[0]
         if not await self._actor(
             cascade_id,
             root_data.get(CONF_LOAD_CONTROL_SWITCH),
@@ -697,7 +731,9 @@ class CascadeManager:
         root = topology["members"][0][1]
         root_actor = root.get(CONF_LOAD_CONTROL_SWITCH)
         root_was_on = bool(root_actor and self.coordinator._entity_is_on(root_actor))
-        baseline = self._member_soc_reported_at(root) if not root_was_on else None
+        baseline = (
+            self._member_telemetry_reported_at(root)[0] if not root_was_on else None
+        )
         if not await self._actor(
             cascade_id,
             root_actor,
@@ -728,9 +764,9 @@ class CascadeManager:
             ):
                 return False
         if baseline is None:
-            baseline = self._member_soc_reported_at(
+            baseline = self._member_telemetry_reported_at(
                 topology["members"][first_missing][1]
-            )
+            )[0]
         self._wait_for_member_wake(
             cascade_id, topology, first_missing, baseline, now, "root"
         )
@@ -781,7 +817,9 @@ class CascadeManager:
         if index < output_count:
             next_index = index + 1
             next_baseline = (
-                self._member_soc_reported_at(topology["members"][next_index][1])
+                self._member_telemetry_reported_at(topology["members"][next_index][1])[
+                    0
+                ]
                 if next_index < wake_count
                 else None
             )
@@ -913,9 +951,10 @@ class CascadeManager:
                 # episode until the members have reached 50 % again.
                 state["episode_day"] = day
                 state["phase"] = "recovering"
-        if state.get("episode_day") != day:
+        if state.get("retry_day") != day:
             state["retry_used"] = False
             state["retry_at"] = None
+            state["retry_day"] = day
         topology = self._topology(cascade_id)
         if topology is None:
             await self.async_safe_off(cascade_id, "invalid topology")
@@ -1489,6 +1528,16 @@ class CascadeManager:
                 "hands_off": bool(state["hands_off"]),
                 "assumed_state_actors": assumed_state_actors,
                 "retry_at": state["retry_at"],
+                # Keep an in-flight wake inspectable from the Root
+                # recommendation/diagnostics.  The 2026-09-01 incident could
+                # otherwise only be reconstructed from service-call events.
+                "wake_mode": state.get("wake_mode"),
+                "wake_member_index": state.get("wake_member_index"),
+                "wake_baseline_at": state.get("wake_telemetry_reported_at")
+                or state.get("wake_soc_reported_at"),
+                "wake_deadline": state.get("wake_deadline"),
+                "wake_evidence_entity": state.get("wake_evidence_entity"),
+                "wake_evidence_at": state.get("wake_evidence_at"),
                 "aggregate_soc_percent": plan.aggregate_soc_percent if plan else None,
                 "aggregate_soc_stale": plan.aggregate_soc_stale if plan else False,
                 "planned_root_energy_kwh": (

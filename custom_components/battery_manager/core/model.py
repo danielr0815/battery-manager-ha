@@ -187,8 +187,10 @@ class SurplusLoadState:
     # normal planning power in the same cycle.
     saturated_power_w: float | None = None
     # Cascade planning may provisionally use a persisted SOC, but execution
-    # must distinguish it from a genuinely fresh device observation.  Neutral
-    # defaults preserve every legacy constructor and code path.
+    # must distinguish it from a genuinely fresh device observation.  The HA
+    # boundary normalizes this to the same naive-local clock as PlanInputs.now;
+    # the pure core therefore never mixes aware UTC and naive slot timestamps.
+    # Neutral defaults preserve every legacy constructor and code path.
     soc_observed_at: datetime | None = None
     soc_source: Literal["live", "cache", "missing"] = "live"
 

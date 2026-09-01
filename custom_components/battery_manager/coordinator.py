@@ -3328,9 +3328,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
                     saturated_power_w=saturated_power_w,
                     soc_observed_at=(
-                        now
+                        # Core planning uses naive local slot timestamps.  A
+                        # restored cache timestamp is UTC-aware; passing it
+                        # through unchanged caused `_usable_soc` to subtract an
+                        # aware value from `PlanInputs.now` and abort the first
+                        # post-restart plan.  Normalize both live and cached
+                        # observations at this HA/core boundary.
+                        dt_util.as_local(now).replace(tzinfo=None)
                         if live_soc is not None
-                        else dt_util.parse_datetime(cached.get("ts"))
+                        else (
+                            dt_util.as_local(cached_at).replace(tzinfo=None)
+                            if (cached_at := dt_util.parse_datetime(cached.get("ts")))
+                            is not None
+                            else None
+                        )
                         if soc is not None and cached is not None
                         else None
                     ),
@@ -6118,6 +6129,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if now is None:
             now = dt_util.now()
         async with self._switch_lock:
+            # F-CASCADE-STORAGE live incident 2026-09-01: a generic action
+            # queued before the cascade pass repeatedly switched B1's Root
+            # input OFF while CascadeManager switched it back ON.  Filtering
+            # while the action list is built is insufficient because ownership
+            # can change before this detached task acquires the actor lock.
+            # Re-check at the final mutation boundary so a cascade always has
+            # exactly one actor owner.
+            cascade_managed = self.cascade_manager.managed_load_ids()
             for action in actions:
                 # Tolerate the legacy 4-tuple (no planned run) so any caller
                 # that does not carry a sub-hour run just gets no deadline. The
@@ -6134,6 +6153,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else ("plan slot" if activate else "plan off")
                 )
                 bypass_guards = bool(action[7]) if len(action) > 7 else False
+                if subentry_id in cascade_managed:
+                    _LOGGER.info(
+                        "Dropping queued generic switch action for cascade-managed"
+                        " load %s",
+                        subentry_id,
+                    )
+                    continue
                 plug = data[CONF_LOAD_CONTROL_SWITCH]
                 enable = data.get(CONF_LOAD_CHARGE_ENABLE)
                 subentry = self.entry.subentries.get(subentry_id)

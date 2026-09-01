@@ -1,18 +1,20 @@
 # Cascade storage design
 
 Status: Implementierungsdesign zu [F-CASCADE-STORAGE](F-CASCADE-STORAGE.md),
-aktualisiert für v0.30.0.
+aktualisiert für v0.34.0.
 
 ## Schichten und Verantwortungen
 
 `core/model.py` definiert ausschließlich frozen Dataclasses. `core/cascade.py`
 legt die Kaskadenplanung um den bestehenden Allokator: Der Legacy-Plan wird
-zuerst unverändert erzeugt. Ein Aux-Kandidat darf ausschließlich Energie
-oberhalb der Kaskaden-Entladeziele nutzen und verändert den gemeinsamen
+zuerst mit der Kaskaden-Prioritätsordnung und einem internen PV-only-Set für
+alle Mitglieder erzeugt. Ein Aux-Kandidat nutzt Energie bis zum normalen Ziel
+beziehungsweise exportgedeckt bis zum Floor und verändert den gemeinsamen
 Storage-SOC-Vektor; ein Replan verteilt spätere Root-Energie weiterhin nach der
-normalen globalen Priorität. Eine Wiederaufladung am selben Tag ist keine
-Vorbedingung. Der Pfad `SystemConfig.cascades == ()` ruft ausschließlich den
-alten Planner auf und ist der Kompatibilitätsanker für vorhandene Goldens.
+globalen Priorität, darf Kaskadenmitglieder aber ausschließlich aus
+gleichzeitigem Restexport laden. Der Pfad `SystemConfig.cascades == ()` ruft
+ausschließlich den alten Planner auf und ist der Kompatibilitätsanker für
+vorhandene Goldens.
 
 ```text
 HA states → PlanInputs + persisted CascadeRuntimeState
@@ -44,7 +46,18 @@ Deshalb besitzt der Kaskadenlayer keinen separaten Root-Surplus-Allocator. Er
 nutzt das Ergebnis und denselben Replan des bestehenden Optimizers. Die
 Kaskaden-Endlast darf unabhängig von heutigem PV Energie oberhalb der
 Mitgliedsziele nutzen; Root-Ladung bis zum höheren Ladeziel bleibt danach eine
-normale priorisierte Überschusslast.
+priorisierte Überschusslast mit einer zusätzlichen harten Quellengrenze. Für
+jeden belegten Ladeabschnitt muss der Restexport desselben Slots dessen Energie
+vollständig decken. Damit können weder `battery_tolerance` noch Pass 2 oder ein
+At-Max-Topup die Hausbatterie zum Laden eines Fossibots heranziehen. Diese
+Einschränkung gilt nicht für die terminale Endlast.
+
+Ein neuer Aux-Block wird innerhalb des heute noch elektrisch freien Fensters
+an den spätestmöglichen Slotrand geschoben. Das ist die feinste ohne separaten
+Executor-Timer sicher ausführbare Auflösung; der partielle Slot 0 und die
+Rolling Replans lassen den Start bei Annäherung weiter konvergieren. Eine
+laufende oder im Leistungsnachweis befindliche Episode bleibt zwingend in Slot
+0 und wird nie nachträglich verschoben.
 
 ## Executor-Zustände
 

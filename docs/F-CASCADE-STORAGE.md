@@ -1,6 +1,6 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
-Status: normative Feature-Spezifikation, aktualisiert für v0.33.0.
+Status: normative Feature-Spezifikation, aktualisiert für v0.34.0.
 
 ## Ziel und Geltungsbereich
 
@@ -47,11 +47,16 @@ innerhalb dieses Verbunds hat die direkte Endlast Vorrang vor zusätzlichem
 Laden der Mitglieder. Damit wird nutzbare Energie nicht verlustbehaftet in
 einem Fossibot zwischengespeichert, während die Endlast pausiert. Nur der nach
 der Endlast verbleibende Root-Überschuss lädt Mitglieder über ihr
-Kaskaden-Entladeziel hinaus. Innerhalb einer terminalen Kaskadenlast gilt die
-Quellenfolge Root/PV, B1 … Bn und danach Root aus der Hausbatterie unter den
-bestehenden No-Import-, Batterieanteil-, Stress- und G4-Gates. Ein neuer
-Aux-Start ist nur zulässig, wenn die vollständige Mindestlaufzeit erbracht
-werden kann. Dabei gelten zwei Reservestufen:
+Kaskaden-Entladeziel hinaus. Für die Speichereingänge gilt dabei eine strengere
+Quellenregel als für normale Überschusslasten: Jeder physische Ladeabschnitt
+muss vollständig durch den im selben Slot nach höher priorisierten Lasten noch
+verbleibenden Root-Export gedeckt sein. `battery_tolerance`, At-Max-Topup aus
+der Hausbatterie und die prognosegestützte Pass-2-Vorladung sind für
+Kaskadenmitglieder gesperrt. Die terminale Endlast behält dagegen die
+allgemeinen Strategien und darf unter deren No-Import-, Stress- und G4-Gates
+auch aus der Hausbatterie versorgt werden. Ein neuer Aux-Start ist nur
+zulässig, wenn die vollständige Mindestlaufzeit erbracht werden kann. Dabei
+gelten zwei Reservestufen:
 
 1. Energie oberhalb des Kaskaden-Entladeziels (standardmäßig 50 %) ist
    bedingungslos verfügbar. Dafür ist weder ein heutiger PV-Slot noch eine
@@ -70,13 +75,18 @@ Slot-Ziel in nachgewiesenen Quellenfenstern fortsetzen. Auch ein beim Rolling
 Replan bereits unter 50 % liegendes Mitglied darf deshalb weiter bis zu dem
 exportgedeckten Ziel laufen; ohne verbleibenden Exportnachweis wird der
 zusätzliche Tiefenhub sofort zurückgezogen. Späteres Laden bis zum höheren
-normalen Ladeziel nutzt weiterhin die normale globale Priorität.
+normalen Ladeziel nutzt weiterhin die globale Priorität und die beschriebene
+PV-only-Quellengrenze.
 
 Die Vorschau reserviert nicht nur die minimale Startlaufzeit, sondern die
-gesamte ab jetzt zusammenhängend mögliche Aux-Episode bis zu den Entladezielen
-aller Mitglieder. Nur Slot 0 ist unmittelbar ausführbar; spätere Segmente
-werden bei jedem Rolling Replan erneut bewertet. Der folgende globale Replan
-sieht dadurch die vollständige zusätzliche Ladekapazität, bevor unvermeidbarer
+gesamte zusammenhängend mögliche Aux-Episode bis zu den Entladezielen aller
+Mitglieder. Eine neue Episode beginnt am spätestmöglichen Forecast-Slot, von
+dem diese Energie noch vor dem ersten Root-/PV-Slot beziehungsweise vor dem
+lokalen Tagesende verbraucht werden kann. Nur Slot 0 ist unmittelbar
+ausführbar; ein künftiger Start bleibt Vorschau und wird bei jedem Rolling
+Replan neu bewertet. Sobald der späte Start in Slot 0 rückt oder die Episode
+bereits läuft, bleibt sie dort verankert. Der folgende globale Replan sieht
+trotzdem die vollständige zusätzliche Ladekapazität, bevor unvermeidbarer
 Überschuss für die vorzeitige Einspeisung gebucht wird. Ein später neu
 gebuchter Root-/PV-Slot beendet die Aux-Vorschau vorher: Root-Aufnahme und
 Aux-Entladung dürfen weder real noch in der Prognose gleichzeitig auftreten.
@@ -107,8 +117,8 @@ Der Erst-Wake ist geordnet:
 
 1. alle Charge-Gates AUS;
 2. Root-Eingang AN;
-3. eine neue numerische SOC-Publikation von B1 nach Root-AN abwarten;
-4. B1-Output AN, danach eine neue SOC-Publikation von B2 abwarten und dieses
+3. eine neue numerische Geräte-Telemetrie von B1 nach Root-AN abwarten;
+4. B1-Output AN, danach eine neue Geräte-Telemetrie von B2 abwarten und dieses
    Muster bis zum letzten für den Pfad benötigten Mitglied fortsetzen;
 5. erst nach dessen Aufwachnachweis Charge-Gate bzw. optionalen Endlast-Aktor
    AN;
@@ -116,14 +126,19 @@ Der Erst-Wake ist geordnet:
 7. gewählte Quelle mit zwei ausschließlich nach der Umschaltung beobachteten,
    mindestens 60 Sekunden getrennten Leistungssamples bestätigen.
 
-Ein bereits vor dem Zuschalten vorhandener numerischer SOC gilt dabei nur als
-Baseline und niemals als Aufwachnachweis. Maßgeblich ist eine nach der jeweils
-vorgelagerten Schalthandlung erfolgte HA-Publikation; auch ein unveränderter
-SOC zählt über `last_reported`. Jede Stufe besitzt ihr eigenes konfiguriertes
-Wake-Timeout. Dadurch erhält insbesondere B2 seinen AC-Ausgangsbefehl erst,
-nachdem B2 durch B1 tatsächlich versorgt wurde und wieder Telemetrie sendet.
+Eine bereits vor dem Zuschalten vorhandene numerische Meldung gilt dabei nur
+als Baseline und niemals als Aufwachnachweis. Maßgeblich ist eine nach der
+jeweils vorgelagerten Schalthandlung erfolgte HA-Publikation von SOC,
+Eingangsleistung oder Ausgangsleistung; auch ein unveränderter Zahlenwert zählt
+über `last_reported`. Dadurch bleibt der Nachweis an konfigurierte Telemetrie
+des konkreten Speichers gebunden, wartet aber nicht unnötig auf den langsamsten
+Sensor. Jede Stufe besitzt ihr eigenes konfiguriertes Wake-Timeout. Dadurch
+erhält insbesondere B2 seinen AC-Ausgangsbefehl erst, nachdem B2 durch B1
+tatsächlich versorgt wurde und wieder Telemetrie sendet.
 
-Der vollständige Wake erhält genau einen Retry nach 15 Minuten. Ein
+Der vollständige Wake erhält genau einen Retry nach 15 Minuten; dieser
+Retry-Zustand bleibt auch vor dem Setzen des erst nach Leistungsnachweis
+verfügbaren `episode_day` über Rolling Refreshes erhalten. Ein
 erfolgreicher Service-Aufruf bestätigt einen `assumed_state`-Actor logisch; die
 fehlende physische Rückmeldung ist als Diagnoseeinschränkung zu verstehen.
 Bei Actoren mit echter Zustandsrückmeldung gilt der Service-Aufruf allein
@@ -158,7 +173,10 @@ Kaskaden. Weil der unabhängige Load-Executor Kaskadenmitglieder nie besitzt,
 delegiert der Coordinator beide Zwangsstopps an den `CascadeManager`; dieser
 führt dieselbe vollständige geordnete Safe-OFF-Sequenz dwell-frei aus. Eine
 bewusst deaktivierte oder bereits hands-off übergebene Kaskade wird dabei nicht
-berührt. Ein unterbrochener Aux-Lauf gilt für den lokalen Tag als beendet.
+berührt. Zusätzlich wird der Kaskadenbesitz unter dem finalen Aktor-Lock erneut
+geprüft: Ein noch vor der Kaskadenübernahme eingereihter generischer
+Schaltauftrag darf keinen Kaskadenaktor mehr verändern. Ein unterbrochener
+Aux-Lauf gilt für den lokalen Tag als beendet.
 
 `proving` wird dem Core als bereits laufende Episode gemeldet: Während des
 Leistungsnachweises fließt schon Endlastenergie, daher darf ein Rolling Replan
@@ -213,7 +231,9 @@ Tagesvertrag normaler Lastspuren. Root-/Surplusbilanz wird ausschließlich am
 Root-Messpunkt gebucht; interne Zähler werden nie summiert. Topologie,
 Automation, Episode, Quelle, Zielunterschreitungen, Claims, Fault/Hands-off,
 Retry, SOC-Cache und Tagesenergie werden persistiert; Powerfenster und
-HA-Offline-Zeit nicht.
+HA-Offline-Zeit nicht. Ein laufender Wake veröffentlicht Modus, Member-Index,
+Baseline, Deadline und die zuletzt akzeptierte Telemetrie-Evidenz für die
+Live-Diagnose.
 
 Die Executor-Phasen `recovering` und `complete` sind bei aktiver Automation
 reine Diagnosen, keine Actor-Freigabe. Auch in diesen Phasen wird Safe-OFF

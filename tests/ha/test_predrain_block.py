@@ -13,6 +13,7 @@ when the block disappears (dwell rules apply).
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from homeassistant.util import dt as dt_util
 from test_stale_failsafe import (
     ENABLE,
@@ -24,6 +25,7 @@ from test_stale_failsafe import (
 )
 
 from custom_components.battery_manager.const import (
+    DOMAIN,
     PREDRAIN_BLOCK_STABLE_MINUTES,
     PREDRAIN_BLOCK_STABLE_PLANS,
 )
@@ -32,6 +34,16 @@ from custom_components.battery_manager.core.model import HourSlot, LoadPlan
 # 04:00 local — pre-dawn, so a big clip day makes the block cover slot 0.
 EARLY = dt_util.as_local(datetime(2026, 7, 19, 2, 0, tzinfo=UTC))
 MIDDAY = dt_util.as_local(datetime(2026, 7, 19, 11, 0, tzinfo=UTC))
+
+
+@pytest.fixture(autouse=True)
+async def _unload_entries_after_test(hass):
+    """Cancel coordinator timers armed by integration-level planning tests."""
+    yield
+    await hass.async_block_till_done()
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
 
 
 def _prime_block_scenario(hass, coordinator, entry, pinned=EARLY):

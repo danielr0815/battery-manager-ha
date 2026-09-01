@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-01
+
+### Changed
+- Neue Kaskaden-Entladeepisoden werden auf den spätestmöglichen sicheren
+  Forecast-Slot vor Root/PV-Übernahme oder Tagesende verschoben. Erst wenn der
+  Rolling-Horizont diesen Start erreicht, wird Slot 0 ausführbar; laufende
+  Episoden bleiben ohne Unterbrechung verankert.
+- Kaskadenspeicher laden nur noch aus gleichzeitig verbleibendem
+  Solarüberschuss. Batterie-Toleranz, Hausbatterie-Topup und prognosegestützte
+  Vorladung sind für ihre Eingänge gesperrt; die Endlast behält die allgemeinen
+  Batteriemanager-Strategien.
+
+### Fixed
+- Der Kaskaden-Wake akzeptiert jetzt eine nach dem Einschalten frisch
+  veröffentlichte numerische SOC-, Eingangsleistungs- oder
+  Ausgangsleistungs-Telemetrie. Ein bereits wacher Fossibot bleibt dadurch
+  nicht mehr wegen der langsameren SOC-Publikation ohne AC-Ausgang.
+- Bereits eingereihte generische Lastaktionen prüfen direkt vor dem Schalten
+  erneut den Kaskadenbesitz. Sie können die Root-Steckdose daher nicht mehr
+  parallel zum Kaskadenmanager aus- und wieder einschalten.
+- Der einmalige 15-Minuten-Wake-Retry bleibt vor dem Leistungsnachweis über
+  Rolling Refreshes erhalten, statt die Root-Steckdose in jedem Lauf neu zu
+  takten.
+- Persistierte UTC-Zeitstempel des Speicher-SOC werden an der HA/Core-Grenze
+  in naive lokale Planzeit umgewandelt; der erste Plan nach einem Neustart
+  scheitert dadurch nicht mehr an gemischten Zeitzonen.
+
 ## [0.33.1] - 2026-09-01
 
 ### Changed

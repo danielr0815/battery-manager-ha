@@ -194,6 +194,28 @@ async def test_policy_always_off_switches_foreign_plug_off(hass):
     assert ("turn_off", PLUG) in calls
 
 
+async def test_queued_generic_action_is_dropped_after_cascade_takes_ownership(
+    hass, monkeypatch
+):
+    """The final actor boundary rechecks ownership of detached actions."""
+    calls: list[tuple[str, str]] = []
+    coordinator, sub_id, data = await _setup(
+        hass, calls, policy=INPUT_OFF_POLICY_ALWAYS
+    )
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    calls.clear()
+    monkeypatch.setattr(
+        coordinator.cascade_manager, "managed_load_ids", lambda: {sub_id}
+    )
+
+    await coordinator._execute_load_switching([(sub_id, data, False, True)])
+
+    assert calls == []
+    assert hass.states.get(PLUG).state == "on"
+    assert hass.states.get(ENABLE).state == "on"
+
+
 async def test_failed_plug_off_keeps_ownership_for_later_cleanup(hass):
     """Review #3: if the plug turn-off fails, ownership/charging state must NOT
     be cleared — otherwise the plug is stranded ON while BM records it as
@@ -398,6 +420,26 @@ async def test_soc_cache_survives_sleeping_device(hass):
     hass.states.async_set(FOSSI_SOC, "62.5")
     states = coordinator._get_load_states()
     assert states[0].soc_percent == 62.5
+
+
+async def test_cached_soc_timestamp_is_normalized_for_naive_core_clock(hass):
+    """An aware persisted UTC timestamp cannot break the first restart plan."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(hass, [])
+    cached_at = dt_util.utcnow() - timedelta(hours=1)
+    coordinator._load_soc_cache[sub_id] = {
+        "entity_id": FOSSI_SOC,
+        "soc": 40.0,
+        "ts": cached_at.isoformat(),
+    }
+    hass.states.async_set(FOSSI_SOC, "unavailable")
+
+    state = coordinator._get_load_states(dt_util.now())[0]
+
+    assert state.soc_source == "cache"
+    assert state.soc_observed_at is not None
+    assert state.soc_observed_at.tzinfo is None
 
 
 async def test_switch_dwell_survives_restart(hass):

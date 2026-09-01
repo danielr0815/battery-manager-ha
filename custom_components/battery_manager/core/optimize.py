@@ -671,6 +671,7 @@ def allocate_loads(
     *,
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
+    direct_surplus_only_load_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
     """Assign surplus loads to hours in three passes.
 
@@ -700,6 +701,11 @@ def allocate_loads(
     supplies their fixed schedules here.  Every candidate and gate then sees
     the same winter-support trajectory as the published forecast; automatic
     emergency escalation remains a later planning stage.
+
+    ``direct_surplus_only_load_ids`` is an internal cascade boundary: those
+    storage inputs may consume only residual export in every covered slot.
+    They cannot use the normal battery-tolerance or pass-2 preconditioning
+    paths, so charging a cascade member never drains the house battery.
 
     Loads run in parallel when surplus suffices; config order = priority when
     it does not (order = the configured per-load priority since v0.8.2, default
@@ -1000,12 +1006,26 @@ def allocate_loads(
                     for j, take in covered[1:]
                 )
                 battery_share = max(0.0, power_wh - surplus_cov) / power_wh
+                direct_surplus_only = load.load_id in direct_surplus_only_load_ids
+                if direct_surplus_only and any(
+                    current.flows[j].grid_export_wh * (take / inputs.slots[j].duration)
+                    + _EPS
+                    < power_w * take
+                    for j, take in covered
+                ):
+                    # F-CASCADE-STORAGE: aggregate coverage is insufficient.
+                    # Every physical run fragment must be backed by export in
+                    # that same slot; a later surplus must not conceal an
+                    # earlier draw from the house battery.
+                    continue
                 # F-PEAK-FILL R2: an energy-limited load with budget left may
                 # pass the soft gate even over tolerance when the slot proves
                 # to be an at-max top-up (checked after the re-simulation).
                 at_max_topup = False
                 if battery_share > load.battery_tolerance + _EPS:
-                    if not (load.energy_limited and rem is not None and rem > _EPS):
+                    if direct_surplus_only or not (
+                        load.energy_limited and rem is not None and rem > _EPS
+                    ):
                         continue
                     at_max_topup = True
                 # Hard conditions via full re-simulation (Z2''/R2/R5/Z3).
@@ -1093,7 +1113,11 @@ def allocate_loads(
             # candidate below), not from the same-day PV window end.
             for load in config.loads:
                 state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-                if not state.available or schedules[load.load_id][i]:
+                if (
+                    load.load_id in direct_surplus_only_load_ids
+                    or not state.available
+                    or schedules[load.load_id][i]
+                ):
                     continue
                 # F-PREDRAIN-BLOCK: pass-2 bets are energy-limited only —
                 # continuous loads get their pre-drain as ONE block in
@@ -1811,7 +1835,12 @@ def support_escalation(
     return tuple(dc24), tuple(dc48), traj
 
 
-def _plan_legacy(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
+def _plan_legacy(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    *,
+    direct_surplus_only_load_ids: frozenset[str] = frozenset(),
+) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2).
 
     The `stressed_min_soc_percent` diagnostic (§3.5, v2) reports the WINDOWED
@@ -1860,6 +1889,7 @@ def _plan_legacy(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         allocation_base,
         dc24_schedule=forced_dc24,
         dc48_schedule=forced_dc48,
+        direct_surplus_only_load_ids=direct_surplus_only_load_ids,
     )
     # `alloc_traj` is the real allocation trajectory, including any manually
     # forced support.  R4 deliberately retains its established WITHOUT-support
@@ -2074,9 +2104,16 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         priority_loads.insert(first, terminal)
     legacy_config = replace(config, loads=tuple(priority_loads), cascades=())
     result_order = {load.load_id: index for index, load in enumerate(config.loads)}
+    cascade_member_ids = frozenset(
+        member.load_id for cascade in config.cascades for member in cascade.members
+    )
 
     def replan(trial_inputs: PlanInputs) -> PlanResult:
-        result = _plan_legacy(legacy_config, trial_inputs)
+        result = _plan_legacy(
+            legacy_config,
+            trial_inputs,
+            direct_surplus_only_load_ids=cascade_member_ids,
+        )
         return replace(
             result,
             load_plans=tuple(

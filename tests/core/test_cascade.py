@@ -87,13 +87,25 @@ def _system(
     return config, PlanInputs(NOW, 5.0, _slots(0, 1000, 1000, 1000, 1000, 1000), states)
 
 
-def test_one_storage_aux_episode_targets_without_recovery_deadline() -> None:
+def _aux_segments(cascade) -> list[tuple[int, cascade_core.CascadeSourceSegment]]:
+    return [
+        (index, segment)
+        for index, flow in enumerate(cascade.flows)
+        for segment in flow.segments
+        if segment.source == "aux"
+    ]
+
+
+def test_one_storage_aux_episode_starts_latest_and_targets_without_recovery() -> None:
     config, inputs = _system()
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
+    aux = _aux_segments(cascade)
 
     assert cascade.planned_aux_energy_wh == 800.0
-    assert cascade.flows[0].segments[0].source_load_id == "b1"
+    assert aux[0][0] == 3
+    assert aux[0][1].source_load_id == "b1"
+    assert not cascade.schedule[0]
     assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) == 50.0
     assert all(
         not (
@@ -103,13 +115,7 @@ def test_one_storage_aux_episode_targets_without_recovery_deadline() -> None:
         for flow in cascade.flows
     )
     assert cascade.recovery_deadline is None
-    assert cascade.proposed_runtime == CascadeRuntimeState(
-        cascade_id="chain",
-        episode_day=NOW.date(),
-        phase="running",
-        active_source_id="b1",
-        recovery_pending_ids=(),
-    )
+    assert cascade.proposed_runtime == CascadeRuntimeState(cascade_id="chain")
     assert all(item.managed_by_cascade for item in result.load_plans)
     assert result.trajectory.flows[0].extra_ac_wh == 0.0
 
@@ -133,13 +139,15 @@ def test_two_storage_skip_caps_efficiency_and_cache() -> None:
     )
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
+    aux = _aux_segments(cascade)
 
     assert cascade.planned_aux_energy_wh == pytest.approx(629.5081967213115)
-    assert cascade.flows[0].segments[0].source_load_id == "b2"
+    assert aux[0][0] == 3
+    assert aux[0][1].source_load_id == "b2"
     assert cascade.aggregate_soc_percent == pytest.approx(76.0)
     assert cascade.aggregate_soc_stale
     assert cascade.provisional_live_soc_required
-    assert cascade.flows[0].member_flows[1].battery_discharge_wh > 150.0
+    assert cascade.flows[aux[0][0]].member_flows[1].battery_discharge_wh > 150.0
 
 
 @pytest.mark.parametrize(
@@ -218,7 +226,10 @@ def test_terminal_direct_use_precedes_additional_member_charging() -> None:
     # SystemConfig order for Coordinator consumers that zip both contracts.
     assert [item.load_id for item in result.load_plans] == ["b1", "leaf"]
     assert plans["leaf"].planned_energy_wh == 300.0
-    assert plans["b1"].planned_energy_wh == 150.0
+    # After direct terminal use each slot retains only 135 Wh of export.  That
+    # cannot supply the member's smallest physical 150-Wh run without drawing
+    # from the house battery, so PV-only cascade charging correctly waits.
+    assert plans["b1"].planned_energy_wh == 0.0
     assert plans["leaf"].planned_energy_wh > plans["b1"].planned_energy_wh
     assert (
         sum(
@@ -229,6 +240,55 @@ def test_terminal_direct_use_precedes_additional_member_charging() -> None:
         )
         == 300.0
     )
+
+
+def test_cascade_member_charging_never_uses_house_battery_tolerance() -> None:
+    """The ordinary load tolerance must not leak into storage charging."""
+    config, inputs = _system(socs=(50.0,))
+    config = replace(
+        config,
+        loads=(replace(config.loads[0], battery_tolerance=1.0), config.loads[1]),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(100.0, 100.0, 100.0),
+        load_states=(
+            SurplusLoadState("b1", soc_percent=50.0),
+            SurplusLoadState("leaf", available=False),
+        ),
+    )
+
+    legacy = plan(replace(config, cascades=()), inputs)
+    cascade = plan(config, inputs)
+
+    assert legacy.load_plans[0].planned_energy_wh > 0.0
+    assert cascade.load_plans[0].planned_energy_wh == 0.0
+    assert all(
+        flow.member_flows[0].soc_end_percent == 50.0
+        for flow in cascade.cascade_plans[0].flows
+    )
+
+
+def test_cascade_member_charges_when_same_slot_export_covers_full_run() -> None:
+    """PV-only is a source rule, not a blanket charging prohibition."""
+    config, inputs = _system(socs=(50.0,))
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(315.0),
+        load_states=(
+            SurplusLoadState("b1", soc_percent=50.0),
+            SurplusLoadState("leaf", available=False),
+        ),
+    )
+
+    result = plan(config, inputs)
+
+    assert result.load_plans[0].planned_energy_wh == 300.0
+    assert result.trajectory.flows[0].grid_export_wh == 0.0
+    assert result.trajectory.flows[0].soc_end_percent == 95.0
+    assert result.cascade_plans[0].flows[0].member_flows[0].soc_end_percent == 65.0
 
 
 @pytest.mark.parametrize(
@@ -383,7 +443,7 @@ def test_aux_headroom_is_used_before_avoidable_early_feedin() -> None:
     )
     inputs = replace(
         inputs,
-        slots=_slots(0, 0, 0, 0, 0, 0, 1200, 1200, 1200, 1200, 1200),
+        slots=_slots(0, 0, 0, 0, 0, 0, 1300, 1300, 1300, 1300, 1300),
     )
 
     without_cascade = plan(replace(config, cascades=()), inputs)
@@ -436,7 +496,23 @@ def test_export_backed_predrain_may_cross_target_but_recovers_next_day() -> None
     assert reached["b2"] is not None
     assert reached["b2"].date() == date(2026, 8, 24)
     assert cascade.proposed_runtime is not None
-    assert cascade.proposed_runtime.recovery_pending_ids == ("b1", "b2")
+    assert cascade.proposed_runtime == CascadeRuntimeState(cascade_id="chain")
+
+    # When the rolling horizon reaches the late start, the same forecast
+    # becomes executable and publishes the persisted recovery promise.
+    start_index = next(
+        index for index, flow in enumerate(cascade.flows) if flow.aux_terminal_wh
+    )
+    rolling_slots = tuple(
+        replace(slot, index=index) for index, slot in enumerate(slots[start_index:])
+    )
+    rolling = plan(
+        config,
+        replace(inputs, now=rolling_slots[0].start, slots=rolling_slots),
+    ).cascade_plans[0]
+    assert rolling.schedule[0]
+    assert rolling.proposed_runtime is not None
+    assert rolling.proposed_runtime.recovery_pending_ids == ("b1", "b2")
 
 
 def test_export_backed_predrain_can_continue_when_already_below_target() -> None:
@@ -596,7 +672,8 @@ def test_cascade_golden_snapshot() -> None:
     snapshot = {
         "b1_to_b2": {
             "aux_wh": aux.planned_aux_energy_wh,
-            "first_source": aux.flows[0].segments[0].source_load_id,
+            "first_source": _aux_segments(aux)[0][1].source_load_id,
+            "first_slot": _aux_segments(aux)[0][0],
             "root_wh": aux.planned_root_energy_wh,
         },
         "direct_pv": {
@@ -626,7 +703,8 @@ def test_cascade_golden_snapshot() -> None:
         "skip": {
             "aggregate_soc": skip.aggregate_soc_percent,
             "aux_wh": skip.planned_aux_energy_wh,
-            "first_source": skip.flows[0].segments[0].source_load_id,
+            "first_source": _aux_segments(skip)[0][1].source_load_id,
+            "first_slot": _aux_segments(skip)[0][0],
             "root_wh": skip.planned_root_energy_wh,
             "stale": skip.aggregate_soc_stale,
         },
