@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from homeassistant.config_entries import ConfigSubentry
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager import cascade_manager as cascade_manager_module
 from custom_components.battery_manager.binary_sensor import CascadeRecommendationSensor
@@ -24,9 +27,11 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_SOC_ENTITY,
+    DOMAIN,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
+from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
 from custom_components.battery_manager.core import (
     CascadeMember,
     CascadeMemberFlow,
@@ -34,7 +39,11 @@ from custom_components.battery_manager.core import (
     CascadeSourceSegment,
     HourSlot,
     LoadCascade,
+    PlanInputs,
+    SurplusLoad,
     SurplusLoadState,
+    SystemConfig,
+    plan,
 )
 from custom_components.battery_manager.sensor import CascadeModeSensor
 from custom_components.battery_manager.switch import CascadeAutomationSwitch
@@ -129,7 +138,7 @@ class _Coordinator:
         state = self.hass.states.get(entity_id)
         return state is not None and state.state == "on"
 
-    async def _switch_entity(self, entity_id, turn_on):
+    async def _switch_entity(self, entity_id, turn_on, *, actor_owner=None):
         self.calls.append((entity_id, turn_on))
         self.hass.states.values[entity_id].state = "on" if turn_on else "off"
         return True
@@ -139,6 +148,140 @@ class _Coordinator:
 
     def load_bm_enabled(self, _load_id):
         return True
+
+
+class _LiveIncidentCoordinator(_Coordinator):
+    """Exact actor topology from the 2026-09-01 Bad cascade incident."""
+
+    def __init__(self, now: datetime) -> None:
+        super().__init__(now, shared_input=True)
+        self.entry.subentries = {
+            "b1": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                data={
+                    CONF_LOAD_SOC_ENTITY: "sensor.b1_soc",
+                    CONF_LOAD_CONTROL_SWITCH: "switch.bad_waschmaschine",
+                    CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b1",
+                    CONF_LOAD_INPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                    CONF_LOAD_OUTPUT_SWITCH: "switch.b1_output",
+                    CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                    CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b1_output_power",
+                    CONF_LOAD_POWER_ENTITY: "sensor.b1_input_power",
+                    "wake_timeout_s": 60,
+                },
+                title="Fossibot F2400-B",
+            ),
+            # B2's input is deliberately transparent: the live subentry has no
+            # control_switch_entity.  It only contributes its output actor.
+            "b2": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                data={
+                    CONF_LOAD_SOC_ENTITY: "sensor.b2_soc",
+                    CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b2",
+                    CONF_LOAD_OUTPUT_SWITCH: "switch.b2_output",
+                    CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                    CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b2_output_power",
+                    CONF_LOAD_POWER_ENTITY: "sensor.b2_input_power",
+                    "wake_timeout_s": 60,
+                },
+                title="Fossibot F2400-B2",
+            ),
+            # The terminal dehumidifier is recommendation-only in production.
+            "leaf": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                data={},
+                title="Entfeuchter Keller",
+            ),
+            "chain": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_CASCADE,
+                data={
+                    CONF_CASCADE_MEMBER_IDS: ["b1", "b2"],
+                    CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+                },
+                title="Bad",
+            ),
+        }
+        for entity_id in (
+            "switch.bad_waschmaschine",
+            "input_boolean.charge_b1",
+            "switch.b1_output",
+            "input_boolean.charge_b2",
+            "switch.b2_output",
+        ):
+            self.hass.states.values[entity_id] = SimpleNamespace(
+                state="off", attributes={}
+            )
+        for entity_id, value in (
+            ("sensor.b1_soc", "89.4"),
+            ("sensor.b1_input_power", "0"),
+            ("sensor.b1_output_power", "0"),
+            ("sensor.b2_soc", "89.1"),
+            ("sensor.b2_input_power", "0"),
+            ("sensor.b2_output_power", "0"),
+        ):
+            self.hass.states.values[entity_id] = SimpleNamespace(
+                state=value,
+                attributes={},
+                last_updated=now,
+                last_reported=now,
+            )
+
+
+def _live_incident_plan(
+    manager: CascadeManager, now: datetime
+) -> tuple[SystemConfig, PlanInputs, object]:
+    """Plan the live 89.25 % two-Fossibot topology at 22:29."""
+    config = SystemConfig(
+        loads=(
+            SurplusLoad(
+                "b1", "Fossibot F2400-B", 250, 0.05, 5, 5, True, 2000, 90, True
+            ),
+            SurplusLoad(
+                "b2", "Fossibot F2400-B2", 499, 0.05, 5, 5, True, 2000, 90, True
+            ),
+            SurplusLoad("leaf", "Entfeuchter Keller", 426.1, 0.15, 15, 15, False),
+        ),
+        cascades=(
+            LoadCascade(
+                "chain",
+                (
+                    CascadeMember("b1", 20, 50, 0.9, 0.9, output_overhead_w=20),
+                    CascadeMember("b2", 20, 50, 1, 1, output_overhead_w=20),
+                ),
+                "leaf",
+            ),
+        ),
+    )
+    # The first slot is the 31-minute remainder at 22:29; two complete night
+    # slots follow.  This recreates the live immediate 0.6-kWh Aux booking.
+    slots = tuple(
+        HourSlot(
+            index,
+            now + timedelta(hours=index),
+            31 / 60 if index == 0 else 1.0,
+            (22 + index) % 24,
+            0.0,
+            0.0,
+            0.0,
+        )
+        for index in range(3)
+    )
+    inputs = PlanInputs(
+        now,
+        75.0,
+        slots,
+        (
+            SurplusLoadState(
+                "b1", soc_percent=89.4, soc_source="live", soc_observed_at=now
+            ),
+            SurplusLoadState(
+                "b2", soc_percent=89.1, soc_source="live", soc_observed_at=now
+            ),
+            SurplusLoadState("leaf"),
+        ),
+        cascade_runtime_states=(manager.runtime_state("chain"),),
+    )
+    return config, inputs, plan(config, inputs)
 
 
 def _aux_plan(
@@ -456,6 +599,302 @@ async def test_aux_member_wake_is_atomic_across_a_withdrawn_rolling_plan() -> No
     assert state["phase"] == "proving"
 
 
+async def test_live_two_fossibot_wake_does_not_cycle_root_every_ten_seconds() -> None:
+    """Reproduce the live 22:29 topology and five rolling refreshes 1:1.
+
+    B1 is the sole Root actor, B2 has a transparent input, the terminal has no
+    actor, both SOCs stay at their pre-wake publication, and every refresh uses
+    a fresh plan with the manager's current runtime state.  The observed bug
+    issued Root OFF then ON on each cycle while it remained in waking_members.
+    """
+    started = datetime(2026, 9, 1, 22, 29, 34)
+    coordinator = _LiveIncidentCoordinator(started)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+
+    config, inputs, result = _live_incident_plan(manager, started)
+    cascade = result.cascade_plans[0]
+    assert cascade.aggregate_soc_percent == pytest.approx(89.25)
+    assert cascade.planned_aux_energy_wh == pytest.approx(646.513, abs=1.0)
+    assert cascade.flows[0].segments[0].source_load_id == "b1"
+
+    await manager.async_apply(config, result, inputs.load_states, started)
+    assert coordinator.calls == [("switch.bad_waschmaschine", True)]
+    assert state["phase"] == "waking_members"
+    wake_deadline = state["wake_deadline"]
+
+    coordinator.calls.clear()
+    for elapsed_s in (10, 20, 30, 40, 50):
+        cycle_now = started + timedelta(seconds=elapsed_s)
+        rolling_inputs = replace(
+            inputs,
+            now=cycle_now,
+            cascade_runtime_states=(manager.runtime_state("chain"),),
+        )
+        rolling_result = plan(config, rolling_inputs)
+        await manager.async_apply(
+            config, rolling_result, rolling_inputs.load_states, cycle_now
+        )
+
+    assert coordinator.calls == []
+    assert coordinator.hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert coordinator.hass.states.get("switch.b1_output").state == "off"
+    assert state["phase"] == "waking_members"
+    assert state["wake_deadline"] == wake_deadline
+
+
+async def test_live_two_fossibot_full_switch_pass_has_one_root_owner(hass) -> None:
+    """Run the exact plan through generic switching and CascadeManager.
+
+    This includes the production order in `_async_update_data`: first the
+    detached generic load pass is queued, then the cascade pass applies its
+    actor transition.  B1 carries stale historical plug ownership as it did on
+    the live system, so any ownership leak would reproduce Root OFF -> ON.
+    """
+    started = datetime(2026, 9, 1, 22, 29, 34)
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="Battery Manager", version=2)
+    entry.add_to_hass(hass)
+
+    subentries = (
+        ConfigSubentry(
+            data={
+                CONF_LOAD_SOC_ENTITY: "sensor.b1_soc",
+                CONF_LOAD_CONTROL_SWITCH: "switch.bad_waschmaschine",
+                CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b1",
+                CONF_LOAD_INPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                CONF_LOAD_OUTPUT_SWITCH: "switch.b1_output",
+                CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b1_output_power",
+                CONF_LOAD_POWER_ENTITY: "sensor.b1_input_power",
+                "power_w": 250,
+                "energy_limited": True,
+                "capacity_wh": 2000,
+                "target_soc_percent": 90,
+                "min_runtime_min": 5,
+                "min_off_min": 5,
+                "input_off_policy": "auto",
+                "wake_timeout_s": 60,
+            },
+            subentry_id="b1",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Fossibot F2400-B",
+            unique_id=None,
+        ),
+        ConfigSubentry(
+            data={
+                CONF_LOAD_SOC_ENTITY: "sensor.b2_soc",
+                CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b2",
+                CONF_LOAD_OUTPUT_SWITCH: "switch.b2_output",
+                CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b2_output_power",
+                CONF_LOAD_POWER_ENTITY: "sensor.b2_input_power",
+                "power_w": 499,
+                "energy_limited": True,
+                "capacity_wh": 2000,
+                "target_soc_percent": 90,
+                "min_runtime_min": 5,
+                "min_off_min": 5,
+                "wake_timeout_s": 60,
+            },
+            subentry_id="b2",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Fossibot F2400-B2",
+            unique_id=None,
+        ),
+        ConfigSubentry(
+            data={
+                "power_w": 426.1,
+                "energy_limited": False,
+                "min_runtime_min": 15,
+                "min_off_min": 15,
+            },
+            subentry_id="leaf",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Entfeuchter Keller",
+            unique_id=None,
+        ),
+        ConfigSubentry(
+            data={
+                CONF_CASCADE_MEMBER_IDS: ["b1", "b2"],
+                CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+            },
+            subentry_id="chain",
+            subentry_type=SUBENTRY_TYPE_CASCADE,
+            title="Bad",
+            unique_id=None,
+        ),
+    )
+    for subentry in subentries:
+        assert hass.config_entries.async_add_subentry(entry, subentry)
+
+    calls: list[tuple[str, str]] = []
+
+    async def turn_on(call) -> None:
+        entity_id = call.data["entity_id"]
+        calls.append(("turn_on", entity_id))
+        hass.states.async_set(entity_id, "on")
+
+    async def turn_off(call) -> None:
+        entity_id = call.data["entity_id"]
+        calls.append(("turn_off", entity_id))
+        hass.states.async_set(entity_id, "off")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
+    for entity_id in (
+        "switch.bad_waschmaschine",
+        "input_boolean.charge_b1",
+        "switch.b1_output",
+        "input_boolean.charge_b2",
+        "switch.b2_output",
+    ):
+        hass.states.async_set(entity_id, "off")
+    for entity_id, value in (
+        ("sensor.b1_soc", "89.4"),
+        ("sensor.b1_input_power", "0"),
+        ("sensor.b1_output_power", "0"),
+        ("sensor.b2_soc", "89.1"),
+        ("sensor.b2_input_power", "0"),
+        ("sensor.b2_output_power", "0"),
+    ):
+        hass.states.async_set(entity_id, value)
+
+    coordinator = BatteryManagerCoordinator(hass, entry)
+    # This test drives refreshes explicitly; do not let actor feedback schedule
+    # an additional real `_async_update_data` with intentionally absent inputs.
+    coordinator._listeners_setup = False
+    if coordinator._unsub_state_listener is not None:
+        coordinator._unsub_state_listener()
+        coordinator._unsub_state_listener = None
+    coordinator._cascade_state["chain"] = {"enabled": True, "phase": "idle"}
+    coordinator._load_plug_owned["b1"] = True
+
+    config, inputs, result = _live_incident_plan(coordinator.cascade_manager, started)
+    durations = tuple(slot.duration for slot in inputs.slots)
+    await coordinator._apply_load_switching(result, started, durations)
+    await hass.async_block_till_done(wait_background_tasks=False)
+    await coordinator.cascade_manager.async_apply(
+        config, result, inputs.load_states, started
+    )
+
+    assert calls == [("turn_on", "switch.bad_waschmaschine")]
+    calls.clear()
+    for elapsed_s in (10, 20, 30, 40, 50):
+        cycle_now = started + timedelta(seconds=elapsed_s)
+        rolling_inputs = replace(
+            inputs,
+            now=cycle_now,
+            cascade_runtime_states=(
+                coordinator.cascade_manager.runtime_state("chain"),
+            ),
+        )
+        rolling_result = plan(config, rolling_inputs)
+        await coordinator._apply_load_switching(
+            rolling_result,
+            cycle_now,
+            tuple(slot.duration for slot in rolling_inputs.slots),
+        )
+        await hass.async_block_till_done(wait_background_tasks=False)
+        await coordinator.cascade_manager.async_apply(
+            config, rolling_result, rolling_inputs.load_states, cycle_now
+        )
+
+    assert calls == []
+    assert hass.states.get("switch.bad_waschmaschine").state == "on"
+
+
+async def test_live_root_rejects_generic_off_at_entity_boundary(
+    hass, monkeypatch
+) -> None:
+    """Reproduce the live Root OFF even if the load-ID guard is missed.
+
+    The 2026-09-01 trace proves that a generic OFF reached the shared B1 Root
+    while the cascade remained in ``waking_members``.  Recreate that exact
+    last-boundary condition: the earlier load-ID ownership filter misses the
+    action, but the physical entity is still a configured cascade actor.  The
+    service boundary itself must remain fail-closed.
+    """
+    now = datetime(2026, 9, 1, 22, 29, 44)
+    coordinator = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(coordinator)
+    coordinator.cascade_manager = manager
+    coordinator._switch_lock = asyncio.Lock()
+    coordinator._cascade_actor_block_warned = set()
+    coordinator._floor_guard_active = False
+    coordinator._stale_shed_active = False
+    coordinator._load_plug_owned = {"b1": True}
+    coordinator._load_charging_active = {"b1": True}
+    coordinator._last_load_switch = {}
+    coordinator._load_last_off = {}
+    coordinator._load_latch_hold = set()
+    coordinator._load_run_deadline = {}
+    coordinator._load_power_calibration_release = set()
+    coordinator._load_off_timer = {}
+    coordinator.data = None
+    coordinator.async_update_listeners = lambda: None
+    coordinator._cancel_off_timer = lambda _load_id: None
+
+    async def switch_entity(entity_id: str, turn_on: bool) -> bool:
+        return await BatteryManagerCoordinator._switch_entity(
+            coordinator, entity_id, turn_on
+        )
+
+    coordinator._switch_entity = switch_entity
+    coordinator.hass.services = hass.services
+    hass.states.async_set("switch.bad_waschmaschine", "on")
+    hass.states.async_set("input_boolean.charge_b1", "off")
+    # Keep the lightweight topology and real HA states in sync for the central
+    # ownership check and for the service handler below.
+    coordinator.hass.states = hass.states
+    calls: list[tuple[str, str]] = []
+
+    async def turn_on(call) -> None:
+        entity_id = call.data["entity_id"]
+        calls.append(("turn_on", entity_id))
+        hass.states.async_set(entity_id, "on")
+
+    async def turn_off(call) -> None:
+        entity_id = call.data["entity_id"]
+        calls.append(("turn_off", entity_id))
+        hass.states.async_set(entity_id, "off")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "waking_members",
+            "source": "b1",
+            "wake_mode": "aux",
+        }
+    )
+    # Model the observed ownership leak before v0.34.3: the generic executor's
+    # load-ID guard misses B1 even though its actor entity remains in topology.
+    monkeypatch.setattr(manager, "managed_load_ids", lambda: set())
+
+    await BatteryManagerCoordinator._execute_load_switching(
+        coordinator,
+        [
+            (
+                "b1",
+                coordinator.entry.subentries["b1"].data,
+                False,
+                True,
+                0.0,
+                False,
+                "plan off",
+            )
+        ],
+        now,
+    )
+
+    assert calls == []
+    assert hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert state["phase"] == "waking_members"
+
+
 async def test_root_passthrough_and_safe_off_order() -> None:
     now = datetime(2026, 8, 23, 6)
     coordinator = _Coordinator(now)
@@ -498,7 +937,9 @@ async def test_root_start_waits_for_delayed_output_confirmation() -> None:
     state = manager._state("chain")
     state["enabled"] = True
 
-    async def delayed_switch(entity_id: str, turn_on: bool) -> bool:
+    async def delayed_switch(
+        entity_id: str, turn_on: bool, *, actor_owner: str | None = None
+    ) -> bool:
         coordinator.calls.append((entity_id, turn_on))
         entity = coordinator.hass.states.values[entity_id]
         if entity_id == "switch.output" and turn_on:
@@ -678,7 +1119,9 @@ async def test_actor_requires_confirmation_before_claiming() -> None:
     coordinator.entry.subentries["chain"].data[CONF_CASCADE_ACTOR_TIMEOUT_S] = 0.01
     manager = CascadeManager(coordinator)
 
-    async def unconfirmed_switch(entity_id: str, turn_on: bool) -> bool:
+    async def unconfirmed_switch(
+        entity_id: str, turn_on: bool, *, actor_owner: str | None = None
+    ) -> bool:
         coordinator.calls.append((entity_id, turn_on))
         return True
 
@@ -706,7 +1149,9 @@ async def test_root_fault_exposes_failed_actor_detail(
         cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
     )
 
-    async def fail_gate(entity_id: str, turn_on: bool) -> bool:
+    async def fail_gate(
+        entity_id: str, turn_on: bool, *, actor_owner: str | None = None
+    ) -> bool:
         coordinator.calls.append((entity_id, turn_on))
         if entity_id == "switch.gate" and turn_on:
             return False

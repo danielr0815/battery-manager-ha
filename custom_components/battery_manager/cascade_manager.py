@@ -267,6 +267,43 @@ class CascadeManager:
                 managed.add(terminal_id)
         return managed
 
+    def actor_owner(self, entity_id: str) -> str | None:
+        """Return the cascade that exclusively owns a physical actor entity.
+
+        Load IDs are the planner-facing ownership key, but every mutation
+        ultimately targets an entity.  Resolving ownership again at that final
+        boundary closes a second class of race: even if a stale/detached
+        generic action loses its load-ID classification, it still cannot touch
+        Root, a member gate/output, or the terminal actor.
+        """
+        for cascade_id, subentry in self.coordinator.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            topology = self._topology(cascade_id)
+            if topology is None:
+                # Invalid cascades remain fail-closed for their stored member
+                # references.  Reserve every actor we can still resolve.
+                actor_data = []
+                for load_id in subentry.data.get(CONF_CASCADE_MEMBER_IDS, []):
+                    load = self.coordinator.entry.subentries.get(load_id)
+                    if load is not None:
+                        actor_data.append(load.data)
+                terminal_id = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+                terminal = self.coordinator.entry.subentries.get(terminal_id)
+                if terminal is not None:
+                    actor_data.append(terminal.data)
+            else:
+                actor_data = [data for _load_id, data in topology["members"]]
+                actor_data.append(topology["terminal"])
+            for data in actor_data:
+                if entity_id in (
+                    data.get(CONF_LOAD_CONTROL_SWITCH),
+                    data.get(CONF_LOAD_CHARGE_ENABLE),
+                    data.get(CONF_LOAD_OUTPUT_SWITCH),
+                ):
+                    return cascade_id
+        return None
+
     def planning_blocked_load_ids(self) -> set[str]:
         """Loads whose cascade cannot currently execute its published plan."""
         blocked: set[str] = set()
@@ -745,7 +782,9 @@ class CascadeManager:
         )
         try:
             async with asyncio.timeout(timeout_s):
-                ok = await self.coordinator._switch_entity(entity_id, turn_on)
+                ok = await self.coordinator._switch_entity(
+                    entity_id, turn_on, actor_owner=cascade_id
+                )
                 if not ok:
                     state["last_actor_error"] = {
                         "entity_id": entity_id,

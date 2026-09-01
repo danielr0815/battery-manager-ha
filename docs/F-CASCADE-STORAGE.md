@@ -175,8 +175,13 @@ führt dieselbe vollständige geordnete Safe-OFF-Sequenz dwell-frei aus. Eine
 bewusst deaktivierte oder bereits hands-off übergebene Kaskade wird dabei nicht
 berührt. Zusätzlich wird der Kaskadenbesitz unter dem finalen Aktor-Lock erneut
 geprüft: Ein noch vor der Kaskadenübernahme eingereihter generischer
-Schaltauftrag darf keinen Kaskadenaktor mehr verändern. Ein unterbrochener
-Aux-Lauf gilt für den lokalen Tag als beendet.
+Schaltauftrag darf keinen Kaskadenaktor mehr verändern. Als zweite, von der
+Load-ID unabhängige Sicherung löst jede physische Entity-Schaltung ihren
+Kaskadenbesitzer unmittelbar an der Service-Grenze neu auf. Nur ein Aufruf des
+zuständigen `CascadeManager` mit passender Kaskaden-ID darf Root, Charge-Gates,
+Outputs oder den Endlast-Aktor erreichen; alle generischen, Support-,
+Kalibrierungs- und veralteten Hintergrundpfade bleiben fail-closed. Ein
+unterbrochener Aux-Lauf gilt für den lokalen Tag als beendet.
 
 Ein akzeptierter Aux-Wake und `proving` werden dem Core als bereits laufende
 Episode gemeldet. Sonst verschiebt die Latest-First-Planung den eben begonnenen

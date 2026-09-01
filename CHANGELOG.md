@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.3] - 2026-09-01
+
+### Fixed
+- Kaskadenbesitz wird jetzt zusätzlich unmittelbar an der physischen
+  Entity-Service-Grenze durchgesetzt. Selbst wenn ein verspäteter generischer
+  Lastauftrag seinen früheren Load-ID-Filter verfehlt, kann er weder Root noch
+  Charge-Gates, Outputs oder den Endlast-Aktor einer Kaskade schalten. Ein
+  Regressionstest bildet die Live-Topologie mit zwei Fossibots, transparentem
+  B2-Eingang, aktiver `waking_members`-Phase und dem beobachteten generischen
+  Root-AUS-Pfad vollständig nach.
+
 ## [0.34.2] - 2026-09-01
 
 ### Fixed

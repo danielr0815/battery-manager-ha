@@ -465,6 +465,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._switch_lock = asyncio.Lock()
         self._switch_task: asyncio.Task | None = None
         self._assumed_state_warned = False
+        # Entity-boundary ownership violations indicate an internal stale or
+        # misrouted actor path.  Remember each shape so a ten-second retry loop
+        # stays visible once without flooding the HA log indefinitely.
+        self._cascade_actor_block_warned: set[tuple[str, str | None, bool]] = set()
 
         # Appliance run tracking and load power smoothing
         self._appliance_started: dict[str, datetime] = {}
@@ -5189,7 +5193,40 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     entity_id,
                 )
 
-    async def _switch_entity(self, entity_id: str, turn_on: bool) -> bool:
+    async def _switch_entity(
+        self,
+        entity_id: str,
+        turn_on: bool,
+        *,
+        actor_owner: str | None = None,
+    ) -> bool:
+        # F-CASCADE-STORAGE final physical boundary (live 2026-09-01): the
+        # normal load-ID guards correctly exclude cascade members, yet the
+        # live Root still received a generic OFF every ~10 s while the cascade
+        # remained in waking_members.  Entity ownership is the invariant that
+        # matters physically.  Re-resolve it immediately before every service
+        # call, and require CascadeManager to present the owning cascade ID.
+        # This also fail-closes support/calibration/stale detached paths if a
+        # future refactor accidentally points them at a cascade actor.
+        reserved_by = self.cascade_manager.actor_owner(entity_id)
+        if reserved_by is not None and actor_owner != reserved_by:
+            warning_key = (entity_id, actor_owner, turn_on)
+            if warning_key not in self._cascade_actor_block_warned:
+                self._cascade_actor_block_warned.add(warning_key)
+                _LOGGER.warning(
+                    "Blocked non-owner switch request for cascade actor %s"
+                    " (owner=%s, caller=%s, requested=%s)",
+                    entity_id,
+                    reserved_by,
+                    actor_owner or "generic",
+                    "ON" if turn_on else "OFF",
+                )
+            else:
+                _LOGGER.debug(
+                    "Repeated non-owner request remains blocked for cascade actor %s",
+                    entity_id,
+                )
+            return False
         service = "turn_on" if turn_on else "turn_off"
         try:
             # homeassistant.* works across domains (switch, input_boolean, ...)

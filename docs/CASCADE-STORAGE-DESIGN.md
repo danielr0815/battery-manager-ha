@@ -98,6 +98,13 @@ unabhängig davon sämtliche transiente Evidenz und beginnt als neue
 Besitzepisode. Alle drei Bedienpfade (AN, AUS, Fault-Reset) laufen unter
 demselben Per-Kaskaden-Lock wie der automatische Executor.
 
+Actor-Besitz wird nicht nur anhand der Planner-Last-ID geprüft. Unmittelbar vor
+jedem `homeassistant.turn_on`/`turn_off` wird die Ziel-Entity erneut gegen alle
+gespeicherten Kaskadentopologien aufgelöst. Kaskadenaktoren akzeptieren dort nur
+die ID ihres `CascadeManager`; ein generischer oder verspäteter Hintergrundpfad
+kann die physische Kette deshalb auch bei einem zuvor verfehlten Load-ID-Filter
+nicht verändern.
+
 Bewusstes Automation-AUS führt einmal Safe-OFF aus und gibt die Actors danach
 frei. Ein Shared-Fremdeingriff wechselt ohne spätere Rücknahme in `hands_off`.
 Faults bleiben dagegen bis zum Reset fail-closed; Automation-AN übernimmt eine
