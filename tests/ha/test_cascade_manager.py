@@ -398,6 +398,64 @@ async def test_aux_wake_retry_survives_refreshes_before_episode_day_exists() -> 
     assert coordinator.calls == []
 
 
+def test_aux_member_wake_is_reported_as_a_continuing_episode() -> None:
+    """Latest-first replans must keep an accepted Aux wake in slot zero."""
+    now = datetime(2026, 9, 1, 19, 2)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "phase": "waking_members",
+            "source": "b1",
+            "wake_mode": "aux",
+        }
+    )
+
+    runtime = manager.runtime_state("chain")
+
+    assert runtime.phase == "proving"
+    assert runtime.active_source_id == "b1"
+
+
+async def test_aux_member_wake_is_atomic_across_a_withdrawn_rolling_plan() -> None:
+    """A rolling replan cannot power-cycle Root during an accepted wake."""
+    now = datetime(2026, 9, 1, 19, 2)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=89), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _aux_plan(now), live, now)
+    wake_deadline = state["wake_deadline"]
+    coordinator.calls.clear()
+    withdrawn = SimpleNamespace(
+        flows=(CascadeSlotFlow(),),
+        recovery_deadline=None,
+    )
+
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=10))
+
+    assert coordinator.calls == []
+    assert state["phase"] == "waking_members"
+    assert state["source"] == "b1"
+    assert state["wake_deadline"] == wake_deadline
+    assert state["retry_used"] is False
+
+    # The same temporarily withdrawn plan must not prevent the already powered
+    # member from completing the bounded wake once fresh telemetry arrives.
+    _publish_soc(coordinator, "sensor.input_power", "0", now + timedelta(seconds=20))
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=20))
+
+    assert coordinator.calls == [
+        ("switch.output", True),
+        ("switch.leaf", True),
+        ("switch.input", False),
+    ]
+    assert state["phase"] == "proving"
+
+
 async def test_root_passthrough_and_safe_off_order() -> None:
     now = datetime(2026, 8, 23, 6)
     coordinator = _Coordinator(now)

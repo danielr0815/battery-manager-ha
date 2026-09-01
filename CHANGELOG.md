@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.2] - 2026-09-01
+
+### Fixed
+- Ein bereits begonnener Aux-Wake bleibt jetzt während `waking_members` im
+  Rolling Planner als laufende Episode in Slot 0 verankert und wird bis zur
+  sicheren Proof-Grenze atomar fortgesetzt. Zuvor meldete der Executor diesen
+  Zustand als `idle`; die Latest-First-Planung verschob die Episode daraufhin
+  wieder in die Zukunft und Root wurde im etwa zehnsekündigen
+  Coordinator-Takt AUS/AN geschaltet, obwohl der erste Fossibot bereits
+  aufwachte. Safety-Abbrüche und manuelle Besitzübergaben bleiben sofortig.
+
 ## [0.34.1] - 2026-09-01
 
 ### Fixed

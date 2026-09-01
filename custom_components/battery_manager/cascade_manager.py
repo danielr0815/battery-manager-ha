@@ -221,10 +221,21 @@ class CascadeManager:
         )
         if restart_source:
             phase = "proving"
-        # ``proving`` already consumes terminal energy.  Reporting it as idle
-        # made the rolling planner demand a fresh full dwell during the proof
-        # minute, so a valid marginal Aux episode could disappear before it
-        # reached ``running``.
+        if (
+            phase in ("waking", "waking_members")
+            and state.get("wake_mode") == "aux"
+            and state.get("source")
+        ):
+            # The Root-fed wake is already an accepted Aux transition.  If it
+            # is reported as idle, latest-first planning moves the episode
+            # back into the future on the very next rolling refresh.  The
+            # executor then tears Root down while the following refresh starts
+            # the same wake again (live 2026-09-01: ~10 s relay loop).
+            phase = "proving"
+        # ``waking_members`` and ``proving`` both belong to an accepted Aux
+        # episode. Reporting either as idle makes the rolling planner demand a
+        # fresh full dwell and may withdraw a valid marginal episode before it
+        # reaches ``running``.
         if phase not in ("idle", "proving", "running", "recovering", "complete"):
             phase = "idle"
         return CascadeRuntimeState(
@@ -1541,9 +1552,15 @@ class CascadeManager:
         desired_source = aux_segments[0].source_load_id if aux_segments else None
         if state.get("phase") == "waking_members":
             mode = state.get("wake_mode")
-            matching_plan = (
-                mode == "aux" and desired_source == state.get("source")
-            ) or (mode == "root" and plan.flows and plan.flows[0].root_input_wh > 0.0)
+            # An accepted Aux wake is one bounded, atomic actor transition.
+            # Rolling plans are advisory while its sleeping members publish;
+            # a transiently withdrawn/repositioned slot must not power-cycle
+            # Root. Global safety, disabled members and manual ownership were
+            # already handled above. A genuine withdrawal is applied after
+            # the wake/proof boundary by the normal ``running`` branch.
+            matching_plan = mode == "aux" or (
+                mode == "root" and plan.flows and plan.flows[0].root_input_wh > 0.0
+            )
             if matching_plan and await self._continue_member_wake(
                 cascade_id, topology, plan, now
             ):

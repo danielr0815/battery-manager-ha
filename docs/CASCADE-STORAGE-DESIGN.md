@@ -56,8 +56,11 @@ Ein neuer Aux-Block wird innerhalb des heute noch elektrisch freien Fensters
 an den spätestmöglichen Slotrand geschoben. Das ist die feinste ohne separaten
 Executor-Timer sicher ausführbare Auflösung; der partielle Slot 0 und die
 Rolling Replans lassen den Start bei Annäherung weiter konvergieren. Eine
-laufende oder im Leistungsnachweis befindliche Episode bleibt zwingend in Slot
-0 und wird nie nachträglich verschoben.
+akzeptierte, noch Mitglieder weckende, laufende oder im Leistungsnachweis
+befindliche Episode bleibt zwingend in Slot 0 und wird nie nachträglich
+verschoben. Der Executor behandelt den begonnenen Aux-Wake zusätzlich bis zur
+Proof-Grenze als atomare Transition, damit selbst ein vorübergehend
+widersprüchlicher Rolling Plan keinen Root-Schaltzyklus auslösen kann.
 
 ## Executor-Zustände
 

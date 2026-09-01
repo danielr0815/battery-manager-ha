@@ -178,9 +178,17 @@ geprüft: Ein noch vor der Kaskadenübernahme eingereihter generischer
 Schaltauftrag darf keinen Kaskadenaktor mehr verändern. Ein unterbrochener
 Aux-Lauf gilt für den lokalen Tag als beendet.
 
-`proving` wird dem Core als bereits laufende Episode gemeldet: Während des
-Leistungsnachweises fließt schon Endlastenergie, daher darf ein Rolling Replan
-nicht erneut eine vollständige Mindestlaufzeit als Startbedingung verlangen.
+Ein akzeptierter Aux-Wake und `proving` werden dem Core als bereits laufende
+Episode gemeldet. Sonst verschiebt die Latest-First-Planung den eben begonnenen
+Wake beim nächsten Rolling Replan wieder in die Zukunft und lässt den Executor
+den Root-Eingang takten. Der Wake bleibt deshalb bis zum ersten sicheren
+Proof-Grenzpunkt eine atomare, durch sein Wake-Timeout begrenzte
+Aktor-Transition. Floor-/Daten-Safety, deaktivierte Mitglieder und manuelle
+Besitzübergaben brechen weiterhin sofort ab. Während des anschließenden
+Leistungsnachweises fließt schon Endlastenergie; auch dort darf ein Rolling
+Replan nicht erneut eine vollständige Mindestlaufzeit als Startbedingung
+verlangen. Ein danach tatsächlich zurückgezogener Plan wird im normalen
+`running`-Zweig geordnet Safe-OFF geschaltet.
 
 Eine erfolgreiche bewusste Aktivierung aus vollständig bestätigtem Safe-OFF
 ist immer eine neue Besitzepisode. Alte Wake-Indizes, Deadlines, Claims,
