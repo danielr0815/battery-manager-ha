@@ -69,7 +69,10 @@ belongs in the HA layer.
    lowest-cost one (import − terminal battery value + a small export penalty).
 2. **Surplus allocation** — assign would-be-exported hours to surplus loads,
    re-simulating each assignment so it can never add grid import or breach the
-   SOC buffer (a committed-energy floor + a latest-first second pass).
+   SOC buffer (a committed-energy floor + a latest-first second pass). For a
+   cascade, the terminal is completed first; member recovery is phased before
+   top-up and retried after the terminal's continuous block so all direct-PV
+   recovery opportunities are consumed before feed-in.
 3. **Early feed-in** (`plan_feedin`, F-FEEDIN) — if enabled, pre-shift the
    day's unavoidable residual export into the morning surplus as a passthrough
    schedule (the battery is never discharged for it), with the Z4 stress as a

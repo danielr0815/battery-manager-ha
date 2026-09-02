@@ -672,6 +672,8 @@ def allocate_loads(
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
     direct_surplus_only_load_ids: frozenset[str] = frozenset(),
+    pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
+    remaining_energy_overrides: dict[str, float] | None = None,
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
     """Assign surplus loads to hours in three passes.
 
@@ -706,6 +708,14 @@ def allocate_loads(
     storage inputs may consume only residual export in every covered slot.
     They cannot use the normal battery-tolerance or pass-2 preconditioning
     paths, so charging a cascade member never drains the house battery.
+
+    ``pass1_energy_phases`` is the other internal cascade boundary.  A load ID
+    may occur more than once, with an optional AC-energy budget for that phase.
+    This lets the wrapper express every member's recovery target before member
+    top-up instead of relying on a single load-outer pass that could fill B1
+    before B2 recovered. None keeps the normal one-phase-per-load order.
+    ``remaining_energy_overrides`` makes cascade storage demand include its
+    member-specific charge efficiency.
 
     Loads run in parallel when surplus suffices; config order = priority when
     it does not (order = the configured per-load priority since v0.8.2, default
@@ -742,7 +752,12 @@ def allocate_loads(
     remaining: dict[str, float | None] = {}
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
-        remaining[load.load_id] = state.remaining_energy_wh(load)
+        remaining[load.load_id] = (
+            remaining_energy_overrides[load.load_id]
+            if remaining_energy_overrides is not None
+            and load.load_id in remaining_energy_overrides
+            else state.remaining_energy_wh(load)
+        )
 
     extra = [0.0] * n
     # Slots carrying ANY accepted booking (any load) — the set slots_serviceable
@@ -964,16 +979,33 @@ def allocate_loads(
     # trajectory's export (R8): earlier bookings — same load or a higher-
     # priority one — are already re-simulated into `current`, so the old
     # intra-slot decrement approximation is replaced by the exact value.
-    for load in config.loads:
+    loads_by_id = {load.load_id: load for load in config.loads}
+    pass1_phases = (
+        tuple((load.load_id, None) for load in config.loads)
+        if pass1_energy_phases is None
+        else pass1_energy_phases
+    )
+    for load_id, phase_budget_wh in pass1_phases:
+        load = loads_by_id[load_id]
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
         if not state.available:
+            continue
+        phase_remaining = None if phase_budget_wh is None else max(0.0, phase_budget_wh)
+        if phase_remaining is not None and phase_remaining <= _EPS:
             continue
         power_w = state.planning_power_w(load)
         for i in range(n):
             slot = inputs.slots[i]
             if schedules[load.load_id][i]:
                 continue
-            rem = remaining[load.load_id]
+            total_rem = remaining[load.load_id]
+            rem = (
+                total_rem
+                if phase_remaining is None
+                else phase_remaining
+                if total_rem is None
+                else min(total_rem, phase_remaining)
+            )
             # Try the largest quantised run first, falling back to shorter
             # min_runtime multiples so a small battery-buffered surplus can still
             # be captured (F-SUBHOUR R1-R3). The whole-slot candidate is first,
@@ -1016,7 +1048,9 @@ def allocate_loads(
                     # F-CASCADE-STORAGE: aggregate coverage is insufficient.
                     # Every physical run fragment must be backed by export in
                     # that same slot; a later surplus must not conceal an
-                    # earlier draw from the house battery.
+                    # earlier draw from the house battery.  The direct-PV
+                    # recovery retry runs only after the complete terminal
+                    # plan, below.
                     continue
                 # F-PEAK-FILL R2: an energy-limited load with budget left may
                 # pass the soft gate even over tolerance when the slot proves
@@ -1038,9 +1072,11 @@ def allocate_loads(
                     >= config.battery.soc_max_percent - AT_MAX_TOPUP_BAND_PERCENT - _EPS
                 ):
                     continue  # no at-max top-up: dip leaves the hysteresis band
-                placed_h, _placed_wh = _accept_candidate(
-                    load, 1, i, power_w, trial, covered, traj, rem
+                placed_h, placed_wh = _accept_candidate(
+                    load, 1, i, power_w, trial, covered, traj, total_rem
                 )
+                if phase_remaining is not None:
+                    phase_remaining = max(0.0, phase_remaining - placed_wh)
                 final_note = _final_note(load, commit_h, seamless)
                 reasons[load.load_id].append(
                     f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
@@ -1476,6 +1512,193 @@ def allocate_loads(
     return plans, tuple(extra), current
 
 
+def _allocate_recovery_after_continuous_loads(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    threshold: float,
+    load_plans: list[LoadPlan],
+    extra_ac: tuple[float, ...],
+    trajectory: Trajectory,
+    recovery_targets_wh: dict[str, float],
+    dc24_schedule: tuple[bool, ...] | None = None,
+    dc48_schedule: tuple[bool, ...] | None = None,
+    *,
+    allow_final_quantum_overshoot: bool = False,
+) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
+    """Retry cascade recovery after the terminal's pass-3 allocation.
+
+    Continuous terminal pre-drain is intentionally constructed in pass 3,
+    after the generic direct-surplus pass.  That higher-priority block can
+    create same-day refill/export headroom which was therefore invisible to a
+    member recovery phase in pass 1.  Without this fixed-point step the later
+    feed-in pass could book exactly that PV while both Fossibots stayed idle.
+
+    The retry is deliberately narrower than generic load allocation: direct
+    PV only, no added import, same-day export repayment, no worsened protected
+    SOC dip, and only the still-open part of each 50 % recovery target.  It
+    runs before early feed-in, so feed-in sees the true residual after every
+    higher-priority recovery opportunity.  After every member has had that
+    strict attempt, a second internal pass may close a target with complete
+    minimum-runtime quanta.  Such a quantum may cross 50 % slightly, but only
+    when all of its energy replaces same-day export.  Keeping this rounding in
+    a separate pass means rounding B1 up can never take energy with which B2
+    could still make strict progress toward 50 %.
+    """
+    if not recovery_targets_wh or not inputs.slots:
+        return load_plans, extra_ac, trajectory
+
+    loads = {load.load_id: load for load in config.loads}
+    plans = {load_plan.load_id: load_plan for load_plan in load_plans}
+    extra = list(extra_ac)
+    current = trajectory
+    protected_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
+
+    for load_id, target_wh in recovery_targets_wh.items():
+        load = loads[load_id]
+        plan = plans[load_id]
+        remaining = max(0.0, target_wh - plan.planned_energy_wh)
+        if remaining <= _EPS:
+            continue
+        state = next(
+            (state for state in inputs.load_states if state.load_id == load_id),
+            SurplusLoadState(load_id=load_id),
+        )
+        if not state.available:
+            continue
+        power_w = state.planning_power_w(load)
+        schedules = list(plan.schedule)
+        run_hours = list(plan.run_hours or (0.0,) * len(inputs.slots))
+        allocations = list(plan.allocations)
+        reasons = list(plan.reasons)
+        planned_wh = plan.planned_energy_wh
+        final_quantum_h = load.min_runtime_min / 60.0
+
+        for i, slot in enumerate(inputs.slots):
+            if remaining <= _EPS:
+                break
+            if schedules[i]:
+                continue
+            for commit_h in _quantised_hours(load, slot, remaining, power_w):
+                final_quantum = False
+                power_wh = power_w * commit_h
+                if power_wh <= _EPS:
+                    continue
+                if remaining < max(power_w, load.nominal_power_w) * commit_h:
+                    final_quantum = (
+                        allow_final_quantum_overshoot
+                        and load.energy_limited
+                        and commit_h <= final_quantum_h + _EPS
+                    )
+                    if not final_quantum:
+                        continue
+                trial_extra, covered = _spread_energy(
+                    extra, inputs.slots, i, power_w, commit_h
+                )
+                if any(schedules[j] for j, _take in covered):
+                    continue
+                if any(
+                    inputs.slots[j].pv_wh + _EPS
+                    < inputs.slots[j].ac_wh
+                    + extra[j]
+                    + power_w * take
+                    + (
+                        config.inverter.standby_power_w * inputs.slots[j].duration
+                        if current.flows[j].inverter_on
+                        else 0.0
+                    )
+                    for j, take in covered
+                ):
+                    continue
+                trial = simulate(
+                    config,
+                    inputs,
+                    threshold,
+                    extra_ac_wh=tuple(trial_extra),
+                    dc24_schedule=dc24_schedule,
+                    dc48_schedule=dc48_schedule,
+                )
+                if trial.total_import_wh > current.total_import_wh + _EPS:
+                    continue
+                if _degrades_min_soc(trial, current, protected_floor):
+                    continue
+                inverter_floor = max(
+                    config.battery.soc_min_percent,
+                    config.control.inverter_min_soc_percent,
+                )
+                if any(
+                    not _slot_serviceable(
+                        trial.flows[j], inputs.slots[j], inverter_floor
+                    )
+                    for j, _take in covered
+                ):
+                    continue
+                candidate_by_day: dict = {}
+                for j, take in covered:
+                    day = inputs.slots[j].start.date()
+                    candidate_by_day[day] = (
+                        candidate_by_day.get(day, 0.0) + power_w * take
+                    )
+                export_drop_by_day: dict = {}
+                for j, slot_j in enumerate(inputs.slots):
+                    day = slot_j.start.date()
+                    export_drop_by_day[day] = export_drop_by_day.get(day, 0.0) + (
+                        current.flows[j].grid_export_wh - trial.flows[j].grid_export_wh
+                    )
+                if any(
+                    export_drop_by_day.get(day, 0.0) + _EPS < needed_wh
+                    for day, needed_wh in candidate_by_day.items()
+                ):
+                    continue
+
+                extra = trial_extra
+                current = trial
+                placed_wh = 0.0
+                for j, take in covered:
+                    schedules[j] = True
+                    run_hours[j] = take
+                    placed_wh += power_w * take
+                planned_wh += placed_wh
+                remaining = max(0.0, remaining - placed_wh)
+                allocations.append((i, len(covered), 1, placed_wh))
+                reasons.append(
+                    f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
+                    "direct PV recovery after terminal plan, "
+                    f"{round(sum(take for _, take in covered) * 60)} min x "
+                    f"{round(power_w)} W"
+                    + (
+                        ", final recovery dwell"
+                        if final_quantum
+                        else _final_note(load, commit_h, False)
+                    )
+                )
+                break
+
+        plans[load_id] = replace(
+            plan,
+            schedule=tuple(schedules),
+            planned_energy_wh=planned_wh,
+            allocations=tuple(allocations),
+            run_hours=tuple(run_hours),
+            reasons=tuple(reasons),
+        )
+
+    updated_plans = [plans[plan.load_id] for plan in load_plans]
+    if not allow_final_quantum_overshoot:
+        return _allocate_recovery_after_continuous_loads(
+            config,
+            inputs,
+            threshold,
+            updated_plans,
+            tuple(extra),
+            current,
+            recovery_targets_wh,
+            dc24_schedule,
+            dc48_schedule,
+            allow_final_quantum_overshoot=True,
+        )
+    return updated_plans, tuple(extra), current
+
+
 def plan_feedin(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -1840,6 +2063,9 @@ def _plan_legacy(
     inputs: PlanInputs,
     *,
     direct_surplus_only_load_ids: frozenset[str] = frozenset(),
+    pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
+    remaining_energy_overrides: dict[str, float] | None = None,
+    recovery_targets_wh: dict[str, float] | None = None,
 ) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2).
 
@@ -1890,6 +2116,8 @@ def _plan_legacy(
         dc24_schedule=forced_dc24,
         dc48_schedule=forced_dc48,
         direct_surplus_only_load_ids=direct_surplus_only_load_ids,
+        pass1_energy_phases=pass1_energy_phases,
+        remaining_energy_overrides=remaining_energy_overrides,
     )
     # `alloc_traj` is the real allocation trajectory, including any manually
     # forced support.  R4 deliberately retains its established WITHOUT-support
@@ -1898,6 +2126,19 @@ def _plan_legacy(
     # below instead compares the real supported trajectories because those are
     # the trajectories protected by the allocator's absolute 50 Wh gate.
     alloc_traj = traj
+    if recovery_targets_wh:
+        load_plans, extra_ac, alloc_traj = _allocate_recovery_after_continuous_loads(
+            config,
+            inputs,
+            threshold,
+            load_plans,
+            extra_ac,
+            alloc_traj,
+            recovery_targets_wh,
+            dc24_schedule=forced_dc24,
+            dc48_schedule=forced_dc48,
+        )
+        traj = alloc_traj
     metric_alloc_traj = (
         simulate(config, inputs, threshold, extra_ac_wh=extra_ac)
         if forced_dc24 is not None or forced_dc48 is not None
@@ -2077,31 +2318,47 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     if not config.cascades:
         return _plan_legacy(config, inputs)
 
-    # F-CASCADE-STORAGE direct-use priority (operator decision 2026-08-31):
-    # a cascade member stores AC energy with conversion losses, whereas its
-    # terminal consumes the same Root surplus directly.  Treat the complete
-    # cascade as occupying the priority position of its first configured
-    # participant, but plan the terminal before additional member charging.
-    # Unrelated loads retain their relative order.  The result is restored to
-    # SystemConfig order because HA consumers deliberately zip both tuples.
-    priority_loads = list(config.loads)
-    for cascade in config.cascades:
-        participant_ids = {
+    # F-CASCADE-STORAGE priority/day contract (operator decision 2026-09-02):
+    # the complete cascade occupies its first participant's global position.
+    # Its direct terminal is one lossless consumer and therefore comes first;
+    # Root charging then runs in TWO explicit phases: every member to its
+    # recovery target, only then every member toward its normal charge target.
+    # A single load-outer pass cannot express that ordering: it used to fill
+    # B1 to 80 % while B2 remained at 20 % in the live Bad cascade.
+    loads_by_id = {load.load_id: load for load in config.loads}
+    cascade_by_participant = {
+        load_id: cascade
+        for cascade in config.cascades
+        for load_id in (
             *(member.load_id for member in cascade.members),
             cascade.terminal_load_id,
-        }
-        first = min(
-            index
-            for index, load in enumerate(priority_loads)
-            if load.load_id in participant_ids
         )
-        terminal_index = next(
-            index
-            for index, load in enumerate(priority_loads)
-            if load.load_id == cascade.terminal_load_id
+    }
+    member_by_id = {
+        member.load_id: member
+        for cascade in config.cascades
+        for member in cascade.members
+    }
+    priority_loads = []
+    phase_order: list[tuple[str, bool]] = []
+    emitted_cascades: set[str] = set()
+    for load in config.loads:
+        cascade = cascade_by_participant.get(load.load_id)
+        if cascade is None:
+            priority_loads.append(load)
+            phase_order.append((load.load_id, False))
+            continue
+        if cascade.cascade_id in emitted_cascades:
+            continue
+        emitted_cascades.add(cascade.cascade_id)
+        member_ids = tuple(member.load_id for member in cascade.members)
+        priority_loads.extend(
+            (loads_by_id[cascade.terminal_load_id],)
+            + tuple(loads_by_id[load_id] for load_id in member_ids)
         )
-        terminal = priority_loads.pop(terminal_index)
-        priority_loads.insert(first, terminal)
+        phase_order.append((cascade.terminal_load_id, False))
+        phase_order.extend((load_id, True) for load_id in member_ids)
+        phase_order.extend((load_id, False) for load_id in member_ids)
     legacy_config = replace(config, loads=tuple(priority_loads), cascades=())
     result_order = {load.load_id: index for index, load in enumerate(config.loads)}
     cascade_member_ids = frozenset(
@@ -2109,10 +2366,51 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     )
 
     def replan(trial_inputs: PlanInputs) -> PlanResult:
+        states = {state.load_id: state for state in trial_inputs.load_states}
+        remaining_overrides: dict[str, float] = {}
+        phases: list[tuple[str, float | None]] = []
+        recovery_targets: dict[str, float] = {}
+        for load_id, recovery_phase in phase_order:
+            member = member_by_id.get(load_id)
+            if member is None:
+                phases.append((load_id, None))
+                continue
+            load = loads_by_id[load_id]
+            state = states.get(load_id)
+            soc = (
+                state.soc_percent
+                if state is not None and state.soc_percent is not None
+                else 0.0
+            )
+            # SurplusLoad.remaining_energy_wh is stored-energy based.  A
+            # cascade member's schedule is AC input, so both the intermediate
+            # recovery budget and the final target must include eta_charge.
+            remaining_overrides[load_id] = (
+                max(0.0, load.target_soc_percent - soc)
+                / 100.0
+                * load.capacity_wh
+                / member.eta_charge
+            )
+            recovery_target_wh = (
+                max(0.0, member.recovery_soc_percent - soc)
+                / 100.0
+                * load.capacity_wh
+                / member.eta_charge
+            )
+            recovery_targets[load_id] = recovery_target_wh
+            phases.append(
+                (
+                    load_id,
+                    recovery_target_wh if recovery_phase else None,
+                )
+            )
         result = _plan_legacy(
             legacy_config,
             trial_inputs,
             direct_surplus_only_load_ids=cascade_member_ids,
+            pass1_energy_phases=tuple(phases),
+            remaining_energy_overrides=remaining_overrides,
+            recovery_targets_wh=recovery_targets,
         )
         return replace(
             result,

@@ -1,8 +1,8 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
 Status: normative Feature-Spezifikation. Der Planungsnachtrag vom 2026-09-02
-ersetzt den bisherigen Ein-Episoden-/Recovery-Sperrvertrag; seine Umsetzung ist
-nach v0.34.4 noch ausstehend.
+ersetzt den bisherigen Ein-Episoden-/Recovery-Sperrvertrag. Die hier relevante
+Recovery-/Feed-in-Priorisierung ist ab v0.34.7 umgesetzt.
 
 ## Ziel und Geltungsbereich
 
@@ -82,14 +82,33 @@ durch eine frühere Planner-Entladung, manuelle Nutzung, einen Neustart oder
 Messkorrekturen entstand.
 
 Für die Speichereingänge gilt eine strengere Quellenregel als für normale
-Überschusslasten: Jeder physische Ladeabschnitt muss vollständig durch den im
-selben Slot nach höher priorisierten Lasten noch verbleibenden Root-Export
-gedeckt sein. `battery_tolerance`, At-Max-Topup aus der Hausbatterie und die
-prognosegestützte Pass-2-Vorladung sind für Kaskadenmitglieder gesperrt. Die
-terminale Endlast behält dagegen die allgemeinen Strategien und darf unter
-deren No-Import-, Stress- und G4-Gates auch aus der Hausbatterie versorgt
-werden. Ein neuer Aux-Start ist nur zulässig, wenn die vollständige
-Mindestlaufzeit erbracht werden kann. Dabei gelten zwei Reservestufen:
+Überschusslasten: Jeder physische Ladeabschnitt muss vollständig durch die im
+selben Slot nach höher priorisierten Lasten noch verbleibende PV-Leistung
+gedeckt sein; ein Kaskadenmitglied darf dabei nie die Hausbatterie entladen
+oder zusätzlichen Netzimport erzeugen. Recovery bis zum Kaskaden-Entladeziel
+darf PV verwenden, welche die Hausbatterie sonst laden würde, aber nur wenn der
+vollständige Plan desselben lokalen Kalendertages beweist, dass späterer Export
+mindestens in derselben AC-Energiemenge sinkt und die geschützten Haus-SOC-Ziele
+erhalten bleiben. Das gilt ausdrücklich auch parallel für mehrere Mitglieder,
+wenn die verbleibende PV-Leistung ihre gleichzeitigen Eingänge deckt.
+
+Top-up oberhalb des Entladeziels bleibt strenger: Er darf nur in einem Slot
+stattfinden, dessen bereits sichtbarer Restexport jeden belegten Laufabschnitt
+vollständig deckt. `battery_tolerance`, At-Max-Topup aus der Hausbatterie und
+die allgemeine prognosegestützte Pass-2-Vorladung bleiben für
+Kaskadenmitglieder gesperrt. Die terminale Endlast behält dagegen die
+allgemeinen Strategien und darf unter deren No-Import-, Stress- und G4-Gates
+auch aus der Hausbatterie versorgt werden. Weil ihr kontinuierlicher
+Pre-Drain-Block erst nach dem ersten Direktüberschuss-Pass feststeht, wird
+offene Recovery nach dem vollständigen Endlastplan erneut allokiert, bevor
+Restexport an die vorzeitige Einspeisung geht. Nachdem jedes Mitglied alle
+streng bis zum Entladeziel begrenzten Recovery-Möglichkeiten erhalten hat,
+darf ein vollständig exportgedeckter Mindestlaufzeit-Block dieses Ziel
+geringfügig überschreiten. Diese abschließende Raster-Rundung zählt nicht als
+bevorrechtigter Top-up; sie darf keine noch mögliche Recovery eines anderen
+Mitglieds verdrängen. Ein neuer Aux-Start ist nur
+zulässig, wenn die vollständige Mindestlaufzeit erbracht werden kann. Dabei
+gelten zwei Reservestufen:
 
 1. Energie oberhalb des Kaskaden-Entladeziels (standardmäßig 50 %) ist für die
    vorrangige Endlast ohne Wiederaufladezusage verfügbar. Das Entladeziel ist

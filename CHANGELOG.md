@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.7] - 2026-09-02
+
+### Fixed
+- Die Kaskadenplanung behandelt bestehende Defizite aller Mitglieder bis zum
+  50-%-Entladeziel jetzt als eigene gemeinsame Recovery-Stufe. Ein früher
+  konfiguriertes Mitglied kann dadurch nicht mehr über 50 % laden, während ein
+  späteres Mitglied trotz erreichbarer Energie bei etwa 20 % stehen bleibt.
+- Recovery darf direkte PV-Leistung, die sonst zunächst die Hausbatterie laden
+  würde, vor einer vorzeitigen Einspeisung nutzen, sofern der vollständige
+  lokale Tagesplan denselben AC-Betrag aus späterem Export zurückholt, keinen
+  Netzimport erzeugt und die geschützten Haus-SOC-Grenzen wahrt. Nach dem
+  kontinuierlichen Endlastplan wird offene Recovery erneut geprüft; bei
+  ausreichender PV können mehrere Fossibots parallel laden. Vorzeitige
+  Einspeisung erhält erst den danach tatsächlich unvermeidlichen Rest. Ein
+  letzter vollständig exportgedeckter Mindestlaufzeit-Block darf das
+  50-%-Ziel geringfügig überschreiten, nachdem alle Mitglieder ihre streng
+  zielbegrenzte Recovery-Chance erhalten haben; so bleibt kein vermeidbarer
+  Export nur wegen der Laufzeit-Rasterung übrig.
+
 ## [0.34.6] - 2026-09-02
 
 ### Fixed

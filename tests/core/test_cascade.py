@@ -20,8 +20,11 @@ from custom_components.battery_manager.core import (
     SurplusLoadState,
     SystemConfig,
     plan,
+    simulate,
 )
 from custom_components.battery_manager.core import cascade as cascade_core
+from custom_components.battery_manager.core import optimize as optimize_core
+from custom_components.battery_manager.core.model import LoadPlan
 
 NOW = datetime(2026, 8, 23, 6)
 
@@ -450,16 +453,280 @@ def test_aux_headroom_is_used_before_avoidable_early_feedin() -> None:
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
 
-    assert cascade.planned_aux_energy_wh == 1600
-    assert [
-        min(flow.member_flows[index].soc_end_percent for flow in cascade.flows)
-        for index in range(2)
-    ] == pytest.approx([50, 50])
+    assert cascade.planned_aux_energy_wh > 1600
+    assert min(
+        cascade.flows[-1].member_flows[index].soc_end_percent for index in range(2)
+    ) == pytest.approx(50.0)
     cascade_feedin = sum(flow.feedin_wh for flow in result.trajectory.flows)
     baseline_feedin = sum(flow.feedin_wh for flow in without_cascade.trajectory.flows)
     assert baseline_feedin > 0
     assert cascade_feedin < baseline_feedin
     assert cascade_feedin < 100
+
+
+def test_preexisting_recovery_debt_outranks_member_topup_and_early_feedin() -> None:
+    """Scarce Root surplus restores every 50 % target before any top-up.
+
+    This is the live Bad-cascade shape from 2026-09-02: both Fossibots start
+    near 20 %, the terminal remains the first consumer, and the remaining PV
+    can restore both members to 50 %. The old load-outer allocator filled B1
+    to 80 %, left B2 at 20 %, and then classified the residual export as
+    eligible for early feed-in.
+    """
+    config, inputs = _system(members=2, socs=(20.0, 20.0))
+    config = replace(
+        config,
+        feedin=FeedInParams(
+            enabled=True,
+            max_w=2000.0,
+            min_soc_percent=20.0,
+            deadline_hour=12,
+        ),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=90.0,
+        slots=_slots(400, 600, 800, 800, 800, 800),
+    )
+
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    final_soc = [flow.soc_end_percent for flow in cascade.flows[-1].member_flows]
+
+    assert result.load_plans[-1].load_id == "leaf"
+    assert result.load_plans[-1].planned_energy_wh == 1500.0
+    assert min(final_soc) >= 50.0
+    assert sum(flow.feedin_wh for flow in result.trajectory.flows) > 0.0
+
+
+def test_recovery_uses_parallel_direct_pv_before_early_feedin() -> None:
+    """Terminal-created headroom is offered to recovery before feed-in.
+
+    The house battery is still charging in the first slots, so the old
+    grid-export-only member gate scheduled almost no Fossibot charging.  The
+    terminal's later pass-3 block then created refill headroom, but only the
+    still-later feed-in pass could see it and exported roughly 0.9 kWh while
+    B1/B2 ended at 45/20 %.  Both 500 W inputs fit concurrently in direct PV;
+    the full-day proof still refills the house battery from later clipping.
+    """
+    config, inputs = _system(members=2, socs=(20.0, 20.0))
+    config = replace(
+        config,
+        loads=tuple(replace(load, nominal_power_w=500.0) for load in config.loads),
+        feedin=FeedInParams(
+            enabled=True,
+            max_w=2000.0,
+            min_soc_percent=20.0,
+            deadline_hour=12,
+        ),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=50.0,
+        slots=_slots(1500, 1500, 1500, 700, 700, 700, 700),
+    )
+
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    b1, b2 = result.load_plans[:2]
+
+    assert [flow.soc_end_percent for flow in cascade.flows[-1].member_flows] == (
+        pytest.approx([50.0, 50.0])
+    )
+    assert any(on1 and on2 for on1, on2 in zip(b1.schedule, b2.schedule, strict=True))
+    assert sum(flow.feedin_wh for flow in result.trajectory.flows) < 200.0
+    assert result.grid_import_kwh == 0.0
+
+
+def test_recovery_does_not_postpone_house_charge_without_same_day_export() -> None:
+    """Direct PV recovery is not a free pre-charge without later clipping."""
+    config, inputs = _system(socs=(20.0,))
+    inputs = replace(inputs, start_soc_percent=50.0, slots=_slots(1000))
+
+    result = plan(config, inputs)
+
+    assert result.load_plans[0].planned_energy_wh == 0.0
+    assert result.trajectory.total_export_wh == 0.0
+
+
+def test_recovery_catchup_keeps_unavailable_and_zero_power_members_off() -> None:
+    """The post-terminal retry retains availability and measured-power gates."""
+    config, inputs = _system(members=2, socs=(20.0, 20.0))
+    config = replace(
+        config,
+        loads=tuple(replace(load, nominal_power_w=500.0) for load in config.loads),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=50.0,
+        slots=_slots(1500, 1500, 1500, 700, 700, 700, 700),
+        load_states=(
+            replace(inputs.load_states[0], available=False),
+            replace(inputs.load_states[1], saturated_power_w=0.0),
+            inputs.load_states[2],
+        ),
+    )
+
+    result = plan(config, inputs)
+
+    assert result.load_plans[0].planned_energy_wh == 0.0
+    assert result.load_plans[1].planned_energy_wh == 0.0
+
+
+def test_empty_horizon_and_unrelated_global_load_keep_cascade_contract() -> None:
+    """The wrapper keeps ordinary loads and the empty-horizon fast return."""
+    config, inputs = _system()
+    ordinary = SurplusLoad("ordinary", "Ordinary", 200.0)
+    config = replace(config, loads=(ordinary, *config.loads))
+    inputs = replace(
+        inputs,
+        slots=(),
+        load_states=(SurplusLoadState("ordinary"), *inputs.load_states),
+    )
+
+    result = plan(config, inputs)
+
+    assert [load_plan.load_id for load_plan in result.load_plans] == [
+        "ordinary",
+        "b1",
+        "leaf",
+    ]
+    assert result.cascade_plans[0].flows == ()
+
+
+def test_recovery_catchup_skips_existing_and_spilling_member_bookings() -> None:
+    """Catch-up fills free PV only; it never overlaps an accepted Root run."""
+    config, inputs = _system(socs=(20.0,))
+    durations = (0.25, 0.25, 1.0, 1.0)
+    slots = tuple(
+        HourSlot(
+            index,
+            NOW + timedelta(hours=sum(durations[:index])),
+            duration,
+            6 + index,
+            500.0 * duration,
+            0.0,
+            0.0,
+        )
+        for index, duration in enumerate(durations)
+    )
+    inputs = replace(inputs, start_soc_percent=95.0, slots=slots)
+    schedule = (True, False, True, False)
+    run_hours = (0.25, 0.0, 1.0, 0.0)
+    extra = (75.0, 0.0, 300.0, 0.0)
+    member_plan = LoadPlan(
+        "b1",
+        schedule,
+        375.0,
+        run_hours=run_hours,
+    )
+    trajectory = simulate(config, inputs, 20.0, extra_ac_wh=extra)
+
+    plans, _extra, _trajectory = (
+        optimize_core._allocate_recovery_after_continuous_loads(
+            config,
+            inputs,
+            20.0,
+            [member_plan],
+            extra,
+            trajectory,
+            {"b1": 975.0},
+        )
+    )
+
+    # Slot 0 is already booked. A dwell start in the 15-minute slot 1 would
+    # spill into booked slot 2, so the only safe catch-up is slot 3.
+    assert plans[0].schedule == (True, False, True, True)
+
+
+def test_recovery_catchup_rejects_added_import_and_protected_soc_dip() -> None:
+    """The full-day opportunity never weakens the import or SOC hard gates."""
+    config, inputs = _system(socs=(20.0,))
+    member_plan = LoadPlan("b1", (False,), 0.0, run_hours=(0.0,))
+
+    import_inputs = replace(
+        inputs,
+        start_soc_percent=config.battery.soc_min_percent,
+        slots=(HourSlot(0, NOW, 1.0, 6, 300.0, 0.0, 400.0),),
+    )
+    import_trajectory = simulate(config, import_inputs, 20.0)
+    import_plans, *_ = optimize_core._allocate_recovery_after_continuous_loads(
+        config,
+        import_inputs,
+        20.0,
+        [member_plan],
+        (0.0,),
+        import_trajectory,
+        {"b1": 600.0},
+    )
+    assert import_plans[0].planned_energy_wh == 0.0
+
+    dip_config = replace(
+        config,
+        control=replace(config.control, inverter_min_soc_percent=5.0),
+    )
+    dip_slots = (
+        HourSlot(0, NOW, 1.0, 6, 300.0, 0.0, 0.0),
+        HourSlot(1, NOW + timedelta(hours=1), 1.0, 7, 0.0, 200.0, 0.0),
+        HourSlot(2, NOW + timedelta(hours=2), 1.0, 8, 6000.0, 0.0, 0.0),
+    )
+    dip_inputs = replace(inputs, start_soc_percent=11.0, slots=dip_slots)
+    dip_plan = replace(member_plan, schedule=(False,) * 3, run_hours=(0.0,) * 3)
+    dip_trajectory = simulate(dip_config, dip_inputs, 5.0)
+    dip_plans, *_ = optimize_core._allocate_recovery_after_continuous_loads(
+        dip_config,
+        dip_inputs,
+        5.0,
+        [dip_plan],
+        (0.0,) * 3,
+        dip_trajectory,
+        {"b1": 300.0},
+    )
+    assert not dip_plans[0].schedule[0]
+
+
+def test_recovery_final_dwell_may_cross_50_to_avoid_export() -> None:
+    """A minimum dwell closes a sub-quantum debt after strict recovery.
+
+    This freezes the last edge from the 2026-09-02 live replay: B1 was left at
+    49.46 % and energy was fed in because its remaining recovery debt was
+    smaller than a five-minute activation. The slight overshoot is allowed
+    only in the post-recovery rounding pass and remains export-backed.
+    """
+    config, inputs = _system(socs=(49.4,))
+    config = replace(
+        config,
+        loads=(
+            replace(config.loads[0], nominal_power_w=300.0, min_runtime_min=5),
+            config.loads[1],
+        ),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(1000.0),
+        load_states=(
+            replace(inputs.load_states[0], learned_power_w=250.0),
+            inputs.load_states[1],
+        ),
+    )
+    member_plan = LoadPlan("b1", (False,), 0.0, run_hours=(0.0,))
+    trajectory = simulate(config, inputs, 20.0)
+
+    plans, _extra, updated = optimize_core._allocate_recovery_after_continuous_loads(
+        config,
+        inputs,
+        20.0,
+        [member_plan],
+        (0.0,),
+        trajectory,
+        {"b1": 12.0},
+    )
+
+    assert plans[0].planned_energy_wh == pytest.approx(250.0 * 5.0 / 60.0)
+    assert trajectory.total_export_wh - updated.total_export_wh == pytest.approx(
+        plans[0].planned_energy_wh
+    )
 
 
 def test_export_backed_predrain_may_cross_target_but_recovers_next_day() -> None:

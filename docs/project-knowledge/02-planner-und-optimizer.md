@@ -25,12 +25,14 @@ bei einem Konflikt mit dieser Zusammenfassung gilt die Wissensbasis, weil sie
    allocation_base = simulate(..., fixed_support)               # sonst base_traj
 3. load_plans, extra_ac, traj = allocate_loads(                 # Pass 1–3
        ..., allocation_base, fixed_support)
-4. alloc_traj = traj                                            # MIT festem Support
-5. feedin_wh, feedin_by_day = plan_feedin(..., alloc_traj, fixed_support)
+4. Kaskaden: offene Recovery nach dem vollständigen Endlastplan erneut aus
+   direkter PV mit Same-Day-Exportnachweis allokieren
+5. alloc_traj = traj                                            # MIT festem Support
+6. feedin_wh, feedin_by_day = plan_feedin(..., alloc_traj, fixed_support)
    traj = simulate(..., feedin_wh=feedin_wh)                    # publizierte Trajektorie MIT Feed-in
-6. dc24, dc48, traj = support_escalation(...)                   # automatische Notfall-Netzteile
-7. windows = appliance_windows(...)                             # Advisor (G3)
-8. Diagnostik: import_trade_used_wh, stressed_min_soc,
+7. dc24, dc48, traj = support_escalation(...)                   # automatische Notfall-Netzteile
+8. windows = appliance_windows(...)                             # Advisor (G3)
+9. Diagnostik: import_trade_used_wh, stressed_min_soc,
    pv_window_ends, threshold_horizon_end, prevented_export_by_day_wh
 ```
 
@@ -582,7 +584,7 @@ einen akzeptierten Lauf nicht heimlich in einen netzgespeisten verwandeln.
 | **Gate-Topup** | `_quantised_hours`, `GATE_TOPUP_MIN_WH = 50.0` | Nur mit `gate_stop_capable` (= Charge-Enable-Entity konfiguriert): ein einziger finaler Kandidat unter Quantumsgröße, damit die Last nicht dauerhaft unter Ziel-SOC parkt (das „Stall-Band"). Legitim, weil G1s dwell-freier Ziel-Stopp exakt `rem` liefert. |
 | Tageslicht-Regel | Pass 2 | Keine Null-PV-Slots, kein Spill in die Nacht |
 | Priorität | Reihenfolge in `config.loads` | Außerhalb einer Kaskade entscheidet die konfigurierte Reihenfolge. Innerhalb einer Kaskade steht die direkte Endlast vor zusätzlichem Laden der Mitglieder, weil der Speicherweg zusätzliche Wandlungsverluste verursacht. |
-| Kaskaden-PV-only | internes `direct_surplus_only_load_ids` | Kaskadenmitglieder dürfen nur laden, wenn jeder belegte Slotabschnitt vollständig durch dessen aktuellen Restexport gedeckt ist. Batterie-Toleranz, Pass 2 und At-Max-Topup bleiben für sie gesperrt; normale Lasten und die Kaskaden-Endlast ändern sich nicht. |
+| Kaskaden-PV-only | interne Recovery-Phasen + `direct_surplus_only_load_ids` | Recovery bis zum Entladeziel darf direkte PV statt gleichzeitiger Hausbatterieladung verwenden, wenn der vollständige lokale Tag denselben AC-Betrag aus späterem Export zurückholt; mehrere Mitglieder dürfen dabei parallel laden. Top-up oberhalb des Entladeziels bleibt je Laufabschnitt Restexport-gedeckt. Batterie-Toleranz, Pass 2 und At-Max-Topup bleiben gesperrt. Nach dem kontinuierlichen Endlastblock wird offene Recovery vor Feed-in erneut geprüft. Erst nachdem jedes Mitglied seine streng zielbegrenzte Chance hatte, darf ein vollständig exportgedecktes Mindestlaufzeit-Quantum das Entladeziel geringfügig überschreiten. |
 
 Das `final top-up to target`-Label im `why`-String erscheint genau dann, wenn
 `commit_h < min_runtime_min/60 - _EPS` **und** es kein Seamless-Trim war.
