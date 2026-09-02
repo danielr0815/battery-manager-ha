@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.4] - 2026-09-02
+
+### Fixed
+- Ein wiederholtes Automation-AN für eine bereits aktive Kaskade ist jetzt
+  idempotent. Zuvor konnte ein redundanter AN-Aufruf in einem kurzen
+  Shared-Root-AUS-Fenster die laufende `waking_members`-Phase löschen; dadurch
+  wurde die Wake-Deadline im Coordinator-Takt immer neu gesetzt und Root rund
+  alle zehn Sekunden AUS/AN geschaltet. Nur ein echtes AUS→AN beginnt künftig
+  eine neue Besitzepisode; Shared-Fremdänderungen führen weiterhin geordnet zu
+  `hands_off`.
+
 ## [0.34.3] - 2026-09-01
 
 ### Fixed

@@ -1,7 +1,10 @@
 # Cascade storage design
 
 Status: Implementierungsdesign zu [F-CASCADE-STORAGE](F-CASCADE-STORAGE.md),
-aktualisiert für v0.34.1.
+beschreibt den implementierten Stand bis v0.34.4. Der normative
+Planungsnachtrag vom 2026-09-02 (tagesweiter Recovery-Nachweis, mehrere
+Aux-Episoden und Recovery vor Top-up) ist darin und im Code noch nicht
+umgesetzt.
 
 ## Schichten und Verantwortungen
 
@@ -97,6 +100,10 @@ erfolgreiche manuelle Aktivierung aus bestätigt vollständig AUS löscht
 unabhängig davon sämtliche transiente Evidenz und beginnt als neue
 Besitzepisode. Alle drei Bedienpfade (AN, AUS, Fault-Reset) laufen unter
 demselben Per-Kaskaden-Lock wie der automatische Executor.
+Ein erneutes AN bei bereits aktiver Kaskade ist dagegen ein reines No-op. Es
+darf auch dann keine Wake-/Proof-Evidenz löschen, wenn ein Shared Actor gerade
+kurz AUS meldet; diese Abweichung klassifiziert anschließend ausschließlich der
+normale Executor und übergibt sie gegebenenfalls geordnet an `hands_off`.
 
 Actor-Besitz wird nicht nur anhand der Planner-Last-ID geprüft. Unmittelbar vor
 jedem `homeassistant.turn_on`/`turn_off` wird die Ziel-Entity erneut gegen alle

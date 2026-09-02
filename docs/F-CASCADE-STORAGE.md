@@ -1,6 +1,8 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
-Status: normative Feature-Spezifikation, aktualisiert für v0.34.1.
+Status: normative Feature-Spezifikation. Der Planungsnachtrag vom 2026-09-02
+ersetzt den bisherigen Ein-Episoden-/Recovery-Sperrvertrag; seine Umsetzung ist
+nach v0.34.4 noch ausstehend.
 
 ## Ziel und Geltungsbereich
 
@@ -41,55 +43,98 @@ oder Löschen der Kaskade behoben werden.
 
 ## Planungsregeln
 
-Die globale Load-Reihenfolge bleibt die äußerste Prioritätsordnung. Die
-Kaskade belegt dabei die Position ihres ersten konfigurierten Teilnehmers;
-innerhalb dieses Verbunds hat die direkte Endlast Vorrang vor zusätzlichem
-Laden der Mitglieder. Damit wird nutzbare Energie nicht verlustbehaftet in
-einem Fossibot zwischengespeichert, während die Endlast pausiert. Nur der nach
-der Endlast verbleibende Root-Überschuss lädt Mitglieder über ihr
-Kaskaden-Entladeziel hinaus. Für die Speichereingänge gilt dabei eine strengere
-Quellenregel als für normale Überschusslasten: Jeder physische Ladeabschnitt
-muss vollständig durch den im selben Slot nach höher priorisierten Lasten noch
-verbleibenden Root-Export gedeckt sein. `battery_tolerance`, At-Max-Topup aus
-der Hausbatterie und die prognosegestützte Pass-2-Vorladung sind für
-Kaskadenmitglieder gesperrt. Die terminale Endlast behält dagegen die
-allgemeinen Strategien und darf unter deren No-Import-, Stress- und G4-Gates
-auch aus der Hausbatterie versorgt werden. Ein neuer Aux-Start ist nur
-zulässig, wenn die vollständige Mindestlaufzeit erbracht werden kann. Dabei
-gelten zwei Reservestufen:
+### Prioritäts- und Tagesvertrag (Operator-Entscheidung 2026-09-02)
 
-1. Energie oberhalb des Kaskaden-Entladeziels (standardmäßig 50 %) ist
-   bedingungslos verfügbar. Dafür ist weder ein heutiger PV-Slot noch eine
-   Wiederaufladezusage erforderlich.
+Die globale Load-Reihenfolge bleibt die äußerste Prioritätsordnung. Die
+Kaskade belegt dabei die Position ihres ersten konfigurierten Teilnehmers.
+Innerhalb dieses Verbunds gilt folgende lexikographische Reihenfolge:
+
+1. Safety-Floors, kein zusätzlicher Netzimport und die physische
+   Quellenexklusivität sind harte Bedingungen.
+2. Die direkte Endlast hat Vorrang vor jeder Wiederaufladung und jedem
+   zusätzlichen Laden der Mitglieder. Ein Recovery-Bedarf darf eine direkt
+   versorgbare Endlast weder pausieren noch aus ihrem Plan verdrängen.
+3. Der nach der Endlast verbleibende Root-Überschuss wird zuerst so auf die
+   Mitglieder verteilt beziehungsweise für sie reserviert, dass alle
+   erreichbaren Kaskaden-Entladeziele gesichert sind.
+4. Erst die danach verbleibende Energie lädt Mitglieder über ihr
+   Kaskaden-Entladeziel hinaus bis zum normalen Ladeziel.
+5. Vorzeitige Einspeisung ist die letzte Planungsoption. Sie darf nur Export
+   zeitlich verschieben, der trotz aller zulässigen Endlast-, Recovery-,
+   Top-up- und Aux-Allokationen später unvermeidlich bleibt.
+
+Damit wird nutzbare Energie weder verlustbehaftet in einem Fossibot
+zwischengespeichert, während die Endlast pausiert, noch für einen Top-up eines
+Mitglieds verbraucht, wenn dadurch ein anderes Mitglied sein erreichbares
+Kaskaden-Entladeziel verfehlt. Ein Top-up über das Entladeziel darf schon vor
+der tatsächlichen Recovery eines anderen Mitglieds nur Energiefragmente
+belegen, die dieses Mitglied wegen Leistung, Mindestlaufzeit, Caps oder
+Topologie nachweislich nicht nutzen kann und die dessen Tagesend-Recovery
+nicht verschlechtern.
+
+Der Tagesnachweis simuliert ab dem aktuellen Rolling-Slot bis zum Ende des
+lokalen Kalendertages die unverändert vorrangige Endlast, sämtliche
+Mitglieds-SOCs, Wirkungsgrade, Leistungs- und Passthrough-Caps,
+Mindestlaufzeiten sowie alle bereits gebuchten Root-, Aux- und
+Recovery-Abschnitte gemeinsam. Jeder beim Replan unter seinem Entladeziel
+liegende Speicher bildet dabei ein Recovery-Defizit, unabhängig davon, ob es
+durch eine frühere Planner-Entladung, manuelle Nutzung, einen Neustart oder
+Messkorrekturen entstand.
+
+Für die Speichereingänge gilt eine strengere Quellenregel als für normale
+Überschusslasten: Jeder physische Ladeabschnitt muss vollständig durch den im
+selben Slot nach höher priorisierten Lasten noch verbleibenden Root-Export
+gedeckt sein. `battery_tolerance`, At-Max-Topup aus der Hausbatterie und die
+prognosegestützte Pass-2-Vorladung sind für Kaskadenmitglieder gesperrt. Die
+terminale Endlast behält dagegen die allgemeinen Strategien und darf unter
+deren No-Import-, Stress- und G4-Gates auch aus der Hausbatterie versorgt
+werden. Ein neuer Aux-Start ist nur zulässig, wenn die vollständige
+Mindestlaufzeit erbracht werden kann. Dabei gelten zwei Reservestufen:
+
+1. Energie oberhalb des Kaskaden-Entladeziels (standardmäßig 50 %) ist für die
+   vorrangige Endlast ohne Wiederaufladezusage verfügbar. Das Entladeziel ist
+   daher keine unmittelbare Schaltgrenze für die Endlast.
 2. Energie zwischen Entladeziel und Sicherheits-Floor (standardmäßig 20 %)
-   darf nur vorab genutzt werden, wenn der globale Replan ansonsten späteren
-   Grid-Export ausweist, die zusätzliche Speicheraufnahme diesen Export
-   tatsächlich reduziert, keinen zusätzlichen Netzimport erzeugt und alle so
-   abgesenkten Mitglieder spätestens am Ende des ersten betroffenen
-   Exporttages wieder mindestens das Entladeziel erreichen. Die nutzbare
-   Energie wird inklusive Ladewirkungsgrad auf genau den noch exportierten
-   AC-Betrag begrenzt.
+   darf nur vorab genutzt werden, wenn der vollständige Plan des lokalen
+   Kalendertages ansonsten späteren unvermeidlichen Grid-Export ausweist, die
+   zusätzliche Speicheraufnahme diesen Export tatsächlich reduziert, keinen
+   zusätzlichen Netzimport erzeugt und alle Mitglieder trotz der unverändert
+   vorrangig eingeplanten Endlast spätestens am Tagesende wieder mindestens
+   ihr Entladeziel erreichen. Die nutzbare Energie wird inklusive
+   Ladewirkungsgrad auf genau den noch unvermeidlich exportierten AC-Betrag
+   begrenzt.
 
 Eine bereits laufende Episode darf ihren Rest bis zum jeweils aktuellen
-Slot-Ziel in nachgewiesenen Quellenfenstern fortsetzen. Auch ein beim Rolling
-Replan bereits unter 50 % liegendes Mitglied darf deshalb weiter bis zu dem
-exportgedeckten Ziel laufen; ohne verbleibenden Exportnachweis wird der
-zusätzliche Tiefenhub sofort zurückgezogen. Späteres Laden bis zum höheren
-normalen Ladeziel nutzt weiterhin die globale Priorität und die beschriebene
-PV-only-Quellengrenze.
+Slot-Ziel nur in einem weiterhin gültigen Tagesnachweis fortsetzen. Auch ein
+beim Rolling Replan bereits unter 50 % liegendes Mitglied darf weiter bis zu
+dem exportgedeckten Ziel laufen, wenn der verbleibende Tagesplan einschließlich
+der vorrangigen Endlast weiterhin die Rückkehr aller Mitglieder zu ihren
+Entladezielen beweist. Ohne diesen Nachweis wird der zusätzliche Tiefenhub
+sofort zurückgezogen. Späteres Laden bis zum höheren normalen Ladeziel nutzt
+innerhalb der Top-up-Stufe die globale Priorität und die beschriebene
+PV-only-Quellengrenze; es darf keine erreichbare Recovery eines anderen
+Mitglieds verzögern oder verhindern.
 
-Die Vorschau reserviert nicht nur die minimale Startlaufzeit, sondern die
-gesamte zusammenhängend mögliche Aux-Episode bis zu den Entladezielen aller
-Mitglieder. Eine neue Episode beginnt am spätestmöglichen Forecast-Slot, von
-dem diese Energie noch vor dem ersten Root-/PV-Slot beziehungsweise vor dem
-lokalen Tagesende verbraucht werden kann. Nur Slot 0 ist unmittelbar
+Die Vorschau bewertet alle für den verbleibenden lokalen Kalendertag möglichen
+Aux-, Root- und Recovery-Abschnitte gemeinsam. Eine neue Aux-Episode beginnt
+innerhalb ihres zulässigen Fensters am spätestmöglichen Forecast-Slot, der den
+vollständigen Tagesvertrag noch erfüllt. Nur Slot 0 ist unmittelbar
 ausführbar; ein künftiger Start bleibt Vorschau und wird bei jedem Rolling
 Replan neu bewertet. Sobald der späte Start in Slot 0 rückt oder die Episode
-bereits läuft, bleibt sie dort verankert. Der folgende globale Replan sieht
-trotzdem die vollständige zusätzliche Ladekapazität, bevor unvermeidbarer
-Überschuss für die vorzeitige Einspeisung gebucht wird. Ein später neu
-gebuchter Root-/PV-Slot beendet die Aux-Vorschau vorher: Root-Aufnahme und
-Aux-Entladung dürfen weder real noch in der Prognose gleichzeitig auftreten.
+bereits läuft, bleibt sie dort bis zum nächsten sicheren Umschaltpunkt
+verankert.
+
+Mehrere Aux-Episoden und ein erneutes Anwachsen bereits teilweise oder
+vollständig abgebauter Recovery-Schuld sind am selben Tag zulässig. Jede
+zusätzliche Entladung muss im dann aktuellen Gesamttagesplan erneut späteren
+unvermeidlichen Export verhindern und die Rückkehr aller Mitglieder zu ihren
+Entladezielen bis Tagesende beweisen. Der globale Replan berücksichtigt die
+vollständige zusätzliche Ladekapazität und alle Recovery-Reservierungen,
+bevor Restexport für die vorzeitige Einspeisung gebucht wird. Root-Aufnahme
+und Aux-Entladung dürfen weder real noch in der Prognose gleichzeitig
+auftreten; ein Root-/PV-Slot trennt daher zwei Aux-Abschnitte elektrisch,
+verbietet aber keinen weiteren, erneut nachgewiesenen Aux-Abschnitt desselben
+Tages.
 
 Der Core simuliert die Speicher-SOCs mit Lade-/Entladewirkungsgrad, Charge-,
 Output- und Passthrough-Caps sowie Output-Overhead. `HourFlows.extra_ac_wh`
@@ -97,11 +142,16 @@ bleibt die externe Root-Bilanz; interne Durchleitung und Aux-Energie erscheinen
 nur in `CascadePlan`. `LoadPlan.managed_by_cascade` unterdrückt die unabhängige
 Aktuation der Mitglieder und der Endlast.
 
-Pro lokalem Kalendertag ist eine Aux-Entladeepisode zulässig. Direkter
-PV-Takeover und Root-Return sind one-way. Ein Block über Mitternacht wird sicher
-beendet und für den neuen Tag neu bewertet. Eine dabei offene
-Wiederaufladezusage bleibt jedoch erhalten und sperrt eine neue Aux-Episode,
-bis alle betroffenen Mitglieder wieder das Entladeziel erreicht haben.
+Recovery-Schuld ist eine tagesweite Verpflichtung und kein pauschales
+Episodenverbot. Sie bleibt über Rolling Replans, Home-Assistant-Neustarts und
+Mitternacht erhalten und geht als Anfangsdefizit in jeden neuen Tagesplan ein.
+Vor Tagesende darf sie erneut anwachsen, solange der vollständige aktuelle
+Tagesplan ihre Rückführung beweist. Wird das Entladeziel entgegen dem Plan bis
+Mitternacht nicht erreicht, bleibt die Schuld offen; am Folgetag ist eine
+weitere Nutzung der geschützten Reserve nur mit einem neuen vollständigen
+Tagesnachweis zulässig. Die direkte Endlast behält auch dann ihre höhere
+Priorität.
+
 Cache-SOCs bis sieben Tage dürfen Vorschau und Aggregat speisen; vor Entladung
 sind neue numerische Live-SOCs aller Mitglieder zwingend. Der
 Sicherheits-Floor bleibt in Planung und Ausführung die absolute Untergrenze.
@@ -181,7 +231,9 @@ Kaskadenbesitzer unmittelbar an der Service-Grenze neu auf. Nur ein Aufruf des
 zuständigen `CascadeManager` mit passender Kaskaden-ID darf Root, Charge-Gates,
 Outputs oder den Endlast-Aktor erreichen; alle generischen, Support-,
 Kalibrierungs- und veralteten Hintergrundpfade bleiben fail-closed. Ein
-unterbrochener Aux-Lauf gilt für den lokalen Tag als beendet.
+unterbrochener Aux-Lauf beendet die aktuelle Episode und behält jede offene
+Recovery-Schuld. Ein späterer Aux-Neustart am selben Tag benötigt den frischen
+vollständigen Tagesnachweis aus den Planungsregeln.
 
 Ein akzeptierter Aux-Wake und `proving` werden dem Core als bereits laufende
 Episode gemeldet. Sonst verschiebt die Latest-First-Planung den eben begonnenen
@@ -203,6 +255,15 @@ Deaktivierung, Fault-Reset und automatische Übergänge verwenden denselben
 Kaskaden-Lock. Eine abgelehnte Aktivierung veröffentlicht einen
 maschinenlesbaren Grund sowie gegebenenfalls die nicht als AUS bestätigten
 Actor-Entity-IDs.
+
+Automation-AN ist zustandsbezogen idempotent: Ist die Kaskade bereits aktiv,
+beginnt derselbe AN-Aufruf keine neue Besitzepisode und verändert insbesondere
+weder Phase, Wake-Deadline, Claims noch Proof-/Retry-Evidenz. Nur eine echte
+Flanke von AUS nach AN darf nach bestätigt vollständigem Safe-OFF den
+transienten Zustand verwerfen. Eine während der aktiven Episode beobachtete
+Shared-Abweichung bleibt Eigentum des normalen Executor-Passes und führt wie
+oben beschrieben zu `hands_off`; ein redundantes AN darf sie nicht als neue
+Übernahme umdeuten.
 
 ## HA-Datenvertrag
 
@@ -269,7 +330,8 @@ zuletzt akzeptierte Telemetrie-Evidenz ausschließlich für die Live-Diagnose.
 
 Die Executor-Phasen `recovering` und `complete` sind bei aktiver Automation
 reine Diagnosen, keine Actor-Freigabe. Auch in diesen Phasen wird Safe-OFF
-idempotent durchgesetzt.
+idempotent durchgesetzt. Sie sperren keinen späteren, durch einen frischen
+Gesamttagesplan nachgewiesenen Aux-Abschnitt.
 Entfällt ein Aux-Segment während `running`, wird der Pfad sofort beendet und
 wechselt abhängig vom offenen Recovery-Ziel nach `recovering` oder `complete`.
 

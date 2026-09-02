@@ -334,6 +334,19 @@ class CascadeManager:
             state["activation_blocked_actors"] = []
             self.coordinator._save_persistent_state()
             return True
+        # F-CASCADE-STORAGE activation idempotence (live 2026-09-02): a
+        # repeated ON request can race with a brief Shared Root-OFF.  Treating
+        # it as a fresh takeover cleared ``waking_members`` and restarted Root
+        # every ~10 s, so its wake deadline moved forever.  Only a deliberate
+        # OFF -> ON edge starts a new ownership episode; ON -> ON preserves all
+        # in-flight wake/proof evidence.  A real Shared deviation is handled by
+        # `_foreign_override` on the next normal cascade pass.
+        if (
+            state.get("enabled")
+            and not state.get("fault")
+            and not state.get("hands_off")
+        ):
+            return True
         if state.get("fault"):
             state["activation_blocked_reason"] = "fault"
             state["activation_blocked_actors"] = []

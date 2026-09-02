@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -804,6 +804,251 @@ async def test_live_two_fossibot_full_switch_pass_has_one_root_owner(hass) -> No
     assert hass.states.get("switch.bad_waschmaschine").state == "on"
 
 
+async def test_live_two_fossibot_real_refreshes_keep_root_stable(
+    hass, monkeypatch, request
+) -> None:
+    """Drive the incident topology through complete coordinator refreshes.
+
+    Unlike the smaller regression above, this leaves the production state
+    listeners active and calls ``_async_update_data`` through ``async_refresh``.
+    The actor feedback therefore arms the same debounced follow-up refreshes as
+    the live entities did.  Time itself is virtual: the five observed rolling
+    updates are advanced in ten-second steps without sleeping for real.
+    """
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CAPACITY_WH,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_ETA_CHARGE,
+        CONF_LOAD_ETA_DISCHARGE,
+        CONF_LOAD_INPUT_OFF_POLICY,
+        CONF_LOAD_MIN_OFF_MIN,
+        CONF_LOAD_MIN_RUNTIME_MIN,
+        CONF_LOAD_OUTPUT_OVERHEAD_W,
+        CONF_LOAD_POWER_W,
+        CONF_LOAD_TARGET_SOC,
+        CONF_PV_FORECAST_DAY_AFTER,
+        CONF_PV_FORECAST_TODAY,
+        CONF_PV_FORECAST_TOMORROW,
+        CONF_SOC_ENTITY,
+        INPUT_OFF_POLICY_AUTO,
+    )
+
+    # Move the observed 22:29 state to the nearest deterministic feasibility
+    # edge: 15 min 6 s remain in the local day. Ten seconds later the first
+    # slot is shorter than the terminal's real 15-minute minimum run. Before
+    # v0.34.2 that genuine rolling replan withdrew Aux and switched Root OFF.
+    started = datetime(2026, 9, 1, 23, 44, 54, tzinfo=UTC)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_SOC_ENTITY: "sensor.house_soc",
+            CONF_PV_FORECAST_TODAY: "sensor.pv_today",
+            CONF_PV_FORECAST_TOMORROW: "sensor.pv_tomorrow",
+            CONF_PV_FORECAST_DAY_AFTER: "sensor.pv_day_after",
+        },
+        title="Battery Manager",
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    subentries = (
+        ConfigSubentry(
+            data={
+                CONF_LOAD_SOC_ENTITY: "sensor.b1_soc",
+                CONF_LOAD_CONTROL_SWITCH: "switch.bad_waschmaschine",
+                CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b1",
+                CONF_LOAD_INPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                CONF_LOAD_OUTPUT_SWITCH: "switch.b1_output",
+                CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b1_output_power",
+                CONF_LOAD_POWER_ENTITY: "sensor.b1_input_power",
+                CONF_LOAD_POWER_W: 250.0,
+                CONF_LOAD_ENERGY_LIMITED: True,
+                CONF_LOAD_CAPACITY_WH: 2000.0,
+                CONF_LOAD_TARGET_SOC: 90.0,
+                CONF_LOAD_MIN_RUNTIME_MIN: 5,
+                CONF_LOAD_MIN_OFF_MIN: 5,
+                CONF_LOAD_INPUT_OFF_POLICY: INPUT_OFF_POLICY_AUTO,
+                CONF_LOAD_OUTPUT_OVERHEAD_W: 20.0,
+                CONF_LOAD_ETA_CHARGE: 0.9,
+                CONF_LOAD_ETA_DISCHARGE: 0.9,
+                "wake_timeout_s": 60,
+            },
+            subentry_id="b1",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Fossibot F2400-B",
+            unique_id=None,
+        ),
+        ConfigSubentry(
+            data={
+                CONF_LOAD_SOC_ENTITY: "sensor.b2_soc",
+                CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b2",
+                CONF_LOAD_OUTPUT_SWITCH: "switch.b2_output",
+                CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_SHARED,
+                CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b2_output_power",
+                CONF_LOAD_POWER_ENTITY: "sensor.b2_input_power",
+                CONF_LOAD_POWER_W: 499.0,
+                CONF_LOAD_ENERGY_LIMITED: True,
+                CONF_LOAD_CAPACITY_WH: 2000.0,
+                CONF_LOAD_TARGET_SOC: 90.0,
+                CONF_LOAD_MIN_RUNTIME_MIN: 5,
+                CONF_LOAD_MIN_OFF_MIN: 5,
+                CONF_LOAD_OUTPUT_OVERHEAD_W: 20.0,
+                "wake_timeout_s": 60,
+            },
+            subentry_id="b2",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Fossibot F2400-B2",
+            unique_id=None,
+        ),
+        ConfigSubentry(
+            data={
+                CONF_LOAD_POWER_ENTITY: "sensor.b2_output_power",
+                CONF_LOAD_POWER_W: 426.1,
+                CONF_LOAD_ENERGY_LIMITED: False,
+                CONF_LOAD_MIN_RUNTIME_MIN: 15,
+                CONF_LOAD_MIN_OFF_MIN: 15,
+            },
+            subentry_id="leaf",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Entfeuchter Keller",
+            unique_id=None,
+        ),
+        ConfigSubentry(
+            data={
+                CONF_CASCADE_MEMBER_IDS: ["b1", "b2"],
+                CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+                CONF_CASCADE_ACTOR_TIMEOUT_S: 30,
+            },
+            subentry_id="chain",
+            subentry_type=SUBENTRY_TYPE_CASCADE,
+            title="Bad",
+            unique_id=None,
+        ),
+    )
+    for subentry in subentries:
+        assert hass.config_entries.async_add_subentry(entry, subentry)
+
+    for entity_id in (
+        "switch.bad_waschmaschine",
+        "input_boolean.charge_b1",
+        "switch.b1_output",
+        "input_boolean.charge_b2",
+        "switch.b2_output",
+    ):
+        hass.states.async_set(entity_id, "off")
+    for entity_id, value in (
+        ("sensor.house_soc", "75"),
+        ("sensor.pv_today", "0"),
+        ("sensor.pv_tomorrow", "0"),
+        ("sensor.pv_day_after", "0"),
+        ("sensor.b1_soc", "89.4"),
+        ("sensor.b1_input_power", "0"),
+        ("sensor.b1_output_power", "0"),
+        ("sensor.b2_soc", "89.1"),
+        ("sensor.b2_input_power", "0"),
+        ("sensor.b2_output_power", "0"),
+    ):
+        hass.states.async_set(entity_id, value)
+
+    service_calls: list[tuple[str, str]] = []
+
+    async def turn_on(call) -> None:
+        entity_id = call.data["entity_id"]
+        service_calls.append(("turn_on", entity_id))
+        hass.states.async_set(entity_id, "on")
+
+    async def turn_off(call) -> None:
+        entity_id = call.data["entity_id"]
+        service_calls.append(("turn_off", entity_id))
+        hass.states.async_set(entity_id, "off")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
+    coordinator = BatteryManagerCoordinator(hass, entry)
+    request.addfinalizer(coordinator.cleanup)
+    # Persistence timing is covered separately. Avoid registering a delayed
+    # Store final-write hook so this timing simulation remains entirely
+    # in-memory and deterministic.
+    coordinator._save_persistent_state = lambda: None
+    actor_calls: list[tuple[str, bool, str | None]] = []
+    real_switch_entity = coordinator._switch_entity
+
+    async def observed_switch_entity(
+        entity_id: str, turn_on: bool, *, actor_owner: str | None = None
+    ) -> bool:
+        actor_calls.append((entity_id, turn_on, actor_owner))
+        if actor_owner is None:
+            return await real_switch_entity(entity_id, turn_on)
+        return await real_switch_entity(entity_id, turn_on, actor_owner=actor_owner)
+
+    coordinator._switch_entity = observed_switch_entity
+    state = coordinator.cascade_manager._state("chain")
+    state["enabled"] = True
+    # Recreate the stale generic ownership/deadline left by a former normal
+    # B1 charge.  Both survived the live setup history and used to make a
+    # detached OFF plausible while the cascade was waking the same Root.
+    coordinator._load_plug_owned["b1"] = True
+    coordinator._load_run_deadline["b1"] = started - timedelta(seconds=1)
+
+    clock = {"now": started}
+    monkeypatch.setattr(dt_util, "now", lambda: clock["now"])
+    await coordinator.async_refresh()
+    if coordinator._load_switch_task is not None:
+        await coordinator._load_switch_task
+
+    cascade_plan = coordinator.data["cascade_plans"]["chain"]
+    assert cascade_plan["aggregate_soc_percent"] == pytest.approx(89.25)
+    assert cascade_plan["planned_aux_energy_kwh"] == pytest.approx(0.107, abs=0.001)
+    assert state["phase"] == "waking_members"
+    assert service_calls == [("turn_on", "switch.bad_waschmaschine")]
+    assert actor_calls[-1][:2] == ("switch.bad_waschmaschine", True)
+    assert coordinator._debounce_task is not None
+    coordinator._debounce_task.cancel()
+
+    service_calls.clear()
+    wake_deadline = state["wake_deadline"]
+    for elapsed_s in (10, 20, 30, 40, 50):
+        clock["now"] = started + timedelta(seconds=elapsed_s)
+        await coordinator.async_refresh()
+        if coordinator._load_switch_task is not None:
+            await coordinator._load_switch_task
+
+    assert service_calls == []
+    assert hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert state["phase"] == "waking_members"
+    assert state["wake_deadline"] == wake_deadline
+
+    # The operator then woke both Fossibots manually and the development PC
+    # disappeared.  Model that as fresh device telemetry while HA keeps
+    # running without any client: each publication advances one ordered wake
+    # boundary. Root is switched OFF exactly once for the intended Aux
+    # handover, by the cascade owner, and never cycles back ON.
+    clock["now"] = started + timedelta(seconds=51)
+    hass.states.async_set("sensor.b1_input_power", "0")
+    await coordinator.async_refresh()
+    clock["now"] = started + timedelta(seconds=52)
+    hass.states.async_set("sensor.b2_input_power", "0")
+    await coordinator.async_refresh()
+
+    assert service_calls == [
+        ("turn_on", "switch.b1_output"),
+        ("turn_on", "switch.b2_output"),
+        ("turn_off", "switch.bad_waschmaschine"),
+    ]
+    assert actor_calls[-1][:2] == ("switch.bad_waschmaschine", False)
+    assert state["phase"] == "proving"
+
+    service_calls.clear()
+    for elapsed_s in (62, 72):
+        clock["now"] = started + timedelta(seconds=elapsed_s)
+        await coordinator.async_refresh()
+    assert service_calls == []
+    assert hass.states.get("switch.bad_waschmaschine").state == "off"
+    assert state["phase"] == "proving"
+
+
 async def test_live_root_rejects_generic_off_at_entity_boundary(
     hass, monkeypatch
 ) -> None:
@@ -1383,6 +1628,49 @@ async def test_enable_discards_stale_wake_state_before_fresh_takeover() -> None:
     assert state["retry_at"] is None
     assert "wake_mode" not in state
     assert "wake_deadline" not in state
+
+
+async def test_redundant_enable_during_root_wake_does_not_restart_episode() -> None:
+    """Reproduce the 2026-09-02 Bad Root deadline loop.
+
+    Live, Root was switched briefly OFF and the already-ON automation received
+    another ON request before the next cascade pass.  Treating that redundant
+    request as a fresh OFF -> ON takeover cleared ``waking_members`` and moved
+    its deadline every ~10 s.  The following pass then switched Root ON again.
+    An ON request for an already enabled cascade must be idempotent; the normal
+    Shared-actor check owns the observed external OFF and enters hands-off.
+    """
+    now = datetime(2026, 9, 2, 6, 53, 5)
+    coordinator = _Coordinator(now, shared_input=True)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20.1), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    assert coordinator.calls == [("switch.input", True)]
+    assert state["phase"] == "waking_members"
+    wake_deadline = state["wake_deadline"]
+    claims = dict(state["claims"])
+
+    # The live Root was OFF for about 100 ms before the next ON.  Recreate the
+    # state seen by a concurrent/repeated automation-ON request in that window.
+    coordinator.hass.states.values["switch.input"].state = "off"
+    assert await manager.async_set_enabled("chain", True)
+
+    assert state["phase"] == "waking_members"
+    assert state["wake_deadline"] == wake_deadline
+    assert state["claims"] == claims
+
+    coordinator.calls.clear()
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=10)
+    )
+
+    assert state["hands_off"] is True
+    assert state["enabled"] is False
+    assert state["phase"] == "hands_off"
+    assert coordinator.calls == []
 
 
 async def test_restored_aux_state_is_adopted_without_switching() -> None:
