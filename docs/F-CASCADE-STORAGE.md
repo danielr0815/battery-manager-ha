@@ -303,11 +303,16 @@ API-Kompatibilität vorhanden, sind aber AUS und tragen
 `managed_by_cascade=<id>`.
 
 Ein Hard-Fault veröffentlicht zusätzlich `fault_detail` mit Actor-Entity,
-Zielzustand, zuletzt beobachtetem Zustand und Fehlerart. Fault- und
-Hands-off-Kaskaden tragen sofort keine geplante Root-/Aux-Energie und keinen
-ausführbaren Zeitplan mehr; im folgenden Replan werden ihre Lasten auch aus der
-globalen SOC-Trajektorie entfernt. Eine fehlerfreie Kaskade mit bewusst
-ausgeschalteter Automation behält ihre Vorschau für die Inbetriebnahme.
+Zielzustand, zuletzt beobachtetem Zustand und Fehlerart. Deaktivierte, faulted
+oder Hands-off-Kaskaden tragen sofort keine geplante Root-/Aux-Energie und
+keinen ausführbaren Zeitplan mehr; im folgenden Replan werden ihre Mitglieder
+und die Endlast auch aus der globalen SOC-Trajektorie entfernt. Dadurch können
+nicht ausführbare Kaskaden weder Haus-SOC, Feed-in noch die Allokation anderer
+Lasten verfälschen. Root-Empfehlung und Timeline sind bei Automation AUS leer;
+der aktuelle Aggregat- und Mitglieder-SOC bleibt zur Diagnose sichtbar. Eine
+spätere hypothetische Inbetriebnahme-Vorschau müsste als ausdrücklich
+nicht-operativer, separater Rechenlauf veröffentlicht werden und dürfte nie in
+die globale Trajektorie zurückwirken.
 
 Der Forecast-Sensor veröffentlicht je Kaskade zusätzlich den lesbaren
 `source_name`, `member_details`, `terminal_name` und `schedule`.

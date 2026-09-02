@@ -213,7 +213,11 @@ class CascadeRecommendationSensor(BatteryManagerEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         plan = self._plan()
-        return bool(plan.get("planned_root_energy_kwh", 0.0)) if plan else None
+        return (
+            bool(plan.get("enabled") and plan.get("planned_root_energy_kwh", 0.0))
+            if plan
+            else None
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

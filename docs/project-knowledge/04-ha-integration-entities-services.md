@@ -16,10 +16,11 @@ Die Forecast-Card zeigt die Kaskade ausschließlich als Root-Black-Box-Spur;
 die separate Cascade-Card zeichnet alle internen Aktivitäten zeilenweise.
 Der Kaskaden-Automationsschalter zeigt `phase`, `hands_off`, `fault` und
 `fault_detail` als Attribute. Letzteres nennt bei einem Aktorfehler Entity,
-Zielzustand, beobachteten Zustand und Fehlerart. Fault-/Hands-off-Kaskaden
-publizieren keine ausführbare Energie oder Timeline und werden im folgenden
-Replan aus der wirksamen SOC-Trajektorie entfernt; bewusstes Automation-AUS
-ohne Fault behält die Inbetriebnahme-Vorschau. `hands_off=true` bei
+Zielzustand, beobachteten Zustand und Fehlerart. Deaktivierte,
+Fault-/Hands-off-Kaskaden publizieren keine ausführbare Energie oder Timeline
+und werden im folgenden Replan aus der wirksamen SOC-Trajektorie entfernt.
+Damit bedeutet Automation AUS auch planerisch AUS; eine hypothetische
+Inbetriebnahme-Vorschau gehört nicht in den operativen Plan. `hands_off=true` bei
 ausgeschalteter Automation bedeutet bei einem
 Shared Actor eine externe Zustandsänderung gegen einen weiterhin benötigten
 Planzustand und damit kontrollierte Besitzübergabe, nicht Hard-Fault. Ein

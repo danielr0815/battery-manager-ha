@@ -311,7 +311,11 @@ class CascadeManager:
             if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
                 continue
             state = self._state(cascade_id)
-            if not state.get("fault") and not state.get("hands_off"):
+            if (
+                state.get("enabled")
+                and not state.get("fault")
+                and not state.get("hands_off")
+            ):
                 continue
             blocked.update(subentry.data.get(CONF_CASCADE_MEMBER_IDS, []))
             terminal_id = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
@@ -2035,12 +2039,17 @@ class CascadeManager:
             plan = plans.get(cascade.cascade_id)
             state = self._state(cascade.cascade_id)
             # Keep aggregate SOC visible for diagnosis, but never advertise
-            # executable energy or schedule blocks after a hard fault/hands-off.
-            # The following refresh also removes these loads from the global
-            # trajectory through ``planning_blocked_load_ids``; this immediate
-            # payload gate closes the UI seam in the faulting refresh itself.
+            # executable energy or schedule blocks while automation is OFF or
+            # after a hard fault/hands-off. The following refresh also removes
+            # these loads from the global trajectory through
+            # ``planning_blocked_load_ids``; this immediate payload gate closes
+            # the UI seam in the disabling/faulting refresh itself.
             effective_plan = (
-                None if state.get("fault") or state.get("hands_off") else plan
+                plan
+                if state.get("enabled")
+                and not state.get("fault")
+                and not state.get("hands_off")
+                else None
             )
             root_per_day = self._root_per_day_kwh(effective_plan, slots)
             topology = self._topology(cascade.cascade_id)
@@ -2172,7 +2181,7 @@ class CascadeManager:
                 ),
                 "recovery_deadline": (
                     deadline.isoformat()
-                    if (deadline := self._recovery_deadline(state, plan))
+                    if (deadline := self._recovery_deadline(state, effective_plan))
                     else None
                 ),
                 "members": [member.load_id for member in cascade.members],

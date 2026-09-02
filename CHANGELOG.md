@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.8] - 2026-09-02
+
+### Fixed
+- `switch.…_automation` AUS entfernt die zugehörige Kaskade jetzt auch aus der
+  wirksamen Planung. Root-Empfehlung, Root-/Aux-Energie und Timeline bleiben
+  leer; Mitglieder und Endlast reservieren keine Energie mehr in Haus-SOC-,
+  Feed-in- oder konkurrierenden Lastplänen. Zuvor stoppte der Schalter nur den
+  Executor, während dieselbe nicht ausführbare „Inbetriebnahme-Vorschau“ den
+  globalen Plan weiterhin veränderte. Aggregat- und Mitglieder-SOC bleiben
+  zur Diagnose sichtbar.
+
 ## [0.34.7] - 2026-09-02
 
 ### Fixed

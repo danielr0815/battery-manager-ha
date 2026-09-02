@@ -3155,11 +3155,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if now is None:
             now = dt_util.utcnow()
         states = []
-        # A hard-faulted or hands-off cascade cannot execute its hypothetical
-        # schedule.  Remove its members and terminal from the effective plan so
-        # the house-SOC trajectory and competing load allocations do not reserve
-        # energy for actors that have deliberately been released or failed.
-        # A clean, deliberately disabled cascade keeps its commissioning preview.
+        # A disabled, hard-faulted or hands-off cascade cannot execute a
+        # schedule. Remove its members and terminal from the effective plan so
+        # the house-SOC trajectory, feed-in and competing load allocations do
+        # not reserve energy for actors that are deliberately not owned.
         cascade_blocked = self.cascade_manager.planning_blocked_load_ids()
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:

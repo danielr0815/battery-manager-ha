@@ -379,6 +379,51 @@ def test_automation_switch_exposes_hands_off_reason() -> None:
     }
 
 
+def test_root_recommendation_is_off_when_cascade_automation_is_off() -> None:
+    """A hypothetical Root plan is never an operational recommendation."""
+    plan_payload = {
+        "enabled": False,
+        "planned_root_energy_kwh": 7.8,
+    }
+    entity = SimpleNamespace(
+        _plan=lambda: plan_payload,
+    )
+
+    assert CascadeRecommendationSensor.is_on.fget(entity) is False
+
+    plan_payload["enabled"] = True
+    assert CascadeRecommendationSensor.is_on.fget(entity) is True
+
+
+def test_disabled_cascade_cannot_reserve_energy_in_operational_plan() -> None:
+    """Automation OFF is planner OFF, not a global commissioning preview."""
+    now = datetime(2026, 9, 2, 22, 30)
+    coordinator = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(coordinator)
+    config, inputs, _preview = _live_incident_plan(manager, now)
+
+    blocked = manager.planning_blocked_load_ids()
+    assert blocked == {"b1", "b2", "leaf"}
+    disabled_inputs = replace(
+        inputs,
+        load_states=tuple(
+            replace(state, available=False) if state.load_id in blocked else state
+            for state in inputs.load_states
+        ),
+    )
+
+    disabled = plan(config, disabled_inputs)
+    no_cascade = plan(replace(config, cascades=()), disabled_inputs)
+
+    assert disabled.cascade_plans[0].planned_root_energy_wh == 0.0
+    assert disabled.cascade_plans[0].planned_aux_energy_wh == 0.0
+    assert all(item.planned_energy_wh == 0.0 for item in disabled.load_plans)
+    assert disabled.trajectory == no_cascade.trajectory
+
+    manager._state("chain")["enabled"] = True
+    assert manager.planning_blocked_load_ids() == set()
+
+
 def test_bulky_cascade_timelines_are_not_recorded() -> None:
     assert CascadeRecommendationSensor._unrecorded_attributes == {
         "member_details",
@@ -2414,6 +2459,16 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     assert payload["schedule"] == []
     state["fault"] = None
     state["hands_off"] = False
+    disabled_payload = manager.payload(result, config, slots)["chain"]
+    assert disabled_payload["enabled"] is False
+    assert disabled_payload["planned_root_energy_kwh"] == 0.0
+    assert disabled_payload["planned_aux_energy_kwh"] == 0.0
+    assert disabled_payload["daily"] == []
+    assert disabled_payload["recovery_deadline"] is None
+    assert disabled_payload["member_details"][0]["soc_forecast"] == []
+    assert disabled_payload["schedule"] == []
+
+    state["enabled"] = True
     active_payload = manager.payload(result, config, slots)["chain"]
     assert active_payload["member_details"][0]["soc_forecast"] == [
         {"t": now.isoformat(), "soc": 90.0},
@@ -2489,6 +2544,7 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     # Inactive/faulted apply still evaluates the central safe-off contract and
     # exercises the per-chain parallel lock/gather wrapper. Actors already
     # confirmed OFF receive no redundant service calls.
+    state["enabled"] = False
     await manager.async_apply(
         config,
         result,
