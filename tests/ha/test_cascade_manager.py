@@ -644,6 +644,45 @@ async def test_live_two_fossibot_wake_does_not_cycle_root_every_ten_seconds() ->
     assert state["wake_deadline"] == wake_deadline
 
 
+async def test_prior_day_manual_reenable_root_wake_does_not_cycle() -> None:
+    """A stale prior-day Aux marker cannot restart Root every refresh.
+
+    This recreates the 2026-09-02 Bad cascade: both Fossibots are at their
+    20 % floor, the operator enables the all-OFF cascade after midnight, and
+    the fresh plan wakes B1 through the shared Root actor.  The prior day's
+    completed Aux marker must be retired before that wake becomes transient.
+    """
+    started = datetime(2026, 9, 2, 6, 15, 21)
+    coordinator = _LiveIncidentCoordinator(started)
+    for entity_id in ("sensor.b1_soc", "sensor.b2_soc"):
+        coordinator.hass.states.values[entity_id].state = "20"
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "idle",
+            "episode_day": "2026-09-01",
+        }
+    )
+    live = (
+        SurplusLoadState("b1", soc_percent=20, soc_source="live"),
+        SurplusLoadState("b2", soc_percent=20, soc_source="live"),
+        SurplusLoadState("leaf"),
+    )
+
+    await manager._apply_one("chain", _root_plan(started), live, started)
+    wake_deadline = state["wake_deadline"]
+    await manager._apply_one(
+        "chain", _root_plan(started), live, started + timedelta(seconds=10)
+    )
+
+    assert coordinator.calls == [("switch.bad_waschmaschine", True)]
+    assert state["phase"] == "waking_members"
+    assert state["wake_deadline"] == wake_deadline
+    assert state["episode_day"] is None
+
+
 async def test_live_two_fossibot_full_switch_pass_has_one_root_owner(hass) -> None:
     """Run the exact plan through generic switching and CascadeManager.
 
@@ -2089,6 +2128,43 @@ async def test_day_rollover_preserves_below_target_recovery_debt() -> None:
     assert state["episode_day"] == "2026-08-24"
     assert state["recovery_pending"] == ["b1"]
     assert state["recovery_deadline"] == (now + timedelta(hours=12)).isoformat()
+
+
+async def test_day_rollover_without_recovery_is_consumed_once() -> None:
+    """A wake spanning midnight may restart once, never on every refresh."""
+    now = datetime(2026, 8, 24, 0, 1)
+    coordinator = _Coordinator(now, shared_input=True)
+    coordinator.hass.states.values["switch.input"].state = "on"
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        {
+            "enabled": True,
+            "phase": "waking_members",
+            "episode_day": "2026-08-23",
+            "wake_mode": "root",
+            "wake_member_index": 0,
+            "wake_telemetry_reported_at": now.isoformat(),
+            "wake_deadline": (now + timedelta(seconds=50)).isoformat(),
+        }
+    )
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    wake_deadline = state["wake_deadline"]
+    assert coordinator.calls == [
+        ("switch.input", False),
+        ("switch.input", True),
+    ]
+    assert state["episode_day"] is None
+
+    coordinator.calls.clear()
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=10)
+    )
+
+    assert coordinator.calls == []
+    assert state["wake_deadline"] == wake_deadline
 
 
 async def test_recovery_finishing_after_midnight_completes_current_day(

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.6] - 2026-09-02
+
+### Fixed
+- Eine vom Vortag erhaltene `episode_day`-Marke wird vor einem neuen
+  Tagesübergang aus bestätigtem Safe-OFF verworfen. Zuvor konnte die manuell
+  aktivierte Bad-Kaskade zunächst Root einschalten und ab dem nächsten
+  Coordinator-Refresh denselben vermeintlichen Tageswechsel wiederholt
+  ausführen; Root taktete dadurch alle zehn Sekunden AUS/AN und die
+  Fossibot-Wake-Deadline wanderte endlos weiter. Auch ein tatsächlich über
+  Mitternacht laufender Wake konsumiert den Tageswechsel jetzt genau einmal.
+
 ## [0.34.5] - 2026-09-02
 
 ### Fixed

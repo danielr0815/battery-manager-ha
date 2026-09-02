@@ -197,6 +197,17 @@ Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst dann seinen
 Claim. Ein bereits bestätigter Zielzustand wird ohne redundanten Service-Aufruf
 übernommen; damit bleibt insbesondere wiederholtes Safe-OFF idempotent.
 
+Eine abgeschlossene `episode_day`-Marke des Vortags wird aus einem stabilen,
+bestätigt ausgeschalteten Zustand entfernt, bevor am neuen Tag ein Root- oder
+Aux-Wake beginnt. Ein bereits transient laufender Übergang über Mitternacht
+wird einmal geordnet Safe-OFF geschaltet; ohne offene Recovery-Schuld wird die
+alte Tagesmarke danach ebenfalls entfernt, mit offener Schuld auf den neuen
+Tag übernommen. Der Tageswechsel ist damit in beiden Fällen konsumiert und
+darf weder Root im Coordinator-Takt AUS/AN schalten noch die Wake-Deadline
+wiederholt neu beginnen lassen. Eine gleichlautende Marke des aktuellen Tages
+bleibt bewusst erhalten: Manuelles AUS→AN eröffnet keine zweite unbewiesene
+Aux-Episode desselben Tages.
+
 Der Executor stoppt jede Aux-Quelle am SOC-Endwert des aktuellen Planslots,
 begrenzt diesen aber immer durch den Sicherheits-Floor. Dadurch kann ein
 exportgedeckter Plan unter 50 % tatsächlich ausgeführt werden, ohne dass ein

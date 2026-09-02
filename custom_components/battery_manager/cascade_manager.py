@@ -1511,25 +1511,42 @@ class CascadeManager:
                 return
             if await self._reconcile_after_restart(cascade_id, topology, plan, now):
                 return
+        active_episode_phases = (
+            "running",
+            "proving",
+            "waking",
+            "waking_members",
+        )
+        prior_episode = bool(
+            state.get("episode_day") and state.get("episode_day") != day
+        )
         if (
-            state.get("episode_day")
-            and state.get("episode_day") != day
-            and state.get("phase")
-            in (
-                "running",
-                "proving",
-                "waking",
-                "waking_members",
-            )
+            prior_episode
+            and state.get("phase") not in active_episode_phases
+            and not state.get("recovery_pending")
         ):
+            # Live 2026-09-02: the Bad cascade was manually enabled from
+            # Safe-OFF with yesterday's completed Aux marker still present.
+            # The first Root pass changed idle -> waking_members; every later
+            # refresh then mistook that new wake for a midnight-crossing old
+            # episode, switched Root OFF/ON and moved its deadline forever.
+            # Retire a completed prior-day marker before starting any new-day
+            # transition.  A same-day marker deliberately remains intact so
+            # an OFF -> ON toggle cannot buy a second Aux episode.
+            state["episode_day"] = None
+            self.coordinator._save_persistent_state()
+            prior_episode = False
+        if prior_episode and state.get("phase") in active_episode_phases:
             pending = bool(state.get("recovery_pending"))
             await self.async_safe_off(cascade_id, "local day rollover")
-            if pending and state.get("phase") != "fault":
+            if state.get("phase") != "fault":
                 # Export-backed discharge may legitimately cross midnight.
                 # Preserve its recovery contract and prevent a second Aux
                 # episode until the members have reached 50 % again.
-                state["episode_day"] = day
-                state["phase"] = "recovering"
+                state["episode_day"] = day if pending else None
+                if pending:
+                    state["phase"] = "recovering"
+                self.coordinator._save_persistent_state()
         if state.get("retry_day") != day:
             state["retry_used"] = False
             state["retry_at"] = None
