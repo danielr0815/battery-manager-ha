@@ -5,9 +5,10 @@
   (repair issue + push), the latch blocks any re-ON, and recovery resumes
   normal operation. The data-loss clock and the latch survive restarts.
 - House-SOC stale watchdog: within 21-89 % a frozen house-battery SOC is
-  latched stale once the plan's expected battery throughput exceeds the
-  band's drift allowance; values outside that window are exempt. The latch
-  routes into UpdateFailed and thus into stage 2.
+  latched stale once measured battery throughput (or the plan fallback when
+  no power sensor is configured) exceeds the band's drift allowance; values
+  outside that window are exempt. The latch routes into UpdateFailed and thus
+  into stage 2.
 - F7/U5: three consecutive support-switch failures raise a repair issue +
   push; the first success resets the streak and resolves the issue.
 """
@@ -23,6 +24,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
     CONF_DCDC_SWITCH,
+    CONF_FEEDIN_BATTERY_POWER_ENTITY,
+    CONF_HOUSE_SOC_STALE_MID_PERCENT,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
@@ -506,6 +509,57 @@ async def test_watchdog_no_false_alarm_at_standby(hass):
         await _refresh_at(hass, coordinator, NIGHT + timedelta(minutes=minutes))
         assert coordinator._house_soc_stale is None
         assert coordinator.last_update_success
+
+
+async def test_watchdog_prefers_measured_battery_power_over_divergent_plan(hass):
+    """Live 2026-09-02: a failed cascade left real battery throughput below
+    one displayed SOC percent while the plan still expected >100 Wh.  The
+    plan is no proof that the battery really moved when an actual battery-power
+    sensor is configured; an unavailable proof sensor must pause as well."""
+    calls: list[tuple[str, str]] = []
+    notifications: list[dict] = []
+    battery_power = "sensor.house_battery_power"
+    _entry, coordinator = await _setup(
+        hass,
+        calls,
+        notifications,
+        extra_data={
+            CONF_FEEDIN_BATTERY_POWER_ENTITY: battery_power,
+            CONF_HOUSE_SOC_STALE_MID_PERCENT: 2.0,
+        },
+    )
+
+    hass.states.async_set(battery_power, "344", {"unit_of_measurement": "W"})
+    coordinator._house_soc_frozen = None
+    coordinator._expected_battery_power_w = 1000.0
+    t1 = MIDDAY + timedelta(minutes=2)
+    await _refresh_at(hass, coordinator, t1)
+    assert coordinator._house_soc_frozen == (55.0, t1, 0.0)
+
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=7))
+    frozen = coordinator._house_soc_frozen
+    assert frozen is not None
+    assert frozen[:2] == (55.0, t1 + timedelta(minutes=7))
+    assert round(frozen[2], 1) == 40.1
+    assert coordinator._house_soc_stale is None
+    assert coordinator.last_update_success
+
+    hass.states.async_set(battery_power, "unavailable")
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=67))
+    frozen = coordinator._house_soc_frozen
+    assert frozen is not None
+    assert frozen[:2] == (55.0, t1 + timedelta(minutes=67))
+    assert round(frozen[2], 1) == 40.1
+    assert coordinator._house_soc_stale is None
+    assert coordinator.last_update_success
+
+    hass.states.async_set(battery_power, "1000")
+    coordinator._expected_battery_power_w = 1000.0
+    await _refresh_at(hass, coordinator, t1 + timedelta(minutes=74))
+    assert coordinator._house_soc_stale == 55.0
+    assert not coordinator.last_update_success
 
 
 async def test_watchdog_latches_frozen_soc_and_unlatches_on_change(hass):

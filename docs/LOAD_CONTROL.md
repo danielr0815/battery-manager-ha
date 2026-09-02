@@ -407,10 +407,13 @@ same blind spot: a BMS serving a cached, frozen SOC with fresh timestamps
 passes every age check, and the planner would keep planning on fiction
 forever. The watchdog `_update_house_soc_watchdog` (G2's sibling) latches the
 house SOC as stale when it stays EXACTLY unchanged while the battery
-demonstrably flows power. BM has no live house-battery *power* sensor, so the
-proof proxy is the **expected slot-0 battery flow of the last valid plan**:
-while `|expected| >= HOUSE_SOC_STALE_POWER_W = 300 W`, a frozen reading
-accumulates the expected energy (`|expected| × Δt`); below the bar the
+demonstrably flows power. When `feedin_battery_power_entity` is configured,
+its **measured absolute battery power** is authoritative. An unreadable
+configured sensor pauses the proof; the plan must not manufacture evidence
+when execution has diverged from it. Only installations without that sensor
+use the **expected slot-0 battery flow of the last valid plan** as a
+compatibility fallback. While `|power| >= HOUSE_SOC_STALE_POWER_W = 300 W`, a
+frozen reading accumulates energy (`|power| × Δt`); below the bar the
 accumulation pauses (standby/float — a constant SOC is physically correct
 there, no evidence either way), and only a CHANGED reading resets it, so
 duty-cycled flow still accumulates. A frozen reading is evaluated only in the

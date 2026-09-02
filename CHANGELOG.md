@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.5] - 2026-09-02
+
+### Fixed
+- Der Haus-SOC-Wächter verwendet bei konfigurierter
+  `feedin_battery_power_entity` jetzt den tatsächlich gemessenen absoluten
+  Batteriedurchsatz als Freeze-Evidenz. Ein nicht lesbarer konfigurierter
+  Leistungssensor pausiert die Akkumulation; nur Anlagen ohne diese Messquelle
+  behalten den erwarteten Planfluss als Kompatibilitäts-Fallback. Damit kann
+  ein nicht ausgeführter Kaskadenplan keinen falschen House-SOC-Stale-Latch und
+  keine flächendeckend nicht verfügbaren Coordinator-Entities mehr auslösen.
+
 ## [0.34.4] - 2026-09-02
 
 ### Fixed

@@ -358,11 +358,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stale_shed_task: asyncio.Task | None = None
         # House-SOC stale watchdog (energy-based, banded sibling of the G2
         # load guard): evidence tuple (frozen value, last accumulation time,
-        # accumulated expected energy in Wh) while power flow is expected,
-        # and the latch (frozen value, for the unlatch compare + log). The
-        # expected slot-0 battery flow of the last VALID plan is the flow
-        # proof — see _update_house_soc_watchdog. In-memory only (like G2):
-        # a restart re-accumulates the evidence energy.
+        # accumulated battery throughput in Wh) while power flow is measured
+        # or expected, and the latch (frozen value, for the unlatch compare +
+        # log). A configured live house-battery power sensor is the preferred
+        # flow proof; the expected slot-0 battery flow of the last VALID plan
+        # remains the compatibility fallback — see _update_house_soc_watchdog.
+        # In-memory only (like G2): a restart re-accumulates the evidence.
         self._house_soc_frozen: tuple[float, datetime, float] | None = None
         self._house_soc_stale: float | None = None
         self._expected_battery_power_w: float | None = None
@@ -1478,23 +1479,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         `_get_soc` accepts any in-range value as fresh, so a BMS serving a
         cached, frozen SOC (with fresh timestamps — age checks cannot catch
         it) would keep the planner running on fiction forever. While the SOC
-        reading stays EXACTLY unchanged, the watchdog accumulates the EXPECTED
+        reading stays EXACTLY unchanged, the watchdog accumulates battery
         energy throughput; once that exceeds the band's configured share of
         capacity, the SOC would have had to move, so the reading is latched as
         stale and `_get_soc` treats it as invalid.
 
-        Flow proof: the integration has no live house-battery POWER sensor
-        (only SOC, voltage, and consumption inputs are configurable), so the
-        expected slot-0 battery flow of the last VALID plan (its trajectory)
-        is used as the |power| proxy — the planner states how many watts the
-        battery should be exchanging right now; a real BMS must reflect that
-        in the SOC once the accumulated expectation passes the band's drift
-        allowance. That is also why accumulation PAUSES below
-        HOUSE_SOC_STALE_POWER_W (standby / float charge: a constant SOC is
-        physically correct there, no evidence either way) and while no valid
-        plan exists (no expectation, nothing to prove a freeze against). Only
-        a CHANGED reading resets the evidence — a pause keeps it, so
-        duty-cycled flow still accumulates. Values below 21 % or above 89 %
+        Flow proof: when a live house-battery power sensor is configured for
+        feed-in control, its measured |power| is authoritative. A configured
+        but unreadable sensor PAUSES the proof; falling back to the plan there
+        would recreate the 2026-09-02 false latch after cascade execution had
+        diverged from the plan. Installations without such a sensor retain the
+        expected slot-0 battery flow of the last VALID plan as a compatibility
+        fallback. Accumulation also PAUSES below HOUSE_SOC_STALE_POWER_W
+        (standby / float charge: a constant SOC is physically correct there,
+        no evidence either way). Only a CHANGED reading resets the evidence —
+        a pause keeps it, so duty-cycled flow still accumulates. Values below
+        21 % or above 89 %
         are exempt altogether: balancing and charge/discharge clamping make a
         constant displayed SOC physically plausible there regardless of the
         expected flow. Inside the inclusive 21-89 % plausibility window, the
@@ -1548,7 +1548,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # New (or changed) value: (re)seed — no elapsed time to add yet.
             self._house_soc_frozen = (raw, now, 0.0)
             return
-        power_w = self._expected_battery_power_w
+        battery_power_entity = self.raw_config.get(CONF_FEEDIN_BATTERY_POWER_ENTITY)
+        if battery_power_entity:
+            power_w = self._read_float(battery_power_entity)
+            flow_proof = "the battery-power sensor measured"
+        else:
+            power_w = self._expected_battery_power_w
+            flow_proof = "the plan expected"
         _value, last, accumulated_wh = evidence
         if power_w is not None and abs(power_w) >= HOUSE_SOC_STALE_POWER_W:
             accumulated_wh += abs(power_w) * (now - last).total_seconds() / 3600.0
@@ -1570,12 +1576,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if accumulated_wh > threshold_wh:
             self._house_soc_stale = raw
             _LOGGER.warning(
-                "House battery SOC frozen at %.1f%% — the plan expected"
-                " %.0f Wh of battery flow without any SOC change (band drift"
+                "House battery SOC frozen at %.1f%% — %s %.0f Wh of battery"
+                " flow without any SOC change (band drift"
                 " allowance %.1f%% of capacity) — treating the reading as"
                 " STALE (UpdateFailed path) until the sensor reports a"
                 " different value",
                 raw,
+                flow_proof,
                 accumulated_wh,
                 drift_percent,
             )

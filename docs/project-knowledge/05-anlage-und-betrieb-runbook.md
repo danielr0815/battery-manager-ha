@@ -389,7 +389,7 @@ er bewacht die SOC-Quelle der *Hausbatterie*, nicht die der Lasten; seit
 v0.18.0 energiebasiert/band-abhängig):
 
 ```
-House battery SOC frozen at 63.0% — the plan expected 420 Wh of battery
+House battery SOC frozen at 63.0% — the battery-power sensor measured 420 Wh of battery
 flow without any SOC change (band drift allowance 2.0% of capacity) —
 treating the reading as STALE (UpdateFailed path) until the sensor
 reports a different value
@@ -400,9 +400,13 @@ House battery SOC reports 63.4% again (was frozen at 63.0%) — stale
 watchdog latch cleared
 ```
 
-**Bedeutung:** der SOC blieb exakt unverändert, während der letzte gültige
-Plan ≥ 300 W Batteriefluss erwartete — so lange, bis der akkumulierte
-erwartete Durchsatz die Drift-Toleranz des SOC-Bands überstieg. Die Prüfung
+**Bedeutung:** der SOC blieb exakt unverändert, während der konfigurierte
+Batterieleistungssensor ≥ 300 W maß — so lange, bis der akkumulierte gemessene
+Durchsatz die Drift-Toleranz des SOC-Bands überstieg. Ist dieser konfigurierte
+Sensor nicht lesbar, pausiert die Evidenz; der Plan darf einen real nicht
+ausgeführten Energiefluss nicht belegen. Nur wenn kein Batterieleistungssensor
+konfiguriert ist, bleibt der erwartete Planfluss der Kompatibilitäts-Fallback.
+Die Prüfung
 findet ausschließlich im inklusiven Fenster 21–89 % statt; unter 21 % und
 über 89 % werden wegen legitimer BMS-Plateaus weder Evidenz aufgebaut noch
 vorhandene Latches gehalten. Innerhalb des Fensters gilt

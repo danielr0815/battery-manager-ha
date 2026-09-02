@@ -205,8 +205,11 @@ die beiden `MAX_HISTORICAL_*`-Grenzen.)
 Zwei Eskalationen hängen an diesem Pfad (v0.17.0): der **energiebasierte,
 band-abhängige Haus-SOC-Stale-Wächter** (`_update_house_soc_watchdog`, seit
 v0.18.0) erkennt einen mit frischen Zeitstempeln eingefrorenen SOC — erst,
-wenn der akkumulierte erwartete Batteriedurchsatz die Drift-Toleranz des
-SOC-Bands übersteigt (Mitte 13–89 %: `house_soc_stale_mid_percent`, Standard
+wenn der akkumulierte Batteriedurchsatz die Drift-Toleranz des SOC-Bands
+übersteigt. Dafür gilt die konfigurierte `feedin_battery_power_entity` als
+maßgebliche Messquelle; ist sie nicht lesbar, pausiert die Evidenz. Nur ohne
+konfigurierte Leistungsmessung dient der erwartete Planfluss als
+Kompatibilitäts-Fallback (Mitte 13–89 %: `house_soc_stale_mid_percent`, Standard
 3 % der Kapazität = 2 % Drift + 1 % Anzeige-Quantisierung, siehe §5.3 in
 05-anlage-und-betrieb-runbook.md; Ränder < 13 % / > 89 %:
 `house_soc_stale_edge_percent`,

@@ -526,7 +526,7 @@
               "battery_capacity_wh": "Total battery capacity in watt-hours (e.g. 5000 for 5 kWh).",
               "battery_min_soc_percent": "Hard lower limit: planning never discharges the battery below this state of charge (deep-discharge protection).",
               "battery_max_soc_percent": "Upper charging limit: above this value the battery absorbs no more surplus (protects the cells).",
-              "house_soc_stale_mid_percent": "House-SOC watchdog: the reading is treated as frozen once the plan expected this much battery throughput (in % of capacity) without any SOC change — mid band (between the edge bounds).",
+              "house_soc_stale_mid_percent": "House-SOC watchdog: the reading is treated as frozen once the configured battery-power sensor measured this much throughput (in % of capacity) without any SOC change. Without a power sensor, the plan is the fallback — mid band (between the edge bounds).",
               "house_soc_stale_edge_percent": "Same watchdog at the SOC edges (below the lower / above the upper bound): BMS calibration plateaus there are normal, so a larger unexplained drift is allowed before the alarm.",
               "house_soc_stale_edge_low_soc": "Below this SOC the edge allowance applies (BMS calibration plateau at the bottom end).",
               "house_soc_stale_edge_high_soc": "Above this SOC the edge allowance applies (Victron calibrates the SOC here — the 89 % plateau belongs in the edge band)."

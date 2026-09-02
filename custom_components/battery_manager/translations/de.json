@@ -526,7 +526,7 @@
               "battery_capacity_wh": "Gesamtkapazität der Batterie in Wattstunden (z. B. 5000 für 5 kWh).",
               "battery_min_soc_percent": "Harte Untergrenze: Unter diesen Ladezustand wird die Batterie nie geplant entladen (Schutz vor Tiefentladung).",
               "battery_max_soc_percent": "Obergrenze für das Laden: Darüber nimmt die Batterie keinen Überschuss mehr auf (schont die Zellen).",
-              "house_soc_stale_mid_percent": "House-SOC-Watchdog: Der Messwert gilt als eingefroren, wenn der Plan diesen Batteriedurchsatz (in % der Kapazität) erwartet hat, ohne dass sich der SOC änderte — mittlerer Bereich (zwischen den Randgrenzen).",
+              "house_soc_stale_mid_percent": "House-SOC-Watchdog: Der Messwert gilt als eingefroren, wenn der konfigurierte Batterieleistungssensor diesen Durchsatz (in % der Kapazität) gemessen hat, ohne dass sich der SOC änderte. Ohne Leistungssensor dient der Plan als Fallback — mittlerer Bereich (zwischen den Randgrenzen).",
               "house_soc_stale_edge_percent": "Derselbe Watchdog an den SOC-Rändern (unterhalb der unteren / oberhalb der oberen Grenze): BMS-Kalibrierungs-Plateaus sind dort normal, daher ist eine größere unerklärte Abweichung vor dem Alarm erlaubt.",
               "house_soc_stale_edge_low_soc": "Unterhalb dieses SOC gilt die Rand-Toleranz (BMS-Kalibrierungs-Plateau am unteren Ende).",
               "house_soc_stale_edge_high_soc": "Oberhalb dieses SOC gilt die Rand-Toleranz (Victron kalibriert hier den SOC — das 89-%-Plateau gehört ins Randband)."
