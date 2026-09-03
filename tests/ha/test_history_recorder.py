@@ -641,6 +641,8 @@ async def test_bias_watchdog_and_future_daytypes(hass, _min_samples_2):
         "bias_w": -400.0,
         "mae_w": 400.0,
         "hours": 24,
+        "learned_hours": 24,
+        "static_fallback_hours": 0,
     }
     issue = ir.async_get(hass).async_get_issue(
         DOMAIN, f"learning_bias_{learner.entry.entry_id}"
@@ -661,3 +663,69 @@ async def test_bias_watchdog_and_future_daytypes(hass, _min_samples_2):
     }
     assert learner.planning_daytype(date(2026, 7, 17)) == "weekend"
     assert learner.planning_daytype(date(2026, 7, 20)) == "weekday"
+
+
+def test_vacation_static_fallback_is_included_in_bias_watchdog(hass) -> None:
+    """Sparse absence bins still validate the base-only series actually used."""
+    learner = _learner(
+        hass,
+        **{
+            CONF_AC_LOAD_ENTITY: "sensor.ac_load",
+            "ac_base_load_w": 100.0,
+            "ac_variable_load_w": 75.0,
+            "ac_variable_start_hour": 6,
+            "ac_variable_end_hour": 20,
+        },
+    )
+    yesterday = "2026-07-14"
+    learner.data["daily_hours"][yesterday] = {
+        "ac": [120.0] * 24,
+        "dc": None,
+    }
+    learner.data["profiles"] = {"ac": None, "dc": None}
+
+    learner._validate_yesterday(
+        date(2026, 7, 15),
+        {yesterday: DAY_TYPE_ABSENCE},
+        learner._raw_config(),
+    )
+
+    assert learner.data["validation"]["ac"][-1] == {
+        "day": yesterday,
+        "bias_w": -20.0,
+        "mae_w": 20.0,
+        "hours": 24,
+        "learned_hours": 0,
+        "static_fallback_hours": 24,
+    }
+
+
+def test_static_fallback_watchdog_honours_window_across_midnight(hass) -> None:
+    """Validation shares the production fallback's wrapped-window semantics."""
+    learner = _learner(
+        hass,
+        **{
+            CONF_AC_LOAD_ENTITY: "sensor.ac_load",
+            "ac_base_load_w": 100.0,
+            "ac_variable_load_w": 50.0,
+            "ac_variable_start_hour": 20,
+            "ac_variable_end_hour": 6,
+        },
+    )
+    yesterday = "2026-07-14"
+    actual = [100.0] * 24
+    for hour in (*range(0, 6), *range(20, 24)):
+        actual[hour] = 150.0
+    learner.data["daily_hours"][yesterday] = {"ac": actual, "dc": None}
+    learner.data["profiles"] = {"ac": None, "dc": None}
+
+    learner._validate_yesterday(
+        date(2026, 7, 15),
+        {yesterday: "weekday"},
+        learner._raw_config(),
+    )
+
+    validation = learner.data["validation"]["ac"][-1]
+    assert validation["bias_w"] == 0.0
+    assert validation["mae_w"] == 0.0
+    assert validation["static_fallback_hours"] == 24

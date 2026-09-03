@@ -64,36 +64,47 @@ def _plan_by_id(result: PlanResult) -> dict[str, LoadPlan]:
     return {plan.load_id: plan for plan in result.load_plans}
 
 
+def _effective_power_w(
+    load_id: str,
+    cascade: LoadCascade,
+    config: SystemConfig,
+    inputs: PlanInputs,
+) -> float:
+    """Return the same robust, hard-capped power used by the allocator."""
+    loads = {load.load_id: load for load in config.loads}
+    states = {state.load_id: state for state in inputs.load_states}
+    load = loads[load_id]
+    state = states.get(load_id, SurplusLoadState(load_id=load_id))
+    power_w = state.planning_power_w(load)
+    member = next((item for item in cascade.members if item.load_id == load_id), None)
+    if member is not None and member.max_charge_power_w is not None:
+        power_w = min(power_w, member.max_charge_power_w)
+    return power_w
+
+
 def _allocate_aux_now(
     cascade: LoadCascade,
     config: SystemConfig,
     inputs: PlanInputs,
     result: PlanResult,
     target_soc_by_id: dict[str, float] | None = None,
+    *,
+    prefer_early: bool = False,
 ) -> tuple[tuple[CascadeSourceSegment, ...], dict[str, float], bool] | None:
-    """Allocate one latest contiguous episode down to all member targets.
+    """Allocate feasible Aux episodes down to all member targets.
 
     Only slot 0 is executable now; later segments are a rolling forecast.  A
-    new episode is aligned to the latest forecast-slot boundary from which all
-    currently usable target energy still fits before Root/PV takes over or the
-    local day ends.  A running episode remains anchored at slot 0.  The full
-    episode is required so the following legacy replan sees the recharge
-    headroom before residual PV is sent to early feed-in.
+    new episode is aligned as late as possible inside each electrically free
+    window; Root/PV may split the plan into more than one episode on the same
+    local day.  A running episode remains anchored at slot 0.  The full useful
+    service plus every required transition is booked so the following legacy
+    replan sees only physically reachable recharge headroom before residual PV
+    is sent to early feed-in.
     """
     if not inputs.slots:
         return None
     runtime = _runtime_for(inputs, cascade.cascade_id)
     today = inputs.now.date()
-    if (
-        runtime is not None
-        and runtime.episode_day == today
-        and runtime.phase
-        in (
-            "recovering",
-            "complete",
-        )
-    ):
-        return None
     plans = _plan_by_id(result)
     terminal_plan = plans[cascade.terminal_load_id]
     # Root/PV and house-battery service always outrank isolated storage.
@@ -103,6 +114,9 @@ def _allocate_aux_now(
     loads = {load.load_id: load for load in config.loads}
     states = {state.load_id: state for state in inputs.load_states}
     terminal = loads[cascade.terminal_load_id]
+    terminal_power_w = _effective_power_w(
+        cascade.terminal_load_id, cascade, config, inputs
+    )
     continuing = (
         runtime is not None
         and runtime.phase in ("running", "proving")
@@ -121,9 +135,11 @@ def _allocate_aux_now(
     end_soc: dict[str, float] = {}
     provisional = False
 
-    # The Aux episode stays contiguous and must end before any Root-bound
-    # cascade activity. Restrict it to the local day: the persisted daily
-    # episode contract is evaluated again after midnight.
+    # Every electrically free window of the remaining local day is eligible.
+    # Root slots split episodes but do not suppress a later, freshly proven
+    # episode; this is how an early discharge/recovery/discharge day reaches a
+    # fixed point instead of feeding the second export peak into the grid.
+    slot_indexes: list[int] = []
     slot_capacity_h: list[float] = []
     cascade_load_ids = (
         *(member.load_id for member in cascade.members),
@@ -137,9 +153,28 @@ def _allocate_aux_now(
             index < len(plans[load_id].schedule) and plans[load_id].schedule[index]
             for load_id in cascade_load_ids
         ):
-            break
+            continue
+        slot_indexes.append(index)
         slot_capacity_h.append(slot.duration)
     if not slot_capacity_h:
+        return None
+    windows: list[tuple[int, int]] = []
+    window_start = 0
+    for position in range(1, len(slot_indexes) + 1):
+        if position == len(slot_indexes) or (
+            slot_indexes[position] > slot_indexes[position - 1] + 1
+        ):
+            windows.append((window_start, position))
+            window_start = position
+    transition_h = 0.0 if continuing else cascade.startup_transition_s / 3600.0
+    window_capacities = [
+        max(0.0, sum(slot_capacity_h[start:end]) - transition_h)
+        for start, end in windows
+    ]
+    service_capacity_h = sum(
+        capacity for capacity in window_capacities if capacity + _EPS >= required_h
+    )
+    if service_capacity_h + _EPS < required_h:
         return None
     source_runs: list[tuple[str, float]] = []
     allocated_h = 0.0
@@ -158,7 +193,7 @@ def _allocate_aux_now(
         downstream_overhead = sum(
             item.output_overhead_w for item in cascade.members[member_index:]
         )
-        source_power = terminal.nominal_power_w + downstream_overhead
+        source_power = terminal_power_w + downstream_overhead
         if (
             member.max_output_power_w is not None
             and source_power > member.max_output_power_w
@@ -191,7 +226,7 @@ def _allocate_aux_now(
         available_h = usable_store * member.eta_discharge / source_power
         if available_h + _EPS < _SOURCE_PROOF_H:
             continue
-        episode_capacity_h = max(0.0, sum(slot_capacity_h) - allocated_h)
+        episode_capacity_h = max(0.0, service_capacity_h - allocated_h)
         take_h = min(episode_capacity_h, available_h)
         # Never spend a switching cycle on a source that cannot carry its own
         # mandatory proof window.
@@ -199,50 +234,168 @@ def _allocate_aux_now(
             continue
         source_runs.append((member.load_id, take_h))
         allocated_h += take_h
-        drawn = source_power * take_h / member.eta_discharge
-        end_soc[member.load_id] = max(
-            target_soc,
-            soc - 100.0 * drawn / load.capacity_wh,
-        )
 
     if allocated_h + _EPS < required_h:
         return None
 
-    # F-CASCADE-STORAGE latest-first: defer a new episode to the latest slot
-    # boundary that still has enough contiguous capacity. The partial slot 0
-    # makes this converge to the exact start on rolling replans without a
-    # separate timer; continuing/proving episodes must never be moved.
-    start_index = 0
-    if not continuing:
-        for candidate in range(len(slot_capacity_h)):
-            if sum(slot_capacity_h[candidate:]) + _EPS >= allocated_h:
-                start_index = candidate
-            else:
+    # Pack service into the minimum suffix of electrically free windows.  A
+    # fragmented day may have more free capacity than can legally be used: if
+    # the available source energy cannot pay the useful minimum runtime in one
+    # more window, leave that earliest fragment unused instead of rejecting the
+    # otherwise feasible later episodes altogether.
+    eligible = [
+        index
+        for index, capacity in enumerate(window_capacities)
+        if capacity + _EPS >= required_h
+    ]
+    selected: list[int] = []
+    capacity_sum = 0.0
+    max_episode_count = max(1, int((allocated_h + _EPS) / required_h))
+    window_order = eligible if continuing or prefer_early else reversed(eligible)
+    for window_index in window_order:
+        if len(selected) >= max_episode_count:
+            break
+        selected.append(window_index)
+        capacity_sum += window_capacities[window_index]
+        if capacity_sum + _EPS >= allocated_h:
+            break
+    allocated_h = min(allocated_h, capacity_sum)
+    if not continuing and not prefer_early:
+        selected.reverse()
+
+    # Trim the source vector to the service that actually fits.  SOC must be
+    # derived from this physical vector, not from capacity discarded because a
+    # further episode could not meet its minimum runtime.
+    remaining_source_h = allocated_h
+    trimmed_source_runs: list[tuple[str, float]] = []
+    for load_id, available_h in source_runs:
+        take_h = min(available_h, remaining_source_h)
+        if take_h > _EPS:
+            trimmed_source_runs.append((load_id, take_h))
+            remaining_source_h -= take_h
+        if remaining_source_h <= _EPS:
+            break
+    source_runs = trimmed_source_runs
+    member_indexes = {
+        member.load_id: index for index, member in enumerate(cascade.members)
+    }
+    for load_id, take_h in source_runs:
+        member_index = member_indexes[load_id]
+        member = cascade.members[member_index]
+        load = loads[load_id]
+        soc = end_soc[load_id]
+        source_power = terminal_power_w + sum(
+            item.output_overhead_w for item in cascade.members[member_index:]
+        )
+        drawn = source_power * take_h / member.eta_discharge
+        target_soc = max(
+            member.discharge_floor_soc_percent,
+            min(
+                member.recovery_soc_percent,
+                (target_soc_by_id or {}).get(
+                    member.load_id, member.recovery_soc_percent
+                ),
+            ),
+        )
+        end_soc[load_id] = max(
+            target_soc,
+            soc - 100.0 * drawn / load.capacity_wh,
+        )
+
+    # Give every selected episode its minimum useful runtime first and place
+    # all remaining service as late as possible.  This construction is always
+    # feasible because the episode count was bounded by available source time.
+    service_by_window = {window_index: required_h for window_index in selected}
+    remaining_service_h = allocated_h - required_h * len(selected)
+    placement_order = selected if prefer_early else reversed(selected)
+    for window_index in placement_order:
+        extra_h = min(
+            window_capacities[window_index] - required_h,
+            remaining_service_h,
+        )
+        service_by_window[window_index] += extra_h
+        remaining_service_h -= extra_h
+
+    source_cursor = 0
+    source_remaining_h = source_runs[0][1]
+
+    def append_interval(
+        start: int,
+        end: int,
+        absolute_start_h: float,
+        duration_h: float,
+        source_load_id: str,
+        *,
+        transition: bool,
+    ) -> None:
+        """Append one continuous window interval split at slot boundaries."""
+        elapsed_h = 0.0
+        remaining_h = duration_h
+        for position in range(start, end):
+            slot_h = slot_capacity_h[position]
+            overlap_start_h = max(absolute_start_h, elapsed_h)
+            overlap_end_h = min(absolute_start_h + duration_h, elapsed_h + slot_h)
+            take_h = max(0.0, overlap_end_h - overlap_start_h)
+            if take_h > _EPS:
+                segments.append(
+                    CascadeSourceSegment(
+                        slot_index=slot_indexes[position],
+                        start_offset_h=overlap_start_h - elapsed_h,
+                        run_hours=take_h,
+                        source="aux",
+                        source_load_id=source_load_id,
+                        root_input_on=False,
+                        terminal_energy_wh=(
+                            0.0 if transition else terminal_power_w * take_h
+                        ),
+                        transition_hours=take_h if transition else 0.0,
+                    )
+                )
+                remaining_h -= take_h
+            elapsed_h += slot_h
+            if remaining_h <= _EPS:
                 break
 
-    slot_index = start_index
-    slot_offset_h = 0.0
-    for source_load_id, source_h in source_runs:
-        remaining_source_h = source_h
-        while remaining_source_h > _EPS and slot_index < len(slot_capacity_h):
-            free_h = slot_capacity_h[slot_index] - slot_offset_h
-            segment_h = min(free_h, remaining_source_h)
-            segments.append(
-                CascadeSourceSegment(
-                    slot_index=slot_index,
-                    start_offset_h=slot_offset_h,
-                    run_hours=segment_h,
-                    source="aux",
-                    source_load_id=source_load_id,
-                    root_input_on=False,
-                    terminal_energy_wh=terminal.nominal_power_w * segment_h,
-                )
+    for window_index in selected:
+        start, end = windows[window_index]
+        service_h = service_by_window[window_index]
+        window_h = sum(slot_capacity_h[start:end])
+        episode_transition_h = transition_h
+        episode_start_h = (
+            0.0
+            if prefer_early or (continuing and window_index == selected[0])
+            else window_h - service_h - episode_transition_h
+        )
+        source_load_id = source_runs[source_cursor][0]
+        if episode_transition_h > _EPS:
+            append_interval(
+                start,
+                end,
+                episode_start_h,
+                episode_transition_h,
+                source_load_id,
+                transition=True,
             )
-            remaining_source_h -= segment_h
-            slot_offset_h += segment_h
-            if slot_capacity_h[slot_index] - slot_offset_h <= _EPS:
-                slot_index += 1
-                slot_offset_h = 0.0
+        service_start_h = episode_start_h + episode_transition_h
+        served_in_window_h = 0.0
+        while served_in_window_h + _EPS < service_h:
+            take_h = min(
+                source_remaining_h,
+                service_h - served_in_window_h,
+            )
+            append_interval(
+                start,
+                end,
+                service_start_h + served_in_window_h,
+                take_h,
+                source_runs[source_cursor][0],
+                transition=False,
+            )
+            served_in_window_h += take_h
+            source_remaining_h -= take_h
+            if source_remaining_h <= _EPS and source_cursor + 1 < len(source_runs):
+                source_cursor += 1
+                source_remaining_h = source_runs[source_cursor][1]
     return tuple(segments), end_soc, provisional
 
 
@@ -270,12 +423,11 @@ def _root_slot_energy(
     index: int,
 ) -> tuple[float, float]:
     """Return (Root boundary Wh, terminal Root Wh) without internal summing."""
-    loads = {load.load_id: load for load in config.loads}
     active_ids = [member.load_id for member in cascade.members]
     active_ids.append(cascade.terminal_load_id)
     own_wh = 0.0
-    deepest = -1
     terminal_wh = 0.0
+    active_hours: dict[str, float] = {}
     for load_id in active_ids:
         plan = plans[load_id]
         if index >= len(plan.schedule) or not plan.schedule[index]:
@@ -285,27 +437,21 @@ def _root_slot_energy(
             if plan.run_hours and index < len(plan.run_hours)
             else inputs.slots[index].duration
         )
-        energy = loads[load_id].nominal_power_w * hours
+        energy = _effective_power_w(load_id, cascade, config, inputs) * hours
         own_wh += energy
+        active_hours[load_id] = hours
         if load_id == cascade.terminal_load_id:
             terminal_wh = energy
-            deepest = len(cascade.members)
-        else:
-            member_index = active_ids.index(load_id)
-            deepest = max(deepest, member_index)
-    overhead_h = inputs.slots[index].duration
-    # F-CASCADE-STORAGE idle-slot observability: ``deepest == -1`` means that no member or
-    # terminal load is active.  Python's ``members[:-1]`` would otherwise count
-    # every output except the last as phantom Root energy, which started B1 even
-    # though the whole cascade schedule was idle (live incident 2026-08-29).
-    overhead_wh = (
-        sum(
-            member.output_overhead_w * overhead_h
-            for member in cascade.members[:deepest]
-        )
-        if deepest >= 0
-        else 0.0
-    )
+    # Each output is needed for the longest downstream activity, not for the
+    # whole slot. This keeps partial-slot Root energy and the member SOC vector
+    # on one physical time base and preserves exact zero for an idle slot.
+    overhead_wh = 0.0
+    for member_index, member in enumerate(cascade.members):
+        downstream_ids = [
+            item.load_id for item in cascade.members[member_index + 1 :]
+        ] + [cascade.terminal_load_id]
+        output_h = max(active_hours.get(load_id, 0.0) for load_id in downstream_ids)
+        overhead_wh += member.output_overhead_w * output_h
     return own_wh + overhead_wh, terminal_wh
 
 
@@ -321,6 +467,9 @@ def _build_plan(
     loads = {load.load_id: load for load in config.loads}
     states = {state.load_id: state for state in original_inputs.load_states}
     plans = _plan_by_id(result)
+    terminal_power_w = _effective_power_w(
+        cascade.terminal_load_id, cascade, config, original_inputs
+    )
     current_soc: dict[str, float] = {}
     stale = provisional
     weighted = 0.0
@@ -398,11 +547,7 @@ def _build_plan(
                 if index < len(load_plan.schedule) and load_plan.schedule[index]
                 else 0.0
             )
-            power = states.get(
-                member.load_id, SurplusLoadState(load_id=member.load_id)
-            ).planning_power_w(load)
-            if member.max_charge_power_w is not None:
-                power = min(power, member.max_charge_power_w)
+            power = _effective_power_w(member.load_id, cascade, config, original_inputs)
             input_wh = power * charge_h
             stored = input_wh * member.eta_charge
             discharged = 0.0
@@ -418,8 +563,13 @@ def _build_plan(
                             ) :
                         ]
                     )
+                    service_h = (
+                        segment.terminal_energy_wh / terminal_power_w
+                        if terminal_power_w > _EPS
+                        else 0.0
+                    )
                     discharged += (
-                        segment.terminal_energy_wh + overhead * segment.run_hours
+                        segment.terminal_energy_wh + overhead * service_h
                     ) / member.eta_discharge
             energy = load.capacity_wh * start / 100.0 + stored - discharged
             energy = min(load.capacity_wh * load.target_soc_percent / 100.0, energy)
@@ -532,8 +682,11 @@ def _replan_candidate(
     config: SystemConfig,
     inputs: PlanInputs,
     base_result: PlanResult,
-    replan: Callable[[PlanInputs], PlanResult],
+    replan: Callable[[PlanInputs, tuple[CascadeSourceSegment, ...]], PlanResult],
     target_soc_by_id: dict[str, float] | None = None,
+    *,
+    prior_segments: tuple[CascadeSourceSegment, ...] = (),
+    prefer_early: bool = False,
 ) -> (
     tuple[
         tuple[CascadeSourceSegment, ...],
@@ -546,13 +699,18 @@ def _replan_candidate(
 ):
     """Build one electrically exclusive Aux candidate and its Root replan."""
     allocation = _allocate_aux_now(
-        cascade, config, inputs, base_result, target_soc_by_id
+        cascade,
+        config,
+        inputs,
+        base_result,
+        target_soc_by_id,
+        prefer_early=prefer_early,
     )
     if allocation is None:
         return None
     segments, end_soc, provisional = allocation
     trial_inputs = _replace_soc_states(inputs, end_soc)
-    trial_result = replan(trial_inputs)
+    trial_result = replan(trial_inputs, (*prior_segments, *segments))
     trial_plans = _plan_by_id(trial_result)
     cascade_load_ids = (
         *(member.load_id for member in cascade.members),
@@ -579,12 +737,13 @@ def _replan_candidate(
             shortened_inputs,
             base_result,
             target_soc_by_id,
+            prefer_early=prefer_early,
         )
         if allocation is None:
             return None
         segments, end_soc, provisional = allocation
         trial_inputs = _replace_soc_states(inputs, end_soc)
-        trial_result = replan(trial_inputs)
+        trial_result = replan(trial_inputs, (*prior_segments, *segments))
         trial_plans = _plan_by_id(trial_result)
         if any(
             segment.slot_index < len(trial_plans[load_id].schedule)
@@ -596,19 +755,16 @@ def _replan_candidate(
     return segments, end_soc, provisional, trial_inputs, trial_result
 
 
-def _first_export_budget(
+def _today_export_budget(
     result: PlanResult, inputs: PlanInputs
 ) -> tuple[date, float] | None:
-    """Return the first forecast day and AC Wh that would still be exported."""
-    by_day: dict[date, float] = {}
+    """Return today's residual export; a later day cannot back a discharge."""
+    today = inputs.now.date()
+    export_wh = 0.0
     for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=False):
-        by_day[slot.start.date()] = by_day.get(slot.start.date(), 0.0) + max(
-            0.0, flow.grid_export_wh
-        )
-    return next(
-        ((day, export_wh) for day, export_wh in by_day.items() if export_wh > _EPS),
-        None,
-    )
+        if slot.start.date() == today:
+            export_wh += max(0.0, flow.grid_export_wh)
+    return (today, export_wh) if export_wh > _EPS else None
 
 
 def _conditional_targets(
@@ -690,7 +846,7 @@ def augment_cascade_plans(
     config: SystemConfig,
     inputs: PlanInputs,
     base_result: PlanResult,
-    replan: Callable[[PlanInputs], PlanResult],
+    replan: Callable[[PlanInputs, tuple[CascadeSourceSegment, ...]], PlanResult],
 ) -> PlanResult:
     """Add cascade contracts while preserving the legacy Root allocator."""
     if not config.cascades:
@@ -701,6 +857,7 @@ def augment_cascade_plans(
     accepted: dict[
         str, tuple[tuple[CascadeSourceSegment, ...], bool, datetime | None]
     ] = {}
+    accepted_segments: tuple[CascadeSourceSegment, ...] = ()
     for cascade in config.cascades:
         segments: tuple[CascadeSourceSegment, ...]
         end_soc: dict[str, float]
@@ -708,7 +865,12 @@ def augment_cascade_plans(
         trial_inputs: PlanInputs
         trial_result: PlanResult
         candidate = _replan_candidate(
-            cascade, config, working_inputs, working_result, replan
+            cascade,
+            config,
+            working_inputs,
+            working_result,
+            replan,
+            prior_segments=accepted_segments,
         )
         if candidate is None:
             # A member may already be below the unconditional 50 % target.  It
@@ -726,7 +888,7 @@ def augment_cascade_plans(
             segments, end_soc, provisional, trial_inputs, trial_result = candidate
         recovery_deadline = None
 
-        export = _first_export_budget(trial_result, working_inputs)
+        export = _today_export_budget(trial_result, working_inputs)
         if export is not None:
             recovery_day, export_budget_wh = export
             targets = _conditional_targets(cascade, config, end_soc, export_budget_wh)
@@ -737,6 +899,8 @@ def augment_cascade_plans(
                 working_result,
                 replan,
                 targets,
+                prior_segments=accepted_segments,
+                prefer_early=True,
             )
             if conditional is not None:
                 (
@@ -787,6 +951,7 @@ def augment_cascade_plans(
         )
         working_inputs = trial_inputs
         working_result = trial_result
+        accepted_segments = (*accepted_segments, *segments)
 
     managed = {
         load_id

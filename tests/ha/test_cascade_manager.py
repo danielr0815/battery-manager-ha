@@ -27,6 +27,7 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_SOC_ENTITY,
+    CONF_LOAD_WAKE_TIMEOUT_S,
     DOMAIN,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
@@ -563,6 +564,179 @@ async def test_fresh_numeric_power_telemetry_proves_member_awake() -> None:
     assert manager._state("chain")["phase"] == "proving"
 
 
+async def test_live_root_wake_retries_output_until_station_is_command_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce the 2026-09-03 Bad wake without waiting real minutes.
+
+    The Fossibot published input power roughly 15 seconds after Root-ON, but
+    accepted its AC-output command only after the first 30-second actor
+    confirmation window.  Root must remain powered and the output command must
+    be retried inside the member's wake window instead of hard-faulting the
+    otherwise safe wake prefix.
+    """
+    now = datetime(2026, 9, 3, 8, 0, 5)
+    coordinator = _LiveIncidentCoordinator(now)
+    coordinator.entry.subentries["chain"].data[CONF_CASCADE_ACTOR_TIMEOUT_S] = 0.01
+    coordinator.entry.subentries["b1"].data[CONF_LOAD_WAKE_TIMEOUT_S] = 60
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (
+        SurplusLoadState("b1", soc_percent=20.4),
+        SurplusLoadState("b2", soc_percent=21.1),
+        SurplusLoadState("leaf"),
+    )
+    output_attempts = 0
+    scheduled: dict[str, object] = {}
+    refreshes = 0
+
+    async def request_refresh() -> None:
+        nonlocal refreshes
+        refreshes += 1
+
+    def create_task(coro, _name=None):
+        return asyncio.create_task(coro)
+
+    def call_later(_hass, delay_s, action):
+        scheduled.update(delay_s=delay_s, action=action, cancelled=False)
+
+        def cancel() -> None:
+            scheduled["cancelled"] = True
+
+        return cancel
+
+    async def delayed_output(
+        entity_id: str, turn_on: bool, *, actor_owner: str | None = None
+    ) -> bool:
+        nonlocal output_attempts
+        coordinator.calls.append((entity_id, turn_on))
+        if entity_id == "switch.b1_output" and turn_on:
+            output_attempts += 1
+            if output_attempts == 1:
+                # The service call completed, but the still-booting Fossibot
+                # neither applied nor confirmed this first command.
+                return True
+        coordinator.hass.states.values[entity_id].state = "on" if turn_on else "off"
+        return True
+
+    coordinator._switch_entity = delayed_output
+    coordinator.async_request_refresh = request_refresh
+    coordinator.hass.async_create_task = create_task
+    monkeypatch.setattr(cascade_manager_module, "async_call_later", call_later)
+    # Model the end of the real 30-second actor-confirmation attempt.  The
+    # final retry timer must target the absolute member wake deadline, not add
+    # another full timeout from this late point.
+    monkeypatch.setattr(
+        cascade_manager_module.dt_util,
+        "now",
+        lambda: now + timedelta(seconds=45),
+    )
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
+    )
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    _publish_soc(
+        coordinator,
+        "sensor.b1_input_power",
+        "0",
+        now + timedelta(seconds=15),
+    )
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=15)
+    )
+
+    assert output_attempts == 1
+    assert state["phase"] == "waking_members"
+    assert state["fault"] is None
+    assert state["enabled"] is True
+    assert coordinator.hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert coordinator.hass.states.get("switch.b1_output").state == "off"
+    assert state["wake_actor_entity"] == "switch.b1_output"
+    assert state["wake_actor_attempts"] == 1
+    assert scheduled["delay_s"] == pytest.approx(15.0)
+
+    # The live SOC publication arrived around 50 seconds after Root-ON.  Model
+    # the worst case where its normal refresh was swallowed by the active
+    # refresh/debounce: only our absolute-deadline callback requests the next
+    # update, and that update must perform the bounded second attempt.
+    _publish_soc(coordinator, "sensor.b1_soc", "20.5", now + timedelta(seconds=50))
+    scheduled["action"](now + timedelta(seconds=60))
+    await asyncio.sleep(0)
+    assert refreshes == 1
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=60)
+    )
+
+    assert output_attempts == 2
+    assert state["phase"] == "waking_members"
+    assert state["wake_member_index"] == 1
+    assert state["fault"] is None
+    assert coordinator.hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert coordinator.hass.states.get("switch.b1_output").state == "on"
+    assert "wake_actor_entity" not in state
+
+    _publish_soc(coordinator, "sensor.b2_soc", "21.1", now + timedelta(seconds=65))
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=65)
+    )
+
+    assert state["phase"] == "root"
+    assert state["fault"] is None
+    assert coordinator.hass.states.get("switch.b2_output").state == "on"
+
+
+async def test_root_wake_actor_retry_faults_only_after_member_wake_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An actually unreachable output remains bounded and fails closed."""
+    now = datetime(2026, 9, 3, 8)
+    coordinator = _Coordinator(now)
+    coordinator.entry.subentries["b1"].data[CONF_LOAD_WAKE_TIMEOUT_S] = 60
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
+    )
+
+    real_actor = manager._actor
+
+    async def unconfirmed_output(
+        cascade_id: str, entity_id: str | None, turn_on: bool
+    ) -> bool:
+        if entity_id == "switch.output" and turn_on:
+            state["last_actor_error"] = {
+                "entity_id": entity_id,
+                "target_state": "on",
+                "observed_state": "off",
+                "kind": "confirmation_timeout",
+            }
+            return False
+        return await real_actor(cascade_id, entity_id, turn_on)
+
+    monkeypatch.setattr(manager, "_actor", unconfirmed_output)
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    _publish_soc(coordinator, "sensor.input_power", "0", now + timedelta(seconds=1))
+    await manager._apply_one("chain", _root_plan(now), live, now + timedelta(seconds=1))
+
+    assert state["fault"] is None
+    assert state["phase"] == "waking_members"
+    assert coordinator.hass.states.get("switch.input").state == "on"
+
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=62)
+    )
+
+    assert state["fault"] == "root_transition_failed"
+    assert state["fault_detail"]["kind"] == "wake_actor_timeout"
+    assert state["fault_detail"]["attempts"] == 2
+    assert state["fault_safe_off_complete"] is True
+    assert state["enabled"] is False
+
+
 async def test_aux_wake_retry_survives_refreshes_before_episode_day_exists() -> None:
     """A timed-out wake waits 15 minutes instead of cycling Root each refresh."""
     now = datetime(2026, 9, 1, 7, 48)
@@ -920,10 +1094,11 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     )
 
     # Move the observed 22:29 state to the nearest deterministic feasibility
-    # edge: 15 min 6 s remain in the local day. Ten seconds later the first
-    # slot is shorter than the terminal's real 15-minute minimum run. Before
-    # v0.34.2 that genuine rolling replan withdrew Aux and switched Root OFF.
-    started = datetime(2026, 9, 1, 23, 44, 54, tzinfo=UTC)
+    # edge: the initial horizon contains the conservative 9.5-minute startup
+    # budget plus the real 15-minute terminal dwell. Once that transition is
+    # accepted, rolling replans report it as ``proving`` and must not reserve
+    # the startup a second time or withdraw Aux while the actors wake.
+    started = datetime(2026, 9, 1, 23, 35, 30, tzinfo=UTC)
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -1052,6 +1227,7 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     hass.services.async_register("homeassistant", "turn_off", turn_off)
     coordinator = BatteryManagerCoordinator(hass, entry)
     request.addfinalizer(coordinator.cleanup)
+    assert coordinator.build_system_config().cascades[0].startup_transition_s == 570.0
     # Persistence timing is covered separately. Avoid registering a delayed
     # Store final-write hook so this timing simulation remains entirely
     # in-memory and deterministic.
@@ -2045,6 +2221,11 @@ def test_persistent_snapshot_strips_inflight_wake_evidence() -> None:
             "claims": {"switch.output": True},
             "wake_mode": "aux",
             "wake_deadline": (now + timedelta(seconds=60)).isoformat(),
+            "wake_actor_entity": "switch.output",
+            "wake_actor_started_at": now.isoformat(),
+            "wake_actor_deadline": (now + timedelta(seconds=180)).isoformat(),
+            "wake_actor_attempts": 1,
+            "wake_actor_last_error": {"kind": "confirmation_timeout"},
             "last_actor_error": {"kind": "old"},
         }
     )
@@ -2058,6 +2239,10 @@ def test_persistent_snapshot_strips_inflight_wake_evidence() -> None:
     assert saved["claims"] == {"switch.output": True}
     assert "wake_mode" not in saved
     assert "wake_deadline" not in saved
+    assert "wake_actor_entity" not in saved
+    assert "wake_actor_deadline" not in saved
+    assert "wake_actor_attempts" not in saved
+    assert "wake_actor_last_error" not in saved
     assert "last_actor_error" not in saved
 
 
@@ -2212,10 +2397,10 @@ async def test_day_rollover_without_recovery_is_consumed_once() -> None:
     assert state["wake_deadline"] == wake_deadline
 
 
-async def test_recovery_finishing_after_midnight_completes_current_day(
+async def test_recovery_finishing_after_midnight_accepts_new_proven_episode(
     monkeypatch,
 ) -> None:
-    """A stopped prior-day episode cannot remain recovering or restart Aux."""
+    """A fresh current-day Aux plan may start after old recovery completes."""
     now = datetime(2026, 8, 24, 10)
     coordinator = _Coordinator(now)
     manager = CascadeManager(coordinator)
@@ -2233,8 +2418,8 @@ async def test_recovery_finishing_after_midnight_completes_current_day(
             "recovery_deadline": (now + timedelta(hours=6)).isoformat(),
         }
     )
-    # A stale rolling preview still proposes Aux.  Recovery ownership must
-    # suppress it before a new current-day plan is available.
+    # The Core plan is the fresh full-day proof. The old episode marker is not
+    # a one-episode-per-day lock after its recovery debt has been cleared.
     await manager._apply_one(
         "chain",
         _aux_plan(now),
@@ -2242,11 +2427,12 @@ async def test_recovery_finishing_after_midnight_completes_current_day(
         now,
     )
 
-    assert state["phase"] == "complete"
+    assert state["phase"] == "waking_members"
     assert state["episode_day"] == "2026-08-24"
     assert state["recovery_pending"] == []
     assert state["recovery_deadline"] is None
-    assert state["source"] is None
+    assert state["source"] == "b1"
+    assert coordinator.calls == [("switch.input", True)]
 
 
 async def test_persisted_recovery_deadline_survives_withdrawn_plan(
@@ -2407,6 +2593,10 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "wake_deadline": (now + timedelta(minutes=1)).isoformat(),
             "wake_evidence_entity": "sensor.input_power",
             "wake_evidence_at": (now + timedelta(seconds=8)).isoformat(),
+            "wake_actor_entity": "switch.output",
+            "wake_actor_deadline": (now + timedelta(minutes=3)).isoformat(),
+            "wake_actor_attempts": 1,
+            "wake_actor_last_error": {"kind": "confirmation_timeout"},
         }
     )
     runtime = manager.runtime_state("chain")
@@ -2456,6 +2646,10 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     assert payload["wake_deadline"] == (now + timedelta(minutes=1)).isoformat()
     assert payload["wake_evidence_entity"] == "sensor.input_power"
     assert payload["wake_evidence_at"] == (now + timedelta(seconds=8)).isoformat()
+    assert payload["wake_actor_entity"] == "switch.output"
+    assert payload["wake_actor_deadline"] == (now + timedelta(minutes=3)).isoformat()
+    assert payload["wake_actor_attempts"] == 1
+    assert payload["wake_actor_last_error"] == {"kind": "confirmation_timeout"}
     assert payload["schedule"] == []
     state["fault"] = None
     state["hands_off"] = False
@@ -2480,6 +2674,7 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "end": (now + timedelta(hours=1)).isoformat(),
             "root_input_wh": 0.0,
             "terminal_energy_wh": 150.0,
+            "transition_minutes": 0.0,
             "sources": ["aux"],
             "activities": [
                 {
@@ -2652,11 +2847,21 @@ def test_schedule_payload_exposes_two_member_output_path() -> None:
     ] == ["b1"]
 
     # B1 as Aux source feeds through both B1 and B2 before the terminal load.
-    segment = CascadeSourceSegment(0, 0.0, 0.5, "aux", "b1", False, 150)
+    transition = CascadeSourceSegment(
+        0,
+        0.0,
+        0.1,
+        "aux",
+        "b1",
+        False,
+        0.0,
+        transition_hours=0.1,
+    )
+    segment = CascadeSourceSegment(0, 0.1, 0.5, "aux", "b1", False, 150)
     aux_plan = SimpleNamespace(
         flows=(
             CascadeSlotFlow(
-                segments=(segment,),
+                segments=(transition, segment),
                 member_flows=(
                     CascadeMemberFlow(
                         "b1",
@@ -2668,9 +2873,15 @@ def test_schedule_payload_exposes_two_member_output_path() -> None:
             ),
         )
     )
-    aux_activities = manager._schedule_payload(cascade, aux_plan, slots)[0][
-        "activities"
-    ]
+    aux_payload = manager._schedule_payload(cascade, aux_plan, slots)[0]
+    aux_activities = aux_payload["activities"]
+    assert aux_payload["transition_minutes"] == 6.0
+    assert next(item for item in aux_activities if item["kind"] == "transition") == {
+        "kind": "transition",
+        "source": "aux",
+        "source_load_id": "b1",
+        "minutes": 6.0,
+    }
     assert [item["load_id"] for item in aux_activities if item["kind"] == "output"] == [
         "b1",
         "b2",

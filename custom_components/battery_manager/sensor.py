@@ -592,6 +592,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             # F-NIGHT-RESCUE R7: end of the merge-bounded threshold horizon
             # (null = full-horizon scan).
             "threshold_horizon_end": data.get("threshold_horizon_end"),
+            "threshold_merge_margin_wh": data.get("threshold_merge_margin_wh"),
             "pv_window_ends": data.get("pv_window_ends") or {},
             # F-REALIZED-SURPLUS R14: the measured day counters the card's
             # stats line renders. The key is OMITTED (not an empty dict) when

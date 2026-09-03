@@ -38,6 +38,7 @@ from .const import (
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
     CONF_BUFFER_MIN_PERCENT,
+    CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
     CONF_DC24_SHARE_PERCENT,
@@ -67,6 +68,7 @@ from .const import (
     CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_ETA_CHARGE,
     CONF_LOAD_ETA_DISCHARGE,
+    CONF_LOAD_HANDOVER_TIMEOUT_S,
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_OFF_POLICY,
     CONF_LOAD_MAX_CHARGE_POWER_W,
@@ -86,6 +88,7 @@ from .const import (
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
+    CONF_LOAD_WAKE_TIMEOUT_S,
     CONF_NATIVE48_BASE_W,
     CONF_PREDRAIN_PV_CONFIDENCE,
     CONF_PSU24_EFFICIENCY,
@@ -1289,6 +1292,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         cascade_id=cascade_id,
                         members=tuple(members),
                         terminal_load_id=terminal_id,
+                        # Worst-case time until useful Aux power is proven:
+                        # every member may consume its wake timeout, every
+                        # required actor edge its confirmation timeout, and
+                        # the source proof uses the configured handover bound.
+                        # The pure Core reserves this before useful energy.
+                        startup_transition_s=(
+                            sum(
+                                float(
+                                    load_subentries[member.load_id].data.get(
+                                        CONF_LOAD_WAKE_TIMEOUT_S, 60
+                                    )
+                                )
+                                for member in members
+                            )
+                            + max(
+                                float(
+                                    load_subentries[member.load_id].data.get(
+                                        CONF_LOAD_HANDOVER_TIMEOUT_S, 180
+                                    )
+                                )
+                                for member in members
+                            )
+                            + (3 * len(members) + 3)
+                            * float(subentry.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30))
+                        ),
                     )
                 )
 
@@ -4081,6 +4109,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if result.threshold_horizon_end is not None
                 else None
             ),
+            # Full-episode stressed export behind the T* terminal-credit ramp.
+            # Unlike the horizon end this remains informative below 250 Wh.
+            "threshold_merge_margin_wh": round(result.threshold_merge_margin_wh, 1),
             "pv_window_ends": dict(result.pv_window_ends),
             "load_plans": load_plans,
             "cascade_plans": self.cascade_manager.payload(result, config, inputs.slots),

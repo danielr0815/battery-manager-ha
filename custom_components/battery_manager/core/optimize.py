@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from .cascade import augment_cascade_plans
 from .model import (
+    CascadeSourceSegment,
     LoadPlan,
     PlanInputs,
     PlanResult,
@@ -55,9 +56,9 @@ IMPORT_ARTIFACT_SLACK_WH = 50.0
 # credit -> hoard-capable). One Wh of stressed clip flipped T* between two regimes
 # ~1.8 kWh apart, so a bare SOC tick made the plan flap minute-to-minute (live
 # 2026-07-24 07:28-08:02: 24 T* flanks 20<->61). The terminal credit now ramps
-# LINEARLY with the stressed clip margin (Wh of export at the first full slot under
-# stress): the full `eta_discharge * eta_inverter` credit at margin 0 (no stressed
-# clip -> unchanged full-horizon regime) fades to 0 at margin >=
+# LINEARLY with the stressed clip margin (Wh of export over the selected contiguous
+# full-battery episode under stress): the full `eta_discharge * eta_inverter`
+# credit at margin 0 (no stressed clip -> unchanged full-horizon regime) fades to 0 at margin >=
 # MERGE_TERMINAL_RAMP_WH (a decisively guaranteed clip -> unchanged drain regime,
 # horizon truncated). 250 Wh ~= a modest 250 W of clipping sustained one slot:
 # small enough that a real guaranteed clip clears it in a single tick, wide enough
@@ -335,7 +336,7 @@ def _search_lo(config: SystemConfig) -> int:
 def _threshold_merge_probe(
     config: SystemConfig, inputs: PlanInputs
 ) -> tuple[int | None, float]:
-    """Merge bound of the threshold scan AND the stressed clip margin.
+    """Merge bound of the threshold scan AND the stressed clip-episode margin.
 
     One pessimistic no-loads sim (threshold at the scan's lower bound, PV
     stressed with the SAME per-slot vector Z4 uses — P10 where banded, alpha
@@ -352,13 +353,17 @@ def _threshold_merge_probe(
       1-2 h window would make T* jumpy), or None when no stressed clip exists
       (full-horizon behaviour unchanged) or the merge sits at the horizon end
       anyway.
-    - ``margin_wh`` is the stressed export at that first full+clipping slot: the
-      CONTINUOUS strength of the guaranteed clip (0.0 when ``end`` is None).
-      One Wh here used to flip the whole merge decision; it now moves the
-      terminal-credit ramp (F-MERGE-HYSTERESIS) by 1/MERGE_TERMINAL_RAMP_WH of
-      its full value instead. The FIRST clip is the right measure: the merge
-      principle only decouples tonight once a clip is guaranteed, so a marginal
-      first clip (export ~0) SHOULD stay in the cautious hoard-capable regime.
+    - ``margin_wh`` is the stressed export accumulated over one contiguous
+      full-battery episode, starting at its first clipping slot (0.0 when no
+      episode exists).  Measuring only that first slot made the result depend on
+      an hourly boundary: a 37 Wh first slot followed by four 42 Wh clipping
+      slots looked weaker than the 250 Wh ramp even though the episode was
+      ~205 Wh.  Worse, such a marginal first episode masked every later,
+      decisive episode.  That recreated the 20 <-> 60 % T* flapping live on
+      2026-09-03 while the forecast showed multi-kWh export.  Episode energy is
+      the stable measure of the same merge evidence; the earliest decisive
+      episode wins, otherwise the strongest marginal episode drives the
+      continuous terminal-credit ramp.
     """
     n = len(inputs.slots)
     if n == 0:
@@ -369,19 +374,47 @@ def _threshold_merge_probe(
     )
     base = simulate(config, inputs, float(_search_lo(config)), pv_scale=stress_vec)
     soc_full = config.battery.soc_max_percent - 0.1
-    merge: int | None = None
-    margin_wh = 0.0
+    best_merge: int | None = None
+    best_margin_wh = 0.0
+    episode_start: int | None = None
+    episode_export_wh = 0.0
+
+    def finish_episode() -> tuple[int, float] | None:
+        nonlocal best_merge, best_margin_wh, episode_start, episode_export_wh
+        if episode_start is None:
+            return None
+        merge = episode_start
+        margin_wh = episode_export_wh
+        episode_start = None
+        episode_export_wh = 0.0
+        end = max(merge, 5)
+        if end >= n - 1:
+            return None
+        if margin_wh >= MERGE_TERMINAL_RAMP_WH:
+            return end, margin_wh
+        if margin_wh > best_margin_wh + _EPS:
+            best_merge = merge
+            best_margin_wh = margin_wh
+        return None
+
     for j, flow in enumerate(base.flows):
-        if flow.soc_end_percent >= soc_full and flow.grid_export_wh > _EPS:
-            merge = j
-            margin_wh = flow.grid_export_wh
-            break
-    if merge is None:
+        full = flow.soc_end_percent >= soc_full
+        if full:
+            if flow.grid_export_wh > _EPS:
+                if episode_start is None:
+                    episode_start = j
+                episode_export_wh += flow.grid_export_wh
+            continue
+        decisive = finish_episode()
+        if decisive is not None:
+            return decisive
+    decisive = finish_episode()
+    if decisive is not None:
+        return decisive
+    if best_merge is None:
         return None, 0.0
-    end = max(merge, 5)  # R5 floor: at least 6 slots (indices 0..5)
-    if end >= n - 1:
-        return None, 0.0  # nothing to truncate
-    return end, margin_wh
+    end = max(best_merge, 5)  # R5 floor: at least 6 slots (indices 0..5)
+    return end, best_margin_wh
 
 
 def _threshold_merge_bound(config: SystemConfig, inputs: PlanInputs) -> int | None:
@@ -528,7 +561,11 @@ def _committed_hours(load, slot) -> float:
 
 
 def _quantised_hours(
-    load, slot, rem: float | None = None, power_w: float | None = None
+    load,
+    slot,
+    rem: float | None = None,
+    power_w: float | None = None,
+    saturation_power_w: float | None = None,
 ) -> list[float]:
     """Candidate commit durations for one (load, slot), LARGEST first.
 
@@ -576,10 +613,79 @@ def _quantised_hours(
         # The 1e-9 shave keeps max(power_w, nominal) * commit_final strictly
         # below `rem`, so the saturation gate's exact `<` comparison can never
         # trip on floating-point round-up of the by-construction equality.
-        commit_final = rem * (1.0 - 1e-9) / max(power_w, load.nominal_power_w)
+        commit_final = (
+            rem
+            * (1.0 - 1e-9)
+            / (
+                saturation_power_w
+                if saturation_power_w is not None
+                else max(power_w, load.nominal_power_w)
+            )
+        )
         if _EPS < commit_final < q:
             candidates.append(commit_final)
     return candidates
+
+
+def _effective_load_power_w(
+    load,
+    state: SurplusLoadState,
+    power_caps_w: dict[str, float] | None,
+) -> float:
+    """Return the single physical planning power used by every layer."""
+    power_w = state.planning_power_w(load)
+    if power_caps_w is not None and load.load_id in power_caps_w:
+        power_w = min(power_w, power_caps_w[load.load_id])
+    return power_w
+
+
+def _saturation_power_w(
+    load,
+    effective_power_w: float,
+    power_caps_w: dict[str, float] | None,
+) -> float:
+    """Keep the saturation guard conservative without exceeding a hard cap."""
+    nominal_w = load.nominal_power_w
+    if power_caps_w is not None and load.load_id in power_caps_w:
+        nominal_w = min(nominal_w, power_caps_w[load.load_id])
+    return max(effective_power_w, nominal_w)
+
+
+def _respects_cumulative_energy_cap(
+    load_id: str,
+    power_w: float,
+    run_hours: list[float] | tuple[float, ...],
+    covered: list[tuple[int, float]],
+    cumulative_caps_wh: dict[str, tuple[float, ...]] | None,
+) -> bool:
+    """Prove that charge energy never precedes its physical storage headroom."""
+    if cumulative_caps_wh is None or load_id not in cumulative_caps_wh:
+        return True
+    caps = cumulative_caps_wh[load_id]
+    candidate_h = dict(covered)
+    cumulative_wh = 0.0
+    for index, existing_h in enumerate(run_hours):
+        cumulative_wh += power_w * (existing_h + candidate_h.get(index, 0.0))
+        if index < len(caps) and cumulative_wh > caps[index] + _EPS:
+            return False
+    return True
+
+
+def _cumulative_charge_caps(
+    target_soc: float,
+    total_wh: float,
+    initial_soc: float,
+    capacity_wh: float,
+    eta_charge: float,
+    discharge_by_slot_wh: list[float],
+) -> tuple[float, ...]:
+    """Release a target's AC-input budget only after headroom exists."""
+    available_wh = max(0.0, target_soc - initial_soc) / 100.0 * capacity_wh / eta_charge
+    caps: list[float] = []
+    for discharged_wh in discharge_by_slot_wh:
+        caps.append(min(total_wh, available_wh))
+        available_wh += discharged_wh / eta_charge
+    return tuple(caps)
 
 
 def _spread_energy(
@@ -674,6 +780,9 @@ def allocate_loads(
     direct_surplus_only_load_ids: frozenset[str] = frozenset(),
     pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
     remaining_energy_overrides: dict[str, float] | None = None,
+    power_caps_w: dict[str, float] | None = None,
+    cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
+    recovery_cumulative_caps_wh: dict[str, tuple[float, ...]] | None = None,
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
     """Assign surplus loads to hours in three passes.
 
@@ -715,7 +824,12 @@ def allocate_loads(
     top-up instead of relying on a single load-outer pass that could fill B1
     before B2 recovered. None keeps the normal one-phase-per-load order.
     ``remaining_energy_overrides`` makes cascade storage demand include its
-    member-specific charge efficiency.
+    member-specific charge efficiency. ``power_caps_w`` applies physical hard
+    caps before energy allocation, saturation checks and downstream cascade
+    accounting consume the resulting effective power.  The two cumulative-cap
+    vectors make future Aux discharge time-causal: normal top-up and the 50 %
+    recovery phase may only book charge energy after the corresponding physical
+    headroom exists.
 
     Loads run in parallel when surplus suffices; config order = priority when
     it does not (order = the configured per-load priority since v0.8.2, default
@@ -993,7 +1107,8 @@ def allocate_loads(
         phase_remaining = None if phase_budget_wh is None else max(0.0, phase_budget_wh)
         if phase_remaining is not None and phase_remaining <= _EPS:
             continue
-        power_w = state.planning_power_w(load)
+        power_w = _effective_load_power_w(load, state, power_caps_w)
+        saturation_power_w = _saturation_power_w(load, power_w, power_caps_w)
         for i in range(n):
             slot = inputs.slots[i]
             if schedules[load.load_id][i]:
@@ -1011,14 +1126,13 @@ def allocate_loads(
             # be captured (F-SUBHOUR R1-R3). The whole-slot candidate is first,
             # so a full-hour placement stays bit-identical to the old behaviour.
             # rem/power_w size the gate-stop final top-up (F-GATE-TOPUP R2).
-            for commit_h in _quantised_hours(load, slot, rem, power_w):
+            for commit_h in _quantised_hours(
+                load, slot, rem, power_w, saturation_power_w
+            ):
                 power_wh = power_w * commit_h
                 if power_wh <= _EPS:
                     continue
-                if (
-                    rem is not None
-                    and rem < max(power_w, load.nominal_power_w) * commit_h
-                ):
+                if rem is not None and rem < saturation_power_w * commit_h:
                     continue  # saturated (or nearly): skip
                 spread = _spread_candidate(load, i, commit_h, power_w)
                 # Unreachable in pass 1: slots are tried ascending and bookings
@@ -1030,6 +1144,19 @@ def allocate_loads(
                     continue  # commitment overlaps an already-scheduled slot
                 trial, covered, commit_h, seamless = spread
                 power_wh = power_w * commit_h
+                phase_caps = (
+                    recovery_cumulative_caps_wh
+                    if phase_budget_wh is not None
+                    else cumulative_energy_caps_wh
+                )
+                if not _respects_cumulative_energy_cap(
+                    load.load_id,
+                    power_w,
+                    run_h[load.load_id],
+                    covered,
+                    phase_caps,
+                ):
+                    continue
                 # Soft surplus condition (D-A4): battery may cover at most
                 # `battery_tolerance` of the committed energy. Spilled slots
                 # contribute their export prorated by the occupied share.
@@ -1168,21 +1295,21 @@ def allocate_loads(
                 # re-introduce a class asymmetry in daylight).
                 if slot.pv_wh <= 0.0:
                     continue
-                power_w = state.planning_power_w(load)
+                power_w = _effective_load_power_w(load, state, power_caps_w)
+                saturation_power_w = _saturation_power_w(load, power_w, power_caps_w)
                 rem = remaining[load.load_id]
                 # Largest-first quantised search (F-SUBHOUR): a sub-hour
                 # preemptive run needs only export_drop >= (1-tol)*(k*q) energy,
                 # so a small afternoon dribble a whole hour cannot capture may
                 # still be soaked by a min_runtime chunk. rem/power_w size the
                 # gate-stop final top-up (F-GATE-TOPUP R2).
-                for commit_h in _quantised_hours(load, slot, rem, power_w):
+                for commit_h in _quantised_hours(
+                    load, slot, rem, power_w, saturation_power_w
+                ):
                     power_wh = power_w * commit_h
                     if power_wh <= _EPS:
                         continue
-                    if (
-                        rem is not None
-                        and rem < max(power_w, load.nominal_power_w) * commit_h
-                    ):
+                    if rem is not None and rem < saturation_power_w * commit_h:
                         continue
                     spread = _spread_candidate(load, i, commit_h, power_w)
                     if spread is None:
@@ -1394,7 +1521,7 @@ def allocate_loads(
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
         if not state.available:
             continue
-        power_w = state.planning_power_w(load)
+        power_w = _effective_load_power_w(load, state, power_caps_w)
         if power_w <= _EPS:
             continue
         for day, day_start in horizon_days:
@@ -1522,8 +1649,14 @@ def _allocate_recovery_after_continuous_loads(
     recovery_targets_wh: dict[str, float],
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
+    power_caps_w: dict[str, float] | None = None,
+    cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     *,
     allow_final_quantum_overshoot: bool = False,
+    visible_export_only: bool = False,
+    today_only: bool = True,
+    repeat_final_rounding: bool = True,
+    phase_name: str = "recovery",
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
     """Retry cascade recovery after the terminal's pass-3 allocation.
 
@@ -1552,20 +1685,37 @@ def _allocate_recovery_after_continuous_loads(
     extra = list(extra_ac)
     current = trajectory
     protected_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
+    recovery_day = inputs.now.date()
 
     for load_id, target_wh in recovery_targets_wh.items():
         load = loads[load_id]
         plan = plans[load_id]
-        remaining = max(0.0, target_wh - plan.planned_energy_wh)
-        if remaining <= _EPS:
-            continue
         state = next(
             (state for state in inputs.load_states if state.load_id == load_id),
             SurplusLoadState(load_id=load_id),
         )
         if not state.available:
             continue
-        power_w = state.planning_power_w(load)
+        power_w = _effective_load_power_w(load, state, power_caps_w)
+        saturation_power_w = _saturation_power_w(load, power_w, power_caps_w)
+        # Recovery is a local-day obligation. A tomorrow booking used to make
+        # this subtraction look complete and suppressed today's retry even
+        # while today's feed-in stayed avoidable (Bad cascade incident).
+        planned_period_wh = sum(
+            power_w
+            * (
+                plan.run_hours[index]
+                if plan.run_hours and index < len(plan.run_hours)
+                else slot.duration
+            )
+            for index, slot in enumerate(inputs.slots)
+            if (not today_only or slot.start.date() == recovery_day)
+            and index < len(plan.schedule)
+            and plan.schedule[index]
+        )
+        remaining = max(0.0, target_wh - planned_period_wh)
+        if remaining <= _EPS:
+            continue
         schedules = list(plan.schedule)
         run_hours = list(plan.run_hours or (0.0,) * len(inputs.slots))
         allocations = list(plan.allocations)
@@ -1576,14 +1726,32 @@ def _allocate_recovery_after_continuous_loads(
         for i, slot in enumerate(inputs.slots):
             if remaining <= _EPS:
                 break
-            if schedules[i]:
+            if today_only and slot.start.date() != recovery_day:
                 continue
-            for commit_h in _quantised_hours(load, slot, remaining, power_w):
+            extending_h = run_hours[i] if schedules[i] else 0.0
+            free_h = max(0.0, slot.duration - extending_h)
+            if free_h <= _EPS:
+                continue
+            candidate_hours = (
+                [
+                    min(
+                        free_h,
+                        remaining / saturation_power_w
+                        if load.energy_limited and saturation_power_w > _EPS
+                        else free_h,
+                    )
+                ]
+                if schedules[i]
+                else _quantised_hours(
+                    load, slot, remaining, power_w, saturation_power_w
+                )
+            )
+            for commit_h in candidate_hours:
                 final_quantum = False
                 power_wh = power_w * commit_h
                 if power_wh <= _EPS:
                     continue
-                if remaining < max(power_w, load.nominal_power_w) * commit_h:
+                if remaining < saturation_power_w * commit_h:
                     final_quantum = (
                         allow_final_quantum_overshoot
                         and load.energy_limited
@@ -1594,7 +1762,24 @@ def _allocate_recovery_after_continuous_loads(
                 trial_extra, covered = _spread_energy(
                     extra, inputs.slots, i, power_w, commit_h
                 )
-                if any(schedules[j] for j, _take in covered):
+                if today_only and any(
+                    inputs.slots[j].start.date() != recovery_day for j, _take in covered
+                ):
+                    continue
+                if any(schedules[j] and j != i for j, _take in covered):
+                    continue
+                if not _respects_cumulative_energy_cap(
+                    load.load_id,
+                    power_w,
+                    run_hours,
+                    covered,
+                    cumulative_energy_caps_wh,
+                ):
+                    continue
+                if visible_export_only and any(
+                    current.flows[j].grid_export_wh + _EPS < power_w * take
+                    for j, take in covered
+                ):
                     continue
                 if any(
                     inputs.slots[j].pv_wh + _EPS
@@ -1655,14 +1840,14 @@ def _allocate_recovery_after_continuous_loads(
                 placed_wh = 0.0
                 for j, take in covered:
                     schedules[j] = True
-                    run_hours[j] = take
+                    run_hours[j] += take
                     placed_wh += power_w * take
                 planned_wh += placed_wh
                 remaining = max(0.0, remaining - placed_wh)
                 allocations.append((i, len(covered), 1, placed_wh))
                 reasons.append(
                     f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
-                    "direct PV recovery after terminal plan, "
+                    f"direct PV {phase_name} after terminal plan, "
                     f"{round(sum(take for _, take in covered) * 60)} min x "
                     f"{round(power_w)} W"
                     + (
@@ -1683,7 +1868,7 @@ def _allocate_recovery_after_continuous_loads(
         )
 
     updated_plans = [plans[plan.load_id] for plan in load_plans]
-    if not allow_final_quantum_overshoot:
+    if repeat_final_rounding and not allow_final_quantum_overshoot:
         return _allocate_recovery_after_continuous_loads(
             config,
             inputs,
@@ -1694,7 +1879,13 @@ def _allocate_recovery_after_continuous_loads(
             recovery_targets_wh,
             dc24_schedule,
             dc48_schedule,
+            power_caps_w,
+            cumulative_energy_caps_wh,
             allow_final_quantum_overshoot=True,
+            visible_export_only=visible_export_only,
+            today_only=today_only,
+            repeat_final_rounding=repeat_final_rounding,
+            phase_name=phase_name,
         )
     return updated_plans, tuple(extra), current
 
@@ -2066,6 +2257,9 @@ def _plan_legacy(
     pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
     remaining_energy_overrides: dict[str, float] | None = None,
     recovery_targets_wh: dict[str, float] | None = None,
+    power_caps_w: dict[str, float] | None = None,
+    cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
+    recovery_cumulative_caps_wh: dict[str, tuple[float, ...]] | None = None,
 ) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2).
 
@@ -2118,6 +2312,9 @@ def _plan_legacy(
         direct_surplus_only_load_ids=direct_surplus_only_load_ids,
         pass1_energy_phases=pass1_energy_phases,
         remaining_energy_overrides=remaining_energy_overrides,
+        power_caps_w=power_caps_w,
+        cumulative_energy_caps_wh=cumulative_energy_caps_wh,
+        recovery_cumulative_caps_wh=recovery_cumulative_caps_wh,
     )
     # `alloc_traj` is the real allocation trajectory, including any manually
     # forced support.  R4 deliberately retains its established WITHOUT-support
@@ -2137,7 +2334,33 @@ def _plan_legacy(
             recovery_targets_wh,
             dc24_schedule=forced_dc24,
             dc48_schedule=forced_dc48,
+            power_caps_w=power_caps_w,
+            cumulative_energy_caps_wh=recovery_cumulative_caps_wh,
         )
+        # The terminal's continuous block can also expose residual export for
+        # ordinary member top-up. Recovery for every member has already had
+        # both strict and final-dwell passes, so this phase may only consume
+        # export that is visibly still present in each covered slot.
+        if remaining_energy_overrides:
+            load_plans, extra_ac, alloc_traj = (
+                _allocate_recovery_after_continuous_loads(
+                    config,
+                    inputs,
+                    threshold,
+                    load_plans,
+                    extra_ac,
+                    alloc_traj,
+                    remaining_energy_overrides,
+                    dc24_schedule=forced_dc24,
+                    dc48_schedule=forced_dc48,
+                    power_caps_w=power_caps_w,
+                    cumulative_energy_caps_wh=cumulative_energy_caps_wh,
+                    visible_export_only=True,
+                    today_only=False,
+                    repeat_final_rounding=False,
+                    phase_name="top-up",
+                )
+            )
         traj = alloc_traj
     metric_alloc_traj = (
         simulate(config, inputs, threshold, extra_ac_wh=extra_ac)
@@ -2274,7 +2497,9 @@ def _plan_legacy(
     }
     # F-NIGHT-RESCUE R7: surface the merge bound the T* scan used, so the
     # 04:13-class events ("why did the threshold jump?") are visible.
-    merge_end = _threshold_merge_bound(config, inputs)
+    merge_end, merge_margin_wh = _threshold_merge_probe(config, inputs)
+    if merge_margin_wh < MERGE_TERMINAL_RAMP_WH:
+        merge_end = None
     threshold_horizon_end = None
     if merge_end is not None:
         merge_slot = inputs.slots[merge_end]
@@ -2307,6 +2532,7 @@ def _plan_legacy(
         stressed_min_soc_percent=stressed_min_soc,
         pv_window_ends=window_ends,
         threshold_horizon_end=threshold_horizon_end,
+        threshold_merge_margin_wh=merge_margin_wh,
         prevented_export_by_day_wh=prevented_export_by_day,
         feedin_schedule_w=feedin_schedule_w,
         feedin_by_day_wh=feedin_by_day_wh,
@@ -2364,8 +2590,23 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     cascade_member_ids = frozenset(
         member.load_id for cascade in config.cascades for member in cascade.members
     )
+    cascade_power_caps_w = {
+        member.load_id: member.max_charge_power_w
+        for cascade in config.cascades
+        for member in cascade.members
+        if member.max_charge_power_w is not None
+    }
+    original_states = {state.load_id: state for state in inputs.load_states}
+    cascade_by_member = {
+        member.load_id: cascade
+        for cascade in config.cascades
+        for member in cascade.members
+    }
 
-    def replan(trial_inputs: PlanInputs) -> PlanResult:
+    def replan(
+        trial_inputs: PlanInputs,
+        aux_segments: tuple[CascadeSourceSegment, ...] = (),
+    ) -> PlanResult:
         states = {state.load_id: state for state in trial_inputs.load_states}
         remaining_overrides: dict[str, float] = {}
         phases: list[tuple[str, float | None]] = []
@@ -2404,13 +2645,96 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                     recovery_target_wh if recovery_phase else None,
                 )
             )
+
+        cumulative_caps: dict[str, tuple[float, ...]] = {}
+        recovery_cumulative_caps: dict[str, tuple[float, ...]] = {}
+        planning_inputs = trial_inputs
+        if aux_segments:
+            # `trial_inputs` carries the final post-Aux SOC so the total target
+            # demand is known. The physical simulation must nevertheless start
+            # at the observed SOC; per-slot cumulative caps release that demand
+            # only after each Aux discharge has actually created headroom.
+            source_ids = {
+                segment.source_load_id
+                for segment in aux_segments
+                if segment.source == "aux" and segment.source_load_id is not None
+            }
+            planning_inputs = replace(
+                trial_inputs,
+                load_states=tuple(
+                    original_states.get(state.load_id, state)
+                    if state.load_id in source_ids
+                    else state
+                    for state in trial_inputs.load_states
+                ),
+            )
+            discharge_by_slot = {
+                load_id: [0.0] * len(trial_inputs.slots) for load_id in source_ids
+            }
+            for segment in aux_segments:
+                source_id = segment.source_load_id
+                if (
+                    segment.source != "aux"
+                    or source_id is None
+                    or segment.terminal_energy_wh <= _EPS
+                    or not 0 <= segment.slot_index < len(trial_inputs.slots)
+                ):
+                    continue
+                cascade = cascade_by_member[source_id]
+                member_index = next(
+                    index
+                    for index, member in enumerate(cascade.members)
+                    if member.load_id == source_id
+                )
+                member = cascade.members[member_index]
+                overhead_wh = (
+                    sum(
+                        item.output_overhead_w
+                        for item in cascade.members[member_index:]
+                    )
+                    * segment.run_hours
+                )
+                discharge_by_slot[source_id][segment.slot_index] += (
+                    segment.terminal_energy_wh + overhead_wh
+                ) / member.eta_discharge
+
+            for load_id in source_ids:
+                load = loads_by_id[load_id]
+                member = member_by_id[load_id]
+                initial_state = original_states.get(load_id)
+                initial_soc = (
+                    initial_state.soc_percent
+                    if initial_state is not None
+                    and initial_state.soc_percent is not None
+                    else 0.0
+                )
+
+                cumulative_caps[load_id] = _cumulative_charge_caps(
+                    load.target_soc_percent,
+                    remaining_overrides[load_id],
+                    initial_soc,
+                    load.capacity_wh,
+                    member.eta_charge,
+                    discharge_by_slot[load_id],
+                )
+                recovery_cumulative_caps[load_id] = _cumulative_charge_caps(
+                    member.recovery_soc_percent,
+                    recovery_targets[load_id],
+                    initial_soc,
+                    load.capacity_wh,
+                    member.eta_charge,
+                    discharge_by_slot[load_id],
+                )
         result = _plan_legacy(
             legacy_config,
-            trial_inputs,
+            planning_inputs,
             direct_surplus_only_load_ids=cascade_member_ids,
             pass1_energy_phases=tuple(phases),
             remaining_energy_overrides=remaining_overrides,
             recovery_targets_wh=recovery_targets,
+            power_caps_w=cascade_power_caps_w,
+            cumulative_energy_caps_wh=cumulative_caps or None,
+            recovery_cumulative_caps_wh=recovery_cumulative_caps or None,
         )
         return replace(
             result,

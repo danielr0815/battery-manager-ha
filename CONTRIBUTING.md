@@ -124,13 +124,15 @@ Explain the diff in your PR.
 
 ## Versioning & releases
 
-- HACS installs this integration by tracking the `main` branch **by commit SHA**
-  (there are no release tags in normal use).
-- Bump `custom_components/battery_manager/manifest.json` `version` for any
-  user-visible change, and move the entry from `[Unreleased]` to `[x.y.z]` in
-  [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog + SemVer).
+- Releases are immutable Git tags/GitHub releases built from `main`; HACS uses
+  those versions rather than an undocumented moving branch SHA.
+- For every user-visible change, bump
+  `custom_components/battery_manager/manifest.json` **and** `pyproject.toml` to
+  the same version, and move the entry from `[Unreleased]` to `[x.y.z]` in
+  [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog + SemVer). CI rejects a
+  version mismatch.
 - The device `sw_version` and the dashboard card version are derived from the
-  manifest at runtime, so you only bump it in one place.
+  manifest at runtime; they need no separate hand-maintained version.
 
 ## Submitting a PR
 

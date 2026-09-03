@@ -82,6 +82,7 @@ from .core import (
     DAY_TYPE_ABSENCE,
     DAY_TYPE_WEEKDAY,
     DAY_TYPE_WEEKEND,
+    LoadProfile,
     aggregate_bins,
     balance_day,
     clean_day,
@@ -509,7 +510,7 @@ class ProfileLearner:
         }
         # Watchdog (D-C9) BEFORE the update: yesterday's actuals against the
         # profile that actually forecast them (the previous night's bins).
-        self._validate_yesterday(today, day_types)
+        self._validate_yesterday(today, day_types, cfg)
 
         # Recency weighting (D-C7): the drift/season model.
         half_life = max(1.0, float(cfg[CONF_PROFILE_HALF_LIFE_DAYS]))
@@ -576,7 +577,9 @@ class ProfileLearner:
             coverage.get("dc", 0.0) * 100,
         )
 
-    def _validate_yesterday(self, today: date, day_types: dict[str, str]) -> None:
+    def _validate_yesterday(
+        self, today: date, day_types: dict[str, str], cfg: dict[str, Any]
+    ) -> None:
         """Daily watchdog (D-C9): P50 forecast vs. cleaned actuals.
 
         Runs BEFORE the profile update, so yesterday is judged by the bins
@@ -592,14 +595,40 @@ class ProfileLearner:
         for path in _PATHS:
             series = actuals.get(path)
             bins = (self.data.get("profiles") or {}).get(path)
-            if not series or not bins:
+            if not series:
                 continue
-            pairs = [
-                (profile_value(bins, dt_key, hour, "p50"), series[hour])
-                for hour in range(24)
-                if hour < len(series)
-            ]
-            pairs = [(p, a) for p, a in pairs if p is not None and a is not None]
+            base_w = float(cfg.get(f"{path}_base_load_w", 50.0))
+            variable_w = float(cfg.get(f"{path}_variable_load_w", 0.0))
+            variable_start = int(cfg.get(f"{path}_variable_start_hour", 0))
+            variable_end = int(cfg.get(f"{path}_variable_end_hour", 0))
+            static_profile = LoadProfile(
+                base_w=base_w,
+                variable_w=variable_w,
+                variable_start_hour=variable_start,
+                variable_end_hour=variable_end,
+            )
+            pairs: list[tuple[float, float]] = []
+            learned_hours = 0
+            static_fallback_hours = 0
+            for hour in range(min(24, len(series))):
+                actual = series[hour]
+                if actual is None:
+                    continue
+                forecast = profile_value(bins, dt_key, hour, "p50") if bins else None
+                if forecast is None:
+                    # Use the exact same static fallback as the coordinator,
+                    # including absence suppression and windows crossing
+                    # midnight.  The watchdog must validate what was planned,
+                    # not a merely similar reconstruction.
+                    forecast = (
+                        static_profile.base_w
+                        if dt_key == DAY_TYPE_ABSENCE
+                        else static_profile.power_w(hour)
+                    )
+                    static_fallback_hours += 1
+                else:
+                    learned_hours += 1
+                pairs.append((float(forecast), float(actual)))
             if not pairs:
                 continue
             bias = sum(p - a for p, a in pairs) / len(pairs)
@@ -612,6 +641,8 @@ class ProfileLearner:
                         "bias_w": round(bias, 1),
                         "mae_w": round(mae, 1),
                         "hours": len(pairs),
+                        "learned_hours": learned_hours,
+                        "static_fallback_hours": static_fallback_hours,
                     }
                 )
                 del history_list[:-VALIDATION_HISTORY_DAYS]

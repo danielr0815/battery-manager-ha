@@ -493,6 +493,7 @@ class LoadCascade:
     cascade_id: str
     members: tuple[CascadeMember, ...]
     terminal_load_id: str
+    startup_transition_s: float = 0.0
 
     def __post_init__(self) -> None:
         _require(bool(self.cascade_id), "LoadCascade.cascade_id must not be empty")
@@ -506,6 +507,10 @@ class LoadCascade:
         _require(
             self.terminal_load_id not in ids,
             "LoadCascade terminal must not also be a storage member",
+        )
+        _require(
+            self.startup_transition_s >= 0.0,
+            "LoadCascade.startup_transition_s must be >= 0",
         )
 
 
@@ -532,6 +537,7 @@ class CascadeSourceSegment:
     source_load_id: str | None
     root_input_on: bool
     terminal_energy_wh: float
+    transition_hours: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -831,6 +837,10 @@ class PlanResult:
     # scan was truncated at this time because the battery is provably full and
     # clipping there even under the stressed PV. None = full-horizon scan.
     threshold_horizon_end: datetime | None = None
+    # Stressed export summed over the selected contiguous full-battery episode.
+    # This drives the continuous terminal-credit ramp even when the 250 Wh
+    # truncation edge is not reached, and explains a null horizon diagnostic.
+    threshold_merge_margin_wh: float = 0.0
     # Per calendar day (ISO date -> Wh): the export the load allocation
     # PREVENTED that day (F-STRICT-SURPLUS R4) — max(0, base_export -
     # alloc_export), both simulated WITHOUT support so even a manually fixed

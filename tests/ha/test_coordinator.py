@@ -1712,6 +1712,10 @@ async def test_forecast_sensors_expose_per_day_attributes(hass):
     assert (
         soc_attrs["threshold_horizon_end"] == coordinator.data["threshold_horizon_end"]
     )
+    assert (
+        soc_attrs["threshold_merge_margin_wh"]
+        == coordinator.data["threshold_merge_margin_wh"]
+    )
 
 
 def test_per_day_attrs_falls_back_to_zero_for_missing_day():

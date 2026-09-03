@@ -688,43 +688,22 @@ class BatteryManagerForecastCard extends HTMLElement {
         color:
           LOAD_COLORS[(loads.length + cascades.length + i) % LOAD_COLORS.length],
       }));
-    // Early grid feed-in (F-FEEDIN): same slot-ENDING semantics as the
-    // support flags, but numeric — a contiguous run of points with
-    // feedin > 0 forms one block, labelled with its power in W (single
-    // value, or min–max range when the rate varies within the block).
+    // Early grid feed-in (F-FEEDIN): the backend stores a slot's power on its
+    // END point. Keep one block per physical slot so hover can use the exact
+    // power × duration energy instead of shifting values by one boundary.
+    // Adjacent rectangles still render as one continuous visual period.
     const feedinBlocks = [];
-    let feedinStart = null;
-    let feedinMin = Infinity;
-    let feedinMax = 0;
     for (let i = 1; i < points.length; i++) {
       const w = points[i].feedin;
       if (w > 0) {
-        if (feedinStart === null) feedinStart = points[i - 1].time;
-        feedinMin = Math.min(feedinMin, w);
-        feedinMax = Math.max(feedinMax, w);
-      } else if (feedinStart !== null) {
+        const durationH = (points[i].time - points[i - 1].time) / 3600000;
         feedinBlocks.push({
-          start: feedinStart,
-          end: points[i - 1].time,
-          label:
-            feedinMin === feedinMax
-              ? `${Math.round(feedinMax)} W`
-              : `${Math.round(feedinMin)}–${Math.round(feedinMax)} W`,
+          start: points[i - 1].time,
+          end: points[i].time,
+          wh: w * durationH,
+          label: `${Math.round(w)} W`,
         });
-        feedinStart = null;
-        feedinMin = Infinity;
-        feedinMax = 0;
       }
-    }
-    if (feedinStart !== null) {
-      feedinBlocks.push({
-        start: feedinStart,
-        end: points[points.length - 1].time,
-        label:
-          feedinMin === feedinMax
-            ? `${Math.round(feedinMax)} W`
-            : `${Math.round(feedinMin)}–${Math.round(feedinMax)} W`,
-      });
     }
     const feedinLanes = feedinBlocks.length
       ? [
@@ -1206,10 +1185,6 @@ class BatteryManagerForecastCard extends HTMLElement {
         );
       });
     const activeLanes = (meta.lanes || []).filter((lane) => covering(lane));
-    // Slot length of the hovered hour: the gap to the previous point. Slot 0
-    // is a PARTIAL hour, so the feed-in power must not be read as Wh 1:1.
-    const prev = meta.points[index - 1];
-    const slotHours = prev ? (nearest.time - prev.time) / 3600000 : 0;
     const when = esc(`${fmt.format(nearest.time)} · ${nearest.soc} %`);
     const chips = activeLanes
       .map((lane) => {
@@ -1222,14 +1197,15 @@ class BatteryManagerForecastCard extends HTMLElement {
           )}: ${t("root")}${energy}</span>`;
         }
         // Energy of THIS hour per lane (operator ask 2026-08-03): a load
-        // carries it on the covering schedule block, the feed-in lane derives
-        // it from the point's planned power x slot length. Appliance lanes
-        // have no per-slot figure and stay name-only.
+        // carries it on the covering schedule block. Feed-in blocks do too:
+        // their power lives on the slot-ending forecast point, so deriving it
+        // from `nearest` would shift every tooltip by one slot. Appliance
+        // lanes have no per-slot figure and stay name-only.
         let wh = null;
         if (lane.kind === "feedin") {
-          const w = num(nearest.feedin) ?? 0;
-          if (w > 0 && slotHours > 0) {
-            wh = w * slotHours;
+          const booked = num(block?.wh);
+          if (booked != null && booked > 0) {
+            wh = booked;
           }
         } else if (lane.kind !== "appliance") {
           const booked = num(block?.wh);

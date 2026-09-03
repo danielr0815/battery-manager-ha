@@ -498,6 +498,12 @@ retroactively (accepted fuzziness, ~1 day/month).
   bias runs one-sided over a threshold for 14 days (hardcoded 15 %), a **repair
   issue** is created (`issue_registry.async_create_issue`) instead of silently
   learning on (surfaces measurement-point/cleaning errors).
+- Validation uses the exact effective series that was planned for that day.
+  Where a learned bin is absent, this includes the configured static fallback;
+  in vacation mode it includes the vacation fallback (`base_w` without the
+  variable window). A `None` learned bin therefore does not make the watchdog
+  blind to a permanently wrong fallback. Diagnostics distinguish learned,
+  profile-fallback and static-fallback hours and expose sample coverage.
 - **Export decomposition (diagnostic, optional):** where an export counter
   exists, `Export − Σ (known non-consumption exports)` ≈ the true lost feed-in
   → a comparison value for the planner's `lost_surplus` metric (example

@@ -1,5 +1,6 @@
 """Tests for the bundled forecast card: resource registration + attributes."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
@@ -23,6 +24,18 @@ ENTRY_DATA = {
     CONF_PV_FORECAST_TOMORROW: "sensor.pv_tomorrow",
     CONF_PV_FORECAST_DAY_AFTER: "sensor.pv_day_after",
 }
+
+
+def test_feedin_hover_uses_exact_slot_block_energy() -> None:
+    """Slot-ending backend values must not be shifted at the hover boundary."""
+    source = (
+        Path(__file__).parents[2]
+        / "custom_components/battery_manager/frontend/battery-manager-forecast-card.js"
+    ).read_text(encoding="utf-8")
+
+    assert "wh: w * durationH" in source
+    assert "const booked = num(block?.wh);" in source
+    assert "const w = num(nearest.feedin)" not in source
 
 
 async def _setup_entry(hass):

@@ -25,8 +25,10 @@ from core.optimize import (
     _committed_hours,
     _crossday_daytime_bet,
     _degrades_min_soc,
+    _effective_uncertainty,
     _quantised_hours,
     _refill_index,
+    _search_lo,
     _slot_serviceable,
     _spread_energy,
     _terminal_credit_factor,
@@ -3347,6 +3349,73 @@ def test_merge_bounded_threshold_drains_not_hoards_with_dc_load():
     assert thr == float(_search_lo(config))  # drains before the clip, not hoard@95
 
 
+def test_merge_probe_uses_whole_clip_episode_not_first_slot():
+    """2026-09-03 09:30 live regression: T* must not rise to ~60 % merely
+    because the first stressed export slot is a small partial-hour remainder.
+
+    This mirrors the live 5 kWh / 50 W AC / 50 W DC two-bus topology and a
+    strong second day followed by a weak horizon tail.  The old probe measured
+    only the first 37 Wh of a five-slot, ~205 Wh stressed clip episode.  Its
+    almost-full terminal credit then let the weak final day make importing AC
+    look preferable to using the battery, selecting T*=59 %.  Accumulating the
+    physical episode fades that credit consistently and restores the operator's
+    low-threshold/use policy.
+    """
+    support = SupportParams(
+        configured=True,
+        native48_base_w=35.0,
+        dc24_share=1.0,
+        dcdc_eta=0.93,
+        dcdc_max_power_w=486.0,
+        psu24_eta=0.89,
+        psu24_max_power_w=601.25,
+        psu24_output_voltage_v=24.05,
+        psu48_eta=0.89,
+        psu48_max_power_w=57.0,
+        psu48_output_voltage_v=49.56,
+        gate_soc_percent=40.0,
+    )
+    config = SystemConfig(
+        control=replace(
+            ControlParams(),
+            predrain_pv_confidence=0.8,
+            upper_pv_reserve=1.05,
+            strong_pv_cutoff_w=200.0,
+        ),
+        support=support,
+        ac_profile=LoadProfile(50.0, 0.0, 0, 0),
+        dc_profile=LoadProfile(50.0, 0.0, 0, 0),
+    )
+    inputs = build_slots(
+        config,
+        datetime(2026, 9, 3, 9, 30),
+        56.0,
+        [4.5, 5.5, 0.0],
+    )
+
+    stress_vec, _optimism, _band = _effective_uncertainty(
+        inputs,
+        config.control.predrain_pv_confidence,
+        config.control.upper_pv_reserve,
+    )
+    stressed = simulate(
+        config,
+        inputs,
+        float(_search_lo(config)),
+        pv_scale=stress_vec,
+    )
+    episode_exports = [
+        flow.grid_export_wh for flow in stressed.flows if flow.grid_export_wh > 0.0
+    ]
+    assert episode_exports[0] == pytest.approx(37.4579, abs=0.01)
+    assert sum(episode_exports) == pytest.approx(205.1946, abs=0.01)
+
+    _end, margin_wh = _threshold_merge_probe(config, inputs)
+    assert margin_wh == pytest.approx(sum(episode_exports))
+    threshold, _base = search_threshold(config, inputs)
+    assert threshold == 20.0
+
+
 def test_threshold_merge_bound_floor_and_absence():
     """R4/R5 unit: no stressed clip -> None (full horizon); a clip within the
     first slots still leaves at least 6 scan slots; a merge at the horizon end
@@ -3407,7 +3476,7 @@ def test_merge_ramp_no_t_star_bistability_at_clip_onset():
     flipped None<->truncated and T* jumped between the hoard and drain regimes on
     a bare SOC/forecast tick — a +-1 Wh forecast / +-0.1 % SOC jitter must NOT
     move T*. Geometry: a strong-ish day 1 whose stressed clip is just appearing,
-    plus a weak final day (day 3 = 2 kWh) — the hoard incentive that made the old
+    plus weak later days — the hoard incentive that made the old
     edge genuinely bistable (~1.8 kWh apart), not a tie."""
     config = SystemConfig(
         control=NIGHT_CONTROL,
@@ -3433,7 +3502,7 @@ def test_merge_ramp_no_t_star_bistability_at_clip_onset():
     while milli <= 13000:  # 8.0 .. 13.0 kWh, 5 Wh steps
         d1 = milli / 1000.0
         inputs = build_slots(
-            config, now, base_soc, [d1, 12.0, 2.0], load_states=NIGHT_STATE
+            config, now, base_soc, [d1, 2.0, 2.0], load_states=NIGHT_STATE
         )
         end, margin = _threshold_merge_probe(config, inputs)
         if end is not None and 20.0 < margin < MERGE_TERMINAL_RAMP_WH / 2.0:
@@ -3446,7 +3515,7 @@ def test_merge_ramp_no_t_star_bistability_at_clip_onset():
 
     def t_star(day1_kwh: float, soc: float) -> float:
         inputs = build_slots(
-            config, now, soc, [day1_kwh, 12.0, 2.0], load_states=NIGHT_STATE
+            config, now, soc, [day1_kwh, 2.0, 2.0], load_states=NIGHT_STATE
         )
         thr, _base = search_threshold(config, inputs)
         return thr
@@ -3458,11 +3527,14 @@ def test_merge_ramp_no_t_star_bistability_at_clip_onset():
         for dk in (-0.001, 0.0, 0.001)
         for ds in (-0.1, 0.0, 0.1)
     ]
-    # The whole neighbourhood collapses onto one threshold — no 20<->61 flip.
-    assert max(jittered) - min(jittered) <= 1.0, (
+    # The whole neighbourhood stays in one (high/hold) regime — no 20<->61
+    # flank.  Integer candidate quantisation can move the edge by a few points,
+    # but it must not cross into the distant drain regime.
+    assert max(jittered) - min(jittered) <= 3.0, (
         f"T* bistable around the clip onset: {sorted(set(jittered))}"
     )
-    assert abs(center - jittered[0]) <= 1.0
+    assert min(jittered) > 50.0
+    assert abs(center - jittered[0]) <= 3.0
 
 
 def test_ramped_stress_floor_follows_stressed_crossover():

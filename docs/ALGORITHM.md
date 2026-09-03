@@ -289,6 +289,13 @@ candidates).
      the closer the crossover, the less forecast-error buffer the inverter
      reserve needs (operator principle). Z3's absolute battery floor stays
      static.
+  4. **Full-episode merge evidence (2026-09-03, T* 20↔60–64):** the merge
+     margin sums stressed export over the complete contiguous full-battery
+     episode. The old first-slot-only margin depended on the hourly boundary,
+     understated sustained clipping and could let a weak horizon tail hoard
+     the battery despite multi-hour surplus. The earliest decisive episode
+     wins; otherwise the strongest marginal episode drives the existing
+     continuous terminal-credit ramp.
 - **Cycling:** planning on the hourly grid; the real recommendation with a
   minimum on/off duration (default 30 min) — spares appliances and relays
   and, since v3, enters the evaluation as committed energy.
@@ -423,6 +430,25 @@ switched back on so that the rail is not dead). Details:
   late-confirming device (the state is adopted), not as an override.
 - Manually **switching off** an automatically activated PSU stays
   automatic: the protective function may switch it back on if needed.
+
+### D-A10 Cascades: day-scoped lexicographic fixed point
+
+A storage cascade is optimized as one electrical unit. Within its global load
+position the order is: safety/no import, terminal load, same-day recovery to
+the cascade discharge target, export-only top-up, additional export-backed Aux
+episodes, and only then early feed-in. The planner repeats the cascade phases
+after every accepted Aux candidate until no valid allocation reduces today's
+residual export. Tomorrow's energy cannot satisfy or mask today's recovery.
+
+All layers use one effective power per load (robust learned power, hard-capped
+by a member's charge limit). New Root/Aux starts reserve their transition time
+before useful energy; rolling replans start from measured SOC and never count
+already delivered energy twice. Recovery and top-up additionally carry a
+cumulative per-slot headroom limit: future Aux discharge cannot finance an
+earlier charge. An export-backed Aux candidate is moved before the solar
+absorption it enables; otherwise the established latest-feasible placement
+remains. The precise normative contract and executor state model are in
+`F-CASCADE-STORAGE.md` and `CASCADE-STORAGE-DESIGN.md`.
 
 ## 3. Prototype Results (hourly grid, integration defaults)
 

@@ -86,8 +86,10 @@ Wirkungsgrad bewertet, mit dem er später wirklich AC-seitig ankommt.
 
 Eine **einzige** pessimistische No-Loads-Simulation (Schwelle = `lo`,
 PV skaliert mit *demselben* Per-Slot-Vektor, den auch Z4 benutzt: P10 wo
-Bänder existieren, sonst α) sucht den ersten Slot, in dem die Batterie
-**voll ist und exportiert**:
+Bänder existieren, sonst α) sucht zusammenhängende Episoden, in denen die
+Batterie **voll ist und exportiert**. Eine Episode beginnt am ersten
+exportierenden Voll-Slot und endet, sobald die Batterie die Voll-Linie wieder
+verlässt:
 
 ```
 if flow.soc_end_percent >= soc_max - 0.1 and flow.grid_export_wh > _EPS
@@ -99,8 +101,12 @@ Rückgabe `(end, margin_wh)`:
   (Indizes 0..5), sonst würde T* über einem 1–2-Stunden-Fenster hüpfen.
   `None`, wenn es keinen gestressten Clip gibt oder der Merge ohnehin am
   Horizontende liegt.
-- `margin_wh` = der Export **an diesem ersten** Clip-Slot: das stetige Maß für
-  die Stärke des garantierten Clippings.
+- `margin_wh` = die **Summe des Exports der vollständigen Voll-Episode**: das
+  stetige Maß für die Stärke des garantierten Clippings. Die früheste Episode
+  ab 250 Wh gewinnt; bleiben alle Episoden darunter, steuert die stärkste die
+  Rampe. Damit kann weder ein kleiner partieller erster Slot die folgenden
+  Clip-Stunden unterschlagen noch eine frühe marginale Episode eine spätere
+  entscheidende Episode verdecken (Live-Fix 2026-09-03, T* 20↔60–64).
 
 Der Merge-Gedanke (D-A4): jenseits eines garantierten Clips ist die Trajektorie
 unabhängig von der heutigen Schwelle. Post-Merge-Ökonomie — z.B. Horten für
@@ -661,6 +667,7 @@ der Überschusslasten.
 | `hours_to_max_soc` | Index des ersten Slots mit `soc_end >= max_soc`, **+1** |
 | `pv_window_ends` | ISO-Datum → letzte Starkstunde (`hour_of_day`) des Absorptionsfensters |
 | `threshold_horizon_end` | Ende des merge-gekürzten T*-Horizonts; `None` = Voll-Horizont-Scan |
+| `threshold_merge_margin_wh` | Gestresster Export der ausgewählten Vollakku-Episode; erklärt die Terminal-Credit-Rampe auch unterhalb der 250-Wh-Kürzungsgrenze |
 | `stressed_min_soc_percent` | siehe §4.4 |
 | `support_dc24_now` / `support_dc48_now` | Slot-0-Zustand der Notfall-PSUs |
 | `feedin_schedule_w` (v0.23.0) | geplante Feed-in-Leistung je Slot (W), leer wenn deaktiviert |

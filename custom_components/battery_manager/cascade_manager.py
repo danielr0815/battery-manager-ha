@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.core import callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_call_later
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ACTOR_MODE_EXCLUSIVE,
@@ -70,6 +74,7 @@ class CascadeManager:
         self._aux_tick: dict[str, tuple[datetime, float]] = {}
         self._telemetry_unknown_since: dict[str, datetime] = {}
         self._restart_actor_unknown_since: dict[str, datetime] = {}
+        self._wake_actor_retry_cancel: dict[str, Callable[[], None]] = {}
 
     def _state(self, cascade_id: str) -> dict[str, Any]:
         state = self.coordinator._cascade_state.setdefault(cascade_id, {})
@@ -166,6 +171,11 @@ class CascadeManager:
             "wake_deadline",
             "wake_evidence_entity",
             "wake_evidence_at",
+            "wake_actor_entity",
+            "wake_actor_started_at",
+            "wake_actor_deadline",
+            "wake_actor_attempts",
+            "wake_actor_last_error",
             "last_actor_error",
         }
         for state in snapshot.values():
@@ -505,6 +515,7 @@ class CascadeManager:
         state["wake_deadline"] = (now + timedelta(seconds=timeout_s)).isoformat()
         state.pop("wake_evidence_entity", None)
         state.pop("wake_evidence_at", None)
+        self._clear_wake_actor(cascade_id)
 
     def _member_woke(self, cascade_id: str, topology: dict[str, Any]) -> bool:
         """Require a new numeric SOC publication after upstream power arrived."""
@@ -546,6 +557,57 @@ class CascadeManager:
             "wake_evidence_at",
         ):
             state.pop(key, None)
+        self._clear_wake_actor(cascade_id)
+
+    def _clear_wake_actor(self, cascade_id: str) -> None:
+        """Discard the bounded output-command retry for one waking member."""
+        if cancel := self._wake_actor_retry_cancel.pop(cascade_id, None):
+            cancel()
+        state = self._state(cascade_id)
+        for key in (
+            "wake_actor_entity",
+            "wake_actor_started_at",
+            "wake_actor_deadline",
+            "wake_actor_attempts",
+            "wake_actor_last_error",
+        ):
+            state.pop(key, None)
+
+    def _schedule_wake_actor_retry(self, cascade_id: str) -> None:
+        """Request one refresh at the wake deadline after a blocked refresh.
+
+        Fossibot telemetry can arrive while ``_actor`` is waiting for its
+        30-second confirmation.  The coordinator debounce deliberately absorbs
+        events during an active refresh, so relying on that publication alone
+        can postpone the retry until the five-minute poll.  This one-shot timer
+        guarantees a final attempt at the member deadline without a real wait
+        inside the actor sequence.
+        """
+        if cascade_id in self._wake_actor_retry_cancel:
+            return
+        state = self._state(cascade_id)
+        try:
+            deadline = datetime.fromisoformat(state["wake_actor_deadline"])
+        except KeyError, TypeError, ValueError:
+            return
+        hass = self.coordinator.hass
+        if not hasattr(hass, "async_create_task") or not hasattr(
+            self.coordinator, "async_request_refresh"
+        ):
+            return
+        remaining_s = max(0.0, (deadline - dt_util.now()).total_seconds())
+
+        @callback
+        def request_retry(_now: datetime) -> None:
+            self._wake_actor_retry_cancel.pop(cascade_id, None)
+            hass.async_create_task(
+                self.coordinator.async_request_refresh(),
+                f"battery_manager_cascade_wake_retry_{cascade_id}",
+            )
+
+        self._wake_actor_retry_cancel[cascade_id] = async_call_later(
+            hass, remaining_s, request_retry
+        )
 
     def _actors_not_confirmed_off(self, topology: dict[str, Any]) -> list[str]:
         """Return actors whose live state is not an explicit ``off``."""
@@ -1397,12 +1459,48 @@ class CascadeManager:
                 if next_index < wake_count
                 else None
             )
-            if not await self._actor(
-                cascade_id,
-                topology["members"][index][1].get(CONF_LOAD_OUTPUT_SWITCH),
-                True,
-            ):
+            member_data = topology["members"][index][1]
+            output_entity = member_data.get(CONF_LOAD_OUTPUT_SWITCH)
+            # A fresh telemetry publication proves that upstream power reached
+            # the member, but not that its command channel has completed boot.
+            # The 2026-09-03 Bad incident published total-input around 15 s
+            # after Root-ON, then needed roughly 50 s before the Fossibot could
+            # confirm AC-output.  Treat one actor confirmation timeout as a
+            # failed attempt inside the member's configured wake window;
+            # the electrically safe wake prefix stays powered for a retry.
+            if state.get("wake_actor_entity") != output_entity:
+                state["wake_actor_entity"] = output_entity
+                state["wake_actor_started_at"] = now.isoformat()
+                state["wake_actor_deadline"] = state.get("wake_deadline")
+                state["wake_actor_attempts"] = 0
+                state.pop("wake_actor_last_error", None)
+            state["wake_actor_attempts"] = int(state["wake_actor_attempts"]) + 1
+            if not await self._actor(cascade_id, output_entity, True):
+                last_error = deepcopy(state.get("last_actor_error"))
+                state["wake_actor_last_error"] = last_error
+                try:
+                    actor_deadline = datetime.fromisoformat(
+                        state["wake_actor_deadline"]
+                    )
+                except TypeError, ValueError:
+                    actor_deadline = now
+                if now < actor_deadline:
+                    self._schedule_wake_actor_retry(cascade_id)
+                    return True
+                state["last_actor_error"] = {
+                    "entity_id": output_entity,
+                    "target_state": "on",
+                    "observed_state": (
+                        last_error.get("observed_state") if last_error else None
+                    ),
+                    "kind": "wake_actor_timeout",
+                    "attempts": int(state["wake_actor_attempts"]),
+                    "deadline": state.get("wake_actor_deadline"),
+                    "last_error_kind": last_error.get("kind") if last_error else None,
+                }
                 return False
+            state.pop("last_actor_error", None)
+            self._clear_wake_actor(cascade_id)
             if next_index < wake_count:
                 self._wait_for_member_wake(
                     cascade_id,
@@ -1765,7 +1863,7 @@ class CascadeManager:
                     state["phase"] = "recovering" if pending else "complete"
             return
 
-        if desired_source and state.get("episode_day") != day:
+        if desired_source:
             retry_at = state.get("retry_at")
             if retry_at:
                 try:
@@ -1773,6 +1871,9 @@ class CascadeManager:
                         return
                 except ValueError:
                     pass
+            # A same-day marker is historical evidence, not a one-episode
+            # lock. The fresh full-day Core plan is the authorization for each
+            # additional Aux episode after an intervening Root/recovery phase.
             if not await self._wake(cascade_id, desired_source, now):
                 await self.async_safe_off(cascade_id, "wake failure")
                 if not state["retry_used"]:
@@ -1905,6 +2006,16 @@ class CascadeManager:
                     )
             for segment in flow.segments:
                 terminal_wh = float(segment.terminal_energy_wh)
+                transition_h = float(getattr(segment, "transition_hours", 0.0))
+                if transition_h > 0.0:
+                    activities.append(
+                        {
+                            "kind": "transition",
+                            "source": "aux",
+                            "source_load_id": segment.source_load_id,
+                            "minutes": round(transition_h * 60.0, 1),
+                        }
+                    )
                 if terminal_wh <= 0.0:
                     continue
                 source = "aux" if segment.source == "aux" else "root"
@@ -1988,6 +2099,14 @@ class CascadeManager:
                             float(segment.terminal_energy_wh)
                             for segment in flow.segments
                         ),
+                        1,
+                    ),
+                    "transition_minutes": round(
+                        sum(
+                            float(getattr(segment, "transition_hours", 0.0))
+                            for segment in flow.segments
+                        )
+                        * 60.0,
                         1,
                     ),
                     "sources": sources,
@@ -2160,6 +2279,10 @@ class CascadeManager:
                 "wake_deadline": state.get("wake_deadline"),
                 "wake_evidence_entity": state.get("wake_evidence_entity"),
                 "wake_evidence_at": state.get("wake_evidence_at"),
+                "wake_actor_entity": state.get("wake_actor_entity"),
+                "wake_actor_deadline": state.get("wake_actor_deadline"),
+                "wake_actor_attempts": state.get("wake_actor_attempts"),
+                "wake_actor_last_error": state.get("wake_actor_last_error"),
                 "aggregate_soc_percent": plan.aggregate_soc_percent if plan else None,
                 "aggregate_soc_stale": plan.aggregate_soc_stale if plan else False,
                 "planned_root_energy_kwh": (

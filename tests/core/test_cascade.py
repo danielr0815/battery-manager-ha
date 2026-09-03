@@ -150,7 +150,9 @@ def test_two_storage_skip_caps_efficiency_and_cache() -> None:
     assert cascade.aggregate_soc_percent == pytest.approx(76.0)
     assert cascade.aggregate_soc_stale
     assert cascade.provisional_live_soc_required
-    assert cascade.flows[aux[0][0]].member_flows[1].battery_discharge_wh > 150.0
+    assert (
+        sum(flow.member_flows[1].battery_discharge_wh for flow in cascade.flows) > 150.0
+    )
 
 
 @pytest.mark.parametrize(
@@ -177,7 +179,7 @@ def test_missing_stale_or_unavailable_source_is_not_started(
     assert plan(config, inputs).cascade_plans[0].planned_aux_energy_wh == expected_aux
 
 
-def test_no_pv_is_required_but_completed_episode_still_blocks_aux() -> None:
+def test_no_pv_is_required_and_completed_episode_allows_fresh_proven_aux() -> None:
     config, inputs = _system()
     no_pv = replace(inputs, slots=_slots(0, 0))
     cascade = plan(config, no_pv).cascade_plans[0]
@@ -188,7 +190,7 @@ def test_no_pv_is_required_but_completed_episode_still_blocks_aux() -> None:
         inputs,
         cascade_runtime_states=(CascadeRuntimeState("chain", NOW.date(), "complete"),),
     )
-    assert plan(config, complete).cascade_plans[0].planned_aux_energy_wh == 0
+    assert plan(config, complete).cascade_plans[0].planned_aux_energy_wh == 800
 
 
 def test_root_service_is_reported_without_aux_double_counting() -> None:
@@ -335,11 +337,7 @@ def test_legacy_result_remains_without_cascade_payload() -> None:
 
 def test_idle_slot_has_no_phantom_root_overhead() -> None:
     """No active cascade path means zero Root energy even with two outputs."""
-    config, inputs = _system(members=2, socs=(90.0, 90.0), caps=True)
-    inputs = replace(
-        inputs,
-        cascade_runtime_states=(CascadeRuntimeState("chain", NOW.date(), "complete"),),
-    )
+    config, inputs = _system(members=2, socs=(50.0, 50.0), caps=True)
 
     result = plan(config, inputs)
 
@@ -360,7 +358,7 @@ def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert (
         cascade_core.augment_cascade_plans(
-            legacy_config, inputs, base, lambda _inputs: base
+            legacy_config, inputs, base, lambda _inputs, _segments: base
         )
         is base
     )
@@ -375,16 +373,20 @@ def test_cascade_rejection_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     root_result = plan(legacy_config, root_inputs)
     allocations = iter((allocation, None))
     monkeypatch.setattr(
-        cascade_core, "_allocate_aux_now", lambda *_args: next(allocations)
+        cascade_core,
+        "_allocate_aux_now",
+        lambda *_args, **_kwargs: next(allocations),
     )
     rejected = cascade_core.augment_cascade_plans(
-        config, inputs, base, lambda _inputs: root_result
+        config, inputs, base, lambda _inputs, _segments: root_result
     )
     assert rejected.cascade_plans[0].planned_aux_energy_wh == 0
 
-    monkeypatch.setattr(cascade_core, "_allocate_aux_now", lambda *_args: allocation)
+    monkeypatch.setattr(
+        cascade_core, "_allocate_aux_now", lambda *_args, **_kwargs: allocation
+    )
     still_rejected = cascade_core.augment_cascade_plans(
-        config, inputs, base, lambda _inputs: root_result
+        config, inputs, base, lambda _inputs, _segments: root_result
     )
     assert still_rejected.cascade_plans[0].planned_aux_energy_wh == 0
 
@@ -536,6 +538,172 @@ def test_recovery_uses_parallel_direct_pv_before_early_feedin() -> None:
     assert any(on1 and on2 for on1, on2 in zip(b1.schedule, b2.schedule, strict=True))
     assert sum(flow.feedin_wh for flow in result.trajectory.flows) < 200.0
     assert result.grid_import_kwh == 0.0
+
+
+def test_sunny_following_day_does_not_mask_bad_cascade_recovery_today() -> None:
+    """Full-plan regression for the live Bad cascade's cross-day subtraction."""
+    config, inputs = _system(members=2, socs=(20.0, 20.0))
+    config = replace(
+        config,
+        loads=tuple(replace(load, nominal_power_w=500.0) for load in config.loads),
+        feedin=FeedInParams(
+            enabled=True,
+            max_w=2000.0,
+            min_soc_percent=20.0,
+            deadline_hour=12,
+        ),
+    )
+    today_pv = (1500, 1500, 1500, 700, 700, 700, 700)
+    today_slots = tuple(
+        HourSlot(i, NOW + timedelta(hours=i), 1.0, 6 + i, pv, 0.0, 0.0)
+        for i, pv in enumerate(today_pv)
+    )
+    tomorrow = NOW + timedelta(days=1)
+    tomorrow_slots = tuple(
+        HourSlot(
+            len(today_slots) + i,
+            tomorrow + timedelta(hours=i),
+            1.0,
+            6 + i,
+            1800.0,
+            0.0,
+            0.0,
+        )
+        for i in range(6)
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=50.0,
+        slots=(*today_slots, *tomorrow_slots),
+    )
+
+    result = plan(config, inputs)
+    today_end = result.cascade_plans[0].flows[len(today_slots) - 1]
+    today_feedin = sum(
+        flow.feedin_wh
+        for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True)
+        if slot.start.date() == NOW.date()
+    )
+
+    assert [flow.soc_end_percent for flow in today_end.member_flows] == (
+        pytest.approx([50.0, 50.0])
+    )
+    assert today_feedin < 200.0
+    assert result.grid_import_kwh == 0.0
+
+
+def test_plan_can_contain_two_aux_episodes_separated_by_root_slots() -> None:
+    """A Root interval separates, but no longer forbids, another Aux episode."""
+    config, inputs = _system(members=3, socs=(90.0, 90.0, 20.0))
+    inputs = replace(
+        inputs,
+        start_soc_percent=5.0,
+        slots=_slots(0.0, 0.0, 3000.0, 3000.0, 3000.0, 0.0),
+    )
+
+    cascade = plan(config, inputs).cascade_plans[0]
+    aux_slots = [index for index, _segment in _aux_segments(cascade)]
+    episode_starts = [
+        slot
+        for index, slot in enumerate(aux_slots)
+        if index == 0 or slot > aux_slots[index - 1] + 1
+    ]
+
+    assert len(episode_starts) == 2
+    assert all(cascade.flows[index].root_input_wh > 0 for index in (3, 4))
+    assert episode_starts[0] < 3 < episode_starts[1]
+
+
+def test_aux_predrains_before_solar_without_booking_future_headroom_early() -> None:
+    """Only already-created headroom may absorb the later solar surplus."""
+    config, inputs = _system(socs=(90.0,))
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(0.0, 0.0, 2000.0, 2000.0, 0.0, 0.0),
+    )
+
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    member = result.load_plans[0]
+
+    assert sum(
+        segment.terminal_energy_wh
+        for flow in cascade.flows[:2]
+        for segment in flow.segments
+        if segment.source == "aux"
+    ) == pytest.approx(600.0)
+    assert member.run_hours[:2] == (0.0, 0.0)
+    assert member.run_hours[2:4] == (1.0, 1.0)
+    assert member.planned_energy_wh == pytest.approx(600.0)
+    assert all(
+        flow.member_flows[0].input_wh
+        == pytest.approx(flow.member_flows[0].battery_charge_wh)
+        for flow in cascade.flows
+    )
+    assert cascade.flows[-1].member_flows[0].soc_end_percent >= 50.0
+    assert result.trajectory.total_export_wh == pytest.approx(2800.0)
+
+
+def test_fragmented_aux_capacity_keeps_feasible_minimum_runtime_episodes() -> None:
+    """An unusable third fragment must not discard two valid Aux episodes."""
+    config, inputs = _system(socs=(68.0,))
+    pv = (0.0, 3000.0, 0.0, 3000.0, 0.0)
+    slots = tuple(
+        HourSlot(
+            index,
+            NOW + timedelta(hours=0.5 * index),
+            0.5,
+            6 + index // 2,
+            value,
+            0.0,
+            0.0,
+        )
+        for index, value in enumerate(pv)
+    )
+    inputs = replace(inputs, start_soc_percent=95.0, slots=slots)
+
+    cascade = plan(config, inputs).cascade_plans[0]
+    aux_slots = [index for index, _segment in _aux_segments(cascade)]
+
+    assert cascade.planned_aux_energy_wh == pytest.approx(300.0)
+    assert aux_slots == [2, 4]
+    assert cascade.flows[-1].member_flows[0].soc_end_percent >= 50.0
+
+
+def test_new_aux_episode_reserves_transition_before_useful_energy() -> None:
+    """Wake/actor/proof time occupies the slot without phantom service Wh."""
+    config, inputs = _system(socs=(90.0,))
+    config = replace(
+        config,
+        cascades=(replace(config.cascades[0], startup_transition_s=600.0),),
+    )
+    inputs = replace(inputs, slots=_slots(0.0))
+
+    cascade = plan(config, inputs).cascade_plans[0]
+    segments = cascade.flows[0].segments
+
+    assert sum(segment.transition_hours for segment in segments) == pytest.approx(
+        10.0 / 60.0
+    )
+    assert cascade.planned_aux_energy_wh == pytest.approx(250.0)
+    assert sum(segment.run_hours for segment in segments) == pytest.approx(1.0)
+    assert cascade.flows[0].terminal_served_wh == pytest.approx(250.0)
+
+
+def test_transition_plus_minimum_runtime_must_fit_episode_window() -> None:
+    """A short forecast tail cannot start an actor path it cannot complete."""
+    config, inputs = _system(socs=(90.0,))
+    config = replace(
+        config,
+        cascades=(replace(config.cascades[0], startup_transition_s=600.0),),
+    )
+    inputs = replace(
+        inputs,
+        slots=(HourSlot(0, NOW, 0.6, 6, 0.0, 0.0, 0.0),),
+    )
+
+    assert plan(config, inputs).cascade_plans[0].planned_aux_energy_wh == 0.0
 
 
 def test_recovery_does_not_postpone_house_charge_without_same_day_export() -> None:
@@ -729,10 +897,38 @@ def test_recovery_final_dwell_may_cross_50_to_avoid_export() -> None:
     )
 
 
-def test_export_backed_predrain_may_cross_target_but_recovers_next_day() -> None:
-    """50 % is unconditional; forecast-backed headroom may use the 20 % floor."""
-    # Mirrors the live incident: B1 still has unconditional energy while B2 is
-    # already just below the ordinary cascade target.
+def test_post_terminal_retry_uses_residual_export_for_member_topup() -> None:
+    """After all recovery attempts, visible export still serves normal top-up."""
+    config, inputs = _system(socs=(60.0,))
+    inputs = replace(inputs, start_soc_percent=95.0, slots=_slots(1000.0, 1000.0))
+    member_plan = LoadPlan("b1", (False, False), 0.0, run_hours=(0.0, 0.0))
+    trajectory = simulate(config, inputs, 20.0)
+
+    plans, _extra, updated = optimize_core._allocate_recovery_after_continuous_loads(
+        config,
+        inputs,
+        20.0,
+        [member_plan],
+        (0.0, 0.0),
+        trajectory,
+        {"b1": 600.0},
+        visible_export_only=True,
+        today_only=False,
+        repeat_final_rounding=False,
+        phase_name="top-up",
+    )
+
+    assert plans[0].planned_energy_wh == pytest.approx(600.0)
+    assert trajectory.total_export_wh - updated.total_export_wh == pytest.approx(600.0)
+    assert any("top-up after terminal plan" in reason for reason in plans[0].reasons)
+
+
+def test_tomorrows_export_cannot_back_today_below_target_predrain() -> None:
+    """The protected reserve needs export and recovery on this local day."""
+    # B1 has unconditional energy above 50 %, while B2 starts below target.
+    # All export and recovery opportunity is tomorrow. The old horizon-wide
+    # contract discharged B1 below 50 % this evening and promised recovery on
+    # the following export day; today's contract must stop at 50 %.
     config, inputs = _system(members=2, socs=(84.9, 48.0))
     now = datetime(2026, 8, 23, 18)
     slots = tuple(
@@ -753,37 +949,95 @@ def test_export_backed_predrain_may_cross_target_but_recovers_next_day() -> None
     cascade = result.cascade_plans[0]
     b1_soc = [flow.member_flows[0].soc_end_percent for flow in cascade.flows]
 
-    assert min(b1_soc) < 50.0
-    assert min(b1_soc) >= 20.0
-    assert cascade.recovery_deadline == datetime(2026, 8, 25)
+    assert min(b1_soc) == pytest.approx(50.0)
+    assert cascade.recovery_deadline is None
     assert all(flow.soc_end_percent >= 50.0 for flow in cascade.flows[-1].member_flows)
     reached = dict(cascade.recovery_reached_at)
     assert reached["b1"] is not None
-    assert reached["b1"].date() == date(2026, 8, 24)
+    assert reached["b1"].date() == date(2026, 8, 23)
     assert reached["b2"] is not None
     assert reached["b2"].date() == date(2026, 8, 24)
     assert cascade.proposed_runtime is not None
     assert cascade.proposed_runtime == CascadeRuntimeState(cascade_id="chain")
 
-    # When the rolling horizon reaches the late start, the same forecast
-    # becomes executable and publishes the persisted recovery promise.
-    start_index = next(
-        index for index, flow in enumerate(cascade.flows) if flow.aux_terminal_wh
+
+def test_tomorrow_member_booking_does_not_mask_today_recovery_retry() -> None:
+    """A future plan cannot satisfy the subtraction for today's 50 % debt."""
+    config, inputs = _system(socs=(20.0,))
+    slots = (
+        HourSlot(0, NOW, 1.0, 6, 1000.0, 0.0, 0.0),
+        HourSlot(1, NOW + timedelta(days=1), 1.0, 6, 1000.0, 0.0, 0.0),
     )
-    rolling_slots = tuple(
-        replace(slot, index=index) for index, slot in enumerate(slots[start_index:])
-    )
-    rolling = plan(
+    inputs = replace(inputs, start_soc_percent=95.0, slots=slots)
+    member_plan = LoadPlan("b1", (False, True), 300.0, run_hours=(0.0, 1.0))
+    trajectory = simulate(config, inputs, 20.0, extra_ac_wh=(0.0, 300.0))
+
+    plans, _extra, updated = optimize_core._allocate_recovery_after_continuous_loads(
         config,
-        replace(inputs, now=rolling_slots[0].start, slots=rolling_slots),
-    ).cascade_plans[0]
-    assert rolling.schedule[0]
-    assert rolling.proposed_runtime is not None
-    assert rolling.proposed_runtime.recovery_pending_ids == ("b1", "b2")
+        inputs,
+        20.0,
+        [member_plan],
+        (0.0, 300.0),
+        trajectory,
+        {"b1": 300.0},
+    )
+
+    assert plans[0].schedule == (True, True)
+    assert trajectory.flows[0].grid_export_wh - updated.flows[0].grid_export_wh == (
+        pytest.approx(300.0)
+    )
 
 
-def test_export_backed_predrain_can_continue_when_already_below_target() -> None:
-    """Rolling replans keep using only the still-exported recovery budget."""
+def test_today_recovery_dwell_may_not_spill_past_local_midnight() -> None:
+    """The same-day 50 % promise rejects a dwell completed tomorrow."""
+    config, inputs = _system(socs=(20.0,))
+    now = datetime(2026, 8, 23, 23, 45)
+    slots = (
+        HourSlot(0, now, 0.25, 23, 250.0, 0.0, 0.0),
+        HourSlot(1, now + timedelta(minutes=15), 1.0, 0, 1000.0, 0.0, 0.0),
+    )
+    inputs = replace(inputs, now=now, start_soc_percent=95.0, slots=slots)
+    member_plan = LoadPlan("b1", (False, False), 0.0, run_hours=(0.0, 0.0))
+    trajectory = simulate(config, inputs, 20.0)
+
+    plans, _extra, _updated = optimize_core._allocate_recovery_after_continuous_loads(
+        config,
+        inputs,
+        20.0,
+        [member_plan],
+        (0.0, 0.0),
+        trajectory,
+        {"b1": 150.0},
+    )
+
+    assert plans[0].schedule == (False, False)
+
+
+def test_effective_power_is_identical_in_allocator_root_and_member_soc() -> None:
+    """Learned/capped power has one value across every energy boundary."""
+    config, inputs = _system(socs=(50.0,), caps=True)
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(1000.0),
+        load_states=(
+            replace(inputs.load_states[0], learned_power_w=400.0),
+            replace(inputs.load_states[1], learned_power_w=425.0, available=False),
+        ),
+    )
+
+    result = plan(config, inputs)
+    member_plan = result.load_plans[0]
+    flow = result.cascade_plans[0].flows[0]
+
+    assert member_plan.planned_energy_wh == pytest.approx(250.0)
+    assert flow.member_flows[0].input_wh == pytest.approx(250.0)
+    assert flow.root_input_wh == pytest.approx(250.0)
+    assert result.trajectory.flows[0].extra_ac_wh == pytest.approx(250.0)
+
+
+def test_below_target_aux_is_not_used_when_terminal_already_prevents_export() -> None:
+    """Protected reserve is not spent when the direct terminal removes export."""
     config, inputs = _system(socs=(48.0,))
     now = datetime(2026, 8, 23, 18)
     slots = tuple(
@@ -792,7 +1046,7 @@ def test_export_backed_predrain_can_continue_when_already_below_target() -> None
             now + timedelta(hours=index),
             1.0,
             (18 + index) % 24,
-            1200.0 if 16 <= index <= 21 else 0.0,
+            1200.0 if 3 <= index <= 5 else 0.0,
             0.0,
             0.0,
         )
@@ -802,8 +1056,8 @@ def test_export_backed_predrain_can_continue_when_already_below_target() -> None
 
     cascade = plan(config, inputs).cascade_plans[0]
 
-    assert cascade.planned_aux_energy_wh > 0.0
-    assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) < 48.0
+    assert cascade.planned_aux_energy_wh == 0.0
+    assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) == 48.0
     assert cascade.flows[-1].member_flows[0].soc_end_percent >= 50.0
 
 

@@ -164,8 +164,11 @@ P1/P2 (exactly one simulation, no pessimism in the series) are preserved.
   re-keyed by profile id (the three built-ins carry their data over —
   no learning loss).
 - Diagnostics: profile of today/tomorrow (sensor attributes), per-profile
-  effective samples, season-affinity on/off; the bias watchdog (D-C9) is
-  unchanged (it validates the P50 series regardless of its bin origin).
+  effective samples, season-affinity on/off; the bias watchdog (D-C9) validates
+  the exact effective P50/fallback series used by the planner and labels each
+  hour's origin. Sparse vacation bins that fall through to the static
+  base-only profile are therefore still measurable instead of disappearing
+  from MAE/bias.
 
 ## 5. Phasing & effort
 

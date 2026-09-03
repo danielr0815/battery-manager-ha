@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.9] - 2026-09-03
+
+### Fixed
+- Der Inverter-Schwellwert hortet an starken Solartagen nicht mehr bei
+  60–64 %. Die Merge-Probe bewertet jetzt die gesamte zusammenhängende,
+  gestresste Einspeiseepisode bei vollem Hausakku statt nur deren ersten
+  (oft partiellen) Stunden-Slot. Dadurch kann weder ein kleiner erster
+  Exportrest die folgenden Clip-Stunden unterschlagen noch eine frühe
+  marginale Episode eine spätere starke verdecken; der schwache letzte
+  Prognosetag zieht T* nicht mehr hoch, obwohl vorher vermeidbarer Export
+  ansteht (Live-Vorfall 2026-09-03 09:14–11:53, T* 20↔59–64).
+- Der geordnete Kaskaden-Wake unterscheidet jetzt eine frische
+  Telemetriepublikation von der tatsächlichen Befehlsbereitschaft eines noch
+  bootenden Fossibot. Ein erster unbestätigter AC-Output-Befehl schaltet Root
+  nicht mehr nach 30 Sekunden ab und setzt keinen sofortigen
+  `root_transition_failed`; der sichere Wake-Präfix bleibt erhalten und der
+  Output wird bis zum konfigurierten Mitglieds-Wake-Timeout begrenzt wiederholt.
+  Diagnoseattribute zeigen Actor, Deadline, Versuchszahl und letzte Ursache.
+- Die Kaskadenplanung behandelt Lade-Headroom jetzt zeitkausal: Eine erst
+  später geplante Aux-Entladung kann keine frühere Fossibot-Ladung mehr
+  rechtfertigen. Wenn die Endlastnutzung späteren Solar-Export verhindert,
+  wird sie früh genug vor die Solaraufnahme gelegt; Recovery und Top-up sind
+  je Slot auf den bis dahin tatsächlich geschaffenen Speicherplatz begrenzt.
+- Mehrere elektrisch getrennte Aux-Episoden eines Tages bleiben zulässig und
+  berücksichtigen je Start die konservative Actor-/Wake-/Proof-Zeit ohne
+  fiktive Endlastenergie. Fragmentierte Zeitfenster verwerfen gültige
+  Mindestlaufzeit-Episoden nicht mehr. Alle Kaskadenschichten verwenden
+  dieselbe gelernte und hart begrenzte Ladeleistung; morgige Buchungen können
+  die heutige 50-%-Recovery weder erfüllen noch verdecken.
+- Die SOC-Karte berechnet den Hover-Wert der vorzeitigen Einspeisung aus dem
+  exakt zugehörigen physischen Slot. Angezeigte Einzelstunden summieren sich
+  damit wieder zur Tagesangabe.
+- Der Prognose-Watchdog bewertet bei noch nicht gelernten Stunden den
+  tatsächlich verwendeten statischen Fallback, einschließlich Urlaubsmodus
+  und Lastfenstern über Mitternacht, und weist gelernte/Fallback-Stunden aus.
+
 ## [0.34.8] - 2026-09-02
 
 ### Fixed

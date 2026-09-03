@@ -2,7 +2,9 @@
 
 Status: normative Feature-Spezifikation. Der Planungsnachtrag vom 2026-09-02
 ersetzt den bisherigen Ein-Episoden-/Recovery-Sperrvertrag. Die hier relevante
-Recovery-/Feed-in-Priorisierung ist ab v0.34.7 umgesetzt.
+Recovery-/Feed-in-Priorisierung ist der verbindliche Abnahmevertrag; der
+Implementierungsstand wird nicht aus einer früheren Release-Nummer abgeleitet,
+sondern durch die in diesem Dokument genannten Regressionstests nachgewiesen.
 
 ## Ziel und Geltungsbereich
 
@@ -135,13 +137,18 @@ PV-only-Quellengrenze; es darf keine erreichbare Recovery eines anderen
 Mitglieds verzögern oder verhindern.
 
 Die Vorschau bewertet alle für den verbleibenden lokalen Kalendertag möglichen
-Aux-, Root- und Recovery-Abschnitte gemeinsam. Eine neue Aux-Episode beginnt
-innerhalb ihres zulässigen Fensters am spätestmöglichen Forecast-Slot, der den
-vollständigen Tagesvertrag noch erfüllt. Nur Slot 0 ist unmittelbar
+Aux-, Root- und Recovery-Abschnitte gemeinsam. Ohne Exportnutzen beginnt eine
+neue Aux-Episode innerhalb ihres zulässigen Fensters am spätestmöglichen
+Forecast-Slot, der den vollständigen Tagesvertrag noch erfüllt. Soll ihre
+Entladung dagegen spätere PV-Aufnahme ermöglichen, wird sie so früh wie nötig
+vor diese Aufnahme gelegt. Lade-Headroom wird dabei als kumulatives
+Zeitreihenbudget geführt: Ein Root-Slot darf nur Energie buchen, deren
+Speicherplatz durch den bis dahin beobachteten Anfangs-SOC oder eine zeitlich
+bereits vorhergehende Aux-Entladung existiert. Künftige Entladung darf niemals
+rückwirkend eine frühere Ladung rechtfertigen. Nur Slot 0 ist unmittelbar
 ausführbar; ein künftiger Start bleibt Vorschau und wird bei jedem Rolling
-Replan neu bewertet. Sobald der späte Start in Slot 0 rückt oder die Episode
-bereits läuft, bleibt sie dort bis zum nächsten sicheren Umschaltpunkt
-verankert.
+Replan neu bewertet. Sobald der Start in Slot 0 rückt oder die Episode bereits
+läuft, bleibt sie dort bis zum nächsten sicheren Umschaltpunkt verankert.
 
 Mehrere Aux-Episoden und ein erneutes Anwachsen bereits teilweise oder
 vollständig abgebauter Recovery-Schuld sind am selben Tag zulässig. Jede
@@ -161,6 +168,24 @@ bleibt die externe Root-Bilanz; interne Durchleitung und Aux-Energie erscheinen
 nur in `CascadePlan`. `LoadPlan.managed_by_cascade` unterdrückt die unabhängige
 Aktuation der Mitglieder und der Endlast.
 
+Für jeden Lastpfad existiert pro Planlauf genau eine effektive Wirkleistung.
+Sie ist die normale robuste Planungsleistung der Last, bei einem
+Kaskadenmitglied zusätzlich hart durch `max_charge_power_w` begrenzt. Dieselbe
+Leistung bestimmt Lastenergie, Root-Grenzenergie, Mitglieds-SOC, Aktivitäten
+und Kartenwerte. Nominal-, Lern- und Cap-Leistung dürfen nicht in
+unterschiedlichen Bilanzschichten parallel verwendet werden. Der
+Output-Overhead wird nur für tatsächlich benötigte Ausgänge und genau einmal
+an der Root-Grenze beziehungsweise an der entladenden Aux-Quelle gebucht.
+
+Ein geplanter neuer Root- oder Aux-Abschnitt enthält vor der ersten
+Nutzenergie ein konservatives Übergangsbudget aus den konfigurierten
+Actor-Bestätigungs-, Mitglieds-Wake- und Handover-Zeiten. Während dieses
+Budgets wird keine noch nicht nachgewiesen gelieferte Endlast- oder
+Speicherenergie gutgeschrieben. Reicht das verbleibende Slot-/Tagesfenster
+nicht für Übergang plus vollständige Mindestlaufzeit, ist der Start nicht
+planbar. Bereits laufende oder nachgewiesene Pfade bezahlen das Budget nicht
+erneut.
+
 Recovery-Schuld ist eine tagesweite Verpflichtung und kein pauschales
 Episodenverbot. Sie bleibt über Rolling Replans, Home-Assistant-Neustarts und
 Mitternacht erhalten und geht als Anfangsdefizit in jeden neuen Tagesplan ein.
@@ -170,6 +195,23 @@ Mitternacht nicht erreicht, bleibt die Schuld offen; am Folgetag ist eine
 weitere Nutzung der geschützten Reserve nur mit einem neuen vollständigen
 Tagesnachweis zulässig. Die direkte Endlast behält auch dann ihre höhere
 Priorität.
+
+Jeder Rolling Replan beginnt bei den aktuellen gemessenen Mitglieds-SOCs und
+dem aktuellen partiellen Slot. Bereits tatsächlich gelieferte Root- und
+Aux-Energie wird nur in den Tageszählern ausgewiesen; sie darf weder ein
+zweites Mal als verfügbare Energie noch als zukünftige Recovery angerechnet
+werden. Umgekehrt darf geplante Energie nach dem heutigen lokalen Tagesende
+kein heute offenes Recovery-Defizit erfüllen. Der Tagesendnachweis wird nach
+jeder angenommenen Aux-Episode und jeder Root-Allokation neu berechnet, bis
+keine weitere zulässige Endlast-/Recovery-/Top-up-/Aux-Allokation den
+Restexport reduzieren kann.
+
+Kann nicht genügend Energie für alle Recovery-Defizite genutzt werden, bleibt
+Recovery als Stufe insgesamt vor Top-up. Innerhalb dieser Stufe entscheidet
+die globale Kaskaden-/Mitgliedspriorität über knappe nutzbare Energie. Ein
+niedriger priorisiertes Mitglied darf also keine Recovery eines höher
+priorisierten Mitglieds verdrängen; Top-up darf umgekehrt erst Fragmente
+nutzen, die kein noch offenes Recovery-Defizit physisch verwenden kann.
 
 Cache-SOCs bis sieben Tage dürfen Vorschau und Aggregat speisen; vor Entladung
 sind neue numerische Live-SOCs aller Mitglieder zwingend. Der
@@ -199,11 +241,26 @@ Eine bereits vor dem Zuschalten vorhandene numerische Meldung gilt dabei nur
 als Baseline und niemals als Aufwachnachweis. Maßgeblich ist eine nach der
 jeweils vorgelagerten Schalthandlung erfolgte HA-Publikation von SOC,
 Eingangsleistung oder Ausgangsleistung; auch ein unveränderter Zahlenwert zählt
-über `last_reported`. Dadurch bleibt der Nachweis an konfigurierte Telemetrie
-des konkreten Speichers gebunden, wartet aber nicht unnötig auf den langsamsten
-Sensor. Jede Stufe besitzt ihr eigenes konfiguriertes Wake-Timeout. Dadurch
-erhält insbesondere B2 seinen AC-Ausgangsbefehl erst, nachdem B2 durch B1
-tatsächlich versorgt wurde und wieder Telemetrie sendet.
+über `last_reported`. Diese Meldung beweist, dass die vorgelagerte Versorgung
+den konkreten Speicher erreicht hat, aber noch nicht, dass dessen intern
+startender Befehlskanal bereits schaltbereit ist. Erst die bestätigte
+Zielstellung des AC-Ausgangs schließt die jeweilige Stufe ab.
+
+Jede Stufe besitzt deshalb zwei getrennte Grenzen: Das konfigurierte
+Wake-Timeout begrenzt das Warten auf eine neue Telemetriepublikation. Nach
+dieser Publikation darf ein einzelnes Actor-Confirmation-Timeout den sicheren
+Wake-Präfix nicht sofort abbrechen. Der Executor lässt Root und alle bereits
+bestätigten Upstream-Ausgänge unverändert an und wiederholt den noch offenen
+Output-Befehl in folgenden Coordinator-Zyklen bis zum konfigurierten
+Wake-Timeout des Mitglieds. Erst dessen Ablauf führt mit Anzahl der
+Versuche und letzter Actor-Ursache zu Wake-Fehler und Safe-OFF. Dadurch erhält
+insbesondere B2 seinen AC-Ausgangsbefehl erst, nachdem B2 durch B1 tatsächlich
+versorgt wurde, und ein langsamer Befehlskanal löst keinen verfrühten
+Root-Abbruch aus. Ein einmaliger Refresh an der absoluten Wake-Deadline stellt
+den letzten Versuch auch dann sicher, wenn eine während der blockierenden
+Actor-Bestätigung eingetroffene Sensorpublikation vom laufenden
+Coordinator-Debounce absorbiert wurde; er wird an jeder Abschluss- oder
+Safe-OFF-Grenze wieder entfernt.
 
 Der vollständige Wake erhält genau einen Retry nach 15 Minuten; dieser
 Retry-Zustand bleibt auch vor dem Setzen des erst nach Leistungsnachweis
@@ -211,10 +268,13 @@ verfügbaren `episode_day` über Rolling Refreshes erhalten. Ein
 erfolgreicher Service-Aufruf bestätigt einen `assumed_state`-Actor logisch; die
 fehlende physische Rückmeldung ist als Diagnoseeinschränkung zu verstehen.
 Bei Actoren mit echter Zustandsrückmeldung gilt der Service-Aufruf allein
-dagegen nicht als Bestätigung: Der Manager wartet innerhalb des konfigurierten
-Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst dann seinen
-Claim. Ein bereits bestätigter Zielzustand wird ohne redundanten Service-Aufruf
-übernommen; damit bleibt insbesondere wiederholtes Safe-OFF idempotent.
+dagegen nicht als Bestätigung: Der Manager wartet je Versuch innerhalb des
+konfigurierten Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst
+dann seinen Claim. Die begrenzte Wiederholung gilt ausschließlich für den noch
+stromlos sicheren Output-AN-Schritt eines Mitglieds-Wakes; andere
+Actor-Fehler bleiben unmittelbar fail-closed. Ein bereits bestätigter
+Zielzustand wird ohne redundanten Service-Aufruf übernommen; damit bleibt
+insbesondere wiederholtes Safe-OFF idempotent.
 
 Eine abgeschlossene `episode_day`-Marke des Vortags wird aus einem stabilen,
 bestätigt ausgeschalteten Zustand entfernt, bevor am neuen Tag ein Root- oder
@@ -362,6 +422,12 @@ Nur ein widersprüchlicher oder weiterhin unbekannter Vektor führt zum
 geordneten Safe-OFF. Eine bewusst deaktivierte Kaskade bleibt unangetastet. Ein
 laufender Wake veröffentlicht Modus, Member-Index, Baseline, Deadline und die
 zuletzt akzeptierte Telemetrie-Evidenz ausschließlich für die Live-Diagnose.
+Während eines verzögerten Output-Starts kommen Actor-Entity,
+Wake-Deadline, Versuchszahl und letzter Actor-Fehler hinzu.
+
+Die Diagnose weist für jede geplante Episode Nutzenergie und Übergangsbudget
+getrennt aus. Dadurch bleibt sichtbar, ob ein kurzer Forecast-Abschnitt an
+Wake-/Bestätigungszeit statt an fehlender PV oder Kapazität scheitert.
 
 Die Executor-Phasen `recovering` und `complete` sind bei aktiver Automation
 reine Diagnosen, keine Actor-Freigabe. Auch in diesen Phasen wird Safe-OFF

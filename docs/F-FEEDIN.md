@@ -24,9 +24,13 @@ feed-in.
 
 ## 2. Regeln
 
-- **R1 (Trigger).** The pass runs only when the post-allocation trajectory
-  (`alloc_traj`, median forecast) still exports — energy the loads provably
-  cannot absorb. No residual export ⇒ no schedule, no setpoint writes.
+- **R1 (Trigger und letzte Priorität).** The pass runs only when the complete
+  post-allocation fixed point (`alloc_traj`, median forecast) still exports —
+  energy that direct terminal operation, same-day cascade recovery, export-only
+  top-up, further valid Aux episodes and all other surplus loads provably cannot
+  absorb. Feed-in is computed only after those alternatives; it must never hide
+  an available charge opportunity. No residual export ⇒ no schedule, no
+  setpoint writes.
 - **R2 (Passthrough-only physics — the battery IDLES).** The battery is NEVER
   actively discharged for feed-in: `step_hour` serves booked feed-in from the
   slot surplus BEFORE charging (`charge = min(headroom, max(0, surplus −
@@ -181,8 +185,11 @@ feed-in.
   one: the flat morning SOC shows in the forecast, and `lost_surplus` stays
   the export that is still lost AFTER feed-in.
 - **R14 (Card).** The forecast card renders a feed-in lane under the SOC chart
-  (pattern: the dc24/dc48 support lanes) with one block per feed-in period
-  including the W figure, plus a stats line "geplante Einspeisung
+  (pattern: the dc24/dc48 support lanes) with an exact per-slot energy contract.
+  Adjacent slots may be drawn as one visual period, but hover always resolves
+  the slot under the cursor and its own `power × slot_duration` value; it may
+  not read the value from the preceding/following forecast boundary. The card
+  also shows a stats line "geplante Einspeisung
   heute/morgen x/x kWh" from the `daily` breakdown (rendered only when the
   attribute exists — backend compatibility).
 - **R15 (Golden-Neutralität).** Neutral defaults: `FeedInParams.enabled =

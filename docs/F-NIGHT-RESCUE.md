@@ -109,6 +109,16 @@ removal. All planner gates keep applying.
   threshold, so the scan deterministically drains to `lo` ahead of the
   stress-confirmed clip. The full-horizon scan (merge = None) keeps the terminal
   value unchanged.
+- **R4b (v3, amended after the 2026-09-03 09:30 T\*=64 incident)** The
+  continuous merge margin is the **sum of stressed export over the complete
+  contiguous full-battery episode**, beginning at its first exporting slot,
+  not the export of that first slot alone. A small partial first slot must not
+  hide the following full hours. If several episodes exist, the earliest
+  decisive episode (`margin >= MERGE_TERMINAL_RAMP_WH`) wins; without a
+  decisive episode, the strongest marginal episode drives the credit ramp.
+  This preserves the pessimistic/P10 evidence rule while making the evidence
+  independent of hourly boundaries and ensuring that an early marginal event
+  cannot mask a later decisive one.
 - **R5** Floor: never truncate below 6 slots (a degenerate 1–2 h window would
   make the threshold jumpy); if merge < 6 slots away, use 6.
 - **R6** `allocate_loads`/pass gates keep operating on the FULL horizon and
@@ -118,6 +128,9 @@ removal. All planner gates keep applying.
   field (e.g. `threshold_horizon_end: datetime | None`), surfaced as a
   SOC-forecast attribute `threshold_horizon_end` — null when full-horizon.
   The explain of the 04:13 class of events becomes visible on the card.
+  R4b additionally exposes `threshold_merge_margin_wh`, including below the
+  250 Wh truncation edge, so a full-horizon scan still reveals how strongly
+  the terminal credit was faded.
 
 ### F3 — crossover buffer ramp (D3)
 
