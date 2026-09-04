@@ -256,11 +256,25 @@ Wake-Timeout des Mitglieds. Erst dessen Ablauf führt mit Anzahl der
 Versuche und letzter Actor-Ursache zu Wake-Fehler und Safe-OFF. Dadurch erhält
 insbesondere B2 seinen AC-Ausgangsbefehl erst, nachdem B2 durch B1 tatsächlich
 versorgt wurde, und ein langsamer Befehlskanal löst keinen verfrühten
-Root-Abbruch aus. Ein einmaliger Refresh an der absoluten Wake-Deadline stellt
-den letzten Versuch auch dann sicher, wenn eine während der blockierenden
-Actor-Bestätigung eingetroffene Sensorpublikation vom laufenden
-Coordinator-Debounce absorbiert wurde; er wird an jeder Abschluss- oder
-Safe-OFF-Grenze wieder entfernt.
+Root-Abbruch aus. Ein einmaliger Refresh an jeder absoluten Wake-Deadline
+begrenzt auch ein vollständig stilles Mitglied unabhängig vom regulären
+Coordinator-Poll. Er stellt zugleich den letzten Output-Versuch sicher, wenn
+eine während der blockierenden Actor-Bestätigung eingetroffene
+Sensorpublikation vom laufenden Coordinator-Debounce absorbiert wurde; der
+Timer wird an jeder Abschluss-, Stufenwechsel- oder Safe-OFF-Grenze entfernt.
+
+Ein angenommener Root-Wake ist innerhalb seines Wake-Fensters ebenso atomar
+wie ein Aux-Wake: Ein Rolling Replan ohne Root-Segment darf die bereits
+eingeschaltete Versorgung nicht vor der nächsten frischen numerischen
+Publikation des gerade aufwachenden Mitglieds trennen. Kehrt die Root-Planung
+bis dahin zurück, wird der geordnete Wake fortgesetzt. Bleibt sie zurückgezogen
+oder wechselt der Plan zu Aux, ist die frische Publikation die sichere
+elektrische Grenze: Die Kette geht geordnet auf Safe-OFF, ohne einen weiteren
+Ausgang, ein Charge-Gate oder die Endlast einzuschalten. Das ursprüngliche
+absolute Wake-Timeout bleibt dabei unverändert; fehlende Telemetrie endet auch
+bei zurückgezogenem Plan weiterhin fail-closed. Globale Safety-Gates,
+deaktivierte Mitglieder, Ownership-Verstöße und Tageswechsel dürfen den Wake
+weiterhin sofort unterbrechen.
 
 Der vollständige Wake erhält genau einen Retry nach 15 Minuten; dieser
 Retry-Zustand bleibt auch vor dem Setzen des erst nach Leistungsnachweis

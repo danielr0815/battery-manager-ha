@@ -74,7 +74,14 @@ class CascadeManager:
         self._aux_tick: dict[str, tuple[datetime, float]] = {}
         self._telemetry_unknown_since: dict[str, datetime] = {}
         self._restart_actor_unknown_since: dict[str, datetime] = {}
-        self._wake_actor_retry_cancel: dict[str, Callable[[], None]] = {}
+        self._wake_deadline_cancel: dict[str, Callable[[], None]] = {}
+
+    def cleanup(self) -> None:
+        """Cancel callbacks that must not survive config-entry unload."""
+        callbacks = tuple(self._wake_deadline_cancel.values())
+        self._wake_deadline_cancel.clear()
+        for cancel in callbacks:
+            cancel()
 
     def _state(self, cascade_id: str) -> dict[str, Any]:
         state = self.coordinator._cascade_state.setdefault(cascade_id, {})
@@ -516,6 +523,7 @@ class CascadeManager:
         state.pop("wake_evidence_entity", None)
         state.pop("wake_evidence_at", None)
         self._clear_wake_actor(cascade_id)
+        self._schedule_wake_deadline_refresh(cascade_id, now)
 
     def _member_woke(self, cascade_id: str, topology: dict[str, Any]) -> bool:
         """Require a new numeric SOC publication after upstream power arrived."""
@@ -560,8 +568,8 @@ class CascadeManager:
         self._clear_wake_actor(cascade_id)
 
     def _clear_wake_actor(self, cascade_id: str) -> None:
-        """Discard the bounded output-command retry for one waking member."""
-        if cancel := self._wake_actor_retry_cancel.pop(cascade_id, None):
+        """Cancel the stage deadline and discard its bounded output retry."""
+        if cancel := self._wake_deadline_cancel.pop(cascade_id, None):
             cancel()
         state = self._state(cascade_id)
         for key in (
@@ -573,21 +581,28 @@ class CascadeManager:
         ):
             state.pop(key, None)
 
-    def _schedule_wake_actor_retry(self, cascade_id: str) -> None:
-        """Request one refresh at the wake deadline after a blocked refresh.
+    def _schedule_wake_deadline_refresh(
+        self,
+        cascade_id: str,
+        now: datetime,
+        *,
+        replace: bool = False,
+    ) -> None:
+        """Request one refresh at every absolute member-wake deadline.
 
-        Fossibot telemetry can arrive while ``_actor`` is waiting for its
-        30-second confirmation.  The coordinator debounce deliberately absorbs
-        events during an active refresh, so relying on that publication alone
-        can postpone the retry until the five-minute poll.  This one-shot timer
-        guarantees a final attempt at the member deadline without a real wait
-        inside the actor sequence.
+        This bounds a completely silent member as well as an output retry.
+        Replacing the timer after a blocking actor attempt preserves the same
+        absolute deadline while making deterministic clocks observe the
+        remaining duration.
         """
-        if cascade_id in self._wake_actor_retry_cancel:
-            return
+        if cancel := self._wake_deadline_cancel.get(cascade_id):
+            if not replace:
+                return
+            self._wake_deadline_cancel.pop(cascade_id, None)
+            cancel()
         state = self._state(cascade_id)
         try:
-            deadline = datetime.fromisoformat(state["wake_actor_deadline"])
+            deadline = datetime.fromisoformat(state["wake_deadline"])
         except KeyError, TypeError, ValueError:
             return
         hass = self.coordinator.hass
@@ -595,17 +610,17 @@ class CascadeManager:
             self.coordinator, "async_request_refresh"
         ):
             return
-        remaining_s = max(0.0, (deadline - dt_util.now()).total_seconds())
+        remaining_s = max(0.0, (deadline - now).total_seconds())
 
         @callback
         def request_retry(_now: datetime) -> None:
-            self._wake_actor_retry_cancel.pop(cascade_id, None)
+            self._wake_deadline_cancel.pop(cascade_id, None)
             hass.async_create_task(
                 self.coordinator.async_request_refresh(),
                 f"battery_manager_cascade_wake_retry_{cascade_id}",
             )
 
-        self._wake_actor_retry_cancel[cascade_id] = async_call_later(
+        self._wake_deadline_cancel[cascade_id] = async_call_later(
             hass, remaining_s, request_retry
         )
 
@@ -1440,6 +1455,21 @@ class CascadeManager:
             return False
 
         mode = state.get("wake_mode")
+        if mode == "root" and not (plan.flows and plan.flows[0].root_input_wh > 0.0):
+            # A Root wake already paid and started its bounded transition
+            # window.  A rolling plan can temporarily lose the current slot
+            # while the sleeping station has not published yet (live Bad
+            # incident 2026-09-04).  Cutting Root at that arbitrary replan
+            # boundary makes the station miss the very evidence needed to
+            # complete the wake.  Once the current member has published we
+            # are at a real electrical boundary and may honour the withdrawn
+            # plan without energising an output, charge gate or terminal.
+            pending = bool(state.get("recovery_pending"))
+            await self.async_safe_off(cascade_id, "Root plan withdrawn after wake")
+            if state.get("phase") != "fault":
+                state["phase"] = "recovering" if pending else "idle"
+                self.coordinator._save_persistent_state()
+            return True
         if mode == "aux":
             output_count = len(topology["members"])
             wake_count = output_count
@@ -1485,7 +1515,11 @@ class CascadeManager:
                 except TypeError, ValueError:
                     actor_deadline = now
                 if now < actor_deadline:
-                    self._schedule_wake_actor_retry(cascade_id)
+                    self._schedule_wake_deadline_refresh(
+                        cascade_id,
+                        dt_util.now(),
+                        replace=True,
+                    )
                     return True
                 state["last_actor_error"] = {
                     "entity_id": output_entity,
@@ -1723,16 +1757,14 @@ class CascadeManager:
         desired_source = aux_segments[0].source_load_id if aux_segments else None
         if state.get("phase") == "waking_members":
             mode = state.get("wake_mode")
-            # An accepted Aux wake is one bounded, atomic actor transition.
-            # Rolling plans are advisory while its sleeping members publish;
-            # a transiently withdrawn/repositioned slot must not power-cycle
-            # Root. Global safety, disabled members and manual ownership were
-            # already handled above. A genuine withdrawal is applied after
-            # the wake/proof boundary by the normal ``running`` branch.
-            matching_plan = mode == "aux" or (
-                mode == "root" and plan.flows and plan.flows[0].root_input_wh > 0.0
-            )
-            if matching_plan and await self._continue_member_wake(
+            # Every accepted member wake is one bounded, atomic electrical
+            # transition.  Rolling plans are advisory while its sleeping
+            # member has not published: Aux continues to its proof boundary;
+            # Root continues only to the next member-publication boundary and
+            # then honours a still-withdrawn plan via Safe-OFF.  Global
+            # safety, disabled members and manual ownership were handled
+            # above and may still interrupt immediately.
+            if mode in ("aux", "root") and await self._continue_member_wake(
                 cascade_id, topology, plan, now
             ):
                 return

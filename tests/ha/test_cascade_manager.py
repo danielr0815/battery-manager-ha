@@ -844,6 +844,272 @@ async def test_aux_member_wake_is_atomic_across_a_withdrawn_rolling_plan() -> No
     assert state["phase"] == "proving"
 
 
+async def test_root_member_wake_survives_withdrawn_plan_until_evidence() -> None:
+    """A transient replan cannot cut Root before the member wake boundary."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+    withdrawn = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    wake_deadline = state["wake_deadline"]
+    coordinator.calls.clear()
+
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=20))
+
+    assert coordinator.calls == []
+    assert coordinator.hass.states.get("switch.input").state == "on"
+    assert state["phase"] == "waking_members"
+    assert state["wake_mode"] == "root"
+    assert state["wake_deadline"] == wake_deadline
+    assert state["fault"] is None
+
+
+@pytest.mark.parametrize("replacement", ["withdrawn", "aux"])
+async def test_withdrawn_root_wake_stops_at_fresh_member_evidence(
+    replacement: str,
+) -> None:
+    """A withdrawn or Aux replan is honoured at the next safe wake boundary."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    coordinator.calls.clear()
+    _publish_soc(coordinator, "sensor.input_power", "0", now + timedelta(seconds=40))
+    next_plan = (
+        SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+        if replacement == "withdrawn"
+        else _aux_plan(now)
+    )
+
+    await manager._apply_one("chain", next_plan, live, now + timedelta(seconds=40))
+
+    assert coordinator.calls == [("switch.input", False)]
+    assert coordinator.hass.states.get("switch.output").state == "off"
+    assert coordinator.hass.states.get("switch.gate").state == "off"
+    assert coordinator.hass.states.get("switch.leaf").state == "off"
+    assert state["phase"] == "idle"
+    assert state["enabled"] is True
+    assert state["fault"] is None
+    assert "wake_mode" not in state
+
+
+async def test_root_plan_can_return_before_member_evidence() -> None:
+    """A one-cycle Root withdrawal does not prevent the original wake."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+    withdrawn = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=20))
+    _publish_soc(coordinator, "sensor.input_power", "0", now + timedelta(seconds=40))
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=40)
+    )
+
+    assert coordinator.calls == [
+        ("switch.input", True),
+        ("switch.output", True),
+        ("switch.leaf", True),
+        ("switch.gate", True),
+    ]
+    assert state["phase"] == "root"
+    assert state["fault"] is None
+
+
+async def test_withdrawn_root_wake_still_faults_at_absolute_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plan churn cannot make an unreachable member's wake unbounded."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+    withdrawn = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
+    )
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    deadline = state["wake_deadline"]
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=61))
+
+    assert state["fault"] == "root_transition_failed"
+    assert state["fault_detail"]["kind"] == "wake_timeout"
+    assert state["fault_safe_off_complete"] is True
+    assert state["enabled"] is False
+    assert state.get("wake_deadline") is None
+    assert deadline == (now + timedelta(seconds=60)).isoformat()
+
+
+async def test_silent_member_arms_refresh_at_absolute_wake_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A silent station cannot leave Root on until the five-minute poll."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    scheduled: dict[str, object] = {}
+    refreshes = 0
+
+    async def request_refresh() -> None:
+        nonlocal refreshes
+        refreshes += 1
+
+    def create_task(coro, _name=None):
+        return asyncio.create_task(coro)
+
+    def call_later(_hass, delay_s, action):
+        scheduled.update(delay_s=delay_s, action=action, cancelled=False)
+
+        def cancel() -> None:
+            scheduled["cancelled"] = True
+
+        return cancel
+
+    coordinator.async_request_refresh = request_refresh
+    coordinator.hass.async_create_task = create_task
+    monkeypatch.setattr(cascade_manager_module, "async_call_later", call_later)
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **k: None
+    )
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+    withdrawn = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+
+    assert scheduled["delay_s"] == pytest.approx(60.0)
+    assert scheduled["cancelled"] is False
+    scheduled["action"](now + timedelta(seconds=60))
+    await asyncio.sleep(0)
+    assert refreshes == 1
+
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=60))
+
+    assert state["fault"] == "root_transition_failed"
+    assert state["fault_detail"]["kind"] == "wake_timeout"
+    assert state["fault_safe_off_complete"] is True
+    assert coordinator.hass.states.get("switch.input").state == "off"
+
+
+async def test_withdrawn_root_wake_holds_any_confirmed_upstream_prefix() -> None:
+    """The same safe boundary applies while an arbitrary member wakes."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (
+        SurplusLoadState("b1", soc_percent=20),
+        SurplusLoadState("b2", soc_percent=20),
+        SurplusLoadState("leaf"),
+    )
+    withdrawn = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    _publish_soc(
+        coordinator,
+        "sensor.b1_input_power",
+        "0",
+        now + timedelta(seconds=20),
+    )
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=20)
+    )
+    assert state["wake_member_index"] == 1
+    assert coordinator.hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert coordinator.hass.states.get("switch.b1_output").state == "on"
+    coordinator.calls.clear()
+
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=30))
+
+    assert coordinator.calls == []
+    assert coordinator.hass.states.get("switch.bad_waschmaschine").state == "on"
+    assert coordinator.hass.states.get("switch.b1_output").state == "on"
+    assert coordinator.hass.states.get("switch.b2_output").state == "off"
+    assert state["wake_member_index"] == 1
+
+    _publish_soc(
+        coordinator,
+        "sensor.b2_input_power",
+        "0",
+        now + timedelta(seconds=40),
+    )
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=40))
+
+    assert coordinator.calls == [
+        ("switch.b1_output", False),
+        ("switch.bad_waschmaschine", False),
+    ]
+    assert coordinator.hass.states.get("switch.b2_output").state == "off"
+    assert state["phase"] == "idle"
+    assert state["fault"] is None
+
+
+async def test_withdrawn_root_wake_preserves_recovery_phase() -> None:
+    """Safe withdrawal must not erase an existing recovery obligation."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update({"enabled": True, "recovery_pending": ["b1"]})
+    live = (
+        SurplusLoadState("b1", soc_percent=20, soc_source="live"),
+        SurplusLoadState("leaf"),
+    )
+    withdrawn = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    _publish_soc(coordinator, "sensor.input_power", "0", now + timedelta(seconds=20))
+    await manager._apply_one("chain", withdrawn, live, now + timedelta(seconds=20))
+
+    assert state["phase"] == "recovering"
+    assert state["recovery_pending"] == ["b1"]
+    assert state["enabled"] is True
+    assert state["fault"] is None
+
+
+async def test_global_safety_interrupts_root_wake_before_member_evidence() -> None:
+    """Atomic wake never outranks an explicit global safety decision."""
+    now = datetime(2026, 9, 4, 7, 0, 6)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=20), SurplusLoadState("leaf"))
+
+    await manager._apply_one("chain", _root_plan(now), live, now)
+    coordinator.calls.clear()
+    await manager._apply_one(
+        "chain",
+        _root_plan(now),
+        live,
+        now + timedelta(seconds=20),
+        safety_reason="G4 floor guard",
+    )
+
+    assert coordinator.calls == [("switch.input", False)]
+    assert state["phase"] == "idle"
+    assert state["enabled"] is True
+    assert state["fault"] is None
+    assert "wake_mode" not in state
+
+
 async def test_live_two_fossibot_wake_does_not_cycle_root_every_ten_seconds() -> None:
     """Reproduce the live 22:29 topology and five rolling refreshes 1:1.
 
@@ -1086,6 +1352,7 @@ async def test_live_two_fossibot_full_switch_pass_has_one_root_owner(hass) -> No
 
     assert calls == []
     assert hass.states.get("switch.bad_waschmaschine").state == "on"
+    coordinator.cleanup()
 
 
 async def test_live_two_fossibot_real_refreshes_keep_root_stable(
@@ -3006,17 +3273,17 @@ def test_defensive_topology_wake_and_ownership_contracts() -> None:
     assert manager._member_woke("chain", topology) is False
 
     cancelled = Mock()
-    manager._wake_actor_retry_cancel["chain"] = cancelled
+    manager._wake_deadline_cancel["chain"] = cancelled
     manager._clear_wake_actor("chain")
     cancelled.assert_called_once_with()
     # Duplicate and malformed retry requests must not arm extra timers.
-    manager._wake_actor_retry_cancel["chain"] = Mock()
-    manager._schedule_wake_actor_retry("chain")
-    assert len(manager._wake_actor_retry_cancel) == 1
-    manager._wake_actor_retry_cancel.clear()
-    state.pop("wake_actor_deadline", None)
-    manager._schedule_wake_actor_retry("chain")
-    assert manager._wake_actor_retry_cancel == {}
+    manager._wake_deadline_cancel["chain"] = Mock()
+    manager._schedule_wake_deadline_refresh("chain", now)
+    assert len(manager._wake_deadline_cancel) == 1
+    manager._wake_deadline_cancel.clear()
+    state.pop("wake_deadline", None)
+    manager._schedule_wake_deadline_refresh("chain", now)
+    assert manager._wake_deadline_cancel == {}
 
     all_off = {
         "switch.input": False,

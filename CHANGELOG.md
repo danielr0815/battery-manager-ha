@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.11] - 2026-09-04
+
+### Fixed
+- Ein bereits begonnener Root-Wake wird durch einen kurzzeitig zurückgezogenen
+  Rolling Plan nicht mehr vorzeitig abgebrochen. Die bestätigte Versorgung
+  bleibt bis zur nächsten frischen Telemetriepublikation des aufwachenden
+  Kaskadenmitglieds bestehen; kehrt Root bis dahin zurück, läuft der geordnete
+  Wake weiter. Bleibt Root zurückgezogen oder wechselt der Plan zu Aux, endet
+  der Wake an dieser sicheren Grenze ohne Aktivierung weiterer Ausgänge,
+  Charge-Gates oder der Endlast. Absolute Wake-Timeouts sowie Safety-,
+  Ownership-, Konfigurations- und Tageswechsel-Abbrüche bleiben fail-closed;
+  ein eigener Deadline-Refresh begrenzt nun auch vollständig stille Mitglieder
+  unabhängig vom regulären Fünf-Minuten-Poll.
+
 ## [0.34.10] - 2026-09-04
 
 ### Fixed

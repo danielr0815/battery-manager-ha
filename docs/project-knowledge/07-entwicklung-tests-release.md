@@ -1,6 +1,6 @@
 # Entwicklung, Tests, Release
 
-**Stand: `main` @ v0.34.9 (2026-09-04).** Dieses Dokument beschreibt die
+**Stand: `main` @ v0.34.11 (2026-09-04).** Dieses Dokument beschreibt die
 **Arbeitsumgebung und die Konventionen** dieses Repos: wie und wo die Tests
 laufen (die HA-Suite braucht Linux, WSL oder den Devcontainer), was die CI
 prüft und wo sie zuverlässig zuschnappt, wie ein Release entsteht und welche Lektionen aus
@@ -111,9 +111,9 @@ uv run ruff format --check .        # oder `uv run ruff format .` zum Anwenden
 Formatter, nicht der Linter). Pytest: `testpaths = ["tests"]`,
 `asyncio_mode = "auto"`, `addopts = "-q"`.
 
-### 1.3 Umfang (Stand v0.34.9)
+### 1.3 Umfang (Stand v0.34.11)
 
-**855 Tests**, davon 333 im Kern und 522 in der HA-Schicht. Die größten
+**864 Tests**, davon 333 im Kern und 531 in der HA-Schicht. Die größten
 Brocken: `tests/ha/test_load_switching.py` (112 Tests — der Executor ist die
 regelreichste Stelle des Projekts) und `tests/core/test_optimize.py` (97).
 

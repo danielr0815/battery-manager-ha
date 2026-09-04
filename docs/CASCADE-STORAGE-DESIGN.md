@@ -108,9 +108,23 @@ ausschließlich diesen Output-AN-Schritt in folgenden Zyklen. Das je Mitglied
 konfigurierte Wake-Timeout begrenzt Telemetrie und diese Versuche gemeinsam;
 danach folgen Diagnose, Fault/Retry-Regel und geordnetes Safe-OFF. Andere
 Actor-Fehler werden nicht auf diese Weise verlängert. Ein One-shot-Refresh an
-der absoluten Wake-Deadline verhindert, dass eine während der blockierenden
-Actor-Bestätigung absorbierte Telemetrieflanke den Retry bis zum regulären
-Fünf-Minuten-Poll verzögert.
+jeder absoluten Wake-Deadline begrenzt ein vollständig stilles Mitglied ohne
+Abhängigkeit vom regulären Poll. Er verhindert außerdem, dass eine während der
+blockierenden Actor-Bestätigung absorbierte Telemetrieflanke den letzten
+Output-Versuch bis zum Fünf-Minuten-Poll verzögert.
+
+Diese Atomizität gilt symmetrisch für Root- und Aux-Wakes, ihre sichere
+Abschlussgrenze ist aber verschieden. Aux läuft bis zur Proof-Grenze weiter.
+Ein Root-Wake, dessen Rolling Plan vorübergehend kein Root-Segment mehr enthält,
+hält nur den bereits bestätigten Wake-Präfix bis zur nächsten frischen
+Publikation des aktuell versorgten Mitglieds. Kehrt Root vorher zurück, läuft
+die Sequenz normal weiter. Bleibt Root zurückgezogen oder wird nun Aux geplant,
+führt die Publikation unmittelbar zu Safe-OFF; noch nicht aktivierte Outputs,
+Charge-Gates und Endlasten bleiben AUS. Die Planänderung verschiebt niemals die
+absolute Wake-Deadline. Dadurch kann ein kurzlebiger Replan das Aufwachen nicht
+selbst vereiteln, während eine echte Planrücknahme an der ersten physisch
+beobachtbaren Grenze wirksam wird. Safety-, Ownership-, Konfigurations- und
+Tageswechsel-Abbrüche behalten Vorrang.
 
 Rolling Replans starten stets mit aktuellem SOC und dem Rest des laufenden
 Slots. Tatsächlich gelieferte Energie steckt damit bereits im neuen Zustand

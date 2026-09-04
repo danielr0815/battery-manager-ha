@@ -7021,6 +7021,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def cleanup(self) -> None:
         """Release entity listeners and cancel pending debounce work."""
+        self.cascade_manager.cleanup()
         self.learner.async_unschedule()
         if self._unsub_state_listener is not None:
             self._unsub_state_listener()
