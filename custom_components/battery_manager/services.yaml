@@ -59,6 +59,13 @@ test_cascade_terminal:
     for fresh running-power proof or one minute without a power sensor, and
     then restores the exact previous actor state.
   fields:
+    device_id:
+      selector:
+        device:
+          filter:
+            - integration: battery_manager
+              manufacturer: Battery Manager
+              model: Storage Cascade
     entry_id:
       advanced: true
       example: "1234567890abcdef"

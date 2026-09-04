@@ -15,11 +15,13 @@ In **Entwicklerwerkzeuge → Aktionen**:
 ```yaml
 action: battery_manager.test_cascade_terminal
 data:
-  entry_id: "<Config-Entry-ID>"
-  cascade_id: "<Kaskaden-Subentry-ID>"
+  device_id: "<aus der Kaskadenliste auswählen>"
 ```
 
-`entry_id` ist nur bei mehreren Battery-Manager-Einträgen nötig. Die Aktion
+`device_id` wird in der Oberfläche als Liste der konfigurierten
+Speicher-Kaskaden mit deren Namen dargestellt. `entry_id` und `cascade_id`
+bleiben nur als erweiterte, abwärtskompatible Felder für bestehende
+YAML-Aufrufe verfügbar. Die Aktion
 läuft synchron: Erfolg bedeutet, dass der Nachweis beziehungsweise die
 sensorlose Haltezeit abgeschlossen und der Ausgangszustand wiederhergestellt
 ist. Ein paralleler zweiter Aufruf derselben Kaskade bricht den laufenden Test

@@ -1008,13 +1008,17 @@
       "name": "Kaskaden-Endlast testen",
       "description": "Aktiviert vorübergehend alle Ausgänge bis zur Endlast, wartet auf einen frischen Leistungsnachweis oder ohne Leistungssensor eine Minute und stellt danach den vorherigen Aktorzustand wieder her.",
       "fields": {
+        "device_id": {
+          "name": "Kaskade",
+          "description": "Zu testende Speicher-Kaskade."
+        },
         "entry_id": {
           "name": "Konfigurationseintrag",
           "description": "Battery-Manager-Eintrag der zu testenden Kaskade. Nur nötig, wenn mehrere Einträge eingerichtet sind."
         },
         "cascade_id": {
           "name": "Kaskaden-ID",
-          "description": "Interne Subentry-ID der Kaskade aus den Diagnoseinformationen."
+          "description": "Optionale interne Subentry-ID für bestehende YAML-Aufrufe. Bei Auswahl einer Kaskade nicht erforderlich."
         }
       }
     }

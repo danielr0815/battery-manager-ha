@@ -16,7 +16,7 @@ INTEGRATION_DIR = Path(__file__).parents[2] / "custom_components" / "battery_man
 SERVICE_FIELDS = {
     "export_learned_profiles": ("entry_id", "file_path", "download", "as_table"),
     "export_hourly_details": ("entry_id", "file_path", "download", "as_table"),
-    "test_cascade_terminal": ("entry_id", "cascade_id"),
+    "test_cascade_terminal": ("device_id", "entry_id", "cascade_id"),
 }
 LEARNING_ISSUES = ("learning_recorder_timeout", "learning_no_recorder")
 
@@ -56,6 +56,25 @@ def test_services_yaml_entry_id_uses_config_entry_selector():
         }
         validate_selector(entry_id["selector"])  # raises on an unknown selector
         assert entry_id.get("advanced") is True
+
+
+def test_terminal_action_uses_filtered_cascade_device_selector():
+    """The UI lists named cascade devices instead of exposing raw subentry IDs."""
+    service = _load_services_yaml()["test_cascade_terminal"]
+    device = service["fields"]["device_id"]
+    assert device["selector"] == {
+        "device": {
+            "filter": [
+                {
+                    "integration": "battery_manager",
+                    "manufacturer": "Battery Manager",
+                    "model": "Storage Cascade",
+                }
+            ]
+        }
+    }
+    validate_selector(device["selector"])
+    assert service["fields"]["cascade_id"].get("advanced") is True
 
 
 def test_services_translations_symmetric():

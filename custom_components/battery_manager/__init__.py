@@ -42,6 +42,7 @@ from .const import (
     SERVICE_EXPORT_LEARNED_PROFILES,
     SERVICE_TEST_CASCADE_TERMINAL,
     STORAGE_VERSION,
+    SUBENTRY_TYPE_CASCADE,
 )
 from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table, format_learned_profiles_table
@@ -279,24 +280,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_TEST_CASCADE_TERMINAL):
 
         async def test_cascade_terminal_service(call: ServiceCall) -> None:
-            _entry_id, target = _service_coordinator(hass, call)
-            cascade_id = call.data["cascade_id"]
-            cascade = target.entry.subentries.get(cascade_id)
-            if cascade is None:
-                raise ServiceValidationError(
-                    f"Unknown cascade_id for terminal test: {cascade_id}"
-                )
+            target, cascade_id = _cascade_service_target(hass, call)
             await target.cascade_manager.async_test_terminal(cascade_id)
 
         hass.services.async_register(
             DOMAIN,
             SERVICE_TEST_CASCADE_TERMINAL,
             test_cascade_terminal_service,
-            schema=vol.Schema(
-                {
-                    vol.Optional("entry_id"): str,
-                    vol.Required("cascade_id"): str,
-                }
+            schema=vol.All(
+                vol.Schema(
+                    {
+                        vol.Optional("entry_id"): str,
+                        vol.Optional("device_id"): str,
+                        vol.Optional("cascade_id"): str,
+                    }
+                ),
+                _validate_cascade_service_target,
             ),
         )
 
@@ -501,6 +500,50 @@ def _export_coordinator(
 ) -> tuple[str, BatteryManagerCoordinator]:
     """Backward-compatible export helper retained for focused unit tests."""
     return _service_coordinator(hass, call)
+
+
+def _validate_cascade_service_target(data: dict[str, object]) -> dict[str, object]:
+    """Require one UI device or the backward-compatible raw cascade ID."""
+    if not data.get("device_id") and not data.get("cascade_id"):
+        raise vol.Invalid("device_id or cascade_id is required")
+    return data
+
+
+def _cascade_service_target(
+    hass: HomeAssistant, call: ServiceCall
+) -> tuple[BatteryManagerCoordinator, str]:
+    """Resolve a selected cascade device or a legacy raw subentry ID."""
+    device_id = call.data.get("device_id")
+    if device_id:
+        device = dr.async_get(hass).async_get(device_id)
+        if device is None or device.config_subentry_id is None:
+            raise ServiceValidationError(f"Unknown cascade device_id: {device_id}")
+        entry_id = device.config_entry_id
+        if (
+            requested_entry := call.data.get("entry_id")
+        ) and requested_entry != entry_id:
+            raise ServiceValidationError(
+                f"Selected cascade device does not belong to entry_id {requested_entry}"
+            )
+        coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+        if coordinator is None:
+            raise ServiceValidationError(
+                f"Battery Manager entry for device is not set up: {entry_id}"
+            )
+        cascade_id = device.config_subentry_id
+    else:
+        _entry_id, coordinator = _service_coordinator(hass, call)
+        cascade_id = call.data["cascade_id"]
+    cascade = coordinator.entry.subentries.get(cascade_id)
+    if cascade is None or cascade.subentry_type != SUBENTRY_TYPE_CASCADE:
+        raise ServiceValidationError(
+            f"Selected target is not a storage cascade: {cascade_id}"
+        )
+    if (raw_id := call.data.get("cascade_id")) and raw_id != cascade_id:
+        raise ServiceValidationError(
+            f"Selected cascade device does not match cascade_id {raw_id}"
+        )
+    return coordinator, cascade_id
 
 
 def _schedule_download_cleanup(hass: HomeAssistant, target: Path) -> None:

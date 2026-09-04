@@ -14,7 +14,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import voluptuous as vol
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -23,8 +26,10 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.battery_manager import (
+    _cascade_service_target,
     _export_coordinator,
     _schedule_download_cleanup,
+    _validate_cascade_service_target,
     _validate_file_path,
     async_setup,
 )
@@ -36,6 +41,8 @@ from custom_components.battery_manager.const import (
     DOMAIN,
     SERVICE_EXPORT_HOURLY_DETAILS,
     SERVICE_EXPORT_LEARNED_PROFILES,
+    SUBENTRY_TYPE_CASCADE,
+    SUBENTRY_TYPE_LOAD,
 )
 
 ENTRY_DATA = {
@@ -335,6 +342,122 @@ def test_export_requires_a_running_entry(hass):
     explicit validation error, never a successful no-op."""
     with pytest.raises(ServiceValidationError, match="No Battery Manager entry"):
         _export_coordinator(hass, SimpleNamespace(data={}))
+
+
+def test_cascade_action_resolves_selected_device_and_legacy_id(hass):
+    """A named cascade device replaces the raw ID without breaking old YAML."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={}, entry_id="entry", title="Battery Manager"
+    )
+    entry.add_to_hass(hass)
+    assert hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={},
+            subentry_id="chain",
+            subentry_type=SUBENTRY_TYPE_CASCADE,
+            title="Bad",
+            unique_id=None,
+        ),
+    )
+    assert hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={},
+            subentry_id="load",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Load",
+            unique_id=None,
+        ),
+    )
+    coordinator = SimpleNamespace(entry=entry)
+    hass.data[DOMAIN] = {"entry": coordinator}
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id="entry",
+        config_subentry_id="chain",
+        identifiers={(DOMAIN, "entry_chain")},
+        manufacturer="Battery Manager",
+        model="Storage Cascade",
+        name="Bad",
+    )
+
+    assert _cascade_service_target(
+        hass, SimpleNamespace(data={"device_id": device.id})
+    ) == (coordinator, "chain")
+    assert _cascade_service_target(
+        hass, SimpleNamespace(data={"entry_id": "entry", "cascade_id": "chain"})
+    ) == (coordinator, "chain")
+
+
+def test_cascade_action_rejects_missing_or_inconsistent_targets(hass):
+    """The broad device selector schema cannot bypass runtime cascade checks."""
+    with pytest.raises(vol.Invalid, match="device_id or cascade_id"):
+        _validate_cascade_service_target({})
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={}, entry_id="entry", title="Battery Manager"
+    )
+    entry.add_to_hass(hass)
+    assert hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={},
+            subentry_id="chain",
+            subentry_type=SUBENTRY_TYPE_CASCADE,
+            title="Bad",
+            unique_id=None,
+        ),
+    )
+    assert hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data={},
+            subentry_id="load",
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Load",
+            unique_id=None,
+        ),
+    )
+    coordinator = SimpleNamespace(entry=entry)
+    hass.data[DOMAIN] = {"entry": coordinator}
+    registry = dr.async_get(hass)
+    cascade_device = registry.async_get_or_create(
+        config_entry_id="entry",
+        config_subentry_id="chain",
+        identifiers={(DOMAIN, "entry_chain")},
+        manufacturer="Battery Manager",
+        model="Storage Cascade",
+        name="Bad",
+    )
+    load_device = registry.async_get_or_create(
+        config_entry_id="entry",
+        config_subentry_id="load",
+        identifiers={(DOMAIN, "entry_load")},
+        manufacturer="Battery Manager",
+        model="Energy Optimizer",
+        name="Load",
+    )
+
+    with pytest.raises(ServiceValidationError, match="Unknown cascade device_id"):
+        _cascade_service_target(
+            hass, SimpleNamespace(data={"device_id": "does_not_exist"})
+        )
+    with pytest.raises(ServiceValidationError, match="does not belong"):
+        _cascade_service_target(
+            hass,
+            SimpleNamespace(data={"device_id": cascade_device.id, "entry_id": "other"}),
+        )
+    with pytest.raises(ServiceValidationError, match="not a storage cascade"):
+        _cascade_service_target(
+            hass, SimpleNamespace(data={"device_id": load_device.id})
+        )
+    with pytest.raises(ServiceValidationError, match="does not match"):
+        _cascade_service_target(
+            hass,
+            SimpleNamespace(
+                data={"device_id": cascade_device.id, "cascade_id": "other"}
+            ),
+        )
 
 
 async def test_download_cleanup_tolerates_external_delete_and_reports_io_error(

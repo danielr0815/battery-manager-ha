@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-09-04
+
+### Fixed
+- Die Werkzeugaktion `battery_manager.test_cascade_terminal` bietet die
+  vorhandenen Speicher-Kaskaden jetzt als namentlich beschriftete Geräteliste
+  an und leitet Config-Entry sowie interne Subentry-ID aus der Auswahl ab. Die
+  rohe `cascade_id` bleibt für bestehende YAML-Aufrufe als erweitertes Feld
+  kompatibel.
+
 ## [0.35.0] - 2026-09-04
 
 ### Added

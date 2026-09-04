@@ -12,7 +12,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, INTEGRATION_NAME
+from .const import DOMAIN, INTEGRATION_NAME, SUBENTRY_TYPE_CASCADE
 from .coordinator import BatteryManagerCoordinator
 
 
@@ -62,6 +62,11 @@ def ensure_devices(
         sw_version=sw_version,
     )
     for subentry_id, subentry in entry.subentries.items():
+        model = (
+            "Storage Cascade"
+            if subentry.subentry_type == SUBENTRY_TYPE_CASCADE
+            else "Energy Optimizer"
+        )
         dev_reg.async_get_or_create(
             config_entry_id=entry.entry_id,
             config_subentry_id=subentry_id,
@@ -69,7 +74,7 @@ def ensure_devices(
             name=subentry.title,
             via_device_id=main.id,
             manufacturer="Battery Manager",
-            model="Energy Optimizer",
+            model=model,
             sw_version=sw_version,
         )
 
@@ -107,11 +112,17 @@ class BatteryManagerEntity(CoordinatorEntity[BatteryManagerCoordinator]):
             # subentry therefore gets its own device; the via_device_id link to
             # the main device is set by ensure_devices() (the main device's
             # registry id does not exist yet at entity construction time).
+            subentry = coordinator.entry.subentries[subentry_id]
+            model = (
+                "Storage Cascade"
+                if subentry.subentry_type == SUBENTRY_TYPE_CASCADE
+                else "Energy Optimizer"
+            )
             self._attr_device_info = DeviceInfo(
                 identifiers={(DOMAIN, f"{entry_id}_{subentry_id}")},
                 name=coordinator.entry.subentries[subentry_id].title,
                 manufacturer="Battery Manager",
-                model="Energy Optimizer",
+                model=model,
                 sw_version=coordinator.integration_version,
             )
 

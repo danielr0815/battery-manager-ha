@@ -35,8 +35,10 @@ from custom_components.battery_manager.const import (
     CONF_SOC_ENTITY,
     DOMAIN,
     INPUT_OFF_POLICY_AUTO,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
+from custom_components.battery_manager.entity import ensure_devices
 
 LOAD_TITLE = "Fossibot Test"
 
@@ -139,6 +141,45 @@ async def test_entities_survive_setup(hass, caplog):
     assert (
         "assigns an existing device to a different config subentry" not in caplog.text
     )
+
+
+def test_cascade_device_model_supports_filtered_action_picker(hass):
+    """Only cascade subentries carry the model used by the action selector."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=BASE_DATA,
+        title="Battery Manager",
+        version=2,
+        subentries_data=[
+            ConfigSubentryData(
+                data=dict(LOAD_DATA),
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title=LOAD_TITLE,
+                unique_id=None,
+            ),
+            ConfigSubentryData(
+                data={},
+                subentry_type=SUBENTRY_TYPE_CASCADE,
+                title="Bad",
+                unique_id=None,
+            ),
+        ],
+    )
+    entry.add_to_hass(hass)
+    ensure_devices(hass, entry, "0.35.1")
+    registry = dr.async_get(hass)
+    by_subentry = {
+        device.config_subentry_id: device
+        for device in registry.devices.get_devices_for_config_entry_id(entry.entry_id)
+        if device.config_subentry_id is not None
+    }
+    for subentry_id, subentry in entry.subentries.items():
+        expected = (
+            "Storage Cascade"
+            if subentry.subentry_type == SUBENTRY_TYPE_CASCADE
+            else "Energy Optimizer"
+        )
+        assert by_subentry[subentry_id].model == expected
 
 
 async def test_migration_moves_subentry_entities(hass):
