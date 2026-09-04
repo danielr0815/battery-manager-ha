@@ -6998,6 +6998,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sources on (never sourceless) and the reload re-reads and heals.
         """
         self._actuation_shutdown = True
+        await self.cascade_manager.async_cancel_terminal_tests()
         # F-SUBHOUR: drop any pending force-OFF timers before flush/unload so a
         # detached point-in-time callback cannot fire after teardown (R13).
         for load_id in list(self._load_off_timer):

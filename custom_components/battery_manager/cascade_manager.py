@@ -9,6 +9,7 @@ restart a still-consistent chain has to prove its source again.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from copy import deepcopy
@@ -16,6 +17,7 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
@@ -58,6 +60,8 @@ _PROOF_SECONDS = 60
 _RETRY_DELAY = timedelta(minutes=15)
 _RESTART_ACTOR_WAIT = timedelta(seconds=60)
 _ACTOR_CONFIRM_POLL_S = 0.1
+_TERMINAL_TEST_POLL_S = 1.0
+_TERMINAL_TEST_NO_POWER_HOLD_S = 60.0
 _TRANSIENT_PHASES = frozenset({"waking", "waking_members", "proving"})
 _STABLE_PHASES = frozenset(
     {"idle", "root", "running", "recovering", "complete", "fault", "hands_off"}
@@ -75,6 +79,7 @@ class CascadeManager:
         self._telemetry_unknown_since: dict[str, datetime] = {}
         self._restart_actor_unknown_since: dict[str, datetime] = {}
         self._wake_deadline_cancel: dict[str, Callable[[], None]] = {}
+        self._terminal_test_tasks: dict[str, asyncio.Task[Any]] = {}
 
     def cleanup(self) -> None:
         """Cancel callbacks that must not survive config-entry unload."""
@@ -82,6 +87,8 @@ class CascadeManager:
         self._wake_deadline_cancel.clear()
         for cancel in callbacks:
             cancel()
+        for task in tuple(self._terminal_test_tasks.values()):
+            task.cancel()
 
     def _state(self, cascade_id: str) -> dict[str, Any]:
         state = self.coordinator._cascade_state.setdefault(cascade_id, {})
@@ -231,6 +238,15 @@ class CascadeManager:
         except ValueError:
             parsed_day = None
         phase = state.get("phase", "idle")
+        active_source = state.get("source")
+        # Actor publications during the diagnostic trigger normal coordinator
+        # refreshes. The pure planner must continue seeing the pre-test runtime
+        # contract, not mistake the temporary diagnostic phase for idle and
+        # create a different episode that executes as soon as the lock opens.
+        test_restore = state.get("terminal_test_restore")
+        if isinstance(test_restore, dict):
+            phase = test_restore.get("phase", "idle")
+            active_source = test_restore.get("source")
         restart_source = (
             state.get("restart_source_hint")
             if state.get("restart_reconcile_pending")
@@ -259,7 +275,7 @@ class CascadeManager:
             cascade_id=cascade_id,
             episode_day=parsed_day,
             phase=phase,
-            active_source_id=restart_source or state.get("source"),
+            active_source_id=restart_source or active_source,
             recovery_pending_ids=tuple(state.get("recovery_pending", [])),
         )
 
@@ -464,6 +480,309 @@ class CascadeManager:
             "terminal_id": terminal_id,
             "terminal": terminal.data,
         }
+
+    def terminal_test_available(self, cascade_id: str) -> bool:
+        """Return whether a terminal test can start or be aborted."""
+        task = self._terminal_test_tasks.get(cascade_id)
+        if task is not None and not task.done():
+            return True
+        state = self._state(cascade_id)
+        return (
+            self._topology(cascade_id) is not None
+            and not state.get("fault")
+            and not state.get("hands_off")
+            and state.get("phase") not in _TRANSIENT_PHASES
+            and state.get("phase") != "testing_terminal"
+        )
+
+    @staticmethod
+    def _terminal_test_actors(topology: dict[str, Any]) -> list[str]:
+        """Return every physical actor once, in topology order."""
+        actors: list[str] = []
+        for _load_id, data in topology["members"]:
+            for key in (
+                CONF_LOAD_CONTROL_SWITCH,
+                CONF_LOAD_CHARGE_ENABLE,
+                CONF_LOAD_OUTPUT_SWITCH,
+            ):
+                if entity_id := data.get(key):
+                    actors.append(entity_id)
+        if terminal := topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH):
+            actors.append(terminal)
+        return list(dict.fromkeys(actors))
+
+    def _terminal_test_snapshot(self, topology: dict[str, Any]) -> dict[str, Any]:
+        """Capture the exact confirmed actor and runtime state before a test."""
+        actors: dict[str, bool] = {}
+        for entity_id in self._terminal_test_actors(topology):
+            current = self.coordinator.hass.states.get(entity_id)
+            if current is None or current.state not in ("on", "off"):
+                raise HomeAssistantError(
+                    f"Cascade actor {entity_id} has no confirmed ON/OFF state"
+                )
+            actors[entity_id] = current.state == "on"
+        state = self._state(topology["id"])
+        return {
+            "actors": actors,
+            "phase": state.get("phase", "idle"),
+            "source": state.get("source"),
+        }
+
+    @staticmethod
+    def _reported_at(entity_state: Any) -> datetime | None:
+        """Return HA's publication timestamp, including equal-value reports."""
+        if entity_state is None:
+            return None
+        return getattr(entity_state, "last_reported", entity_state.last_updated)
+
+    async def _wait_for_fresh_member(
+        self,
+        data: dict[str, Any],
+        baseline: datetime | None,
+    ) -> None:
+        """Wait until a newly supplied member publishes numeric telemetry."""
+        timeout_s = float(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            reported_at, _entity_id = self._member_telemetry_reported_at(data)
+            if reported_at is not None and (baseline is None or reported_at > baseline):
+                return
+            if loop.time() >= deadline:
+                raise HomeAssistantError(
+                    "Cascade member did not publish fresh telemetry within "
+                    f"{timeout_s:g} seconds"
+                )
+            await asyncio.sleep(_TERMINAL_TEST_POLL_S)
+
+    async def _wait_for_terminal_proof(
+        self,
+        terminal: dict[str, Any],
+        baseline: datetime | None,
+    ) -> None:
+        """Prove fresh terminal draw, or hold one minute without a sensor."""
+        power_entity = terminal.get(CONF_LOAD_POWER_ENTITY)
+        if not power_entity:
+            await asyncio.sleep(_TERMINAL_TEST_NO_POWER_HOLD_S)
+            return
+        timeout_s = float(terminal.get(CONF_LOAD_WAKE_TIMEOUT_S, 60))
+        threshold = self.coordinator._load_standby_bar(terminal)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            entity_state = self.coordinator.hass.states.get(power_entity)
+            value = self.coordinator._read_float(power_entity)
+            reported_at = self._reported_at(entity_state)
+            if (
+                value is not None
+                and value >= threshold
+                and reported_at is not None
+                and (baseline is None or reported_at > baseline)
+            ):
+                return
+            if loop.time() >= deadline:
+                raise HomeAssistantError(
+                    "Terminal load did not publish fresh running power within "
+                    f"{timeout_s:g} seconds"
+                )
+            await asyncio.sleep(_TERMINAL_TEST_POLL_S)
+
+    async def _restore_terminal_test_snapshot(
+        self,
+        cascade_id: str,
+        topology: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> bool:
+        """Restore an arbitrary confirmed pre-test vector in safe order."""
+        targets = snapshot["actors"]
+        terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+        ok = True
+        # Break the temporary consumer before reshaping its supply path.
+        ok &= await self._actor(cascade_id, terminal_actor, False)
+        for _load_id, data in reversed(topology["members"]):
+            entity_id = data.get(CONF_LOAD_OUTPUT_SWITCH)
+            if entity_id and not targets.get(entity_id, False):
+                ok &= await self._actor(cascade_id, entity_id, False)
+        for _load_id, data in topology["members"]:
+            entity_id = data.get(CONF_LOAD_CHARGE_ENABLE)
+            if entity_id:
+                ok &= await self._actor(
+                    cascade_id, entity_id, targets.get(entity_id, False)
+                )
+        # Outputs that were ON normally remained supplied throughout. The
+        # explicit writes also heal a defensive external change during test.
+        for _load_id, data in topology["members"]:
+            entity_id = data.get(CONF_LOAD_OUTPUT_SWITCH)
+            if entity_id and targets.get(entity_id, False):
+                ok &= await self._actor(cascade_id, entity_id, True)
+        if terminal_actor and targets.get(terminal_actor, False):
+            ok &= await self._actor(cascade_id, terminal_actor, True)
+        # Root stays available until every previously-active consumer path has
+        # been rebuilt; an Aux snapshot then drops it as the final make-before-
+        # break step.
+        root = topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH)
+        if root:
+            ok &= await self._actor(cascade_id, root, targets.get(root, False))
+        state = self._state(cascade_id)
+        if ok:
+            state["phase"] = snapshot.get("phase", "idle")
+            state["source"] = snapshot.get("source")
+            # The restored actual vector is the new ownership evidence. Old
+            # claims may intentionally have differed for a Shared actor.
+            state["claims"] = dict(targets)
+            state.pop("restart_reconcile_pending", None)
+            state.pop("restart_safe_off_pending", None)
+        return ok
+
+    async def async_test_terminal(self, cascade_id: str) -> None:
+        """Test the terminal path and restore it; a second call aborts."""
+        running = self._terminal_test_tasks.get(cascade_id)
+        if running is not None and not running.done():
+            if running is asyncio.current_task():
+                return
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await running
+            return
+        if not self.terminal_test_available(cascade_id):
+            raise HomeAssistantError(
+                "Terminal test needs a valid, non-faulted cascade outside a transition"
+            )
+        current = asyncio.current_task()
+        if current is None:
+            raise HomeAssistantError(
+                "Terminal test needs an active Home Assistant task"
+            )
+        self._terminal_test_tasks[cascade_id] = current
+        lock = self._locks.setdefault(cascade_id, asyncio.Lock())
+        try:
+            async with lock:
+                await self._run_terminal_test_locked(cascade_id)
+        finally:
+            if self._terminal_test_tasks.get(cascade_id) is current:
+                self._terminal_test_tasks.pop(cascade_id, None)
+            self.coordinator.async_update_listeners()
+
+    async def _run_terminal_test_locked(self, cascade_id: str) -> None:
+        """Own the cascade until proof/hold and exact state restoration."""
+        topology = self._topology(cascade_id)
+        if topology is None:
+            raise HomeAssistantError("Cascade topology is invalid")
+        state = self._state(cascade_id)
+        snapshot = self._terminal_test_snapshot(topology)
+        state["terminal_test_restore"] = snapshot
+        state["terminal_test"] = {"state": "starting", "error": None}
+        state["phase"] = "testing_terminal"
+        # Persist the recovery vector before the first temporary actor write.
+        await self.coordinator.async_flush_persistent_state()
+        error: Exception | None = None
+        cancelled = False
+        try:
+            for _load_id, data in topology["members"]:
+                if not await self._actor(
+                    cascade_id, data.get(CONF_LOAD_CHARGE_ENABLE), False
+                ):
+                    raise HomeAssistantError("Could not disable a cascade charge gate")
+            root_data = topology["members"][0][1]
+            baseline = self._member_telemetry_reported_at(root_data)[0]
+            if not await self._actor(
+                cascade_id, root_data.get(CONF_LOAD_CONTROL_SWITCH), True
+            ):
+                raise HomeAssistantError("Could not activate the cascade root input")
+            terminal_power = topology["terminal"].get(CONF_LOAD_POWER_ENTITY)
+            terminal_baseline: datetime | None = None
+            for index, (_load_id, data) in enumerate(topology["members"]):
+                state["terminal_test"] = {
+                    "state": "waking_member",
+                    "member_index": index,
+                    "error": None,
+                }
+                self.coordinator.async_update_listeners()
+                await self._wait_for_fresh_member(data, baseline)
+                if index + 1 < len(topology["members"]):
+                    baseline = self._member_telemetry_reported_at(
+                        topology["members"][index + 1][1]
+                    )[0]
+                elif terminal_power:
+                    terminal_baseline = self._reported_at(
+                        self.coordinator.hass.states.get(terminal_power)
+                    )
+                if not await self._actor(
+                    cascade_id, data.get(CONF_LOAD_OUTPUT_SWITCH), True
+                ):
+                    raise HomeAssistantError(
+                        f"Could not activate cascade output {index + 1}"
+                    )
+            terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+            if not await self._actor(cascade_id, terminal_actor, True):
+                raise HomeAssistantError("Could not activate the terminal load")
+            state["terminal_test"] = {
+                "state": ("proving_power" if terminal_power else "holding_one_minute"),
+                "error": None,
+            }
+            self.coordinator.async_update_listeners()
+            await self._wait_for_terminal_proof(topology["terminal"], terminal_baseline)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except Exception as err:
+            error = err
+        finally:
+            restored = await asyncio.shield(
+                self._restore_terminal_test_snapshot(cascade_id, topology, snapshot)
+            )
+            state.pop("terminal_test_restore", None)
+            if not restored:
+                state["terminal_test"] = {
+                    "state": "failed",
+                    "error": "Previous actor state could not be restored",
+                }
+                await self._fault(cascade_id, "terminal_test_restore_failed")
+                await self.async_safe_off(cascade_id, "terminal test restore failure")
+            else:
+                state["terminal_test"] = {
+                    "state": (
+                        "aborted" if cancelled else "failed" if error else "successful"
+                    ),
+                    "error": str(error) if error else None,
+                    "completed_at": dt_util.now().isoformat(),
+                }
+            await self.coordinator.async_flush_persistent_state()
+        if error is not None:
+            raise HomeAssistantError(str(error)) from error
+
+    async def async_cancel_terminal_tests(self) -> None:
+        """Cancel tests and await their shielded state restoration."""
+        tasks = [task for task in self._terminal_test_tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def async_recover_terminal_tests(self) -> None:
+        """Restore a pre-test vector persisted across an integration reload."""
+        for cascade_id in tuple(self.coordinator._cascade_state):
+            state = self._state(cascade_id)
+            snapshot = state.get("terminal_test_restore")
+            topology = self._topology(cascade_id)
+            if not isinstance(snapshot, dict) or topology is None:
+                continue
+            lock = self._locks.setdefault(cascade_id, asyncio.Lock())
+            async with lock:
+                restored = await self._restore_terminal_test_snapshot(
+                    cascade_id, topology, snapshot
+                )
+                state.pop("terminal_test_restore", None)
+                state["terminal_test"] = {
+                    "state": "recovered" if restored else "failed",
+                    "error": None if restored else "Restart recovery failed",
+                    "completed_at": dt_util.now().isoformat(),
+                }
+                if not restored:
+                    await self._fault(cascade_id, "terminal_test_recovery_failed")
+                    await self.async_safe_off(cascade_id, "terminal test recovery")
+                await self.coordinator.async_flush_persistent_state()
 
     def _fresh_member_socs(self, topology: dict[str, Any]) -> bool:
         for _load_id, data in topology["members"]:
@@ -1034,6 +1353,7 @@ class CascadeManager:
 
     async def async_safety_off_active(self, reason: str, now: datetime) -> None:
         """Apply the global fail-safe to every configured active cascade."""
+        await self.async_cancel_terminal_tests()
         tasks = []
         for cascade_id, subentry in self.coordinator.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
@@ -1944,6 +2264,8 @@ class CascadeManager:
         now: datetime,
         safety_reason: str | None = None,
     ) -> None:
+        if safety_reason is not None:
+            await self.async_cancel_terminal_tests()
         plans = {plan.cascade_id: plan for plan in result.cascade_plans}
         tasks = []
         for cascade in config.cascades:
@@ -2315,6 +2637,7 @@ class CascadeManager:
                 "wake_actor_deadline": state.get("wake_actor_deadline"),
                 "wake_actor_attempts": state.get("wake_actor_attempts"),
                 "wake_actor_last_error": state.get("wake_actor_last_error"),
+                "terminal_test": deepcopy(state.get("terminal_test")),
                 "aggregate_soc_percent": plan.aggregate_soc_percent if plan else None,
                 "aggregate_soc_stale": plan.aggregate_soc_stale if plan else False,
                 "planned_root_energy_kwh": (

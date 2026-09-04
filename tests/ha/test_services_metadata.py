@@ -13,8 +13,11 @@ import yaml
 from homeassistant.helpers.selector import validate_selector
 
 INTEGRATION_DIR = Path(__file__).parents[2] / "custom_components" / "battery_manager"
-SERVICES = ("export_learned_profiles", "export_hourly_details")
-FIELDS = ("entry_id", "file_path", "download", "as_table")
+SERVICE_FIELDS = {
+    "export_learned_profiles": ("entry_id", "file_path", "download", "as_table"),
+    "export_hourly_details": ("entry_id", "file_path", "download", "as_table"),
+    "test_cascade_terminal": ("entry_id", "cascade_id"),
+}
 LEARNING_ISSUES = ("learning_recorder_timeout", "learning_no_recorder")
 
 
@@ -33,12 +36,12 @@ def test_services_yaml_documents_every_service():
     """Every registered service has name/description and documents all
     fields of the voluptuous schema in __init__.py."""
     services = _load_services_yaml()
-    assert sorted(services) == sorted(SERVICES)
-    for name in SERVICES:
+    assert sorted(services) == sorted(SERVICE_FIELDS)
+    for name, fields in SERVICE_FIELDS.items():
         service = services[name]
         assert service["name"]
         assert service["description"]
-        assert sorted(service["fields"]) == sorted(FIELDS)
+        assert sorted(service["fields"]) == sorted(fields)
 
 
 def test_services_yaml_entry_id_uses_config_entry_selector():
@@ -46,7 +49,7 @@ def test_services_yaml_entry_id_uses_config_entry_selector():
     version — validate_selector proves the config schema is accepted) so
     the UI offers a Battery Manager entry picker."""
     services = _load_services_yaml()
-    for name in SERVICES:
+    for name in SERVICE_FIELDS:
         entry_id = services[name]["fields"]["entry_id"]
         assert entry_id["selector"] == {
             "config_entry": {"integration": "battery_manager"}
@@ -61,14 +64,14 @@ def test_services_translations_symmetric():
     services.<service>.name/description/fields.<field>.*)."""
     de = _load_translations("de")["services"]
     en = _load_translations("en")["services"]
-    assert sorted(de) == sorted(en) == sorted(SERVICES)
+    assert sorted(de) == sorted(en) == sorted(SERVICE_FIELDS)
     for lang in (de, en):
-        for name in SERVICES:
+        for name, fields in SERVICE_FIELDS.items():
             service = lang[name]
             assert service["name"]
             assert service["description"]
-            assert sorted(service["fields"]) == sorted(FIELDS)
-            for field in FIELDS:
+            assert sorted(service["fields"]) == sorted(fields)
+            for field in fields:
                 assert service["fields"][field]["name"]
                 assert service["fields"][field]["description"]
 

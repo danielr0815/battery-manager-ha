@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-04
+
+### Added
+- Die versteckte Home-Assistant-Werkzeugaktion
+  `battery_manager.test_cascade_terminal` prüft eine komplette
+  Speicher-Kaskade unabhängig vom Planner: Sie merkt sich den bestätigten
+  Aktorzustand, deaktiviert alle Charge-Gates, weckt Root und jedes Mitglied
+  elektrisch geordnet und aktiviert anschließend die Endlast. Mit
+  Leistungssensor gilt erst eine frische Publikation oberhalb derselben
+  Standby-Schwelle wie beim normalen Executor als Nachweis; ohne Sensor bleibt
+  der letzte Output exakt eine Minute aktiv. Erfolg, Fehler, Abbruch,
+  Sicherheitsabschaltung und Integration-Reload stellen den vorherigen Zustand
+  wieder her; scheitert das, fällt die Kaskade auf Störung und Safe-OFF.
+
 ## [0.34.11] - 2026-09-04
 
 ### Fixed

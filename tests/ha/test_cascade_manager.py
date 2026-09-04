@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager import cascade_manager as cascade_manager_module
@@ -129,6 +130,8 @@ class _Coordinator:
         self._cascade_state = {}
         self.calls = []
         self.saved = 0
+        self.flushed = 0
+        self.listener_updates = 0
 
     def _read_float(self, entity_id):
         state = self.hass.states.get(entity_id)
@@ -147,6 +150,16 @@ class _Coordinator:
 
     def _save_persistent_state(self):
         self.saved += 1
+
+    async def async_flush_persistent_state(self):
+        self.flushed += 1
+
+    def async_update_listeners(self):
+        self.listener_updates += 1
+
+    @staticmethod
+    def _load_standby_bar(data):
+        return max(10.0, 0.1 * float(data["power_w"]))
 
     def load_bm_enabled(self, _load_id):
         return True
@@ -3179,6 +3192,357 @@ def test_schedule_payload_exposes_two_member_output_path() -> None:
         "b1",
         "b2",
     ]
+
+
+async def test_terminal_tool_action_without_sensor_holds_then_restores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recommendation-only leaf starts with the last output for exactly 60 s."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    coordinator.entry.subentries["leaf"].data = {}
+    wake = AsyncMock()
+    sleep = AsyncMock()
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", wake)
+    monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", sleep)
+
+    await manager.async_test_terminal("chain")
+
+    wake.assert_awaited_once()
+    sleep.assert_awaited_once_with(60.0)
+    assert coordinator.calls == [
+        ("switch.input", True),
+        ("switch.output", True),
+        ("switch.output", False),
+        ("switch.input", False),
+    ]
+    assert manager._state("chain")["terminal_test"]["state"] == "successful"
+    assert manager._state("chain")["phase"] == "idle"
+    assert coordinator.flushed == 2
+
+
+async def test_terminal_tool_action_wakes_every_live_cascade_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Bad topology reaches B2 before its recommendation-only leaf."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(coordinator)
+    seen: list[str] = []
+
+    async def fresh_member(data, _baseline):
+        seen.append(data[CONF_LOAD_SOC_ENTITY])
+
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", fresh_member)
+    monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", AsyncMock())
+
+    await manager.async_test_terminal("chain")
+
+    assert seen == ["sensor.b1_soc", "sensor.b2_soc"]
+    assert coordinator.calls[:3] == [
+        ("switch.bad_waschmaschine", True),
+        ("switch.b1_output", True),
+        ("switch.b2_output", True),
+    ]
+    assert coordinator.calls[-3:] == [
+        ("switch.b2_output", False),
+        ("switch.b1_output", False),
+        ("switch.bad_waschmaschine", False),
+    ]
+
+
+async def test_terminal_tool_action_requires_fresh_running_power_and_restores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured sensor must newly publish above the shared standby bar."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    terminal = coordinator.entry.subentries["leaf"].data
+    terminal.update(
+        {
+            CONF_LOAD_POWER_ENTITY: "sensor.leaf_power",
+            "power_w": 400.0,
+            CONF_LOAD_WAKE_TIMEOUT_S: 5,
+        }
+    )
+    coordinator.hass.states.values["sensor.leaf_power"] = SimpleNamespace(
+        state="0",
+        attributes={},
+        last_updated=now,
+        last_reported=now,
+    )
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+
+    async def publish_running(_delay):
+        power = coordinator.hass.states.values["sensor.leaf_power"]
+        power.state = "100"
+        power.last_updated = now + timedelta(seconds=1)
+        power.last_reported = now + timedelta(seconds=1)
+
+    monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", publish_running)
+
+    await manager.async_test_terminal("chain")
+
+    assert ("switch.leaf", True) in coordinator.calls
+    assert coordinator.calls[-3:] == [
+        ("switch.leaf", False),
+        ("switch.output", False),
+        ("switch.input", False),
+    ]
+    assert manager._state("chain")["terminal_test"]["state"] == "successful"
+
+
+async def test_terminal_tool_action_restores_nonidle_vector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The test is observational: Root/gate/output/terminal states round-trip."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="root", source=None)
+    for entity_id in ("switch.input", "switch.gate", "switch.output", "switch.leaf"):
+        coordinator.hass.states.values[entity_id].state = "on"
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+    monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", AsyncMock())
+
+    state["terminal_test_restore"] = {
+        "actors": {},
+        "phase": "running",
+        "source": "b1",
+    }
+    runtime = manager.runtime_state("chain")
+    assert runtime.phase == "running"
+    assert runtime.active_source_id == "b1"
+    state.pop("terminal_test_restore")
+
+    await manager.async_test_terminal("chain")
+
+    assert {
+        entity_id: coordinator.hass.states.values[entity_id].state
+        for entity_id in ("switch.input", "switch.gate", "switch.output", "switch.leaf")
+    } == {
+        "switch.input": "on",
+        "switch.gate": "on",
+        "switch.output": "on",
+        "switch.leaf": "on",
+    }
+    assert state["phase"] == "root"
+    assert state["terminal_test"]["state"] == "successful"
+
+
+async def test_terminal_tool_action_failure_and_restart_restore_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failures restore immediately; a persisted interrupted test does likewise."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    monkeypatch.setattr(
+        manager,
+        "_wait_for_fresh_member",
+        AsyncMock(side_effect=HomeAssistantError("silent member")),
+    )
+
+    with pytest.raises(HomeAssistantError, match="silent member"):
+        await manager.async_test_terminal("chain")
+    assert all(
+        coordinator.hass.states.values[entity_id].state == "off"
+        for entity_id in ("switch.input", "switch.gate", "switch.output", "switch.leaf")
+    )
+    assert manager._state("chain")["terminal_test"]["state"] == "failed"
+
+    snapshot = {
+        "actors": {
+            "switch.input": True,
+            "switch.gate": False,
+            "switch.output": True,
+            "switch.leaf": False,
+        },
+        "phase": "root",
+        "source": None,
+    }
+    manager._state("chain")["terminal_test_restore"] = snapshot
+    await manager.async_recover_terminal_tests()
+    assert coordinator.hass.states.values["switch.input"].state == "on"
+    assert coordinator.hass.states.values["switch.output"].state == "on"
+    assert manager._state("chain")["phase"] == "root"
+    assert manager._state("chain")["terminal_test"]["state"] == "recovered"
+
+
+async def test_terminal_tool_action_rejects_unsafe_start_and_can_be_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state["fault"] = "latched"
+    with pytest.raises(HomeAssistantError, match="non-faulted"):
+        await manager.async_test_terminal("chain")
+    state["fault"] = None
+
+    entered = asyncio.Event()
+
+    async def wait_forever(_data, _baseline):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", wait_forever)
+    running = asyncio.create_task(manager.async_test_terminal("chain"))
+    await entered.wait()
+    await manager.async_test_terminal("chain")
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert manager._state("chain")["terminal_test"]["state"] == "aborted"
+    assert coordinator.hass.states.values["switch.input"].state == "off"
+
+
+async def test_terminal_tool_action_timeout_and_snapshot_validation() -> None:
+    """Fresh evidence and confirmed starting actors are hard requirements."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    topology = manager._topology("chain")
+    assert topology is not None
+
+    coordinator.hass.states.values["switch.input"].state = "unknown"
+    with pytest.raises(HomeAssistantError, match="no confirmed ON/OFF"):
+        manager._terminal_test_snapshot(topology)
+    coordinator.hass.states.values["switch.input"].state = "off"
+    assert manager._reported_at(None) is None
+
+    data = dict(topology["members"][0][1])
+    data[CONF_LOAD_WAKE_TIMEOUT_S] = 0
+    with pytest.raises(HomeAssistantError, match="fresh telemetry"):
+        await manager._wait_for_fresh_member(data, now + timedelta(seconds=1))
+    await manager._wait_for_fresh_member(data, None)
+
+    terminal = {
+        CONF_LOAD_POWER_ENTITY: "sensor.leaf_power",
+        "power_w": 400.0,
+        CONF_LOAD_WAKE_TIMEOUT_S: 0,
+    }
+    coordinator.hass.states.values["sensor.leaf_power"] = SimpleNamespace(
+        state="0",
+        attributes={},
+        last_updated=now,
+        last_reported=now,
+    )
+    with pytest.raises(HomeAssistantError, match="running power"):
+        await manager._wait_for_terminal_proof(terminal, now)
+
+
+@pytest.mark.parametrize(
+    ("actor_results", "message"),
+    [
+        ([False], "charge gate"),
+        ([True, False], "root input"),
+        ([True, True, False], "output 1"),
+        ([True, True, True, False], "terminal load"),
+    ],
+)
+async def test_terminal_tool_action_reports_every_actor_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    actor_results: list[bool],
+    message: str,
+) -> None:
+    """No failed make/break boundary may be skipped or reported successful."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    monkeypatch.setattr(manager, "_actor", AsyncMock(side_effect=actor_results))
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+    monkeypatch.setattr(
+        manager, "_restore_terminal_test_snapshot", AsyncMock(return_value=True)
+    )
+
+    with pytest.raises(HomeAssistantError, match=message):
+        await manager._run_terminal_test_locked("chain")
+
+
+async def test_terminal_tool_action_restore_failure_faults_and_safe_offs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    monkeypatch.setattr(manager, "_actor", AsyncMock(return_value=True))
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+    monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(
+        manager, "_restore_terminal_test_snapshot", AsyncMock(return_value=False)
+    )
+    fault = AsyncMock()
+    safe_off = AsyncMock(return_value=True)
+    monkeypatch.setattr(manager, "_fault", fault)
+    monkeypatch.setattr(manager, "async_safe_off", safe_off)
+
+    await manager._run_terminal_test_locked("chain")
+
+    fault.assert_awaited_once_with("chain", "terminal_test_restore_failed")
+    safe_off.assert_awaited_once_with("chain", "terminal test restore failure")
+    assert manager._state("chain")["terminal_test"]["state"] == "failed"
+
+
+async def test_terminal_tool_action_global_cancel_and_failed_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    entered = asyncio.Event()
+
+    async def wait_forever(_data, _baseline):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", wait_forever)
+    running = asyncio.create_task(manager.async_test_terminal("chain"))
+    await entered.wait()
+    await manager.async_cancel_terminal_tests()
+    assert running.cancelled()
+    assert manager._state("chain")["terminal_test"]["state"] == "aborted"
+
+    # No marker is an intentional no-op.
+    await manager.async_recover_terminal_tests()
+    manager._state("chain")["terminal_test_restore"] = {
+        "actors": {},
+        "phase": "idle",
+        "source": None,
+    }
+    monkeypatch.setattr(
+        manager, "_restore_terminal_test_snapshot", AsyncMock(return_value=False)
+    )
+    fault = AsyncMock()
+    safe_off = AsyncMock(return_value=True)
+    monkeypatch.setattr(manager, "_fault", fault)
+    monkeypatch.setattr(manager, "async_safe_off", safe_off)
+
+    await manager.async_recover_terminal_tests()
+
+    fault.assert_awaited_once_with("chain", "terminal_test_recovery_failed")
+    safe_off.assert_awaited_once_with("chain", "terminal test recovery")
+
+
+async def test_terminal_tool_action_defensive_internal_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive impossible-at-service-boundary branches remain explicit."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    current = asyncio.current_task()
+    assert current is not None
+    manager._terminal_test_tasks["chain"] = current
+    await manager.async_test_terminal("chain")
+    manager._terminal_test_tasks.clear()
+
+    monkeypatch.setattr(manager, "_topology", lambda _cascade_id: None)
+    with pytest.raises(HomeAssistantError, match="topology is invalid"):
+        await manager._run_terminal_test_locked("chain")
 
 
 async def test_handover_power_edge_cases_and_fault_reset(

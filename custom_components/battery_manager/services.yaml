@@ -51,3 +51,22 @@ export_hourly_details:
       default: true
       selector:
         boolean:
+
+test_cascade_terminal:
+  name: Test cascade terminal load
+  description: >-
+    Temporarily energizes every member output up to the terminal load, waits
+    for fresh running-power proof or one minute without a power sensor, and
+    then restores the exact previous actor state.
+  fields:
+    entry_id:
+      advanced: true
+      example: "1234567890abcdef"
+      selector:
+        config_entry:
+          integration: battery_manager
+    cascade_id:
+      advanced: true
+      example: "01JXYZ1234567890ABCDEF"
+      selector:
+        text:

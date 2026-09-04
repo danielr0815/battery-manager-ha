@@ -1003,6 +1003,20 @@
           "description": "Write a human-readable text table instead of the JSON snapshot."
         }
       }
+    },
+    "test_cascade_terminal": {
+      "name": "Test cascade terminal load",
+      "description": "Temporarily activates every output up to the terminal load, waits for fresh running-power proof or one minute without a power sensor, then restores the previous actor state.",
+      "fields": {
+        "entry_id": {
+          "name": "Configuration entry",
+          "description": "Battery Manager entry containing the cascade. Only needed when multiple entries are configured."
+        },
+        "cascade_id": {
+          "name": "Cascade ID",
+          "description": "Internal cascade subentry ID from the diagnostic information."
+        }
+      }
     }
   }
 }

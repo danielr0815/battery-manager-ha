@@ -1003,6 +1003,20 @@
           "description": "Eine lesbare Texttabelle statt des JSON-Snapshots schreiben."
         }
       }
+    },
+    "test_cascade_terminal": {
+      "name": "Kaskaden-Endlast testen",
+      "description": "Aktiviert vorübergehend alle Ausgänge bis zur Endlast, wartet auf einen frischen Leistungsnachweis oder ohne Leistungssensor eine Minute und stellt danach den vorherigen Aktorzustand wieder her.",
+      "fields": {
+        "entry_id": {
+          "name": "Konfigurationseintrag",
+          "description": "Battery-Manager-Eintrag der zu testenden Kaskade. Nur nötig, wenn mehrere Einträge eingerichtet sind."
+        },
+        "cascade_id": {
+          "name": "Kaskaden-ID",
+          "description": "Interne Subentry-ID der Kaskade aus den Diagnoseinformationen."
+        }
+      }
     }
   }
 }

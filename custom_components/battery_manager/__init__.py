@@ -40,6 +40,7 @@ from .const import (
     LEARNED_STORE_MAJOR,
     SERVICE_EXPORT_HOURLY_DETAILS,
     SERVICE_EXPORT_LEARNED_PROFILES,
+    SERVICE_TEST_CASCADE_TERMINAL,
     STORAGE_VERSION,
 )
 from .coordinator import BatteryManagerCoordinator
@@ -237,6 +238,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # failure is tolerated (fast retry interval during startup).
     await coordinator.async_load_persistent_state()
     await coordinator.async_recover_power_calibration()
+    await coordinator.cascade_manager.async_recover_terminal_tests()
     await coordinator.async_refresh()
 
     # HA 2026.8: one device per config subentry (core PR #175785). Created
@@ -274,6 +276,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             export_profiles_service,
             schema=export_schema,
         )
+    if not hass.services.has_service(DOMAIN, SERVICE_TEST_CASCADE_TERMINAL):
+
+        async def test_cascade_terminal_service(call: ServiceCall) -> None:
+            _entry_id, target = _service_coordinator(hass, call)
+            cascade_id = call.data["cascade_id"]
+            cascade = target.entry.subentries.get(cascade_id)
+            if cascade is None:
+                raise ServiceValidationError(
+                    f"Unknown cascade_id for terminal test: {cascade_id}"
+                )
+            await target.cascade_manager.async_test_terminal(cascade_id)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_TEST_CASCADE_TERMINAL,
+            test_cascade_terminal_service,
+            schema=vol.Schema(
+                {
+                    vol.Optional("entry_id"): str,
+                    vol.Required("cascade_id"): str,
+                }
+            ),
+        )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # After the platforms: the learner looks up the vacation switch entity.
@@ -303,6 +328,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for service in (
                 SERVICE_EXPORT_HOURLY_DETAILS,
                 SERVICE_EXPORT_LEARNED_PROFILES,
+                SERVICE_TEST_CASCADE_TERMINAL,
             ):
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)
@@ -452,13 +478,13 @@ def _migrate_to_subentry_devices(hass: HomeAssistant, entry: ConfigEntry) -> Non
         dev_reg.async_update_device(main.id, new_config_subentry_id=None)
 
 
-def _export_coordinator(
+def _service_coordinator(
     hass: HomeAssistant, call: ServiceCall
 ) -> tuple[str, BatteryManagerCoordinator]:
-    """Resolve the target coordinator for an export service call.
+    """Resolve the target coordinator for an integration action.
 
-    Failures raise instead of only logging: a service call that silently does
-    nothing leaves the operator believing the export happened.
+    Failures raise instead of only logging: an action that silently does
+    nothing leaves the operator believing it happened.
     """
     domain_data: dict[str, BatteryManagerCoordinator] = hass.data.get(DOMAIN, {})
     if not domain_data:
@@ -466,8 +492,15 @@ def _export_coordinator(
     entry_id = call.data.get("entry_id") or next(iter(domain_data))
     coordinator = domain_data.get(entry_id)
     if coordinator is None:
-        raise ServiceValidationError(f"Unknown entry_id for export: {entry_id}")
+        raise ServiceValidationError(f"Unknown entry_id: {entry_id}")
     return entry_id, coordinator
+
+
+def _export_coordinator(
+    hass: HomeAssistant, call: ServiceCall
+) -> tuple[str, BatteryManagerCoordinator]:
+    """Backward-compatible export helper retained for focused unit tests."""
+    return _service_coordinator(hass, call)
 
 
 def _schedule_download_cleanup(hass: HomeAssistant, target: Path) -> None:
@@ -539,7 +572,7 @@ async def _async_write_export(
 
 async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -> None:
     """Write the last plan's hourly details to a file."""
-    entry_id, coordinator = _export_coordinator(hass, call)
+    entry_id, coordinator = _service_coordinator(hass, call)
 
     details = coordinator.get_last_hourly_details()
     if not details:
@@ -561,7 +594,7 @@ async def _async_export_learned_profiles(
     hass: HomeAssistant, call: ServiceCall
 ) -> None:
     """Write the learned consumption profiles to a file (CONSUMPTION_FORECAST)."""
-    entry_id, coordinator = _export_coordinator(hass, call)
+    entry_id, coordinator = _service_coordinator(hass, call)
 
     snapshot = coordinator.learner.export_snapshot()
     # A fresh learner stores {"ac": None, "dc": None} — truthy but empty, so
