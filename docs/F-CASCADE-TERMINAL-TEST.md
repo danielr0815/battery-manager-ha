@@ -35,8 +35,13 @@ ab.
 2. Alle Charge-Gates werden ausgeschaltet.
 3. Root wird eingeschaltet. Jedes Kaskadenmitglied muss nach dem Anlegen seiner
    Versorgung frische numerische Telemetrie veröffentlichen, bevor sein Output
-   eingeschaltet wird. Damit gilt dieselbe elektrische Reihenfolge wie beim
-   normalen Wake.
+   eingeschaltet wird. Eine solche Publikation beweist die elektrische
+   Versorgung, aber noch nicht die Bereitschaft des Befehlskanals: Fossibot
+   kann während des Starts gecachte numerische Werte erneut publizieren. Ein
+   unbestätigter Output-Befehl wird deshalb wie beim normalen Wake innerhalb
+   des absoluten Mitglieds-Wake-Fensters begrenzt wiederholt. Der Zielzustand
+   muss bestätigt werden; erst danach beginnt das eigene Wake-Fenster des
+   nächsten Mitglieds.
 4. Ein konfigurierter Aktor der Endlast wird eingeschaltet. Fehlt er, versorgt
    bereits der letzte Fossibot-Output die automatisch startende Endlast.
 5. Ist ein Leistungssensor der Endlast konfiguriert, muss er nach der
@@ -62,3 +67,9 @@ ab.
   wiederhergestellt.
 - Scheitert die Wiederherstellung, wird keine erfolgreiche Diagnose gemeldet:
   Die Kaskade erhält eine harte Störung und durchläuft Safe-OFF.
+- Während eines Output-Retry und nach einem endgültigen Fehler nennt
+  `terminal_test` Mitgliedsindex, Entity-ID, absolute Deadline, Versuchszahl
+  und die letzte Actor-Ursache. Ein beim ersten Versuch bereits abgelaufenes
+  Wake-Fenster führt nach genau diesem Versuch zum fail-closed Abbruch; begann
+  die blockierende Bestätigung rechtzeitig und verbraucht den Rest des
+  Fensters, bleibt genau ein letzter begrenzter Versuch zulässig.

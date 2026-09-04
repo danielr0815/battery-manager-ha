@@ -3252,6 +3252,96 @@ async def test_terminal_tool_action_wakes_every_live_cascade_member(
     ]
 
 
+async def test_terminal_tool_retries_output_after_cached_wake_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A publishing Fossibot may need another command before AC output responds."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(coordinator)
+    real_actor = manager._actor
+    b2_attempts = 0
+
+    async def delayed_b2_output(
+        cascade_id: str, entity_id: str | None, turn_on: bool
+    ) -> bool:
+        nonlocal b2_attempts
+        if entity_id == "switch.b2_output" and turn_on:
+            b2_attempts += 1
+            if b2_attempts == 1:
+                # Live 2026-09-04: the connector published numeric cached
+                # telemetry while its command channel was not ready yet.
+                coordinator.calls.append((entity_id, turn_on))
+                manager._state(cascade_id)["last_actor_error"] = {
+                    "entity_id": entity_id,
+                    "target_state": "on",
+                    "observed_state": "off",
+                    "kind": "confirmation_timeout",
+                }
+                return False
+        return await real_actor(cascade_id, entity_id, turn_on)
+
+    monkeypatch.setattr(manager, "_actor", delayed_b2_output)
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+    monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", AsyncMock())
+
+    await manager.async_test_terminal("chain")
+
+    assert b2_attempts == 2
+    assert coordinator.calls.count(("switch.b2_output", True)) == 2
+    assert manager._state("chain")["terminal_test"]["state"] == "successful"
+    assert all(
+        coordinator.hass.states.values[entity_id].state == "off"
+        for entity_id in (
+            "switch.bad_waschmaschine",
+            "switch.b1_output",
+            "switch.b2_output",
+        )
+    )
+
+
+async def test_terminal_tool_output_retry_is_bounded_and_retains_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable output fails closed with actionable retry evidence."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    coordinator.entry.subentries["b1"].data[CONF_LOAD_WAKE_TIMEOUT_S] = 0
+    manager = CascadeManager(coordinator)
+    real_actor = manager._actor
+
+    async def unreachable_output(
+        cascade_id: str, entity_id: str | None, turn_on: bool
+    ) -> bool:
+        if entity_id == "switch.output" and turn_on:
+            coordinator.calls.append((entity_id, turn_on))
+            manager._state(cascade_id)["last_actor_error"] = {
+                "entity_id": entity_id,
+                "target_state": "on",
+                "observed_state": "off",
+                "kind": "confirmation_timeout",
+            }
+            return False
+        return await real_actor(cascade_id, entity_id, turn_on)
+
+    monkeypatch.setattr(manager, "_actor", unreachable_output)
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+
+    with pytest.raises(
+        HomeAssistantError,
+        match=r"output 1 within 0 seconds after 1 attempt.*confirmation_timeout",
+    ):
+        await manager.async_test_terminal("chain")
+
+    result = manager._state("chain")["terminal_test"]
+    assert result["state"] == "failed"
+    assert result["member_index"] == 0
+    assert result["output_entity"] == "switch.output"
+    assert result["attempts"] == 1
+    assert result["last_actor_error"]["kind"] == "confirmation_timeout"
+    assert coordinator.hass.states.get("switch.input").state == "off"
+
+
 async def test_terminal_tool_action_requires_fresh_running_power_and_restores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3452,6 +3542,7 @@ async def test_terminal_tool_action_reports_every_actor_boundary(
     """No failed make/break boundary may be skipped or reported successful."""
     now = datetime(2026, 9, 4, 12)
     coordinator = _Coordinator(now)
+    coordinator.entry.subentries["b1"].data[CONF_LOAD_WAKE_TIMEOUT_S] = 0
     manager = CascadeManager(coordinator)
     monkeypatch.setattr(manager, "_actor", AsyncMock(side_effect=actor_results))
     monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())

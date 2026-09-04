@@ -61,6 +61,7 @@ _RETRY_DELAY = timedelta(minutes=15)
 _RESTART_ACTOR_WAIT = timedelta(seconds=60)
 _ACTOR_CONFIRM_POLL_S = 0.1
 _TERMINAL_TEST_POLL_S = 1.0
+_TERMINAL_TEST_OUTPUT_RETRY_S = 1.0
 _TERMINAL_TEST_NO_POWER_HOLD_S = 60.0
 _TRANSIENT_PHASES = frozenset({"waking", "waking_members", "proving"})
 _STABLE_PHASES = frozenset(
@@ -587,6 +588,62 @@ class CascadeManager:
                 )
             await asyncio.sleep(_TERMINAL_TEST_POLL_S)
 
+    async def _activate_terminal_test_output(
+        self,
+        cascade_id: str,
+        data: dict[str, Any],
+        member_index: int,
+        deadline: float,
+        deadline_at: datetime,
+    ) -> None:
+        """Retry one supplied member's output until its wake window expires."""
+        entity_id = data.get(CONF_LOAD_OUTPUT_SWITCH)
+        if not entity_id:
+            return
+        state = self._state(cascade_id)
+        state.pop("last_actor_error", None)
+        loop = asyncio.get_running_loop()
+        first_attempt_had_window = loop.time() < deadline
+        attempts = 0
+        last_error: dict[str, Any] | None = None
+        while True:
+            attempts += 1
+            state["terminal_test"] = {
+                "state": "activating_output",
+                "member_index": member_index,
+                "output_entity": entity_id,
+                "attempts": attempts,
+                "deadline": deadline_at.isoformat(),
+                "last_actor_error": deepcopy(last_error),
+                "error": None,
+            }
+            self.coordinator.async_update_listeners()
+            if await self._actor(cascade_id, entity_id, True):
+                state.pop("last_actor_error", None)
+                return
+            last_error = deepcopy(state.get("last_actor_error")) or {
+                "entity_id": entity_id,
+                "target_state": "on",
+                "kind": "unconfirmed",
+            }
+            state["terminal_test"]["last_actor_error"] = deepcopy(last_error)
+            self.coordinator.async_update_listeners()
+            now = loop.time()
+            if now >= deadline:
+                # A confirmation attempt may itself consume the remaining
+                # wake window. Preserve the productive executor's guarantee
+                # of one bounded retry when that first attempt began in time.
+                if attempts == 1 and first_attempt_had_window:
+                    continue
+                break
+            await asyncio.sleep(min(_TERMINAL_TEST_OUTPUT_RETRY_S, deadline - now))
+        kind = last_error.get("kind", "unconfirmed")
+        raise HomeAssistantError(
+            f"Could not activate cascade output {member_index + 1} within "
+            f"{float(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60)):g} seconds "
+            f"after {attempts} attempt(s) ({kind})"
+        )
+
     async def _restore_terminal_test_snapshot(
         self,
         cascade_id: str,
@@ -675,6 +732,7 @@ class CascadeManager:
         state["phase"] = "testing_terminal"
         # Persist the recovery vector before the first temporary actor write.
         await self.coordinator.async_flush_persistent_state()
+        self._begin_actor_sequence(cascade_id)
         error: Exception | None = None
         cancelled = False
         try:
@@ -692,9 +750,13 @@ class CascadeManager:
             terminal_power = topology["terminal"].get(CONF_LOAD_POWER_ENTITY)
             terminal_baseline: datetime | None = None
             for index, (_load_id, data) in enumerate(topology["members"]):
+                wake_timeout_s = max(0.0, float(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60)))
+                wake_deadline = asyncio.get_running_loop().time() + wake_timeout_s
+                wake_deadline_at = dt_util.now() + timedelta(seconds=wake_timeout_s)
                 state["terminal_test"] = {
                     "state": "waking_member",
                     "member_index": index,
+                    "deadline": wake_deadline_at.isoformat(),
                     "error": None,
                 }
                 self.coordinator.async_update_listeners()
@@ -707,12 +769,13 @@ class CascadeManager:
                     terminal_baseline = self._reported_at(
                         self.coordinator.hass.states.get(terminal_power)
                     )
-                if not await self._actor(
-                    cascade_id, data.get(CONF_LOAD_OUTPUT_SWITCH), True
-                ):
-                    raise HomeAssistantError(
-                        f"Could not activate cascade output {index + 1}"
-                    )
+                await self._activate_terminal_test_output(
+                    cascade_id,
+                    data,
+                    index,
+                    wake_deadline,
+                    wake_deadline_at,
+                )
             terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
             if not await self._actor(cascade_id, terminal_actor, True):
                 raise HomeAssistantError("Could not activate the terminal load")
@@ -740,13 +803,25 @@ class CascadeManager:
                 await self._fault(cascade_id, "terminal_test_restore_failed")
                 await self.async_safe_off(cascade_id, "terminal test restore failure")
             else:
-                state["terminal_test"] = {
+                terminal_result = {
                     "state": (
                         "aborted" if cancelled else "failed" if error else "successful"
                     ),
                     "error": str(error) if error else None,
                     "completed_at": dt_util.now().isoformat(),
                 }
+                if error:
+                    progress = state.get("terminal_test", {})
+                    for key in (
+                        "member_index",
+                        "output_entity",
+                        "attempts",
+                        "deadline",
+                        "last_actor_error",
+                    ):
+                        if key in progress:
+                            terminal_result[key] = deepcopy(progress[key])
+                state["terminal_test"] = terminal_result
             await self.coordinator.async_flush_persistent_state()
         if error is not None:
             raise HomeAssistantError(str(error)) from error

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-09-04
+
+### Fixed
+- Die Kaskaden-Endlastdiagnose bricht einen elektrisch korrekten Wake nicht
+  mehr nach dem ersten unbestätigten Fossibot-Output-Befehl ab. Frische
+  numerische Telemetrie startet weiterhin erst den geordneten Schaltversuch;
+  der Output wird danach innerhalb des absoluten Mitglieds-Wake-Fensters
+  begrenzt wiederholt und muss seinen Zustand bestätigen. Das deckt auch
+  Fossibot-Polls mit gecachten Werten ab, während deren Befehlskanal noch
+  startet. Dauerhaft unerreichbare Outputs bleiben fail-closed, der vorherige
+  Aktorzustand wird wiederhergestellt und Diagnoseattribute erhalten Mitglied,
+  Actor, Deadline, Versuchszahl und letzte Actor-Ursache.
+
 ## [0.35.1] - 2026-09-04
 
 ### Fixed
