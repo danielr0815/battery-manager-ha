@@ -1,0 +1,6 @@
+# Keep the browser MCP project-scoped so Codex can start it from both the host
+# workspace and a trusted Dev Container workspace.
+[mcp_servers.playwright]
+command = "bash"
+args = [".devcontainer/playwright-mcp.sh"]
+startup_timeout_sec = 120

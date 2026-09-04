@@ -21,6 +21,8 @@ from custom_components.battery_manager.const import (
     SUBENTRY_TYPE_LOAD,
 )
 from custom_components.battery_manager.diagnostics import (
+    _core_config,
+    _last_plan_metrics,
     _subentries,
     async_get_config_entry_diagnostics,
 )
@@ -84,3 +86,18 @@ def test_subentry_options_are_redacted():
     assert sub["data"]["api_key"] == "**REDACTED**"
     assert sub["options"]["api_key"] == "**REDACTED**"
     assert sub["options"]["threshold"] == 42
+
+
+def test_diagnostics_degrade_to_explicit_errors_before_first_plan():
+    """The diagnostics endpoint is a recovery tool: broken config building and
+    a not-yet-produced plan must remain downloadable and self-describing."""
+
+    def _broken_config():
+        raise ValueError("invalid installation")
+
+    coordinator = SimpleNamespace(build_system_config=_broken_config, data=None)
+
+    assert _core_config(coordinator) == {
+        "error": "could not build system config: invalid installation"
+    }
+    assert _last_plan_metrics(coordinator) == {"valid": False}

@@ -205,6 +205,7 @@ test_temp_*
 htmlcov/
 .coverage
 coverage.xml
+coverage.json
 
 # -------------------
 # IDE and Editor Files

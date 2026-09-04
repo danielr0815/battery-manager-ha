@@ -14,6 +14,7 @@ from custom_components.battery_manager.const import (
     CONF_SOC_ENTITY,
     DEBOUNCE_SECONDS,
     DOMAIN,
+    PV_FORECAST_MODE_DAILY,
     STARTUP_SOC_GRACE_S,
 )
 
@@ -2024,3 +2025,121 @@ async def test_load_schedule_entries_carry_per_slot_energy(hass):
     )
     if planned_total > 0:
         assert abs(booked_total - planned_total) <= max(1.0, planned_total * 0.02)
+
+
+async def test_cascade_commands_refresh_only_after_manager_result():
+    """The coordinator is the UI boundary for cascade commands: it propagates
+    the manager outcome and requests one fresh published plan after each edge."""
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    manager = SimpleNamespace(
+        async_set_enabled=AsyncMock(return_value=False),
+        async_reset_fault=AsyncMock(return_value=True),
+    )
+    coordinator = SimpleNamespace(
+        cascade_manager=manager,
+        async_request_refresh=AsyncMock(),
+    )
+
+    accepted = await BatteryManagerCoordinator.async_set_cascade_enabled(
+        coordinator, "chain", True
+    )
+    reset = await BatteryManagerCoordinator.async_reset_cascade_fault(
+        coordinator, "chain"
+    )
+
+    assert accepted is False
+    assert reset is True
+    manager.async_set_enabled.assert_awaited_once_with("chain", True)
+    manager.async_reset_fault.assert_awaited_once_with("chain")
+    assert coordinator.async_request_refresh.await_count == 2
+
+
+async def test_unknown_energy_unit_falls_back_once_and_zero_curve_is_unscaled(
+    hass, caplog
+):
+    """F-REALIZED-SURPLUS warns once before assuming kWh; an empty hourly PV
+    curve remains neutral because no physically meaningful ratio exists."""
+    from datetime import datetime
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    hass.states.async_set(
+        "sensor.energy_unknown",
+        "12",
+        {"unit_of_measurement": "bananas"},
+    )
+    hass.states.async_set(
+        "sensor.pv_zero_curve",
+        "12",
+        {"unit_of_measurement": "kWh"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        first = coordinator._energy_unit_factor("sensor.energy_unknown")
+        second = coordinator._energy_unit_factor("sensor.energy_unknown")
+
+    assert first == second == 1000.0
+    assert caplog.text.count("reports an unknown unit") == 1
+    assert (
+        coordinator._pv_curve_ac_factor(
+            "sensor.pv_zero_curve", {datetime(2026, 9, 4): 0.0}
+        )
+        == 1.0
+    )
+    coordinator._pv_forecast_mode = PV_FORECAST_MODE_DAILY
+    assert coordinator._get_pv_hourly(datetime(2026, 9, 4)) == (None, None, None)
+
+
+async def test_recent_soc_cache_bridges_a_short_sensor_dropout(hass):
+    """The documented startup/dropout tolerance reuses only a recent valid SOC,
+    keeping planning available through a transient unavailable state."""
+    from homeassistant.util import dt as dt_util
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = dt_util.now()
+    coordinator._last_valid_soc = 61.5
+    coordinator._last_soc_update = now
+    hass.states.async_set("sensor.test_soc", "unavailable")
+
+    assert coordinator._get_soc(now + timedelta(minutes=1)) == 61.5
+
+
+def test_missing_optional_load_inputs_fail_closed_but_legacy_cache_is_kept():
+    """Missing power/appliance inputs cannot prove activity, while a legacy SOC
+    cache without a timestamp remains trusted once for migration compatibility."""
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_POWER_ENTITY,
+        CONF_LOAD_POWER_W,
+    )
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    coordinator = SimpleNamespace(
+        entry=SimpleNamespace(
+            subentries={
+                "load": SimpleNamespace(
+                    data={
+                        CONF_LOAD_POWER_W: 400.0,
+                        CONF_LOAD_POWER_ENTITY: "sensor.not_published",
+                    }
+                )
+            }
+        ),
+        _read_float=lambda _entity_id: None,
+    )
+
+    assert (
+        BatteryManagerCoordinator._draw_above_standby(coordinator, "missing") is False
+    )
+    assert BatteryManagerCoordinator._draw_above_standby(coordinator, "load") is False
+    assert BatteryManagerCoordinator._load_soc_cache_stale(coordinator, {}) is False
+    assert (
+        BatteryManagerCoordinator._load_soc_cache_stale(
+            coordinator, {"ts": "not-a-timestamp"}
+        )
+        is False
+    )
+    assert (
+        BatteryManagerCoordinator._appliance_is_running(coordinator, {}, True) is False
+    )

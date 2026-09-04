@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.10] - 2026-09-04
+
+### Fixed
+- Exportpfade mit Nullbytes werden nun vor jeder plattformabhängigen
+  Pfadauflösung einheitlich abgewiesen.
+
+### Changed
+- Die Testsuite dokumentiert ihre Anforderungsbezüge und deckt zusätzliche
+  Config-Flow-, Coordinator-, Kaskaden-, Diagnose-, Frontend- und
+  Export-Fehlerverträge ab. CI verlangt jetzt neben 95 % Gesamt-Coverage für
+  jedes HA-Modul mindestens 95 % und für jedes Core-Modul weiterhin 100 %.
+- Der CI-verifizierte Devcontainer enthält Chromium, Node.js und einen
+  projektlokal konfigurierten Playwright-MCP. Der Container-Test läuft seriell,
+  um modulübergreifende Zustandslecks zusätzlich zum schnellen parallelen Lauf
+  zu erkennen; alle uv-Installationen verwenden den gesperrten Lockfile-Modus.
+
 ## [0.34.9] - 2026-09-03
 
 ### Fixed

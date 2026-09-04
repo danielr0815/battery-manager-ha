@@ -2,10 +2,14 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components import battery_manager
 from custom_components.battery_manager import (
     CARD_URL,
     _async_register_card_resource,
@@ -67,6 +71,49 @@ async def test_setup_without_lovelace_does_not_break(hass):
     """Card registration is optional sugar; the planner must come up anyway."""
     entry = await _setup_entry(hass)
     assert hass.data[DOMAIN][entry.entry_id].last_update_success
+
+
+async def test_global_setup_isolates_optional_card_and_sweep_failures(
+    hass, monkeypatch, caplog
+):
+    """Neither optional frontend registration nor stale-export maintenance may
+    prevent Home Assistant from starting the integration."""
+    monkeypatch.setattr(
+        battery_manager,
+        "_async_setup_card",
+        AsyncMock(side_effect=RuntimeError("card")),
+    )
+    monkeypatch.setattr(
+        battery_manager,
+        "_async_sweep_download_dir",
+        AsyncMock(side_effect=OSError("downloads")),
+    )
+
+    assert await battery_manager.async_setup(hass, {})
+    assert "Could not register the bundled dashboard card" in caplog.text
+    assert "Could not sweep stale download exports" in caplog.text
+
+
+async def test_card_resource_registration_waits_for_ha_started(hass, monkeypatch):
+    """Before HA is running, resource mutation is deferred until the official
+    startup event so an unloaded Lovelace collection cannot be overwritten."""
+    register = AsyncMock()
+    monkeypatch.setattr(battery_manager, "_async_register_card_resource", register)
+    monkeypatch.setattr(
+        battery_manager,
+        "async_get_integration",
+        AsyncMock(return_value=SimpleNamespace(version="1.2.3")),
+    )
+    hass.set_state(CoreState.not_running)
+    hass.http = SimpleNamespace(async_register_static_paths=AsyncMock())
+
+    await battery_manager._async_setup_card(hass)
+    hass.http.async_register_static_paths.assert_awaited_once()
+    register.assert_not_awaited()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    hass.set_state(CoreState.running)
+    await hass.async_block_till_done()
+    register.assert_awaited_once_with(hass, f"{CARD_URL}?v=1.2.3")
 
 
 async def test_soc_forecast_sensor_single_point_and_empty_fallback(hass):
@@ -142,10 +189,19 @@ async def test_card_resource_created_updated_never_duplicated(hass):
     assert [i["url"] for i in items] == [f"{CARD_URL}?v=9.9.9"]
 
 
-async def test_card_resource_yaml_mode_skips_registry(hass):
-    """Without a storage collection nothing must crash (frontend absent)."""
+async def test_card_resource_yaml_mode_uses_global_frontend_url(hass, monkeypatch):
+    """YAML mode cannot write a resource registry, so the documented global
+    frontend fallback must receive the exact cache-busted module URL."""
+    calls = []
+    monkeypatch.setattr(
+        "custom_components.battery_manager.add_extra_js_url",
+        lambda _hass, url: calls.append(url),
+    )
+    hass.config.components.add("frontend")
     hass.data["lovelace"] = SimpleNamespace(resources=None)
     await _async_register_card_resource(hass, f"{CARD_URL}?v=0.4.0")
+
+    assert calls == [f"{CARD_URL}?v=0.4.0"]
 
 
 async def test_dc48_mode_sensor_exposes_controller_diagnostic(hass):

@@ -10,6 +10,8 @@ failures raise instead of only logging.
 import os
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -20,7 +22,12 @@ from pytest_homeassistant_custom_component.common import (
     async_get_persistent_notifications,
 )
 
-from custom_components.battery_manager import async_setup
+from custom_components.battery_manager import (
+    _export_coordinator,
+    _schedule_download_cleanup,
+    _validate_file_path,
+    async_setup,
+)
 from custom_components.battery_manager.const import (
     CONF_PV_FORECAST_DAY_AFTER,
     CONF_PV_FORECAST_TODAY,
@@ -299,3 +306,51 @@ async def test_startup_sweep_removes_stale_downloads(hass):
 
     assert not stale.exists()
     assert fresh.is_file()
+
+
+def test_export_path_rejects_null_hidden_and_resolution_failures(tmp_path, monkeypatch):
+    """The export boundary rejects ambiguous names before writing; null bytes
+    receive their own error instead of leaking a platform-dependent OSError."""
+    base = tmp_path / "battery_manager"
+
+    with pytest.raises(ValueError, match="null bytes"):
+        _validate_file_path(str(base / "bad\0.txt"), base)
+    with pytest.raises(ValueError, match="Invalid filename"):
+        _validate_file_path(str(base / ".hidden.txt"), base)
+
+    original_resolve = Path.resolve
+
+    def fail_selected(path):
+        if path.name == "unresolvable.txt":
+            raise OSError("filesystem loop")
+        return original_resolve(path)
+
+    monkeypatch.setattr(Path, "resolve", fail_selected)
+    with pytest.raises(ValueError, match="Invalid path: filesystem loop"):
+        _validate_file_path(str(base / "unresolvable.txt"), base)
+
+
+def test_export_requires_a_running_entry(hass):
+    """Calling an export service without any configured coordinator is an
+    explicit validation error, never a successful no-op."""
+    with pytest.raises(ServiceValidationError, match="No Battery Manager entry"):
+        _export_coordinator(hass, SimpleNamespace(data={}))
+
+
+async def test_download_cleanup_tolerates_external_delete_and_reports_io_error(
+    hass, caplog
+):
+    """TTL cleanup races safely with an operator delete, but exposes genuine
+    filesystem failures in the log for diagnosis."""
+    missing = SimpleNamespace(unlink=Mock(side_effect=FileNotFoundError))
+    broken = SimpleNamespace(unlink=Mock(side_effect=OSError("read-only")))
+
+    _schedule_download_cleanup(hass, missing)
+    _schedule_download_cleanup(hass, broken)
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(hours=1, seconds=1))
+    await hass.async_block_till_done()
+    await hass.async_block_till_done()
+
+    missing.unlink.assert_called_once_with()
+    broken.unlink.assert_called_once_with()
+    assert "Could not delete expired download export: read-only" in caplog.text

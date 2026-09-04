@@ -1,9 +1,9 @@
 # Entwicklung, Tests, Release
 
-**Stand: `main` @ v0.16.2 (2026-07-25).** Dieses Dokument beschreibt die
+**Stand: `main` @ v0.34.9 (2026-09-04).** Dieses Dokument beschreibt die
 **Arbeitsumgebung und die Konventionen** dieses Repos: wie und wo die Tests
-laufen (die HA-Suite geht nur unter WSL), was die CI prüft und wo sie
-zuverlässig zuschnappt, wie ein Release entsteht und welche Lektionen aus
+laufen (die HA-Suite braucht Linux, WSL oder den Devcontainer), was die CI
+prüft und wo sie zuverlässig zuschnappt, wie ein Release entsteht und welche Lektionen aus
 früheren Reviews als Regel festgeschrieben sind. Was der Code tut, steht in
 01–03; die Anlage und der Deploy-*Weg* in `05-anlage-und-betrieb-runbook.md`.
 
@@ -52,6 +52,16 @@ Alle Aussagen sind gegen `.github/workflows/*`, `pyproject.toml`,
 
 ---
 
+> **Update 2026-09-04 — Devcontainer und Modul-Coverage:** Die vollständige
+> HA-Suite läuft direkt im Linux-Devcontainer; WSL ist nur noch eine alternative
+> Linux-Umgebung für Windows-Hosts. Setup und CI verwenden
+> `uv sync --locked --group dev`, sodass ein veralteter Lockfile nicht mehr
+> still geändert wird. Der schnelle CI-Lauf bleibt mit vier xdist-Workern
+> parallel, der Devcontainer-Lauf prüft dieselbe Suite seriell auf globalen
+> Zustands-Leak. Zusätzlich zum 95-%-Gesamt-Gate verlangt
+> `scripts/check_module_coverage.py` mindestens 95 % für jedes HA-Modul und
+> weiterhin 100 % für jedes Core-Modul. Audit: `../TEST_QUALITY_AUDIT.md`.
+
 ## 1. Testumgebung
 
 ### 1.1 Der Split — und warum es ihn gibt
@@ -67,10 +77,11 @@ das es dort nicht gibt. Deshalb ist der Testbaum zweigeteilt:
 
 ### 1.2 Die Kommandos
 
-**Volle Suite (das, was CI fährt) — nur unter WSL:**
+**Volle Suite (das, was der schnelle CI-Testjob fährt) —
+Linux/WSL/Devcontainer:**
 
 ```
-wsl -e bash -lc "cd /mnt/c/Users/jj/claude_space/battery-manager-ha && ~/bmha-venv/bin/python -m pytest tests -q -n 4 --dist=loadscope"
+uv run pytest tests -n 4 --dist=loadscope
 ```
 
 Die HA-Suite setzt über eine Autouse-Fixture ausschließlich im Testprozess den
@@ -81,28 +92,28 @@ bleiben HA-Fixtures isoliert und pytest-cov kann die Worker-Daten kombinieren.
 **Nur der Kern — geht nativ unter Windows:**
 
 ```
-python -m pytest tests/core -p no:homeassistant
+uv run pytest tests/core -p no:homeassistant
 ```
 
 Das `-p no:homeassistant` schaltet das HA-Pytest-Plugin ab; ohne den Schalter
 scheitert schon die Plugin-Initialisierung.
 
-**Linter — von Windows aus** (das `.venv` im Repo hat ruff):
+**Linter:**
 
 ```
-ruff check custom_components tests
-ruff format --check .        # oder `ruff format .` zum Anwenden
+uv run ruff check custom_components tests scripts
+uv run ruff format --check .        # oder `uv run ruff format .` zum Anwenden
 ```
 
-`pyproject.toml` konfiguriert beides: `target-version = "py313"`,
+`pyproject.toml` konfiguriert beides: `target-version = "py314"`,
 `line-length = 88`, `extend-exclude = [".venv"]`, Lint-Regelsatz
 `E, F, I, UP, B, SIM` mit `ignore = ["E501"]` (die Zeilenlänge regelt der
 Formatter, nicht der Linter). Pytest: `testpaths = ["tests"]`,
 `asyncio_mode = "auto"`, `addopts = "-q"`.
 
-### 1.3 Umfang (Stand v0.16.2)
+### 1.3 Umfang (Stand v0.34.9)
 
-**433 Tests**, davon ~197 im Kern und ~236 in der HA-Schicht. Die größten
+**855 Tests**, davon 333 im Kern und 522 in der HA-Schicht. Die größten
 Brocken: `tests/ha/test_load_switching.py` (112 Tests — der Executor ist die
 regelreichste Stelle des Projekts) und `tests/core/test_optimize.py` (97).
 
@@ -160,16 +171,16 @@ das Muster — sonst debuggt er die Testinfrastruktur statt seines Features.
 
 Trigger: **jeder Push**, jeder Pull Request, **nächtlich** (`cron: 0 0 * * *`)
 und manuell. Fünf unabhängige Jobs. `lint` und `tests` laufen über **uv**:
-`astral-sh/setup-uv@v9` (mit Cache) → `uv sync --group dev` → alle Aufrufe
-via `uv run`. Der Interpreter (**Python 3.14**) kommt aus `.python-version`,
+`astral-sh/setup-uv@v9` (mit Cache) → `uv sync --locked --group dev` → alle
+Aufrufe via `uv run`. Der Interpreter (**Python 3.14**) kommt aus `.python-version`,
 alle Tool-Versionen aus `uv.lock` (Mindestversionen `>=` in `pyproject.toml`,
 exakt im Lock; einzig phacc ist voll gepinnt, weil es die HA-Kopplung führt):
 
 | Job | Was er tut |
 |---|---|
-| **`lint` (Lint (ruff + mypy))** | `uv run ruff check custom_components tests`, **`uv run ruff format --check .`**, **mypy-Baseline** (`uv run mypy` — meldet nur Fehler in `core/`, Scope-Begründung in `[tool.mypy]`) und das **Versions-Gate** |
-| **`tests` (Tests (pytest))** | `uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=term --cov-report=xml` — die **volle** Suite inkl. HA-Schicht; vier xdist-Worker halten Module samt HA-Fixtures zusammen, Coverage wird kombiniert und das XML landet als **Artifact** (`actions/upload-artifact@v7`, `coverage-xml`, kein externer Dienst) |
-| **`devcontainer`** | Baut `.devcontainer/devcontainer.json` via `devcontainers/ci` (inkl. `postCreateCommand` = `uv sync`) und führt im Container aus: volle Suite, `ruff check`, `ruff format --check .`, `mypy` — ein kaputter Devcontainer fällt sofort auf. `lint`/`tests` bleiben das schnellere Feedback (setup-uv); kein `cacheFrom`, weil der Devcontainer image-basiert ist (kein Dockerfile, keine eigenen Layer) |
+| **`lint` (Lint (ruff + mypy))** | `uv run ruff check custom_components tests scripts`, **`uv run ruff format --check .`**, **mypy-Baseline** (`uv run mypy` — meldet nur Fehler in `core/`, Scope-Begründung in `[tool.mypy]`) und das **Versions-Gate** |
+| **`tests` (Tests (pytest))** | `uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=term --cov-report=xml --cov-report=json`, danach `scripts/check_module_coverage.py` — die **volle** Suite inkl. HA-Schicht; vier xdist-Worker halten Module samt HA-Fixtures zusammen, Coverage wird kombiniert und das XML landet als **Artifact** (`actions/upload-artifact@v7`, `coverage-xml`, kein externer Dienst) |
+| **`devcontainer`** | Baut `.devcontainer/devcontainer.json` via `devcontainers/ci` (inkl. Dockerfile mit Chromium, Node-Feature und gepinntem Playwright-MCP im `postCreateCommand`) und führt im Container aus: volle Suite, `ruff check`, `ruff format --check .`, `mypy` — ein kaputter Devcontainer fällt sofort auf. `lint`/`tests` bleiben das schnellere Feedback (setup-uv); kein `cacheFrom`, weil die Abhängigkeiten reproduzierbar aus den öffentlichen Devcontainer-/Debian-/npm-Quellen aufgebaut werden |
 | **`validate-hacs`** | `hacs/action@22.5.0` (gepinnter Tag statt `@main`), `category: integration`, `ignore: brands` |
 | **`validate-hassfest`** | `home-assistant/actions/hassfest@e3fb68e…` — gepinnter master-**SHA** statt `@master` (upstream existieren keine nutzbaren Tags; manuell bumpen, Kommentar im Workflow) |
 
@@ -259,7 +270,7 @@ gegen ein vergessenes Bumpen.
    `## [Unreleased]`-Abschnitt). Der Eintrag erklärt **das Verhalten und das
    Warum**, nicht die geänderten Dateien — siehe den v0.16.2-Eintrag als
    Vorbild.
-3. `ruff format` + `ruff check`, volle Suite unter WSL grün.
+3. `ruff format` + `ruff check`, volle Suite unter Linux/WSL/Devcontainer grün.
 4. Commit, Push auf `main`, **CI grün abwarten**.
 5. `gh release create vX.Y.Z --target main --title "vX.Y.Z" --notes "…"`.
    **HACS trackt Releases, nicht Commits** — ohne diesen Schritt kommt beim
@@ -414,10 +425,10 @@ Commit nach einem Review**.
 ## 5. Kurz-Checkliste vor dem Push
 
 ```
-1. ruff format .            (Scratchpad-Treffer ignorieren, s. §2.3)
-2. ruff check custom_components tests
-3. wsl -e bash -lc "cd /mnt/c/Users/jj/claude_space/battery-manager-ha \
-     && ~/bmha-venv/bin/python -m pytest tests -q -n 4 --dist=loadscope"
+1. uv run ruff format .            (Scratchpad-Treffer ignorieren, s. §2.3)
+2. uv run ruff check custom_components tests scripts
+3. uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=json
+   uv run python scripts/check_module_coverage.py
 4. grep -rn MUTANT custom_components tests      (nach Agenten-Reviews)
 5. Goldens: unbeabsichtigt gewandert?  -> Change prüfen, nicht Golden
 6. manifest.json == pyproject.toml     (Versions-Gate)

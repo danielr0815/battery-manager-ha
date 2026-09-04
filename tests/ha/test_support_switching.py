@@ -6,7 +6,8 @@ DC/DC on -> delay -> PSU off. An unconfirmed new supply aborts the sequence.
 """
 
 from datetime import timedelta
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -21,6 +22,7 @@ from custom_components.battery_manager.const import (
     CONF_SUPPORT_SWITCH_DELAY_S,
     DOMAIN,
 )
+from custom_components.battery_manager.switch import SupportManualSwitch
 
 DC48 = "switch.psu_48v"
 
@@ -36,6 +38,26 @@ ENTRY_DATA = {
     CONF_DCDC_SWITCH: DCDC,
     CONF_SUPPORT_SWITCH_DELAY_S: 1,
 }
+
+
+async def test_manual_switch_entity_delegates_mode_and_publishes_state():
+    """The UI switch is the F-N2/R3 command boundary: both edges must reach the
+    coordinator with the correct PSU key and publish their resulting state."""
+    coordinator = SimpleNamespace(async_set_support_manual=AsyncMock())
+    entity = SimpleNamespace(
+        coordinator=coordinator,
+        _psu_key="dc48",
+        async_write_ha_state=Mock(),
+    )
+
+    await SupportManualSwitch.async_turn_on(entity)
+    await SupportManualSwitch.async_turn_off(entity)
+
+    assert coordinator.async_set_support_manual.await_args_list == [
+        (("dc48", True),),
+        (("dc48", False),),
+    ]
+    assert entity.async_write_ha_state.call_count == 2
 
 
 def _register_switch_services(hass, call_log, *, dead_entities=()):

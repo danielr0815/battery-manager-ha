@@ -20,8 +20,7 @@ keine Runtime-Dependencies (`requirements: []` im Manifest).
 ## Setup (einmalig)
 
 ```bash
-uv sync --group dev        # erzeugt .venv aus uv.lock (einzige Wahrheit,
-                           # auch in CI); installiert Python 3.14 bei Bedarf
+uv sync --locked --group dev  # veralteter Lockfile bricht ab; Python 3.14 bei Bedarf
 ```
 
 Alternativ: Devcontainer (`.devcontainer/`) — der postCreateCommand macht
@@ -39,12 +38,16 @@ mypy darin aus (`devcontainers/ci`); lokal geht das mit der devcontainer-CLI
   Browser-Instanz als Ersatz initialisieren. Ist der lokale Playwright-MCP
   nicht verfügbar, dies klar melden und die Live-Prüfung pausieren.
 - Ziel: `hass.rsn.ro-la.de:8123/`.
+- Die projektlokale `.codex/config.toml` startet denselben MCP auch im
+  Devcontainer; dort läuft das mitgelieferte Chromium headless. Nach einem
+  Rebuild die Codex-Erweiterung neu starten, damit sie die MCP-Konfiguration
+  neu einliest.
 
 ## Tests
 
 ```bash
 uv run pytest tests/core -p no:homeassistant   # Kern-Suite, läuft überall
-uv run pytest tests -n 4 --dist=loadscope      # volle Suite (753 Tests), Linux/WSL
+uv run pytest tests -n 4 --dist=loadscope      # volle Suite, Linux/WSL/Devcontainer
 ```
 
 **Zeitregel für Tests:** Produktive Sekunden-/Minuten-Delays nie real abwarten.
@@ -60,10 +63,12 @@ im Devcontainer von `validate.yml`):
 # Kern 100 % — Konvention: der reine Planner bleibt vollständig getestet:
 uv run pytest tests/core -p no:homeassistant \
     --cov=custom_components/battery_manager/core --cov-fail-under=100
-# Gesamt 95 % — fail_under in [tool.coverage.report], greift bei jedem
-# Lauf mit --cov:
-uv run pytest tests -n 4 --dist=loadscope --cov
+# Gesamt 95 % und jedes HA-Modul >= 95 %:
+uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=json
+uv run python scripts/check_module_coverage.py
 ```
+
+Traceability- und Pseudotest-Regeln: `docs/TEST_QUALITY_AUDIT.md`.
 
 Planner-Verhalten ist durch **Golden Snapshots** eingefroren
 (`tests/core/golden_topology.json`) — dieser Workflow gilt unverändert: Bei
@@ -74,7 +79,7 @@ Szenario darf ohne dokumentierten Grund mehr Netzbezug importieren.
 ## Lint, Format, Typen (vor jedem Push)
 
 ```bash
-uv run ruff check custom_components tests
+uv run ruff check custom_components tests scripts
 uv run ruff format --check .    # bzw. `uv run ruff format .` zum Anwenden
 uv run mypy                     # Baseline: prüft nur core/, siehe [tool.mypy]
 ```

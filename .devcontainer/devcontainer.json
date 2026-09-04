@@ -1,9 +1,17 @@
 {
   "name": "battery-manager-ha",
-  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
   // uv installs the locked dev environment (uv.lock is the single source of
-  // truth, same as CI). Requires network access on container creation.
-  "postCreateCommand": "python -m pip install uv && uv sync --group dev",
+  // truth, same as CI). MCP is pinned and installed once during creation, so
+  // starting the browser later does not depend on npm availability.
+  "postCreateCommand": "python -m pip install uv && uv sync --locked --group dev && npm install --global @playwright/mcp@0.0.78",
   "customizations": {
     "vscode": {
       "extensions": [

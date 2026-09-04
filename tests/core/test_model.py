@@ -18,8 +18,15 @@ from core.model import (
 
 
 def test_battery_params_valid_defaults():
-    BatteryParams()  # must not raise
-    BatteryParams(capacity_wh=2000.0, eta_charge=1.0, eta_discharge=0.5)
+    defaults = BatteryParams()
+    bounded = BatteryParams(capacity_wh=2000.0, eta_charge=1.0, eta_discharge=0.5)
+
+    # This is the positive half of the validation contract, not merely a
+    # constructor coverage call: accepted values must survive unchanged.
+    assert defaults.capacity_wh > 0.0
+    assert bounded.capacity_wh == 2000.0
+    assert bounded.eta_charge == 1.0
+    assert bounded.eta_discharge == 0.5
 
 
 @pytest.mark.parametrize("capacity", [0.0, -1.0, float("nan")])

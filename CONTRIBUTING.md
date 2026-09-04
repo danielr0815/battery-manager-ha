@@ -30,10 +30,16 @@ the full suite inside) and locally via the
 (`devcontainer up --workspace-folder .`, then `devcontainer exec
 --workspace-folder . uv run pytest tests`).
 
+The container also includes Node.js and Chromium for the project-scoped
+Playwright MCP server. Codex starts it headlessly inside the container and
+stores its login profile under the ignored `.playwright-mcp/` directory. After
+the first container build, restart the Codex extension once so it reloads
+`.codex/config.toml`.
+
 **B. Local with [uv](https://docs.astral.sh/uv/):**
 
 ```bash
-uv sync --group dev   # creates .venv from uv.lock, fetches Python 3.14 if needed
+uv sync --locked --group dev  # fails instead of silently rewriting a stale lock
 ```
 
 `uv.lock` is the single source of truth for every dev-tool version — CI runs
@@ -56,14 +62,22 @@ Windows:
 # The -p no:homeassistant flag disables the HA pytest plugin.
 uv run pytest tests/core -p no:homeassistant
 
-# Full suite incl. the HA layer — needs Linux or WSL (this is what CI runs).
+# Full suite incl. the HA layer — Linux, WSL or the devcontainer.
 uv run pytest tests -n 4 --dist=loadscope
+
+# Exact CI coverage gates: core 100 %, every HA module >= 95 %.
+uv run pytest tests/core -p no:homeassistant \
+    --cov=custom_components/battery_manager/core --cov-fail-under=100
+uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=json
+uv run python scripts/check_module_coverage.py
 ```
 
 HA tests replace the coordinator's production five-second entity debounce with
 an immediate yield in `tests/ha/conftest.py`; a dedicated mock-based test keeps
 the production delay covered without adding real wall-clock sleeps. Four xdist
 workers keep each module and its HA fixtures together while combining coverage.
+CI additionally runs the suite serially inside the devcontainer to detect
+cross-module state leakage in one HA/Python process.
 Never make a test wait through a production-scale seconds/minutes delay: mock or
 advance the clock and cover the configured delay separately. Polling in tests
 must stop on an observed state/publication, not assume that a fixed millisecond
@@ -73,6 +87,9 @@ sleep gave a background task enough CPU time.
 
 On Windows, develop and test the planner core natively; run the HA-layer tests
 under WSL (or let CI run them on your PR).
+
+The test-to-requirement traceability and the rules against coverage-only tests
+are documented in [docs/TEST_QUALITY_AUDIT.md](docs/TEST_QUALITY_AUDIT.md).
 
 ## Linting, formatting & type checking
 
@@ -86,7 +103,7 @@ fully pinned: it pins homeassistant exactly itself and thus leads the HA
 coupling (the comment in `pyproject.toml` has the details). Before pushing:
 
 ```bash
-uv run ruff check custom_components tests
+uv run ruff check custom_components tests scripts
 uv run ruff format --check .    # or `uv run ruff format .` to apply
 ```
 

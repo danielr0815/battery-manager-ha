@@ -1,5 +1,7 @@
 """Config/options flow smoke tests (schema construction must never raise)."""
 
+from types import SimpleNamespace
+
 import pytest
 import voluptuous as vol
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -586,6 +588,62 @@ async def test_migrate_preserves_calibrated_gate_soc(hass):
     assert await async_migrate_entry(hass, entry)
     assert entry.minor_version == 5
     assert entry.options["gate_soc_percent"] == 55.0
+
+
+async def test_migrate_v1_removes_retired_keys_and_preserves_legacy_defaults(hass):
+    """The complete v1 migration is behavioural, not a version-only smoke test:
+    retired controller keys disappear, the learning window widens, and the
+    auto-persisted voltage gate moves while unrelated data survives."""
+    from custom_components.battery_manager import async_migrate_entry
+    from custom_components.battery_manager.const import (
+        CONF_GATE_SOC_PERCENT,
+        CONF_LEARNING_WINDOW_DAYS,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **ENTRY_DATA,
+            "controller_target_soc_percent": 80,
+            CONF_GATE_SOC_PERCENT: 100.0,
+            "operator_note": "keep",
+        },
+        options={
+            "ac_additional_load_w": 250,
+            CONF_LEARNING_WINDOW_DAYS: 42,
+        },
+        title="Battery Manager",
+        version=1,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert (entry.version, entry.minor_version) == (2, 5)
+    assert "controller_target_soc_percent" not in entry.data
+    assert "ac_additional_load_w" not in entry.options
+    assert entry.data["operator_note"] == "keep"
+    assert entry.data[CONF_GATE_SOC_PERCENT] == 40.0
+    assert entry.options[CONF_LEARNING_WINDOW_DAYS] == 120
+
+
+async def test_migrate_rejects_unknown_future_major_version(hass):
+    """A newer schema must remain untouched instead of being guessed at by an
+    older integration version."""
+    from custom_components.battery_manager import async_migrate_entry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**ENTRY_DATA, "future": True},
+        title="Battery Manager",
+        version=3,
+        minor_version=0,
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry) is False
+    assert entry.version == 3
+    assert entry.data["future"] is True
 
 
 async def test_pv_step_rejects_misordered_windows(hass):
@@ -1931,3 +1989,226 @@ async def test_cascade_subentry_creates_ordered_topology(hass):
     )
     assert cascade.data[CONF_CASCADE_MEMBER_IDS] == [storage_id]
     assert cascade.data[CONF_CASCADE_TERMINAL_LOAD_ID] == terminal_id
+
+
+def test_standalone_config_validators_pin_cross_field_requirements():
+    """D-C1/D-C8/D-A9 and LOAD_CONTROL §7 are cross-field contracts; exercise
+    their failing combinations directly so form plumbing cannot mask them."""
+    from custom_components.battery_manager import config_flow
+    from custom_components.battery_manager.const import (
+        CONF_AC_BALANCE_OUT,
+        CONF_BUFFER_MAX_PERCENT,
+        CONF_BUFFER_MIN_PERCENT,
+        CONF_LOAD_CHARGE_ENABLE,
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_SUPPORT_DC24_ACTIVATE_SOC,
+        CONF_SUPPORT_DC24_SWITCH,
+        CONF_SUPPORT_DC48_ACTIVATE_SOC,
+        CONF_SUPPORT_DC48_SWITCH,
+    )
+
+    assert config_flow._flatten_sections({"future_key": 7}) == {"future_key": 7}
+    assert (
+        config_flow._validate_learning_sources({CONF_AC_BALANCE_OUT: ["sensor.out"]})
+        == "balance_out_without_in"
+    )
+    assert (
+        config_flow._validate_buffer_clamps(
+            {CONF_BUFFER_MIN_PERCENT: 20, CONF_BUFFER_MAX_PERCENT: 20}
+        )
+        == "buffer_min_above_max"
+    )
+    assert (
+        config_flow._validate_support_hysteresis({CONF_SUPPORT_DC24_ACTIVATE_SOC: 10})
+        is None
+    )
+    assert (
+        config_flow._validate_load_control(
+            {
+                CONF_LOAD_CONTROL_SWITCH: "switch.same",
+                CONF_LOAD_CHARGE_ENABLE: "switch.same",
+            }
+        )
+        == "control_entities_not_distinct"
+    )
+    assert (
+        config_flow._validate_support_entities(
+            {
+                CONF_SUPPORT_DC24_SWITCH: "switch.same",
+                CONF_SUPPORT_DC48_SWITCH: "switch.same",
+            }
+        )
+        == "support_entities_not_distinct"
+    )
+    # A partial support ladder is intentionally deferred until all four
+    # values exist; this guards upgrades carrying only one new option.
+    assert (
+        config_flow._validate_support_hysteresis({CONF_SUPPORT_DC48_ACTIVATE_SOC: 5})
+        is None
+    )
+
+
+def test_cascade_validator_rejects_each_unsafe_topology_contract():
+    """F-CASCADE-STORAGE configuration is fail-closed: every topology rule
+    reports a specific operator-facing error before any actor can be owned."""
+    from custom_components.battery_manager.config_flow import CascadeSubentryFlow
+    from custom_components.battery_manager.const import (
+        CONF_CASCADE_MEMBER_IDS,
+        CONF_CASCADE_TERMINAL_LOAD_ID,
+        CONF_LOAD_CHARGE_ENABLE,
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_LOAD_DISCHARGE_FLOOR_SOC,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_HANDOVER_TIMEOUT_S,
+        CONF_LOAD_NAME,
+        CONF_LOAD_OUTPUT_POWER_ENTITY,
+        CONF_LOAD_OUTPUT_SWITCH,
+        CONF_LOAD_RECOVERY_SOC,
+        CONF_LOAD_SOC_ENTITY,
+        CONF_LOAD_TARGET_SOC,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    root_data = {
+        CONF_LOAD_ENERGY_LIMITED: True,
+        CONF_LOAD_SOC_ENTITY: "sensor.root_soc",
+        CONF_LOAD_CONTROL_SWITCH: "switch.root",
+        CONF_LOAD_CHARGE_ENABLE: "switch.root_gate",
+        CONF_LOAD_OUTPUT_SWITCH: "switch.root_output",
+        CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.root_output_power",
+        CONF_LOAD_DISCHARGE_FLOOR_SOC: 20,
+        CONF_LOAD_RECOVERY_SOC: 50,
+        CONF_LOAD_TARGET_SOC: 90,
+        CONF_LOAD_HANDOVER_TIMEOUT_S: 180,
+    }
+    terminal_data = {CONF_LOAD_ENERGY_LIMITED: False}
+    entry = SimpleNamespace(
+        subentries={
+            "root": SimpleNamespace(subentry_type=SUBENTRY_TYPE_LOAD, data=root_data),
+            "leaf": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_LOAD, data=terminal_data
+            ),
+        }
+    )
+    flow = SimpleNamespace(_get_entry=lambda: entry)
+
+    def validate(member_ids, terminal="leaf", **overrides):
+        payload = {
+            CONF_LOAD_NAME: "Safe chain",
+            CONF_CASCADE_MEMBER_IDS: member_ids,
+            CONF_CASCADE_TERMINAL_LOAD_ID: terminal,
+            **overrides,
+        }
+        return CascadeSubentryFlow._validate(flow, payload, None)
+
+    assert validate([], **{CONF_LOAD_NAME: " "}) == "name_required"
+    assert validate([]) == "cascade_members_required"
+    assert validate(["root", "root"]) == "cascade_duplicate_member"
+    assert validate(["root"], terminal="root") == "cascade_duplicate_member"
+    assert validate(["root"], terminal="missing") == "cascade_terminal_invalid"
+
+    entry.subentries["bad"] = SimpleNamespace(
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        data={CONF_LOAD_ENERGY_LIMITED: False},
+    )
+    assert validate(["bad"]) == "cascade_member_invalid"
+
+    original = dict(root_data)
+    root_data.pop(CONF_LOAD_SOC_ENTITY)
+    assert validate(["root"]) == "cascade_member_incomplete"
+    root_data.clear()
+    root_data.update(original)
+    root_data.pop(CONF_LOAD_CONTROL_SWITCH)
+    assert validate(["root"]) == "cascade_root_input_required"
+    root_data.clear()
+    root_data.update(original)
+
+    entry.subentries["second"] = SimpleNamespace(
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        data={
+            **root_data,
+            CONF_LOAD_SOC_ENTITY: "sensor.second_soc",
+            CONF_LOAD_CONTROL_SWITCH: "switch.second_input",
+            CONF_LOAD_CHARGE_ENABLE: "switch.second_gate",
+            CONF_LOAD_OUTPUT_SWITCH: "switch.second_output",
+            CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.second_output_power",
+        },
+    )
+    assert validate(["root", "second"]) == "cascade_nonroot_input_forbidden"
+    entry.subentries["second"].data.pop(CONF_LOAD_CONTROL_SWITCH)
+
+    root_data[CONF_LOAD_RECOVERY_SOC] = 10
+    assert validate(["root"]) == "cascade_soc_order"
+    root_data[CONF_LOAD_RECOVERY_SOC] = 50
+    root_data[CONF_LOAD_HANDOVER_TIMEOUT_S] = 59
+    assert validate(["root"]) == "cascade_handover_timeout"
+    root_data[CONF_LOAD_HANDOVER_TIMEOUT_S] = 180
+
+    terminal_data[CONF_LOAD_CONTROL_SWITCH] = root_data[CONF_LOAD_CONTROL_SWITCH]
+    assert validate(["root"]) == "cascade_actor_in_use"
+    terminal_data.clear()
+    terminal_data.update({CONF_LOAD_ENERGY_LIMITED: False})
+    assert validate(["root"]) is None
+
+
+def test_cascade_validator_rejects_load_or_actor_owned_by_another_chain():
+    """Two cascades may neither share logical loads nor aliases of the same
+    physical actor, including stale references to a removed load."""
+    from custom_components.battery_manager.config_flow import CascadeSubentryFlow
+    from custom_components.battery_manager.const import (
+        CONF_CASCADE_MEMBER_IDS,
+        CONF_CASCADE_TERMINAL_LOAD_ID,
+        CONF_LOAD_CHARGE_ENABLE,
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_LOAD_ENERGY_LIMITED,
+        CONF_LOAD_HANDOVER_TIMEOUT_S,
+        CONF_LOAD_NAME,
+        CONF_LOAD_OUTPUT_POWER_ENTITY,
+        CONF_LOAD_OUTPUT_SWITCH,
+        CONF_LOAD_SOC_ENTITY,
+        SUBENTRY_TYPE_CASCADE,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    def storage(prefix, control):
+        return SimpleNamespace(
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            data={
+                CONF_LOAD_ENERGY_LIMITED: True,
+                CONF_LOAD_SOC_ENTITY: f"sensor.{prefix}_soc",
+                CONF_LOAD_CONTROL_SWITCH: control,
+                CONF_LOAD_CHARGE_ENABLE: f"switch.{prefix}_gate",
+                CONF_LOAD_OUTPUT_SWITCH: f"switch.{prefix}_output",
+                CONF_LOAD_OUTPUT_POWER_ENTITY: f"sensor.{prefix}_output_power",
+                CONF_LOAD_HANDOVER_TIMEOUT_S: 180,
+            },
+        )
+
+    leaf = SimpleNamespace(
+        subentry_type=SUBENTRY_TYPE_LOAD, data={CONF_LOAD_ENERGY_LIMITED: False}
+    )
+    entry = SimpleNamespace(
+        subentries={
+            "candidate": storage("candidate", "switch.shared_root"),
+            "candidate_leaf": leaf,
+            "owned": storage("owned", "switch.shared_root"),
+            "owned_leaf": leaf,
+            "other": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_CASCADE,
+                data={
+                    CONF_CASCADE_MEMBER_IDS: ["owned", "removed"],
+                    CONF_CASCADE_TERMINAL_LOAD_ID: "owned_leaf",
+                },
+            ),
+        }
+    )
+    flow = SimpleNamespace(_get_entry=lambda: entry)
+    payload = {
+        CONF_LOAD_NAME: "Candidate",
+        CONF_CASCADE_MEMBER_IDS: ["candidate"],
+        CONF_CASCADE_TERMINAL_LOAD_ID: "candidate_leaf",
+    }
+
+    assert CascadeSubentryFlow._validate(flow, payload, None) == "cascade_actor_in_use"
+    payload[CONF_CASCADE_MEMBER_IDS] = ["owned"]
+    assert CascadeSubentryFlow._validate(flow, payload, None) == "cascade_member_in_use"

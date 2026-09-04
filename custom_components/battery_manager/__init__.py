@@ -91,6 +91,8 @@ def _validate_file_path(file_path: str, base_dir: Path) -> Path:
     attacker-planted config file.
     """
     try:
+        if "\0" in file_path:
+            raise ValueError("Path contains null bytes")
         resolved_path = Path(file_path).resolve()
         resolved_base = base_dir.resolve()
         # Proper path containment: a string startswith() would also accept a
@@ -102,8 +104,6 @@ def _validate_file_path(file_path: str, base_dir: Path) -> Path:
             raise ValueError(
                 f"Path '{file_path}' is outside allowed directory '{base_dir}'"
             )
-        if "\0" in file_path:
-            raise ValueError("Path contains null bytes")
         if ".storage" in resolved_path.parts:
             raise ValueError("Path must not touch HA internal state (.storage)")
         if resolved_path.suffix.lower() not in _ALLOWED_EXPORT_SUFFIXES:

@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
@@ -378,6 +379,31 @@ def test_automation_switch_exposes_hands_off_reason() -> None:
         "restart_reconcile_pending": False,
         "restart_reconcile_actors": [],
     }
+
+
+async def test_automation_switch_only_publishes_accepted_ownership_changes() -> None:
+    """Cascade activation is fail-closed: a rejected takeover must not be
+    rendered as ON, while disable always publishes the resulting safe state."""
+    coordinator = SimpleNamespace(
+        async_set_cascade_enabled=AsyncMock(side_effect=[False, True, True])
+    )
+    entity = SimpleNamespace(
+        coordinator=coordinator,
+        _subentry_id="chain",
+        async_write_ha_state=Mock(),
+    )
+
+    await CascadeAutomationSwitch.async_turn_on(entity)
+    assert entity.async_write_ha_state.call_count == 0
+    await CascadeAutomationSwitch.async_turn_on(entity)
+    await CascadeAutomationSwitch.async_turn_off(entity)
+
+    assert coordinator.async_set_cascade_enabled.await_args_list == [
+        (("chain", True),),
+        (("chain", True),),
+        (("chain", False),),
+    ]
+    assert entity.async_write_ha_state.call_count == 2
 
 
 def test_root_recommendation_is_off_when_cascade_automation_is_off() -> None:
@@ -2930,3 +2956,216 @@ async def test_handover_power_edge_cases_and_fault_reset(
     assert state["fault"] is None
     assert not state["enabled"]
     assert deleted
+
+
+def test_defensive_topology_wake_and_ownership_contracts() -> None:
+    """Invalid stored references and ambiguous telemetry must fail closed; these
+    branches are operational contracts for upgrades and temporarily unavailable
+    HA entities, not unreachable coverage exceptions."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+
+    assert manager._topology("b1") is None  # load is not a cascade
+    chain = coordinator.entry.subentries["chain"]
+    original_chain_data = dict(chain.data)
+    chain.data = {
+        CONF_CASCADE_MEMBER_IDS: ["missing"],
+        CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+    }
+    assert manager._topology("chain") is None
+    # Even an invalid topology reserves every still-resolvable physical actor.
+    chain.data = {
+        CONF_CASCADE_MEMBER_IDS: ["b1", "missing"],
+        CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+    }
+    assert manager.actor_owner("switch.input") == "chain"
+    assert manager.actor_owner("switch.leaf") == "chain"
+    chain.data = {CONF_CASCADE_MEMBER_IDS: [], CONF_CASCADE_TERMINAL_LOAD_ID: "leaf"}
+    assert manager._topology("chain") is None
+    chain.data = original_chain_data
+    topology = manager._topology("chain")
+    assert topology is not None
+
+    assert manager._recovery_deadline({"recovery_deadline": "not-a-date"}, None) is None
+    state = manager._state("chain")
+    state["wake_member_index"] = -1
+    assert manager._member_woke("chain", topology) is False
+    state["wake_member_index"] = 0
+    coordinator.hass.states.values["sensor.soc"].state = "unavailable"
+    coordinator.hass.states.values["sensor.input_power"].state = "unavailable"
+    coordinator.hass.states.values["sensor.output_power"].state = "unavailable"
+    assert manager._member_woke("chain", topology) is False
+
+    _publish_soc(coordinator, "sensor.soc", "90", now)
+    state.pop("wake_telemetry_reported_at", None)
+    state.pop("wake_soc_reported_at", None)
+    assert manager._member_woke("chain", topology) is True
+    assert state["wake_evidence_entity"] == "sensor.soc"
+    state["wake_telemetry_reported_at"] = object()
+    assert manager._member_woke("chain", topology) is False
+
+    cancelled = Mock()
+    manager._wake_actor_retry_cancel["chain"] = cancelled
+    manager._clear_wake_actor("chain")
+    cancelled.assert_called_once_with()
+    # Duplicate and malformed retry requests must not arm extra timers.
+    manager._wake_actor_retry_cancel["chain"] = Mock()
+    manager._schedule_wake_actor_retry("chain")
+    assert len(manager._wake_actor_retry_cancel) == 1
+    manager._wake_actor_retry_cancel.clear()
+    state.pop("wake_actor_deadline", None)
+    manager._schedule_wake_actor_retry("chain")
+    assert manager._wake_actor_retry_cancel == {}
+
+    all_off = {
+        "switch.input": False,
+        "switch.gate": False,
+        "switch.output": False,
+        "switch.leaf": False,
+    }
+    assert manager._all_actors_off(topology)
+    terminal_on = {**all_off, "switch.input": True, "switch.leaf": True}
+    assert manager._is_ordered_wake_prefix(topology, terminal_on) is False
+    gate_on = {**all_off, "switch.input": True, "switch.gate": True}
+    assert manager._is_ordered_wake_prefix(topology, gate_on) is False
+
+    # A two-member output gap (off followed by on) is never a safe wake prefix.
+    second = SimpleNamespace(
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        data={
+            **coordinator.entry.subentries["b1"].data,
+            CONF_LOAD_CONTROL_SWITCH: None,
+            CONF_LOAD_CHARGE_ENABLE: "switch.gate2",
+            CONF_LOAD_OUTPUT_SWITCH: "switch.output2",
+        },
+        title="B2",
+    )
+    coordinator.entry.subentries["b2"] = second
+    coordinator.hass.states.values["switch.gate2"] = SimpleNamespace(
+        state="off", attributes={}
+    )
+    coordinator.hass.states.values["switch.output2"] = SimpleNamespace(
+        state="on", attributes={}
+    )
+    chain.data = {
+        CONF_CASCADE_MEMBER_IDS: ["b1", "b2"],
+        CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+    }
+    topology2 = manager._topology("chain")
+    assert topology2 is not None
+    gap = {
+        **all_off,
+        "switch.input": True,
+        "switch.gate2": False,
+        "switch.output2": True,
+    }
+    assert manager._is_ordered_wake_prefix(topology2, gap) is False
+    assert (
+        manager._can_finish_aux(topology2, {**gap, "switch.gate": True}, "b1") is False
+    )
+
+    state["claims"] = {"switch.input": True}
+    coordinator.hass.states.values["switch.input"].state = "unknown"
+    assert manager._foreign_override("chain", topology2) is None
+    coordinator.hass.states.values["switch.input"] = SimpleNamespace(
+        state="off", attributes={"assumed_state": True}
+    )
+    assert manager._foreign_override("chain", topology2) is None
+    state["enabled"] = False
+    manager._adopt_shared_safe_off("chain", topology2, SimpleNamespace(flows=()))
+    assert state["claims"] == {"switch.input": True}
+
+
+async def test_actor_and_safe_off_failure_contracts(monkeypatch) -> None:
+    """Every failed or unavailable actor boundary aborts the ordered transition;
+    global safety touches active cascades but deliberately leaves manual ones."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    topology = manager._topology("chain")
+    assert topology is not None
+
+    assert await manager._actor("chain", None, True) is True
+
+    topology_method = manager._topology
+    fault = AsyncMock()
+    monkeypatch.setattr(manager, "_fault", fault)
+    monkeypatch.setattr(manager, "_topology", lambda _cid: None)
+    assert await manager.async_safe_off("missing", "test") is False
+    fault.assert_awaited_with("missing", "invalid_topology")
+
+    monkeypatch.setattr(manager, "_topology", topology_method)
+    actor = AsyncMock(return_value=False)
+    monkeypatch.setattr(manager, "_actor", actor)
+    fault.reset_mock()
+    assert await manager.async_safe_off("chain", "actor failure") is False
+    fault.assert_awaited_with("chain", "safe_off_failed:actor failure")
+
+    state = manager._state("chain")
+    state.update(fault="latched", fault_safe_off_complete=True)
+    assert await manager.async_safety_off("chain", "global") is True
+    state.update(fault=None, fault_safe_off_complete=False, enabled=False)
+    assert await manager.async_safety_off("chain", "global") is True
+
+    state["enabled"] = True
+    safety = AsyncMock(return_value=True)
+    monkeypatch.setattr(manager, "async_safety_off", safety)
+    await manager.async_safety_off_active("floor guard", now)
+    safety.assert_awaited_once_with("chain", "floor guard", now)
+
+
+async def test_ordered_transition_substeps_abort_on_first_failed_actor(
+    monkeypatch,
+) -> None:
+    """Wake, Root, finish and handover routines must never continue past an
+    unconfirmed actor, preserving make-before-break under device failures."""
+    now = datetime(2026, 9, 4, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    topology = manager._topology("chain")
+    assert topology is not None
+    root_plan = _root_plan(now)
+
+    topology_method = manager._topology
+    monkeypatch.setattr(manager, "_topology", lambda _cid: None)
+    assert await manager._finish_wake("chain", "b1") is False
+    assert await manager._handover("chain", "b1") is False
+    fault = AsyncMock()
+    monkeypatch.setattr(manager, "_fault", fault)
+    assert await manager._wake("chain", "b1", now) is False
+    fault.assert_awaited_with("chain", "invalid_topology")
+    assert await manager._apply_root("chain", SimpleNamespace(flows=()), now) is False
+
+    monkeypatch.setattr(manager, "_topology", topology_method)
+    monkeypatch.setattr(manager, "_actor", AsyncMock(return_value=False))
+    assert await manager._finish_wake("chain", "b1") is False
+    assert await manager._wake("chain", "b1", now) is False
+    assert (
+        await manager._resume_aux_after_restart("chain", topology, "b1", now) is False
+    )
+    assert await manager._finish_root("chain", topology, root_plan) is False
+    assert await manager._apply_root("chain", root_plan, now) is False
+    assert await manager._handover("chain", "b1") is False
+
+    # Later failures are equally terminal: terminal enable and Root power-on
+    # may not be skipped after earlier actors succeeded.
+    monkeypatch.setattr(manager, "_actor", AsyncMock(side_effect=[True, False]))
+    assert (
+        await manager._resume_aux_after_restart("chain", topology, "b1", now) is False
+    )
+    monkeypatch.setattr(manager, "_actor", AsyncMock(side_effect=[True, False]))
+    assert await manager._finish_root("chain", topology, root_plan) is False
+    monkeypatch.setattr(manager, "_actor", AsyncMock(side_effect=[True, False]))
+    assert await manager._wake("chain", "b1", now) is False
+
+    state = manager._state("chain")
+    state.update(
+        wake_member_index=0,
+        wake_deadline="invalid",
+        wake_mode="unsupported",
+    )
+    monkeypatch.setattr(manager, "_member_woke", Mock(return_value=True))
+    assert (
+        await manager._continue_member_wake("chain", topology, root_plan, now) is False
+    )
