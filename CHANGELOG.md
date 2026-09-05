@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-05
+
+### Changed
+- Die Kaskadenkachel zeigt den geplanten Ablauf als zusammengefasste Phasen mit
+  Quelle, Empfänger und Energie. Aufnahme, gespeicherte Energie und Akkuentnahme
+  bleiben getrennt; AC-Durchleitung wird nicht als Akkuladung ausgegeben.
+- Kleine SOC- und Endlastkurven erhalten einen gemeinsamen Zeitcursor per Maus,
+  Touch oder Tastatur. Energiekennzahlen und Geräte öffnen eine gemeinsame
+  Detailansicht für SOC, mittlere Leistung je Planslot und kumulierte Energie.
+  Heute/Morgen berücksichtigen die HA-Zeitzone; fehlende Prognosen bleiben leer.
+- Namen, Flussangaben und Cursorwerte umbrechen vollständig außerhalb des nur
+  bei Bedarf scrollenden Diagramms. Die Kartenhöhe wächst mit dem Inhalt.
+
 ## [0.35.2] - 2026-09-04
 
 ### Fixed

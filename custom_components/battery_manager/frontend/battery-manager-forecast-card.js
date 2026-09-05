@@ -2017,7 +2017,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   getGridOptions() {
-    return { rows: 6, columns: 12, min_rows: 4, min_columns: 6 };
+    return { rows: "auto", columns: 12, min_rows: 4, min_columns: 6 };
   }
 
   static getStubConfig(hass, entities, entitiesFallback) {
@@ -2059,7 +2059,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
   _cascades() {
     const state = this._hass?.states?.[this._entityId()];
     const cascades = state?.attributes?.cascades;
-    return Array.isArray(cascades) ? cascades.slice(0, 20) : [];
+    return Array.isArray(cascades) ? cascades.filter((c) => c && typeof c === "object").slice(0, 20) : [];
   }
 
   _memberDetails(cascade) {
@@ -2094,428 +2094,407 @@ class BatteryManagerCascadeCard extends HTMLElement {
     }));
   }
 
-  _detail(activity, fallbackName) {
-    const t = (key) => localize(this._hass, key);
-    const name = activity?.name || fallbackName || "?";
-    const wh = num(activity?.energy_wh);
-    const energy = wh == null ? "" : ` ${Math.round(wh)} Wh`;
-    const startSoc = num(activity?.soc_start_percent);
-    const endSoc = num(activity?.soc_end_percent);
-    const soc =
-      startSoc == null || endSoc == null
-        ? ""
-        : ` · ${t("soc")} ${startSoc.toFixed(1)}→${endSoc.toFixed(1)} %`;
-    if (activity?.kind === "charge") {
-      return `${name}: ${t("charging")}${energy}${soc}`;
-    }
-    if (activity?.kind === "discharge") {
-      return `${name}: ${t("discharging")}${energy}${soc}`;
-    }
-    if (activity?.kind === "output") {
-      const sources = (Array.isArray(activity.sources)
-        ? activity.sources
-        : []
-      )
-        .map((source) => (source === "aux" ? t("aux") : t("root")))
-        .join("/");
-      return `${name}: ${t("output")} ${t("on")}${
-        sources ? ` · ${t("source")} ${sources}` : ""
-      }`;
-    }
-    const source =
-      activity?.source === "aux"
-        ? `${t("aux")}${activity.source_name ? ` ${activity.source_name}` : ""}`
-        : t("root");
-    return `${name}:${energy} · ${t("source")} ${source}`;
+  _text(de, en) {
+    return (this._hass?.language || "en").startsWith("de") ? de : en;
   }
 
-  _chart(cascade, index) {
-    const t = (key) => localize(this._hass, key);
-    const rawSchedule = (Array.isArray(cascade?.schedule)
-      ? cascade.schedule
-      : []
-    )
-      .filter((block) => {
-        const start = new Date(block?.start).getTime();
-        const end = new Date(block?.end).getTime();
-        return Number.isFinite(start) && Number.isFinite(end) && end > start;
-      })
-      .slice(0, MAX_BLOCKS);
-    const members = this._memberDetails(cascade);
-    const starts = [
-      ...rawSchedule.map((block) => new Date(block.start).getTime()),
-      ...members.flatMap((member) =>
-        (Array.isArray(member.soc_forecast) ? member.soc_forecast : []).map(
-          (point) => new Date(point?.t).getTime()
-        )
-      ),
-    ].filter(Number.isFinite);
-    const hourMs = 3600000;
-    const t0 = starts.length
-      ? Math.min(...starts)
-      : Math.floor(Date.now() / hourMs) * hourMs;
-    const t1 = t0 + Math.max(6, Math.min(96, this._config.hours)) * hourMs;
-    const schedule = rawSchedule.filter(
-      (block) =>
-        new Date(block.end).getTime() > t0 &&
-        new Date(block.start).getTime() < t1
-    );
-    const socSeries = members.map((member, memberIndex) => {
-      const current = num(member.soc_percent);
-      const target = num(member.target_soc_percent);
-      let points = (Array.isArray(member.soc_forecast)
-        ? member.soc_forecast
-        : []
-      )
-        .map((point) => ({
-          time: new Date(point?.t).getTime(),
-          soc: num(point?.soc),
-        }))
-        .filter(
-          (point) =>
-            Number.isFinite(point.time) &&
-            point.soc != null &&
-            point.time >= t0 &&
-            point.time <= t1
-        )
-        .slice(0, MAX_POINTS);
-      if (!points.length && current != null) {
-        points = [
-          { time: t0, soc: current },
-          { time: t1, soc: current },
-        ];
-      }
-      return {
-        name: member.name,
-        current,
-        target,
-        points,
-        color: CASCADE_SOC_COLORS[memberIndex % CASCADE_SOC_COLORS.length],
-      };
-    });
-    const activityBlocks = (kind, loadId) =>
-      schedule.flatMap((block) =>
-        (Array.isArray(block.activities) ? block.activities : [])
-          .filter(
-            (activity) =>
-              activity &&
-              typeof activity === "object" &&
-              activity.kind === kind &&
-              (loadId == null || activity.load_id === loadId)
-          )
-          .map((activity) => ({
-            start: block.start,
-            end: block.end,
-            activity,
-            wh: num(activity.energy_wh),
-            detail: this._detail(activity),
-          }))
-      );
-    const rows = [
-      {
-        kind: "root",
-        label: t("cascade_root_input"),
-        color: CASCADE_ROOT_COLOR,
-        blocks: schedule
-          .filter((block) => (num(block.root_input_wh) ?? 0) > 0)
-          .map((block) => {
-            const wh = num(block.root_input_wh) ?? 0;
-            return {
-              start: block.start,
-              end: block.end,
-              wh,
-              detail: `${t("cascade_root_input")} · ${Math.round(wh)} Wh`,
-            };
-          }),
-      },
-    ];
-    for (const member of members) {
-      rows.push(
-        {
-          kind: "charge",
-          label: `${member.name} · ${t("charging")}`,
-          color: CASCADE_CHARGE_COLOR,
-          blocks: activityBlocks("charge", member.load_id),
-        },
-        {
-          kind: "discharge",
-          label: `${member.name} · ${t("discharging")}`,
-          color: CASCADE_DISCHARGE_COLOR,
-          blocks: activityBlocks("discharge", member.load_id),
-        },
-        {
-          kind: "output",
-          label: `${member.name} · ${t("output")}`,
-          color: CASCADE_OUTPUT_COLOR,
-          blocks: activityBlocks("output", member.load_id),
-        }
-      );
-    }
-    const terminalName = cascade?.terminal_name || cascade?.terminal_load_id || "?";
-    rows.push({
-      kind: "terminal",
-      label: `${terminalName} · ${t("terminal_load")}`,
-      color: CASCADE_TERMINAL_COLOR,
-      blocks: activityBlocks("terminal", cascade?.terminal_load_id),
-    });
+  _number(value, digits = 2) {
+    return value == null ? "—" : new Intl.NumberFormat(this._hass?.language || "en", {
+      minimumFractionDigits: digits, maximumFractionDigits: digits,
+    }).format(value);
+  }
 
-    const width = 900;
-    const labelWidth = 205;
-    const right = 12;
-    const plotWidth = width - labelWidth - right;
-    const rowHeight = 25;
-    const socRowHeight = 66;
-    const top = 22;
-    const bottom = 24;
-    const activityTop = top + socSeries.length * socRowHeight;
-    const height = activityTop + rows.length * rowHeight + bottom;
-    const x = (time) =>
-      labelWidth + ((time - t0) / (t1 - t0)) * plotWidth;
-    const svg = [];
-    const fmtTick = new Intl.DateTimeFormat(this._hass?.language || "en", {
-      weekday: "short",
-      hour: "2-digit",
-    });
-    for (let tick = t0; tick <= t1; tick += 6 * hourMs) {
-      const px = x(tick);
-      svg.push(
-        `<line x1="${px}" y1="${top - 8}" x2="${px}" y2="${height - bottom}" class="grid"/>`,
-        `<text x="${px + 3}" y="12" class="axis">${esc(fmtTick.format(tick))}</text>`
-      );
+  _time(time, date = false) {
+    return new Intl.DateTimeFormat(this._hass?.language || "en", {
+      timeZone: this._hass?.config?.time_zone,
+      ...(date ? { weekday: "short", day: "2-digit", month: "2-digit" } : {}),
+      hour: "2-digit", minute: "2-digit",
+    }).format(time);
+  }
+
+  _day(time) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: this._hass?.config?.time_zone,
+      year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(time);
+    return ["year", "month", "day"].map((key) => parts.find((p) => p.type === key).value).join("-");
+  }
+
+  _timestamp(value) {
+    // Backend slots are naive HA-local timestamps; the viewing browser can
+    // live in a different timezone. Offset-bearing ISO timestamps stay exact.
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(value)) {
+      return this._localTimestamp(Date.parse(`${value}Z`));
     }
-    socSeries.forEach((series, seriesIndex) => {
-      const y = top + seriesIndex * socRowHeight;
-      const plotBottom = y + 55;
-      const socY = (value) =>
-        plotBottom - (Math.max(0, Math.min(100, value)) / 100) * 50;
-      const value = series.current == null ? "?" : `${series.current.toFixed(1)} %`;
-      const target =
-        series.target == null
-          ? ""
-          : ` · ${t("cascade_discharge_target")} ${series.target.toFixed(0)} %`;
-      svg.push(
-        `<text x="4" y="${y + 20}" class="label">${esc(series.name)}</text>`,
-        `<text x="4" y="${y + 39}" class="soc-value">${esc(`${value}${target}`)}</text>`,
-        `<line x1="${labelWidth}" y1="${socY(50)}" x2="${width - right}" y2="${socY(50)}" class="soc-grid"/>`,
-        `<line x1="${labelWidth}" y1="${plotBottom}" x2="${width - right}" y2="${plotBottom}" class="rowline"/>`
-      );
-      if (series.target != null) {
-        svg.push(
-          `<line x1="${labelWidth}" y1="${socY(series.target)}" x2="${width - right}" y2="${socY(series.target)}" class="soc-target"><title>${esc(`${t("cascade_discharge_target")} ${series.target.toFixed(0)} %`)}</title></line>`
-        );
-      }
-      if (series.points.length) {
-        const points = series.points
-          .map((point) => `${x(point.time)},${socY(point.soc)}`)
-          .join(" ");
-        svg.push(
-          `<polyline points="${points}" fill="none" stroke="${series.color}" class="soc-line"><title>${esc(`${series.name} ${t("soc")}`)}</title></polyline>`
-        );
-      }
-    });
-    rows.forEach((row, rowIndex) => {
-      const y = activityTop + rowIndex * rowHeight;
-      svg.push(
-        `<text x="4" y="${y + 16}" class="label">${esc(row.label)}</text>`,
-        `<line x1="${labelWidth}" y1="${y + rowHeight}" x2="${width - right}" y2="${y + rowHeight}" class="rowline"/>`
-      );
-      for (const block of row.blocks) {
-        const start = Math.max(t0, new Date(block.start).getTime());
-        const end = Math.min(t1, new Date(block.end).getTime());
-        const bx = x(start);
-        const bw = Math.max(2, x(end) - bx);
-        const label = block.wh == null ? t("on") : `${Math.round(block.wh)} Wh`;
-        svg.push(
-          `<rect x="${bx}" y="${y + 5}" width="${bw}" height="15" rx="3" fill="${row.color}"><title>${esc(block.detail)}</title></rect>`,
-          bw > 42
-            ? `<text x="${bx + 4}" y="${y + 16}" class="block-label">${esc(label)}</text>`
-            : ""
-        );
-      }
-    });
-    svg.push(`<g id="marker-${index}"></g>`);
-    const slots = [
-      ...new Set([
-        ...schedule.map((block) => new Date(block.start).getTime()),
-        ...socSeries.flatMap((series) =>
-          series.points.map((point) => point.time)
-        ),
-      ]),
-    ]
-      .filter((time) => time >= t0 && time < t1)
-      .sort((a, b) => a - b);
-    this._charts[index] = {
-      t0,
-      t1,
-      labelWidth,
-      plotWidth,
-      top,
-      height,
-      bottom,
-      rows,
-      socSeries,
-      slots,
-      kbIndex: null,
+    return value == null ? NaN : new Date(value).getTime();
+  }
+
+  _dayStart(day) {
+    return this._localTimestamp(Date.parse(`${day}T00:00:00Z`));
+  }
+
+  _localTimestamp(target) {
+    // Calendar boundaries in HA's timezone, including 23/25-hour DST days.
+    if (!Number.isFinite(target)) return NaN;
+    let value = target;
+    for (let i = 0; i < 3; i++) {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: this._hass?.config?.time_zone, year: "numeric", month: "2-digit",
+        day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hourCycle: "h23",
+      }).formatToParts(value);
+      const p = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+      value += target - Date.parse(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}.${p.fractionalSecond}Z`);
+    }
+    return value;
+  }
+
+  _window(period = "all") {
+    if (period === "all") return [-Infinity, Infinity];
+    const today = this._day(Date.now());
+    const date = new Date(`${today}T12:00:00Z`);
+    if (period === "tomorrow") date.setUTCDate(date.getUTCDate() + 1);
+    const start = this._dayStart(date.toISOString().slice(0, 10));
+    date.setUTCDate(date.getUTCDate() + 1);
+    return [start, this._dayStart(date.toISOString().slice(0, 10))];
+  }
+
+  _horizon(cascade, period) {
+    const starts = [...(Array.isArray(cascade.schedule) ? cascade.schedule : []).map((b) => this._timestamp(b?.start)),
+      ...this._memberDetails(cascade).flatMap((m) => this._points(m).map((p) => p.time))].filter(Number.isFinite);
+    const start = starts.length ? Math.min(...starts) : Date.now();
+    const [from, until] = this._window(period);
+    return [Math.max(from, start), Math.min(until, start + Math.max(6, Math.min(96, this._config.hours)) * 3600000)];
+  }
+
+  _blocks(cascade, period = "all") {
+    const [from, until] = this._horizon(cascade, period);
+    return (Array.isArray(cascade?.schedule) ? cascade.schedule : [])
+      .flatMap((block) => {
+        const start = this._timestamp(block?.start);
+        const end = this._timestamp(block?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+        const a = Math.max(start, from), b = Math.min(end, until);
+        if (b <= a) return [];
+        return [{ ...block, start: a, end: b, fraction: (b - a) / (end - start),
+          activities: (Array.isArray(block.activities) ? block.activities : []).filter((v) => v && typeof v === "object") }];
+      }).sort((a, b) => a.start - b.start).slice(0, MAX_BLOCKS);
+  }
+
+  _energy(block, kind, id, field = "energy_wh") {
+    if (kind === "root") return num(block.root_input_wh) == null ? null : num(block.root_input_wh) * block.fraction;
+    const activities = block.activities.filter((a) => (kind === "aux" ? a.kind === "terminal" && a.source === "aux" : a.kind === kind) && (id == null || a.load_id === id));
+    if (activities.some((a) => num(a[field]) == null)) return null;
+    return activities.reduce((sum, a) => sum + num(a[field]), 0) * block.fraction;
+  }
+
+  _kwh(wh) {
+    return wh == null ? null : wh / 1000;
+  }
+
+  _total(blocks, kind, id, field) {
+    const values = blocks.map((b) => this._energy(b, kind, id, field));
+    return values.some((v) => v == null) ? null : values.reduce((sum, v) => sum + v, 0);
+  }
+
+  _flowList(blocks, cascade) {
+    const flows = new Map();
+    const add = (key, label, wh, color) => {
+      const previous = flows.get(key);
+      flows.set(key, { label, color, wh: wh == null || previous?.wh === null ? null : (previous?.wh || 0) + wh });
     };
-    const hasActivity =
-      socSeries.some((series) => series.points.length) ||
-      rows.some((row) => row.blocks.length);
-    return `<svg id="chart-${index}" viewBox="0 0 ${width} ${height}" role="img" tabindex="0" aria-label="${esc(
-      `${t("cascade_chart_label")}: ${cascade?.name || "Cascade"}`
-    )}">${svg.join("")}</svg><div id="readout-${index}" class="readout" aria-live="polite">${
-      hasActivity ? "&nbsp;" : esc(t("cascade_no_data"))
-    }</div>`;
+    for (const block of blocks) {
+      for (const a of block.activities) {
+        const name = a.name || a.load_id || "?";
+        const wh = num(a.energy_wh) == null ? null : num(a.energy_wh) * block.fraction;
+        if (a.kind === "charge") {
+          add(`charge:${a.load_id}`, `Root → ${name}`, wh, CASCADE_CHARGE_COLOR);
+          add(`stored:${a.load_id}`, `${name} · ${this._text("im Akku gespeichert", "stored in battery")}`,
+            num(a.stored_energy_wh) == null ? null : num(a.stored_energy_wh) * block.fraction, CASCADE_CHARGE_COLOR);
+        } else if (a.kind === "discharge") {
+          add(`discharge:${a.load_id}`, `${name} · ${this._text("Akkuentnahme inkl. Verlusten", "battery withdrawal incl. losses")}`, wh, CASCADE_DISCHARGE_COLOR);
+        } else if (a.kind === "terminal") {
+          const source = a.source === "root" ? "Root" : a.source_name ||
+            this._memberDetails(cascade).find((m) => m.load_id === a.source_load_id)?.name ||
+            this._text("Speicher (Quelle unbekannt)", "Storage (unknown source)");
+          add(`terminal:${a.source}:${a.source_load_id}`, `${source} → ${name}`, wh, CASCADE_TERMINAL_COLOR);
+        }
+      }
+    }
+    const root = this._total(blocks, "root");
+    const charge = this._total(blocks, "charge");
+    const rootDeliveries = blocks.flatMap((b) => b.activities
+      .filter((a) => a.kind === "terminal" && a.source === "root")
+      .map((a) => num(a.energy_wh) == null ? null : num(a.energy_wh) * b.fraction));
+    const terminalRoot = rootDeliveries.some((wh) => wh == null) ? null : rootDeliveries.reduce((sum, wh) => sum + wh, 0);
+    if (root != null && charge != null && terminalRoot != null && root - charge - terminalRoot > 0.5) {
+      add("overhead", this._text("Root → AC-Eigenbedarf / Rundungsrest", "Root → AC overhead / rounding residual"), root - charge - terminalRoot, CASCADE_OUTPUT_COLOR);
+    }
+    return [...flows.values()].map((f) => `<li><span class="flow-label"><i style="background:${f.color}"></i>${esc(f.label)}</span><strong>${this._number(f.wh == null ? null : f.wh / 1000)} kWh</strong></li>`).join("");
   }
 
-  _showSlot(chartIndex, time) {
-    const chart = this._charts[chartIndex];
-    const marker = this.shadowRoot?.getElementById(`marker-${chartIndex}`);
-    const readout = this.shadowRoot?.getElementById(`readout-${chartIndex}`);
-    if (!chart || !marker || !readout) return;
-    const clamped = Math.max(chart.t0, Math.min(chart.t1, time));
-    const px =
-      chart.labelWidth +
-      ((clamped - chart.t0) / (chart.t1 - chart.t0)) * chart.plotWidth;
-    marker.innerHTML = `<line x1="${px}" y1="${chart.top - 8}" x2="${px}" y2="${chart.height - chart.bottom}" class="marker"/>`;
-    const activeRows = chart.rows
-      .filter((row) => row.kind !== "output")
-      .flatMap((row) =>
-        row.blocks
-          .filter((block) => {
-            const start = new Date(block.start).getTime();
-            const end = new Date(block.end).getTime();
-            return clamped >= start && clamped < end;
-          })
-          .map((block) => ({ kind: row.kind, detail: block.detail }))
-      );
-    const hasSpecificActivity = activeRows.some((item) => item.kind !== "root");
-    const activityDetails = activeRows
-      .filter((item) => !hasSpecificActivity || item.kind !== "root")
-      .map((item) => item.detail);
-    const socDetails = chart.socSeries.flatMap((series) => {
-      const point = [...series.points]
-        .reverse()
-        .find((candidate) => candidate.time <= clamped);
-      return point ? [`${series.name}: ${localize(this._hass, "soc")} ${point.soc.toFixed(1)} %`] : [];
+  _points(member) {
+    // Missing forecasts must not become a fabricated constant SOC forecast.
+    return (Array.isArray(member?.soc_forecast) ? member.soc_forecast : [])
+      .map((p) => ({ time: this._timestamp(p?.t), value: num(p?.soc) }))
+      .filter((p) => Number.isFinite(p.time) && p.value != null && p.value >= 0 && p.value <= 100)
+      .sort((a, b) => a.time - b.time).slice(0, MAX_POINTS);
+  }
+
+  _socAt(points, time) {
+    if (!points.length || time < points[0].time || time > points.at(-1).time) return null;
+    const next = points.findIndex((p) => p.time >= time);
+    if (next === 0 || points[next].time === time) return points[next].value;
+    const a = points[next - 1], b = points[next];
+    return a.value + (b.value - a.value) * (time - a.time) / (b.time - a.time);
+  }
+
+  _series(cascade, kind, id, period, mode) {
+    const [from, until] = this._horizon(cascade, period);
+    if (until < from) return { points: [], unit: kind === "soc" ? "%" : mode === "energy" ? "kWh" : "W", label: "" };
+    if (kind === "soc") {
+      const member = this._memberDetails(cascade).find((m) => m.load_id === id);
+      const raw = this._points(member);
+      const points = raw.filter((p) => p.time >= from && p.time <= until);
+      for (const time of [from, until]) {
+        const value = this._socAt(raw, time);
+        if (Number.isFinite(time) && value != null && !points.some((p) => p.time === time)) points.push({ time, value });
+      }
+      return { points: points.sort((a, b) => a.time - b.time), unit: "%", label: "SOC", target: num(member?.target_soc_percent) };
+    }
+    const blocks = this._blocks(cascade, period);
+    const points = [];
+    let total = 0, previousEnd = null;
+    for (const block of blocks) {
+      const wh = this._energy(block, kind, id);
+      if (wh == null) return { points: [], unit: mode === "energy" ? "kWh" : "W", label: this._text("Keine vollständigen Energiedaten", "Incomplete energy data") };
+      if (previousEnd != null && block.start > previousEnd) {
+        points.push({ time: previousEnd, value: mode === "energy" ? total / 1000 : 0 },
+          { time: block.start, value: mode === "energy" ? total / 1000 : 0 });
+      }
+      const watts = wh / ((block.end - block.start) / 3600000);
+      points.push({ time: block.start, value: mode === "energy" ? total / 1000 : watts });
+      total += wh;
+      points.push({ time: block.end, value: mode === "energy" ? total / 1000 : watts });
+      previousEnd = block.end;
+    }
+    return { points, blocks, kind, id, mode, unit: mode === "energy" ? "kWh" : "W",
+      label: mode === "energy" ? this._text("Energie kumuliert", "Cumulative energy") : this._text("Ø Leistung je Zeitfenster", "Average power per time slot") };
+  }
+
+  _valueAt(series, time) {
+    if (series.unit === "%") return this._socAt(series.points, time);
+    if (!series.points.length || time < series.points[0].time || time > series.points.at(-1).time) return null;
+    if (series.mode === "energy") {
+      return series.blocks.reduce((sum, b) => sum + this._energy(b, series.kind, series.id) *
+        Math.max(0, Math.min(1, (time - b.start) / (b.end - b.start))), 0) / 1000;
+    }
+    const block = series.blocks.find((b) => time >= b.start && time < b.end);
+    return block ? this._energy(block, series.kind, series.id) / ((block.end - block.start) / 3600000) : 0;
+  }
+
+  _plot(series, owner, color, compact = false) {
+    const index = this._charts.length;
+    const points = series.points;
+    if (!points.length) return `<p class="muted">${esc(this._text("Keine Prognose für diesen Zeitraum", "No forecast for this period"))}</p>`;
+    const t0 = points[0].time, t1 = Math.max(t0 + 1, points.at(-1).time);
+    const width = 600, height = compact ? 110 : 210;
+    const left = 48, right = 16, top = 18, bottom = height - 28;
+    const peak = Math.max(0, ...points.map((p) => p.value));
+    const step = series.unit === "W" ? 50 : 0.1;
+    const maximum = series.unit === "%" ? 100 : Math.max(step, Math.ceil(peak / step) * step);
+    const x = (time) => left + (time - t0) / (t1 - t0) * (width - left - right);
+    const y = (value) => bottom - value / maximum * (bottom - top);
+    this._charts.push({ ...series, owner, t0, t1, width, left, right, top, bottom, kbIndex: null });
+    const ticks = [t0, (t0 + t1) / 2, t1];
+    const target = series.target == null ? "" : `<line x1="${left}" x2="${width - right}" y1="${y(series.target)}" y2="${y(series.target)}" class="soc-target"/>`;
+    return `<div class="plot"><svg id="chart-${index}" viewBox="0 0 ${width} ${height}" tabindex="0" role="img" aria-label="${esc(`${owner}: ${series.label} · ${this._text("Planung; Pfeiltasten zur Zeitauswahl", "Forecast; arrow keys to select time")}`)}">
+      <text x="2" y="${top + 4}" class="axis">${this._number(maximum, series.unit === "kWh" ? 1 : 0)}</text><text x="6" y="${bottom}" class="axis">0</text>
+      <line x1="${left}" x2="${width - right}" y1="${bottom}" y2="${bottom}" class="grid"/>${target}
+      <polyline points="${points.map((p) => `${x(p.time)},${y(p.value)}`).join(" ")}" fill="none" stroke="${color}" class="forecast-line"/>
+      ${ticks.map((time, i) => `<text x="${x(time)}" y="${height - 7}" text-anchor="${i === 0 ? "start" : i === 2 ? "end" : "middle"}" class="axis">${esc(this._time(time))}</text>`).join("")}
+      <g id="marker-${index}"></g></svg></div><div id="readout-${index}" class="readout" aria-live="polite">${esc(`${series.label} · ${this._time(t0, true)} – ${this._time(t1, true)} · ${this._text("Planung", "Forecast")}`)}</div>`;
+  }
+
+  _showTime(time) {
+    this._cursorTime = time;
+    this._charts.forEach((chart, index) => {
+      const marker = this.shadowRoot.getElementById(`marker-${index}`);
+      const readout = this.shadowRoot.getElementById(`readout-${index}`);
+      if (!marker || !readout) return;
+      const value = this._valueAt(chart, time);
+      const px = chart.left + (time - chart.t0) / (chart.t1 - chart.t0) * (chart.width - chart.left - chart.right);
+      marker.innerHTML = time < chart.t0 || time > chart.t1 ? "" : `<line x1="${px}" x2="${px}" y1="${chart.top}" y2="${chart.bottom}" class="marker"/>`;
+      readout.textContent = `${this._time(time, true)} · ${chart.owner} · ${chart.label}: ${this._number(value, chart.unit === "W" ? 0 : chart.unit === "kWh" ? 3 : 1)} ${chart.unit} · ${this._text("Planung", "Forecast")}`;
     });
-    const details = [...new Set([...socDetails, ...activityDetails])];
-    const fmt = new Intl.DateTimeFormat(this._hass?.language || "en", {
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    readout.textContent = `${fmt.format(clamped)}${
-      details.length ? ` · ${details.join(" · ")}` : ""
-    }`;
+  }
+
+  _ui(cascade, index) {
+    const key = cascade.cascade_id || `${index}:${cascade.name}`;
+    this._views ||= new Map();
+    if (!this._views.has(key)) this._views.set(key, { period: "today", detail: null, mode: "power" });
+    return this._views.get(key);
+  }
+
+  _button(label, index, action, extra = "", selected = false) {
+    return `<button type="button" data-cascade="${index}" data-action="${action}" ${extra} aria-pressed="${selected}">${esc(label)}</button>`;
+  }
+
+  _groups(blocks) {
+    // Adjacent slots with the same source, activities and average powers are
+    // one readable phase; retain original slots for exact energy sums.
+    const groups = [];
+    for (const block of blocks) {
+      const hours = (block.end - block.start) / 3600000;
+      const signature = JSON.stringify([this._energy(block, "root") / hours, block.activities.map((a) => [a.kind, a.load_id,
+        a.source, a.source_load_id, a.sources,
+        num(a.energy_wh) == null ? null : Math.round(num(a.energy_wh) * block.fraction / hours * 10),
+        num(a.stored_energy_wh) == null ? null : Math.round(num(a.stored_energy_wh) * block.fraction / hours * 10)])]);
+      const last = groups.at(-1);
+      if (last && last.end === block.start && last.signature === signature &&
+          !block.activities.some((a) => a.kind === "transition") && this._day(last.start) === this._day(block.start)) {
+        last.end = block.end;
+        last.blocks.push(block);
+      } else groups.push({ ...block, signature, blocks: [block] });
+    }
+    return groups;
+  }
+
+  _agenda(cascade, index, view) {
+    const blocks = this._blocks(cascade, view.period);
+    const heading = this._text("Geplanter Ablauf", "Planned sequence");
+    return `<div class="section-heading"><h3>${heading}</h3></div>
+      ${!blocks.length ? `<p class="muted">${esc(localize(this._hass, "cascade_no_data"))}</p>` : `<ol class="agenda">${this._groups(blocks).map((block) => {
+        const outputs = block.activities.filter((a) => a.kind === "output").map((a) => a.name || a.load_id);
+        const transitions = block.activities.filter((a) => a.kind === "transition").reduce((sum, a) => sum + (num(a.minutes) || 0) * block.fraction, 0);
+        return `<li class="event"><time>${esc(this._time(block.start, true))} – ${esc(this._time(block.end))}</time>
+          <div class="event-body"><div class="event-title"><b>${esc(this._text("Energiefluss", "Energy flow"))}</b><span class="badge">${esc(this._text("Planung", "Forecast"))}</span></div>
+          <ul class="flows">${this._flowList(block.blocks, cascade)}</ul>
+          ${outputs.length ? `<p class="muted">${esc(this._text("AC-Ausgänge aktiv", "AC outputs active"))}: ${esc(outputs.join(" · "))}</p>` : ""}
+          ${transitions ? `<p class="muted">${esc(this._text("Quellenwechsel", "Source transition"))}: ${this._number(transitions, 1)} min</p>` : ""}
+          </div></li>`;
+      }).join("")}</ol>`}`;
+  }
+
+  _details(cascade, index, view) {
+    if (!view.detail) return "";
+    const { kind, id } = view.detail;
+    const member = this._memberDetails(cascade).find((m) => m.load_id === id);
+    const title = kind === "soc" ? member?.name || id : kind === "root" ? "Root → Kaskade" :
+      kind === "aux" ? this._text("Aus Speichern → Endlast", "From storage → terminal") : cascade.terminal_name || cascade.terminal_load_id || "?";
+    const controls = kind === "soc" ? [["soc", "SOC"], ["charge", this._text("Aufnahme", "Charge input")], ["discharge", this._text("Akkuentnahme", "Battery withdrawal")]] : [];
+    const metric = kind === "soc" ? view.detail.metric || "soc" : kind;
+    const blocks = this._blocks(cascade, view.period);
+    return `<section class="details" id="details-${index}" tabindex="-1"><div class="section-heading"><h3>${esc(title)}</h3>${this._button(this._text("Schließen", "Close"), index, "close")}</div>
+      <nav>${controls.map(([key, label]) => this._button(label, index, "metric", `data-metric="${key}"`, metric === key)).join("")}
+      ${metric !== "soc" ? [["power", this._text("Leistung", "Power")], ["energy", this._text("Energie", "Energy")]].map(([key, label]) => this._button(label, index, "mode", `data-mode="${key}"`, view.mode === key)).join("") : ""}</nav>
+      <p class="muted">${esc(this._text("Planung · gestrichelte Kurve. Leistung = Durchschnitt je Zeitfenster; keine Messhistorie.", "Forecast · dashed curve. Power = slot average; no measurement history."))}</p>
+      ${this._plot(this._series(cascade, metric, id, view.period, view.mode), title, metric === "soc" ? CASCADE_SOC_COLORS[0] : metric === "charge" ? CASCADE_CHARGE_COLOR : metric === "discharge" ? CASCADE_DISCHARGE_COLOR : CASCADE_ROOT_COLOR)}
+      ${metric === "soc" && num(member?.target_soc_percent) != null ? `<p class="muted">${esc(localize(this._hass, "cascade_discharge_target"))}: ${this._number(num(member.target_soc_percent), 0)} %</p>` : ""}
+      <h4>${esc(this._text("Quelle → Empfänger · ausgewählter Zeitraum", "Source → recipient · selected period"))}</h4><ul class="flows">${this._flowList(blocks, cascade)}</ul>
+      <p class="muted">${esc(this._text("Root bezeichnet den Eingang der Kaskade. Pfeile zeigen Quelle und Empfänger entlang der oben dargestellten Kette. AC-Durchleitung ist keine Akkuladung; je AC-Ausgang liegt keine eigene Energiemenge vor. Fehlende Werte: —.", "Root is the cascade input. Arrows show source and recipient along the chain above. AC pass-through is not battery charging; energy per AC output is unavailable. Missing values: —."))}</p></section>`;
+  }
+
+  _renderCascade(cascade, index) {
+    const view = this._ui(cascade, index);
+    const members = this._memberDetails(cascade);
+    const blocks = this._blocks(cascade, view.period);
+    const phase = cascade.hands_off ? "hands_off" : cascade.fault ? "fault" : cascade.phase || "idle";
+    const metrics = [
+      [this._text("Aus Speichern · an Endlast", "From storage · to terminal"), this._kwh(this._total(this._blocks(cascade, "all"), "aux")), "aux", "all"],
+      [this._text("Root heute · Plan", "Root today · forecast"), this._kwh(this._total(this._blocks(cascade, "today"), "root")), "root", "today"],
+      [this._text("Root morgen · Plan", "Root tomorrow · forecast"), this._kwh(this._total(this._blocks(cascade, "tomorrow"), "root")), "root", "tomorrow"],
+    ];
+    return `<section class="cascade"><header class="section-heading"><h2>${esc(cascade.name || "Cascade")}</h2><span class="badge">${esc(localize(this._hass, `cascade_phase_${phase}`))}</span></header>
+      ${cascade.source_name ? `<p>${esc(localize(this._hass, "source"))}: ${esc(cascade.source_name)}</p>` : ""}
+      ${cascade.fault ? `<p class="fault">⚠ ${esc(cascade.fault)}${cascade.fault_detail ? ` · ${esc(cascade.fault_detail.entity_id || "")} · ${esc(cascade.fault_detail.observed_state || "?")}` : ""}</p>` : ""}
+      <p class="topology">${esc(["Root", ...members.map((m) => m.name || m.load_id), cascade.terminal_name || cascade.terminal_load_id || "?"].join(" → "))}</p>
+      <div class="metrics">${metrics.map(([label, value, kind, period]) => `<button type="button" data-cascade="${index}" data-action="detail" data-kind="${kind}" data-period="${period}" aria-controls="details-${index}" aria-expanded="${view.detail?.kind === kind && view.period === period}"><span>${esc(label)}</span><strong>${this._number(value)} kWh</strong><small>${esc(this._text("Diagramm öffnen", "Open chart"))} ↗</small></button>`).join("")}</div>
+      <p class="muted">${esc(this._text("Heute zeigt den verbleibenden Plan. Aus Speichern bezieht sich auf den gesamten Plan.", "Today shows the remaining plan. From storage refers to the full plan."))}</p>
+      ${num(cascade.actual_aux_energy_kwh) != null ? `<p class="muted">${esc(this._text("Ist · heute aus Speichern genutzt", "Actual · used from storage today"))}: ${this._number(num(cascade.actual_aux_energy_kwh))} kWh</p>` : ""}
+      <div class="members">${members.map((member, mi) => `<article class="member"><div class="section-heading"><h3>${esc(member.name || member.load_id)}</h3><strong>${this._number(num(member.soc_percent), 1)} %</strong></div>
+        <p class="muted">${esc(this._text("SOC am Planstart", "SOC at plan start"))} · ${esc(localize(this._hass, "cascade_discharge_target"))} ${this._number(num(member.target_soc_percent), 0)} %</p>
+        ${this._plot(this._series(cascade, "soc", member.load_id, view.period), member.name || member.load_id, CASCADE_SOC_COLORS[mi % CASCADE_SOC_COLORS.length], true)}
+        <div class="member-energy">${[["charge", this._text("Aufnahme", "Charge input"), "energy_wh"], ["charge", this._text("Im Akku gespeichert", "Stored in battery"), "stored_energy_wh"], ["discharge", this._text("Akkuentnahme", "Battery withdrawal"), "energy_wh"]].map(([kind, label, field]) => { const wh = this._total(blocks, kind, member.load_id, field); return `<span>${label}<b>${this._number(wh == null ? null : wh / 1000)} kWh</b></span>`; }).join("")}</div>
+        ${this._button(this._text("SOC & Energie · Details", "SOC & energy · details"), index, "detail", `data-kind="soc" data-id="${esc(member.load_id)}" aria-controls="details-${index}" aria-expanded="${view.detail?.id === member.load_id}"`)}
+      </article>`).join("")}</div>
+      <article class="terminal"><div class="section-heading"><h3>${esc(cascade.terminal_name || cascade.terminal_load_id || "?")}</h3>${this._button(this._text("Leistung & Energie ↗", "Power & energy ↗"), index, "detail", `data-kind="terminal" aria-controls="details-${index}" aria-expanded="${view.detail?.kind === "terminal"}"`)}</div>
+        ${this._plot(this._series(cascade, "terminal", null, view.period, "power"), cascade.terminal_name || cascade.terminal_load_id || "?", CASCADE_TERMINAL_COLOR, true)}</article>
+      <div class="period">${[["today", this._text("Heute", "Today")], ["tomorrow", this._text("Morgen", "Tomorrow")], ["all", this._text("Gesamter Plan", "Full plan")]].map(([key, label]) => this._button(label, index, "period", `data-period="${key}"`, view.period === key)).join("")}</div>
+      ${this._details(cascade, index, view)}${this._agenda(cascade, index, view)}</section>`;
   }
 
   _bindCharts() {
     this._charts.forEach((chart, index) => {
-      const svg = this.shadowRoot?.getElementById(`chart-${index}`);
+      const svg = this.shadowRoot.getElementById(`chart-${index}`);
       if (!svg) return;
-      svg.addEventListener("pointermove", (event) => {
+      const move = (event) => {
         const rect = svg.getBoundingClientRect();
-        if (!(rect.width > 0)) return;
-        const viewX = ((event.clientX - rect.left) / rect.width) * 900;
-        const fraction = Math.max(
-          0,
-          Math.min(1, (viewX - chart.labelWidth) / chart.plotWidth)
-        );
-        this._showSlot(index, chart.t0 + fraction * (chart.t1 - chart.t0));
-      });
+        if (!rect.width) return;
+        const x = (event.clientX - rect.left) / rect.width * chart.width;
+        const fraction = Math.max(0, Math.min(1, (x - chart.left) / (chart.width - chart.left - chart.right)));
+        this._showTime(chart.t0 + fraction * (chart.t1 - chart.t0));
+      };
+      svg.addEventListener("pointermove", move);
+      svg.addEventListener("pointerdown", move);
       svg.addEventListener("keydown", (event) => {
-        if (!chart.slots.length) return;
-        let kbIndex = chart.kbIndex;
-        if (event.key === "ArrowLeft") {
-          kbIndex = kbIndex == null ? 0 : Math.max(0, kbIndex - 1);
-        } else if (event.key === "ArrowRight") {
-          kbIndex =
-            kbIndex == null
-              ? 0
-              : Math.min(chart.slots.length - 1, kbIndex + 1);
-        } else if (event.key === "Home") {
-          kbIndex = 0;
-        } else if (event.key === "End") {
-          kbIndex = chart.slots.length - 1;
-        } else {
-          return;
-        }
+        const times = [...new Set(chart.points.map((p) => p.time))];
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        chart.kbIndex = kbIndex;
-        this._showSlot(index, chart.slots[kbIndex]);
+        const current = chart.kbIndex ?? 0;
+        chart.kbIndex = event.key === "Home" ? 0 : event.key === "End" ? times.length - 1 :
+          event.key === "ArrowLeft" ? Math.max(0, current - 1) : Math.min(times.length - 1, current + 1);
+        this._showTime(times[chart.kbIndex]);
       });
     });
+    this.shadowRoot.querySelectorAll("button[data-action]").forEach((button) => button.addEventListener("click", () => {
+      const index = Number(button.dataset.cascade), cascade = this._cascades()[index];
+      if (!cascade) return;
+      const view = this._ui(cascade, index);
+      const action = button.dataset.action;
+      if (action === "detail") {
+        view.mode = "power";
+        view.detail = { kind: button.dataset.kind, id: button.dataset.id };
+        if (button.dataset.period) view.period = button.dataset.period;
+      } else if (action === "close") view.detail = null;
+      else if (action === "period") view.period = button.dataset.period;
+      else if (action === "mode") view.mode = button.dataset.mode;
+      else if (action === "metric" && view.detail) view.detail.metric = button.dataset.metric;
+      const dataset = { ...button.dataset };
+      this._render();
+      if (action === "detail") {
+        const panel = this.shadowRoot.getElementById(`details-${index}`);
+        panel?.focus({ preventScroll: true });
+        panel?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } else {
+        const buttons = [...this.shadowRoot.querySelectorAll("button[data-action]")];
+        const next = buttons.find((b) => Object.entries(dataset).every(([key, value]) => b.dataset[key] === value));
+        (next || buttons.find((b) => b.dataset.cascade === String(index)))?.focus({ preventScroll: true });
+      }
+    }));
+    if (this._cursorTime != null) this._showTime(this._cursorTime);
   }
 
   _render() {
     if (!this._config || !this._hass) return;
+    this._charts = [];
     const entityId = this._entityId();
     const state = this._hass.states[entityId];
-    const t = (key) => localize(this._hass, key);
-    let body = "";
-    this._charts = [];
-    if (!entityId) {
-      body = `<div class="message">${esc(t("no_entity"))}</div>`;
-    } else if (!state) {
-      body = `<div class="message">${esc(t("not_found"))} ${esc(entityId)}</div>`;
-    } else {
-      body = this._cascades()
-        .map((item, index) => {
-        const root = num(item?.planned_root_energy_kwh) ?? 0;
-        const rootToday = num(item?.today_kwh);
-        const rootTomorrow = num(item?.tomorrow_kwh);
-        const aux = num(item?.planned_aux_energy_kwh) ?? 0;
-        const actual = num(item?.actual_aux_energy_kwh) ?? 0;
-        const detail = item?.fault_detail;
-        const actor = detail?.entity_id
-          ? `${detail.entity_id} → ${detail.target_state || "?"}; ${detail.kind || "failed"}; Ist ${detail.observed_state ?? "?"}`
-          : "";
-        const phase = item?.hands_off
-          ? "hands_off"
-          : item?.fault
-            ? "fault"
-            : item?.phase || "idle";
-        const phaseText = t(`cascade_phase_${phase}`);
-        const source = item?.source_name || item?.source;
-        const sourceText =
-          source && ["proving", "running", "recovering"].includes(phase)
-            ? ` · ${source}`
-            : "";
-        const fault = item?.fault ? ` · ⚠ ${item.fault}` : "";
-        const actualText = actual > 0
-          ? ` · ${actual.toFixed(2)} kWh ${t("cascade_used_today")}`
-          : "";
-        const rootText =
-          rootToday !== undefined && rootTomorrow !== undefined
-            ? `${esc(t("cascade_root_today_tomorrow"))} ${rootToday.toFixed(1)}/${rootTomorrow.toFixed(1)} kWh`
-            : `${root.toFixed(2)} kWh ${esc(t("cascade_via_root"))}`;
-          return `<section><div class="summary"><b>${esc(item?.name || "Cascade")}</b>` +
-            `<span title="${esc(actor)}">${esc(phaseText)}${esc(sourceText)}${esc(fault)}</span>` +
-            `<div class="energy">${esc(t("cascade_plan"))}: ${aux.toFixed(2)} kWh ${esc(t("cascade_from_storage"))} · ${rootText}${actualText}</div></div>` +
-            `<div class="chart-wrap">${this._chart(item, index)}</div></section>`;
-        })
-        .join("");
-      if (!body) body = `<div class="message">No cascades configured.</div>`;
-    }
-    this.shadowRoot.innerHTML = `<ha-card header="${esc(
-      this._config.title || "Battery Manager Cascades"
-    )}"><style>
-      .wrap{padding:0 16px 16px}section{padding:12px 0;border-top:1px solid var(--divider-color)}
-      .summary{display:grid;grid-template-columns:1fr;gap:4px;margin-bottom:8px}
-      .summary span,.energy{display:block;color:var(--secondary-text-color);font-size:.85em}
-      .energy{font-variant-numeric:tabular-nums}
-      .chart-wrap{overflow-x:auto}svg{display:block;width:100%;min-width:620px;height:auto;touch-action:none;outline:none}
-      svg:focus{outline:2px solid var(--primary-color);outline-offset:2px}
-      .grid{stroke:var(--divider-color);stroke-width:1;stroke-dasharray:2 3}.rowline{stroke:var(--divider-color);stroke-width:.7}
-      .axis,.label{fill:var(--secondary-text-color);font:12px sans-serif}.label{fill:var(--primary-text-color)}
-      .soc-value{fill:var(--secondary-text-color);font:11px sans-serif}.soc-grid{stroke:var(--divider-color);stroke-width:.6}
-      .soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1.2;stroke-dasharray:5 4}.soc-line{stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
-      .block-label{fill:white;font:10px sans-serif;pointer-events:none}.marker{stroke:var(--primary-text-color);stroke-width:1;stroke-dasharray:3 3}
-      .readout{min-height:2.6em;margin:6px 4px 0;color:var(--secondary-text-color);font-size:.82em;line-height:1.3}
-      .message{padding:20px 0;color:var(--secondary-text-color)}
+    const cascades = this._cascades();
+    const body = !entityId ? esc(localize(this._hass, "no_entity")) : !state ? esc(`${localize(this._hass, "not_found")} ${entityId}`) :
+      cascades.length ? cascades.map((c, i) => this._renderCascade(c, i)).join("") : esc(this._text("Keine Kaskaden konfiguriert", "No cascades configured"));
+    this.shadowRoot.innerHTML = `<ha-card header="${esc(this._config.title || "Battery Manager Cascades")}"><style>
+      :host{display:block;min-width:0}*{box-sizing:border-box}.wrap{padding:0 16px 16px;color:var(--primary-text-color,#eee);font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+      .cascade{border-top:1px solid var(--divider-color,#444);padding-top:16px}.cascade+.cascade{margin-top:24px}h2,h3,h4,p{margin:0}h2{font-size:1.4em}h3{font-size:1.1em}h4{margin-top:16px}.muted,.readout,small{color:var(--secondary-text-color,#aaa);font-size:.86em}.muted{margin:8px 0}.fault{color:var(--error-color,#f66)}
+      .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.section-heading>*{min-width:0}.badge{padding:3px 9px;border:1px solid var(--divider-color,#444);border-radius:12px;color:var(--secondary-text-color,#aaa);font-size:.85em}
+      button{font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:left;cursor:pointer;border:1px solid var(--divider-color,#444);border-radius:9px;background:var(--secondary-background-color,#222);color:var(--primary-text-color,#eee);padding:9px 12px;min-height:44px;max-width:100%}button:hover,button[aria-pressed=true]{border-color:var(--primary-color,#039be5);background:color-mix(in srgb,var(--primary-color,#039be5) 12%,transparent)}button:focus-visible,svg:focus-visible{outline:2px solid var(--primary-color,#039be5);outline-offset:2px}nav,.period{display:flex;gap:6px;flex-wrap:wrap}.period{margin:16px 0}
+      .topology{color:var(--secondary-text-color,#aaa);margin:8px 0 16px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px}.metrics button{display:grid;gap:5px}.metrics strong{font-size:1.35em}.metrics span{color:var(--secondary-text-color,#aaa)}.members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:16px}.member,.terminal,.details{padding:14px;border:1px solid var(--divider-color,#444);border-radius:12px;min-width:0}.terminal{margin-top:12px}.member-energy{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:.85em}.member-energy span{flex:1;min-width:85px;color:var(--secondary-text-color,#aaa)}.member-energy b{display:block;color:var(--primary-text-color,#eee)}
+      .plot{overflow-x:auto;padding:3px}svg{display:block;width:100%;min-width:300px;height:auto;touch-action:pan-y}.axis{fill:var(--secondary-text-color,#aaa);font:12px sans-serif}.grid{stroke:var(--divider-color,#444)}.forecast-line{stroke-width:2.5;stroke-dasharray:6 3;stroke-linejoin:round}.soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1;stroke-dasharray:3 5}.marker{stroke:var(--primary-text-color,#eee);stroke-width:1;stroke-dasharray:3 3}.readout{min-height:3em;margin-top:4px;white-space:normal;overflow-wrap:anywhere}.details{border-color:var(--primary-color,#039be5);margin:16px 0}.details:focus{outline:none}
+      .agenda{list-style:none;padding:0;margin:12px 0}.event{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:12px;margin-bottom:12px}.event time{font-size:.88em;color:var(--primary-color,#039be5);padding-top:12px}.event-body{border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.event-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.flows{list-style:none;margin:8px 0;padding:0}.flows li{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--divider-color,#444)}.flow-label{flex:1;min-width:min(180px,100%)}.flows strong{font-variant-numeric:tabular-nums}.flow-label i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}
+      @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}
     </style><div class="wrap">${body}</div></ha-card>`;
     this._bindCharts();
   }
+
 }
 
 if (!customElements.get(CASCADE_CARD_TYPE)) {
