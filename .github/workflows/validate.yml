@@ -13,7 +13,7 @@ jobs:
     name: Frontend behavior
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: node tests/frontend/cascade-card.test.mjs
@@ -104,7 +104,7 @@ jobs:
         uses: "actions/checkout@v7"
 
       - name: Node for backend/frontend contract tests
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
