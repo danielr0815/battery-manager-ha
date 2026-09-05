@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+import pytest
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -296,8 +297,10 @@ def test_power_feedback_gaps_count_as_zero():
     assert None not in series
 
 
-async def test_export_learned_profiles_service(hass):
-    """The export service writes a readable table of the learned bins."""
+@pytest.mark.parametrize("language", ["de", "en"])
+async def test_export_learned_profiles_service(hass, language):
+    """The export service follows the HA system language for readable tables."""
+    hass.config.language = language
     from pathlib import Path
 
     entry = _entry(hass)
@@ -326,10 +329,12 @@ async def test_export_learned_profiles_service(hass):
         blocking=True,
     )
     content = await hass.async_add_executor_job(target.read_text)
-    assert "Werktag P50" in content
-    assert "[AC-Pfad]" in content
+    assert ("Werktag P50" if language == "de" else "Weekday P50") in content
+    assert ("[AC Pfad]" if language == "de" else "[AC path]") in content
     assert "100" in content  # learned weekday value
-    assert "statisches Profil aktiv" in content  # DC has no learned profile
+    assert (
+        "statisches Profil aktiv" if language == "de" else "static profile active"
+    ) in content  # DC has no learned profile
 
 
 async def test_vacation_mode_uses_base_load_without_absence_bins(hass):

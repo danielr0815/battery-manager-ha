@@ -26,10 +26,17 @@ _COLUMNS = (
 )
 
 
-def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
+def format_hourly_details_table(
+    hourly_details: list[dict[str, Any]], language: str = "en"
+) -> str:
     """Return hourly plan details formatted as an ASCII table."""
+    de = (language or "en").lower().split("-")[0] == "de"
     if not hourly_details:
-        return "\nNo hourly details available"
+        return (
+            "\nKeine Stundendetails verfügbar"
+            if de
+            else "\nNo hourly details available"
+        )
 
     rows: list[list[str]] = []
     for detail in hourly_details:
@@ -39,14 +46,26 @@ def format_hourly_details_table(hourly_details: list[dict[str, Any]]) -> str:
             if key == "datetime" and isinstance(value, str):
                 value = value[5:16].replace("T", " ")  # MM-DD HH:MM
             elif isinstance(value, bool):
-                value = "on" if value else "-"
+                value = ("an" if de else "on") if value else "-"
             try:
                 row.append(fmt.format(value))
             except ValueError, TypeError:
                 row.append(str(value))
         rows.append(row)
 
-    headers = [header for _key, header, _fmt in _COLUMNS]
+    labels = (
+        {"SOC in %": "SOC Start %", "SOC out %": "SOC Ende %"}
+        if de
+        else {
+            "Std": "Hour",
+            "Zeit": "Time",
+            "Zusatz Wh": "Loads Wh",
+            "Laden Wh": "Charge Wh",
+            "Entladen Wh": "Discharge Wh",
+            "WR": "Inverter",
+        }
+    )
+    headers = [labels.get(header, header) for _key, header, _fmt in _COLUMNS]
     return _ascii_table(headers, rows)
 
 
@@ -78,7 +97,9 @@ _DAY_TYPE_HEADERS = (
 )
 
 
-def format_learned_profiles_table(snapshot: dict[str, Any]) -> str:
+def format_learned_profiles_table(
+    snapshot: dict[str, Any], language: str = "en"
+) -> str:
     """Render the learned consumption profiles as ASCII tables.
 
     `snapshot` is the learner's export: {profiles, samples, diagnostics,
@@ -86,39 +107,57 @@ def format_learned_profiles_table(snapshot: dict[str, Any]) -> str:
     and the sample count per (day type, hour); '-' = bin invalid (static
     fallback, docs/CONSUMPTION_FORECAST.md D-C6).
     """
+    de = (language or "en").lower().split("-")[0] == "de"
+
+    def text(german: str, english: str) -> str:
+        return german if de else english
+
     profiles = snapshot.get("profiles") or {}
     samples = snapshot.get("samples") or {}
     diagnostics = snapshot.get("diagnostics") or {}
     lines = [
-        "Gelernte Verbrauchsprofile (docs/CONSUMPTION_FORECAST.md)",
-        f"Stand: {snapshot.get('computed_at') or '-'}"
-        f" | Lernfenster: {snapshot.get('window_days') or '-'} Tage"
-        f" | Abdeckung: {diagnostics.get('coverage')}"
-        f" | negative Residuen: {diagnostics.get('negative_residuals')}",
+        text("Gelernte Verbrauchsprofile", "Learned consumption profiles")
+        + " (docs/CONSUMPTION_FORECAST.md)",
+        f"{text('Stand', 'Computed at')}: {snapshot.get('computed_at') or '-'}"
+        f" | {text('Lernfenster', 'Learning window')}: {snapshot.get('window_days') or '-'} {text('Tage', 'days')}"
+        f" | {text('Abdeckung', 'Coverage')}: {diagnostics.get('coverage')}"
+        f" | {text('negative Residuen', 'negative residuals')}: {diagnostics.get('negative_residuals')}",
     ]
     if diagnostics.get("missing_statistics"):
         lines.append(
-            "Ohne Langzeitstatistik: " + ", ".join(diagnostics["missing_statistics"])
+            text("Ohne Langzeitstatistik: ", "No long-term statistics: ")
+            + ", ".join(diagnostics["missing_statistics"])
         )
 
-    headers = ["Std"]
+    headers = [text("Std", "Hour")]
     for _key, label in _DAY_TYPE_HEADERS:
-        headers.extend([f"{label} P50", "P80", "n"])
+        headers.extend(
+            [
+                f"{text(label, {'weekday': 'Weekday', 'weekend': 'Weekend', 'absence': 'Away'}[_key])} P50",
+                "P80",
+                "n",
+            ]
+        )
 
     validation = snapshot.get("validation") or {}
     for path in ("ac", "dc"):
         bins = profiles.get(path)
         lines.append("")
-        lines.append(f"[{path.upper()}-Pfad]")
+        lines.append(f"[{path.upper()} {text('Pfad', 'path')}]")
         entries = validation.get(path) or []
         if entries:
             last = entries[-1]
             lines.append(
-                f"Wächter zuletzt ({last.get('day')}): "
+                f"{text('Letzte Prüfung', 'Last validation')} ({last.get('day')}): "
                 f"Bias {last.get('bias_w')} W, MAE {last.get('mae_w')} W"
             )
         if not bins:
-            lines.append("(kein gelerntes Profil — statisches Profil aktiv)")
+            lines.append(
+                text(
+                    "(kein gelerntes Profil — statisches Profil aktiv)",
+                    "(no learned profile — static profile active)",
+                )
+            )
             continue
         path_samples = samples.get(path) or {}
         rows = []

@@ -1,6 +1,6 @@
 # Kaskadenkachel: Energiefluss und Diagramme
 
-Stand: v0.36.0. Die vorhandene `battery-manager-cascade-card` verwendet weiterhin
+Stand: v0.36.1. Die vorhandene `battery-manager-cascade-card` verwendet weiterhin
 `entity`, `title` und `hours` (6–96, Standard 48). Kein neuer Kartentyp nötig.
 
 ## Verhalten
@@ -35,6 +35,9 @@ Stand: v0.36.0. Die vorhandene `battery-manager-cascade-card` verwendet weiterhi
 - Benachbarte Slots mit identischen Aktivitäten, Quellen und mittleren
   Leistungen werden im Ablauf zu einer Phase zusammengefasst. Die Originalslots
   bleiben Grundlage der Energie- und Cursorberechnung.
+- Miniaturen sind maximal 600 px und Detaildiagramme maximal 900 px breit,
+  damit Höhe, Linien und Achsentext auf breiten Dashboards nicht übergroß werden.
+  Cursorwerte verwenden dieselbe Maximalbreite und bleiben links ausgerichtet.
 - Namen, Kennzahlen, Quelle-Ziel-Zeilen und Cursorwerte stehen in umbrechendem
   HTML außerhalb des horizontal scrollbaren SVG-Bereichs. Die Kartenhöhe ist
   automatisch; Touch-Scrollen der Seite bleibt möglich.
@@ -46,3 +49,21 @@ Energieintegration, Tages-Clipping, DST, HA-Zeitzone, Energiearten, fehlende
 Daten, Escape-Verhalten und Phasengruppierung. Der CI-Job `frontend` führt die
 Tests ohne npm-Abhängigkeiten aus. Browserprüfung zusätzlich mit lokalem
 Playwright-MCP und synthetischen Sensordaten bei Desktop- und Mobilbreite.
+
+### Desktop-Layout-Prüfung (v0.36.1)
+
+Mit lokalem Playwright-MCP und aktuellen HA-Anlagendaten in einer temporären
+Vorschau geprüft (2026-09-05): Bei 1920 und 2800 px Viewportbreite bleiben
+Miniatur-SVGs rund 109 px, Detail-SVGs rund 313 px hoch. Bei 768, 390 und
+280 px entsteht kein horizontaler Seitenüberlauf; bei 280 px scrollt nur der
+Diagrammbereich. Der Node-Regressionstest prüft die Zeitauswahl bei skalierten
+SVGs und horizontalem Scrollversatz einschließlich der Achsengrenzen.
+
+Die gemeinsame Zeitauswahl steht vor den Speicher- und Endlastdiagrammen. Sie
+steuert auch die Detailansicht und den geplanten Ablauf der jeweiligen Kaskade.
+Die explizit mit heute, morgen oder Gesamtplan beschrifteten Kennzahlen bleiben
+auf ihren angegebenen Zeitraum bezogen.
+
+Status- und Sprachregeln: [Deutsch und Englisch](F-LANGUAGE-SUPPORT.md).
+`recovering` bezeichnet eine noch ausstehende Wiederaufladung, keine aktuell
+gemessene Ladung. Deutsche Karten verwenden „Eingang“ für die Root-Versorgung.

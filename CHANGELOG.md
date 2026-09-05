@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-09-05
+
+### Fixed
+- Kaskadenstatus „recovering“ heißt „Wiederaufladung ausstehend“ / „recharge
+  pending“ und behauptet keine laufende Ladung. Karten, Statuswerte,
+  Aktionsfehler, Auswahllisten, Benachrichtigungen und lesbare Exporte sind
+  konsistent deutsch/englisch; Karten reagieren sofort auf Sprachwechsel.
+- Gemeinsame Zeitauswahl (Heute/Morgen/Gesamter Plan) steht oberhalb der
+  Diagramme, deren Zeitraum sie zusammen mit dem geplanten Ablauf steuert.
+- Diagramme der Kaskadenkachel wachsen auf breiten Desktop-Dashboards nicht
+  mehr unbegrenzt: Miniaturen sind auf 600 px und Detaildiagramme auf 900 px
+  begrenzt. Cursorwerte umbrechen unter dem Diagramm; schmale Kacheln bleiben
+  responsiv und scrollen bei Bedarf nur den Diagrammbereich.
+
 ## [0.36.0] - 2026-09-05
 
 ### Changed

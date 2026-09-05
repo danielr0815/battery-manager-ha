@@ -59,7 +59,7 @@ test('charge, stored energy, withdrawal and terminal delivery remain separate',(
  assert.equal(c._total(blocks,'terminal'),60);
  assert.equal(c._total(blocks,'aux'),40);
  const html=c._flowList(blocks,cascade);
- assert.ok(html.includes('Root → Speicher &lt;script&gt;'));
+ assert.ok(html.includes('Eingang → Speicher &lt;script&gt;'));
  assert.ok(html.includes('Speicher &lt;script&gt; → Endlast'));
  assert.ok(!html.includes('<script>'));
 });
@@ -117,4 +117,106 @@ test('fractional seconds survive HA-local conversion',()=>{
 test('unknown terminal energy cannot be relabelled as AC overhead',()=>{
  const c=card(),cascade={schedule:[block(0,1,300,[activity('terminal',undefined,{source:'root'})])]};
  assert.ok(!c._flowList(c._blocks(cascade),cascade).includes('Rundungsrest'));
+});
+
+test('pointer selection stays aligned when charts are scaled or horizontally scrolled',()=>{
+ for (const [width,left] of [[894,30],[594,30],[300,-70]]) {
+  const c=card(),listeners={};
+  const series=c._series({schedule:[block(0,1,100),block(1,2,200)]},'root',null,'all','power');
+  c._plot(series,'Root','blue');
+  c.shadowRoot.getElementById=()=>({
+   getBoundingClientRect:()=>({width,left}),
+   addEventListener:(name,handler)=>{listeners[name]=handler;},
+  });
+  let selected;
+  c._showTime=time=>{selected=time;};
+  c._bindCharts();
+  // The time-axis midpoint must select the slot boundary at every CSS
+  // size, including an SVG shifted by horizontal scrolling.
+  listeners.pointermove({clientX:left+width*(48+(600-48-16)/2)/600});
+  assert.equal(selected,start+3600000);
+  assert.equal(c._valueAt(series,selected),200);
+  listeners.pointerdown({clientX:left});
+  assert.equal(selected,start);
+  listeners.pointerdown({clientX:left+width});
+  assert.equal(selected,start+7200000);
+ }
+});
+
+test('shared period selector precedes every chart and the planned sequence',()=>{
+ const c=card(),cascade={name:'Test',schedule:[block(0,1,100)]};
+ const view=c._ui(cascade,0);
+ view.period='all';view.detail={kind:'root'};
+ const html=c._renderCascade(cascade,0);
+ const selector=html.indexOf('<div class="period">');
+ assert.ok(selector>=0);
+ for(const section of ['<div class="members">','<article class="terminal">','<section class="details"','<ol class="agenda">']) {
+  assert.ok(html.indexOf(section)>selector,section);
+ }
+ assert.equal((html.match(/data-action="period"/g)||[]).length,3);
+ assert.match(html,/data-action="period" data-period="all" aria-pressed="true"/);
+});
+
+test('all cards react to a UI language change without a sensor update',()=>{
+ for(const [type,de,en] of [
+  ['battery-manager-forecast-card','Warte auf den ersten Planungslauf','Waiting for the first planning run'],
+  ['battery-manager-consumption-card','Keine Verbrauchsprognose','No consumption forecast'],
+  ['battery-manager-cascade-card','Wiederaufladung ausstehend','recharge pending'],
+ ]) {
+  const c=new (definitions.get(type))();
+  c.setConfig({entity:'sensor.test'});
+  const states={'sensor.test':{attributes:{cascades:[{phase:'recovering',schedule:[block(0,1,100)]}]}}};
+  const hass={language:'de-DE',config:{time_zone:'Europe/Berlin'},states};
+  c.hass=hass;
+  assert.ok(c.shadowRoot.innerHTML.includes(de),type);
+  c.hass={...hass,language:'en-GB'};
+  assert.ok(c.shadowRoot.innerHTML.includes(en),type);
+  assert.ok(!c.shadowRoot.innerHTML.includes(de),type);
+  c.hass={...hass,language:'de'};
+  assert.ok(c.shadowRoot.innerHTML.includes(de),type);
+ }
+});
+
+test('cascade title, root details and every backend phase are bilingual',()=>{
+ const translations=Object.fromEntries(['de','en'].map(lang=>[lang,JSON.parse(readFileSync(new URL(`../../custom_components/battery_manager/translations/${lang}.json`,import.meta.url),'utf8'))]));
+ for(const language of ['de','en']){
+  const c=card();c._config.entity='sensor.test';c._hass.language=language;
+  const cascade={phase:'recovering',schedule:[block(0,1,100)],member_details:[]};
+  c._hass.states['sensor.test']={attributes:{cascades:[cascade]}};
+  const view=c._ui(cascade,0);view.period='all';view.detail={kind:'root'};
+  c._render();
+  assert.ok(c.shadowRoot.innerHTML.includes(language==='de'?'Battery Manager Kaskaden':'Battery Manager Cascades'));
+  assert.ok(c.shadowRoot.innerHTML.includes(language==='de'?'Eingang → Kaskade':'Root → cascade'));
+  assert.ok(!c.shadowRoot.innerHTML.includes(language==='de'?'charging storage':'Root → Kaskade'));
+  for(const phase of Object.keys(translations[language].entity.sensor.cascade_mode.state)){
+   cascade.phase=phase;c._render();
+   assert.ok(!c.shadowRoot.innerHTML.includes('cascade_phase_'),phase);
+   assert.ok(!c.shadowRoot.innerHTML.includes(language==='de'?'Status unbekannt':'unknown status'),phase);
+  }
+  cascade.fault='safe_off_failed:some technical reason';c._render();
+  assert.ok(c.shadowRoot.innerHTML.includes(language==='de'?'Sicherheitsabschaltung fehlgeschlagen':'Safety shutdown failed'));
+  assert.ok(!c.shadowRoot.innerHTML.includes('some technical reason'));
+  c._config.title='My own title';c._render();
+  assert.ok(c.shadowRoot.innerHTML.includes('header="My own title"'));
+ }
+});
+
+test('picker and editor labels follow HA language rather than browser language',()=>{
+ context.navigator={language:'en-US'};
+ for(const language of ['de','en']) {
+  context.document={querySelector:()=>({hass:{language}})};
+  const names=context.window.customCards.map(c=>c.name);
+  assert.ok(names.includes(language==='de'?'Battery Manager Kaskaden':'Battery Manager Cascades'));
+  for(const Card of definitions.values()) {
+   const form=Card.getConfigForm();
+   assert.equal(form.computeLabel({name:'hours'}),language==='de'?'Prognosezeitraum (Stunden)':'Forecast horizon (hours)');
+  }
+ }
+ delete context.document;delete context.navigator;
+});
+
+test('frontend dictionaries have matching keys and unsupported languages use English',()=>{
+ const strings=vm.runInContext('STRINGS',context);
+ assert.deepEqual(Object.keys(strings.de).sort(),Object.keys(strings.en).sort());
+ assert.equal(vm.runInContext('localize({language:"fr"},"card_cascade")',context),'Battery Manager Cascades');
 });

@@ -47,6 +47,7 @@ from .const import (
 from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table, format_learned_profiles_table
 from .entity import ensure_devices
+from .localization import message
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -487,11 +488,20 @@ def _service_coordinator(
     """
     domain_data: dict[str, BatteryManagerCoordinator] = hass.data.get(DOMAIN, {})
     if not domain_data:
-        raise ServiceValidationError("No Battery Manager entry is set up")
+        raise ServiceValidationError(
+            "No Battery Manager entry is set up",
+            translation_domain=DOMAIN,
+            translation_key="entry_not_setup",
+        )
     entry_id = call.data.get("entry_id") or next(iter(domain_data))
     coordinator = domain_data.get(entry_id)
     if coordinator is None:
-        raise ServiceValidationError(f"Unknown entry_id: {entry_id}")
+        raise ServiceValidationError(
+            f"Unknown entry_id: {entry_id}",
+            translation_domain=DOMAIN,
+            translation_key="unknown_entry",
+            translation_placeholders={"value0": f"{entry_id}"},
+        )
     return entry_id, coordinator
 
 
@@ -517,18 +527,29 @@ def _cascade_service_target(
     if device_id:
         device = dr.async_get(hass).async_get(device_id)
         if device is None or device.config_subentry_id is None:
-            raise ServiceValidationError(f"Unknown cascade device_id: {device_id}")
+            raise ServiceValidationError(
+                f"Unknown cascade device_id: {device_id}",
+                translation_domain=DOMAIN,
+                translation_key="unknown_cascade_device",
+                translation_placeholders={"value0": f"{device_id}"},
+            )
         entry_id = device.config_entry_id
         if (
             requested_entry := call.data.get("entry_id")
         ) and requested_entry != entry_id:
             raise ServiceValidationError(
-                f"Selected cascade device does not belong to entry_id {requested_entry}"
+                f"Selected cascade device does not belong to entry_id {requested_entry}",
+                translation_domain=DOMAIN,
+                translation_key="cascade_entry_mismatch",
+                translation_placeholders={"value0": f"{requested_entry}"},
             )
         coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
         if coordinator is None:
             raise ServiceValidationError(
-                f"Battery Manager entry for device is not set up: {entry_id}"
+                f"Battery Manager entry for device is not set up: {entry_id}",
+                translation_domain=DOMAIN,
+                translation_key="device_entry_not_setup",
+                translation_placeholders={"value0": f"{entry_id}"},
             )
         cascade_id = device.config_subentry_id
     else:
@@ -537,11 +558,17 @@ def _cascade_service_target(
     cascade = coordinator.entry.subentries.get(cascade_id)
     if cascade is None or cascade.subentry_type != SUBENTRY_TYPE_CASCADE:
         raise ServiceValidationError(
-            f"Selected target is not a storage cascade: {cascade_id}"
+            f"Selected target is not a storage cascade: {cascade_id}",
+            translation_domain=DOMAIN,
+            translation_key="not_cascade",
+            translation_placeholders={"value0": f"{cascade_id}"},
         )
     if (raw_id := call.data.get("cascade_id")) and raw_id != cascade_id:
         raise ServiceValidationError(
-            f"Selected cascade device does not match cascade_id {raw_id}"
+            f"Selected cascade device does not match cascade_id {raw_id}",
+            translation_domain=DOMAIN,
+            translation_key="cascade_mismatch",
+            translation_placeholders={"value0": f"{raw_id}"},
         )
     return coordinator, cascade_id
 
@@ -590,7 +617,12 @@ async def _async_write_export(
     try:
         target = _validate_file_path(file_path, base_dir)
     except ValueError as err:
-        raise ServiceValidationError(f"Refusing to export: {err}") from err
+        raise ServiceValidationError(
+            f"Refusing to export: {err}",
+            translation_domain=DOMAIN,
+            translation_key="export_refused",
+            translation_placeholders={"value0": f"{err}"},
+        ) from err
 
     def _write() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -599,17 +631,25 @@ async def _async_write_export(
     try:
         await hass.async_add_executor_job(_write)
     except OSError as err:  # pragma: no cover
-        raise HomeAssistantError(f"Failed to write export: {err}") from err
+        raise HomeAssistantError(
+            f"Failed to write export: {err}",
+            translation_domain=DOMAIN,
+            translation_key="export_write_failed",
+            translation_placeholders={"value0": f"{err}"},
+        ) from err
 
     _LOGGER.info("Export written to %s", target)
     if download:
         _schedule_download_cleanup(hass, target)
         persistent_notification_create(
             hass,
-            f"[Download {target.name}](/local/{_EXPORT_SUBDIR}/{target.name}) — "
-            "the file is reachable under /local/ without login and is "
-            "deleted automatically after 1 hour.",
-            title="Battery Manager Export",
+            message(
+                hass,
+                "download",
+                name=target.name,
+                url=f"/local/{_EXPORT_SUBDIR}/{target.name}",
+            ),
+            title=message(hass, "export_title"),
         )
 
 
@@ -621,11 +661,13 @@ async def _async_export_hourly_details(hass: HomeAssistant, call: ServiceCall) -
     if not details:
         raise HomeAssistantError(
             "No hourly details available yet — the planner has not produced "
-            "a plan since startup"
+            "a plan since startup",
+            translation_domain=DOMAIN,
+            translation_key="no_hourly_details",
         )
 
     if call.data.get(CONF_AS_TABLE, True):
-        content = format_hourly_details_table(details)
+        content = format_hourly_details_table(details, hass.config.language)
     else:
         content = "\n".join(json.dumps(row) for row in details)
     await _async_write_export(
@@ -646,10 +688,12 @@ async def _async_export_learned_profiles(
     if not any(profiles.values()):
         raise HomeAssistantError(
             "No learned consumption profiles available yet — the learner "
-            "needs long-term statistics first"
+            "needs long-term statistics first",
+            translation_domain=DOMAIN,
+            translation_key="no_learned_profiles",
         )
     if call.data.get(CONF_AS_TABLE, True):
-        content = format_learned_profiles_table(snapshot)
+        content = format_learned_profiles_table(snapshot, hass.config.language)
     else:
         content = json.dumps(snapshot, indent=2, ensure_ascii=False)
     await _async_write_export(

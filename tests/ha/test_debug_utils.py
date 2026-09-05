@@ -38,12 +38,12 @@ def test_full_row_renders_all_columns():
     )
     # Header carries every column label.
     for header in (
-        "Std",
-        "Zeit",
+        "Hour",
+        "Time",
         "SOC in %",
         "SOC out %",
         "PV Wh",
-        "WR",
+        "Inverter",
         "24V",
         "Prof",
     ):

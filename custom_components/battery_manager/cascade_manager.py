@@ -519,7 +519,10 @@ class CascadeManager:
             current = self.coordinator.hass.states.get(entity_id)
             if current is None or current.state not in ("on", "off"):
                 raise HomeAssistantError(
-                    f"Cascade actor {entity_id} has no confirmed ON/OFF state"
+                    f"Cascade actor {entity_id} has no confirmed ON/OFF state",
+                    translation_domain=DOMAIN,
+                    translation_key="cascade_actor_unknown",
+                    translation_placeholders={"value0": f"{entity_id}"},
                 )
             actors[entity_id] = current.state == "on"
         state = self._state(topology["id"])
@@ -552,7 +555,10 @@ class CascadeManager:
             if loop.time() >= deadline:
                 raise HomeAssistantError(
                     "Cascade member did not publish fresh telemetry within "
-                    f"{timeout_s:g} seconds"
+                    f"{timeout_s:g} seconds",
+                    translation_domain=DOMAIN,
+                    translation_key="cascade_telemetry_timeout",
+                    translation_placeholders={"value0": f"{timeout_s:g}"},
                 )
             await asyncio.sleep(_TERMINAL_TEST_POLL_S)
 
@@ -584,7 +590,10 @@ class CascadeManager:
             if loop.time() >= deadline:
                 raise HomeAssistantError(
                     "Terminal load did not publish fresh running power within "
-                    f"{timeout_s:g} seconds"
+                    f"{timeout_s:g} seconds",
+                    translation_domain=DOMAIN,
+                    translation_key="terminal_power_timeout",
+                    translation_placeholders={"value0": f"{timeout_s:g}"},
                 )
             await asyncio.sleep(_TERMINAL_TEST_POLL_S)
 
@@ -641,7 +650,15 @@ class CascadeManager:
         raise HomeAssistantError(
             f"Could not activate cascade output {member_index + 1} within "
             f"{float(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60)):g} seconds "
-            f"after {attempts} attempt(s) ({kind})"
+            f"after {attempts} attempt(s) ({kind})",
+            translation_domain=DOMAIN,
+            translation_key="cascade_output_failed",
+            translation_placeholders={
+                "value0": f"{member_index + 1}",
+                "value1": f"{float(data.get(CONF_LOAD_WAKE_TIMEOUT_S, 60)):g}",
+                "value2": f"{attempts}",
+                "value3": f"{kind}",
+            },
         )
 
     async def _restore_terminal_test_snapshot(
@@ -703,12 +720,16 @@ class CascadeManager:
             return
         if not self.terminal_test_available(cascade_id):
             raise HomeAssistantError(
-                "Terminal test needs a valid, non-faulted cascade outside a transition"
+                "Terminal test needs a valid, non-faulted cascade outside a transition",
+                translation_domain=DOMAIN,
+                translation_key="terminal_test_unavailable",
             )
         current = asyncio.current_task()
         if current is None:
             raise HomeAssistantError(
-                "Terminal test needs an active Home Assistant task"
+                "Terminal test needs an active Home Assistant task",
+                translation_domain=DOMAIN,
+                translation_key="terminal_test_task",
             )
         self._terminal_test_tasks[cascade_id] = current
         lock = self._locks.setdefault(cascade_id, asyncio.Lock())
@@ -724,7 +745,11 @@ class CascadeManager:
         """Own the cascade until proof/hold and exact state restoration."""
         topology = self._topology(cascade_id)
         if topology is None:
-            raise HomeAssistantError("Cascade topology is invalid")
+            raise HomeAssistantError(
+                "Cascade topology is invalid",
+                translation_domain=DOMAIN,
+                translation_key="invalid_cascade_topology",
+            )
         state = self._state(cascade_id)
         snapshot = self._terminal_test_snapshot(topology)
         state["terminal_test_restore"] = snapshot
@@ -740,13 +765,21 @@ class CascadeManager:
                 if not await self._actor(
                     cascade_id, data.get(CONF_LOAD_CHARGE_ENABLE), False
                 ):
-                    raise HomeAssistantError("Could not disable a cascade charge gate")
+                    raise HomeAssistantError(
+                        "Could not disable a cascade charge gate",
+                        translation_domain=DOMAIN,
+                        translation_key="cascade_gate_off_failed",
+                    )
             root_data = topology["members"][0][1]
             baseline = self._member_telemetry_reported_at(root_data)[0]
             if not await self._actor(
                 cascade_id, root_data.get(CONF_LOAD_CONTROL_SWITCH), True
             ):
-                raise HomeAssistantError("Could not activate the cascade root input")
+                raise HomeAssistantError(
+                    "Could not activate the cascade root input",
+                    translation_domain=DOMAIN,
+                    translation_key="cascade_input_failed",
+                )
             terminal_power = topology["terminal"].get(CONF_LOAD_POWER_ENTITY)
             terminal_baseline: datetime | None = None
             for index, (_load_id, data) in enumerate(topology["members"]):
@@ -778,7 +811,11 @@ class CascadeManager:
                 )
             terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
             if not await self._actor(cascade_id, terminal_actor, True):
-                raise HomeAssistantError("Could not activate the terminal load")
+                raise HomeAssistantError(
+                    "Could not activate the terminal load",
+                    translation_domain=DOMAIN,
+                    translation_key="terminal_activation_failed",
+                )
             state["terminal_test"] = {
                 "state": ("proving_power" if terminal_power else "holding_one_minute"),
                 "error": None,
@@ -824,7 +861,14 @@ class CascadeManager:
                 state["terminal_test"] = terminal_result
             await self.coordinator.async_flush_persistent_state()
         if error is not None:
-            raise HomeAssistantError(str(error)) from error
+            if isinstance(error, HomeAssistantError):
+                raise error
+            raise HomeAssistantError(
+                str(error),
+                translation_domain=DOMAIN,
+                translation_key="terminal_test_failed",
+                translation_placeholders={"error": str(error)},
+            ) from error
 
     async def async_cancel_terminal_tests(self) -> None:
         """Cancel tests and await their shielded state restoration."""
@@ -1339,7 +1383,24 @@ class CascadeManager:
             f"cascade_fault_{self.coordinator.entry.entry_id}_{cascade_id}",
             is_fixable=True,
             severity=ir.IssueSeverity.ERROR,
-            translation_key="cascade_fault",
+            translation_key=(
+                f"cascade_fault_{reason.split(':', 1)[0]}"
+                if reason.split(":", 1)[0]
+                in (
+                    "invalid_topology",
+                    "safe_off_failed",
+                    "restart_aux_reconciliation_failed",
+                    "restart_wake_reconciliation_failed",
+                    "exclusive_actor_changed_externally",
+                    "root_transition_failed",
+                    "wake_failed_after_retry",
+                    "source_power_proof_failed",
+                    "handover_failed_at_target",
+                    "terminal_test_restore_failed",
+                    "terminal_test_recovery_failed",
+                )
+                else "cascade_fault"
+            ),
             translation_placeholders={"reason": display_reason},
         )
         cascade = self.coordinator.entry.subentries.get(cascade_id)

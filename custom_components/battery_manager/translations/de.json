@@ -361,24 +361,24 @@
             "target_soc_percent": "Ziel-SOC (%)",
             "soc_entity": "SOC-Sensor (optional)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
-            "discharge_floor_soc_percent": "Sicherheits-Floor (%)",
+            "discharge_floor_soc_percent": "Sicherheitsuntergrenze (%)",
             "recovery_soc_percent": "Kaskaden-Entladeziel (%)",
-            "wake_timeout_s": "Wake-Timeout (s)",
+            "wake_timeout_s": "Zeitlimit für Speicheraktivierung (s)",
             "handover_min_power_w": "Leistungsnachweis mindestens (W)",
-            "handover_timeout_s": "Handover-Timeout (s)",
+            "handover_timeout_s": "Zeitlimit für Quellenwechsel (s)",
             "cascade_charge_efficiency": "Ladewirkungsgrad",
             "cascade_discharge_efficiency": "Entladewirkungsgrad",
-            "cascade_output_overhead_w": "Output-Eigenverbrauch (W)",
-            "output_switch_entity": "Output-Aktor",
-            "output_power_entity": "Output-Leistungssensor",
-            "input_actor_mode": "Besitzmodus Eingang",
-            "gate_actor_mode": "Besitzmodus Lade-Gate",
-            "output_actor_mode": "Besitzmodus Output",
+            "cascade_output_overhead_w": "Ausgangs-Eigenverbrauch (W)",
+            "output_switch_entity": "Ausgangsschalter",
+            "output_power_entity": "Ausgangs-Leistungssensor",
+            "input_actor_mode": "Steuerungsmodus Eingang",
+            "gate_actor_mode": "Steuerungsmodus Ladefreigabe",
+            "output_actor_mode": "Steuerungsmodus Ausgang",
             "cascade_max_charge_power_w": "Maximale Ladeleistung (W, optional)",
-            "cascade_max_output_power_w": "Maximale Output-Leistung (W, optional)",
-            "cascade_max_passthrough_power_w": "Maximale Passthrough-Leistung (W, optional)",
-            "output_idle_power_w": "Standalone-Idle-Schwelle (W, optional)",
-            "output_idle_duration_min": "Standalone-Idle-Dauer (min, optional)"
+            "cascade_max_output_power_w": "Maximale Ausgangsleistung (W, optional)",
+            "cascade_max_passthrough_power_w": "Maximale Durchleitungsleistung (W, optional)",
+            "output_idle_power_w": "Leerlaufschwelle im Einzelbetrieb (W, optional)",
+            "output_idle_duration_min": "Leerlaufdauer im Einzelbetrieb (min, optional)"
           },
           "data_description": {
             "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
@@ -386,7 +386,7 @@
             "discharge_floor_soc_percent": "Untere Sicherheitsgrenze. Der normale Kaskadenbetrieb beendet die Entladung bereits am Kaskaden-Entladeziel.",
             "recovery_soc_percent": "Bis zu diesem SOC darf die Kaskade den Speicher über die Endlast entladen. Energie oberhalb des Ziels darf auch ohne Wiederauflade-Nachweis für denselben Tag genutzt werden.",
             "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
-            "charge_enable_entity": "Gate „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Passthrough), ohne die Batterie zu laden."
+            "charge_enable_entity": "Freigabe „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Durchleitung), ohne die Batterie zu laden."
           }
         }
       }
@@ -400,11 +400,11 @@
         "cascade_terminal_invalid": "Die Endlast muss eine Nicht-Speicher-Last sein.",
         "cascade_member_in_use": "Eine ausgewählte Last wird bereits von einer Kaskade verwendet.",
         "cascade_member_invalid": "Ein Mitglied ist kein gültiger Speicher.",
-        "cascade_member_incomplete": "Jeder Speicher benötigt SOC, Lade-Gate, Output-Aktor und Output-Leistung.",
+        "cascade_member_incomplete": "Jeder Speicher benötigt SOC, Lade-Gate, Ausgangsschalter und Ausgangsleistung.",
         "cascade_root_input_required": "Der erste Speicher benötigt einen Eingangsschalter.",
         "cascade_nonroot_input_forbidden": "Nur der erste Speicher darf einen Eingangsschalter besitzen.",
-        "cascade_soc_order": "Es muss Sicherheits-Floor < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
-        "cascade_handover_timeout": "Der Handover-Timeout muss mindestens 60 Sekunden betragen.",
+        "cascade_soc_order": "Es muss Sicherheitsuntergrenze < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
+        "cascade_handover_timeout": "Der Zeitlimit für Quellenwechsel muss mindestens 60 Sekunden betragen.",
         "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein."
       },
       "initiate_flow": {
@@ -414,10 +414,10 @@
       "step": {
         "user": {
           "title": "Speicher-Kaskade",
-          "description": "Ordne Speicher vom Root bis zum Leaf und wähle die abschließende Last. Die Automation startet aus Sicherheitsgründen AUS.",
+          "description": "Ordne Speicher vom Eingang bis zum letzten Speicher und wähle die abschließende Last. Die Automation startet aus Sicherheitsgründen AUS.",
           "data": {
             "name": "Name",
-            "member_load_ids": "Speicher (Root → Leaf)",
+            "member_load_ids": "Speicher (Eingang → letzter Speicher)",
             "terminal_load_id": "Abschließende Last",
             "actor_confirmation_timeout_s": "Aktor-Bestätigungs-Timeout (s)"
           }
@@ -426,7 +426,7 @@
           "title": "Speicher-Kaskade",
           "data": {
             "name": "Name",
-            "member_load_ids": "Speicher (Root → Leaf)",
+            "member_load_ids": "Speicher (Eingang → letzter Speicher)",
             "terminal_load_id": "Abschließende Last",
             "actor_confirmation_timeout_s": "Aktor-Bestätigungs-Timeout (s)"
           }
@@ -784,6 +784,12 @@
         "hourly": "Stündlich (bevorzugt Stundenwerte; warnt, wenn keine vorliegen)",
         "daily": "Nur täglich (stündliche Attribute ignorieren)"
       }
+    },
+    "cascade_actor_mode": {
+      "options": {
+        "exclusive": "Exklusiv durch Battery Manager gesteuert",
+        "shared": "Gemeinsam genutzt (manuelle Eingriffe respektieren)"
+      }
     }
   },
   "entity": {
@@ -861,7 +867,20 @@
         "name": "{name} Planungsleistung"
       },
       "cascade_mode": {
-        "name": "{name} Modus"
+        "name": "{name} Modus",
+        "state": {
+          "root": "Versorgung über Eingang",
+          "waking": "weckt Speicher",
+          "waking_members": "weckt Speicherkette",
+          "testing_terminal": "prüft Endlast",
+          "idle": "Wartet",
+          "proving": "Prüft Speicher",
+          "running": "Entlädt Speicher",
+          "recovering": "Wiederaufladung ausstehend",
+          "complete": "Zyklus abgeschlossen",
+          "fault": "Störung",
+          "hands_off": "Manuelle Steuerung"
+        }
       },
       "cascade_soc": {
         "name": "{name} SOC"
@@ -887,7 +906,7 @@
         "name": "{name} Leistungswarnung"
       },
       "cascade_recommendation": {
-        "name": "{name} Root-Empfehlung"
+        "name": "{name} Eingangsempfehlung"
       },
       "cascade_fault": {
         "name": "{name} Störung"
@@ -935,8 +954,8 @@
       "description": "Die Kaskade wurde wegen „{reason}“ sicher beendet. Prüfe Aktoren und Telemetrie und verwende anschließend den Störungs-Reset."
     },
     "cascade_recovery_missed": {
-      "title": "Recovery-Ziel der Speicher-Kaskade verfehlt",
-      "description": "Mindestens ein Speicher hat sein Recovery-Ziel bis zum Ende des letzten heutigen PV-Slots nicht erreicht. Die Automation bleibt für künftige Tage verfügbar; prüfe Prognose, Priorität und Ladepfad."
+      "title": "Wiederaufladeziel der Speicher-Kaskade verfehlt",
+      "description": "Mindestens ein Speicher hat sein Wiederaufladeziel bis zum Ende des letzten heutigen PV-Zeitfensters nicht erreicht. Die Automation bleibt für künftige Tage verfügbar; prüfe Prognose, Priorität und Ladepfad."
     },
     "learning_bias": {
       "title": "Verbrauchslernen: systematische Abweichung",
@@ -947,8 +966,8 @@
       "description": "Seit über zwei Stunden liegen weder gültige Batterie-SOC- noch PV-Prognosedaten vor. Als Fail-safe wurden alle gesteuerten Zusatzlasten einmalig abgeschaltet, damit sie nicht blind (ggf. netzgespeist) weiterlaufen. Nach Wiederherstellung der Daten läuft der Normalbetrieb automatisch weiter und dieser Hinweis löst sich auf; prüfe die Erreichbarkeit der Mess-Entitäten und der Schaltaktoren."
     },
     "support_switch_failed": {
-      "title": "Support-Schaltung: wiederholte Schaltfehler",
-      "description": "Die Support-Aktorik (48-V-PSU bzw. 24-V-Schiene inkl. DC/DC-Umschaltung) ist dreimal in Folge fehlgeschlagen — Dienstaufruf gescheitert oder Umschaltung nicht bestätigt. Prüfe Erreichbarkeit und Zustandsrückmeldung der konfigurierten Schalter. Der 5-Minuten-Zyklus versucht weiterhin automatisch zu schalten; der Hinweis löst sich nach dem ersten erfolgreichen Schaltvorgang von selbst auf."
+      "title": "Schaltung der Netzstützung: wiederholte Schaltfehler",
+      "description": "Die Schaltgeräte der Netzstützung (48-V-Netzteil bzw. 24-V-Schiene inkl. DC/DC-Umschaltung) ist dreimal in Folge fehlgeschlagen — Dienstaufruf gescheitert oder Umschaltung nicht bestätigt. Prüfe Erreichbarkeit und Zustandsrückmeldung der konfigurierten Schalter. Der 5-Minuten-Zyklus versucht weiterhin automatisch zu schalten; der Hinweis löst sich nach dem ersten erfolgreichen Schaltvorgang von selbst auf."
     },
     "learning_recorder_timeout": {
       "title": "Verbrauchslernen: Recorder-Zeitüberschreitung",
@@ -957,12 +976,56 @@
     "learning_no_recorder": {
       "title": "Verbrauchslernen: Recorder-Integration fehlt",
       "description": "Das Verbrauchslernen benötigt die Recorder-Integration (Langzeitstatistik und Zustandshistorie), es sind aber Mess-Entitäten ohne sie konfiguriert. Solange der Recorder fehlt, bleibt das statische Lastprofil aktiv und es wird nichts gelernt. Recorder einrichten oder die Mess-Entitäten des Verbrauchslernens entfernen; dieser Hinweis löst sich nach dem ersten erfolgreichen Lauf von selbst auf."
+    },
+    "cascade_fault_invalid_topology": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Ungültige Konfiguration der Speicherkette. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_safe_off_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Sicherheitsabschaltung fehlgeschlagen. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_restart_aux_reconciliation_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Speicherversorgung konnte nach Neustart nicht abgeglichen werden. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_restart_wake_reconciliation_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Speicheraktivierung konnte nach Neustart nicht abgeglichen werden. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_exclusive_actor_changed_externally": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Ein exklusiv gesteuerter Schalter wurde extern geändert. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_root_transition_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Umschaltung auf Eingangsversorgung fehlgeschlagen. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_wake_failed_after_retry": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Speicheraktivierung auch nach Wiederholung fehlgeschlagen. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_source_power_proof_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Ausgangsleistung des Speichers konnte nicht bestätigt werden. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_handover_failed_at_target": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Quellenwechsel beim Entladeziel fehlgeschlagen. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_terminal_test_restore_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Vorherige Schalterzustände konnten nach dem Endlasttest nicht wiederhergestellt werden. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "cascade_fault_terminal_test_recovery_failed": {
+      "title": "Speicher-Kaskade sicher gestoppt",
+      "description": "Unterbrochener Endlasttest konnte nicht wiederhergestellt werden. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
     }
   },
   "services": {
     "export_learned_profiles": {
       "name": "Gelernte Profile exportieren",
-      "description": "Exportiert die gelernten Verbrauchsprofile (AC-/DC-Pfad, je Tagstyp und Stunde) als Texttabelle oder JSON-Snapshot in das Exportverzeichnis battery_manager oder als Browser-Download.",
+      "description": "Exportiert die gelernten Verbrauchsprofile (AC-/DC-Pfad, je Tagstyp und Stunde) als Texttabelle oder JSON-Datenstand in das Exportverzeichnis battery_manager oder als Browser-Download.",
       "fields": {
         "entry_id": {
           "name": "Konfigurationseintrag",
@@ -974,17 +1037,17 @@
         },
         "download": {
           "name": "Download",
-          "description": "Die Datei über /local/ als Browser-Download bereitstellen, statt sie in das Konfigurationsverzeichnis zu schreiben. Download-Links brauchen kein Login, deshalb wird die Datei nach einer Stunde automatisch gelöscht."
+          "description": "Die Datei über /local/ als Browser-Download bereitstellen, statt sie in das Konfigurationsverzeichnis zu schreiben. Download-Links brauchen keine Anmeldung, deshalb wird die Datei nach einer Stunde automatisch gelöscht."
         },
         "as_table": {
           "name": "Als Tabelle",
-          "description": "Eine lesbare Texttabelle statt des JSON-Snapshots schreiben."
+          "description": "Eine lesbare Texttabelle statt des JSON-Datenstands schreiben."
         }
       }
     },
     "export_hourly_details": {
       "name": "Stundendetails exportieren",
-      "description": "Exportiert die Stundendetails des letzten Plans (SOC, Netzbezug/-einspeisung, Entscheidungen) als Texttabelle oder JSON-Snapshot in das Exportverzeichnis battery_manager oder als Browser-Download.",
+      "description": "Exportiert die Stundendetails des letzten Plans (SOC, Netzbezug/-einspeisung, Entscheidungen) als Texttabelle oder JSON-Datenstand in das Exportverzeichnis battery_manager oder als Browser-Download.",
       "fields": {
         "entry_id": {
           "name": "Konfigurationseintrag",
@@ -996,11 +1059,11 @@
         },
         "download": {
           "name": "Download",
-          "description": "Die Datei über /local/ als Browser-Download bereitstellen, statt sie in das Konfigurationsverzeichnis zu schreiben. Download-Links brauchen kein Login, deshalb wird die Datei nach einer Stunde automatisch gelöscht."
+          "description": "Die Datei über /local/ als Browser-Download bereitstellen, statt sie in das Konfigurationsverzeichnis zu schreiben. Download-Links brauchen keine Anmeldung, deshalb wird die Datei nach einer Stunde automatisch gelöscht."
         },
         "as_table": {
           "name": "Als Tabelle",
-          "description": "Eine lesbare Texttabelle statt des JSON-Snapshots schreiben."
+          "description": "Eine lesbare Texttabelle statt des JSON-Datenstands schreiben."
         }
       }
     },
@@ -1021,6 +1084,74 @@
           "description": "Optionale interne Subentry-ID für bestehende YAML-Aufrufe. Bei Auswahl einer Kaskade nicht erforderlich."
         }
       }
+    }
+  },
+  "exceptions": {
+    "entry_not_setup": {
+      "message": "Es ist kein Battery-Manager-Eintrag eingerichtet."
+    },
+    "unknown_entry": {
+      "message": "Unbekannte Konfiguration: {value0}"
+    },
+    "not_cascade": {
+      "message": "Das ausgewählte Ziel ist keine Speicherkaskade: {value0}"
+    },
+    "cascade_mismatch": {
+      "message": "Das ausgewählte Kaskadengerät stimmt nicht mit der Kaskaden-ID {value0} überein."
+    },
+    "no_hourly_details": {
+      "message": "Noch keine Stundendetails verfügbar: Seit dem Start wurde noch kein Plan erstellt."
+    },
+    "no_learned_profiles": {
+      "message": "Noch keine gelernten Verbrauchsprofile verfügbar. Dafür werden zunächst Langzeitstatistiken benötigt."
+    },
+    "unknown_cascade_device": {
+      "message": "Unbekanntes Kaskadengerät: {value0}"
+    },
+    "cascade_entry_mismatch": {
+      "message": "Das ausgewählte Kaskadengerät gehört nicht zur Konfiguration {value0}."
+    },
+    "device_entry_not_setup": {
+      "message": "Die Battery-Manager-Konfiguration für dieses Gerät ist nicht eingerichtet: {value0}"
+    },
+    "export_refused": {
+      "message": "Export abgelehnt. Bitte einen zulässigen Dateipfad im Exportverzeichnis verwenden. Details: {value0}"
+    },
+    "export_write_failed": {
+      "message": "Die Exportdatei konnte nicht geschrieben werden. Details: {value0}"
+    },
+    "cascade_output_failed": {
+      "message": "Kaskadenausgang {value0} konnte innerhalb von {value1} Sekunden nach {value2} Versuchen nicht aktiviert werden ({value3})."
+    },
+    "terminal_test_unavailable": {
+      "message": "Der Endlasttest benötigt eine gültige, störungsfreie Kaskade außerhalb einer Umschaltung."
+    },
+    "terminal_test_task": {
+      "message": "Der Endlasttest benötigt einen aktiven Home-Assistant-Task."
+    },
+    "invalid_cascade_topology": {
+      "message": "Die Kaskadentopologie ist ungültig."
+    },
+    "cascade_actor_unknown": {
+      "message": "Für das Kaskadenschaltgerät {value0} liegt kein bestätigter Ein-/Aus-Zustand vor."
+    },
+    "cascade_telemetry_timeout": {
+      "message": "Der Kaskadenspeicher hat innerhalb von {value0} Sekunden keine aktuellen Messwerte veröffentlicht."
+    },
+    "terminal_power_timeout": {
+      "message": "Die Endlast hat innerhalb von {value0} Sekunden keine aktuellen Messwerte zur Betriebsleistung veröffentlicht."
+    },
+    "cascade_input_failed": {
+      "message": "Der Eingang der Kaskade konnte nicht aktiviert werden."
+    },
+    "terminal_activation_failed": {
+      "message": "Die Endlast konnte nicht aktiviert werden."
+    },
+    "cascade_gate_off_failed": {
+      "message": "Eine Ladefreigabe der Kaskade konnte nicht ausgeschaltet werden."
+    },
+    "terminal_test_failed": {
+      "message": "Endlasttest fehlgeschlagen: {error}"
     }
   }
 }

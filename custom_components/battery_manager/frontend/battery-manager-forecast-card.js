@@ -92,6 +92,35 @@ const MAX_BLOCKS = 100; // schedule blocks rendered per lane
 
 const STRINGS = {
   en: {
+    fault_unknown: "Cascade fault",
+    fault_invalid_topology: "Invalid storage chain configuration",
+    fault_safe_off_failed: "Safety shutdown failed",
+    fault_restart_aux_reconciliation_failed: "Storage supply could not be restored after restart",
+    fault_restart_wake_reconciliation_failed: "Storage wake-up could not be restored after restart",
+    fault_exclusive_actor_changed_externally: "An exclusively controlled switch was changed externally",
+    fault_root_transition_failed: "Switching to input supply failed",
+    fault_wake_failed_after_retry: "Storage wake-up failed after retry",
+    fault_source_power_proof_failed: "Storage output power could not be confirmed",
+    fault_handover_failed_at_target: "Source change at the discharge target failed",
+    fault_terminal_test_restore_failed: "Previous switch states could not be restored after the terminal test",
+    fault_terminal_test_recovery_failed: "Interrupted terminal test could not be recovered",
+    card_forecast: "Battery Manager Forecast",
+    card_consumption: "Battery Manager Consumption",
+    card_cascade: "Battery Manager Cascades",
+    desc_forecast: "SOC forecast, inverter threshold and planned surplus loads.",
+    desc_consumption: "Consumption forecast by voltage level and planned surplus loads.",
+    desc_cascade: "Storage SOC, energy flows, planned sequence and cascade status.",
+    field_entity: "Forecast sensor",
+    field_title: "Title",
+    field_hours: "Forecast horizon (hours)",
+    invalid_config: "Invalid configuration",
+    invalid_entity: "\"entity\" must be an entity id string",
+    invalid_hours: "\"hours\" must be a finite number",
+    cascade_phase_root: "input supply",
+    cascade_phase_waking: "waking storage",
+    cascade_phase_waking_members: "waking storage chain",
+    cascade_phase_testing_terminal: "testing terminal load",
+    cascade_phase_unknown: "unknown status",
     now: "now",
     threshold: "threshold",
     import: "grid import",
@@ -138,8 +167,8 @@ const STRINGS = {
     cascade_phase_idle: "waiting",
     cascade_phase_proving: "checking source",
     cascade_phase_running: "discharging storage",
-    cascade_phase_recovering: "charging storage",
-    cascade_phase_complete: "discharge target reached",
+    cascade_phase_recovering: "recharge pending",
+    cascade_phase_complete: "cycle complete",
     cascade_phase_fault: "fault",
     cascade_phase_hands_off: "manual control",
     cascade_plan: "Plan",
@@ -153,6 +182,35 @@ const STRINGS = {
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
   de: {
+    fault_unknown: "Kaskadenstörung",
+    fault_invalid_topology: "Ungültige Konfiguration der Speicherkette",
+    fault_safe_off_failed: "Sicherheitsabschaltung fehlgeschlagen",
+    fault_restart_aux_reconciliation_failed: "Speicherversorgung konnte nach Neustart nicht abgeglichen werden",
+    fault_restart_wake_reconciliation_failed: "Speicheraktivierung konnte nach Neustart nicht abgeglichen werden",
+    fault_exclusive_actor_changed_externally: "Ein exklusiv gesteuerter Schalter wurde extern geändert",
+    fault_root_transition_failed: "Umschaltung auf Eingangsversorgung fehlgeschlagen",
+    fault_wake_failed_after_retry: "Speicheraktivierung auch nach Wiederholung fehlgeschlagen",
+    fault_source_power_proof_failed: "Ausgangsleistung des Speichers konnte nicht bestätigt werden",
+    fault_handover_failed_at_target: "Quellenwechsel beim Entladeziel fehlgeschlagen",
+    fault_terminal_test_restore_failed: "Vorherige Schalterzustände konnten nach dem Endlasttest nicht wiederhergestellt werden",
+    fault_terminal_test_recovery_failed: "Unterbrochener Endlasttest konnte nicht wiederhergestellt werden",
+    card_forecast: "Battery Manager Prognose",
+    card_consumption: "Battery Manager Verbrauch",
+    card_cascade: "Battery Manager Kaskaden",
+    desc_forecast: "SOC-Prognose, Wechselrichterschwelle und geplante Überschusslasten.",
+    desc_consumption: "Verbrauchsprognose nach Spannungsebene und geplante Überschusslasten.",
+    desc_cascade: "Speicher-SOC, Energieflüsse, geplanter Ablauf und Kaskadenstatus.",
+    field_entity: "Prognosesensor",
+    field_title: "Titel",
+    field_hours: "Prognosezeitraum (Stunden)",
+    invalid_config: "Ungültige Konfiguration",
+    invalid_entity: "\"entity\" muss eine Entitäts-ID als Text sein",
+    invalid_hours: "\"hours\" muss eine endliche Zahl sein",
+    cascade_phase_root: "Versorgung über Eingang",
+    cascade_phase_waking: "weckt Speicher",
+    cascade_phase_waking_members: "weckt Speicherkette",
+    cascade_phase_testing_terminal: "prüft Endlast",
+    cascade_phase_unknown: "Status unbekannt",
     now: "jetzt",
     threshold: "Schwelle",
     import: "Netzimport",
@@ -184,11 +242,11 @@ const STRINGS = {
     planned_loads: "geplante Lasten",
     cascade: "Kaskade",
     charging: "laden",
-    root: "Root",
-    aux: "Aux",
+    root: "Eingang",
+    aux: "Speicher",
     cascade_chart_label: "Kaskaden-Zeitplan",
     cascade_no_data: "In diesem Zeitraum ist keine Kaskadenaktivität geplant.",
-    cascade_root_input: "Root → Kaskade",
+    cascade_root_input: "Eingang → Kaskade",
     discharging: "entladen",
     output: "AC-Ausgang",
     terminal_load: "Endlast",
@@ -200,14 +258,14 @@ const STRINGS = {
     cascade_phase_idle: "wartet",
     cascade_phase_proving: "prüft Speicher",
     cascade_phase_running: "entlädt Speicher",
-    cascade_phase_recovering: "lädt Speicher",
-    cascade_phase_complete: "Entladeziel erreicht",
+    cascade_phase_recovering: "Wiederaufladung ausstehend",
+    cascade_phase_complete: "Zyklus abgeschlossen",
     cascade_phase_fault: "Störung",
     cascade_phase_hands_off: "manuelle Steuerung",
     cascade_plan: "Plan",
     cascade_from_storage: "aus Speichern",
-    cascade_via_root: "aus PV / Root",
-    cascade_root_today_tomorrow: "Root heute/morgen",
+    cascade_via_root: "aus PV / Eingang",
+    cascade_root_today_tomorrow: "Eingang heute/morgen",
     cascade_used_today: "heute genutzt",
     cascade_discharge_target: "Entladeziel",
     static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
@@ -216,8 +274,16 @@ const STRINGS = {
   },
 };
 
+// Picker/editor callbacks have no hass argument. Resolve the HA user language
+// on access so neither module loading nor a sensor cache freezes the locale.
+function uiLanguage(hass) {
+  return hass?.language || (typeof document !== "undefined" &&
+    document.querySelector("home-assistant")?.hass?.language) ||
+    (typeof navigator !== "undefined" && navigator.language) || "en";
+}
+
 function localize(hass, key) {
-  const lang = (hass?.language || "en").split("-")[0];
+  const lang = uiLanguage(hass).toLowerCase().split(/[-_]/)[0];
   return (STRINGS[lang] || STRINGS.en)[key] || STRINGS.en[key] || key;
 }
 
@@ -298,18 +364,18 @@ class BatteryManagerForecastCard extends HTMLElement {
 
   setConfig(config) {
     if (!config || typeof config !== "object") {
-      throw new Error("Invalid configuration");
+      throw new Error(localize(this._hass, "invalid_config"));
     }
     // YAML is free-form: fail loudly with a useful message instead of
     // rendering something subtly broken (Lovelace shows thrown errors).
     if (config.entity != null && typeof config.entity !== "string") {
-      throw new Error(`${CARD_TYPE}: "entity" must be an entity id string`);
+      throw new Error(`${CARD_TYPE}: ${localize(this._hass, "invalid_entity")}`);
     }
     if (
       config.hours != null &&
       (typeof config.hours !== "number" || !Number.isFinite(config.hours))
     ) {
-      throw new Error(`${CARD_TYPE}: "hours" must be a finite number`);
+      throw new Error(`${CARD_TYPE}: ${localize(this._hass, "invalid_hours")}`);
     }
     this._config = {
       hours: 48,
@@ -320,11 +386,12 @@ class BatteryManagerForecastCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const languageChanged = hass.language !== this._hass?.language;
     this._hass = hass;
     const stateObj = this._config?.entity
       ? hass.states[this._config.entity]
       : undefined;
-    if (stateObj !== this._lastState) {
+    if (stateObj !== this._lastState || languageChanged) {
       this._lastState = stateObj;
       this._render();
     }
@@ -352,6 +419,7 @@ class BatteryManagerForecastCard extends HTMLElement {
 
   static getConfigForm() {
     return {
+      computeLabel: (schema) => localize(null, `field_${schema.name}`),
       schema: [
         {
           name: "entity",
@@ -432,6 +500,7 @@ class BatteryManagerForecastCard extends HTMLElement {
     } else {
       header =
         this._config.title ??
+        hass.formatEntityName?.(stateObj) ??
         stateObj.attributes.friendly_name ??
         this._config.entity;
       body = this._renderChart(stateObj, t);
@@ -1308,18 +1377,18 @@ class BatteryManagerConsumptionCard extends HTMLElement {
 
   setConfig(config) {
     if (!config || typeof config !== "object") {
-      throw new Error("Invalid configuration");
+      throw new Error(localize(this._hass, "invalid_config"));
     }
     if (config.entity != null && typeof config.entity !== "string") {
       throw new Error(
-        `${CONSUMPTION_CARD_TYPE}: "entity" must be an entity id string`
+        `${CONSUMPTION_CARD_TYPE}: ${localize(this._hass, "invalid_entity")}`
       );
     }
     if (
       config.hours != null &&
       (typeof config.hours !== "number" || !Number.isFinite(config.hours))
     ) {
-      throw new Error(`${CONSUMPTION_CARD_TYPE}: "hours" must be a finite number`);
+      throw new Error(`${CONSUMPTION_CARD_TYPE}: ${localize(this._hass, "invalid_hours")}`);
     }
     this._config = { hours: 48, ...config };
     this._lastState = undefined;
@@ -1327,11 +1396,12 @@ class BatteryManagerConsumptionCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const languageChanged = hass.language !== this._hass?.language;
     this._hass = hass;
     const stateObj = this._config?.entity
       ? hass.states[this._config.entity]
       : undefined;
-    if (stateObj !== this._lastState) {
+    if (stateObj !== this._lastState || languageChanged) {
       this._lastState = stateObj;
       this._render();
     }
@@ -1355,6 +1425,7 @@ class BatteryManagerConsumptionCard extends HTMLElement {
 
   static getConfigForm() {
     return {
+      computeLabel: (schema) => localize(null, `field_${schema.name}`),
       schema: [
         {
           name: "entity",
@@ -1896,10 +1967,8 @@ if (!customElements.get(CARD_TYPE)) {
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: CARD_TYPE,
-    name: "Battery Manager Forecast",
-    description:
-      "Planned SOC trajectory, inverter threshold and surplus-load schedule" +
-      " from the Battery Manager integration.",
+    get name() { return localize(null, "card_forecast"); },
+    get description() { return localize(null, "desc_forecast"); },
     preview: true,
     documentationURL: DOCS_URL,
     // HA 2026.6+ entity-first card picker: suggest this card whenever the
@@ -1931,11 +2000,8 @@ if (!customElements.get(CONSUMPTION_CARD_TYPE)) {
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: CONSUMPTION_CARD_TYPE,
-    name: "Battery Manager Consumption",
-    description:
-      "Planned consumption per hour, split by voltage level (230 V AC /" +
-      " 48 V / 24 V) plus planned surplus loads, from the Battery Manager" +
-      " integration.",
+    get name() { return localize(null, "card_consumption"); },
+    get description() { return localize(null, "desc_consumption"); },
     preview: true,
     documentationURL: DOCS_URL,
     getEntitySuggestion: (hass, entityId) => {
@@ -1980,18 +2046,18 @@ class BatteryManagerCascadeCard extends HTMLElement {
 
   setConfig(config) {
     if (!config || typeof config !== "object") {
-      throw new Error("Invalid configuration");
+      throw new Error(localize(this._hass, "invalid_config"));
     }
     if (config.entity != null && typeof config.entity !== "string") {
       throw new Error(
-        `${CASCADE_CARD_TYPE}: "entity" must be an entity id string`
+        `${CASCADE_CARD_TYPE}: ${localize(this._hass, "invalid_entity")}`
       );
     }
     if (
       config.hours != null &&
       (typeof config.hours !== "number" || !Number.isFinite(config.hours))
     ) {
-      throw new Error(`${CASCADE_CARD_TYPE}: "hours" must be a finite number`);
+      throw new Error(`${CASCADE_CARD_TYPE}: ${localize(this._hass, "invalid_hours")}`);
     }
     this._config = { hours: 48, ...config };
     this._lastState = undefined;
@@ -1999,9 +2065,10 @@ class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   set hass(value) {
+    const languageChanged = value.language !== this._hass?.language;
     this._hass = value;
     const state = value.states[this._entityId()];
-    if (state !== this._lastState) {
+    if (state !== this._lastState || languageChanged) {
       this._lastState = state;
       this._render();
     }
@@ -2031,6 +2098,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
 
   static getConfigForm() {
     return {
+      computeLabel: (schema) => localize(null, `field_${schema.name}`),
       schema: [
         {
           name: "entity",
@@ -2095,7 +2163,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   _text(de, en) {
-    return (this._hass?.language || "en").startsWith("de") ? de : en;
+    return uiLanguage(this._hass).toLowerCase().split(/[-_]/)[0] === "de" ? de : en;
   }
 
   _number(value, digits = 2) {
@@ -2207,13 +2275,13 @@ class BatteryManagerCascadeCard extends HTMLElement {
         const name = a.name || a.load_id || "?";
         const wh = num(a.energy_wh) == null ? null : num(a.energy_wh) * block.fraction;
         if (a.kind === "charge") {
-          add(`charge:${a.load_id}`, `Root → ${name}`, wh, CASCADE_CHARGE_COLOR);
+          add(`charge:${a.load_id}`, `${localize(this._hass, "root")} → ${name}`, wh, CASCADE_CHARGE_COLOR);
           add(`stored:${a.load_id}`, `${name} · ${this._text("im Akku gespeichert", "stored in battery")}`,
             num(a.stored_energy_wh) == null ? null : num(a.stored_energy_wh) * block.fraction, CASCADE_CHARGE_COLOR);
         } else if (a.kind === "discharge") {
           add(`discharge:${a.load_id}`, `${name} · ${this._text("Akkuentnahme inkl. Verlusten", "battery withdrawal incl. losses")}`, wh, CASCADE_DISCHARGE_COLOR);
         } else if (a.kind === "terminal") {
-          const source = a.source === "root" ? "Root" : a.source_name ||
+          const source = a.source === "root" ? localize(this._hass, "root") : a.source_name ||
             this._memberDetails(cascade).find((m) => m.load_id === a.source_load_id)?.name ||
             this._text("Speicher (Quelle unbekannt)", "Storage (unknown source)");
           add(`terminal:${a.source}:${a.source_load_id}`, `${source} → ${name}`, wh, CASCADE_TERMINAL_COLOR);
@@ -2227,7 +2295,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       .map((a) => num(a.energy_wh) == null ? null : num(a.energy_wh) * b.fraction));
     const terminalRoot = rootDeliveries.some((wh) => wh == null) ? null : rootDeliveries.reduce((sum, wh) => sum + wh, 0);
     if (root != null && charge != null && terminalRoot != null && root - charge - terminalRoot > 0.5) {
-      add("overhead", this._text("Root → AC-Eigenbedarf / Rundungsrest", "Root → AC overhead / rounding residual"), root - charge - terminalRoot, CASCADE_OUTPUT_COLOR);
+      add("overhead", this._text("Eingang → AC-Eigenbedarf / Rundungsrest", "Root → AC overhead / rounding residual"), root - charge - terminalRoot, CASCADE_OUTPUT_COLOR);
     }
     return [...flows.values()].map((f) => `<li><span class="flow-label"><i style="background:${f.color}"></i>${esc(f.label)}</span><strong>${this._number(f.wh == null ? null : f.wh / 1000)} kWh</strong></li>`).join("");
   }
@@ -2379,7 +2447,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     if (!view.detail) return "";
     const { kind, id } = view.detail;
     const member = this._memberDetails(cascade).find((m) => m.load_id === id);
-    const title = kind === "soc" ? member?.name || id : kind === "root" ? "Root → Kaskade" :
+    const title = kind === "soc" ? member?.name || id : kind === "root" ? localize(this._hass, "cascade_root_input") :
       kind === "aux" ? this._text("Aus Speichern → Endlast", "From storage → terminal") : cascade.terminal_name || cascade.terminal_load_id || "?";
     const controls = kind === "soc" ? [["soc", "SOC"], ["charge", this._text("Aufnahme", "Charge input")], ["discharge", this._text("Akkuentnahme", "Battery withdrawal")]] : [];
     const metric = kind === "soc" ? view.detail.metric || "soc" : kind;
@@ -2391,7 +2459,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       ${this._plot(this._series(cascade, metric, id, view.period, view.mode), title, metric === "soc" ? CASCADE_SOC_COLORS[0] : metric === "charge" ? CASCADE_CHARGE_COLOR : metric === "discharge" ? CASCADE_DISCHARGE_COLOR : CASCADE_ROOT_COLOR)}
       ${metric === "soc" && num(member?.target_soc_percent) != null ? `<p class="muted">${esc(localize(this._hass, "cascade_discharge_target"))}: ${this._number(num(member.target_soc_percent), 0)} %</p>` : ""}
       <h4>${esc(this._text("Quelle → Empfänger · ausgewählter Zeitraum", "Source → recipient · selected period"))}</h4><ul class="flows">${this._flowList(blocks, cascade)}</ul>
-      <p class="muted">${esc(this._text("Root bezeichnet den Eingang der Kaskade. Pfeile zeigen Quelle und Empfänger entlang der oben dargestellten Kette. AC-Durchleitung ist keine Akkuladung; je AC-Ausgang liegt keine eigene Energiemenge vor. Fehlende Werte: —.", "Root is the cascade input. Arrows show source and recipient along the chain above. AC pass-through is not battery charging; energy per AC output is unavailable. Missing values: —."))}</p></section>`;
+      <p class="muted">${esc(this._text("Eingang bezeichnet die Versorgung am Anfang der Kaskade. Pfeile zeigen Quelle und Empfänger entlang der oben dargestellten Kette. AC-Durchleitung ist keine Akkuladung; je AC-Ausgang liegt keine eigene Energiemenge vor. Fehlende Werte: —.", "Root is the cascade input. Arrows show source and recipient along the chain above. AC pass-through is not battery charging; energy per AC output is unavailable. Missing values: —."))}</p></section>`;
   }
 
   _renderCascade(cascade, index) {
@@ -2401,16 +2469,17 @@ class BatteryManagerCascadeCard extends HTMLElement {
     const phase = cascade.hands_off ? "hands_off" : cascade.fault ? "fault" : cascade.phase || "idle";
     const metrics = [
       [this._text("Aus Speichern · an Endlast", "From storage · to terminal"), this._kwh(this._total(this._blocks(cascade, "all"), "aux")), "aux", "all"],
-      [this._text("Root heute · Plan", "Root today · forecast"), this._kwh(this._total(this._blocks(cascade, "today"), "root")), "root", "today"],
-      [this._text("Root morgen · Plan", "Root tomorrow · forecast"), this._kwh(this._total(this._blocks(cascade, "tomorrow"), "root")), "root", "tomorrow"],
+      [this._text("Eingang heute · Plan", "Root today · forecast"), this._kwh(this._total(this._blocks(cascade, "today"), "root")), "root", "today"],
+      [this._text("Eingang morgen · Plan", "Root tomorrow · forecast"), this._kwh(this._total(this._blocks(cascade, "tomorrow"), "root")), "root", "tomorrow"],
     ];
-    return `<section class="cascade"><header class="section-heading"><h2>${esc(cascade.name || "Cascade")}</h2><span class="badge">${esc(localize(this._hass, `cascade_phase_${phase}`))}</span></header>
+    return `<section class="cascade"><header class="section-heading"><h2>${esc(cascade.name || localize(this._hass, "cascade"))}</h2><span class="badge">${esc(localize(this._hass, STRINGS.en[`cascade_phase_${phase}`] ? `cascade_phase_${phase}` : "cascade_phase_unknown"))}</span></header>
       ${cascade.source_name ? `<p>${esc(localize(this._hass, "source"))}: ${esc(cascade.source_name)}</p>` : ""}
-      ${cascade.fault ? `<p class="fault">⚠ ${esc(cascade.fault)}${cascade.fault_detail ? ` · ${esc(cascade.fault_detail.entity_id || "")} · ${esc(cascade.fault_detail.observed_state || "?")}` : ""}</p>` : ""}
-      <p class="topology">${esc(["Root", ...members.map((m) => m.name || m.load_id), cascade.terminal_name || cascade.terminal_load_id || "?"].join(" → "))}</p>
+      ${cascade.fault ? `<p class="fault">⚠ ${esc(localize(this._hass, STRINGS.en[`fault_${String(cascade.fault).split(":")[0]}`] ? `fault_${String(cascade.fault).split(":")[0]}` : "fault_unknown"))}${cascade.fault_detail ? ` · ${esc(cascade.fault_detail.entity_id || "")} · ${esc(cascade.fault_detail.observed_state || "?")}` : ""}</p>` : ""}
+      <p class="topology">${esc([localize(this._hass, "root"), ...members.map((m) => m.name || m.load_id), cascade.terminal_name || cascade.terminal_load_id || "?"].join(" → "))}</p>
       <div class="metrics">${metrics.map(([label, value, kind, period]) => `<button type="button" data-cascade="${index}" data-action="detail" data-kind="${kind}" data-period="${period}" aria-controls="details-${index}" aria-expanded="${view.detail?.kind === kind && view.period === period}"><span>${esc(label)}</span><strong>${this._number(value)} kWh</strong><small>${esc(this._text("Diagramm öffnen", "Open chart"))} ↗</small></button>`).join("")}</div>
       <p class="muted">${esc(this._text("Heute zeigt den verbleibenden Plan. Aus Speichern bezieht sich auf den gesamten Plan.", "Today shows the remaining plan. From storage refers to the full plan."))}</p>
       ${num(cascade.actual_aux_energy_kwh) != null ? `<p class="muted">${esc(this._text("Ist · heute aus Speichern genutzt", "Actual · used from storage today"))}: ${this._number(num(cascade.actual_aux_energy_kwh))} kWh</p>` : ""}
+      <div class="period">${[["today", this._text("Heute", "Today")], ["tomorrow", this._text("Morgen", "Tomorrow")], ["all", this._text("Gesamter Plan", "Full plan")]].map(([key, label]) => this._button(label, index, "period", `data-period="${key}"`, view.period === key)).join("")}</div>
       <div class="members">${members.map((member, mi) => `<article class="member"><div class="section-heading"><h3>${esc(member.name || member.load_id)}</h3><strong>${this._number(num(member.soc_percent), 1)} %</strong></div>
         <p class="muted">${esc(this._text("SOC am Planstart", "SOC at plan start"))} · ${esc(localize(this._hass, "cascade_discharge_target"))} ${this._number(num(member.target_soc_percent), 0)} %</p>
         ${this._plot(this._series(cascade, "soc", member.load_id, view.period), member.name || member.load_id, CASCADE_SOC_COLORS[mi % CASCADE_SOC_COLORS.length], true)}
@@ -2419,7 +2488,6 @@ class BatteryManagerCascadeCard extends HTMLElement {
       </article>`).join("")}</div>
       <article class="terminal"><div class="section-heading"><h3>${esc(cascade.terminal_name || cascade.terminal_load_id || "?")}</h3>${this._button(this._text("Leistung & Energie ↗", "Power & energy ↗"), index, "detail", `data-kind="terminal" aria-controls="details-${index}" aria-expanded="${view.detail?.kind === "terminal"}"`)}</div>
         ${this._plot(this._series(cascade, "terminal", null, view.period, "power"), cascade.terminal_name || cascade.terminal_load_id || "?", CASCADE_TERMINAL_COLOR, true)}</article>
-      <div class="period">${[["today", this._text("Heute", "Today")], ["tomorrow", this._text("Morgen", "Tomorrow")], ["all", this._text("Gesamter Plan", "Full plan")]].map(([key, label]) => this._button(label, index, "period", `data-period="${key}"`, view.period === key)).join("")}</div>
       ${this._details(cascade, index, view)}${this._agenda(cascade, index, view)}</section>`;
   }
 
@@ -2482,7 +2550,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     const cascades = this._cascades();
     const body = !entityId ? esc(localize(this._hass, "no_entity")) : !state ? esc(`${localize(this._hass, "not_found")} ${entityId}`) :
       cascades.length ? cascades.map((c, i) => this._renderCascade(c, i)).join("") : esc(this._text("Keine Kaskaden konfiguriert", "No cascades configured"));
-    this.shadowRoot.innerHTML = `<ha-card header="${esc(this._config.title || "Battery Manager Cascades")}"><style>
+    this.shadowRoot.innerHTML = `<ha-card header="${esc(this._config.title || localize(this._hass, "card_cascade"))}"><style>
       :host{display:block;min-width:0}*{box-sizing:border-box}.wrap{padding:0 16px 16px;color:var(--primary-text-color,#eee);font-size:14px;line-height:1.5;overflow-wrap:anywhere}
       .cascade{border-top:1px solid var(--divider-color,#444);padding-top:16px}.cascade+.cascade{margin-top:24px}h2,h3,h4,p{margin:0}h2{font-size:1.4em}h3{font-size:1.1em}h4{margin-top:16px}.muted,.readout,small{color:var(--secondary-text-color,#aaa);font-size:.86em}.muted{margin:8px 0}.fault{color:var(--error-color,#f66)}
       .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.section-heading>*{min-width:0}.badge{padding:3px 9px;border:1px solid var(--divider-color,#444);border-radius:12px;color:var(--secondary-text-color,#aaa);font-size:.85em}
@@ -2490,6 +2558,8 @@ class BatteryManagerCascadeCard extends HTMLElement {
       .topology{color:var(--secondary-text-color,#aaa);margin:8px 0 16px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px}.metrics button{display:grid;gap:5px}.metrics strong{font-size:1.35em}.metrics span{color:var(--secondary-text-color,#aaa)}.members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:16px}.member,.terminal,.details{padding:14px;border:1px solid var(--divider-color,#444);border-radius:12px;min-width:0}.terminal{margin-top:12px}.member-energy{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:.85em}.member-energy span{flex:1;min-width:85px;color:var(--secondary-text-color,#aaa)}.member-energy b{display:block;color:var(--primary-text-color,#eee)}
       .plot{overflow-x:auto;padding:3px}svg{display:block;width:100%;min-width:300px;height:auto;touch-action:pan-y}.axis{fill:var(--secondary-text-color,#aaa);font:12px sans-serif}.grid{stroke:var(--divider-color,#444)}.forecast-line{stroke-width:2.5;stroke-dasharray:6 3;stroke-linejoin:round}.soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1;stroke-dasharray:3 5}.marker{stroke:var(--primary-text-color,#eee);stroke-width:1;stroke-dasharray:3 3}.readout{min-height:3em;margin-top:4px;white-space:normal;overflow-wrap:anywhere}.details{border-color:var(--primary-color,#039be5);margin:16px 0}.details:focus{outline:none}
       .agenda{list-style:none;padding:0;margin:12px 0}.event{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:12px;margin-bottom:12px}.event time{font-size:.88em;color:var(--primary-color,#039be5);padding-top:12px}.event-body{border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.event-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.flows{list-style:none;margin:8px 0;padding:0}.flows li{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--divider-color,#444)}.flow-label{flex:1;min-width:min(180px,100%)}.flows strong{font-variant-numeric:tabular-nums}.flow-label i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}
+      /* Bound SVG scaling on wide dashboards; keep wrapping readouts outside scrolling. */
+      .plot,.readout{width:100%;max-width:600px}.details .plot,.details .readout{max-width:900px}
       @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}
     </style><div class="wrap">${body}</div></ha-card>`;
     this._bindCharts();
@@ -2502,8 +2572,8 @@ if (!customElements.get(CASCADE_CARD_TYPE)) {
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: CASCADE_CARD_TYPE,
-    name: "Battery Manager Cascades",
-    description: "Storage SOC, active source, Root/Aux energy, recovery and faults.",
+    get name() { return localize(null, "card_cascade"); },
+    get description() { return localize(null, "desc_cascade"); },
     preview: true,
     documentationURL: DOCS_URL,
     getEntitySuggestion: (hass, entityId) => {

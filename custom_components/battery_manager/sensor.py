@@ -260,6 +260,21 @@ class CascadeModeSensor(BatteryManagerEntity, SensorEntity):
     _unrecorded_attributes = frozenset({"member_details", "schedule"})
     _attr_icon = "mdi:source-branch"
     _attr_translation_key = "cascade_mode"
+    # Enum metadata lets HA translate phases while keeping automation states stable.
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [
+        "root",
+        "waking",
+        "waking_members",
+        "testing_terminal",
+        "idle",
+        "proving",
+        "running",
+        "recovering",
+        "complete",
+        "fault",
+        "hands_off",
+    ]
 
     def __init__(self, coordinator, subentry_id: str, title: str) -> None:
         super().__init__(coordinator, f"cascade_mode_{subentry_id}", subentry_id)

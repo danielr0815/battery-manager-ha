@@ -784,6 +784,12 @@
         "hourly": "Hourly (prefer wh_period values; warn when none present)",
         "daily": "Daily only (ignore hourly attributes)"
       }
+    },
+    "cascade_actor_mode": {
+      "options": {
+        "exclusive": "Controlled exclusively by Battery Manager",
+        "shared": "Shared (respect manual changes)"
+      }
     }
   },
   "entity": {
@@ -861,7 +867,20 @@
         "name": "{name} planning power"
       },
       "cascade_mode": {
-        "name": "{name} mode"
+        "name": "{name} mode",
+        "state": {
+          "root": "input supply",
+          "waking": "waking storage",
+          "waking_members": "waking storage chain",
+          "testing_terminal": "testing terminal load",
+          "idle": "Waiting",
+          "proving": "Checking storage",
+          "running": "Discharging storage",
+          "recovering": "Recharge pending",
+          "complete": "Cycle complete",
+          "fault": "Fault",
+          "hands_off": "Manual control"
+        }
       },
       "cascade_soc": {
         "name": "{name} SOC"
@@ -957,6 +976,50 @@
     "learning_no_recorder": {
       "title": "Consumption learning: recorder integration missing",
       "description": "Consumption learning needs the recorder integration (long-term statistics and state history), but measurement entities are configured without it. While the recorder is missing, the static load profile stays active and nothing is learned. Set up the recorder or remove the learning measurement entities; this notice clears itself after the first successful run."
+    },
+    "cascade_fault_invalid_topology": {
+      "title": "Storage cascade stopped safely",
+      "description": "Invalid storage chain configuration. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_safe_off_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Safety shutdown failed. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_restart_aux_reconciliation_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Storage supply could not be restored after restart. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_restart_wake_reconciliation_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Storage wake-up could not be restored after restart. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_exclusive_actor_changed_externally": {
+      "title": "Storage cascade stopped safely",
+      "description": "An exclusively controlled switch was changed externally. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_root_transition_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Switching to input supply failed. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_wake_failed_after_retry": {
+      "title": "Storage cascade stopped safely",
+      "description": "Storage wake-up failed after retry. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_source_power_proof_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Storage output power could not be confirmed. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_handover_failed_at_target": {
+      "title": "Storage cascade stopped safely",
+      "description": "Source change at the discharge target failed. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_terminal_test_restore_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Previous switch states could not be restored after the terminal test. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "cascade_fault_terminal_test_recovery_failed": {
+      "title": "Storage cascade stopped safely",
+      "description": "Interrupted terminal test could not be recovered. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
     }
   },
   "services": {
@@ -1021,6 +1084,74 @@
           "description": "Optional internal subentry ID for existing YAML calls. Not needed when a cascade is selected."
         }
       }
+    }
+  },
+  "exceptions": {
+    "entry_not_setup": {
+      "message": "No Battery Manager entry is set up"
+    },
+    "unknown_entry": {
+      "message": "Unknown entry_id: {value0}"
+    },
+    "not_cascade": {
+      "message": "Selected target is not a storage cascade: {value0}"
+    },
+    "cascade_mismatch": {
+      "message": "Selected cascade device does not match cascade_id {value0}"
+    },
+    "no_hourly_details": {
+      "message": "No hourly details available yet — the planner has not produced a plan since startup"
+    },
+    "no_learned_profiles": {
+      "message": "No learned consumption profiles available yet — the learner needs long-term statistics first"
+    },
+    "unknown_cascade_device": {
+      "message": "Unknown cascade device_id: {value0}"
+    },
+    "cascade_entry_mismatch": {
+      "message": "Selected cascade device does not belong to entry_id {value0}"
+    },
+    "device_entry_not_setup": {
+      "message": "Battery Manager entry for device is not set up: {value0}"
+    },
+    "export_refused": {
+      "message": "Refusing to export: {value0}"
+    },
+    "export_write_failed": {
+      "message": "Failed to write export: {value0}"
+    },
+    "cascade_output_failed": {
+      "message": "Could not activate cascade output {value0} within {value1} seconds after {value2} attempt(s) ({value3})"
+    },
+    "terminal_test_unavailable": {
+      "message": "Terminal test needs a valid, non-faulted cascade outside a transition"
+    },
+    "terminal_test_task": {
+      "message": "Terminal test needs an active Home Assistant task"
+    },
+    "invalid_cascade_topology": {
+      "message": "Cascade topology is invalid"
+    },
+    "cascade_actor_unknown": {
+      "message": "Cascade actor {value0} has no confirmed ON/OFF state"
+    },
+    "cascade_telemetry_timeout": {
+      "message": "Cascade member did not publish fresh telemetry within {value0} seconds"
+    },
+    "terminal_power_timeout": {
+      "message": "Terminal load did not publish fresh running power within {value0} seconds"
+    },
+    "cascade_input_failed": {
+      "message": "Could not activate the cascade root input"
+    },
+    "terminal_activation_failed": {
+      "message": "Could not activate the terminal load"
+    },
+    "cascade_gate_off_failed": {
+      "message": "Could not disable a cascade charge gate"
+    },
+    "terminal_test_failed": {
+      "message": "Terminal test failed: {error}"
     }
   }
 }

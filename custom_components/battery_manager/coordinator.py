@@ -217,6 +217,7 @@ from .core import (
     slot_starts,
 )
 from .history_profile import ProfileLearner
+from .localization import message
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1691,11 +1692,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             translation_key="stale_data_load_shed",
         )
         await self._push_notification(
-            "⚠️ Battery Manager: data loss — loads switched off",
-            f"No valid battery SOC or PV forecast data for"
-            f" {STALE_LOAD_SHED_HOURS}+ hours. All controlled surplus loads"
-            " were force-switched off (fail-safe); they resume automatically"
-            " once data returns.",
+            message(self.hass, "data_lost_title"),
+            message(self.hass, "data_lost", hours=STALE_LOAD_SHED_HOURS),
         )
         self._stale_shed_task = self.entry.async_create_background_task(
             self.hass,
@@ -1725,9 +1723,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if self.raw_config.get(CONF_WARNING_NOTIFY_ON_RESOLVE, True):
             await self._push_notification(
-                "✅ Battery Manager: data recovered",
-                "Valid battery SOC and PV forecast data are back; the"
-                " fail-safe load shed has ended and normal planning resumes.",
+                message(self.hass, "data_recovered_title"),
+                message(self.hass, "data_recovered"),
             )
 
     def _read_wh_period(
@@ -2318,23 +2315,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not targets:
             return
         if on:
-            msg_title = f"⚠️ {title}: power warning"
-            message = (
-                f"{title} draws {raw:.0f} W but {nominal:.0f} W are configured"
-                f" (sustained over {dwell:g} min). Check the device — full"
-                " water tank, wrong configured power, or a foreign consumer."
+            msg_title = message(self.hass, "power_warning_title", name=title)
+            body = message(
+                self.hass,
+                "power_warning",
+                name=title,
+                raw=raw,
+                nominal=nominal,
+                dwell=dwell,
             )
         else:
             if not self.raw_config.get(CONF_WARNING_NOTIFY_ON_RESOLVE, True):
                 return
-            msg_title = f"✅ {title}: power warning cleared"
-            message = f"{title} draws its configured power again."
+            msg_title = message(self.hass, "power_resolved_title", name=title)
+            body = message(self.hass, "power_resolved", name=title)
         for service in targets:
             try:
                 await self.hass.services.async_call(
                     "notify",
                     service,
-                    {"title": msg_title, "message": message},
+                    {"title": msg_title, "message": body},
                     blocking=False,
                 )
             except Exception as err:
@@ -2389,17 +2389,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         targets = self.raw_config.get(CONF_WARNING_NOTIFY_TARGETS) or []
         if not targets:
             return
-        msg_title = f"🪣 {title}: tank nearly full"
-        message = (
-            f"{title}: tank likely full within {max(0, round(remaining_min))} min"
-            " of runtime — please empty it."
+        msg_title = message(self.hass, "tank_title", name=title)
+        body = message(
+            self.hass, "tank", name=title, minutes=max(0, round(remaining_min))
         )
         for service in targets:
             try:
                 await self.hass.services.async_call(
                     "notify",
                     service,
-                    {"title": msg_title, "message": message},
+                    {"title": msg_title, "message": body},
                     blocking=False,
                 )
             except Exception as err:
@@ -5477,11 +5476,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             translation_key="support_switch_failed",
         )
         await self._push_notification(
-            "⚠️ Battery Manager: support switching failing",
-            f"The support actuators (48 V PSU / 24 V rail) failed"
-            f" {self._support_fail_count} times in a row — service call"
-            " failed or switchover not confirmed. Check the configured"
-            " switches; the 5-minute cycle keeps retrying.",
+            message(self.hass, "support_title"),
+            message(self.hass, "support", count=self._support_fail_count),
         )
 
     # ------------------------------------------------------------------
