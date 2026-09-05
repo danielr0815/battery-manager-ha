@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.3] - 2026-09-05
+
+### Fixed
+- Behebt eine Regression aus 0.36.2: HA-Konfigurationsdaten vom Typ
+  `mappingproxy` werden vor dem Speichern der Kaskaden-Zuordnung in normale
+  Dictionaries umgewandelt. Die Aktualisierung bricht nicht mehr mit
+  `TypeError: cannot pickle 'mappingproxy' object` ab.
+- Gespeicherte Kaskaden-Zuordnungen behalten nach dem JSON-Roundtrip ihre
+  Struktur; unveränderte Zuordnungen lösen nach einem Neustart keine unnötige
+  Speicherung aus. Ein Regressionstest prüft schreibgeschützte HA-Subentries,
+  Wiederherstellung und die Abschaltung entfernter Aktoren.
+
 ## [0.36.2] - 2026-09-05
 
 ### Fixed

@@ -675,7 +675,10 @@ class CascadeManager:
             load = self.coordinator.entry.subentries.get(load_id)
             if load is None:
                 return None
-            members.append((load_id, load.data))
+            # HA stores subentry data as mappingproxy, which deepcopy cannot
+            # copy. Plain dicts detach the persistent actor vector; lists keep
+            # equality stable after the storage JSON round-trip (0.36.2 incident).
+            members.append([load_id, dict(load.data)])
         terminal_id = cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
         terminal = self.coordinator.entry.subentries.get(terminal_id)
         if not members or terminal is None:
@@ -684,7 +687,7 @@ class CascadeManager:
             "id": cascade_id,
             "members": members,
             "terminal_id": terminal_id,
-            "terminal": terminal.data,
+            "terminal": dict(terminal.data),
         }
 
     def terminal_test_available(self, cascade_id: str) -> bool:

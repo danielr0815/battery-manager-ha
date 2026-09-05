@@ -4214,3 +4214,43 @@ def test_cascade_learning_uses_owned_isolated_charge_path() -> None:
     coordinator.entry.subentries["leaf"].data = {}
     assert manager.load_is_active("leaf") is True
     assert manager.load_is_active("missing") is False
+
+
+async def test_real_subentry_topology_is_serializable_and_stable_after_restore(
+    monkeypatch,
+):
+    """Live 0.36.2: HA mappingproxy data must survive snapshot and JSON restore."""
+    import json
+    from types import MappingProxyType
+
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    coordinator = _Coordinator(datetime(2026, 9, 5, tzinfo=UTC))
+    for sid, sub in tuple(coordinator.entry.subentries.items()):
+        coordinator.entry.subentries[sid] = ConfigSubentry(
+            data=MappingProxyType(sub.data),
+            subentry_type=sub.subentry_type,
+            title=sub.title,
+            unique_id=None,
+            subentry_id=sid,
+        )
+    assert isinstance(coordinator.entry.subentries["b1"].data, MappingProxyType)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    await manager.async_reconcile_topologies()
+    snapshot = manager.persistent_state_snapshot()
+    assert (
+        snapshot["chain"]["actor_topology"]["members"][0][1][CONF_LOAD_CONTROL_SWITCH]
+        == "switch.input"
+    )
+    coordinator._cascade_state = json.loads(json.dumps(snapshot))
+    manager = CascadeManager(coordinator)
+    flushes = coordinator.flushed
+    await manager.async_reconcile_topologies()
+    assert coordinator.flushed == flushes
+    assert coordinator.calls == []
+    # A later removal still uses the independently saved physical actor path.
+    coordinator.hass.states.get("switch.leaf").state = "on"
+    del coordinator.entry.subentries["chain"]
+    await manager.async_reconcile_topologies()
+    assert coordinator.calls == [("switch.leaf", False)]
+    assert "actor_topology" not in manager._state("chain")
