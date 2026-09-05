@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import voluptuous as vol
@@ -1403,10 +1404,44 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             for key in self._STORAGE_KEYS
         }
         for key in self._STORAGE_ENTITY_KEYS:
-            if key in self._existing:
+            if not self._basic.get(CONF_LOAD_ENERGY_LIMITED) and key in self._existing:
                 data[key] = self._existing[key]
         data.update(self._basic)
         data.update(storage_input)
+        if self._is_reconfigure:
+            # Reject incompatible type/actor changes before any sibling writes.
+            entry = self._get_entry()
+            edited = self._get_reconfigure_subentry()
+            proposed = SimpleNamespace(
+                subentries={
+                    **entry.subentries,
+                    edited.subentry_id: SimpleNamespace(
+                        subentry_type=SUBENTRY_TYPE_LOAD, data=data
+                    ),
+                }
+            )
+            for cascade_id, cascade in entry.subentries.items():
+                if cascade.subentry_type != SUBENTRY_TYPE_CASCADE:
+                    continue
+                if edited.subentry_id not in (
+                    *cascade.data.get(CONF_CASCADE_MEMBER_IDS, []),
+                    cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID),
+                ):
+                    continue
+                error = CascadeSubentryFlow._validate(
+                    SimpleNamespace(_get_entry=lambda: proposed),
+                    {**cascade.data, CONF_LOAD_NAME: cascade.title},
+                    cascade_id,
+                )
+                if error is not None:
+                    storage = bool(self._basic.get(CONF_LOAD_ENERGY_LIMITED))
+                    return self.async_show_form(
+                        step_id="storage" if storage else "reconfigure",
+                        data_schema=self._storage_schema(data)
+                        if storage
+                        else self._basic_schema(data),
+                        errors={"base": error},
+                    )
         title = data.pop(CONF_LOAD_NAME)
         data[CONF_LOAD_PRIORITY] = self._renumber_siblings(
             int(data[CONF_LOAD_PRIORITY])
@@ -1727,7 +1762,10 @@ class CascadeSubentryFlow(ConfigSubentryFlow):
             other_terminal = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
             if other_terminal:
                 used.add(other_terminal)
-            for load_id in subentry.data.get(CONF_CASCADE_MEMBER_IDS, []):
+            for load_id in [
+                *subentry.data.get(CONF_CASCADE_MEMBER_IDS, []),
+                other_terminal,
+            ]:
                 load = loads.get(load_id)
                 if load is None:
                     continue

@@ -2212,3 +2212,110 @@ def test_cascade_validator_rejects_load_or_actor_owned_by_another_chain():
     assert CascadeSubentryFlow._validate(flow, payload, None) == "cascade_actor_in_use"
     payload[CONF_CASCADE_MEMBER_IDS] = ["owned"]
     assert CascadeSubentryFlow._validate(flow, payload, None) == "cascade_member_in_use"
+
+
+def test_load_reconfigure_checks_cascade_before_writing_and_clears_optional_fields():
+    from unittest.mock import Mock
+
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.config_flow import (
+        SurplusLoadSubentryFlow as Flow,
+    )
+
+    member = SimpleNamespace(
+        subentry_id="member", subentry_type=c.SUBENTRY_TYPE_LOAD, data={}
+    )
+    chain = SimpleNamespace(
+        subentry_type=c.SUBENTRY_TYPE_CASCADE,
+        title="Chain",
+        data={
+            c.CONF_CASCADE_MEMBER_IDS: ["member"],
+            c.CONF_CASCADE_TERMINAL_LOAD_ID: "leaf",
+        },
+    )
+    leaf = SimpleNamespace(
+        subentry_type=c.SUBENTRY_TYPE_LOAD, data={c.CONF_LOAD_ENERGY_LIMITED: False}
+    )
+    entry = SimpleNamespace(subentries={"member": member, "leaf": leaf, "chain": chain})
+    flow = SimpleNamespace(
+        _STORAGE_KEYS=Flow._STORAGE_KEYS,
+        _STORAGE_ENTITY_KEYS=Flow._STORAGE_ENTITY_KEYS,
+        _existing={
+            c.CONF_LOAD_CHARGE_ENABLE: "switch.old",
+            c.CONF_LOAD_MAX_CHARGE_POWER_W: 500,
+        },
+        _basic={
+            c.CONF_LOAD_NAME: "Member",
+            c.CONF_LOAD_PRIORITY: 1,
+            c.CONF_LOAD_ENERGY_LIMITED: False,
+        },
+        _is_reconfigure=True,
+        _get_entry=lambda: entry,
+        _get_reconfigure_subentry=lambda: member,
+        _renumber_siblings=Mock(return_value=1),
+        async_update_and_abort=Mock(),
+        _basic_schema=lambda _: None,
+        _storage_schema=lambda _: None,
+        async_show_form=lambda **kw: kw,
+    )
+    result = Flow._finish(flow, {})
+    assert result["errors"]["base"] == "cascade_member_invalid"
+    flow._renumber_siblings.assert_not_called()
+    flow.async_update_and_abort.assert_not_called()
+    # With the chain removed, clearing selectors really removes them.
+    del entry.subentries["chain"]
+    flow._basic[c.CONF_LOAD_ENERGY_LIMITED] = True
+    Flow._finish(flow, {})
+    saved = flow.async_update_and_abort.call_args.kwargs["data"]
+    assert c.CONF_LOAD_CHARGE_ENABLE not in saved
+    assert c.CONF_LOAD_MAX_CHARGE_POWER_W not in saved
+
+
+def test_separate_cascades_cannot_alias_one_terminal_switch():
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.config_flow import CascadeSubentryFlow
+
+    def storage(prefix):
+        return SimpleNamespace(
+            subentry_type=c.SUBENTRY_TYPE_LOAD,
+            data={
+                c.CONF_LOAD_ENERGY_LIMITED: True,
+                c.CONF_LOAD_SOC_ENTITY: f"sensor.{prefix}",
+                c.CONF_LOAD_CONTROL_SWITCH: f"switch.{prefix}_input",
+                c.CONF_LOAD_CHARGE_ENABLE: f"switch.{prefix}_gate",
+                c.CONF_LOAD_OUTPUT_SWITCH: f"switch.{prefix}_output",
+                c.CONF_LOAD_OUTPUT_POWER_ENTITY: f"sensor.{prefix}_power",
+            },
+        )
+
+    def leaf():
+        return SimpleNamespace(
+            subentry_type=c.SUBENTRY_TYPE_LOAD,
+            data={c.CONF_LOAD_CONTROL_SWITCH: "switch.shared"},
+        )
+
+    entry = SimpleNamespace(
+        subentries={
+            "a": storage("a"),
+            "b": storage("b"),
+            "la": leaf(),
+            "lb": leaf(),
+            "ca": SimpleNamespace(
+                subentry_type=c.SUBENTRY_TYPE_CASCADE,
+                data={
+                    c.CONF_CASCADE_MEMBER_IDS: ["a"],
+                    c.CONF_CASCADE_TERMINAL_LOAD_ID: "la",
+                },
+            ),
+        }
+    )
+    result = CascadeSubentryFlow._validate(
+        SimpleNamespace(_get_entry=lambda: entry),
+        {
+            c.CONF_LOAD_NAME: "B",
+            c.CONF_CASCADE_MEMBER_IDS: ["b"],
+            c.CONF_CASCADE_TERMINAL_LOAD_ID: "lb",
+        },
+        None,
+    )
+    assert result == "cascade_actor_in_use"

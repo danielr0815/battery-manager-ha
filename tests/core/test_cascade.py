@@ -1265,3 +1265,71 @@ def test_cascade_golden_snapshot() -> None:
     )
     assert allocation is not None
     assert allocation[0][0].source_load_id == "b2"
+
+
+@pytest.mark.parametrize("initial", [10.0, 100.0])
+def test_idle_soc_is_conserved_outside_dispatch_targets(initial):
+    """Targets restrict new flows; they never add or erase stored energy."""
+    config, inputs = _system(socs=(initial,))
+    inputs = replace(
+        inputs,
+        slots=_slots(0, 0, 0),
+        load_states=tuple(
+            replace(state, available=False) for state in inputs.load_states
+        ),
+    )
+    result = plan(config, inputs)
+    for slot in result.cascade_plans[0].flows:
+        member = slot.member_flows[0]
+        assert member.soc_start_percent == pytest.approx(initial)
+        assert member.soc_end_percent == pytest.approx(initial)
+        assert member.battery_charge_wh == member.battery_discharge_wh == 0.0
+
+
+def test_missing_soc_remains_unknown_in_core_flow():
+    config, inputs = _system()
+    inputs = replace(
+        inputs,
+        load_states=tuple(
+            replace(state, soc_percent=None, soc_source="missing", available=False)
+            for state in inputs.load_states
+        ),
+    )
+    cascade = plan(config, inputs).cascade_plans[0]
+    assert cascade.aggregate_soc_percent is None
+    assert all(not flow.member_flows[0].soc_known for flow in cascade.flows)
+
+
+@pytest.mark.parametrize("cap", [100.0, 300.0, 500.0, 600.0])
+def test_root_passthrough_caps_bound_simultaneous_power(cap):
+    """Two 300 W consumers cannot share a 500 W path, even at short duty cycles."""
+    config, inputs = _system(members=2, socs=(90.0, 20.0))
+    chain = config.cascades[0]
+    config = replace(
+        config,
+        cascades=(
+            replace(
+                chain,
+                members=(
+                    replace(chain.members[0], max_passthrough_power_w=cap),
+                    chain.members[1],
+                ),
+            ),
+        ),
+    )
+    inputs = replace(inputs, start_soc_percent=95, slots=_slots(2000, 2000, 2000))
+    result = plan(config, inputs)
+    downstream = [item for item in result.load_plans if item.load_id in ("b2", "leaf")]
+    for index in range(len(inputs.slots)):
+        watts = sum(300 for item in downstream if item.schedule[index])
+        assert watts <= cap
+    if cap < 300:
+        assert all(not any(item.schedule) for item in downstream)
+    else:
+        assert any(any(item.schedule) for item in downstream)
+    for flow in result.cascade_plans[0].flows:
+        for member in flow.member_flows:
+            delta = 2000 * (member.soc_end_percent - member.soc_start_percent) / 100
+            assert delta == pytest.approx(
+                member.battery_charge_wh - member.battery_discharge_wh
+            )

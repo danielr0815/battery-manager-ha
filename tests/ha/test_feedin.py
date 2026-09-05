@@ -1092,3 +1092,35 @@ async def test_downward_trim_stays_immediate_during_plan_flap(hass):
     await pass_at(40, 800.0)
     assert calls[-1] == (SETPOINT, 0.0)
     assert float(hass.states.get(SETPOINT).state) == 0.0
+
+
+async def test_removing_battery_sensor_releases_owned_export_setpoint():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.coordinator import (
+        BatteryManagerCoordinator as Coordinator,
+    )
+
+    writes = AsyncMock(return_value=True)
+    coordinator = SimpleNamespace(
+        raw_config={
+            c.CONF_FEEDIN_ENABLED: False,
+            c.CONF_FEEDIN_SETPOINT_ENTITY: "input_number.export",
+            c.CONF_FEEDIN_BATTERY_POWER_ENTITY: None,
+        },
+        _feedin_owned_entity="input_number.export",
+        _feedin_last_written_w=500,
+        feedin_manual=lambda: False,
+        hass=SimpleNamespace(states=SimpleNamespace(get=lambda _: object())),
+        _switch_lock=asyncio.Lock(),
+        _set_number_value=writes,
+        _save_persistent_state=lambda: None,
+    )
+    coordinator._feedin_entities = lambda: Coordinator._feedin_entities(coordinator)
+    await Coordinator._feedin_release_orphan(coordinator)
+    assert writes.await_count == 1
+    assert writes.call_args.args[:2] == ("input_number.export", 0.0)
+    assert coordinator._feedin_owned_entity is None

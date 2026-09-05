@@ -220,3 +220,24 @@ test('frontend dictionaries have matching keys and unsupported languages use Eng
  assert.deepEqual(Object.keys(strings.de).sort(),Object.keys(strings.en).sort());
  assert.equal(vm.runInContext('localize({language:"fr"},"card_cascade")',context),'Battery Manager Cascades');
 });
+
+test('consumption horizon clips boundary and partial slots without adding an hour',()=>{
+ const C=definitions.get('battery-manager-consumption-card');
+ for (const hours of [0.25,6]) {
+  const c=new C();c._config={hours};c._width=800;c._hass={language:'en',config:{time_zone:'UTC'}};
+  const base=Date.parse('2026-09-05T08:30:00Z');
+  const points=Array.from({length:12},(_,i)=>({t:new Date(base+(i===0?0:i-.5)*3600000).toISOString(),ac_w:1000,duration_h:i===0?.5:1}));
+  c._renderChart({attributes:{consumption_forecast:points}},key=>key);
+  assert.equal((c._chartMeta.t1-c._chartMeta.t0)/3600000,hours);
+  assert.ok(c._statsText.includes(`${hours.toFixed(1)}/0.0`));
+ }
+});
+
+test('consumption day totals follow HA timezone across the repeated autumn hour',()=>{
+ const C=definitions.get('battery-manager-consumption-card');const c=new C();
+ c._config={hours:48};c._width=800;c._hass={language:'en',config:{time_zone:'Europe/Berlin'}};
+ const base=Date.parse('2026-10-24T22:00:00Z');
+ const points=Array.from({length:48},(_,i)=>({t:new Date(base+i*3600000).toISOString(),ac_w:1000,duration_h:1}));
+ c._renderChart({attributes:{consumption_forecast:points}},key=>key);
+ assert.ok(c._statsText.includes('25.0/23.0'));
+});

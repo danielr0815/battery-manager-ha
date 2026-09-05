@@ -941,3 +941,21 @@ async def test_stale_realized_sensors_removed_when_gates_close(hass):
     assert reloaded is not coordinator
     assert "realized" not in reloaded.data
     assert EXPORT not in reloaded._tracked_entities()
+
+
+async def test_nan_counter_does_not_poison_realized_ledger(hass):
+    import math
+
+    hass.states.async_set(LOAD_A_ENERGY, "1.0", KWH)
+    coordinator, _entry = await _setup(
+        hass,
+        loads=(
+            (LOAD_A, {CONF_LOAD_POWER_W: 400, CONF_LOAD_ENERGY_ENTITY: LOAD_A_ENERGY}),
+        ),
+    )
+    # Exercise the real ledger with virtual timestamps.
+    for index, reading in enumerate(("1.0", "NaN", "1.01", "1.02", "1.03")):
+        hass.states.async_set(LOAD_A_ENERGY, reading, KWH)
+        coordinator._update_realized_surplus(T0 + FIVE_MIN * index, [])
+    assert math.isfinite(coordinator._realized["prevented_wh"])
+    assert coordinator._realized["prevented_wh"] == pytest.approx(20.0)

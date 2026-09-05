@@ -4,6 +4,7 @@ import logging
 from dataclasses import replace
 from datetime import datetime
 
+import pytest
 from core.model import ApplianceRun, LoadProfile, PVParams, SystemConfig
 from core.series import build_slots, insert_appliance_run, pv_hour_share, slot_starts
 
@@ -421,3 +422,34 @@ def test_insert_appliance_run_without_remaining_work_is_noop():
 
     for out in (zero_energy, zero_hours):
         assert [s.ac_wh for s in out.slots] == [s.ac_wh for s in inputs.slots]
+
+
+@pytest.mark.parametrize("month, day, hours", [(3, 29, 23), (10, 25, 25)])
+def test_dst_slots_conserve_real_elapsed_energy(month, day, hours):
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from custom_components.battery_manager.core.forecast_hours import aggregate_hours
+    from custom_components.battery_manager.core.model import LoadProfile, SystemConfig
+    from custom_components.battery_manager.core.series import build_slots
+
+    now = datetime(2026, month, day, tzinfo=ZoneInfo("Europe/Berlin"))
+    config = SystemConfig(ac_profile=LoadProfile(base_w=1000, variable_w=0))
+    # Fixed offsets preserve distinct buckets for both occurrences of 02:00.
+    buckets = aggregate_hours(
+        ((now.astimezone(UTC) + timedelta(hours=i)).astimezone(now.tzinfo), 500.0)
+        for i in range(hours)
+    )
+    inputs = build_slots(config, now, 50, [hours / 2], pv_hourly=buckets)
+    assert len(inputs.slots) == len(buckets) == hours
+    assert sum(slot.duration for slot in inputs.slots) == hours
+    assert sum(slot.ac_wh for slot in inputs.slots) == hours * 1000
+    assert sum(slot.pv_wh for slot in inputs.slots) == hours * 500
+    assert all(slot.start.date() == now.date() for slot in inputs.slots)
+    assert all(
+        (b.start - a.start).total_seconds() == 3600
+        for a, b in zip(inputs.slots, inputs.slots[1:], strict=False)
+    )
+    assert inputs.slots[-1].start + timedelta(hours=1) == (
+        now + timedelta(days=1)
+    ).astimezone(UTC)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 
 from .forecast_hours import coverage_and_residual
 from .model import ApplianceRun, HourSlot, PlanInputs, SurplusLoadState, SystemConfig
@@ -78,36 +78,27 @@ def pv_hour_share(pv, hour_of_day: int) -> float:
     return raw / total if total > 0.0 else raw
 
 
-def slot_starts(now: datetime, num_days: int) -> tuple[datetime, ...]:
-    """Enumerate the slot start times of a planning horizon.
+def fixed_local_time(value: datetime) -> datetime:
+    """Preserve the local clock and offset without ambiguous DST arithmetic."""
+    offset = value.utcoffset()
+    return value.replace(tzinfo=timezone(offset)) if offset is not None else value
 
-    Single source of truth for the slot grid (partial first hour, then a
-    fixed hourly raster until midnight after the last forecast day). Used by
-    build_slots AND by callers that construct per-slot input series, so both
-    sides can never disagree on slot count or indexing (D-C5).
-    """
+
+def slot_starts(now: datetime, num_days: int) -> tuple[datetime, ...]:
+    """Real hourly intervals through local midnight, including 23/25-hour days."""
     if num_days <= 0:
         return ()
-    horizon_end = (now + timedelta(days=num_days - 1)).replace(
-        hour=23, minute=59, second=59, microsecond=0
+    end = (now + timedelta(days=num_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
     )
-    starts: list[datetime] = []
-    slot_start = now
-    index = 0
-    # The FIRST slot is emitted unconditionally (code review 2026-07): at
-    # now >= 23:59:59.x of the last forecast day, `now` sits past horizon_end
-    # (whose microseconds are pinned to 0) and the horizon used to come back
-    # EMPTY, leaving downstream with no plan for the current moment. The
-    # remaining sliver of the day is a valid tiny slot instead.
-    while slot_start <= horizon_end or not starts:
-        starts.append(slot_start)
-        if index == 0:
-            slot_start = slot_start.replace(
-                minute=0, second=0, microsecond=0
-            ) + timedelta(hours=1)
-        else:
-            slot_start += timedelta(hours=1)
-        index += 1
+    aware = now.utcoffset() is not None
+    cursor = now.astimezone(UTC) if aware else now
+    end = end.astimezone(UTC) if aware else end
+    starts = []
+    while cursor < end:
+        local = cursor.astimezone(now.tzinfo) if aware else cursor
+        starts.append(fixed_local_time(local))
+        cursor += timedelta(hours=_slot_duration_hours(len(starts) - 1, local))
     return tuple(starts)
 
 
@@ -254,7 +245,7 @@ def build_slots(
     slot index. A None value (or a series shorter than the horizon) falls
     back to the static profile for that slot only.
 
-    `pv_hourly` is an optional naive-local hour-start -> Wh map (docs/F-PREDRAIN.md
+    `pv_hourly` is an optional local hour-start -> Wh map (with matching offsets) (docs/F-PREDRAIN.md
     F1). When non-empty it drives the per-slot PV instead of the two-window model;
     None or an empty map keeps the two-window synthesis bit-identical to before.
 
@@ -302,7 +293,7 @@ def build_slots(
     slots = _apply_appliance_runs(slots, appliance_runs)
 
     return PlanInputs(
-        now=now,
+        now=fixed_local_time(now),
         start_soc_percent=start_soc_percent,
         slots=tuple(slots),
         load_states=load_states,

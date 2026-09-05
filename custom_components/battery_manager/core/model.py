@@ -552,6 +552,7 @@ class CascadeMemberFlow:
     own_charge_input_wh: float = 0.0
     battery_charge_wh: float = 0.0
     battery_discharge_wh: float = 0.0
+    soc_known: bool = True
 
 
 @dataclass(frozen=True)

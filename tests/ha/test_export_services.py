@@ -11,7 +11,7 @@ import os
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import voluptuous as vol
@@ -309,10 +309,14 @@ async def test_startup_sweep_removes_stale_downloads(hass):
     old_ts = (dt_util.utcnow() - timedelta(hours=2)).timestamp()
     os.utime(stale, (old_ts, old_ts))
 
-    assert await async_setup(hass, {})
-
+    with patch("custom_components.battery_manager.async_call_later") as schedule:
+        assert await async_setup(hass, {})
+    assert schedule.call_count == 1
+    assert 3590 < schedule.call_args.args[1] <= 3600
     assert not stale.exists()
     assert fresh.is_file()
+    await schedule.call_args.args[2](dt_util.utcnow())
+    assert not fresh.exists()
 
 
 def test_export_path_rejects_null_hidden_and_resolution_failures(tmp_path, monkeypatch):
@@ -477,3 +481,47 @@ async def test_download_cleanup_tolerates_external_delete_and_reports_io_error(
     missing.unlink.assert_called_once_with()
     broken.unlink.assert_called_once_with()
     assert "Could not delete expired download export: read-only" in caplog.text
+
+
+async def test_nested_download_link_preserves_and_quotes_relative_path(hass):
+    entry = await _setup_entry(hass)
+    _coordinator(hass, entry).data = {"hourly_details": HOURLY_DETAILS}
+    target = (
+        Path(hass.config.config_dir)
+        / "www"
+        / "battery_manager"
+        / "reports"
+        / "Bericht ä #1.json"
+    )
+    with patch("custom_components.battery_manager._schedule_download_cleanup"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_EXPORT_HOURLY_DETAILS,
+            {"download": True, "file_path": str(target)},
+            blocking=True,
+        )
+    assert target.is_file()
+    notifications = async_get_persistent_notifications(hass)
+    assert any(
+        "/local/battery_manager/reports/Bericht%20%C3%A4%20%231.json" in item["message"]
+        for item in notifications.values()
+    )
+
+
+async def test_restart_rearms_nested_exports_for_remaining_ttl(hass):
+    from custom_components.battery_manager import _async_sweep_download_dir
+
+    base = Path(hass.config.config_dir) / "www" / "battery_manager" / "nested"
+    base.mkdir(parents=True)
+    target = base / "recent.json"
+    target.write_text("{}")
+    timestamp = 1800000000
+    os.utime(target, (timestamp - 1800, timestamp - 1800))
+    with (
+        patch("custom_components.battery_manager.time.time", return_value=timestamp),
+        patch("custom_components.battery_manager.async_call_later") as timer,
+    ):
+        await _async_sweep_download_dir(hass)
+    assert timer.call_args.args[1] == 1800
+    await timer.call_args.args[2](dt_util.utcnow())
+    assert not target.exists()

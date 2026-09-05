@@ -1567,6 +1567,7 @@ class BatteryManagerConsumptionCard extends HTMLElement {
       .filter((p) => p && p.t != null)
       .map((p) => ({
         time: new Date(p.t).getTime(),
+        duration: num(p.duration_h),
         ac: num(p.ac_w) ?? 0,
         dc48: num(p.dc48_w) ?? 0,
         dc24: num(p.dc24_w) ?? 0,
@@ -1574,32 +1575,20 @@ class BatteryManagerConsumptionCard extends HTMLElement {
         learned: typeof p.src === "string" && p.src === "L/L",
       }))
       .filter((p) => Number.isFinite(p.time));
-    if (points.length < 2) {
-      return this._message(t("no_data"));
-    }
-    const horizonMs = Number(this._config.hours) * 3600 * 1000;
-    if (horizonMs > 0) {
-      const cutoff = points[0].time + horizonMs;
-      const capped = points.filter((p) => p.time <= cutoff);
-      if (capped.length >= 2) {
-        points = capped;
-      }
-    }
-    if (points.length > MAX_POINTS) {
-      const stride = Math.ceil(points.length / MAX_POINTS);
-      points = points.filter(
-        (_, i, arr) => i % stride === 0 || i === arr.length - 1
-      );
-    }
-    // Slot durations from the gaps to the next slot start (slot 0 is a
-    // partial hour); the last slot reuses the previous duration.
-    const durs = points.map((p, i) =>
-      i + 1 < points.length
-        ? (points[i + 1].time - p.time) / 3600000
-        : (p.time - points[i - 1].time) / 3600000
-    );
+    points.sort((a, b) => a.time - b.time);
+    points = points.map((p, i) => ({ ...p, end: p.time + (
+      p.duration > 0 ? p.duration * 3600000 :
+      i + 1 < points.length ? points[i + 1].time - p.time : 3600000
+    ) }));
+    if (!points.length) return this._message(t("no_data"));
+    const horizonMs = Number(this._config.hours) * 3600000;
+    const cutoff = horizonMs > 0 ? points[0].time + horizonMs : Infinity;
+    points = points.filter((p) => p.time < cutoff && p.end > p.time)
+      .map((p) => ({ ...p, end: Math.min(p.end, cutoff) }));
+    if (!points.length) return this._message(t("no_data"));
+    const durs = points.map((p) => (p.end - p.time) / 3600000);
     const t0 = points[0].time;
-    const t1 = points[points.length - 1].time + durs[durs.length - 1] * 3600000;
+    const t1 = points[points.length - 1].end;
     if (t1 <= t0) {
       return this._message(t("no_data"));
     }
@@ -1647,13 +1636,15 @@ class BatteryManagerConsumptionCard extends HTMLElement {
     );
 
     // Vertical grid: day boundaries (labelled) and 6-hour ticks
-    const dayFmt = new Intl.DateTimeFormat(lang, { weekday: "short" });
+    const timeZone = this._hass?.config?.time_zone;
+    const dayFmt = new Intl.DateTimeFormat(lang, { weekday: "short", timeZone });
+    const hourFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone });
     for (
       let tick = new Date(t0).setMinutes(0, 0, 0) + 3600 * 1000;
       tick <= t1;
       tick += 3600 * 1000
     ) {
-      const hour = new Date(tick).getHours();
+      const hour = Number(hourFmt.format(tick));
       if (hour === 0) {
         svg.push(
           `<line x1="${x(tick)}" y1="${margin.top}" x2="${x(tick)}"
@@ -1724,7 +1715,8 @@ class BatteryManagerConsumptionCard extends HTMLElement {
     this._chartMeta = { points, durs, totals, barMeta, x, margin, plotH, t0, t1, lang };
 
     // Per-day kWh sums (today / tomorrow) per layer, from W x slot hours.
-    const dayKey = (time) => new Date(time).toDateString();
+    const dateFmt = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone });
+    const dayKey = (time) => dateFmt.format(time);
     const day0 = dayKey(t0);
     let day1 = null;
     const sums = {};

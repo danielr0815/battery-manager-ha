@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import voluptuous as vol
 from homeassistant.components.frontend import add_extra_js_url
@@ -15,7 +16,11 @@ from homeassistant.components.persistent_notification import (
     async_create as persistent_notification_create,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_STARTED,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
 from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
@@ -151,20 +156,28 @@ async def _async_sweep_download_dir(hass: HomeAssistant) -> None:
     download_dir = Path(hass.config.config_dir) / "www" / _EXPORT_SUBDIR
     cutoff = time.time() - _DOWNLOAD_TTL_S
 
-    def _sweep() -> None:
+    def _sweep() -> list[tuple[Path, float]]:
+        remaining = []
         try:
-            children = list(download_dir.iterdir())
+            children = list(download_dir.rglob("*"))
         except OSError:  # nothing exported yet (or directory unreadable)
-            return
+            return remaining
         for child in children:
             try:
-                if child.is_file() and child.stat().st_mtime < cutoff:
+                if not child.is_file() or child.is_symlink():
+                    continue
+                expires_in = child.stat().st_mtime - cutoff
+                if expires_in <= 0:
                     child.unlink()
                     _LOGGER.info("Removed stale download export %s", child)
+                else:
+                    remaining.append((child, min(expires_in, _DOWNLOAD_TTL_S)))
             except OSError as err:
                 _LOGGER.warning("Could not remove stale export %s: %s", child, err)
+        return remaining
 
-    await hass.async_add_executor_job(_sweep)
+    for target, delay in await hass.async_add_executor_job(_sweep):
+        _schedule_download_cleanup(hass, target, delay)
 
 
 async def _async_setup_card(hass: HomeAssistant) -> None:
@@ -235,6 +248,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.integration_version = str(_mf_version) if _mf_version else None
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
+
+    async def _on_stop(_event: Event) -> None:
+        await coordinator.async_cancel_actuation_tasks()
+        coordinator.cleanup()
+        await coordinator.async_flush_persistent_state()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
+    )
 
     # Restore SOC cache / plug ownership, then first refresh; a refresh
     # failure is tolerated (fast retry interval during startup).
@@ -573,7 +595,9 @@ def _cascade_service_target(
     return coordinator, cascade_id
 
 
-def _schedule_download_cleanup(hass: HomeAssistant, target: Path) -> None:
+def _schedule_download_cleanup(
+    hass: HomeAssistant, target: Path, delay: float = _DOWNLOAD_TTL_S
+) -> None:
     """Delete a download export once its TTL expires.
 
     The /local/ tree is served without login, so the export (learned
@@ -594,7 +618,7 @@ def _schedule_download_cleanup(hass: HomeAssistant, target: Path) -> None:
     async def _on_ttl_expired(_now) -> None:
         await hass.async_add_executor_job(_delete)
 
-    async_call_later(hass, _DOWNLOAD_TTL_S, _on_ttl_expired)
+    async_call_later(hass, delay, _on_ttl_expired)
 
 
 async def _async_write_export(
@@ -647,7 +671,7 @@ async def _async_write_export(
                 hass,
                 "download",
                 name=target.name,
-                url=f"/local/{_EXPORT_SUBDIR}/{target.name}",
+                url=f"/local/{_EXPORT_SUBDIR}/{quote(target.relative_to(base_dir.resolve()).as_posix())}",
             ),
             title=message(hass, "export_title"),
         )

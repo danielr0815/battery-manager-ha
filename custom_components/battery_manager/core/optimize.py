@@ -4,6 +4,7 @@ escalation. Implements docs/ALGORITHM.md §1 with decisions D-A1..D-A9."""
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import timedelta
 
@@ -651,6 +652,34 @@ def _saturation_power_w(
     return max(effective_power_w, nominal_w)
 
 
+def _respects_path_power_limits(
+    load_id: str,
+    covered: list[tuple[int, float]],
+    run_hours: Mapping[str, Sequence[float]],
+    limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...],
+) -> bool:
+    """All runs start at the slot boundary: their simultaneous W must fit.
+
+    A shorter duty cycle cannot make a fixed-power device fit a smaller AC
+    passthrough limit. Check the complete path on every allocation pass.
+    """
+    for participants, cap in limits:
+        if not any(key == load_id for key, _power in participants):
+            continue
+        for index, take in covered:
+            if (
+                take > _EPS
+                and sum(
+                    power
+                    for key, power in participants
+                    if key == load_id or run_hours[key][index] > _EPS
+                )
+                > cap + _EPS
+            ):
+                return False
+    return True
+
+
 def _respects_cumulative_energy_cap(
     load_id: str,
     power_w: float,
@@ -781,6 +810,7 @@ def allocate_loads(
     pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
     remaining_energy_overrides: dict[str, float] | None = None,
     power_caps_w: dict[str, float] | None = None,
+    path_power_limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...] = (),
     cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     recovery_cumulative_caps_wh: dict[str, tuple[float, ...]] | None = None,
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
@@ -1026,6 +1056,10 @@ def allocate_loads(
         candidate is vetoed, else the trial trajectory for the caller's
         pass-specific gates / acceptance.
         """
+        if not _respects_path_power_limits(
+            load.load_id, covered, run_h, path_power_limits
+        ):
+            return None
         traj = simulate(
             config,
             inputs,
@@ -1650,6 +1684,7 @@ def _allocate_recovery_after_continuous_loads(
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
     power_caps_w: dict[str, float] | None = None,
+    path_power_limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...] = (),
     cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     *,
     allow_final_quantum_overshoot: bool = False,
@@ -1768,6 +1803,23 @@ def _allocate_recovery_after_continuous_loads(
                     continue
                 if any(schedules[j] and j != i for j, _take in covered):
                     continue
+                path_runs = {
+                    key: (
+                        item.run_hours
+                        or tuple(
+                            slot.duration if on else 0.0
+                            for slot, on in zip(
+                                inputs.slots, item.schedule, strict=True
+                            )
+                        )
+                    )
+                    for key, item in plans.items()
+                }
+                path_runs[load.load_id] = tuple(run_hours)
+                if not _respects_path_power_limits(
+                    load.load_id, covered, path_runs, path_power_limits
+                ):
+                    continue
                 if not _respects_cumulative_energy_cap(
                     load.load_id,
                     power_w,
@@ -1880,6 +1932,7 @@ def _allocate_recovery_after_continuous_loads(
             dc24_schedule,
             dc48_schedule,
             power_caps_w,
+            path_power_limits,
             cumulative_energy_caps_wh,
             allow_final_quantum_overshoot=True,
             visible_export_only=visible_export_only,
@@ -2258,6 +2311,7 @@ def _plan_legacy(
     remaining_energy_overrides: dict[str, float] | None = None,
     recovery_targets_wh: dict[str, float] | None = None,
     power_caps_w: dict[str, float] | None = None,
+    path_power_limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...] = (),
     cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     recovery_cumulative_caps_wh: dict[str, tuple[float, ...]] | None = None,
 ) -> PlanResult:
@@ -2313,6 +2367,7 @@ def _plan_legacy(
         pass1_energy_phases=pass1_energy_phases,
         remaining_energy_overrides=remaining_energy_overrides,
         power_caps_w=power_caps_w,
+        path_power_limits=path_power_limits,
         cumulative_energy_caps_wh=cumulative_energy_caps_wh,
         recovery_cumulative_caps_wh=recovery_cumulative_caps_wh,
     )
@@ -2335,6 +2390,7 @@ def _plan_legacy(
             dc24_schedule=forced_dc24,
             dc48_schedule=forced_dc48,
             power_caps_w=power_caps_w,
+            path_power_limits=path_power_limits,
             cumulative_energy_caps_wh=recovery_cumulative_caps_wh,
         )
         # The terminal's continuous block can also expose residual export for
@@ -2354,6 +2410,7 @@ def _plan_legacy(
                     dc24_schedule=forced_dc24,
                     dc48_schedule=forced_dc48,
                     power_caps_w=power_caps_w,
+                    path_power_limits=path_power_limits,
                     cumulative_energy_caps_wh=cumulative_energy_caps_wh,
                     visible_export_only=True,
                     today_only=False,
@@ -2608,6 +2665,31 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         aux_segments: tuple[CascadeSourceSegment, ...] = (),
     ) -> PlanResult:
         states = {state.load_id: state for state in trial_inputs.load_states}
+        path_power_limits = tuple(
+            (
+                tuple(
+                    (
+                        load_id,
+                        _effective_load_power_w(
+                            loads_by_id[load_id],
+                            states.get(load_id, SurplusLoadState(load_id=load_id)),
+                            cascade_power_caps_w,
+                        ),
+                    )
+                    for load_id in (
+                        *(
+                            downstream.load_id
+                            for downstream in cascade.members[index + 1 :]
+                        ),
+                        cascade.terminal_load_id,
+                    )
+                ),
+                member.max_passthrough_power_w,
+            )
+            for cascade in config.cascades
+            for index, member in enumerate(cascade.members)
+            if member.max_passthrough_power_w is not None
+        )
         remaining_overrides: dict[str, float] = {}
         phases: list[tuple[str, float | None]] = []
         recovery_targets: dict[str, float] = {}
@@ -2733,6 +2815,7 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             remaining_energy_overrides=remaining_overrides,
             recovery_targets_wh=recovery_targets,
             power_caps_w=cascade_power_caps_w,
+            path_power_limits=path_power_limits,
             cumulative_energy_caps_wh=cumulative_caps or None,
             recovery_cumulative_caps_wh=recovery_cumulative_caps or None,
         )

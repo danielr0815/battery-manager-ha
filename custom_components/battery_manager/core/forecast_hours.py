@@ -1,34 +1,28 @@
-"""Hourly PV forecast aggregation (pure core, no Home Assistant imports).
+"""Aggregate hourly PV energy without merging distinct DST-fold instants.
 
-The three PV forecast entities expose an hourly ``wh_period`` attribute
-(Open-Meteo: hourly buckets; the balcony-solar-forecast integration: 15-min
-buckets). This module reduces those raw buckets to a naive-local hour -> Wh map
-and derives the per-day residual used to fill the hours the hourly forecast does
-not cover (docs/F-PREDRAIN.md F1). Timezone parsing / normalisation happens in
-the coordinator; everything here operates on naive-local datetimes.
+The coordinator parses timezone information. Naive inputs remain supported for
+pure-core callers; aware inputs retain fixed local offsets and calendar dates.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def aggregate_hours(
     entries: Iterable[tuple[datetime, float]],
 ) -> dict[datetime, float]:
-    """Sum sub-hour buckets into naive-local hour-start keys.
+    """Sum sub-hour energy buckets, keeping repeated local hours separate.
 
-    ``entries`` are (timestamp, Wh) pairs with naive-local timestamps (the caller
-    has already converted any aware key to local and dropped tzinfo). Values are
-    Wh produced during the bucket (Open-Meteo ``wh_period`` semantics), so 15- or
-    30-minute buckets that fall in the same hour are ADDED. A whole-hour series
-    passes through unchanged (one bucket per hour). Two buckets landing on the
-    same local hour after a DST fall-back are likewise summed.
+    Fixed offsets avoid Python's same-ZoneInfo fold equality: 02:00+02:00
+    and 02:00+01:00 are two independent hours, never one double-size bucket.
     """
     hours: dict[datetime, float] = {}
     for ts, wh in entries:
         key = ts.replace(minute=0, second=0, microsecond=0)
+        if (offset := key.utcoffset()) is not None:
+            key = key.replace(tzinfo=timezone(offset))
         hours[key] = hours.get(key, 0.0) + wh
     return hours
 

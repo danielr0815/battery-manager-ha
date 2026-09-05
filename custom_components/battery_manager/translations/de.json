@@ -267,7 +267,18 @@
       "error": {
         "keep_on_requires_enable": "Die Politik „Anlassen“ erfordert eine Lade-Freigabe-Entität — sonst könnte das Laden nie gestoppt werden.",
         "control_entities_not_distinct": "Ladeeingang-Schalter und Lade-Freigabe müssen unterschiedliche Entitäten sein.",
-        "name_required": "Bitte gib einen Namen für die Last ein."
+        "name_required": "Bitte gib einen Namen für die Kaskade ein.",
+        "cascade_members_required": "Wähle mindestens einen Speicher.",
+        "cascade_duplicate_member": "Jede Last darf nur einmal vorkommen.",
+        "cascade_terminal_invalid": "Die Endlast muss eine Nicht-Speicher-Last sein.",
+        "cascade_member_in_use": "Eine ausgewählte Last wird bereits von einer Kaskade verwendet.",
+        "cascade_member_invalid": "Ein Mitglied ist kein gültiger Speicher.",
+        "cascade_member_incomplete": "Jeder Speicher benötigt SOC, Lade-Gate, Ausgangsschalter und Ausgangsleistung.",
+        "cascade_root_input_required": "Der erste Speicher benötigt einen Eingangsschalter.",
+        "cascade_nonroot_input_forbidden": "Nur der erste Speicher darf einen Eingangsschalter besitzen.",
+        "cascade_soc_order": "Es muss Sicherheitsuntergrenze < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
+        "cascade_handover_timeout": "Der Zeitlimit für Quellenwechsel muss mindestens 60 Sekunden betragen.",
+        "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein."
       },
       "initiate_flow": {
         "user": "Überschusslast hinzufügen",

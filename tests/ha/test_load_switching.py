@@ -422,7 +422,7 @@ async def test_soc_cache_survives_sleeping_device(hass):
     assert states[0].soc_percent == 62.5
 
 
-async def test_cached_soc_timestamp_is_normalized_for_naive_core_clock(hass):
+async def test_cached_soc_timestamp_preserves_its_instant_for_core_clock(hass):
     """An aware persisted UTC timestamp cannot break the first restart plan."""
     from homeassistant.util import dt as dt_util
 
@@ -439,7 +439,7 @@ async def test_cached_soc_timestamp_is_normalized_for_naive_core_clock(hass):
 
     assert state.soc_source == "cache"
     assert state.soc_observed_at is not None
-    assert state.soc_observed_at.tzinfo is None
+    assert state.soc_observed_at == cached_at
 
 
 async def test_switch_dwell_survives_restart(hass):

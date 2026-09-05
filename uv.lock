@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "battery-manager-ha"
-version = "0.36.1"
+version = "0.36.2"
 source = { virtual = "." }
 
 [package.dev-dependencies]

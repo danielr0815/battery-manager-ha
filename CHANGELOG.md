@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-09-05
+
+### Fixed
+- HA-Neustarts brechen laufende Kaskaden-Schaltbestätigungen ab, bevor die
+  Geräteintegrationen herunterfahren. Ein beim Shutdown nicht erreichbarer
+  Root-Schalter erzeugt dadurch keinen dauerhaft gespeicherten Kaskadenfehler.
+- Kaskaden beachten die konfigurierte Mindestpause vor dem Wiedereinschalten,
+  auch nach einem Neustart und bei Endlasten direkt am letzten AC-Ausgang.
+  Zurückgezogene Energiepläne und Sicherheitsgrenzen schalten weiterhin sofort
+  ab; eine Mindestlaufzeit darf keinen ungeplanten Netzbezug erzwingen.
+- Kaskaden lernen ihre Ladeleistung anhand bestätigter eigener Schaltpfade
+  wieder automatisch. Speicher-Eingangsmessungen mit aktiver AC-Durchleitung
+  werden nicht als eigene Ladeleistung eingelernt.
+- Kaskaden-Leistungsnachweise berücksichtigen unveränderte, frisch gemeldete
+  Sensorwerte und enden innerhalb der konfigurierten Frist. Fehlender Nachweis
+  stoppt den Ausgang und die Endlast; ein eigener Timer prüft auch ohne
+  `state_changed`-Ereignis weiter.
+- Entfernte Kaskadenmitglieder, Endlasten und geänderte Aktor-Zuordnungen lassen
+  keine vergessenen Ausgänge aktiv. Die zuletzt verwalteten Aktoren bleiben bis
+  zur bestätigten Abschaltung gespeichert; fehlgeschlagene Abschaltungen werden
+  erneut versucht. Ungültige Kaskaden werden nach erfolgreicher Abschaltung
+  deaktiviert.
+- Kaskaden dürfen keine gemeinsame physische Endlast schalten. Änderungen an
+  beteiligten Lasten werden vor dem Speichern gegen die vollständige Kaskade
+  validiert; insbesondere kann ein Mitglied nicht versehentlich zu einer
+  kontinuierlichen Last werden. Optionale Speicherfelder lassen sich löschen.
+- Leistungssensoren werden in Watt normalisiert, auch bei kW-Anzeigen.
+  NaN und unendliche Werte werden verworfen; beschädigte gespeicherte Zähler
+  werden bereinigt und gültige Messungen nach einem Ausfall neu eingelernt.
+- Beim Entfernen des Batterie-Leistungssensors wird ein zuvor vom Battery
+  Manager gesetzter Einspeise-Sollwert auf null zurückgesetzt.
+- Planung, PV-Stundenwerte und gelernte Verbrauchsprofile verwenden dieselben
+  realen Zeitintervalle. Zeitumstellungstage haben korrekt 23 beziehungsweise
+  25 Stunden; beide wiederholten Herbststunden bleiben getrennt.
+- AC-Durchleitungsgrenzen gelten auch bei Versorgung über Root und für die
+  gemeinsame Leistung mehrerer nachgelagerter Verbraucher. Kürzere Laufzeiten
+  machen eine zu hohe feste Geräteleistung nicht zulässig.
+- SOC außerhalb eines Ladeziels oder einer Entladegrenze bleibt ohne Energiefluss
+  unverändert. Fehlender SOC wird in Kaskadendetails und Diagrammen als unbekannt
+  ausgegeben und nicht durch einen erfundenen Mindestwert ersetzt.
+- Verbrauchsdiagramme begrenzen Zeitfenster und Energiesummen exakt auf die
+  gewählte Dauer, einschließlich Teilstunden. Tageswerte verwenden die
+  Home-Assistant-Zeitzone.
+- Download-Exporte erhalten nach Neustarts einen Timer für ihre verbleibende
+  Lebensdauer, auch in Unterverzeichnissen. Downloadlinks behalten den relativen
+  Pfad und kodieren Leerzeichen, Umlaute und Sonderzeichen korrekt.
+
+### Changed
+- Regressionstests prüfen physische Energie- und Leistungsgrenzen sowie echte
+  Backend-Ausgaben in den Frontend-Karten. Die volle HA-Testsuite benötigt dafür
+  Node.js 22 oder neuer; CI und Devcontainer stellen es bereit.
+- Details und Zuordnung der Review-Befunde: [F-REVIEW-HARDENING](docs/F-REVIEW-HARDENING.md).
+
 ## [0.36.1] - 2026-09-05
 
 ### Fixed

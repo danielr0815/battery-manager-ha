@@ -216,6 +216,7 @@ from .core import (
     quantile_band_slots,
     slot_starts,
 )
+from .core.series import fixed_local_time
 from .history_profile import ProfileLearner
 from .localization import message
 
@@ -286,7 +287,11 @@ def _gate_soc(percent: Any) -> float | None:
 def _stored_wh(value: Any) -> float:
     """Defensive store restore for a Wh counter: numbers pass through,
     anything else (missing, None, corrupt) starts neutral at 0."""
-    return float(value) if isinstance(value, int | float) else 0.0
+    return (
+        float(value)
+        if isinstance(value, int | float) and math.isfinite(value) and value >= 0
+        else 0.0
+    )
 
 
 # Explicit AC-side variants of the wh_period family: a forecast source that
@@ -371,7 +376,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._house_soc_frozen: tuple[float, datetime, float] | None = None
         self._house_soc_stale: float | None = None
         self._expected_battery_power_w: float | None = None
-        # Hourly PV forecast (docs/F-PREDRAIN.md F1): merged naive-local hour -> Wh
+        # Hourly PV forecast (docs/F-PREDRAIN.md F1): merged offset-aware local hour -> Wh
         # map, cached with the same stale-fallback semantics as the daily state.
         # The ingestion mode is a system option (WP3); absent = the recommended
         # "auto" (hourly when present, else two-window). Read once here — an
@@ -967,6 +972,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             k: float(v)
                             for k, v in last_readings.items()
                             if isinstance(v, int | float)
+                            and math.isfinite(v)
+                            and v >= 0
                         }
                         if isinstance(last_readings, dict)
                         else {}
@@ -1474,9 +1481,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if state is None or state.state in ("unknown", "unavailable"):
             return None
         try:
-            return float(state.state)
+            value = float(state.state)
         except ValueError, TypeError:
             return None
+        return value if math.isfinite(value) else None
+
+    def _read_power_w(self, entity_id: str) -> float | None:
+        """Normalize power telemetry at the boundary; missing units mean W.
+
+        HA permits changing a power sensor's display unit to kW. Comparing
+        that raw value to a watt threshold silently misclassifies running loads.
+        """
+        value = self._read_float(entity_id)
+        state = self.hass.states.get(entity_id)
+        if value is None or state is None:
+            return None
+        factor = {
+            None: 1.0,
+            "": 1.0,
+            "W": 1.0,
+            "kW": 1000.0,
+            "MW": 1e6,
+            "GW": 1e9,
+            "mW": 0.001,
+        }.get(state.attributes.get("unit_of_measurement"))
+        if factor is None:
+            return None
+        watts = value * factor
+        return watts if math.isfinite(watts) else None
 
     def _get_soc(self, now: datetime) -> float | None:
         # House-SOC stale watchdog latched: the source demonstrably serves a
@@ -1579,7 +1611,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         battery_power_entity = self.raw_config.get(CONF_FEEDIN_BATTERY_POWER_ENTITY)
         if battery_power_entity:
-            power_w = self._read_float(battery_power_entity)
+            power_w = self._read_power_w(battery_power_entity)
             flow_proof = "the battery-power sensor measured"
         else:
             power_w = self._expected_battery_power_w
@@ -1731,7 +1763,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, entity_id: str, attr: str = "wh_period"
     ) -> dict[datetime, float]:
         """Parse an entity's hourly ``wh_period``-family attribute into a
-        naive-local hour -> Wh map (docs/F-PREDRAIN.md F1; the quantile
+        offset-aware local hour -> Wh map (docs/F-PREDRAIN.md F1; the quantile
         attributes ``wh_period_p10``/``wh_period_p90`` share the exact same
         format and tolerance rules, F-QUANTILE-BANDS R1).
 
@@ -1743,7 +1775,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plain one.
 
         Keys are parsed with dt_util.parse_datetime: naive keys are treated as
-        LOCAL, aware keys are converted to local and made naive. 15/30-min buckets
+        LOCAL; aware keys retain the local UTC offset to distinguish DST folds. 15/30-min buckets
         are summed per hour by aggregate_hours. Malformed keys/values are skipped;
         non-finite (NaN/±inf) values are skipped and negative values clamped to 0
         (FIX-9) so a bad forecast attribute can never poison the hourly map.
@@ -1767,8 +1799,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if ts is None:
                 skipped += 1
                 continue
-            if ts.tzinfo is not None:
-                ts = dt_util.as_local(ts).replace(tzinfo=None)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+            ts = fixed_local_time(dt_util.as_local(ts))
             try:
                 wh = float(value)
             except TypeError, ValueError:
@@ -1855,7 +1888,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         dict[datetime, float] | None,
         dict[datetime, float] | None,
     ]:
-        """Merged naive-local hourly PV maps (median, p10, p90) from the three
+        """Merged offset-aware local hourly PV maps (median, p10, p90) from the three
         forecast entities.
 
         Stale-cache fallback is PER ENTITY (FIX-4): each cycle every entity uses
@@ -2184,7 +2217,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # clears only when the load demonstrably runs again.
                 self._load_deviation_since.pop(subentry_id, None)
                 continue
-            raw = self._read_float(power_entity)
+            raw = self._read_power_w(power_entity)
             if raw is None:
                 continue  # no reading: keep the current state
             nominal = float(data[CONF_LOAD_POWER_W])
@@ -2447,7 +2480,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data = subentry.data
         if not data.get(CONF_LOAD_POWER_ENTITY):
             return False
-        raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+        raw = self._read_power_w(data[CONF_LOAD_POWER_ENTITY])
         if raw is None:
             return False
         return raw >= self._load_standby_bar(data)
@@ -2508,6 +2541,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         and must not train the planning power (operator decision F-L6,
         2026-07-05: manual activations must not influence future planning).
         """
+        if subentry_id in self.cascade_manager.managed_load_ids():
+            return self.cascade_manager.load_is_active(subentry_id)
         if subentry_id in self._load_charging_active:
             return bool(self._load_charging_active[subentry_id])
         return bool(self._load_plan_active.get(subentry_id)) and bool(
@@ -2613,7 +2648,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise HomeAssistantError(
                 "Power calibration can only start while the load is not charging"
             )
-        baseline = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+        baseline = self._read_power_w(data[CONF_LOAD_POWER_ENTITY])
         if baseline is None:
             raise HomeAssistantError("The load power-feedback sensor is unavailable")
         if baseline >= self._load_standby_bar(data):
@@ -2694,7 +2729,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             while loop.time() - started_at < POWER_CALIBRATION_MAX_TOTAL_S:
                 await asyncio.sleep(POWER_CALIBRATION_POLL_S)
                 now_mono = loop.time()
-                raw = self._read_float(power_entity)
+                raw = self._read_power_w(power_entity)
                 state = self.hass.states.get(power_entity)
                 if raw is None or state is None:
                     continue
@@ -3247,7 +3282,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raw = None
             min_sample_w = None
             if data.get(CONF_LOAD_POWER_ENTITY):
-                raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+                raw = self._read_power_w(data[CONF_LOAD_POWER_ENTITY])
                 # Readings below a fraction of the nominal power are
                 # standby draw, not a charge sample (a 400 W dehumidifier
                 # idling at ~20 W cleared the old flat 10 W bar and got
@@ -3370,16 +3405,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
                     saturated_power_w=saturated_power_w,
                     soc_observed_at=(
-                        # Core planning uses naive local slot timestamps.  A
-                        # restored cache timestamp is UTC-aware; passing it
-                        # through unchanged caused `_usable_soc` to subtract an
-                        # aware value from `PlanInputs.now` and abort the first
-                        # post-restart plan.  Normalize both live and cached
-                        # observations at this HA/core boundary.
-                        dt_util.as_local(now).replace(tzinfo=None)
+                        # Fixed local offsets preserve real elapsed cache age,
+                        # even inside the repeated autumn hour, and share the
+                        # same unambiguous clock as PlanInputs.now.
+                        fixed_local_time(dt_util.as_local(now))
                         if live_soc is not None
                         else (
-                            dt_util.as_local(cached_at).replace(tzinfo=None)
+                            fixed_local_time(dt_util.as_local(cached_at))
                             if (cached_at := dt_util.parse_datetime(cached.get("ts")))
                             is not None
                             else None
@@ -3504,10 +3536,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ]:
         """Build per-slot consumption overrides from the learned profiles.
 
-        Bin lookup uses the tz-aware local slot start via absolute elapsed
-        time (D-C5): across a DST change the skipped hour is skipped and
-        the repeated hour reuses its bin, while the core keeps its naive
-        raster. In vacation mode an invalid absence bin falls back to the
+        Bin lookup shares the core's real-time grid (D-C5): the spring
+        hour is skipped, both autumn hours reuse the local profile bin,
+        and the horizon ends at local midnight after 23/25 real hours. In vacation mode an invalid absence bin falls back to the
         static base load WITHOUT the variable share (D-C4) — deliberately
         not None, which would re-add variable_w via the core fallback.
         Also returns the P80−P50 band per slot (dynamic buffer, D-C8) and
@@ -3519,8 +3550,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "vacation_mode": vacation,
             **self.learner.diagnostics(),
         }
-        naive_now = now.replace(tzinfo=None)
-        utc_now = dt_util.as_utc(now)
         series: dict[str, list[float | None]] = {"ac": [], "dc": []}
         # P80−P50 per slot in W: the uncertainty band feeding the dynamic
         # SOC buffer (D-C8); 0 where no quantiles exist for the slot.
@@ -3528,10 +3557,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         static_profiles = {"ac": config.ac_profile, "dc": config.dc_profile}
         delta_sum = {"ac": 0.0, "dc": 0.0}
         delta_count = {"ac": 0, "dc": 0}
-        for start in slot_starts(naive_now, num_days):
-            # Absolute-time mapping: the naive slot delta is the intended
-            # elapsed time; adding it in UTC yields the true local hour.
-            local = dt_util.as_local(utc_now + (start - naive_now))
+        for start in slot_starts(now, num_days):
+            local = start
             dt_key = (
                 DAY_TYPE_ABSENCE
                 if vacation
@@ -3619,6 +3646,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ------------------------------------------------------------------
 
     async def _async_update_data(self) -> dict[str, Any]:
+        if self._actuation_shutdown or self.hass.is_stopping:
+            return self.data or {}
+        await self.cascade_manager.async_reconcile_topologies()
         now = dt_util.now()
         if self._startup_at is None:
             self._startup_at = now  # V8: anchor the SOC startup grace window
@@ -3708,7 +3738,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         inputs = build_slots(
             config,
-            now.replace(tzinfo=None),
+            now,
             soc,
             forecasts,
             appliance_runs=appliance_runs,
@@ -3975,8 +4005,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ),
             }
 
-        naive_now = now.replace(tzinfo=None)
-        soc_forecast = [{"t": naive_now.isoformat(), "soc": round(soc, 1)}]
+        local_now = fixed_local_time(now)
+        soc_forecast = [{"t": local_now.isoformat(), "soc": round(soc, 1)}]
         # F-FEEDIN: the per-slot planned feed-in power rides on each forecast
         # point (only when the schedule is populated — the card renders its
         # lane purely on attribute presence, keeping old backends compatible).
@@ -4049,6 +4079,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             consumption_forecast.append(
                 {
                     "t": slot.start.isoformat(),
+                    "duration_h": slot.duration,
                     "ac_w": round(slot.ac_wh / slot.duration, 1),
                     "loads_w": round(flow.extra_ac_wh / slot.duration, 1),
                     "dc24_w": round(rail_w, 1),
@@ -4125,9 +4156,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "active": True,
                     "schedule": [
                         {
-                            "start": naive_now.isoformat(),
+                            "start": local_now.isoformat(),
                             "end": (
-                                naive_now + timedelta(hours=run.remaining_hours)
+                                local_now + timedelta(hours=run.remaining_hours)
                             ).isoformat(),
                             "wh": round(run.remaining_energy_wh, 1),
                         }
@@ -4302,7 +4333,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._realized_relearn.add(entity_id)
             return None
         last = readings.get(entity_id)
-        if last is None or entity_id in self._realized_relearn:
+        if (
+            last is None
+            or not math.isfinite(last)
+            or entity_id in self._realized_relearn
+        ):
             # First ever reading, or the first valid state after a dropout:
             # baseline only, no delta.
             readings[entity_id] = value
@@ -5533,7 +5568,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return (
             self._read_float(soc_entity) is not None
-            and self._read_float(power_entity) is not None
+            and self._read_power_w(power_entity) is not None
         )
 
     def _maintain_recommendation_deadline(
@@ -5861,7 +5896,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         planning_power = self._load_learned_power_w.get(subentry_id) or float(
             data.get(CONF_LOAD_POWER_W, 0.0)
         )
-        raw = self._read_float(data[CONF_LOAD_POWER_ENTITY])
+        raw = self._read_power_w(data[CONF_LOAD_POWER_ENTITY])
         if (
             raw is not None
             and raw >= self._load_standby_bar(data)
@@ -6513,10 +6548,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state = self.hass.states.get(entities[0])
         if state is None or state.state in ("unavailable", "unknown"):
             return None
-        try:
-            return FEEDIN_SETPOINT_EXPORT_SIGN * float(state.state)
-        except TypeError, ValueError:
-            return None
+        value = self._read_power_w(entities[0])
+        return FEEDIN_SETPOINT_EXPORT_SIGN * value if value is not None else None
 
     def _feedin_tick(self, now: datetime) -> float:
         """Integrate the applied setpoint into today's delivered feed-in energy
@@ -6633,7 +6666,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         as it is no longer the configured one.
         """
         owned = self._feedin_owned_entity
-        if owned is None or owned == (self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY)):
+        entities = self._feedin_entities()
+        if owned is None or (entities is not None and owned == entities[0]):
             return
         if self.feedin_manual():
             # The operator took the setpoint over before the unwiring — it is
@@ -6771,7 +6805,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         desired = base_w
         trimmed = False
-        battery_power_w = self._read_float(entities[1])
+        battery_power_w = self._read_power_w(entities[1])
         if active and base_w > 0.0 and battery_power_w is not None:
             cur = current if current is not None else 0.0
             if battery_power_w < -FEEDIN_TRIM_DEADBAND_W:
@@ -6994,7 +7028,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sources on (never sourceless) and the reload re-reads and heals.
         """
         self._actuation_shutdown = True
-        await self.cascade_manager.async_cancel_terminal_tests()
+        await self.cascade_manager.async_shutdown()
         # F-SUBHOUR: drop any pending force-OFF timers before flush/unload so a
         # detached point-in-time callback cannot fire after teardown (R13).
         for load_id in list(self._load_off_timer):

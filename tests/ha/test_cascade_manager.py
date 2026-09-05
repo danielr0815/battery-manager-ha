@@ -139,6 +139,9 @@ class _Coordinator:
             return None
         return float(state.state)
 
+    def _read_power_w(self, entity_id):
+        return BatteryManagerCoordinator._read_power_w(self, entity_id)
+
     def _entity_is_on(self, entity_id):
         state = self.hass.states.get(entity_id)
         return state is not None and state.state == "on"
@@ -504,6 +507,9 @@ async def test_wake_order_and_two_sample_power_proof() -> None:
         ("switch.input", False),
     ]
     assert manager._state("chain")["phase"] == "proving"
+    coordinator.hass.states.get("sensor.output_power").last_reported = now + timedelta(
+        seconds=1
+    )
 
     await manager._apply_one(
         "chain",
@@ -538,7 +544,10 @@ async def test_power_proof_tracks_forecast_recovery_below_fifty_percent() -> Non
     await manager._apply_one("chain", deep_plan, live, now)
     _publish_soc(coordinator, "sensor.soc", "90", now + timedelta(seconds=1))
     await manager._apply_one("chain", deep_plan, live, now + timedelta(seconds=1))
-    await manager._apply_one("chain", deep_plan, live, now)
+    coordinator.hass.states.get("sensor.output_power").last_reported = now + timedelta(
+        seconds=1
+    )
+    await manager._apply_one("chain", deep_plan, live, now + timedelta(seconds=1))
     power = coordinator.hass.states.get("sensor.output_power")
     power.last_updated = now + timedelta(seconds=61)
     power.state = "310"
@@ -3891,3 +3900,317 @@ async def test_ordered_transition_substeps_abort_on_first_failed_actor(
     assert (
         await manager._continue_member_wake("chain", topology, root_plan, now) is False
     )
+
+
+@pytest.mark.parametrize("removed", ["leaf", "b1", "chain"])
+async def test_removed_topology_stops_persisted_actors_after_reload(
+    removed, monkeypatch
+):
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    now = datetime(2026, 9, 5, 8)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    await manager.async_reconcile_topologies()
+    snapshot = manager.persistent_state_snapshot()
+    for entity in ("switch.input", "switch.gate", "switch.output", "switch.leaf"):
+        coordinator.hass.states.values[entity].state = "on"
+    del coordinator.entry.subentries[removed]
+    coordinator._cascade_state = snapshot
+    manager = CascadeManager(coordinator)
+    await manager.async_apply(
+        SystemConfig(), SimpleNamespace(cascade_plans=()), (), now
+    )
+    assert coordinator.calls == [
+        ("switch.leaf", False),
+        ("switch.output", False),
+        ("switch.gate", False),
+        ("switch.input", False),
+    ]
+    assert manager._state("chain")["fault_safe_off_complete"]
+
+
+async def test_missing_legacy_terminal_still_stops_surviving_output(monkeypatch):
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    now = datetime(2026, 9, 5, 8)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    coordinator.hass.states.values["switch.output"].state = "on"
+    del coordinator.entry.subentries["leaf"]
+    await manager.async_apply(
+        SystemConfig(), SimpleNamespace(cascade_plans=()), (), now
+    )
+    assert coordinator.hass.states.get("switch.output").state == "off"
+    assert manager._state("chain")["fault"] == "invalid_topology"
+
+
+async def test_equal_power_publications_prove_output_and_schedule_refresh(monkeypatch):
+    now = datetime(2026, 9, 5, 8)
+    coordinator = _Coordinator(now)
+    coordinator.hass.loop = object()
+    coordinator.async_request_refresh = AsyncMock()
+    manager = CascadeManager(coordinator)
+    manager._state("chain").update(enabled=True, source="b1", phase="proving")
+    timer = Mock(return_value=Mock())
+    monkeypatch.setattr(cascade_manager_module, "async_call_later", timer)
+    assert manager._power_proven("chain", now) is None
+    assert timer.call_args.args[1] == 60
+    await timer.call_args.args[2](now + timedelta(seconds=60))
+    coordinator.async_request_refresh.assert_awaited_once()
+    power = coordinator.hass.states.get("sensor.output_power")
+    power.last_reported = now + timedelta(seconds=60)
+    assert power.last_updated == now
+    assert manager._power_proven("chain", now + timedelta(seconds=60)) is True
+    manager.cleanup()
+
+
+@pytest.mark.parametrize("reading", ["unavailable", "300"])
+async def test_power_proof_timeout_stops_terminal_without_fresh_feedback(
+    reading, monkeypatch
+):
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    now = datetime(2026, 9, 5, 8)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="proving", source="b1")
+    coordinator.hass.states.values["switch.output"].state = "on"
+    coordinator.hass.states.values["switch.leaf"].state = "on"
+    coordinator.hass.states.values["sensor.output_power"].state = reading
+    states = (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf"))
+    await manager._apply_one("chain", _aux_plan(now), states, now)
+    await manager._apply_one(
+        "chain", _aux_plan(now), states, now + timedelta(seconds=180)
+    )
+    assert state["phase"] != "proving"
+    assert coordinator.hass.states.get("switch.leaf").state == "off"
+    assert coordinator.hass.states.get("switch.output").state == "off"
+
+
+async def test_real_unknown_soc_payload_cannot_draw_fabricated_charge(hass):
+    import json
+    import subprocess
+    from pathlib import Path
+
+    from custom_components.battery_manager.core.series import build_slots
+
+    now = datetime(2026, 9, 5, 8, tzinfo=UTC)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    config = SystemConfig(
+        loads=(
+            SurplusLoad("b1", "B1", 300, 0, 30, 30, True, 2000, 90, True),
+            SurplusLoad("leaf", "Leaf", 300, 0, 30, 30, False),
+        ),
+        cascades=(LoadCascade("chain", (CascadeMember("b1", 20, 50),), "leaf"),),
+    )
+    inputs = build_slots(
+        config,
+        now,
+        50,
+        [0],
+        load_states=(
+            SurplusLoadState(
+                "b1", soc_percent=None, soc_source="missing", available=False
+            ),
+            SurplusLoadState("leaf", available=False),
+        ),
+    )
+    result = plan(config, inputs)
+    payload = manager.payload(result, config, inputs.slots)["chain"]
+    assert payload["member_details"][0]["soc_percent"] is None
+    script = Path(__file__).parents[1] / "frontend" / "backend-contract.mjs"
+    rendered = await hass.async_add_executor_job(
+        lambda: subprocess.run(
+            ["node", str(script)],
+            input=json.dumps({"cascade": payload}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    )
+    assert rendered.returncode == 0, rendered.stderr
+
+
+def test_cascade_fault_entity_reports_configuration_cleanup_failure():
+    from custom_components.battery_manager.binary_sensor import CascadeFaultSensor
+
+    coordinator = SimpleNamespace(
+        data={
+            "cascade_plans": {
+                "chain": {
+                    "fault": "invalid_topology",
+                    "fault_detail": {"entity_id": "switch.leaf"},
+                    "hands_off": False,
+                }
+            }
+        }
+    )
+    entity = SimpleNamespace(coordinator=coordinator, _subentry_id="chain")
+    assert CascadeFaultSensor.is_on.fget(entity) is True
+    attributes = CascadeFaultSensor.extra_state_attributes.fget(entity)
+    assert attributes["reason"] == "invalid_topology"
+    assert attributes["detail"] == {"entity_id": "switch.leaf"}
+    coordinator.data = None
+    assert CascadeFaultSensor.is_on.fget(entity) is False
+
+
+async def test_failed_topology_cleanup_retains_old_actor_ownership_for_retry(
+    monkeypatch,
+):
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    now = datetime(2026, 9, 5, 8)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    await manager.async_reconcile_topologies()
+    coordinator.hass.states.values["switch.leaf"].state = "on"
+    del coordinator.entry.subentries["leaf"]
+    original = coordinator._switch_entity
+
+    async def fail_terminal(entity, turn_on, **kwargs):
+        if entity == "switch.leaf":
+            return False
+        return await original(entity, turn_on, **kwargs)
+
+    monkeypatch.setattr(coordinator, "_switch_entity", fail_terminal)
+    await manager.async_reconcile_topologies()
+    assert manager.actor_owner("switch.leaf") == "chain"
+    assert coordinator.hass.states.get("switch.leaf").state == "on"
+    assert (
+        manager._state("chain")["actor_topology"]["terminal"][CONF_LOAD_CONTROL_SWITCH]
+        == "switch.leaf"
+    )
+    monkeypatch.setattr(coordinator, "_switch_entity", original)
+    await manager.async_reconcile_topologies()
+    assert coordinator.hass.states.get("switch.leaf").state == "off"
+    assert manager._state("chain")["fault_safe_off_complete"]
+    assert not manager._state("chain")["enabled"]
+    count = len(coordinator.calls)
+    await manager.async_reconcile_topologies()
+    assert len(coordinator.calls) == count
+
+
+async def test_shutdown_cancels_unavailable_actor_without_persisting_fault() -> None:
+    """Bad 05 September: stop a pending confirmation before device teardown."""
+    now = datetime(2026, 9, 5, 11, 47, 50, tzinfo=UTC)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.input": True})
+    coordinator.hass.states.get("switch.input").state = "unavailable"
+    entered = asyncio.Event()
+
+    async def pending(*args, **kwargs):
+        entered.set()
+        await asyncio.Future()
+
+    coordinator._switch_entity = pending
+    idle = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+    task = asyncio.create_task(manager._apply_one("chain", idle, (), now))
+    await entered.wait()
+    coordinator._actuation_shutdown = True
+    await manager.async_shutdown()
+    assert task.cancelled()
+    assert state["enabled"] is True
+    assert state["fault"] is None
+    assert state["claims"]["switch.input"] is True
+    manager.normalize_restored_state()
+    assert state["restart_reconcile_pending"] is True
+    await manager._apply_one("chain", idle, (), now)
+    with pytest.raises(asyncio.CancelledError):
+        await manager._actor("chain", "switch.input", True)
+    with pytest.raises(asyncio.CancelledError):
+        await manager._fault("chain", "safe_off_failed:test")
+    assert state["fault"] is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_root_minimum_off_survives_replans_and_restart(freezer, restart) -> None:
+    """Bad 05 September: a 20-second replan must not bypass a five-minute pause."""
+    now = datetime(2026, 9, 5, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    coordinator = _Coordinator(now)
+    coordinator.entry.subentries["b1"].data.update(min_runtime_min=5, min_off_min=5)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        enabled=True, phase="root", claims={"switch.input": True, "switch.gate": True}
+    )
+    for actor in ("switch.input", "switch.gate"):
+        coordinator.hass.states.get(actor).state = "on"
+    live = (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf"))
+    idle = SimpleNamespace(flows=(CascadeSlotFlow(),), recovery_deadline=None)
+    # Plan withdrawal stays immediate, even inside the configured minimum run.
+    await manager._apply_one("chain", idle, live, now)
+    assert coordinator.calls == [("switch.gate", False), ("switch.input", False)]
+    original = dict(state["actor_off_since"])
+    if restart:
+        manager = CascadeManager(coordinator)
+        manager.normalize_restored_state()
+    coordinator.calls.clear()
+    for seconds in (20, 299):
+        freezer.move_to(now + timedelta(seconds=seconds))
+        await manager._apply_one(
+            "chain", _root_plan(now), live, now + timedelta(seconds=seconds)
+        )
+        assert coordinator.calls == []
+        assert state["fault"] is None
+        assert state["actor_off_since"] == original
+    freezer.move_to(now + timedelta(seconds=300))
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=300)
+    )
+    assert coordinator.calls == [("switch.input", True)]
+    assert state["phase"] == "waking_members"
+
+
+async def test_direct_terminal_minimum_off_blocks_aux_before_root_wake(freezer) -> None:
+    """A terminal without its own switch is protected by the final AC output."""
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    freezer.move_to(now)
+    coordinator = _Coordinator(now)
+    coordinator.entry.subentries["leaf"].data = {"min_off_min": 15}
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.output": True})
+    coordinator.hass.states.get("switch.output").state = "on"
+    await manager.async_safe_off("chain", "plan withdrawn")
+    coordinator.calls.clear()
+    live = (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf"))
+    freezer.move_to(now + timedelta(minutes=14))
+    await manager._apply_one("chain", _aux_plan(now), live, now + timedelta(minutes=14))
+    assert coordinator.calls == []
+    assert state["fault"] is None
+    freezer.move_to(now + timedelta(minutes=15))
+    await manager._apply_one("chain", _aux_plan(now), live, now + timedelta(minutes=15))
+    assert coordinator.calls == [("switch.input", True)]
+
+
+def test_cascade_learning_uses_owned_isolated_charge_path() -> None:
+    """Compatibility OFF must not suppress learning; passthrough must not train it."""
+    coordinator = _Coordinator(datetime(2026, 9, 5, tzinfo=UTC))
+    manager = coordinator.cascade_manager = CascadeManager(coordinator)
+    coordinator._load_charging_active = {"b1": False, "leaf": False}
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.input": True, "switch.gate": True})
+    for actor in ("switch.input", "switch.gate"):
+        coordinator.hass.states.get(actor).state = "on"
+    assert BatteryManagerCoordinator._bm_load_active(coordinator, "b1") is True
+    assert manager.load_is_active("leaf") is False
+    coordinator.hass.states.get("switch.gate").state = "off"
+    assert manager.load_is_active("b1") is False
+    coordinator.hass.states.get("switch.gate").state = "on"
+    coordinator.hass.states.get("switch.output").state = "on"
+    assert manager.load_is_active("b1") is False  # total input includes downstream
+    state["claims"].update({"switch.output": True, "switch.leaf": True})
+    coordinator.hass.states.get("switch.leaf").state = "on"
+    assert BatteryManagerCoordinator._bm_load_active(coordinator, "leaf") is True
+    state["enabled"] = False
+    assert manager.load_is_active("leaf") is False
+    state["enabled"] = True
+    coordinator.entry.subentries["leaf"].data = {}
+    assert manager.load_is_active("leaf") is True
+    assert manager.load_is_active("missing") is False

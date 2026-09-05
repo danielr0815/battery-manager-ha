@@ -572,9 +572,6 @@ def _build_plan(
                         segment.terminal_energy_wh + overhead * service_h
                     ) / member.eta_discharge
             energy = load.capacity_wh * start / 100.0 + stored - discharged
-            energy = min(load.capacity_wh * load.target_soc_percent / 100.0, energy)
-            floor_energy = load.capacity_wh * member.discharge_floor_soc_percent / 100.0
-            energy = max(floor_energy, energy)
             end = 100.0 * energy / load.capacity_wh
             current_soc[member.load_id] = end
             if end + _EPS < member.recovery_soc_percent:
@@ -591,6 +588,10 @@ def _build_plan(
             member_flows.append(
                 CascadeMemberFlow(
                     load_id=member.load_id,
+                    soc_known=_usable_soc(
+                        states.get(member.load_id), original_inputs.now
+                    )[0]
+                    is not None,
                     soc_start_percent=start,
                     soc_end_percent=end,
                     input_wh=input_wh,

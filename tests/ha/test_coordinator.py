@@ -5,6 +5,7 @@ from datetime import UTC, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
@@ -413,14 +414,20 @@ async def test_coordinator_reads_wh_period_hourly_forecast(hass):
     pv_map, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
     assert pv_map is not None
     # Naive-local keys parsed as local.
-    assert pv_map[datetime(2026, 7, 10, 10, 0)] == 1000.0
-    assert pv_map[datetime(2026, 7, 10, 11, 0)] == 1500.0
+    assert (
+        pv_map[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )
+    assert (
+        pv_map[datetime(2026, 7, 10, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1500.0
+    )
     # Malformed key and malformed value are both skipped.
     assert datetime(2026, 7, 10, 12, 0) not in pv_map
     # Aware UTC keys converted to local (+2 h); the 15-min buckets are summed.
-    assert pv_map[datetime(2026, 7, 11, 10, 0)] == 500.0
-    # All keys are naive (tzinfo dropped).
-    assert all(key.tzinfo is None for key in pv_map)
+    assert (
+        pv_map[datetime(2026, 7, 11, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 500.0
+    )
+    # All keys retain an explicit offset, including repeated fall-back hours.
+    assert all(key.tzinfo is not None for key in pv_map)
 
     # Per-day source labelling for a horizon anchored on the fixture day.
     fixture_now = datetime(2026, 7, 10, 9, 0, tzinfo=dt_util.get_default_time_zone())
@@ -466,15 +473,21 @@ async def test_pv_hourly_per_entity_cache_survives_one_unavailable(hass):
     now = dt_util.now()
 
     full, _p10, _p90 = coordinator._get_pv_hourly(now)
-    assert full[datetime(2026, 7, 10, 10, 0)] == 1000.0
-    assert full[datetime(2026, 7, 11, 11, 0)] == 700.0
+    assert (
+        full[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )
+    assert full[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 700.0
 
     # Today's entity drops out: the partial read must NOT overwrite the cached
     # full map — today's buckets survive from the per-entity cache.
     hass.states.async_set("sensor.pv_today", "unavailable")
     merged, _p10, _p90 = coordinator._get_pv_hourly(now)
-    assert merged[datetime(2026, 7, 10, 10, 0)] == 1000.0  # cached, not lost
-    assert merged[datetime(2026, 7, 11, 11, 0)] == 700.0  # still fresh
+    assert (
+        merged[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )  # cached, not lost
+    assert (
+        merged[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 700.0
+    )  # still fresh
 
 
 async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
@@ -512,10 +525,18 @@ async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
 
     m = coordinator._read_wh_period("sensor.pv_today")
     assert all(math.isfinite(v) and v >= 0.0 for v in m.values())  # finite, non-neg
-    assert m[datetime(2026, 7, 10, 12, 0)] == 0.0  # -500 clamped to 0
-    assert m[datetime(2026, 7, 10, 13, 0)] == 800.0  # good value kept
-    assert datetime(2026, 7, 10, 10, 0) not in m  # NaN skipped
-    assert datetime(2026, 7, 10, 11, 0) not in m  # inf skipped
+    assert (
+        m[datetime(2026, 7, 10, 12, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 0.0
+    )  # -500 clamped to 0
+    assert (
+        m[datetime(2026, 7, 10, 13, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 800.0
+    )  # good value kept
+    assert (
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE) not in m
+    )  # NaN skipped
+    assert (
+        datetime(2026, 7, 10, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE) not in m
+    )  # inf skipped
 
 
 # ---------------------------------------------------------------------------
@@ -566,10 +587,18 @@ async def test_pv_hourly_scales_dc_curve_toward_ac_state(hass):
 
     eta = 5649.0 / 6129.0
     median, p10, p90 = coordinator._get_pv_hourly(dt_util.now())
-    assert median[datetime(2026, 7, 10, 10, 0)] == pytest.approx(3000.0 * eta)
-    assert median[datetime(2026, 7, 10, 11, 0)] == pytest.approx(3129.0 * eta)
-    assert p10[datetime(2026, 7, 10, 10, 0)] == pytest.approx(2000.0 * eta)
-    assert p90[datetime(2026, 7, 10, 10, 0)] == pytest.approx(4000.0 * eta)
+    assert median[
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    ] == pytest.approx(3000.0 * eta)
+    assert median[
+        datetime(2026, 7, 10, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    ] == pytest.approx(3129.0 * eta)
+    assert p10[
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    ] == pytest.approx(2000.0 * eta)
+    assert p90[
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    ] == pytest.approx(4000.0 * eta)
 
 
 async def test_pv_hourly_consistent_source_stays_unscaled(hass):
@@ -606,8 +635,12 @@ async def test_pv_hourly_consistent_source_stays_unscaled(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     median, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
-    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0
-    assert median[datetime(2026, 7, 10, 11, 0)] == 1500.0
+    assert (
+        median[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )
+    assert (
+        median[datetime(2026, 7, 10, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1500.0
+    )
 
 
 async def test_pv_hourly_underivable_eta_stays_unscaled(hass):
@@ -646,13 +679,20 @@ async def test_pv_hourly_underivable_eta_stays_unscaled(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     median, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
-    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0
-    assert median[datetime(2026, 7, 11, 11, 0)] == 700.0
-    assert median[datetime(2026, 7, 12, 12, 0)] == 500.0
+    assert (
+        median[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )
+    assert (
+        median[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 700.0
+    )
+    assert (
+        median[datetime(2026, 7, 12, 12, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 500.0
+    )
     # Defensive branch: a vanished entity has no state to derive from at all.
     assert (
         coordinator._pv_curve_ac_factor(
-            "sensor.does_not_exist", {datetime(2026, 7, 10, 10, 0): 1000.0}
+            "sensor.does_not_exist",
+            {datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 1000.0},
         )
         == 1.0
     )
@@ -709,19 +749,30 @@ async def test_pv_hourly_prefers_explicit_ac_curve(hass):
 
     median, p10, p90 = coordinator._get_pv_hourly(dt_util.now())
     # The explicit AC buckets pass through VERBATIM (no η on top).
-    assert median[datetime(2026, 7, 10, 10, 0)] == 2000.0
-    assert median[datetime(2026, 7, 10, 11, 0)] == 2100.0
-    assert p10 == {datetime(2026, 7, 10, 10, 0): 1500.0}
-    assert p90 == {datetime(2026, 7, 10, 10, 0): 2600.0}
+    assert (
+        median[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 2000.0
+    )
+    assert (
+        median[datetime(2026, 7, 10, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 2100.0
+    )
+    assert p10 == {
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 1500.0
+    }
+    assert p90 == {
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 2600.0
+    }
     # Explicit AC present -> the factor helper never derives against it.
     assert (
         coordinator._pv_curve_ac_factor(
-            "sensor.pv_today", {datetime(2026, 7, 10, 10, 0): 2000.0}
+            "sensor.pv_today",
+            {datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 2000.0},
         )
         == 1.0
     )
     # Fallback path: garbage AC attr -> DC buckets with derived η = 0.8.
-    assert median[datetime(2026, 7, 11, 11, 0)] == 800.0
+    assert (
+        median[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 800.0
+    )
 
 
 async def test_pv_hourly_eta_is_clamped(hass):
@@ -768,9 +819,15 @@ async def test_pv_hourly_eta_is_clamped(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     median, _p10, _p90 = coordinator._get_pv_hourly(dt_util.now())
-    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0  # η > 1: untouched
-    assert median[datetime(2026, 7, 10, 11, 0)] == 1500.0
-    assert median[datetime(2026, 7, 11, 11, 0)] == 2000.0  # η clamped to 0.5
+    assert (
+        median[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )  # η > 1: untouched
+    assert (
+        median[datetime(2026, 7, 10, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1500.0
+    )
+    assert (
+        median[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 2000.0
+    )  # η clamped to 0.5
 
 
 async def test_pv_hourly_cache_replay_does_not_rescale(hass):
@@ -808,7 +865,9 @@ async def test_pv_hourly_cache_replay_does_not_rescale(hass):
     now = dt_util.now()
 
     fresh, _p10, _p90 = coordinator._get_pv_hourly(now)
-    assert fresh[datetime(2026, 7, 10, 10, 0)] != 3000.0  # scaled once ...
+    assert (
+        fresh[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] != 3000.0
+    )  # scaled once ...
 
     hass.states.async_set("sensor.pv_today", "unavailable")
     replayed, _p10, _p90 = coordinator._get_pv_hourly(now)
@@ -1788,18 +1847,33 @@ async def test_pv_hourly_parses_quantile_attributes_with_stale_cache(hass):
     now = dt_util.now()
 
     median, p10, p90 = coordinator._get_pv_hourly(now)
-    assert median[datetime(2026, 7, 10, 10, 0)] == 1000.0
-    assert median[datetime(2026, 7, 11, 11, 0)] == 700.0
+    assert (
+        median[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 1000.0
+    )
+    assert (
+        median[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 700.0
+    )
     # Quantiles cover only where the attributes did (partial coverage is fine).
-    assert p10 == {datetime(2026, 7, 10, 10, 0): 600.0}
-    assert p90 == {datetime(2026, 7, 10, 10, 0): 1400.0}
+    assert p10 == {
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 600.0
+    }
+    assert p90 == {
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 1400.0
+    }
 
     # Dropout: median AND bands survive together from the same cache entry.
     hass.states.async_set("sensor.pv_today", "unavailable")
     median2, p10_2, p90_2 = coordinator._get_pv_hourly(now)
-    assert median2[datetime(2026, 7, 10, 10, 0)] == 1000.0
-    assert p10_2 == {datetime(2026, 7, 10, 10, 0): 600.0}
-    assert p90_2 == {datetime(2026, 7, 10, 10, 0): 1400.0}
+    assert (
+        median2[datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)]
+        == 1000.0
+    )
+    assert p10_2 == {
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 600.0
+    }
+    assert p90_2 == {
+        datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 1400.0
+    }
 
 
 async def test_quantile_coverage_attribute_wiring(hass):
@@ -2127,6 +2201,7 @@ def test_missing_optional_load_inputs_fail_closed_but_legacy_cache_is_kept():
             }
         ),
         _read_float=lambda _entity_id: None,
+        _read_power_w=lambda _entity_id: None,
     )
 
     assert (
@@ -2143,3 +2218,128 @@ def test_missing_optional_load_inputs_fail_closed_but_legacy_cache_is_kept():
     assert (
         BatteryManagerCoordinator._appliance_is_running(coordinator, {}, True) is False
     )
+
+
+def test_power_units_and_invalid_numbers_at_input_boundary():
+    from custom_components.battery_manager.coordinator import (
+        BatteryManagerCoordinator as Coordinator,
+    )
+    from custom_components.battery_manager.coordinator import _stored_wh
+
+    state = SimpleNamespace(state="0.45", attributes={"unit_of_measurement": "kW"})
+    coordinator = SimpleNamespace(
+        hass=SimpleNamespace(states=SimpleNamespace(get=lambda _: state))
+    )
+    coordinator._read_float = lambda entity: Coordinator._read_float(
+        coordinator, entity
+    )
+    for unit, raw, expected in [
+        ("kW", "0.45", 450),
+        ("W", "450", 450),
+        ("MW", "0.00045", 450),
+        ("mW", "450000", 450),
+        (None, "450", 450),
+        ("kWh", "0.45", None),
+        ("GW", "1e308", None),
+        ("W", "NaN", None),
+        ("W", "inf", None),
+        ("W", "-inf", None),
+    ]:
+        state.state = raw
+        state.attributes["unit_of_measurement"] = unit
+        assert Coordinator._read_power_w(coordinator, "sensor.power") == expected
+    for invalid in (float("nan"), float("inf"), -1):
+        assert _stored_wh(invalid) == 0
+
+
+async def test_hourly_pv_and_learning_share_dst_grid(hass):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from custom_components.battery_manager.core.series import build_slots
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    now = datetime(2026, 10, 25, tzinfo=ZoneInfo("Europe/Berlin"))
+    hass.states.async_set(
+        "sensor.pv_today",
+        "0.9",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period": {
+                "2026-10-25T02:00:00+02:00": 400,
+                "2026-10-25T02:00:00+01:00": 500,
+            },
+        },
+    )
+    curve = coordinator._read_wh_period("sensor.pv_today")
+    assert len(curve) == 2
+    config = coordinator.build_system_config()
+    ac, dc, band, _, _ = coordinator._learned_series(now, config, 1)
+    inputs = build_slots(
+        config, now, 50, [0.9], ac_load_w=ac, dc_load_w=dc, pv_hourly=curve
+    )
+    assert len(inputs.slots) == len(band["ac"]) == 25
+    repeated = [slot for slot in inputs.slots if slot.start.hour == 2]
+    assert [slot.pv_wh for slot in repeated] == [400, 500]
+    assert (repeated[1].start - repeated[0].start).total_seconds() == 3600
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_real_consumption_payload_obeys_card_horizon(hass):
+    import json
+    import subprocess
+    from pathlib import Path
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    points = coordinator.data["consumption_forecast"]
+    remaining = 6.0
+    expected = 0.0
+    for point in points:
+        take = min(remaining, point["duration_h"])
+        expected += take * sum(
+            point[key] for key in ("ac_w", "dc48_w", "dc24_w", "loads_w")
+        )
+        remaining -= take
+        if remaining <= 0:
+            break
+    assert remaining == 0
+    payload = json.dumps(
+        {
+            "consumption": points,
+            "expected_wh": expected,
+            "time_zone": hass.config.time_zone,
+        }
+    )
+    script = Path(__file__).parents[1] / "frontend" / "backend-contract.mjs"
+    result = await hass.async_add_executor_job(
+        lambda: subprocess.run(
+            ["node", str(script)],
+            input=payload,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_ha_stop_stops_actuation_and_flushes_state(hass):
+    """A normal HA stop, not just entry unload, quiesces the coordinator."""
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    with patch.object(
+        coordinator, "async_flush_persistent_state", new_callable=AsyncMock
+    ) as flush:
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+        assert coordinator._actuation_shutdown is True
+        assert coordinator._unsub_state_listener is None
+        flush.assert_awaited_once()
+        before = coordinator.data
+        assert await coordinator._async_update_data() is before

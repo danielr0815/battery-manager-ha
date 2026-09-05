@@ -470,3 +470,39 @@ Attribute; nach Safe-OFF kann `shared` bewusst wieder aktiviert werden. Bei
 bewusst ausgeschalteter Automation bleiben nach dem einmaligen Safe-OFF auch
 exklusive Actors manuell bedienbar; sie werden erst mit erfolgreichem
 Automation-AN erneut geclaimt.
+
+
+## Betriebsfehler Bad vom 2026-09-05 (v0.36.2)
+
+Um 07:26 und 11:48 Uhr erzeugte ein während des HA-Shutdowns nicht mehr
+verfügbarer Root-Schalter einen gespeicherten Bestätigungsfehler. Um
+11:48:56 erschien dieser Fehler nach dem Neustart erneut. Der STOP-Listener
+beendet jetzt die Aktoraufträge und Timer und schreibt anschließend den
+stabilen Zustand. Abgebrochene Bestätigungen erzeugen keinen Gerätefehler;
+beim nächsten Start gilt die bestehende physische Restart-Reconciliation.
+Bereits gespeicherte echte oder alte Fehler bleiben bewusst bis zum Reset
+verriegelt; das Update setzt sie nicht pauschal zurück.
+
+Bestätigte AUS-Übergänge speichern pro physischem Aktor einen UTC-Zeitpunkt.
+Vor dem Aufbau eines Root-/Aux-Pfades werden die Mindestpausen aller dafür
+benötigten Aktoren geprüft. Wiederholtes Safe-OFF verschiebt diese Zeitpunkte
+nicht. Der letzte AC-Ausgang berücksichtigt auch die Mindestpause einer direkt
+angeschlossenen Endlast ohne eigenen Schalter. Warten ist kein Kaskadenfehler.
+Ein verlorener Energieplan wird weiterhin sofort abgeschaltet: Die geplante
+Mindestlaufzeit ist keine Berechtigung, nachträglich Energie aus dem Netz zu
+beziehen. Die Mindestpause verhindert den zuvor beobachteten Wiederanlauf nach
+20 Sekunden. Eine nicht mehr gedeckte Laufzeit wird nicht künstlich verlängert.
+
+Das robuste Leistungslernen verwendet bei Kaskaden bestätigte eigene Claims
+und reale Aktorzustände statt der absichtlich ausgeschalteten unabhängigen
+Last-Empfehlungen. Bei Speichern muss der Eingang samt Charge-Gate aktiv und der
+AC-Ausgang aus sein; andernfalls enthält die Eingangsmessung Durchleitung und
+ist keine saubere Probe der eigenen Ladeleistung. Für die Endlast zählen der
+letzte Ausgang und, falls vorhanden, ihr eigener Schalter. Die bestehende
+fünfminütige Einlernphase und der robuste Median bleiben unverändert.
+
+Regressionen: `test_shutdown_cancels_unavailable_actor_without_persisting_fault`,
+`test_ha_stop_stops_actuation_and_flushes_state`,
+`test_root_minimum_off_survives_replans_and_restart`,
+`test_direct_terminal_minimum_off_blocks_aux_before_root_wake`,
+`test_cascade_learning_uses_owned_isolated_charge_path`.

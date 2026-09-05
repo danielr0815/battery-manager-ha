@@ -267,7 +267,18 @@
       "error": {
         "keep_on_requires_enable": "The 'keep on' policy requires a charge-enable entity — otherwise charging could never be stopped.",
         "control_entities_not_distinct": "Charging input switch and charge-enable entity must be different.",
-        "name_required": "Please enter a name for the load."
+        "name_required": "Please enter a name for the cascade.",
+        "cascade_members_required": "Select at least one storage.",
+        "cascade_duplicate_member": "Each load may occur only once.",
+        "cascade_terminal_invalid": "The terminal must be a non-storage load.",
+        "cascade_member_in_use": "A selected load is already used by a cascade.",
+        "cascade_member_invalid": "A member is not a valid storage.",
+        "cascade_member_incomplete": "Every storage needs SOC, charge gate, output actor and output power.",
+        "cascade_root_input_required": "The first storage needs an input switch.",
+        "cascade_nonroot_input_forbidden": "Only the first storage may have an input switch.",
+        "cascade_soc_order": "Safety floor < cascade discharge target <= charge target SOC is required.",
+        "cascade_handover_timeout": "Handover timeout must be at least 60 seconds.",
+        "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only."
       },
       "initiate_flow": {
         "user": "Add surplus load",

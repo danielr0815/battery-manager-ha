@@ -72,6 +72,11 @@ uv run pytest tests -n 4 --dist=loadscope --cov --cov-report=json
 uv run python scripts/check_module_coverage.py
 ```
 
+The full HA suite also requires Node.js 22+ to verify real backend payloads
+against the bundled cards. CI and the devcontainer provide it. Run the standalone
+frontend suite with `node --test tests/frontend/cascade-card.test.mjs`.
+The pure core suite still needs only Python.
+
 HA tests replace the coordinator's production five-second entity debounce with
 an immediate yield in `tests/ha/conftest.py`; a dedicated mock-based test keeps
 the production delay covered without adding real wall-clock sleeps. Four xdist
