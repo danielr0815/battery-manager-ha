@@ -248,6 +248,9 @@ ACTOR_MODES = (ACTOR_MODE_EXCLUSIVE, ACTOR_MODE_SHARED)
 CONF_CASCADE_MEMBER_IDS = "member_load_ids"
 CONF_CASCADE_TERMINAL_LOAD_ID = "terminal_load_id"
 CONF_CASCADE_ACTOR_TIMEOUT_S = "actor_confirmation_timeout_s"
+# Slow OFF publications get one bounded read-only grace period. Shared by
+# executor and startup budgeting so this time cannot become useful energy.
+CASCADE_OFF_CONFIRM_GRACE_S = 30.0
 # Load location relative to the grid-consumption measurement point (§2.3;
 # V3 semantics, 2026-07-24). This flag governs ONLY the baseline (Grundlast)
 # learning in history_profile.py — it decides whether the load's own draw is

@@ -53,6 +53,95 @@ Regressionen: `test_forecast_spends_only_prior_charging_across_days`,
 `test_reverse_handover_uses_awake_powered_member_directly`,
 `test_reverse_handover_missing_wake_evidence_stops_within_deadline`.
 
+## Korrektur vom 2026-09-06: Übergänge ohne unnötige Abschaltung
+
+Der Vorfall der Bad-Kaskade um 10:04 Uhr entstand beim Entfall einer einzelnen
+Ladefreigabe: Der Executor schaltete beide Ladefreigaben aus und wollte die
+weiterhin benötigte unmittelbar wieder einschalten. Deren gerade gestartete
+Mindestpause führte zur vollständigen Sicherheitsabschaltung. Eine verspätete
+Bestätigung des letzten AC-Ausgangs ließ anschließend die Störung einrasten.
+
+Für Eingangsversorgung, Pfaderweiterungen und Neustartübernahmen gilt deshalb
+jetzt ein gemeinsamer Abgleich von Istzustand und erlaubtem Zielzustand:
+
+- Ein weiterhin benötigter, bestätigter ON-Aktor wird nicht zwischendurch
+  ausgeschaltet. Entfallende Aktoren werden von der Endlast zum Eingang
+  abgeschaltet. Neue Aktoren werden in Versorgungsrichtung eingeschaltet.
+- Eine noch laufende Mindestpause entfernt den betroffenen Verbraucher aus
+  dem erlaubten Zielzustand. Eine gesperrte Versorgung entfernt zusätzlich
+  alle davon abhängigen Verbraucher. Bereits erlaubte Lasten bleiben aktiv;
+  Ausgänge ohne verbleibenden Verbraucher bleiben aus. Es entsteht kein
+  zusätzlicher Aux-Auftrag als Ersatz für einen gesperrten Eingang.
+- Ein neuer Eingangsplan kann einen laufenden Aux-Pfad übernehmen und benötigte
+  Ausgänge erhalten. Die Mindestpause des Eingangs bleibt verbindlich. Fehlt
+  jegliche freigegebene Versorgung, wird der Pfad weiterhin abgeschaltet.
+- Nach einem HA-Neustart werden zusammenhängende Eingangs- und vollständige
+  Aux-Pfade anhand aktueller Schaltzustände erkannt und entsprechend dem
+  frischen Plan weitergeführt. Unbekannte oder widersprüchliche Pfade behalten
+  die bisherigen begrenzten Warte- und Sicherheitsregeln.
+- Jeder neu benötigte schlafende Speicher wird in elektrischer Reihenfolge
+  geweckt. Die frische Meldung eines vorgeschalteten Mitglieds beweist nicht,
+  dass ein weiteres Mitglied hinter einem abgeschalteten Ausgang bereits wach
+  ist. Vor einem Aux-Wechsel werden auch dessen vollständiger Zielpfad und
+  gegebenenfalls die vorübergehende Versorgung auf Mindestpausen geprüft.
+- Übernommene OFF-Meldungen behalten ihren tatsächlichen Zeitbezug.
+  Wiederholtes Abgleichen setzt den Beginn der Mindestpause nicht neu.
+- Nach dem konfigurierten Actor-Confirmation-Timeout erhält jede ausstehende
+  OFF-Bestätigung genau einmal 30 Sekunden Nachlaufzeit. Bei der üblichen
+  Einstellung von 30 Sekunden sind das insgesamt maximal 60 Sekunden.
+  Die Nachlaufzeit liegt zentral vor der Fehlerrückgabe an Planwechsel,
+  Quellenwechsel und Sicherheitsabschaltung. Eine Meldung nach 43 Sekunden
+  beendet sie sofort erfolgreich, ohne einen zweiten Schaltbefehl zu senden.
+  Ein eingeschalteter, unbekannter oder nicht verfügbarer Zustand bleibt
+  unbestätigt; weitere Veröffentlichungen verlängern die Frist nicht.
+  Fehlgeschlagene Service-Aufrufe bleiben unmittelbar Fehler. Nach einem
+  Timeout des Service-Aufrufs kann nur tatsächliches OFF den Erfolg beweisen,
+  kein lediglich angenommenes ON. ON-Fristen und Shutdown-Abbruch bleiben
+  unverändert. Die Nachlaufzeit wird auch im Startbudget neuer Aux-Phasen
+  reserviert (höchstens N Gates, N−1 übersprungene Ausgänge und Root).
+- Nach fehlgeschlagenem Abschalten darf kein aufrufender Pfad die Phase
+  `fault` mit `recovering` oder `complete` überschreiben. Nach einem
+  Bestätigungs-Timeout wird am Ende der Abschaltsequenz einmal der vollständige
+  Istzustand geprüft: Sind inzwischen alle Aktoren bestätigt aus, kann die
+  Abschaltung erfolgreich enden. Diese abschließende Zustandsprüfung eröffnet
+  keine weitere Wartefrist und sendet keinen erneuten Schaltbefehl.
+  Unbestätigte Zustände bleiben eine Störung.
+- Beim Verlassen des Speicherbetriebs werden alte Leistungs-Messpunkte
+  verworfen, damit Pausen und Eingangsversorgung nicht in die Aux-Energie
+  integriert werden.
+
+Die 640 Fälle von `test_root_transition_matrix_preserves_retained_actors`
+prüfen alle Lade-/Endlastkombinationen für zwei und drei Speicher, jeweils mit
+und ohne Neustart. Die erwarteten physischen Pfade werden unabhängig von der
+produktiven Zielberechnung aufgebaut. Zusätzliche Verhaltensregressionen:
+`test_waiting_charge_does_not_stop_retained_root_consumers`,
+`test_blocked_upstream_removes_dependents_but_keeps_own_charge`,
+`test_waiting_charge_does_not_energise_unused_output`,
+`test_aux_to_root_preserves_still_needed_outputs`,
+`test_aux_to_root_respects_blocked_input`,
+`test_root_to_aux_keeps_terminal_powered`,
+`test_handover_checks_all_dwell_before_mutating`,
+`test_awake_handover_gap_does_not_skip_sleeping_downstream_member`,
+`test_adopted_shared_off_preserves_minimum_off_clock`,
+`test_failed_stop_retains_fault_phase`,
+`test_late_off_confirmation_is_adopted_at_end_of_break` und
+`test_stopped_aux_does_not_count_energy_during_pause`.
+Die Nachlaufzeit wird durch
+`test_delayed_off_confirmation_does_not_latch_fault` (29,9 / 30,1 / 43 / 59,9
+Sekunden in drei Abschaltpfaden),
+`test_missing_off_feedback_faults_after_fixed_grace`,
+`test_on_confirmation_keeps_original_deadline`,
+`test_off_service_failure_does_not_gain_grace`,
+`test_timed_out_off_service_needs_physical_confirmation`,
+`test_off_grace_adds_once_to_configured_timeout` und
+`test_shutdown_cancels_off_grace_without_fault` nachgewiesen.
+`test_off_confirmation_grace_duration_contract` prüft separat die produktiven
+30 Sekunden. Mindestpausen und Bestätigungsfristen laufen in diesen
+Regressionen ausschließlich mit virtueller Zeit.
+Die Core-Algorithmen bleiben unverändert; die HA-Schicht liefert ein um die
+OFF-Nachlaufzeit erweitertes konservatives Startbudget. Die akzeptierte kurze
+Ladung durch externe Weck-/Ladeautomationen bleibt unverändert.
+
 ## Konfigurationsvertrag
 
 Eine `cascade`-Subentry enthält den Namen, die geordneten Storage-Load-IDs, die
@@ -317,7 +406,9 @@ fehlende physische Rückmeldung ist als Diagnoseeinschränkung zu verstehen.
 Bei Actoren mit echter Zustandsrückmeldung gilt der Service-Aufruf allein
 dagegen nicht als Bestätigung: Der Manager wartet je Versuch innerhalb des
 konfigurierten Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst
-dann seinen Claim. Die begrenzte Wiederholung gilt ausschließlich für den noch
+dann seinen Claim. Für OFF gilt die oben beschriebene einmalige Nachlaufzeit
+von 30 Sekunden ohne erneuten Service-Aufruf. Die begrenzte Wiederholung gilt
+weiterhin ausschließlich für den noch
 stromlos sicheren Output-AN-Schritt eines Mitglieds-Wakes; andere
 Actor-Fehler bleiben unmittelbar fail-closed. Ein bereits bestätigter
 Zielzustand wird ohne redundanten Service-Aufruf übernommen; damit bleibt

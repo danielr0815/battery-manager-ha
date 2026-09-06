@@ -25,6 +25,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ACTOR_MODE_EXCLUSIVE,
     ACTOR_MODE_SHARED,
+    CASCADE_OFF_CONFIRM_GRACE_S,
     CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
@@ -153,7 +154,9 @@ class CascadeManager:
                 return True
         return False
 
-    def _check_minimum_off(self, cascade_id: str, targets: dict[str, bool]) -> None:
+    def _minimum_off_blockers(
+        self, cascade_id: str, targets: dict[str, bool]
+    ) -> set[str]:
         """Check the entire desired path before beginning a new transition.
 
         A withdrawn energy plan still stops immediately: minimum runtime must
@@ -163,7 +166,7 @@ class CascadeManager:
         """
         topology = self._topology(cascade_id)
         if topology is None:
-            return
+            return set()
         delays: dict[str, float] = {}
         members = topology["members"]
         for index, (_, data) in enumerate(members):
@@ -187,17 +190,96 @@ class CascadeManager:
                 )
         off_since = self._state(cascade_id).get("actor_off_since", {})
         now = dt_util.utcnow()
+        blocked: set[str] = set()
         for actor, enabled in targets.items():
             if not enabled or self.coordinator._entity_is_on(actor):
                 continue
             timestamp = off_since.get(actor)
-            if timestamp is None:
-                continue
-            since = dt_util.parse_datetime(timestamp)
+            since = dt_util.parse_datetime(timestamp) if timestamp else None
             if since is not None and now < dt_util.as_utc(since) + timedelta(
                 minutes=delays.get(actor, 0)
             ):
-                raise _MinimumOffPending
+                blocked.add(actor)
+        return blocked
+
+    def _record_observed_off(
+        self, cascade_id: str, entity_id: str, current: Any
+    ) -> None:
+        """An adopted OFF starts dwell too; repeated polls never move it."""
+        observed = getattr(current, "last_changed", None)
+        stamp = (
+            dt_util.as_utc(observed)
+            if isinstance(observed, datetime)
+            else dt_util.utcnow()
+        )
+        self._state(cascade_id).setdefault("actor_off_since", {})[entity_id] = (
+            stamp.isoformat()
+        )
+
+    def _check_minimum_off(self, cascade_id: str, targets: dict[str, bool]) -> None:
+        if self._minimum_off_blockers(cascade_id, targets):
+            raise _MinimumOffPending
+
+    def _permitted_root_targets(
+        self, cascade_id: str, topology: dict[str, Any], plan: Any
+    ) -> dict[str, bool]:
+        """Keep the electrically connected subset of the fresh Root plan.
+
+        Bad 2026-09-06: one waiting charge gate must not stop an already
+        authorised terminal or another member. OFF obligations still apply;
+        a blocked supply removes all dependent loads, never creates Aux.
+        """
+        targets = self._root_actor_targets(topology, plan)
+        for actor in self._minimum_off_blockers(cascade_id, targets):
+            targets[actor] = False
+        members = topology["members"]
+        root = members[0][1].get(CONF_LOAD_CONTROL_SWITCH)
+        supplied = bool(targets.get(root))
+        for _load_id, data in members:
+            gate = data.get(CONF_LOAD_CHARGE_ENABLE)
+            output = data.get(CONF_LOAD_OUTPUT_SWITCH)
+            targets[gate] = supplied and targets[gate]
+            targets[output] = supplied and targets[output]
+            supplied = targets[output]
+        terminal = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+        if terminal:
+            targets[terminal] = supplied and targets[terminal]
+        # Prune supplies that only served a now-blocked consumer. Keeping
+        # their outputs ON would spend standby energy without permitted work.
+        demand = targets[terminal] if terminal else supplied
+        for _, data in reversed(members):
+            output = data[CONF_LOAD_OUTPUT_SWITCH]
+            targets[output] = targets[output] and demand
+            demand = targets[output] or targets[data[CONF_LOAD_CHARGE_ENABLE]]
+        targets[root] = demand
+        return targets
+
+    @staticmethod
+    def _root_target_counts(
+        topology: dict[str, Any], targets: dict[str, bool]
+    ) -> tuple[int, int]:
+        members = topology["members"]
+        output_count = sum(
+            bool(targets[data[CONF_LOAD_OUTPUT_SWITCH]]) for _, data in members
+        )
+        deepest_charge = max(
+            (
+                i + 1
+                for i, (_, data) in enumerate(members)
+                if targets[data[CONF_LOAD_CHARGE_ENABLE]]
+            ),
+            default=0,
+        )
+        return output_count, max(output_count, deepest_charge)
+
+    async def _turn_off_unneeded(
+        self, cascade_id: str, topology: dict[str, Any], targets: dict[str, bool]
+    ) -> bool:
+        """Cut only withdrawn actors, downstream before their supply."""
+        for actor in self._off_order(topology):
+            if not targets[actor] and not await self._actor(cascade_id, actor, False):
+                return False
+        return True
 
     def cleanup(self) -> None:
         """Cancel callbacks that must not survive config-entry unload."""
@@ -1382,6 +1464,25 @@ class CascadeManager:
         )
         return targets
 
+    @staticmethod
+    def _is_supplied_root_path(topology: dict[str, Any], live: dict[str, bool]) -> bool:
+        """A connected Root prefix may retain charging across HA restart."""
+        supplied = live.get(
+            topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH), False
+        )
+        if not supplied:
+            return False
+        for _, data in topology["members"]:
+            gate, output = (
+                live[data[CONF_LOAD_CHARGE_ENABLE]],
+                live[data[CONF_LOAD_OUTPUT_SWITCH]],
+            )
+            if (gate or output) and not supplied:
+                return False
+            supplied = output
+        terminal = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+        return not terminal or not live[terminal] or supplied
+
     def _is_ordered_wake_prefix(
         self, topology: dict[str, Any], states: dict[str, bool]
     ) -> bool:
@@ -1493,6 +1594,7 @@ class CascadeManager:
                     and current is not None
                     and current.state == "off"
                 ):
+                    self._record_observed_off(cascade_id, entity_id, current)
                     state["claims"][entity_id] = False
 
     async def _actor(
@@ -1531,6 +1633,8 @@ class CascadeManager:
             # Re-sending OFF on every inactive plan pass made both outputs
             # oscillate every ~12 s.  A confirmed target state is already a
             # successful, adoptable transition and must never be rewritten.
+            if not turn_on and state["claims"].get(entity_id) is True:
+                self._record_observed_off(cascade_id, entity_id, current)
             state["claims"][entity_id] = turn_on
             return True
         cascade = self.coordinator.entry.subentries.get(cascade_id)
@@ -1552,24 +1656,23 @@ class CascadeManager:
                         "kind": "service_failed",
                     }
                     return False
-                while True:
-                    current = self.coordinator.hass.states.get(entity_id)
-                    if current is not None and current.attributes.get("assumed_state"):
-                        # A completed service call is the strongest evidence an
-                        # assumed-state actor exposes; it cannot confirm more.
-                        break
-                    if current is not None and current.state == target_state:
-                        break
-                    await asyncio.sleep(_ACTOR_CONFIRM_POLL_S)
+                await self._wait_actor_state(
+                    entity_id, target_state, accept_assumed=True
+                )
         except TimeoutError:
-            current = self.coordinator.hass.states.get(entity_id)
-            state["last_actor_error"] = {
-                "entity_id": entity_id,
-                "target_state": target_state,
-                "observed_state": current.state if current is not None else None,
-                "kind": "confirmation_timeout",
-            }
-            return False
+            # Bad 2026-09-06: OFF arrived 43 s after the command. Faulting at
+            # 30 s (or retrying a toggle-like OFF) turned slow feedback into a
+            # latched outage. Every OFF path gets the same bounded read-only
+            # grace BEFORE its caller can fault; ON keeps its original bound.
+            if turn_on or not await self._wait_delayed_off(entity_id):
+                current = self.coordinator.hass.states.get(entity_id)
+                state["last_actor_error"] = {
+                    "entity_id": entity_id,
+                    "target_state": target_state,
+                    "observed_state": current.state if current is not None else None,
+                    "kind": "confirmation_timeout",
+                }
+                return False
         if not turn_on:
             state.setdefault("actor_off_since", {})[entity_id] = (
                 dt_util.utcnow().isoformat()
@@ -1587,6 +1690,35 @@ class CascadeManager:
             target_state.upper(),
             state.get("phase"),
         )
+        return True
+
+    async def _wait_actor_state(
+        self, entity_id: str, target: str, *, accept_assumed: bool
+    ) -> None:
+        """Observe an existing command; the caller owns its absolute deadline."""
+        while True:
+            current = self.coordinator.hass.states.get(entity_id)
+            if current is not None and (
+                current.state == target
+                or (accept_assumed and current.attributes.get("assumed_state"))
+            ):
+                # Assumed-state acceptance requires a completed service call;
+                # the OFF grace after a timed-out call requires actual OFF.
+                return
+            await asyncio.sleep(_ACTOR_CONFIRM_POLL_S)
+
+    async def _wait_delayed_off(self, entity_id: str) -> bool:
+        """A late OFF is evidence, never permission to send a second command."""
+        _LOGGER.info(
+            "Awaiting delayed OFF confirmation for %s for up to %.0f more seconds",
+            entity_id,
+            CASCADE_OFF_CONFIRM_GRACE_S,
+        )
+        try:
+            async with asyncio.timeout(CASCADE_OFF_CONFIRM_GRACE_S):
+                await self._wait_actor_state(entity_id, "off", accept_assumed=False)
+        except TimeoutError:
+            return False
         return True
 
     def _begin_actor_sequence(self, cascade_id: str) -> None:
@@ -1708,11 +1840,25 @@ class CascadeManager:
         if cancel := self._proof_refresh_cancel.pop(cascade_id, None):
             cancel()
         self._proof.pop(cascade_id, None)
+        self._aux_tick.pop(cascade_id, None)
+        self._telemetry_unknown_since.pop(cascade_id, None)
         self._clear_member_wake(cascade_id)
         state = self._state(cascade_id)
         state["source"] = None
         if state.get("phase") != "fault":
             state["phase"] = "idle"
+        if (
+            not ok
+            and state.get("last_actor_error", {}).get("kind") == "confirmation_timeout"
+            and self._all_actors_off(topology)
+        ):
+            # Another actor's confirmation can outlast an earlier delayed
+            # OFF publication. Judge the completed break by current evidence,
+            # without re-sending toggle-like device commands or adding delay.
+            for actor in self._off_order(topology):
+                await self._actor(cascade_id, actor, False)
+            state.pop("last_actor_error", None)
+            ok = True
         if not ok:
             await self._fault(cascade_id, f"safe_off_failed:{reason}")
         elif state.get("fault"):
@@ -1782,6 +1928,7 @@ class CascadeManager:
         topology = self._topology(cascade_id)
         if topology is None:
             return False
+        self._check_minimum_off(cascade_id, self._aux_targets(topology, source_id))
         root_data = topology["members"][0][1]
         terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
         if terminal_actor and not await self._actor(cascade_id, terminal_actor, True):
@@ -1882,6 +2029,13 @@ class CascadeManager:
     ) -> bool:
         """Resume an observed Root-fed Aux wake without cycling the chain."""
         self._begin_actor_sequence(cascade_id)
+        targets = self._aux_targets(topology, source_id)
+        for _, data in topology["members"]:
+            self._set_actor_target(targets, data.get(CONF_LOAD_OUTPUT_SWITCH), True)
+        self._set_actor_target(
+            targets, topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH), True
+        )
+        self._check_minimum_off(cascade_id, targets)
         for _load_id, data in topology["members"]:
             if not await self._actor(
                 cascade_id, data.get(CONF_LOAD_CHARGE_ENABLE), False
@@ -2010,6 +2164,18 @@ class CascadeManager:
             )
             return False
 
+        if root_wanted and (
+            self._is_supplied_root_path(topology, live)
+            or any(
+                live == self._aux_targets(topology, load_id)
+                for load_id, _ in topology["members"]
+            )
+        ):
+            if not await self._apply_root(cascade_id, plan, now):
+                await self._fault(cascade_id, "restart_wake_reconciliation_failed")
+                await self.async_safe_off(cascade_id, "restart Root reconciliation")
+            return True
+
         if desired_source and self._can_finish_aux(topology, live, desired_source):
             state["source"] = desired_source
             _LOGGER.info(
@@ -2056,103 +2222,78 @@ class CascadeManager:
     async def _finish_root(
         self, cascade_id: str, topology: dict[str, Any], plan: Any
     ) -> bool:
-        """Apply Root consumers after every newly supplied member woke."""
-        member_flows, terminal_root, output_count, _wake_count = self._root_targets(
-            topology, plan
-        )
-        for index, (_load_id, data) in enumerate(topology["members"]):
-            if not await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_OUTPUT_SWITCH),
-                index < output_count,
-            ):
-                return False
-        terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
-        if terminal_actor and not await self._actor(
-            cascade_id, terminal_actor, terminal_root
-        ):
+        """Apply only changed Root consumers after the ordered wake."""
+        targets = self._permitted_root_targets(cascade_id, topology, plan)
+        if not await self._turn_off_unneeded(cascade_id, topology, targets):
             return False
-        for load_id, data in topology["members"]:
-            charging = bool(
-                member_flows.get(load_id)
-                and member_flows[load_id].own_charge_input_wh > 0
-            )
-            if not await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_CHARGE_ENABLE),
-                charging,
-            ):
+        # ON order is supply-to-load; OFF order above is deliberately reversed.
+        members = topology["members"]
+        on_order = [members[0][1].get(CONF_LOAD_CONTROL_SWITCH)]
+        on_order.extend(data.get(CONF_LOAD_OUTPUT_SWITCH) for _, data in members)
+        on_order.append(topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH))
+        on_order.extend(data.get(CONF_LOAD_CHARGE_ENABLE) for _, data in members)
+        for actor in on_order:
+            if targets.get(actor) and not await self._actor(cascade_id, actor, True):
                 return False
         self._clear_member_wake(cascade_id)
-        self._state(cascade_id)["phase"] = (
-            "recovering" if self._state(cascade_id).get("recovery_pending") else "root"
+        self._aux_tick.pop(cascade_id, None)
+        self._telemetry_unknown_since.pop(cascade_id, None)
+        state = self._state(cascade_id)
+        state["source"] = None
+        state["phase"] = (
+            "recovering"
+            if state.get("recovery_pending")
+            else "root"
+            if any(targets.values())
+            else "idle"
         )
         return True
 
     async def _apply_root(self, cascade_id: str, plan: Any, now: datetime) -> bool:
-        """Apply one Root-fed slot without counting internal passthrough."""
+        """Reconcile a Root plan without cycling its retained supply or gates."""
         self._begin_actor_sequence(cascade_id)
         topology = self._topology(cascade_id)
         if topology is None or not plan.flows:
             return False
-        self._check_minimum_off(cascade_id, self._root_actor_targets(topology, plan))
-        live, unknown = self._live_actor_states(topology)
-        if not unknown and live == self._root_actor_targets(topology, plan):
-            # A rolling refresh (and especially the first one after restart)
-            # must not cycle charge gates merely to rebuild the same topology.
-            state = self._state(cascade_id)
-            state["claims"] = dict(live)
-            state["source"] = None
-            self._clear_member_wake(cascade_id)
-            state["phase"] = "recovering" if state.get("recovery_pending") else "root"
-            return True
-        _member_flows, _terminal_root, output_count, wake_count = self._root_targets(
-            topology, plan
-        )
-
-        # Disable charging before changing the passthrough path.
-        for _load_id, data in topology["members"]:
-            if not await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_CHARGE_ENABLE),
-                False,
-            ):
-                return False
+        targets = self._permitted_root_targets(cascade_id, topology, plan)
+        # Do not create an OFF clock for an actor that is still needed. This
+        # same delta rule applies to gate-only changes and path extensions.
+        if not await self._turn_off_unneeded(cascade_id, topology, targets):
+            return False
         root = topology["members"][0][1]
         root_actor = root.get(CONF_LOAD_CONTROL_SWITCH)
-        root_was_on = bool(root_actor and self.coordinator._entity_is_on(root_actor))
+        if not targets[root_actor]:
+            return await self._finish_root(cascade_id, topology, plan)
+        output_count, wake_count = self._root_target_counts(topology, targets)
+        root_was_on = self.coordinator._entity_is_on(root_actor)
         baseline = (
             self._member_telemetry_reported_at(root)[0] if not root_was_on else None
         )
-        if not await self._actor(
-            cascade_id,
-            root_actor,
-            True,
-        ):
+        if not await self._actor(cascade_id, root_actor, True):
             return False
-        if not wake_count:
-            return await self._finish_root(cascade_id, topology, plan)
+        # A confirmed Root supply ends the old Aux episode even if additional
+        # members still need waking. Never integrate its power over this gap.
+        state = self._state(cascade_id)
+        state["source"] = None
+        self._aux_tick.pop(cascade_id, None)
+        self._telemetry_unknown_since.pop(cascade_id, None)
+        self._proof.pop(cascade_id, None)
+        if cancel := self._proof_refresh_cancel.pop(cascade_id, None):
+            cancel()
         first_missing = next(
             (
                 index
-                for index, (_load_id, data) in enumerate(
-                    topology["members"][:output_count]
-                )
+                for index, (_, data) in enumerate(topology["members"][:output_count])
                 if not self.coordinator._entity_is_on(data.get(CONF_LOAD_OUTPUT_SWITCH))
             ),
             None,
         )
-        if not root_was_on:
+        if not root_was_on and wake_count:
             first_missing = 0
         if first_missing is None:
             return await self._finish_root(cascade_id, topology, plan)
-        # A path containing a gap is rebuilt from that point so no sleeping
-        # downstream member receives a premature command.
-        for _load_id, data in reversed(topology["members"][first_missing + 1 :]):
-            if not await self._actor(
-                cascade_id, data.get(CONF_LOAD_OUTPUT_SWITCH), False
-            ):
-                return False
+        # Outputs already ON downstream may still be serving the terminal.
+        # They need no OFF/ON cycle merely because an upstream gap is waking.
         if baseline is None:
             baseline = self._member_telemetry_reported_at(
                 topology["members"][first_missing][1]
@@ -2213,8 +2354,8 @@ class CascadeManager:
             output_count = len(topology["members"])
             wake_count = output_count
         elif mode == "root":
-            _flows, _terminal, output_count, wake_count = self._root_targets(
-                topology, plan
+            output_count, wake_count = self._root_target_counts(
+                topology, self._permitted_root_targets(cascade_id, topology, plan)
             )
         else:
             return False
@@ -2305,6 +2446,7 @@ class CascadeManager:
             for index, (load_id, _data) in enumerate(topology["members"])
             if load_id == source_id
         )
+        self._check_minimum_off(cascade_id, self._aux_targets(topology, source_id))
         if now is not None:
             # An output that was OFF with no powered input may be asleep even
             # while HA retains numeric SOC. Rebuild its supply recursively,
@@ -2345,7 +2487,15 @@ class CascadeManager:
                     and reported is not None
                     and reported >= max(supply_since, now - timedelta(seconds=30))
                 )
-                if not awake:
+                # Even an awake first gap cannot prove a second downstream
+                # gap is awake. Continue in electrical order in that case.
+                another_gap = any(
+                    not self.coordinator._entity_is_on(
+                        item.get(CONF_LOAD_OUTPUT_SWITCH)
+                    )
+                    for _, item in topology["members"][first_missing + 1 :]
+                )
+                if not awake or another_gap:
                     targets = self._aux_targets(topology, source_id)
                     for _, item in topology["members"][wake_index : first_missing + 1]:
                         self._set_actor_target(
@@ -2668,6 +2818,13 @@ class CascadeManager:
                 # window).  `running` describes the old physical episode and
                 # must never keep that path energised without a matching new
                 # segment.
+                if plan.flows and plan.flows[0].root_input_wh > 0.0:
+                    # Root can take over a still-needed load without creating
+                    # a new minimum OFF interval for the whole output chain.
+                    if not await self._apply_root(cascade_id, plan, now):
+                        await self._fault(cascade_id, "root_transition_failed")
+                        await self.async_safe_off(cascade_id, "Root transition")
+                    return
                 pending = bool(state.get("recovery_pending"))
                 await self.async_safe_off(cascade_id, "Aux plan withdrawn")
                 if state.get("phase") != "fault":
@@ -2717,8 +2874,9 @@ class CascadeManager:
             if telemetry_missing:
                 since = self._telemetry_unknown_since.setdefault(cascade_id, now)
                 self._aux_tick.pop(cascade_id, None)
-                if now - since >= timedelta(minutes=10):
-                    await self.async_safe_off(cascade_id, "telemetry unavailable")
+                if now - since >= timedelta(minutes=10) and await self.async_safe_off(
+                    cascade_id, "telemetry unavailable"
+                ):
                     state["phase"] = "recovering"
                     state["warning"] = "telemetry_unavailable"
                 return
@@ -2738,8 +2896,8 @@ class CascadeManager:
                         await self.async_safe_off(cascade_id, "handover failure")
                 else:
                     pending = bool(state.get("recovery_pending"))
-                    await self.async_safe_off(cascade_id, "source target")
-                    state["phase"] = "recovering" if pending else "complete"
+                    if await self.async_safe_off(cascade_id, "source target"):
+                        state["phase"] = "recovering" if pending else "complete"
             return
 
         if desired_source:

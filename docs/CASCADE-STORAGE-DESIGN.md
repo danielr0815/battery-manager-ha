@@ -93,6 +93,12 @@ Aux-Wake zusätzlich bis zur Proof-Grenze als atomare Transition.
 Neue Episoden reservieren vor der Nutzenergie ein konservatives
 Transitionsbudget aus Actor-Bestätigung, den für den Pfad benötigten
 Mitglieds-Wake-Timeouts und dem mindestens 60-sekündigen Leistungsnachweis.
+Zusätzlich werden je möglichem OFF-Schritt 30 Sekunden für verspätete
+Rückmeldungen reserviert: maximal N Ladefreigaben, N−1 übersprungene Ausgänge
+und Root. Diese einmalige Nachlaufzeit gilt zentral auch bei Planwechseln
+und Safe-OFF, vor einer Fehlerrückgabe. Es wird ausschließlich auf bestätigtes
+OFF gewartet; ON-Fristen bleiben unverändert und kein Abschaltbefehl wird in
+der Nachlaufzeit wiederholt. Ohne Bestätigung bleibt der Ablauf fail-closed.
 Dieses Budget zählt nicht als gelieferte Endlastenergie. Ein Fenster muss
 Transition plus Mindestlaufzeit tragen; ein bereits bewiesener laufender Pfad
 hat keinen erneuten Startabzug. Der konkrete Slotvertrag veröffentlicht beide

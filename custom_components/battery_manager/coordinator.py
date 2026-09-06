@@ -28,6 +28,7 @@ from .cascade_manager import CascadeManager
 from .const import (
     APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
     APPLIANCE_RUNNING_STATES,
+    CASCADE_OFF_CONFIRM_GRACE_S,
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_OFF_THRESHOLD_W,
     CONF_APPLIANCE_OPPORTUNISTIC,
@@ -1324,6 +1325,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             )
                             + (3 * len(members) + 3)
                             * float(subentry.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30))
+                            # Up to N gates, N-1 skipped outputs and Root can
+                            # need delayed OFF confirmation before Aux proof.
+                            + 2 * len(members) * CASCADE_OFF_CONFIRM_GRACE_S
                         ),
                     )
                 )

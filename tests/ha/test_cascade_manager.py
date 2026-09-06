@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from custom_components.battery_manager.binary_sensor import CascadeRecommendatio
 from custom_components.battery_manager.cascade_manager import CascadeManager
 from custom_components.battery_manager.const import (
     ACTOR_MODE_SHARED,
+    CASCADE_OFF_CONFIRM_GRACE_S,
     CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
@@ -1490,8 +1492,9 @@ async def test_live_two_fossibot_full_switch_pass_has_one_root_owner(hass) -> No
     coordinator.cleanup()
 
 
+@pytest.mark.parametrize("window_short", [False, True])
 async def test_live_two_fossibot_real_refreshes_keep_root_stable(
-    hass, monkeypatch, request
+    hass, monkeypatch, request, window_short
 ) -> None:
     """Drive the incident topology through complete coordinator refreshes.
 
@@ -1522,11 +1525,13 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     )
 
     # Move the observed 22:29 state to the nearest deterministic feasibility
-    # edge: the initial horizon contains the conservative 9.5-minute startup
+    # edge: the initial horizon contains the conservative 11.5-minute startup
     # budget plus the real 15-minute terminal dwell. Once that transition is
     # accepted, rolling replans report it as ``proving`` and must not reserve
     # the startup a second time or withdraw Aux while the actors wake.
-    started = datetime(2026, 9, 1, 23, 35, 30, tzinfo=UTC)
+    started = datetime(2026, 9, 1, 23, 33, 30, tzinfo=UTC)
+    if window_short:
+        started += timedelta(seconds=1)
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -1655,7 +1660,8 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     hass.services.async_register("homeassistant", "turn_off", turn_off)
     coordinator = BatteryManagerCoordinator(hass, entry)
     request.addfinalizer(coordinator.cleanup)
-    assert coordinator.build_system_config().cascades[0].startup_transition_s == 570.0
+    # 570 s existing wake/actor/proof budget + four possible 30 s OFF graces.
+    assert coordinator.build_system_config().cascades[0].startup_transition_s == 690.0
     # Persistence timing is covered separately. Avoid registering a delayed
     # Store final-write hook so this timing simulation remains entirely
     # in-memory and deterministic.
@@ -1688,12 +1694,23 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
 
     cascade_plan = coordinator.data["cascade_plans"]["chain"]
     assert cascade_plan["aggregate_soc_percent"] == pytest.approx(89.25)
-    assert sum(
-        row["terminal_energy_wh"]
-        for row in cascade_plan["schedule"]
-        if row["start"].startswith(started.date().isoformat())
-        and "aux" in row["sources"]
-    ) / 1000 == pytest.approx(0.107, abs=0.001)
+    aux_kwh = (
+        sum(
+            row["terminal_energy_wh"]
+            for row in cascade_plan["schedule"]
+            if row["start"].startswith(started.date().isoformat())
+            and "aux" in row["sources"]
+        )
+        / 1000
+    )
+    if window_short:
+        # One second less than transition + dwell must not start a phase that
+        # cannot deliver its promised 15-minute terminal run after slow OFF.
+        assert aux_kwh == 0
+        assert service_calls == []
+        assert state["phase"] == "idle"
+        return
+    assert aux_kwh == pytest.approx(0.107, abs=0.001)
     assert state["phase"] == "waking_members"
     assert service_calls == [("turn_on", "switch.bad_waschmaschine")]
     assert actor_calls[-1][:2] == ("switch.bad_waschmaschine", True)
@@ -4432,3 +4449,695 @@ def test_activity_intervals_preserve_partial_charge_aux_and_transition_times():
     assert (
         CascadeManager._activity_intervals(cascade, legacy, slots)[0]["exact"] is False
     )
+
+
+def _root_transition_case(now, count, mask):
+    """Independent physical fixture: bit N denotes the terminal, lower bits charging."""
+    coordinator = _LiveIncidentCoordinator(now)
+    for index in range(3, count + 1):
+        load_id = f"b{index}"
+        coordinator.entry.subentries[load_id] = SimpleNamespace(
+            title=load_id,
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            data={
+                CONF_LOAD_SOC_ENTITY: f"sensor.{load_id}_soc",
+                CONF_LOAD_CHARGE_ENABLE: f"input_boolean.charge_{load_id}",
+                CONF_LOAD_OUTPUT_SWITCH: f"switch.{load_id}_output",
+                CONF_LOAD_OUTPUT_POWER_ENTITY: f"sensor.{load_id}_output_power",
+                CONF_LOAD_POWER_ENTITY: f"sensor.{load_id}_input_power",
+            },
+        )
+        for entity, value in [
+            (f"sensor.{load_id}_soc", "50"),
+            (f"sensor.{load_id}_input_power", "0"),
+            (f"sensor.{load_id}_output_power", "0"),
+            (f"switch.{load_id}_output", "off"),
+            (f"input_boolean.charge_{load_id}", "off"),
+        ]:
+            coordinator.hass.states.values[entity] = SimpleNamespace(
+                state=value, attributes={}, last_updated=now, last_reported=now
+            )
+    coordinator.entry.subentries["chain"].data[CONF_CASCADE_MEMBER_IDS] = [
+        f"b{i}" for i in range(1, count + 1)
+    ]
+    for i in range(1, count + 1):
+        coordinator.entry.subentries[f"b{i}"].data["min_off_min"] = 5
+    coordinator.entry.subentries["leaf"].data["min_off_min"] = 15
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="root" if mask else "idle")
+    expected = _root_transition_vector(count, mask)
+    for actor, on in expected.items():
+        coordinator.hass.states.get(actor).state = "on" if on else "off"
+    state["claims"] = dict(expected)
+    state["actor_off_since"] = {
+        actor: (now - timedelta(minutes=20)).isoformat()
+        for actor, on in expected.items()
+        if not on
+    }
+    return coordinator, manager
+
+
+def _root_transition_vector(count, mask):
+    # A load needs every output physically before it, never its own output.
+    terminal = bool(mask & (1 << count))
+    result = {"switch.bad_waschmaschine": bool(mask)}
+    for i in range(count):
+        result[f"input_boolean.charge_b{i + 1}"] = bool(mask & (1 << i))
+        result[f"switch.b{i + 1}_output"] = terminal or any(
+            mask & (1 << j) for j in range(i + 1, count)
+        )
+    return result
+
+
+def _root_transition_plan(now, count, mask):
+    terminal = bool(mask & (1 << count))
+    charges = [bool(mask & (1 << i)) for i in range(count)]
+    return SimpleNamespace(
+        flows=(
+            CascadeSlotFlow(
+                root_input_wh=300 * (sum(charges) + terminal),
+                member_flows=tuple(
+                    CascadeMemberFlow(
+                        f"b{i + 1}",
+                        50,
+                        60 if charging else 50,
+                        own_charge_input_wh=300 if charging else 0,
+                    )
+                    for i, charging in enumerate(charges)
+                ),
+                segments=(CascadeSourceSegment(0, 0, 1, "direct_pv", None, True, 300),)
+                if terminal
+                else (),
+            ),
+        ),
+        recovery_deadline=now + timedelta(hours=6),
+        provisional_live_soc_required=False,
+    )
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize(
+    "count,before,after",
+    [
+        (n, a, b)
+        for n in (2, 3)
+        for a in range(1 << (n + 1))
+        for b in range(1 << (n + 1))
+    ],
+)
+async def test_root_transition_matrix_preserves_retained_actors(
+    freezer, count, before, after, restart
+):
+    """Every Root consumer combination converges without OFF/ON of retained loads."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, count, before)
+    if restart:
+        manager.normalize_restored_state()
+    live = tuple(
+        SurplusLoadState(f"b{i + 1}", soc_percent=50) for i in range(count)
+    ) + (SurplusLoadState("leaf"),)
+    target = _root_transition_plan(now, count, after)
+    await manager._apply_one("chain", target, live, now)
+    for step in range(1, count + 2):
+        if manager._state("chain")["phase"] != "waking_members":
+            break
+        instant = now + timedelta(seconds=step)
+        freezer.move_to(instant)
+        for i in range(count):
+            _publish_soc(c, f"sensor.b{i + 1}_soc", "50", instant)
+        await manager._apply_one("chain", target, live, instant)
+    expected = _root_transition_vector(count, after)
+    assert {actor: c._entity_is_on(actor) for actor in expected} == expected
+    assert manager._state("chain")["fault"] is None
+    assert manager._state("chain")["enabled"] is True
+    old = _root_transition_vector(count, before)
+    assert all(not (old[actor] and expected[actor] and not on) for actor, on in c.calls)
+    assert len(c.calls) == len({actor for actor, _ in c.calls})
+    # Every output being removed is confirmed before its upstream output.
+    off_outputs = [
+        actor for actor, on in c.calls if not on and actor.endswith("_output")
+    ]
+    assert off_outputs == sorted(off_outputs, reverse=True)
+
+
+async def test_waiting_charge_does_not_stop_retained_root_consumers(freezer):
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 5)  # B1 charging + terminal.
+    state = manager._state("chain")
+    state["actor_off_since"]["input_boolean.charge_b2"] = now.isoformat()
+    live = (
+        SurplusLoadState("b1", soc_percent=50),
+        SurplusLoadState("b2", soc_percent=50),
+        SurplusLoadState("leaf"),
+    )
+    for seconds in (0, 299):
+        freezer.move_to(now + timedelta(seconds=seconds))
+        await manager._apply_one(
+            "chain",
+            _root_transition_plan(now, 2, 7),
+            live,
+            now + timedelta(seconds=seconds),
+        )
+        assert c.calls == []
+        assert state["phase"] == "root"
+    freezer.move_to(now + timedelta(seconds=300))
+    await manager._apply_one(
+        "chain", _root_transition_plan(now, 2, 7), live, now + timedelta(seconds=300)
+    )
+    assert c.calls == [("input_boolean.charge_b2", True)]
+    assert state["fault"] is None
+
+
+async def test_blocked_upstream_removes_dependents_but_keeps_own_charge(freezer):
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 1)
+    manager._state("chain")["actor_off_since"]["switch.b1_output"] = now.isoformat()
+    live = (
+        SurplusLoadState("b1", soc_percent=50),
+        SurplusLoadState("b2", soc_percent=50),
+        SurplusLoadState("leaf"),
+    )
+    await manager._apply_one("chain", _root_transition_plan(now, 2, 7), live, now)
+    assert c.calls == []
+    assert c._entity_is_on("input_boolean.charge_b1")
+    assert not c._entity_is_on("input_boolean.charge_b2")
+    assert not c._entity_is_on("switch.b2_output")
+
+
+@pytest.mark.parametrize("reason", ["target", "telemetry"])
+async def test_failed_stop_retains_fault_phase(monkeypatch, reason):
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    c = _Coordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(
+        enabled=True, phase="running", source="b1", episode_day=now.date().isoformat()
+    )
+    c.hass.states.get("switch.output").state = "on"
+    monkeypatch.setattr(
+        cascade_manager_module.ir, "async_create_issue", lambda *a, **kw: None
+    )
+    c._switch_entity = AsyncMock(return_value=False)
+    if reason == "telemetry":
+        c.hass.states.get("sensor.output_power").state = "unavailable"
+        manager._telemetry_unknown_since["chain"] = now - timedelta(minutes=11)
+    await manager._apply_one(
+        "chain",
+        _aux_plan(now),
+        (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+        now,
+    )
+    assert state["phase"] == "fault"
+    assert state["enabled"] is False
+    assert state["fault"].startswith("safe_off_failed:")
+    assert state["fault_detail"]["entity_id"] == "switch.output"
+
+
+async def test_late_off_confirmation_is_adopted_at_end_of_break(monkeypatch, freezer):
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c = _Coordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    for actor in ("switch.input", "switch.output"):
+        c.hass.states.get(actor).state = "on"
+        state["claims"][actor] = True
+    real_actor = manager._actor
+
+    async def late_off(cid, actor, on):
+        if actor == "switch.output" and c._entity_is_on(actor):
+            state["last_actor_error"] = {
+                "entity_id": actor,
+                "kind": "confirmation_timeout",
+                "target_state": "off",
+                "observed_state": "on",
+            }
+            return False
+        if actor == "switch.input":
+            c.hass.states.get("switch.output").state = "off"
+        return await real_actor(cid, actor, on)
+
+    monkeypatch.setattr(manager, "_actor", late_off)
+    assert await manager.async_safe_off("chain", "test")
+    assert state["fault"] is None
+    assert state["claims"]["switch.output"] is False
+    assert "switch.output" in state["actor_off_since"]
+    assert c.calls == [("switch.input", False)]
+
+
+async def test_adopted_shared_off_preserves_minimum_off_clock(freezer):
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c = _Coordinator(now, shared_input=True)
+    c.entry.subentries["b1"].data["min_off_min"] = 5
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="root", claims={"switch.input": True})
+    c.hass.states.get("switch.input").last_changed = now
+    idle = SimpleNamespace(flows=(), recovery_deadline=None)
+    live = (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf"))
+    await manager._apply_one("chain", idle, live, now)
+    stamp = state["actor_off_since"]["switch.input"]
+    freezer.move_to(now + timedelta(seconds=20))
+    await manager._apply_one(
+        "chain", _root_plan(now), live, now + timedelta(seconds=20)
+    )
+    assert c.calls == []
+    assert state["actor_off_since"]["switch.input"] == stamp
+    assert not state["hands_off"]
+
+
+async def test_waiting_charge_does_not_energise_unused_output(freezer):
+    """A blocked new charge is no permission to power its otherwise idle supply."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 1)
+    manager._state("chain")["actor_off_since"]["input_boolean.charge_b2"] = (
+        now.isoformat()
+    )
+    await manager._apply_one(
+        "chain",
+        _root_transition_plan(now, 2, 3),
+        (
+            SurplusLoadState("b1", soc_percent=50),
+            SurplusLoadState("b2", soc_percent=50),
+            SurplusLoadState("leaf"),
+        ),
+        now,
+    )
+    assert c.calls == []
+    assert manager._state("chain")["phase"] == "root"
+    assert not c._entity_is_on("switch.b1_output")
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("source", ["b1", "b2"])
+@pytest.mark.parametrize("mask", [4, 7])
+async def test_aux_to_root_preserves_still_needed_outputs(
+    freezer, restart, source, mask
+):
+    """Changing supply must not stop the terminal or start its 15-minute OFF dwell."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 4)
+    state = manager._state("chain")
+    old = _root_transition_vector(2, 4)
+    old["switch.bad_waschmaschine"] = False
+    old["switch.b1_output"] = source == "b1"
+    for actor, on in old.items():
+        c.hass.states.get(actor).state = "on" if on else "off"
+        if not on:
+            state["actor_off_since"][actor] = (now - timedelta(minutes=20)).isoformat()
+    state.update(
+        phase="running",
+        source=source,
+        claims=old.copy(),
+        episode_day=now.date().isoformat(),
+    )
+    manager._aux_tick["chain"] = (now - timedelta(seconds=30), 300)
+    if restart:
+        manager.normalize_restored_state()
+    target = _root_transition_plan(now, 2, mask)
+    live = (
+        SurplusLoadState("b1", soc_percent=50),
+        SurplusLoadState("b2", soc_percent=50),
+        SurplusLoadState("leaf"),
+    )
+    await manager._apply_one("chain", target, live, now)
+    assert state["source"] is None
+    assert "chain" not in manager._aux_tick
+    for seconds in (1, 2):
+        instant = now + timedelta(seconds=seconds)
+        freezer.move_to(instant)
+        for i in (1, 2):
+            _publish_soc(c, f"sensor.b{i}_soc", "50", instant)
+        await manager._apply_one("chain", target, live, instant)
+    expected = _root_transition_vector(2, mask)
+    assert {actor: c._entity_is_on(actor) for actor in expected} == expected
+    assert not any(not on and old[actor] for actor, on in c.calls)
+    assert "switch.b2_output" not in state["actor_off_since"]
+    assert state["phase"] == "root"
+    assert state["fault"] is None
+
+
+async def test_aux_to_root_respects_blocked_input(freezer):
+    """Withdrawing Aux cannot override Root dwell to keep a terminal running."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 4)
+    state = manager._state("chain")
+    c.hass.states.get("switch.bad_waschmaschine").state = "off"
+    state["claims"]["switch.bad_waschmaschine"] = False
+    state["actor_off_since"]["switch.bad_waschmaschine"] = now.isoformat()
+    state.update(phase="running", source="b1", episode_day=now.date().isoformat())
+    await manager._apply_one(
+        "chain",
+        _root_transition_plan(now, 2, 4),
+        (
+            SurplusLoadState("b1", soc_percent=50),
+            SurplusLoadState("b2", soc_percent=50),
+            SurplusLoadState("leaf"),
+        ),
+        now,
+    )
+    assert c.calls == [("switch.b2_output", False), ("switch.b1_output", False)]
+    assert state["phase"] == "idle"
+    assert state["fault"] is None
+
+
+async def test_root_to_aux_keeps_terminal_powered(freezer):
+    """Ordered Aux preparation withdraws charging but retains the existing outputs."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 7)
+    live = (
+        SurplusLoadState("b1", soc_percent=90),
+        SurplusLoadState("b2", soc_percent=90),
+        SurplusLoadState("leaf"),
+    )
+    target = _aux_plan(now)
+    await manager._apply_one("chain", target, live, now)
+    for seconds in (1, 2):
+        instant = now + timedelta(seconds=seconds)
+        freezer.move_to(instant)
+        for i in (1, 2):
+            _publish_soc(c, f"sensor.b{i}_soc", "90", instant)
+        await manager._apply_one("chain", target, live, instant)
+    assert c.calls == [
+        ("input_boolean.charge_b1", False),
+        ("input_boolean.charge_b2", False),
+        ("switch.bad_waschmaschine", False),
+    ]
+    assert manager._state("chain")["phase"] == "proving"
+    assert c._entity_is_on("switch.b1_output")
+    assert c._entity_is_on("switch.b2_output")
+
+
+async def test_handover_checks_all_dwell_before_mutating(freezer):
+    """A blocked final output rejects even the direct handover before a write."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 2, 2)
+    manager._state("chain")["actor_off_since"]["switch.b2_output"] = now.isoformat()
+    with pytest.raises(cascade_manager_module._MinimumOffPending):
+        await manager._handover("chain", "b2", now)
+    assert c.calls == []
+    assert c._entity_is_on("switch.b1_output")
+
+
+async def test_awake_handover_gap_does_not_skip_sleeping_downstream_member(freezer):
+    """Fresh B2 telemetry cannot prove B3 is awake behind B2's OFF output."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c, manager = _root_transition_case(now, 3, 0)
+    state = manager._state("chain")
+    state.update(phase="running", source="b1")
+    c.hass.states.get("switch.b1_output").state = "on"
+    state["claims"]["switch.b1_output"] = True
+    assert await manager._handover("chain", "b2", now)
+    assert c.calls == []
+    assert state["wake_member_index"] == 1
+    instant = now + timedelta(seconds=1)
+    freezer.move_to(instant)
+    _publish_soc(c, "sensor.b2_soc", "50", instant)
+    target = _aux_plan(now)
+    assert await manager._continue_member_wake(
+        "chain", manager._topology("chain"), target, instant
+    )
+    assert c.calls == [("switch.b2_output", True)]
+    assert state["wake_member_index"] == 2
+    assert not c._entity_is_on("switch.b3_output")
+    instant += timedelta(seconds=1)
+    freezer.move_to(instant)
+    _publish_soc(c, "sensor.b3_soc", "50", instant)
+    assert await manager._continue_member_wake(
+        "chain", manager._topology("chain"), target, instant
+    )
+    assert c.calls == [
+        ("switch.b2_output", True),
+        ("switch.b3_output", True),
+        ("switch.b1_output", False),
+    ]
+    assert state["phase"] == "proving"
+    assert state["source"] == "b2"
+
+
+async def test_stopped_aux_does_not_count_energy_during_pause(freezer):
+    """The first sample of a later episode must not integrate a stopped interval."""
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    freezer.move_to(now)
+    c = _Coordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    live = (SurplusLoadState("b1", soc_percent=90), SurplusLoadState("leaf"))
+    for actor in ("switch.output", "switch.leaf"):
+        c.hass.states.get(actor).state = "on"
+    state.update(
+        enabled=True, phase="running", source="b1", episode_day=now.date().isoformat()
+    )
+    await manager._apply_one("chain", _aux_plan(now), live, now)
+    assert state["aux_today_wh"] == 0
+    assert await manager.async_safe_off("chain", "episode completed")
+    later = now + timedelta(minutes=5)
+    freezer.move_to(later)
+    # The next episode has completed its own wake/proof. Its first power
+    # sample is a new baseline, not 25 Wh of phantom energy during the pause.
+    for actor in ("switch.output", "switch.leaf"):
+        c.hass.states.get(actor).state = "on"
+        state["claims"][actor] = True
+    state.update(phase="running", source="b1")
+    await manager._apply_one("chain", _aux_plan(later), live, later)
+    assert state["aux_today_wh"] == 0
+    freezer.move_to(later + timedelta(seconds=60))
+    await manager._apply_one(
+        "chain", _aux_plan(later), live, later + timedelta(seconds=60)
+    )
+    assert state["aux_today_wh"] == pytest.approx(5)
+
+
+class _ActorConfirmationClock:
+    """Virtual timeout scopes exercise command/feedback timing without real delays."""
+
+    def __init__(self):
+        self.elapsed = 0.0
+        self.deadlines = []
+        self.timeouts = []
+        self.events = []
+        self.pause_at = None
+        self.paused = asyncio.Event()
+
+    @asynccontextmanager
+    async def timeout(self, seconds):
+        self.timeouts.append(seconds)
+        self.deadlines.append(self.elapsed + seconds)
+        try:
+            yield
+        finally:
+            self.deadlines.pop()
+
+    async def sleep(self, seconds):
+        deadline = min(self.deadlines)
+        self.elapsed = round(min(self.elapsed + seconds, deadline), 6)
+        for instant, callback in list(self.events):
+            if instant <= self.elapsed:
+                self.events.remove((instant, callback))
+                callback()
+        if self.pause_at is not None and self.elapsed >= self.pause_at:
+            self.paused.set()
+            await asyncio.Future()
+        if self.elapsed >= deadline:
+            raise TimeoutError
+
+
+@pytest.fixture
+def actor_confirmation_clock(monkeypatch):
+    clock = _ActorConfirmationClock()
+    # Patch this executor's namespace only; HA fixture shutdown still owns
+    # real asyncio timeout contexts and must not inherit the virtual clock.
+    actor_asyncio = SimpleNamespace(**vars(asyncio))
+    actor_asyncio.timeout = clock.timeout
+    actor_asyncio.sleep = clock.sleep
+    monkeypatch.setattr(cascade_manager_module, "asyncio", actor_asyncio)
+    return clock
+
+
+def test_off_confirmation_grace_duration_contract():
+    assert CASCADE_OFF_CONFIRM_GRACE_S == 30.0
+
+
+@pytest.mark.parametrize("path", ["root_plan", "safe_off", "aux_break"])
+@pytest.mark.parametrize("feedback_after", [29.9, 30.1, 43.0, 59.9])
+async def test_delayed_off_confirmation_does_not_latch_fault(
+    monkeypatch, actor_confirmation_clock, path, feedback_after
+):
+    """The incident's 43 s OFF is accepted before any caller latches a fault."""
+    clock = actor_confirmation_clock
+    now = datetime(2026, 9, 6, 10, tzinfo=UTC)
+    c = _Coordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="root")
+    for actor in ("switch.input", "switch.output", "switch.leaf", "switch.gate"):
+        on = actor != "switch.gate" or path == "root_plan"
+        c.hass.states.get(actor).state = "on" if on else "off"
+        state["claims"][actor] = on
+    delayed_actor = "switch.input" if path == "aux_break" else "switch.output"
+    entity = c.hass.states.get(delayed_actor)
+    clock.events.append((feedback_after, lambda: setattr(entity, "state", "off")))
+    create_issue = Mock()
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", create_issue)
+
+    async def switch(entity_id, on, **kwargs):
+        c.calls.append((entity_id, on))
+        if entity_id != delayed_actor:
+            c.hass.states.get(entity_id).state = "on" if on else "off"
+        return True
+
+    c._switch_entity = switch
+    if path == "root_plan":
+        charging = SimpleNamespace(
+            flows=(
+                CascadeSlotFlow(
+                    root_input_wh=300,
+                    member_flows=(
+                        CascadeMemberFlow("b1", 50, 60, own_charge_input_wh=300),
+                    ),
+                ),
+            ),
+            recovery_deadline=None,
+        )
+        await manager._apply_one(
+            "chain",
+            charging,
+            (SurplusLoadState("b1", soc_percent=50), SurplusLoadState("leaf")),
+            now,
+        )
+        assert state["phase"] == "root"
+        assert c._entity_is_on("switch.input")
+        assert c._entity_is_on("switch.gate")
+    elif path == "safe_off":
+        assert await manager.async_safe_off("chain", "delayed OFF regression")
+        assert manager._all_actors_off(manager._topology("chain"))
+    else:
+        assert await manager._finish_wake("chain", "b1", now)
+        assert state["phase"] == "proving"
+        assert c._entity_is_on("switch.output")
+        assert c._entity_is_on("switch.leaf")
+    assert clock.elapsed == pytest.approx(feedback_after)
+    assert c.calls.count((delayed_actor, False)) == 1
+    assert state["claims"][delayed_actor] is False
+    assert state["fault"] is None
+    assert state["enabled"] is True
+    create_issue.assert_not_called()
+
+
+@pytest.mark.parametrize("observed", ["on", "unavailable"])
+async def test_missing_off_feedback_faults_after_fixed_grace(
+    monkeypatch, actor_confirmation_clock, observed
+):
+    """Repeated state publications never extend the 30 + 30 s OFF deadline."""
+    clock = actor_confirmation_clock
+    c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.output": True})
+    entity = c.hass.states.get("switch.output")
+    entity.state = observed
+    for at in (31, 40, 50, 59):
+        clock.events.append((at, lambda: setattr(entity, "state", observed)))
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    c._switch_entity = AsyncMock(return_value=True)
+    assert not await manager.async_safe_off("chain", "missing OFF regression")
+    assert clock.elapsed == 60
+    assert clock.timeouts == [30, 30]
+    c._switch_entity.assert_awaited_once_with(
+        "switch.output", False, actor_owner="chain"
+    )
+    assert state["phase"] == "fault"
+    assert state["enabled"] is False
+    assert not state["fault_safe_off_complete"]
+    assert state["fault_detail"]["observed_state"] == observed
+    assert state["fault_detail"]["kind"] == "confirmation_timeout"
+
+
+async def test_on_confirmation_keeps_original_deadline(actor_confirmation_clock):
+    c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
+    manager = CascadeManager(c)
+    c._switch_entity = AsyncMock(return_value=True)
+    assert not await manager._actor("chain", "switch.output", True)
+    assert actor_confirmation_clock.elapsed == 30
+    assert actor_confirmation_clock.timeouts == [30]
+    assert "switch.output" not in manager._state("chain")["claims"]
+
+
+async def test_off_service_failure_does_not_gain_grace(actor_confirmation_clock):
+    c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
+    c.hass.states.get("switch.output").state = "on"
+    manager = CascadeManager(c)
+    c._switch_entity = AsyncMock(return_value=False)
+    assert not await manager._actor("chain", "switch.output", False)
+    assert actor_confirmation_clock.elapsed == 0
+    assert actor_confirmation_clock.timeouts == [30]
+    assert manager._state("chain")["last_actor_error"]["kind"] == "service_failed"
+
+
+@pytest.mark.parametrize("feedback", [True, False])
+async def test_timed_out_off_service_needs_physical_confirmation(
+    actor_confirmation_clock, feedback
+):
+    """A timed-out service may have acted; assumed ON alone cannot prove OFF."""
+    clock = actor_confirmation_clock
+    c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
+    entity = c.hass.states.get("switch.output")
+    entity.state = "on"
+    entity.attributes["assumed_state"] = True
+    if feedback:
+        clock.events.append((43, lambda: setattr(entity, "state", "off")))
+    manager = CascadeManager(c)
+
+    async def slow_service(*args, **kwargs):
+        await clock.sleep(90)
+        return True
+
+    c._switch_entity = AsyncMock(side_effect=slow_service)
+    assert await manager._actor("chain", "switch.output", False) is feedback
+    assert clock.elapsed == (43 if feedback else 60)
+    assert c._switch_entity.await_count == 1
+
+
+async def test_off_grace_adds_once_to_configured_timeout(actor_confirmation_clock):
+    clock = actor_confirmation_clock
+    c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
+    c.entry.subentries["chain"].data[CONF_CASCADE_ACTOR_TIMEOUT_S] = 7
+    entity = c.hass.states.get("switch.output")
+    entity.state = "on"
+    clock.events.append((25, lambda: setattr(entity, "state", "off")))
+    c._switch_entity = AsyncMock(return_value=True)
+    assert await CascadeManager(c)._actor("chain", "switch.output", False)
+    assert clock.timeouts == [7, 30]
+    assert clock.elapsed == 25
+
+
+async def test_shutdown_cancels_off_grace_without_fault(actor_confirmation_clock):
+    clock = actor_confirmation_clock
+    clock.pause_at = 31
+    c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
+    c.hass.states.get("switch.output").state = "on"
+    c._switch_entity = AsyncMock(return_value=True)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.output": True})
+    task = asyncio.create_task(manager.async_safe_off("chain", "shutdown regression"))
+    await clock.paused.wait()
+    c._actuation_shutdown = True
+    await manager.async_shutdown()
+    assert task.cancelled()
+    assert state["fault"] is None
+    assert state["enabled"] is True
+    assert state["claims"]["switch.output"] is True
+    assert not manager._actor_tasks
+    assert c._switch_entity.await_count == 1

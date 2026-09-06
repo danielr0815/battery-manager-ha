@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-09-06
+
+### Fixed
+- Kaskaden gleichen Eingangspläne über die tatsächlich benötigten Schalter ab.
+  Weiterhin benötigte Ladefreigaben und AC-Ausgänge bleiben eingeschaltet;
+  kleine Planänderungen erzeugen dadurch keine eigene Mindestpause und keine
+  unnötige Sicherheitsabschaltung wie bei der Bad-Kaskade am 06.09. um 10:04.
+- Mindestpausen sperren nur betroffene Verbraucher und ihre abhängigen Pfade.
+  Bereits erlaubte Verbraucher laufen weiter; Ausgänge ohne verbleibenden
+  Verbraucher werden nicht vorsorglich eingeschaltet. Entfallende Pfade werden
+  von der Endlast zum Eingang abgeschaltet.
+- Der Rückwechsel vom Speicher zur Eingangsversorgung und die Übernahme eines
+  zusammenhängenden Pfads nach HA-Neustart erhalten weiterhin benötigte
+  Ausgänge. Neue Ausgänge benötigen weiterhin einen geordneten Wachnachweis.
+  Ein waches Mitglied überspringt keine weiteren schlafenden Mitglieder.
+- Speicherwechsel prüfen die vollständigen benötigten Schaltpfade vor der
+  ersten Änderung auf Mindestpausen. Übernommene OFF-Rückmeldungen starten
+  ebenfalls eine Mindestpause, ohne sie bei jeder Aktualisierung zu verlängern.
+- OFF-Rückmeldungen erhalten zentral eine einmalige Nachlaufzeit von
+  30 Sekunden nach dem konfigurierten Bestätigungs-Timeout (standardmäßig
+  insgesamt 60 Sekunden). Das gilt auch für normale Plan- und Quellenwechsel,
+  bevor eine Störung festgeschrieben wird. Währenddessen wird ausschließlich
+  auf die Rückmeldung gewartet; der Abschaltbefehl wird nicht erneut gesendet.
+  Die beim Vorfall beobachtete Rückmeldung nach 43 Sekunden wird akzeptiert.
+  Einschaltfristen bleiben unverändert; fehlende OFF-Bestätigung führt nach
+  Ablauf der gesamten Frist weiterhin zu einer Störung.
+- Das Startbudget neuer Speicherphasen reserviert auch die mögliche
+  OFF-Nachlaufzeit. Diese Zeit wird nicht als nutzbare Endlastenergie geplant.
+- Fehlgeschlagene Sicherheitsabschaltungen behalten den Status „Störung“.
+  Am Ende der Abschaltsequenz werden verspätete OFF-Bestätigungen zusätzlich
+  anhand des vollständigen aktuellen Schaltzustands bewertet.
+- Beendete Speicherphasen verwerfen alte Messpunkte. Pausen und eine folgende
+  Eingangsversorgung werden nicht mehr als zusätzliche Speicherenergie gezählt.
+- Regressionen decken 640 Wechselkombinationen für zwei und drei Speicher,
+  Neustarts, Quellenwechsel, Mindestpausen, mehrstufiges Aufwecken und
+  fehlgeschlagene beziehungsweise verspätete Schaltbestätigungen ab.
+
 ## [0.37.0] - 2026-09-06
 
 ### Added
