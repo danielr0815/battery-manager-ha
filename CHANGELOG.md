@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-06
+
+### Added
+- Kaskadendiagramme zeigen geplante Lade-, Entlade- und AC-Ausgangsintervalle
+  als beschriftete Zeitspuren. Teilstunden bleiben erhalten; ältere Daten ohne
+  genaue Ladezeiten werden als unsichere Zeitfenster markiert.
+- Klick auf zugeordnete Prognosewerte oder Diagramme öffnet die normale
+  Home-Assistant-Messhistorie der konfigurierten Entität. Die Prognose bleibt
+  über einen separaten Button erreichbar; unbekannte Entitäten sind nicht verlinkt.
+
+### Fixed
+- Gleichartige aufeinanderfolgende Ablaufphasen werden auch bei gerundeten
+  Teilstunden zusammengefasst. Leistungswechsel, Quellenwechsel und Lücken
+  bleiben erkennbar; Energiesummen verwenden weiterhin die Originalslots.
+- Veraltete Zeitcursor erzeugen nach Plan- oder Zeitraumwechsel kein
+  widersprüchliches „SOC: — %“ mehr. Diagramme und Aktivitätsspuren verwenden
+  denselben Zeitraum; mehrtägige Achsen zeigen auch das Datum.
+
+### Changed
+- Speicher, Endlast und Details teilen ein responsives Raster mit bis zu vier
+  Spalten. Die Endlast belegt eine Spalte; Details nutzen je nach Platz eine
+  oder zwei Spalten, statt immer die gesamte Dashboardbreite zu reservieren.
+- Kompaktere Ablaufzeilen mit aussagekräftigen Titeln, sichtbaren Planlücken,
+  Wh-Anzeige für kleine Energiemengen und aufklappbaren Bilanzresten.
+- Planübersicht und Zeitraumansicht sind ausdrücklich getrennt; „Heute ab jetzt“
+  und „Entladegrenze“ erklären den Zeitbezug und die SOC-Markierung.
+  Gerätedetails zeigen nur zugehörige Energieflüsse. Deutsch und Englisch
+  werden für alle neuen Beschriftungen unterstützt.
+
 ## [0.36.4] - 2026-09-06
 
 ### Fixed

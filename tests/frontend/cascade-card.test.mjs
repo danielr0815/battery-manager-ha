@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const sourcePath = process.env.CASCADE_CARD_SOURCE || new URL('../../custom_components/battery_manager/frontend/battery-manager-forecast-card.js', import.meta.url);
 const definitions = new Map();
-const context = vm.createContext({ URL, Intl, Date, console,
+const context = vm.createContext({ URL, Intl, Date, console, CustomEvent: class {constructor(type, options) {this.type=type;Object.assign(this, options);}},
  HTMLElement: class { attachShadow() { this.shadowRoot = { innerHTML:'', querySelectorAll:()=>[], getElementById:()=>null }; } },
  ResizeObserver:class {observe(){} disconnect(){}},
  customElements:{get:(k)=>definitions.get(k),define:(k,v)=>definitions.set(k,v)},window:{},
@@ -240,4 +240,80 @@ test('consumption day totals follow HA timezone across the repeated autumn hour'
  const points=Array.from({length:48},(_,i)=>({t:new Date(base+i*3600000).toISOString(),ac_w:1000,duration_h:1}));
  c._renderChart({attributes:{consumption_forecast:points}},key=>key);
  assert.ok(c._statsText.includes('25.0/23.0'));
+});
+
+
+test('rounded partial slots merge without hiding actual power changes or gaps',()=>{
+ const c=card();
+ // 492 W / 450 W, first two minutes rounded independently to 0.1 Wh.
+ const cascade={schedule:[block(0,1/30,16.4,[activity('terminal',15,{source:'root'})]),
+ block(1/30,31/30,491.7,[activity('terminal',450,{source:'root'})]),
+ block(31/30,61/30,510,[activity('terminal',468,{source:'root'})]),
+ block(3,4,510,[activity('terminal',468,{source:'root'})])]};
+ const groups=c._groups(c._blocks(cascade));
+ assert.equal(groups.length,3);assert.equal(groups[0].blocks.length,2);
+ assert.equal(c._total(groups[0].blocks,'terminal'),465);
+ const unknown=c._blocks({schedule:[block(0,1,10),block(1,2,10)]});
+ unknown[0].root_input_wh=null;assert.equal(c._groups(unknown).length,2);
+});
+
+test('history uses the configured entity and never opens an invented entity',()=>{
+ const c=card();c._hass.states={'sensor.soc':{attributes:{friendly_name:'Battery SOC'}},'sensor.out':{attributes:{}}};
+ const cascade={member_details:[{load_id:'b1',history_entities:{soc:'sensor.soc',output:'sensor.out'}}]};
+ assert.equal(c._historyEntity(cascade,'soc','b1'),'sensor.soc');
+ assert.equal(c._historyEntity(cascade,'discharge','b1'),'sensor.out');
+ assert.equal(c._historyEntity(cascade,'root'),null);
+ const events=[];c.dispatchEvent=e=>events.push(e);
+ c._openHistory('sensor.soc');c._openHistory('sensor.missing');
+ assert.equal(events.length,1);assert.equal(events[0].type,'hass-more-info');
+ assert.equal(events[0].detail.entityId,'sensor.soc');assert.equal(events[0].composed,true);
+ assert.match(c._historyButton('sensor.soc','48 %'),/data-history="sensor.soc"/);
+});
+
+test('cursor outside a new forecast shows its valid period rather than a missing SOC',()=>{
+ const c=card(), marker={innerHTML:'old'}, readout={textContent:''};
+ c._plot({points:[{time:start,value:48},{time:start+3600000,value:60}],unit:'%',label:'SOC'},'B1','blue');
+ c.shadowRoot.getElementById=id=>id.startsWith('marker')?marker:readout;
+ c._showTime(start-1);assert.equal(marker.innerHTML,'');assert.ok(!readout.textContent.includes('—'));
+ c._showTime(start+1800000);assert.match(readout.textContent,/54,0/);
+});
+
+test('activity tracks preserve partial intervals, merge contiguous bars and clip to the selected period',()=>{
+ const c=card(), cascade={schedule:[block(0,2)],activity_intervals:[
+ {kind:'charge',load_id:'b1',start:new Date(start).toISOString(),end:new Date(start+15*60000).toISOString(),exact:true},
+ {kind:'charge',load_id:'b1',start:new Date(start+15*60000).toISOString(),end:new Date(start+30*60000).toISOString(),exact:true},
+ {kind:'output',load_id:'b1',start:new Date(start+3600000).toISOString(),end:new Date(start+7200000).toISOString(),exact:false}]};
+ const html=c._activityTracks(cascade,'b1','all');
+ assert.match(html,/width:25%/);assert.match(html,/switching|Schaltzeiten unbekannt/);
+ assert.equal((html.match(/tabindex="0"/g)||[]).length,2);
+ c._window=()=>[start+3600000,start+7200000];
+ assert.equal((c._activityTracks(cascade,'b1','today').match(/tabindex="0"/g)||[]).length,1);
+});
+
+test('small residuals use Wh and member details exclude unrelated energy flows',()=>{
+ const c=card(),cascade={schedule:[block(0,1,105,[activity('charge',50,{stored_energy_wh:45}),activity('charge',50,{load_id:'b2',name:'Other',stored_energy_wh:45})])]};
+ const all=c._flowList(c._blocks(cascade),cascade);
+ assert.match(all,/5,0 Wh/);assert.match(all,/<details>/);
+ const member=c._flowList(c._blocks(cascade),cascade,'b1');
+ assert.ok(!member.includes('Other'));assert.ok(!member.includes('Bilanzrest'));
+});
+
+
+test('diagram click and Enter open history while arrow keys keep selecting forecast time',()=>{
+ const c=card(),listeners={};c._hass.states['sensor.soc']={attributes:{}};
+ const cascade={member_details:[{load_id:'b1',history_entities:{soc:'sensor.soc'},soc_forecast:[{t:new Date(start).toISOString(),soc:48},{t:new Date(start+3600000).toISOString(),soc:60}]}]};
+ c._plot(c._series(cascade,'soc','b1','all'),'B1','blue');
+ c.shadowRoot.getElementById=()=>({getBoundingClientRect:()=>({width:600,left:0}),addEventListener:(name,handler)=>listeners[name]=handler});
+ const opened=[];let selected;c._openHistory=id=>opened.push(id);c._showTime=t=>selected=t;
+ c._bindCharts();listeners.click();listeners.keydown({key:'Enter',preventDefault(){}});
+ assert.deepEqual(opened,['sensor.soc','sensor.soc']);
+ listeners.keydown({key:'ArrowRight',preventDefault(){}});assert.equal(selected,start+3600000);
+ assert.equal(opened.length,2);
+});
+
+
+test('narrow grid charts keep twelve physical pixels for axis text',()=>{
+ const c=card();c._charts=[{width:600}];const label={style:{}};
+ c.shadowRoot.getElementById=()=>({getBoundingClientRect:()=>({width:300}),querySelectorAll:()=>[label]});
+ c._sizeAxes();assert.equal(label.style.fontSize,'24px');
 });

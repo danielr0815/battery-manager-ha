@@ -1407,3 +1407,21 @@ def test_root_passthrough_caps_bound_simultaneous_power(cap):
             assert delta == pytest.approx(
                 member.battery_charge_wh - member.battery_discharge_wh
             )
+
+
+@pytest.mark.parametrize("pv, hours", [(165.0, 0.5), (315.0, 1.0)])
+def test_charge_timeline_retains_planned_duration(pv, hours):
+    config, inputs = _system(socs=(50.0,))
+    inputs = replace(
+        inputs,
+        start_soc_percent=95.0,
+        slots=_slots(pv),
+        load_states=(
+            SurplusLoadState("b1", soc_percent=50.0),
+            SurplusLoadState("leaf", available=False),
+        ),
+    )
+    result = plan(config, inputs)
+    flow = result.cascade_plans[0].flows[0].member_flows[0]
+    assert flow.charge_hours == hours
+    assert flow.own_charge_input_wh == hours * 300.0

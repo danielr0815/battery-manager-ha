@@ -3067,6 +3067,12 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
             "load_id": "b1",
             "name": "B1",
             "soc_percent": 90.0,
+            "history_entities": {
+                "soc": "sensor.soc",
+                "charge": "sensor.input_power",
+                "output": "sensor.output_power",
+                "terminal": "sensor.input_power",
+            },
             "target_soc_percent": 50,
             "soc_forecast": [],
         }
@@ -4372,3 +4378,57 @@ async def test_real_subentry_topology_is_serializable_and_stable_after_restore(
     await manager.async_reconcile_topologies()
     assert coordinator.calls == [("switch.leaf", False)]
     assert "actor_topology" not in manager._state("chain")
+
+
+def test_activity_intervals_preserve_partial_charge_aux_and_transition_times():
+    now = datetime(2026, 9, 6, 8, tzinfo=UTC)
+    cascade = LoadCascade(
+        "chain", (CascadeMember("b1", 20, 50), CascadeMember("b2", 20, 50)), "leaf"
+    )
+    slots = (HourSlot(0, now, 1.0, 8, 0.0, 0.0, 0.0),)
+    flows = (
+        CascadeSlotFlow(
+            member_flows=(
+                CascadeMemberFlow("b1", 50, 50),
+                CascadeMemberFlow(
+                    "b2", 50, 60, own_charge_input_wh=100, charge_hours=0.25
+                ),
+            ),
+            segments=(
+                CascadeSourceSegment(0, 0.5, 0.1, "aux", "b1", False, 0, 0.1),
+                CascadeSourceSegment(0, 0.6, 0.4, "aux", "b1", False, 120),
+            ),
+        ),
+    )
+    intervals = CascadeManager._activity_intervals(
+        cascade, SimpleNamespace(flows=flows), slots
+    )
+
+    def periods(kind, load_id):
+        return [
+            (item["start"], item["end"])
+            for item in intervals
+            if item["kind"] == kind and item["load_id"] == load_id
+        ]
+
+    def stamp(minutes):
+        return (now + timedelta(minutes=minutes)).isoformat()
+
+    assert periods("charge", "b2") == [(stamp(0), stamp(15))]
+    assert periods("discharge", "b1") == [(stamp(36), stamp(60))]
+    assert periods("terminal", "leaf") == [(stamp(36), stamp(60))]
+    assert periods("transition", "b1") == [(stamp(30), stamp(36))]
+    assert periods("output", "b1") == [(stamp(0), stamp(15)), (stamp(36), stamp(60))]
+    assert periods("output", "b2") == [(stamp(36), stamp(60))]
+    assert all(item["exact"] for item in intervals)
+    assert CascadeManager._activity_intervals(cascade, None, slots) == []
+    legacy = SimpleNamespace(
+        flows=(
+            CascadeSlotFlow(
+                member_flows=(CascadeMemberFlow("b1", 50, 60, own_charge_input_wh=10),)
+            ),
+        )
+    )
+    assert (
+        CascadeManager._activity_intervals(cascade, legacy, slots)[0]["exact"] is False
+    )

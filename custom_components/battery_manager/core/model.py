@@ -553,6 +553,8 @@ class CascadeMemberFlow:
     battery_charge_wh: float = 0.0
     battery_discharge_wh: float = 0.0
     soc_known: bool = True
+    # Preserve partial charging windows for UI timelines without reverse-calculating rounded energy.
+    charge_hours: float | None = None
 
 
 @dataclass(frozen=True)

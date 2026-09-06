@@ -596,6 +596,7 @@ def _build_plan(
                     soc_end_percent=end,
                     input_wh=input_wh,
                     own_charge_input_wh=input_wh,
+                    charge_hours=charge_h,
                     battery_charge_wh=stored,
                     battery_discharge_wh=discharged,
                 )

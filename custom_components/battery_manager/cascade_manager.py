@@ -2818,6 +2818,77 @@ class CascadeManager:
         if tasks:
             await asyncio.gather(*tasks)
 
+    @staticmethod
+    def _activity_intervals(
+        cascade: Any, plan: Any, slots: tuple[HourSlot, ...]
+    ) -> list[dict[str, Any]]:
+        """Expose model intervals, never infer switching times from rounded Wh."""
+        intervals: list[dict[str, Any]] = []
+        if plan is None:
+            return intervals
+        ids = [member.load_id for member in cascade.members]
+        for slot, flow in zip(slots, plan.flows, strict=False):
+
+            def add(
+                kind: str,
+                load_id: str,
+                offset: float,
+                duration: float,
+                exact: bool = True,
+                slot: HourSlot = slot,
+            ) -> None:
+                start = max(0.0, offset)
+                end = min(slot.duration, offset + duration)
+                if end > start:
+                    intervals.append(
+                        {
+                            "kind": kind,
+                            "load_id": load_id,
+                            "start": (slot.start + timedelta(hours=start)).isoformat(),
+                            "end": (slot.start + timedelta(hours=end)).isoformat(),
+                            "exact": exact,
+                        }
+                    )
+
+            for member_flow in flow.member_flows:
+                if member_flow.own_charge_input_wh <= 0:
+                    continue
+                duration = member_flow.charge_hours
+                add(
+                    "charge",
+                    member_flow.load_id,
+                    0.0,
+                    slot.duration if duration is None else duration,
+                    duration is not None,
+                )
+                for load_id in ids[: ids.index(member_flow.load_id)]:
+                    add(
+                        "output",
+                        load_id,
+                        0.0,
+                        slot.duration if duration is None else duration,
+                        duration is not None,
+                    )
+            for segment in flow.segments:
+                offset, duration = segment.start_offset_h, segment.run_hours
+                if segment.transition_hours > 0:
+                    add(
+                        "transition",
+                        segment.source_load_id,
+                        offset,
+                        segment.transition_hours,
+                    )
+                if segment.terminal_energy_wh <= 0:
+                    continue
+                add("terminal", cascade.terminal_load_id, offset, duration)
+                first = 0
+                if segment.source == "aux":
+                    add("discharge", segment.source_load_id, offset, duration)
+                    first = ids.index(segment.source_load_id)
+                for load_id in ids[first:]:
+                    add("output", load_id, offset, duration)
+        return intervals
+
     def _schedule_payload(
         self,
         cascade: Any,
@@ -3087,6 +3158,17 @@ class CascadeManager:
                 and actor_state.attributes.get("assumed_state")
             ]
             member_details = []
+
+            def entity_refs(load_id):
+                entry = self.coordinator.entry.subentries.get(load_id)
+                data = entry.data if entry is not None else {}
+                return {
+                    "soc": data.get(CONF_LOAD_SOC_ENTITY),
+                    "charge": data.get(CONF_LOAD_POWER_ENTITY),
+                    "output": data.get(CONF_LOAD_OUTPUT_POWER_ENTITY),
+                    "terminal": data.get(CONF_LOAD_POWER_ENTITY),
+                }
+
             for member_index, member in enumerate(cascade.members):
                 current_soc = None
                 if plan and plan.flows:
@@ -3134,6 +3216,7 @@ class CascadeManager:
                             else member.load_id
                         ),
                         "soc_percent": current_soc,
+                        "history_entities": entity_refs(member.load_id),
                         "target_soc_percent": member.recovery_soc_percent,
                         "soc_forecast": soc_forecast,
                     }
@@ -3207,6 +3290,15 @@ class CascadeManager:
                 ),
                 "members": [member.load_id for member in cascade.members],
                 "member_details": member_details,
+                "terminal_history_entity": entity_refs(cascade.terminal_load_id)[
+                    "terminal"
+                ],
+                "root_history_entity": entity_refs(cascade.members[0].load_id)["charge"]
+                if cascade.members
+                else None,
+                "activity_intervals": self._activity_intervals(
+                    cascade, effective_plan, slots
+                ),
                 "terminal_load_id": cascade.terminal_load_id,
                 "terminal_name": (
                     self.coordinator.entry.subentries[cascade.terminal_load_id].title

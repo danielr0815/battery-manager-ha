@@ -1,6 +1,6 @@
 # Kaskadenkachel: Energiefluss und Diagramme
 
-Stand: v0.36.1. Die vorhandene `battery-manager-cascade-card` verwendet weiterhin
+Stand: v0.37.0. Die vorhandene `battery-manager-cascade-card` verwendet weiterhin
 `entity`, `title` und `hours` (6–96, Standard 48). Kein neuer Kartentyp nötig.
 
 ## Verhalten
@@ -9,14 +9,15 @@ Stand: v0.36.1. Die vorhandene `battery-manager-cascade-card` verwendet weiterhi
   Energiequelle und den Empfänger entlang dieser Kette an, einschließlich
   Versorgung der Endlast durch einen bestimmten Speicher.
 - Die Tagesauswahl gilt für Miniaturen, Gerätedaten, Details und Ablauf.
-  Root-Kennzahlen wählen beim Öffnen automatisch heute bzw. morgen; die
-  Speicher-Kennzahl wählt den gesamten konfigurierten Planungshorizont.
+  Die Aktion „Prognose öffnen“ bei Root-Kennzahlen wählt automatisch heute
+  bzw. morgen; bei der Speicher-Kennzahl den gesamten Planungshorizont.
+  Der Wert selbst öffnet bei vorhandener Zuordnung die Messhistorie.
 - Aufnahme ist `charge.energy_wh`, Speicherung ist `stored_energy_wh`,
   Akkuentnahme ist `discharge.energy_wh` inklusive modellierter Verluste.
   Die Kennzahl „Aus Speichern · an Endlast“ summiert nur Aux-Endlastenergie.
   Diese Größen dürfen nicht addiert oder gleichgesetzt werden.
 - Der verbleibende Root-Anteil nach Ladeeingängen und Root-Endlastversorgung
-  wird als AC-Eigenbedarf / Rundungsrest ausgewiesen. Für einzelne AC-Ausgänge
+  wird als aufklappbare „Weitere Energie / Bilanzrest“ ausgewiesen. Für einzelne AC-Ausgänge
   enthält der Sensor keine eigene Durchleitungsenergiemenge; dort wird nur der
   geplante Aktivzustand gezeigt. Es werden keine Messwerte erfunden.
 - Diagramme sind ausdrücklich Planung (gestrichelt). SOC zwischen Stützstellen
@@ -29,7 +30,7 @@ Stand: v0.36.1. Die vorhandene `battery-manager-cascade-card` verwendet weiterhi
 - HA-lokale Zeitstempel, Tagesgrenzen und Sommerzeitwechsel werden in der
   konfigurierten HA-Zeitzone ausgewertet, unabhängig vom Browserstandort.
 - Alle Diagramme teilen den Zeitcursor (Hover, Tippen/Ziehen; Pfeiltasten,
-  Home/End). Ein Gerät bzw. eine Kennzahl öffnet die gemeinsame Detailansicht.
+  Home/End). Die Prognose-/Detailschaltflächen öffnen die gemeinsame Detailansicht.
   Dort wechseln Speicher zwischen SOC/Aufnahme/Akkuentnahme, Energiekurven
   zwischen mittlerer Leistung und kumulierter Energie.
 - Benachbarte Slots mit identischen Aktivitäten, Quellen und mittleren
@@ -67,3 +68,48 @@ auf ihren angegebenen Zeitraum bezogen.
 Status- und Sprachregeln: [Deutsch und Englisch](F-LANGUAGE-SUPPORT.md).
 `recovering` bezeichnet eine noch ausstehende Wiederaufladung, keine aktuell
 gemessene Ladung. Deutsche Karten verwenden „Eingang“ für die Root-Versorgung.
+
+
+## Aktivitäts- und Historienansicht (v0.37.0)
+
+- `activity_intervals` enthält Art, Last-ID, Beginn/Ende und `exact`. Ladezeiten
+  stammen direkt aus `CascadeMemberFlow.charge_hours`; Aux- und Endlastzeiten
+  aus den Quellsegmenten einschließlich ihrer Offsets. Das verändert weder
+  Allokation noch Schaltverhalten. Unbekannte Ladezeiten sind schraffierte
+  Zeitfenster, keine behaupteten exakten Schaltzeiten. Die Spuren beschreiben
+  Modellaktivität, keine garantierten realen Schaltbefehle oder Wake-Zeiten.
+- Alle Diagramme und Spuren verwenden denselben verfügbaren, ausgewählten
+  Horizont. Balken sind per Fokus/Überfahren mit vollständigen Zeitangaben
+  lesbar; Lücken im Ablauf heißen „Keine Aktivität im veröffentlichten Plan“.
+- Unterstrichene Werte sowie Klick/Enter im Diagramm öffnen `hass-more-info`
+  der explizit veröffentlichten und in HA vorhandenen Messentität. SOC und
+  gespeicherte Energie verweisen auf den Ladestand, Aufnahme auf Eingangsleistung,
+  Akkuentnahme auf AC-Ausgangsleistung, Endlastwerte auf deren Leistung.
+  Diese Messhistorien sind keine Historie der berechneten Prognosekennzahl;
+  insbesondere enthält AC-Ausgangsleistung auch Durchleitung. Der Zielname
+  steht im Tooltip. Ohne geeignete Entität wird kein Historienlink erzeugt.
+- Die separate Aktion „Prognose öffnen“ öffnet weiterhin die Kartendetails.
+  Überblickskennzahlen haben feste Zeitbezüge; die Auswahl darunter steuert
+  Speicher, Endlast, Details und Ablauf. Gerätedetails filtern Fremdgeräte aus.
+- Die Phasengruppierung toleriert nur den aus 0,1-Wh-Rundung resultierenden
+  Leistungsfehler beider Slots. Echte Leistungswechsel und Quellenwechsel sowie
+  Übergangsphasen und Tagesgrenzen werden nicht verschluckt.
+- Bilanzreste sind aufklappbar; kleine positive Energiemengen unter 10 Wh
+  werden in Wh angezeigt. Die gelbe Linie ist die Entladegrenze, kein Ladeziel.
+
+- Das Raster richtet sich nach der tatsächlichen Kachelbreite (Container Queries):
+  eine Spalte unter 740 px, zwei ab 740 px, drei ab 1180 px, vier ab 1600 px.
+  Speicher und Endlast belegen je eine Spalte. Details belegen im dreispaltigen Raster
+  zwei Spalten, ansonsten eine. Im vierspaltigen Raster passen damit zwei
+  Speicher, Endlast und Details nebeneinander. Die Lesereihenfolge bleibt auch mit Tastatur erhalten.
+
+
+### Abnahme v0.37.0
+
+Am 2026-09-06 mit lokalem Playwright-MCP in einer temporären, ausdrücklich
+als Beispieldaten markierten Kachel geprüft: 2800, 1920, 1280, 800, 390 und
+280 px Viewportbreite ohne horizontalen Seitenüberlauf. Bei 1920/2800 px
+stehen zwei Speicher, Endlast und Details in einer Reihe. Bei schmaleren
+Containern wird umgebrochen; Diagramme können bei 280 px intern scrollen.
+Ein Historienklick öffnete für den konfigurierten Fossibot-SOC-Sensor den
+HA-Dialog mit `ha-more-info-history` und `state-history-chart-line`.
