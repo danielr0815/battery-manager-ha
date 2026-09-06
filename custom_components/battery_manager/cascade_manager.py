@@ -2305,6 +2305,62 @@ class CascadeManager:
             for index, (load_id, _data) in enumerate(topology["members"])
             if load_id == source_id
         )
+        if now is not None:
+            # An output that was OFF with no powered input may be asleep even
+            # while HA retains numeric SOC. Rebuild its supply recursively,
+            # using the existing publication/boot retries before any ON write.
+            first_missing = next(
+                (
+                    index
+                    for index in range(source_index, len(topology["members"]))
+                    if not self.coordinator._entity_is_on(
+                        topology["members"][index][1].get(CONF_LOAD_OUTPUT_SWITCH)
+                    )
+                ),
+                None,
+            )
+            if first_missing is not None:
+                wake_index = first_missing
+                while wake_index > 0 and not self.coordinator._entity_is_on(
+                    topology["members"][wake_index - 1][1].get(CONF_LOAD_OUTPUT_SWITCH)
+                ):
+                    wake_index -= 1
+                data = topology["members"][wake_index][1]
+                upstream = (
+                    topology["members"][wake_index - 1][1].get(CONF_LOAD_OUTPUT_SWITCH)
+                    if wake_index
+                    else data.get(CONF_LOAD_CONTROL_SWITCH)
+                )
+                reported, _ = self._member_telemetry_reported_at(data)
+                # A powered path and recent device telemetry allow direct
+                # handover. Otherwise a fresh publication after supply-on is
+                # mandatory, regardless of the cached numeric SOC.
+                supply_state = self.coordinator.hass.states.get(upstream)
+                supply_since = getattr(
+                    supply_state, "last_changed", now - timedelta(seconds=30)
+                )
+                awake = (
+                    wake_index == first_missing
+                    and self.coordinator._entity_is_on(upstream)
+                    and reported is not None
+                    and reported >= max(supply_since, now - timedelta(seconds=30))
+                )
+                if not awake:
+                    targets = self._aux_targets(topology, source_id)
+                    for _, item in topology["members"][wake_index : first_missing + 1]:
+                        self._set_actor_target(
+                            targets, item.get(CONF_LOAD_OUTPUT_SWITCH), True
+                        )
+                    self._set_actor_target(targets, upstream, True)
+                    self._check_minimum_off(cascade_id, targets)
+                    if not await self._actor(cascade_id, upstream, True):
+                        return False
+                    state = self._state(cascade_id)
+                    state["source"] = source_id
+                    self._wait_for_member_wake(
+                        cascade_id, topology, wake_index, reported, now, "aux"
+                    )
+                    return True
         for index in range(len(topology["members"]) - 1, -1, -1):
             _load_id, data = topology["members"][index]
             needed = index >= source_index

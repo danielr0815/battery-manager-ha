@@ -678,6 +678,92 @@ def _build_plan(
     )
 
 
+def _extend_aux_forecast(
+    cascade: LoadCascade,
+    config: SystemConfig,
+    inputs: PlanInputs,
+    result: PlanResult,
+    segments: tuple[CascadeSourceSegment, ...],
+    provisional: bool,
+    recovery_deadline: datetime | None,
+) -> CascadePlan:
+    """Spend already forecast stored energy in later electrically free windows.
+
+    The pre-drain replan owns conditional discharge and Root allocation.
+    This chronological pass only consumes energy above the ordinary target;
+    it never borrows from a later charge or changes the protected Root plan.
+    Rebuilding SOC after each window prevents tomorrow from spending today's
+    discharge a second time. Root bookings, including partial slots, retain
+    priority and separate episodes.
+    """
+    preview = _build_plan(
+        cascade, config, inputs, result, segments, provisional, recovery_deadline
+    )
+    if preview.aggregate_soc_percent is None:
+        return preview
+    index = 0
+    while index < len(inputs.slots):
+        flow = preview.flows[index]
+        if flow.root_input_wh > _EPS or flow.segments:
+            index += 1
+            continue
+        start = index
+        day = inputs.slots[start].start.date()
+        while (
+            index < len(inputs.slots)
+            and inputs.slots[index].start.date() == day
+            and preview.flows[index].root_input_wh <= _EPS
+            and not preview.flows[index].segments
+        ):
+            index += 1
+        # Slot zero remains owned by the existing live/pre-drain allocator.
+        if start == 0:
+            continue
+        # Existing later Aux bookings already own part of this energy.
+        # Additional discharge shifts every later SOC down by the same amount
+        # because Root is unchanged, so reserve the lowest remaining SOC.
+        projected = {
+            item.load_id: min(
+                item.soc_start_percent,
+                *(
+                    later.member_flows[member_index].soc_end_percent
+                    for later in preview.flows[start:]
+                ),
+            )
+            for member_index, item in enumerate(preview.flows[start].member_flows)
+        }
+        window_inputs = replace(
+            _replace_soc_states(inputs, projected),
+            now=inputs.slots[start].start,
+            slots=inputs.slots[start:index],
+            cascade_runtime_states=(),
+        )
+        window_result = replace(
+            result,
+            load_plans=tuple(
+                replace(
+                    item,
+                    schedule=item.schedule[start:index],
+                    run_hours=item.run_hours[start:index],
+                )
+                for item in result.load_plans
+            ),
+        )
+        allocation = _allocate_aux_now(cascade, config, window_inputs, window_result)
+        if allocation is None:
+            continue
+        additional, _, _ = allocation
+        provisional = provisional or preview.aggregate_soc_stale
+        segments = (
+            *segments,
+            *(replace(s, slot_index=s.slot_index + start) for s in additional),
+        )
+        preview = _build_plan(
+            cascade, config, inputs, result, segments, provisional, recovery_deadline
+        )
+    return preview
+
+
 def _replan_candidate(
     cascade: LoadCascade,
     config: SystemConfig,
@@ -968,7 +1054,7 @@ def augment_cascade_plans(
     )
     marked_result = replace(working_result, load_plans=marked_plans)
     cascade_plans = tuple(
-        _build_plan(
+        _extend_aux_forecast(
             cascade,
             config,
             inputs,

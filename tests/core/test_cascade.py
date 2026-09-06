@@ -90,6 +90,77 @@ def _system(
     return config, PlanInputs(NOW, 5.0, _slots(0, 1000, 1000, 1000, 1000, 1000), states)
 
 
+@pytest.mark.parametrize("cache", [False, True])
+@pytest.mark.parametrize("charge_day_offset", [0, 1])
+def test_forecast_spends_only_prior_charging_across_days(charge_day_offset, cache):
+    """Forecast charging must fund later Aux, including tomorrow's afternoon."""
+    config, inputs = _system(socs=(50.0,))
+    now = datetime(2026, 9, 5, 6)
+    slots = tuple(
+        HourSlot(i, now + timedelta(hours=i), 1, (6 + i) % 24, 0, 0, 0)
+        for i in range(60)
+    )
+    inputs = replace(
+        inputs,
+        now=now,
+        slots=slots,
+        load_states=tuple(
+            replace(s, soc_source="cache" if cache else "live", soc_observed_at=now)
+            if s.load_id == "b1"
+            else s
+            for s in inputs.load_states
+        ),
+    )
+    start = 4 + 24 * charge_day_offset
+    charge = tuple(i in (start, start + 1) for i in range(len(slots)))
+    base = plan(replace(config, cascades=()), inputs)
+    base = replace(
+        base,
+        load_plans=(
+            LoadPlan("b1", charge, 600, run_hours=tuple(float(x) for x in charge)),
+            LoadPlan("leaf", (False,) * len(slots), 0, run_hours=(0.0,) * len(slots)),
+        ),
+    )
+    preview = cascade_core._extend_aux_forecast(
+        config.cascades[0], config, inputs, base, (), False, None
+    )
+    assert preview.planned_aux_energy_wh == pytest.approx(600)
+    assert preview.provisional_live_soc_required is cache
+    assert all(f.aux_terminal_wh == 0 for f in preview.flows[: start + 2])
+    assert sum(f.member_flows[0].battery_charge_wh for f in preview.flows) == 600
+    assert sum(
+        f.member_flows[0].battery_discharge_wh for f in preview.flows
+    ) == pytest.approx(600)
+    assert preview.flows[-1].member_flows[0].soc_end_percent == pytest.approx(50)
+    for flow in preview.flows:
+        member = flow.member_flows[0]
+        assert member.soc_end_percent >= 50 - 1e-6
+        assert not (flow.root_input_wh > 0 and flow.aux_terminal_wh > 0)
+        assert (
+            member.soc_end_percent - member.soc_start_percent
+        ) * 20 == pytest.approx(member.battery_charge_wh - member.battery_discharge_wh)
+
+
+def test_forecast_preserves_energy_reserved_for_existing_later_aux():
+    """An earlier free window must not spend a later episode's reserved SOC."""
+    config, inputs = _system(socs=(90.0,))
+    base = plan(replace(config, cascades=()), inputs)
+    base = replace(
+        base,
+        load_plans=(
+            LoadPlan("b1", (False,) * 6, 0),
+            LoadPlan("leaf", (True, False, True, False, False, False), 600),
+        ),
+    )
+    reserved = (cascade_core.CascadeSourceSegment(5, 0, 1, "aux", "b1", False, 300),)
+    preview = cascade_core._extend_aux_forecast(
+        config.cascades[0], config, inputs, base, reserved, False, None
+    )
+    assert preview.flows[5].aux_terminal_wh == 300
+    assert preview.planned_aux_energy_wh <= 800 + 1e-6
+    assert min(f.member_flows[0].soc_end_percent for f in preview.flows) >= 50 - 1e-6
+
+
 def _aux_segments(cascade) -> list[tuple[int, cascade_core.CascadeSourceSegment]]:
     return [
         (index, segment)
@@ -1056,9 +1127,12 @@ def test_below_target_aux_is_not_used_when_terminal_already_prevents_export() ->
 
     cascade = plan(config, inputs).cascade_plans[0]
 
-    assert cascade.planned_aux_energy_wh == 0.0
+    # No reserve may be spent before charging. Tomorrow can now use the
+    # subsequently stored energy above 50%, without a pre-drain promise.
+    assert all(flow.aux_terminal_wh == 0 for flow in cascade.flows[:6])
+    assert cascade.planned_aux_energy_wh == pytest.approx(800)
     assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) == 48.0
-    assert cascade.flows[-1].member_flows[0].soc_end_percent >= 50.0
+    assert cascade.flows[-1].member_flows[0].soc_end_percent == pytest.approx(50.0)
 
 
 @pytest.mark.parametrize(

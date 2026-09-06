@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.4] - 2026-09-06
+
+### Fixed
+- Quellenwechsel zu abgeschalteten Fossibots prüfen den Wachzustand. Fehlt
+  frische Telemetrie unter anliegender Versorgung, wird der Eingangspfad
+  rekursiv aufgebaut: vorgeschaltete Speicher werden zuerst geweckt, dann
+  wird jeder weitere Ausgang erst nach einer neuen Gerätemeldung aktiviert.
+  Bestehende Wake-Fristen, Wiederholungen und Leistungsnachweise gelten auch
+  beim Rückwechsel. Bereits laufende nachgelagerte Ausgänge bleiben erhalten.
+- Die Kaskadenvorschau nutzt auch später eingeplante Ladung für anschließende
+  Entladung, einschließlich Folgetagen. Bestehende Root-Buchungen und
+  reservierte Entladeenergie bleiben geschützt; spätere Ladung kann keine
+  frühere Entladung rechtfertigen. Neue Vorschau-Entladungen halten das normale
+  Entladeziel ein und erzeugen keinen zusätzlichen Netzbezug.
+- Regressionen prüfen Mehrtages-SOC-Bilanzen, vorläufige Cache-Prognosen,
+  Rückwechsel über mehrere schlafende Mitglieder sowie sicheren Abbruch bei
+  fehlender Aufweckbestätigung.
+
 ## [0.36.3] - 2026-09-05
 
 ### Fixed

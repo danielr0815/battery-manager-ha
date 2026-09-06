@@ -20,6 +20,39 @@ Verzweigungen, gemeinsam genutzte Lasten oder Aktoren und parallele Verbraucher
 an einem Storage-Output sind nicht Teil dieses Features. Ohne `cascades` bleibt
 das bisherige Planner- und Entity-Verhalten unverändert.
 
+## Korrektur vom 2026-09-06: Vorschau und rekursives Aufwecken
+
+Nach der bestehenden Root-/Pre-Drain-Allokation ergänzt ein chronologischer
+Durchlauf freie Zeitfenster im gesamten Forecast-Horizont. Er verwendet den
+bis dahin prognostizierten SOC und schützt Energie, die bereits für spätere
+Aux-Abschnitte reserviert ist. Nur Energie oberhalb des normalen Entladeziels
+ist zusätzlich verfügbar. Die Root-Buchungen bleiben unverändert; insbesondere
+werden weder künftige Ladung vorweggenommen noch bestehende Tagesnachweise für
+Tiefenentladung gelockert. Nach jeder zusätzlichen Episode wird die gesamte
+SOC-Reihe fortgeschrieben. Partielle Root-Slots behalten vollständig Vorrang.
+Die bestehende Regel für spätestmögliche Aux-Starts gilt weiterhin.
+
+Ein Rückwechsel auf einen abgeschalteten Ausgang setzt einen belegten
+Wachzustand voraus: frische Telemetrie unter bereits anliegender Versorgung.
+Andernfalls wird der Eingang dieses Mitglieds versorgt. Ist das vorgeschaltete
+Mitglied ebenfalls abgeschaltet, wird der Pfad bis zur ersten verfügbaren
+Versorgung, nötigenfalls bis Root, zurückverfolgt und von dort schrittweise
+aufgeweckt. Neue Ausgänge werden erst nach einer neuen Veröffentlichung des
+jeweiligen Geräts aktiviert. Die bestehende Wake-Frist mit Wiederholungen
+begrenzt auch diesen Vorgang. Nach Aufbau des Pfads werden nicht benötigte
+vorgelagerte Ausgänge und Root getrennt, danach folgt der Leistungsnachweis.
+Safety und manuelle Besitzübergaben bleiben vorrangig.
+
+Die kurze Ladung nach dem Wecken durch die vorhandenen externen
+Ladeautomationen ist laut Betreiber akzeptiert. Diese Korrektur ändert weder
+die Ladeautomation noch verlangt sie eine zusätzliche physische Ladesperre.
+
+Regressionen: `test_forecast_spends_only_prior_charging_across_days`,
+`test_forecast_preserves_energy_reserved_for_existing_later_aux`,
+`test_reverse_handover_wakes_recursive_supply_before_output`,
+`test_reverse_handover_uses_awake_powered_member_directly`,
+`test_reverse_handover_missing_wake_evidence_stops_within_deadline`.
+
 ## Konfigurationsvertrag
 
 Eine `cascade`-Subentry enthält den Namen, die geordneten Storage-Load-IDs, die

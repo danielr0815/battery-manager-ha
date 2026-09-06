@@ -245,6 +245,114 @@ class _LiveIncidentCoordinator(_Coordinator):
             )
 
 
+async def test_reverse_handover_wakes_recursive_supply_before_output():
+    """Bad 00:14: a sleeping B2 behind sleeping B1 must be supplied in order."""
+    now = datetime(2026, 9, 6, 0, 14, tzinfo=UTC)
+    coordinator = _LiveIncidentCoordinator(now - timedelta(minutes=6))
+    # Add a running B3 so the requested B2 and its predecessor are both asleep.
+    b3 = SimpleNamespace(
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        title="B3",
+        data={
+            **coordinator.entry.subentries["b2"].data,
+            CONF_LOAD_SOC_ENTITY: "sensor.b3_soc",
+            CONF_LOAD_OUTPUT_SWITCH: "switch.b3_output",
+            CONF_LOAD_CHARGE_ENABLE: "input_boolean.charge_b3",
+            CONF_LOAD_POWER_ENTITY: "sensor.b3_input_power",
+            CONF_LOAD_OUTPUT_POWER_ENTITY: "sensor.b3_output_power",
+        },
+    )
+    coordinator.entry.subentries["b3"] = b3
+    coordinator.entry.subentries["chain"].data[CONF_CASCADE_MEMBER_IDS].append("b3")
+    for entity in ("switch.b3_output", "input_boolean.charge_b3"):
+        coordinator.hass.states.values[entity] = SimpleNamespace(
+            state="on" if entity.endswith("output") else "off", attributes={}
+        )
+    for entity in ("sensor.b3_soc", "sensor.b3_input_power", "sensor.b3_output_power"):
+        coordinator.hass.states.values[entity] = SimpleNamespace(
+            state="50", attributes={}, last_updated=now, last_reported=now
+        )
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        enabled=True, phase="running", source="b3", claims={"switch.b3_output": True}
+    )
+    assert await manager._handover("chain", "b2", now)
+    assert coordinator.calls == [("switch.bad_waschmaschine", True)]
+    assert state["wake_member_index"] == 0
+    topology = manager._topology("chain")
+    idle = SimpleNamespace(flows=())
+    assert await manager._continue_member_wake(
+        "chain", topology, idle, now + timedelta(seconds=5)
+    )
+    assert coordinator.calls == [("switch.bad_waschmaschine", True)]
+    _publish_soc(coordinator, "sensor.b1_soc", "48", now + timedelta(seconds=10))
+    assert await manager._continue_member_wake(
+        "chain", topology, idle, now + timedelta(seconds=10)
+    )
+    assert coordinator.calls[-1] == ("switch.b1_output", True)
+    assert state["wake_member_index"] == 1
+    _publish_soc(coordinator, "sensor.b2_soc", "70", now + timedelta(seconds=20))
+    assert await manager._continue_member_wake(
+        "chain", topology, idle, now + timedelta(seconds=20)
+    )
+    assert coordinator.calls[-1] == ("switch.b2_output", True)
+    _publish_soc(coordinator, "sensor.b3_soc", "50", now + timedelta(seconds=30))
+    assert await manager._continue_member_wake(
+        "chain", topology, idle, now + timedelta(seconds=30)
+    )
+    assert state["phase"] == "proving"
+    assert state["source"] == "b2"
+    assert coordinator.calls[-2:] == [
+        ("switch.b1_output", False),
+        ("switch.bad_waschmaschine", False),
+    ]
+    assert ("switch.b3_output", False) not in coordinator.calls
+    assert coordinator.hass.states.get("switch.b3_output").state == "on"
+    assert state["fault"] is None
+
+
+async def test_reverse_handover_missing_wake_evidence_stops_within_deadline():
+    """Missing Root-wake telemetry must never result in an output ON command."""
+    now = datetime(2026, 9, 6, 0, 14, tzinfo=UTC)
+    coordinator = _LiveIncidentCoordinator(now - timedelta(minutes=6))
+    coordinator.hass.states.get("switch.b2_output").state = "on"
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        enabled=True, phase="running", source="b2", claims={"switch.b2_output": True}
+    )
+    assert await manager._handover("chain", "b1", now)
+    assert coordinator.calls == [("switch.bad_waschmaschine", True)]
+    live = (
+        SurplusLoadState("b1", soc_percent=70),
+        SurplusLoadState("b2", soc_percent=50),
+        SurplusLoadState("leaf"),
+    )
+    await manager._apply_one("chain", _aux_plan(now), live, now + timedelta(seconds=61))
+    assert ("switch.b1_output", True) not in coordinator.calls
+    assert coordinator.hass.states.get("switch.b2_output").state == "off"
+    assert coordinator.hass.states.get("switch.bad_waschmaschine").state == "off"
+    assert state["retry_used"] is True
+    assert state["retry_at"] is not None
+
+
+async def test_reverse_handover_uses_awake_powered_member_directly():
+    """An already powered, freshly reporting member needs no Root wake."""
+    now = datetime(2026, 9, 6, 0, 14, tzinfo=UTC)
+    coordinator = _LiveIncidentCoordinator(now)
+    coordinator.hass.states.get("switch.b1_output").state = "on"
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="running", source="b1")
+    assert await manager._handover("chain", "b2", now)
+    assert coordinator.calls == [
+        ("switch.b2_output", True),
+        ("switch.b1_output", False),
+    ]
+    assert state["phase"] == "proving"
+
+
 def _live_incident_plan(
     manager: CascadeManager, now: datetime
 ) -> tuple[SystemConfig, PlanInputs, object]:
@@ -1149,7 +1257,12 @@ async def test_live_two_fossibot_wake_does_not_cycle_root_every_ten_seconds() ->
     config, inputs, result = _live_incident_plan(manager, started)
     cascade = result.cascade_plans[0]
     assert cascade.aggregate_soc_percent == pytest.approx(89.25)
-    assert cascade.planned_aux_energy_wh == pytest.approx(646.513, abs=1.0)
+    # Today's episode stays fixed; tomorrow may now use the remaining SOC.
+    assert sum(
+        flow.aux_terminal_wh
+        for slot, flow in zip(inputs.slots, cascade.flows, strict=True)
+        if slot.start.date() == started.date()
+    ) == pytest.approx(646.513, abs=1.0)
     assert cascade.flows[0].segments[0].source_load_id == "b1"
 
     await manager.async_apply(config, result, inputs.load_states, started)
@@ -1575,7 +1688,12 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
 
     cascade_plan = coordinator.data["cascade_plans"]["chain"]
     assert cascade_plan["aggregate_soc_percent"] == pytest.approx(89.25)
-    assert cascade_plan["planned_aux_energy_kwh"] == pytest.approx(0.107, abs=0.001)
+    assert sum(
+        row["terminal_energy_wh"]
+        for row in cascade_plan["schedule"]
+        if row["start"].startswith(started.date().isoformat())
+        and "aux" in row["sources"]
+    ) / 1000 == pytest.approx(0.107, abs=0.001)
     assert state["phase"] == "waking_members"
     assert service_calls == [("turn_on", "switch.bad_waschmaschine")]
     assert actor_calls[-1][:2] == ("switch.bad_waschmaschine", True)
