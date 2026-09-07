@@ -1,6 +1,6 @@
 # Battery Manager: zehn weitere Optimierungen
 
-Stand: 2026-09-07, Arbeitsstand 0.38.0. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
+Stand: 2026-09-07, Arbeitsstand 0.38.1. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
 Abnahmen werden unten dokumentiert. Die Schalterkorrektur
 ist bereits umgesetzt und zählt nicht zu diesen zehn weiteren Punkten.
 Ein Prüfauftrag ist kein bestätigter Defekt. Bestehende Operator-Regeln und
@@ -146,3 +146,14 @@ vollständige zusammengehörige Plan-/Messaufzeichnungen. Eine rückwirkende
 Kalibrierung aus den aktuellen Summensensoren wäre kein belastbarer Nachweis.
 Die noch offenen Implementierungsteile der Punkte 3/4/5/7/9/10 sind davon
 getrennt und bleiben in der Tabelle ausgewiesen.
+
+
+## Nachtrag: robuste Aktorsteuerung (0.38.1)
+
+Umgesetzt: allgemeine begrenzte Zustands-Recovery bei Kaskaden-Schaltfehlern,
+einmaliger Retry für idempotente HA-Helper, Ladefreigaben vor vorgelagerten
+Ausgängen AUS, abschließende Safe-OFF-Beobachtung und persistentes Diagnosejournal.
+Das Startbudget berücksichtigt die zusätzlichen Recovery-Zeitfenster.
+Die physische Ursache der verspäteten Fossibot-Rückmeldung bleibt offen;
+die neue Version liefert dafür Ereignis- und Zustandsbelege. Ein Live-Nachweis
+nach Installation steht noch aus.

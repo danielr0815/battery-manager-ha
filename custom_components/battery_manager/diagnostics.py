@@ -118,6 +118,14 @@ async def async_get_config_entry_diagnostics(
 
     captured = getattr(coordinator, "_last_planner_recording", None)
     diagnostics["planner_recording"] = recording(*captured) if captured else None
+    diagnostics["cascade_actor_evidence"] = {
+        cid: {
+            "actor_journal": state.get("actor_journal", []),
+            "off_recovery": state.get("off_recovery"),
+            "actor_recovery": state.get("actor_recovery"),
+        }
+        for cid, state in getattr(coordinator, "_cascade_state", {}).items()
+    }
     diagnostics["integration_version"] = coordinator.integration_version
     diagnostics["core_config"] = _core_config(coordinator)
     diagnostics["learned_state"] = coordinator.learned_state_snapshot()

@@ -126,6 +126,12 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
     entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2)
     entry.add_to_hass(hass)
     coordinator = SimpleNamespace(
+        _cascade_state={
+            "chain": {
+                "actor_journal": [{"event": "confirmation_failed"}],
+                "off_recovery": {"status": "succeeded"},
+            }
+        },
         _last_planner_recording=(config, inputs, result),
         integration_version="0.38.0",
         build_system_config=lambda: changed,
@@ -140,3 +146,8 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
     assert dump["core_config"]["feedin"]["automatic_enabled"]
     assert "cascades" in dump["core_config"]
     assert "support" in dump["core_config"]
+    assert dump["cascade_actor_evidence"]["chain"] == {
+        "actor_journal": [{"event": "confirmation_failed"}],
+        "off_recovery": {"status": "succeeded"},
+        "actor_recovery": None,
+    }

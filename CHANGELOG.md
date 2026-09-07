@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-09-07
+
+### Fixed
+- Kaskaden nehmen beim Abschalten sämtliche Ladefreigaben vor den versorgenden
+  AC-Ausgängen zurück. Die gemeinsame Reihenfolge gilt auch bei Pfadwechseln.
+- Fehlgeschlagene Kaskaden-Schaltungen erhalten vor der Fehlereskalation einen
+  begrenzten Recovery-Versuch mit Zustandsaktualisierung und bis zu 30 Sekunden
+  Bestätigungszeit, sowohl für AN/AUS als auch für Servicefehler. Bekannte
+  `input_boolean`-Zustände dürfen einmal erneut gesetzt werden; physische
+  Schalter werden in dieser Recovery wegen möglicher Toggle-Effekte nur geprüft.
+- Nach erfolgloser Abschaltbestätigung prüft eine aktive Kaskade den vollständig
+  getrennten Pfad nochmals für höchstens 30 Sekunden. Erfolgreiche Recovery
+  erhält die Automatikfreigabe. Abbruch beim HA-Shutdown erzeugt keinen Fault.
+- Das konservative Kaskaden-Startbudget reserviert auch die Actor-Recovery-Zeit.
+
+### Added
+- Persistentes Journal der letzten 200 Aktorereignisse je Kaskade mit laufender
+  Nummer, Zeit, Schaltziel, Phase, Zuständen, Messwerten und HA-Publikationszeiten.
+  Recovery-Ergebnis und ursprünglicher Fehler stehen im Diagnoseexport;
+  Ereignisse und fehlgeschlagene Wiederherstellung sind im HA-Log nachvollziehbar.
+
 ## [0.38.0] - 2026-09-07
 
 ### Added

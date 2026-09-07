@@ -433,10 +433,20 @@ Bei Actoren mit echter Zustandsrückmeldung gilt der Service-Aufruf allein
 dagegen nicht als Bestätigung: Der Manager wartet je Versuch innerhalb des
 konfigurierten Actor-Confirmation-Timeouts auf den Zielzustand und setzt erst
 dann seinen Claim. Für OFF gilt die oben beschriebene einmalige Nachlaufzeit
-von 30 Sekunden ohne erneuten Service-Aufruf. Die begrenzte Wiederholung gilt
-weiterhin ausschließlich für den noch
-stromlos sicheren Output-AN-Schritt eines Mitglieds-Wakes; andere
-Actor-Fehler bleiben unmittelbar fail-closed. Ein bereits bestätigter
+von 30 Sekunden ohne erneuten Service-Aufruf. Seit 0.38.1 folgt bei einem
+verbleibenden AN-/AUS-Bestätigungsfehler oder Servicefehler eine gemeinsame
+Actor-Recovery: einmal `homeassistant.update_entity`, danach erneute Prüfung des
+echten Zielzustands innerhalb eines gemeinsamen 30-Sekunden-Limits. Für
+`input_boolean` wird ein bekannter abweichender Zustand höchstens einmal erneut
+mit AN/AUS gesetzt; Hands-off und ein Fault sperren dabei neue AN-Versuche.
+Physische Schalter erhalten in dieser allgemeinen Recovery keinen zweiten
+Befehl, weil bereits ausgeführte, aber unbestätigte Fossibot-Befehle sonst
+Toggle-Effekte auslösen können. Die bestehende begrenzte Output-AN-Wiederholung
+innerhalb eines sicheren Mitglieds-Wakes bleibt separat bestehen. Misslingt die
+Recovery, entscheidet der bisherige Aufrufer über Safe-OFF/Fehlereskalation;
+ungültige Topologie, Ownership- und harte Sicherheitsverletzungen werden nicht
+als vorübergehende Schaltfehler übergangen. Zustandsrefresh und Beobachtung
+verlängern ihr absolutes Limit nicht durch neue Meldungen. Ein bereits bestätigter
 Zielzustand wird ohne redundanten Service-Aufruf übernommen; damit bleibt
 insbesondere wiederholtes Safe-OFF idempotent.
 
@@ -460,8 +470,14 @@ Wiederaufladezusage bereits beim Leistungsnachweis persistiert und nicht erst
 nach dem gemessenen SOC-Abfall.
 
 Ziel-, Floor- und Safety-Abbrüche übersteuern Dwell. Safe-OFF schaltet die
-Endlast, Outputs downstream→upstream, Charge-Gates und Root aus. Ein
-Safe-OFF-Fehler setzt einen Hard-Fault und Repair; Reset versucht Safe-OFF erneut, löscht nur
+Endlast, sämtliche Charge-Gates, Outputs downstream→upstream und Root aus.
+Damit bleibt keine Ladefreigabe absichtlich gesetzt, während ihr vorgelagerter
+Ausgang ausgeschaltet werden soll. Eine fehlgeschlagene Einzelabschaltung
+verhindert die weiteren Trennschritte nicht. Bleibt bei aktiver, nicht bereits
+gestörter oder freigegebener Kaskade danach eine Bestätigung aus, folgt einmal
+Zustandsrefresh aller Aktoren mit maximal 30 Sekunden Beobachtung ohne weitere
+Schaltbefehle. Erst ein weiterhin bestehender Safe-OFF-Fehler setzt einen
+Hard-Fault und Repair; Reset versucht Safe-OFF erneut, löscht nur
 bei Erfolg und lässt Automation AUS. Nach einem erfolgreich abgeschlossenen,
 faultbedingten Safe-OFF bleibt der Fault sichtbar und sperrt Automation-AN,
 aber der Manager gibt die Actors für manuelle Diagnose frei und wiederholt
@@ -656,3 +672,17 @@ Regressionen: `test_shutdown_cancels_unavailable_actor_without_persisting_fault`
 `test_root_minimum_off_survives_replans_and_restart`,
 `test_direct_terminal_minimum_off_blocks_aux_before_root_wake`,
 `test_cascade_learning_uses_owned_isolated_charge_path`.
+
+
+### Aktor-Recovery-Diagnose (0.38.1)
+
+`cascade_actor_evidence` im HA-Diagnoseexport enthält pro Kaskade die letzten
+200 `actor_journal`-Ereignisse sowie `actor_recovery` und `off_recovery`.
+Das persistente Journal enthält fortlaufende Nummern und UTC-Zeiten,
+Schaltziel, Phase, Abschaltgrund, HA-Zustände, SOC/Eingangs-/Ausgangsleistung,
+`last_updated`, `last_reported` und verfügbare Context-IDs. Es sind
+Momentaufnahmen an Befehls-, Bestätigungs-, Recovery- und Fehlergrenzen, kein
+vollständiger Ersatz für den HA-Recorder. Recovery speichert zusätzlich den
+ursprünglichen Fehler und ob tatsächlich ein Helper-Befehl wiederholt wurde.
+Nach HA-Neustart werden unterbrochene Recovery-Läufe als `interrupted`
+markiert; ein laufendes Herunterfahren bricht Wartephasen ohne neuen Fault ab.

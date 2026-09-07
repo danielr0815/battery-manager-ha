@@ -19,7 +19,9 @@ from custom_components.battery_manager.binary_sensor import CascadeRecommendatio
 from custom_components.battery_manager.cascade_manager import CascadeManager
 from custom_components.battery_manager.const import (
     ACTOR_MODE_SHARED,
+    CASCADE_ACTOR_JOURNAL_LIMIT,
     CASCADE_OFF_CONFIRM_GRACE_S,
+    CASCADE_SAFE_OFF_RECOVERY_S,
     CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
@@ -1525,11 +1527,11 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     )
 
     # Move the observed 22:29 state to the nearest deterministic feasibility
-    # edge: the initial horizon contains the conservative 11.5-minute startup
+    # edge: the initial horizon contains the conservative 16-minute startup
     # budget plus the real 15-minute terminal dwell. Once that transition is
     # accepted, rolling replans report it as ``proving`` and must not reserve
     # the startup a second time or withdraw Aux while the actors wake.
-    started = datetime(2026, 9, 1, 23, 33, 30, tzinfo=UTC)
+    started = datetime(2026, 9, 1, 23, 29, 0, tzinfo=UTC)
     if window_short:
         started += timedelta(seconds=1)
     entry = MockConfigEntry(
@@ -1660,8 +1662,8 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     hass.services.async_register("homeassistant", "turn_off", turn_off)
     coordinator = BatteryManagerCoordinator(hass, entry)
     request.addfinalizer(coordinator.cleanup)
-    # 570 s existing wake/actor/proof budget + four possible 30 s OFF graces.
-    assert coordinator.build_system_config().cascades[0].startup_transition_s == 690.0
+    # 570 s wake/actor/proof + four OFF graces + nine actor recovery windows.
+    assert coordinator.build_system_config().cascades[0].startup_transition_s == 960.0
     # Persistence timing is covered separately. Avoid registering a delayed
     # Store final-write hook so this timing simulation remains entirely
     # in-memory and deterministic.
@@ -1878,8 +1880,8 @@ async def test_root_passthrough_and_safe_off_order() -> None:
     assert await manager.async_safe_off("chain", "test")
     assert coordinator.calls == [
         ("switch.leaf", False),
-        ("switch.output", False),
         ("switch.gate", False),
+        ("switch.output", False),
         ("switch.input", False),
     ]
 
@@ -2583,8 +2585,8 @@ async def test_incoherent_restored_actor_vector_falls_back_to_safe_off() -> None
     )
 
     assert coordinator.calls == [
-        ("switch.output", False),
         ("switch.gate", False),
+        ("switch.output", False),
     ]
     assert state["phase"] == "idle"
     assert state["claims"] == {
@@ -3250,8 +3252,8 @@ async def test_global_safety_gate_safe_offs_active_but_not_manual_cascade() -> N
 
     assert coordinator.calls == [
         ("switch.leaf", False),
-        ("switch.output", False),
         ("switch.gate", False),
+        ("switch.output", False),
         ("switch.input", False),
     ]
     assert state["enabled"] is True
@@ -4064,8 +4066,8 @@ async def test_removed_topology_stops_persisted_actors_after_reload(
     )
     assert coordinator.calls == [
         ("switch.leaf", False),
-        ("switch.output", False),
         ("switch.gate", False),
+        ("switch.output", False),
         ("switch.input", False),
     ]
     assert manager._state("chain")["fault_safe_off_complete"]
@@ -5039,7 +5041,7 @@ async def test_delayed_off_confirmation_does_not_latch_fault(
 async def test_missing_off_feedback_faults_after_fixed_grace(
     monkeypatch, actor_confirmation_clock, observed
 ):
-    """Repeated state publications never extend the 30 + 30 s OFF deadline."""
+    """Repeated publications cannot extend grace or the single recovery."""
     clock = actor_confirmation_clock
     c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
     manager = CascadeManager(c)
@@ -5052,8 +5054,8 @@ async def test_missing_off_feedback_faults_after_fixed_grace(
     monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
     c._switch_entity = AsyncMock(return_value=True)
     assert not await manager.async_safe_off("chain", "missing OFF regression")
-    assert clock.elapsed == 60
-    assert clock.timeouts == [30, 30]
+    assert clock.elapsed == 90
+    assert clock.timeouts == [30, 30, 30, 30]
     c._switch_entity.assert_awaited_once_with(
         "switch.output", False, actor_owner="chain"
     )
@@ -5064,24 +5066,26 @@ async def test_missing_off_feedback_faults_after_fixed_grace(
     assert state["fault_detail"]["kind"] == "confirmation_timeout"
 
 
-async def test_on_confirmation_keeps_original_deadline(actor_confirmation_clock):
+async def test_on_recovery_without_refresh_service_keeps_original_deadline(
+    actor_confirmation_clock,
+):
     c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
     manager = CascadeManager(c)
     c._switch_entity = AsyncMock(return_value=True)
     assert not await manager._actor("chain", "switch.output", True)
     assert actor_confirmation_clock.elapsed == 30
-    assert actor_confirmation_clock.timeouts == [30]
+    assert actor_confirmation_clock.timeouts == [30, 30]
     assert "switch.output" not in manager._state("chain")["claims"]
 
 
-async def test_off_service_failure_does_not_gain_grace(actor_confirmation_clock):
+async def test_off_service_failure_with_unavailable_recovery(actor_confirmation_clock):
     c = _Coordinator(datetime(2026, 9, 6, 10, tzinfo=UTC))
     c.hass.states.get("switch.output").state = "on"
     manager = CascadeManager(c)
     c._switch_entity = AsyncMock(return_value=False)
     assert not await manager._actor("chain", "switch.output", False)
     assert actor_confirmation_clock.elapsed == 0
-    assert actor_confirmation_clock.timeouts == [30]
+    assert actor_confirmation_clock.timeouts == [30, 30]
     assert manager._state("chain")["last_actor_error"]["kind"] == "service_failed"
 
 
@@ -5141,3 +5145,306 @@ async def test_shutdown_cancels_off_grace_without_fault(actor_confirmation_clock
     assert state["claims"]["switch.output"] is True
     assert not manager._actor_tasks
     assert c._switch_entity.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "feedback_after,refresh_fails", [(90, False), (105, False), (119.9, True)]
+)
+async def test_safe_off_recovery_refreshes_once_and_preserves_enable(
+    monkeypatch, actor_confirmation_clock, feedback_after, refresh_fails
+):
+    clock = actor_confirmation_clock
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="root")
+    for actor in ("switch.input", "switch.output", "switch.gate", "switch.leaf"):
+        c.hass.states.get(actor).state = "on"
+        state["claims"][actor] = True
+
+    async def switch(entity_id, on, **kwargs):
+        c.calls.append((entity_id, on))
+        if entity_id != "switch.output":
+            c.hass.states.get(entity_id).state = "on" if on else "off"
+        return True
+
+    c._switch_entity = switch
+
+    async def refresh(*args, **kwargs):
+        assert not c._entity_is_on("switch.gate")
+        if isinstance(args[2]["entity_id"], str):
+            return
+        assert not c._entity_is_on("switch.input")
+        if refresh_fails:
+            raise HomeAssistantError("refresh unavailable")
+        if feedback_after == 90:
+            c.hass.states.get("switch.output").state = "off"
+
+    c.hass.services = SimpleNamespace(async_call=AsyncMock(side_effect=refresh))
+    if feedback_after > 90:
+        clock.events.append(
+            (
+                feedback_after,
+                lambda: setattr(c.hass.states.get("switch.output"), "state", "off"),
+            )
+        )
+    issue = Mock()
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", issue)
+    assert await manager.async_safe_off("chain", "no active cascade segment")
+    assert clock.elapsed == pytest.approx(feedback_after)
+    assert state["enabled"] and state["fault"] is None
+    assert state["off_recovery"]["status"] == "succeeded"
+    assert manager._all_actors_off(manager._topology("chain"))
+    assert c.calls.count(("switch.output", False)) == 1
+    assert all(not on for _, on in c.calls)
+    assert c.hass.services.async_call.await_count == 2
+    issue.assert_not_called()
+    events = [row["event"] for row in state["actor_journal"]]
+    assert events.index("command_started") < events.index("service_returned")
+    assert "confirmation_failed" in events
+    assert events[-1] == "off_recovery_succeeded"
+    assert state["actor_journal"][-1]["snapshot"]["switch.input"]["state"] == "off"
+    assert "sensor.output_power" in state["actor_journal"][-1]["snapshot"]
+    assert (
+        manager.persistent_state_snapshot()["chain"]["actor_journal"]
+        == state["actor_journal"]
+    )
+
+
+async def test_shutdown_cancels_recovery_without_reissuing_commands(
+    actor_confirmation_clock,
+):
+    clock = actor_confirmation_clock
+    clock.pause_at = 61
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    c.hass.states.get("switch.output").state = "on"
+    c._switch_entity = AsyncMock(return_value=True)
+    c.hass.services = SimpleNamespace(async_call=AsyncMock())
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.output": True})
+    task = asyncio.create_task(manager.async_safe_off("chain", "shutdown"))
+    await clock.paused.wait()
+    c._actuation_shutdown = True
+    await manager.async_shutdown()
+    assert task.cancelled()
+    assert state["actor_recovery"]["status"] == "interrupted"
+    assert state["fault"] is None
+    assert c._switch_entity.await_count == 1
+    assert not manager._actor_tasks
+
+
+def test_actor_journal_is_bounded_and_survives_restoration():
+    assert CASCADE_SAFE_OFF_RECOVERY_S == 30
+    assert CASCADE_ACTOR_JOURNAL_LIMIT == 200
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    manager = CascadeManager(c)
+    for i in range(205):
+        manager._actor_event("chain", f"event-{i}", "missing.actor", "off")
+    saved = manager.persistent_state_snapshot()
+    rows = saved["chain"]["actor_journal"]
+    assert len(rows) == 200
+    assert rows[0]["event"] == "event-5"
+    assert rows[-1]["snapshot"]["missing.actor"]["state"] is None
+    c._cascade_state = saved
+    manager.normalize_restored_state()
+    assert c._cascade_state["chain"]["actor_journal"] == rows
+
+
+@pytest.mark.parametrize("turn_on", [True, False])
+@pytest.mark.parametrize("initial_failure", ["service", "confirmation"])
+async def test_actor_recovery_adopts_refreshed_physical_state_without_rewrite(
+    actor_confirmation_clock, turn_on, initial_failure
+):
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    entity = c.hass.states.get("switch.output")
+    entity.state = "off" if turn_on else "on"
+    c._switch_entity = AsyncMock(return_value=initial_failure != "service")
+
+    async def refresh(*args, **kwargs):
+        entity.state = "on" if turn_on else "off"
+
+    c.hass.services = SimpleNamespace(async_call=AsyncMock(side_effect=refresh))
+    manager = CascadeManager(c)
+    assert await manager._actor("chain", "switch.output", turn_on)
+    state = manager._state("chain")
+    assert state["claims"]["switch.output"] is turn_on
+    assert "last_actor_error" not in state
+    assert state["actor_recovery"]["status"] == "succeeded"
+    assert not state["actor_recovery"]["command_retried"]
+    assert c._switch_entity.await_count == 1
+    assert actor_confirmation_clock.elapsed == (
+        0 if initial_failure == "service" else 30 if turn_on else 60
+    )
+
+
+@pytest.mark.parametrize("turn_on", [True, False])
+@pytest.mark.parametrize(
+    "outcome", ["success", "failed", "unknown", "hands_off", "fault"]
+)
+async def test_helper_retry_is_single_bounded_and_respects_protection(
+    actor_confirmation_clock, turn_on, outcome
+):
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    entity_id = "input_boolean.charge"
+    entity = SimpleNamespace(state="off" if turn_on else "on", attributes={})
+    c.hass.states.values[entity_id] = entity
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, hands_off=outcome == "hands_off")
+    if outcome == "fault":
+        state["fault"] = "safety"
+
+    async def refresh(*args, **kwargs):
+        if outcome == "unknown":
+            entity.state = "unavailable"
+
+    async def switch(*args, **kwargs):
+        if c._switch_entity.await_count == 2 and outcome == "success":
+            entity.state = "on" if turn_on else "off"
+            return True
+        return False
+
+    c._switch_entity = AsyncMock(side_effect=switch)
+    c.hass.services = SimpleNamespace(async_call=AsyncMock(side_effect=refresh))
+    assert await manager._actor("chain", entity_id, turn_on) is (outcome == "success")
+    retried = outcome in ("success", "failed") or (outcome == "fault" and not turn_on)
+    assert c._switch_entity.await_count == (2 if retried else 1)
+    assert state["actor_recovery"]["command_retried"] is retried
+    assert actor_confirmation_clock.elapsed == (0 if outcome == "success" else 30)
+    assert state["actor_recovery"]["status"] == (
+        "succeeded" if outcome == "success" else "failed"
+    )
+
+
+async def test_unconfirmed_physical_recovery_is_bounded_before_fault(
+    actor_confirmation_clock, monkeypatch
+):
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    c.hass.services = SimpleNamespace(async_call=AsyncMock())
+    c._switch_entity = AsyncMock(return_value=False)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state["enabled"] = True
+    issue = Mock()
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", issue)
+    assert not await manager._actor("chain", "switch.output", True)
+    assert actor_confirmation_clock.elapsed == 30
+    assert state["enabled"] and state["fault"] is None
+    await manager._fault("chain", "root_transition_failed")
+    assert state["fault"] == "root_transition_failed"
+    assert state["enabled"] is False
+    assert state["fault_detail"]["kind"] == "service_failed"
+    assert c._switch_entity.await_count == 1
+    issue.assert_called_once()
+
+
+async def test_safe_off_withdraws_all_gates_before_upstream_outputs():
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    manager = CascadeManager(c)
+    topology = manager._topology("chain")
+    topology["members"].append(
+        (
+            "b2",
+            {
+                CONF_LOAD_CHARGE_ENABLE: "switch.gate2",
+                CONF_LOAD_OUTPUT_SWITCH: "switch.output2",
+            },
+        )
+    )
+    state = manager._state("chain")
+    state["actor_topology"] = topology
+    actors = (
+        "switch.input",
+        "switch.gate",
+        "switch.gate2",
+        "switch.output",
+        "switch.output2",
+        "switch.leaf",
+    )
+    for entity in actors:
+        c.hass.states.values[entity] = SimpleNamespace(state="on", attributes={})
+    assert await manager.async_safe_off("chain", "order regression")
+    assert c.calls == [
+        (entity, False)
+        for entity in (
+            "switch.leaf",
+            "switch.gate",
+            "switch.gate2",
+            "switch.output2",
+            "switch.output",
+            "switch.input",
+        )
+    ]
+
+
+def test_restart_marks_unfinished_recoveries_interrupted():
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(
+        actor_recovery={"status": "running"}, off_recovery={"status": "running"}
+    )
+    manager.normalize_restored_state()
+    assert state["actor_recovery"]["status"] == "interrupted"
+    assert state["off_recovery"]["status"] == "interrupted"
+
+
+async def test_failed_refresh_still_accepts_later_push(actor_confirmation_clock):
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    c._switch_entity = AsyncMock(return_value=False)
+    c.hass.services = SimpleNamespace(
+        async_call=AsyncMock(side_effect=HomeAssistantError("poll failed"))
+    )
+    entity = c.hass.states.get("switch.output")
+    actor_confirmation_clock.events.append((15, lambda: setattr(entity, "state", "on")))
+    manager = CascadeManager(c)
+    assert await manager._actor("chain", "switch.output", True)
+    assert actor_confirmation_clock.elapsed == 15
+    assert manager._state("chain")["actor_recovery"]["refresh_error"] == "poll failed"
+    c._switch_entity.assert_awaited_once()
+
+
+async def test_shutdown_cancels_final_safe_off_observation(actor_confirmation_clock):
+    clock = actor_confirmation_clock
+    clock.pause_at = 91
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    c.hass.states.get("switch.output").state = "on"
+    c._switch_entity = AsyncMock(return_value=True)
+    c.hass.services = SimpleNamespace(async_call=AsyncMock())
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, claims={"switch.output": True})
+    task = asyncio.create_task(manager.async_safe_off("chain", "shutdown"))
+    await clock.paused.wait()
+    c._actuation_shutdown = True
+    await manager.async_shutdown()
+    assert task.cancelled()
+    assert state["off_recovery"]["status"] == "interrupted"
+    assert state["fault"] is None
+    assert c._switch_entity.await_count == 1
+    assert not manager._actor_tasks
+
+
+async def test_later_recovery_does_not_hide_failed_safe_off_actor(
+    actor_confirmation_clock, monkeypatch
+):
+    c = _Coordinator(datetime(2026, 9, 7, 11, tzinfo=UTC))
+    for entity in ("switch.gate", "switch.output"):
+        c.hass.states.get(entity).state = "on"
+    c._switch_entity = AsyncMock(return_value=False)
+
+    async def refresh(domain, service, data, **kwargs):
+        if data["entity_id"] == "switch.output":
+            c.hass.states.get("switch.output").state = "off"
+
+    c.hass.services = SimpleNamespace(async_call=AsyncMock(side_effect=refresh))
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    manager = CascadeManager(c)
+    manager._state("chain")["enabled"] = True
+    assert not await manager.async_safe_off("chain", "preserve failed gate")
+    state = manager._state("chain")
+    assert state["actor_recovery"]["status"] == "succeeded"
+    assert state["fault_detail"]["entity_id"] == "switch.gate"
+    assert state["fault_detail"]["observed_state"] == "on"
+    assert actor_confirmation_clock.elapsed == 30

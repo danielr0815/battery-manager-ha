@@ -252,6 +252,9 @@ CONF_CASCADE_ACTOR_TIMEOUT_S = "actor_confirmation_timeout_s"
 # Slow OFF publications get one bounded read-only grace period. Shared by
 # executor and startup budgeting so this time cannot become useful energy.
 CASCADE_OFF_CONFIRM_GRACE_S = 30.0
+# Bounded actor refresh/retry and final post-isolation observation window.
+CASCADE_SAFE_OFF_RECOVERY_S = 30.0
+CASCADE_ACTOR_JOURNAL_LIMIT = 200
 # Load location relative to the grid-consumption measurement point (§2.3;
 # V3 semantics, 2026-07-24). This flag governs ONLY the baseline (Grundlast)
 # learning in history_profile.py — it decides whether the load's own draw is

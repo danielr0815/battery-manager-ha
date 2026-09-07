@@ -25,7 +25,9 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ACTOR_MODE_EXCLUSIVE,
     ACTOR_MODE_SHARED,
+    CASCADE_ACTOR_JOURNAL_LIMIT,
     CASCADE_OFF_CONFIRM_GRACE_S,
+    CASCADE_SAFE_OFF_RECOVERY_S,
     CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
@@ -357,6 +359,9 @@ class CascadeManager:
             # Wake metadata is invalid across HA downtime even when a corrupt
             # or old store paired it with an otherwise stable phase.
             self._clear_member_wake(cascade_id)
+            for key in ("actor_recovery", "off_recovery"):
+                if state.get(key, {}).get("status") == "running":
+                    state[key]["status"] = "interrupted"
             state.pop("last_actor_error", None)
             if cancel := self._proof_refresh_cancel.pop(cascade_id, None):
                 cancel()
@@ -512,10 +517,13 @@ class CascadeManager:
     def _off_order(topology: dict[str, Any]) -> list[str]:
         members = topology["members"]
         actors = [topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)]
+        # Withdraw charging permission before removing its upstream supply.
+        # Otherwise a slow output OFF leaves the downstream battery charging
+        # throughout confirmation/recovery (Bad incident, 2026-09-07).
+        actors.extend(data.get(CONF_LOAD_CHARGE_ENABLE) for _, data in members)
         actors.extend(
             data.get(CONF_LOAD_OUTPUT_SWITCH) for _, data in reversed(members)
         )
-        actors.extend(data.get(CONF_LOAD_CHARGE_ENABLE) for _, data in members)
         actors.extend(data.get(CONF_LOAD_CONTROL_SWITCH) for _, data in members)
         return list(dict.fromkeys(entity for entity in actors if entity))
 
@@ -1607,9 +1615,215 @@ class CascadeManager:
         try:
             if entity_id and turn_on:
                 self._check_minimum_off(cascade_id, {entity_id: True})
-            return await self._confirm_actor(cascade_id, entity_id, turn_on)
+            if await self._confirm_actor(cascade_id, entity_id, turn_on):
+                return True
+            return await self._recover_actor(cascade_id, entity_id, turn_on)
         finally:
             self._actor_tasks.discard(task)
+
+    async def _recover_actor(
+        self, cascade_id: str, entity_id: str | None, turn_on: bool
+    ) -> bool:
+        """Bounded recovery shared by all actor transitions, before caller faults.
+
+        A failed service may already have reached the device. Physical switches
+        therefore get a refresh and observation retry, never a blind second
+        write. Only HA's idempotent input_boolean helper can be written again.
+        """
+        state = self._state(cascade_id)
+        target = "on" if turn_on else "off"
+        recovery = {
+            "entity_id": entity_id,
+            "target": target,
+            "status": "running",
+            "started_at": dt_util.utcnow().isoformat(),
+            "command_retried": False,
+            "initial_error": deepcopy(state.get("last_actor_error")),
+        }
+        state["actor_recovery"] = recovery
+        self._actor_event(cascade_id, "actor_recovery_started", entity_id, target)
+        _LOGGER.warning(
+            "Cascade %s recovering %s -> %s after %s",
+            cascade_id,
+            entity_id,
+            target,
+            recovery["initial_error"],
+        )
+        try:
+            async with asyncio.timeout(CASCADE_SAFE_OFF_RECOVERY_S):
+                try:
+                    await self.coordinator.hass.services.async_call(
+                        "homeassistant",
+                        "update_entity",
+                        {"entity_id": entity_id},
+                        blocking=True,
+                    )
+                except HomeAssistantError as err:
+                    # A failed poll does not suppress a later push publication.
+                    # Keep observing within the same deadline, but do not use
+                    # a failed refresh as permission for another helper write.
+                    recovery["refresh_error"] = str(err)
+                    self._actor_event(
+                        cascade_id, "actor_recovery_refresh_failed", entity_id, target
+                    )
+                else:
+                    self._actor_event(
+                        cascade_id, "actor_recovery_refreshed", entity_id, target
+                    )
+                current = self.coordinator.hass.states.get(entity_id)
+                if (
+                    entity_id
+                    and entity_id.startswith("input_boolean.")
+                    and current is not None
+                    and current.state in ("on", "off")
+                    and current.state != target
+                    and "refresh_error" not in recovery
+                    and not state.get("hands_off")
+                    and (
+                        not turn_on or (state.get("enabled") and not state.get("fault"))
+                    )
+                ):
+                    if self._stopping():
+                        raise asyncio.CancelledError
+                    if turn_on:
+                        self._check_minimum_off(cascade_id, {entity_id: True})
+                    recovery["command_retried"] = True
+                    self._actor_event(
+                        cascade_id, "actor_recovery_command_retry", entity_id, target
+                    )
+                    await self.coordinator._switch_entity(
+                        entity_id, turn_on, actor_owner=cascade_id
+                    )
+                await self._wait_actor_state(entity_id, target, accept_assumed=False)
+        except asyncio.CancelledError:
+            recovery["status"] = "interrupted"
+            self._actor_event(
+                cascade_id, "actor_recovery_interrupted", entity_id, target
+            )
+            raise
+        except Exception as err:
+            recovery["status"] = "failed"
+            recovery["error"] = str(err) or type(err).__name__
+            _LOGGER.warning(
+                "Cascade %s recovery failed for %s -> %s: %s",
+                cascade_id,
+                entity_id,
+                target,
+                recovery["error"],
+            )
+            current = self.coordinator.hass.states.get(entity_id)
+            state["last_actor_error"]["observed_state"] = (
+                current.state if current else None
+            )
+            self._actor_event(cascade_id, "actor_recovery_failed", entity_id, target)
+            return False
+        recovery["status"] = "succeeded"
+        # Adoption records the confirmed OFF timestamp without another command.
+        await self._confirm_actor(cascade_id, entity_id, turn_on)
+        state.pop("last_actor_error", None)
+        self._actor_event(cascade_id, "actor_recovery_succeeded", entity_id, target)
+        return True
+
+    def _actor_event(
+        self,
+        cascade_id: str,
+        event: str,
+        entity_id: str | None = None,
+        target: str | None = None,
+    ) -> None:
+        """Persist bounded command evidence, including the surrounding power path."""
+        state = self._state(cascade_id)
+        topology = state.get("actor_topology") or self._topology(cascade_id)
+        ids = {entity_id} if entity_id else set()
+        if topology:
+            ids.update(self._off_order(topology))
+            for data in [
+                *(data for _, data in topology["members"]),
+                topology["terminal"],
+            ]:
+                for key in (
+                    CONF_LOAD_SOC_ENTITY,
+                    CONF_LOAD_POWER_ENTITY,
+                    CONF_LOAD_OUTPUT_POWER_ENTITY,
+                ):
+                    if data.get(key):
+                        ids.add(data[key])
+        snapshot = {}
+        for actor in sorted(ids):
+            current = self.coordinator.hass.states.get(actor)
+            snapshot[actor] = {
+                "state": current.state if current else None,
+                "last_updated": str(getattr(current, "last_updated", "")),
+                "last_reported": str(getattr(current, "last_reported", "")),
+                "context_id": getattr(getattr(current, "context", None), "id", None),
+            }
+        state["actor_event_sequence"] = state.get("actor_event_sequence", 0) + 1
+        record = {
+            "sequence": state["actor_event_sequence"],
+            "at": dt_util.utcnow().isoformat(),
+            "event": event,
+            "entity_id": entity_id,
+            "target": target,
+            "phase": state.get("phase"),
+            "reason": state.get("safe_off_reason"),
+            "snapshot": snapshot,
+        }
+        journal = state.setdefault("actor_journal", [])
+        journal.append(record)
+        del journal[:-CASCADE_ACTOR_JOURNAL_LIMIT]
+        self.coordinator._save_persistent_state()
+        _LOGGER.info("Cascade %s actor evidence: %s", cascade_id, record)
+
+    async def _recover_safe_off(
+        self, cascade_id: str, topology: dict[str, Any]
+    ) -> bool:
+        """One observation-only recovery after breaking the complete load path."""
+        state = self._state(cascade_id)
+        state["off_recovery"] = {
+            "status": "running",
+            "started_at": dt_util.utcnow().isoformat(),
+        }
+        self._actor_event(cascade_id, "off_recovery_started")
+        _LOGGER.warning(
+            "Cascade %s OFF confirmation missing; refreshing actor states once, "
+            "checking safe topology for at most %.0f s without new switch commands",
+            cascade_id,
+            CASCADE_SAFE_OFF_RECOVERY_S,
+        )
+        task = asyncio.current_task()
+        self._actor_tasks.add(task)
+        try:
+            async with asyncio.timeout(CASCADE_SAFE_OFF_RECOVERY_S):
+                try:
+                    await self.coordinator.hass.services.async_call(
+                        "homeassistant",
+                        "update_entity",
+                        {"entity_id": self._off_order(topology)},
+                        blocking=True,
+                    )
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Cascade %s recovery refresh failed: %s", cascade_id, err
+                    )
+                    self._actor_event(cascade_id, "off_recovery_refresh_failed")
+                while not self._all_actors_off(topology):
+                    await asyncio.sleep(_ACTOR_CONFIRM_POLL_S)
+        except TimeoutError:
+            state["off_recovery"]["status"] = "failed"
+            self._actor_event(cascade_id, "off_recovery_failed")
+            return False
+        except asyncio.CancelledError:
+            state["off_recovery"]["status"] = "interrupted"
+            self._actor_event(cascade_id, "off_recovery_interrupted")
+            raise
+        finally:
+            self._actor_tasks.discard(task)
+        state["off_recovery"]["status"] = "succeeded"
+        for actor in self._off_order(topology):
+            await self._actor(cascade_id, actor, False)
+        state.pop("last_actor_error", None)
+        self._actor_event(cascade_id, "off_recovery_succeeded")
+        return True
 
     async def _confirm_actor(
         self,
@@ -1641,12 +1855,16 @@ class CascadeManager:
         timeout_s = float(
             cascade.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30) if cascade else 30
         )
+        self._actor_event(cascade_id, "command_started", entity_id, target_state)
         try:
             async with asyncio.timeout(timeout_s):
                 ok = await self.coordinator._switch_entity(
                     entity_id, turn_on, actor_owner=cascade_id
                 )
                 if not ok:
+                    self._actor_event(
+                        cascade_id, "service_failed", entity_id, target_state
+                    )
                     state["last_actor_error"] = {
                         "entity_id": entity_id,
                         "target_state": target_state,
@@ -1656,15 +1874,24 @@ class CascadeManager:
                         "kind": "service_failed",
                     }
                     return False
+                self._actor_event(
+                    cascade_id, "service_returned", entity_id, target_state
+                )
                 await self._wait_actor_state(
                     entity_id, target_state, accept_assumed=True
                 )
         except TimeoutError:
+            self._actor_event(
+                cascade_id, "confirmation_deadline", entity_id, target_state
+            )
             # Bad 2026-09-06: OFF arrived 43 s after the command. Faulting at
             # 30 s (or retrying a toggle-like OFF) turned slow feedback into a
             # latched outage. Every OFF path gets the same bounded read-only
             # grace BEFORE its caller can fault; ON keeps its original bound.
             if turn_on or not await self._wait_delayed_off(entity_id):
+                self._actor_event(
+                    cascade_id, "confirmation_failed", entity_id, target_state
+                )
                 current = self.coordinator.hass.states.get(entity_id)
                 state["last_actor_error"] = {
                     "entity_id": entity_id,
@@ -1673,6 +1900,7 @@ class CascadeManager:
                     "kind": "confirmation_timeout",
                 }
                 return False
+        self._actor_event(cascade_id, "target_confirmed", entity_id, target_state)
         if not turn_on:
             state.setdefault("actor_off_since", {})[entity_id] = (
                 dt_util.utcnow().isoformat()
@@ -1723,7 +1951,9 @@ class CascadeManager:
 
     def _begin_actor_sequence(self, cascade_id: str) -> None:
         """Discard stale transition evidence before a new ordered sequence."""
-        self._state(cascade_id).pop("last_actor_error", None)
+        state = self._state(cascade_id)
+        state.pop("last_actor_error", None)
+        state.pop("safe_off_reason", None)
 
     async def _fault(self, cascade_id: str, reason: str) -> None:
         if self._stopping():
@@ -1734,6 +1964,7 @@ class CascadeManager:
         state["phase"] = "fault"
         state["enabled"] = False
         state["fault_safe_off_complete"] = False
+        self._actor_event(cascade_id, "fault_entered")
         display_reason = reason
         if detail := state.get("fault_detail"):
             display_reason = (
@@ -1778,6 +2009,8 @@ class CascadeManager:
     async def async_safe_off(self, cascade_id: str, reason: str) -> bool:
         """Break the load path downstream-to-upstream and keep Root open."""
         self._begin_actor_sequence(cascade_id)
+        self._state(cascade_id)["safe_off_reason"] = reason
+        self._actor_event(cascade_id, "safe_off_started")
         topology = self._state(cascade_id).get("actor_topology") or self._topology(
             cascade_id
         )
@@ -1815,28 +2048,15 @@ class CascadeManager:
                 )
                 return self._state(cascade_id)["fault_safe_off_complete"]
         ok = True
-        terminal = topology["terminal"]
-        terminal_actor = terminal.get(CONF_LOAD_CONTROL_SWITCH)
-        if terminal_actor:
-            ok &= await self._actor(cascade_id, terminal_actor, False)
-        for _load_id, data in reversed(topology["members"]):
-            ok &= await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_OUTPUT_SWITCH),
-                False,
-            )
-        for _load_id, data in topology["members"]:
-            ok &= await self._actor(
-                cascade_id,
-                data.get(CONF_LOAD_CHARGE_ENABLE),
-                False,
-            )
-        root = topology["members"][0][1]
-        ok &= await self._actor(
-            cascade_id,
-            root.get(CONF_LOAD_CONTROL_SWITCH),
-            False,
-        )
+        failed_actor = None
+        for entity_id in self._off_order(topology):
+            if not await self._actor(cascade_id, entity_id, False):
+                ok = False
+                failed_actor = deepcopy(self._state(cascade_id).get("last_actor_error"))
+        # A later actor can recover successfully and clear its own error.
+        # Preserve the unresolved failure of an earlier break step for Repair.
+        if failed_actor is not None:
+            self._state(cascade_id)["last_actor_error"] = failed_actor
         if cancel := self._proof_refresh_cancel.pop(cascade_id, None):
             cancel()
         self._proof.pop(cascade_id, None)
@@ -1859,6 +2079,14 @@ class CascadeManager:
                 await self._actor(cascade_id, actor, False)
             state.pop("last_actor_error", None)
             ok = True
+        if (
+            not ok
+            and state.get("enabled")
+            and not state.get("fault")
+            and not state.get("hands_off")
+            and state.get("last_actor_error", {}).get("kind") == "confirmation_timeout"
+        ):
+            ok = await self._recover_safe_off(cascade_id, topology)
         if not ok:
             await self._fault(cascade_id, f"safe_off_failed:{reason}")
         elif state.get("fault"):
@@ -3392,6 +3620,8 @@ class CascadeManager:
                 ),
                 "fault": state["fault"],
                 "fault_detail": state.get("fault_detail"),
+                "off_recovery": deepcopy(state.get("off_recovery")),
+                "actor_recovery": deepcopy(state.get("actor_recovery")),
                 "warning": state.get("warning"),
                 "hands_off": bool(state["hands_off"]),
                 "activation_blocked_reason": state.get("activation_blocked_reason"),
