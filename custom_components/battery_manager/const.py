@@ -11,6 +11,7 @@
 from .core.optimize import (  # noqa: F401
     GATE_TOPUP_MIN_WH,
     MERGE_TERMINAL_RAMP_WH,
+    PREDRAIN_PEAK_TOLERANCE_PERCENT,
 )
 
 DOMAIN = "battery_manager"

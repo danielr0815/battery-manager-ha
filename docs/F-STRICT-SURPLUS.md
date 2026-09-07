@@ -138,7 +138,14 @@ line: the export the plan's load runs prevent that day. This answers "why is a
 load running although SOC never reaches max?" directly on the dashboard —
 2026-07-19 would have shown `prevented_export ≈ 1.6` for Sunday.
 
-**R5 — the plan still reaches soc_max (operator clarification 2026-07-19).**
+**R5 — the plan still reaches soc_max (updated 2026-09-07).**
+The binding hierarchy is [STRATEGY-CURRENT.md](STRATEGY-CURRENT.md).
+Continuous pass-3 pre-drain may end at `soc_max − 1.0` percentage points on
+its own day. This is one absolute daily allowance, retained by subsequent
+bookings, never a fresh allowance per load or replan. Import, cutoff and
+reserve gates remain mandatory. The strict rule below applies otherwise.
+
+Historical strict formulation (2026-07-19):
 A booking is accepted only if the trial trajectory still reaches
 `soc_max − 0.1` on EVERY calendar day the no-loads base reaches it
 (`preserves_daily_max`, checked in both passes alongside R1/R2). This makes

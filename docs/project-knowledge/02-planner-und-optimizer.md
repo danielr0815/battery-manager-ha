@@ -488,6 +488,16 @@ Kandidatendauer:
 
 ---
 
+### Kontinuierlicher Pre-drain: Peak-Toleranz (v0.38.0)
+
+F-PREDRAIN-BLOCK R5 erlaubt ausschließlich für den eigenen Blocktag einen
+Tagespeak bis einen SOC-Prozentpunkt unter `soc_max` (50 Wh bei 5 kWh).
+Nach Annahme bleibt diese absolute Tagesgrenze für weitere Kandidaten erhalten;
+sie wird niemals von einem bereits reduzierten Peak erneut abgezogen.
+Das nominale Erholungsfenster verwendet dieselbe Grenze. Import- und
+Reservegates bleiben unverändert. Restexport bei noch vorhandenen Laufpausen
+berechtigt deshalb nicht automatisch zur Einspeisung; dafür gilt R1a unten.
+
 ## 5A. Early Feed-In (`plan_feedin`, F-FEEDIN, v0.23.0)
 
 Spec: `docs/F-FEEDIN.md`. Der Pass verlegt den **unvermeidlichen** Restexport
@@ -499,15 +509,25 @@ invariant, nur das Timing wandert vom Mittagspeak weg.
   unvermeidliche Menge) und vor `support_escalation`. Neutral-Default
   (`FeedInParams.enabled = False` oder `max_w = 0`) short-circuitet ohne
   Zusatzsimulation — bit-identischer Plan (§10).
+- **Laufzeitpause (v0.38.0, R8):** `automatic_enabled=False` unterbindet
+  automatische Buchungen an jedem Horizont-Tag. Die SOC-Prognose enthält dann
+  keine vorgezogene Einspeisung; natürlicher Export bleibt. Nur ein heutiger
+  manueller Setpoint bleibt als tatsächliche Vorgabe sichtbar (R9).
+- **Dauerlauf-Vorrang (v0.38.0, F-FEEDIN R1a):** Automatische Einspeisung
+  erfordert ab dem jeweiligen Einspeiseslot bis zum ersten echten `soc_max`
+  am selben Tag durchgehende `run_hours` aller kontinuierlichen Verbraucher,
+  einschließlich des Peak-Slots. Spätere Starts, Teilstundenpausen und fehlende
+  Laufzeitdaten sperren. Der Kandidat wird auch mit dem durch die Einspeisung
+  verzögerten Peak geprüft. Für Kaskaden gilt der Root-Endlastplan. Manuelle
+  Setpoints bleiben gemäß R9 sichtbar.
 - **Zielmenge pro Kalendertag** = Restexport (`grid_export`) des Tages aus der
   Median-Prognose (R3, keine Stress-Skalierung des Ziels).
 - **Buchung** aufsteigend ab Slot 0, nur wenn `remaining > ε` ∧ Trial-SOC am
   Slotanfang > `feedin_min_soc_percent` (absoluter Floor, R5) ∧ < soc_max
   (volle Batterie exportiert natürlich) ∧ Slot-Überschuss > 0. Rate =
   `remaining / max(Stunden bis deadline_hour, Slotdauer)`, gedeckelt auf
-  `min(max_w, Slot-Überschuss)`; nach der **weichen** Deadline kollabiert der
-  Nenner auf die Slotdauer — Überzug so schnell, wie der Überschuss erlaubt
-  (R4). Jede Buchung wird in die Trial re-simuliert.
+  `min(max_w, Slot-Überschuss)`; ab der **harten** Deadline wird nichts mehr
+  gebucht (R4). Jede Buchung wird in die Trial re-simuliert.
 - **Physik** (`step_hour`, R2): Feed-in wird **vor** der Batterieladung aus
   dem Überschuss bedient, `grid_export += feedin` 1:1, geklemmt auf den
   Überschuss, im Defizit-Zweig 0 — keine aktive Entladung.
@@ -764,3 +784,11 @@ Wichtigste Code-Anker dieses Dokuments:
 5. `core/simulate.py::step_hour` — Energieflüsse, Wirkungsgrade, kein
    Export-Limit; `core/optimize.py::plan` — die Diagnostikfelder und ihre
    exakte Definition.
+
+### Betreiberkorrektur 2026-09-07: Dauerlauf vor Kaskadenspeichern
+
+Verbindlicher aktueller Vertrag: `docs/STRATEGY-CURRENT.md` und der Nachtrag
+in `docs/F-CASCADE-STORAGE.md`. Endlast einschließlich Pass 3 und Lückenschluss
+wird vor Mitgliedsladung allokiert. Neue Speicheraktionen haben Mindestgrößen;
+kleine bestehende Recovery-Abweichungen lösen keine Nachladung aus. Historische
+Aussagen über Recovery vor vollständigem Endlastlauf sind damit ersetzt.

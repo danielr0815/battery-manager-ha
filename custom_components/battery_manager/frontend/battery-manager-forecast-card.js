@@ -130,6 +130,16 @@ const STRINGS = {
     today_tomorrow: "(kWh · today/tomorrow)",
     nothing_planned: "nothing planned",
     active: "active",
+    feedin_wait: "feed-in waits for confirmed load start",
+    storage_action_too_small: "storage action below minimum duration or energy",
+    terminal_priority: "continuous terminal operation has priority",
+    same_day_export: "insufficient same-day export to repay charging",
+    candidate_rejected: "tested start rejected",
+    daily_peak: "daily battery target",
+    additional_import: "additional grid import",
+    slot_not_serviceable: "supply or cutoff limit",
+    soc_reserve: "SOC reserve",
+    path_power_limit: "cascade power limit",
     feedin_lane: "early feed-in",
     feedin: "planned feed-in",
     realized: "measured",
@@ -220,6 +230,16 @@ const STRINGS = {
     today_tomorrow: "(kWh · heute/morgen)",
     nothing_planned: "nichts geplant",
     active: "aktiv",
+    feedin_wait: "Einspeisung wartet auf bestätigten Laststart",
+    storage_action_too_small: "Speicheraktion unter Mindestlaufzeit oder Mindestenergie",
+    terminal_priority: "durchgängiger Endlastbetrieb hat Vorrang",
+    same_day_export: "zu wenig gleichzeitiger oder späterer Tagesexport für die Ladung",
+    candidate_rejected: "geprüfter Start verworfen",
+    daily_peak: "Batterie-Tagesziel",
+    additional_import: "zusätzlicher Netzbezug",
+    slot_not_serviceable: "Versorgung oder Abschaltgrenze",
+    soc_reserve: "SOC-Reserve",
+    path_power_limit: "Kaskaden-Leistungsgrenze",
     feedin_lane: "vorzeitige Einspeisung",
     feedin: "geplante Einspeisung",
     realized: "Ist",
@@ -1025,9 +1045,17 @@ class BatteryManagerForecastCard extends HTMLElement {
           planned > 0 && sched.length && !inWindow && Number.isFinite(firstMs)
             ? ` · <span class="off">${whenFmt.format(firstMs)}</span>`
             : "";
+        const wait = load.feedin_waiting_for_confirmation
+          ? ` · ${esc(t("feedin_wait"))}` : "";
+        const rejected = Array.isArray(load.rejected_candidates)
+          ? load.rejected_candidates[0] : null;
+        const rejectedTime = rejected ? new Date(rejected.start).getTime() : NaN;
+        const rejection = rejected && Number.isFinite(rejectedTime)
+          ? ` · ${esc(t("candidate_rejected"))} ${esc(whenFmt.format(rejectedTime))}: ${esc(t(rejected.reason))}`
+          : "";
         return `<span><span class="dot" style="background:${load.color}"></span>${esc(
           load.name ?? "?"
-        )} (${detail}${powerDetail})${active}${offWindow}</span>`;
+        )} (${detail}${powerDetail})${active}${offWindow}${wait}${rejection}</span>`;
       })
       .join("");
 
@@ -2485,9 +2513,12 @@ class BatteryManagerCascadeCard extends HTMLElement {
         if (last && last.end >= item.start && last.exact === item.exact) last.end = Math.max(last.end, item.end);
         else merged.push({...item});
       }
+      // The axis anchors each sibling tooltip across the available width.
+      // A fixed child tooltip is clipped by HA dashboard containing blocks;
+      // anchoring to the tiny bar would also overflow at the right edge.
       return `<div class="activity-row"><span>${label}</span><div class="activity-axis">${merged.map((a) => {
         const description = `${label}: ${this._time(a.start, true)} – ${this._time(a.end, true)} · ${a.exact ? this._text("geplant", "planned") : this._text("Zeitfenster; Schaltzeiten unbekannt", "time slot; switching times unknown")}`;
-        return `<span tabindex="0" class="activity-bar ${a.exact ? "" : "estimated"}" style="left:${100*(a.start-from)/(until-from)}%;width:${100*(a.end-a.start)/(until-from)}%;background-color:${color}" aria-label="${esc(description)}"><span class="activity-tip">${esc(description)}</span></span>`;
+        return `<span tabindex="0" class="activity-bar ${a.exact ? "" : "estimated"}" style="left:${100*(a.start-from)/(until-from)}%;width:${100*(a.end-a.start)/(until-from)}%;background-color:${color}" aria-label="${esc(description)}"></span><span class="activity-tip" aria-hidden="true">${esc(description)}</span>`;
       }).join("")}</div></div>`;
     }).join("")}</div>`;
   }
@@ -2538,6 +2569,27 @@ class BatteryManagerCascadeCard extends HTMLElement {
       <p class="muted">${esc(this._text("Eingang bezeichnet die Versorgung am Anfang der Kaskade. Pfeile zeigen Quelle und Empfänger entlang der oben dargestellten Kette. AC-Durchleitung ist keine Akkuladung; je AC-Ausgang liegt keine eigene Energiemenge vor. Fehlende Werte: —.", "Root is the cascade input. Arrows show source and recipient along the chain above. AC pass-through is not battery charging; energy per AC output is unavailable. Missing values: —."))}</p></section>`;
   }
 
+  _decisions(cascade) {
+    const data = this._hass?.states?.[this._entityId()]?.attributes?.load_decisions || {};
+    const ids = [...this._memberDetails(cascade).map((m) => m.load_id), cascade.terminal_load_id];
+    const rows = ids.flatMap((id) => {
+      const decision = data[id];
+      if (!decision || typeof decision !== "object") return [];
+      const messages = [];
+      if (decision.waiting_for_confirmation) messages.push(esc(localize(this._hass, "feedin_wait")));
+      for (const rejection of Array.isArray(decision.rejected_candidates) ? decision.rejected_candidates : []) {
+        const time = this._timestamp(rejection?.start);
+        if (!Number.isFinite(time)) continue;
+        const when = new Intl.DateTimeFormat(this._hass.language || "en", {
+          timeZone: this._hass.config?.time_zone, weekday: "short", hour: "2-digit", minute: "2-digit",
+        }).format(time);
+        messages.push(`${esc(when)} · ${esc(localize(this._hass, "candidate_rejected"))}: ${esc(localize(this._hass, rejection.reason))}`);
+      }
+      return messages.map((message) => `<li><strong>${esc(decision.name || id)}</strong>: ${message}</li>`);
+    });
+    return rows.length ? `<details class="muted"><summary>${esc(this._text("Planungsgründe", "Planning decisions"))}</summary><ul>${rows.join("")}</ul></details>` : "";
+  }
+
   _renderCascade(cascade, index) {
     const view = this._ui(cascade, index);
     const members = this._memberDetails(cascade);
@@ -2552,6 +2604,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       ${cascade.source_name ? `<p>${esc(localize(this._hass, "source"))}: ${esc(cascade.source_name)}</p>` : ""}
       ${cascade.fault ? `<p class="fault">⚠ ${esc(localize(this._hass, STRINGS.en[`fault_${String(cascade.fault).split(":")[0]}`] ? `fault_${String(cascade.fault).split(":")[0]}` : "fault_unknown"))}${cascade.fault_detail ? ` · ${esc(cascade.fault_detail.entity_id || "")} · ${esc(cascade.fault_detail.observed_state || "?")}` : ""}</p>` : ""}
       <p class="topology">${esc([localize(this._hass, "root"), ...members.map((m) => m.name || m.load_id), cascade.terminal_name || cascade.terminal_load_id || "?"].join(" → "))}</p>
+      ${this._decisions(cascade)}
       <h3>${esc(this._text("Planübersicht", "Plan overview"))}</h3><div class="metrics">${metrics.map(([label, value, kind, period]) => `<div class="metric"><span>${esc(label)}</span><strong>${this._historyButton(this._historyEntity(cascade, kind), `${this._number(value)} kWh`)}</strong><button type="button" data-cascade="${index}" data-action="detail" data-kind="${kind}" data-period="${period}" aria-controls="details-${index}" aria-expanded="${view.detail?.kind === kind && view.period === period}">${esc(this._text("Prognose öffnen", "Open forecast"))} ↗</button></div>`).join("")}</div>
       <p class="muted">${esc(this._text("Unterstrichene Werte und Diagrammklicks öffnen die Messhistorie. Ausgangsleistung enthält auch Durchleitung.", "Underlined values and chart clicks open measurement history. Output power also includes pass-through."))}</p>
       <p class="muted">${esc(this._text("Heute zeigt den verbleibenden Plan. Aus Speichern bezieht sich auf den gesamten Plan.", "Today shows the remaining plan. From storage refers to the full plan."))}</p>
@@ -2650,7 +2703,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       .topology{color:var(--secondary-text-color,#aaa);margin:8px 0 16px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px}.metric{display:grid;gap:5px;padding:10px;border:1px solid var(--divider-color,#444);border-radius:9px}.metric>button{font-size:.85em}.metrics strong{font-size:1.35em}.metrics span{color:var(--secondary-text-color,#aaa)}.members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:16px}.member,.terminal,.details{padding:14px;border:1px solid var(--divider-color,#444);border-radius:12px;min-width:0}.terminal{margin-top:12px}.member-energy{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:.85em}.member-energy span{flex:1;min-width:85px;color:var(--secondary-text-color,#aaa)}.member-energy b{display:block;color:var(--primary-text-color,#eee)}
       .plot{overflow-x:auto;padding:3px}svg{display:block;width:100%;min-width:300px;height:auto;touch-action:pan-y}.axis{fill:var(--secondary-text-color,#aaa);font:12px sans-serif}.grid{stroke:var(--divider-color,#444)}.forecast-line{stroke-width:2.5;stroke-dasharray:6 3;stroke-linejoin:round}.soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1;stroke-dasharray:3 5}.marker{stroke:var(--primary-text-color,#eee);stroke-width:1;stroke-dasharray:3 3}.readout{min-height:1.5em;margin-top:4px;white-space:normal;overflow-wrap:anywhere}.details{border-color:var(--primary-color,#039be5);margin:16px 0}.details:focus{outline:none}
       .agenda{list-style:none;padding:0;margin:12px 0}.event{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:12px;margin-bottom:12px}.event time{font-size:.88em;color:var(--primary-color,#039be5);padding-top:12px}.event-body{border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.event-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.flows{list-style:none;margin:8px 0;padding:0}.flows li{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--divider-color,#444)}.flow-label{flex:1;min-width:min(180px,100%)}.flows strong{font-variant-numeric:tabular-nums}.flow-label i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}
-      .history{display:inline;padding:0;min-height:0;border:0;background:none;text-decoration:underline;text-decoration-style:dotted}.history:hover{background:none}.activity-tracks{max-width:600px;margin:8px 0 12px}.activity-row{position:relative;padding-top:18px;margin:4px 0}.activity-row>span{position:absolute;top:0;font-size:.8em;color:var(--secondary-text-color)}.activity-axis{position:relative;height:10px;margin-left:8%;margin-right:2.667%;background:var(--divider-color,#444);border-radius:3px}.activity-bar{position:absolute;height:100%;border-radius:3px;min-width:2px}.activity-bar.estimated{background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,#777 3px,#777 5px)}.activity-tip{display:none;position:fixed;bottom:16px;left:16px;z-index:2;width:min(320px,calc(100vw - 32px));padding:6px;background:var(--card-background-color,#222);border:1px solid var(--divider-color);font-size:12px}.activity-bar:hover .activity-tip,.activity-bar:focus .activity-tip{display:block}.balance-residual{font-size:.85em;color:var(--secondary-text-color)}.pause{color:var(--secondary-text-color);font-size:.85em}.pause>span{padding-top:12px}
+      .history{display:inline;padding:0;min-height:0;border:0;background:none;text-decoration:underline;text-decoration-style:dotted}.history:hover{background:none}.activity-tracks{max-width:600px;margin:8px 0 12px}.activity-row{position:relative;padding-top:18px;margin:4px 0}.activity-row>span{position:absolute;top:0;font-size:.8em;color:var(--secondary-text-color)}.activity-axis{position:relative;height:10px;margin-left:8%;margin-right:2.667%;background:var(--divider-color,#444);border-radius:3px}.activity-bar{position:absolute;height:100%;border-radius:3px;min-width:2px}.activity-bar.estimated{background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,#777 3px,#777 5px)}.activity-tip{display:none;position:absolute;bottom:calc(100% + 6px);left:0;right:0;z-index:2;padding:6px;background:var(--card-background-color,#222);border:1px solid var(--divider-color,#444);border-radius:4px;font-size:12px;white-space:normal;overflow-wrap:anywhere;pointer-events:none}.activity-bar:hover + .activity-tip,.activity-axis:not(:has(.activity-bar:hover)) .activity-bar:focus + .activity-tip{display:block}.balance-residual{font-size:.85em;color:var(--secondary-text-color)}.pause{color:var(--secondary-text-color);font-size:.85em}.pause>span{padding-top:12px}
       .chart-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;margin-top:16px}.chart-grid>.members{display:contents}.chart-grid>.terminal,.chart-grid>.details{margin:0}.chart-grid>.details{grid-column:span 1}
       @container(min-width:740px){.chart-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
       @container(min-width:1180px){.chart-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chart-grid>.details{grid-column:span 2}}

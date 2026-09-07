@@ -6,10 +6,13 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 
 from .cascade import augment_cascade_plans
 from .model import (
+    STORAGE_ACTION_MINUTES,
+    STORAGE_TARGET_TOLERANCE_PERCENT,
+    STORAGE_TARGET_TOLERANCE_WH,
     CascadeSourceSegment,
     LoadPlan,
     PlanInputs,
@@ -49,6 +52,11 @@ QUANTILE_RATIO_MIN_WH = 25.0
 # artifacts had accumulated past this slack and vetoed whole pre-drain
 # blocks, live 2026-08-03.)
 IMPORT_ARTIFACT_SLACK_WH = 50.0
+
+# Operator 2026-09-07: forecast/consumption noise must not veto a useful
+# continuous pre-drain over a fraction of one SOC tick (live 94.47 vs 95 %).
+# This is a bounded SAME-DAY peak allowance, never extra import or floor slack.
+PREDRAIN_PEAK_TOLERANCE_PERCENT = 1.0
 
 # Terminal-credit ramp for the merge-bounded threshold search (F-MERGE-HYSTERESIS,
 # forensics 2026-07-24). The merge decision used to be a knife-edge: a pessimistic
@@ -652,6 +660,28 @@ def _saturation_power_w(
     return max(effective_power_w, nominal_w)
 
 
+def _add_path_overheads(
+    trial: list[float],
+    load_id: str,
+    covered: Sequence[tuple[int, float]],
+    runs: Mapping[str, Sequence[float]],
+    path_overheads: tuple[tuple[tuple[str, ...], float], ...],
+) -> None:
+    """Book each active output once, including overlapping downstream loads.
+
+    Root supply pays the output standby losses; useful load energy and member
+    charging budgets must stay unchanged. Aux accounts for its own losses in
+    cascade.py and never enters this root-supply calculation.
+    """
+    for downstream, overhead_w in path_overheads:
+        if load_id not in downstream:
+            continue
+        for index, take in covered:
+            before = max(runs[key][index] for key in downstream)
+            after = max(before, runs[load_id][index] + take)
+            trial[index] += overhead_w * (after - before)
+
+
 def _respects_path_power_limits(
     load_id: str,
     covered: list[tuple[int, float]],
@@ -807,12 +837,12 @@ def allocate_loads(
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
     direct_surplus_only_load_ids: frozenset[str] = frozenset(),
-    pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
     remaining_energy_overrides: dict[str, float] | None = None,
     power_caps_w: dict[str, float] | None = None,
     path_power_limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...] = (),
     cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     recovery_cumulative_caps_wh: dict[str, tuple[float, ...]] | None = None,
+    path_overheads: tuple[tuple[tuple[str, ...], float], ...] = (),
 ) -> tuple[list[LoadPlan], tuple[float, ...], Trajectory]:
     """Assign surplus loads to hours in three passes.
 
@@ -848,11 +878,6 @@ def allocate_loads(
     They cannot use the normal battery-tolerance or pass-2 preconditioning
     paths, so charging a cascade member never drains the house battery.
 
-    ``pass1_energy_phases`` is the other internal cascade boundary.  A load ID
-    may occur more than once, with an optional AC-energy budget for that phase.
-    This lets the wrapper express every member's recovery target before member
-    top-up instead of relying on a single load-outer pass that could fill B1
-    before B2 recovered. None keeps the normal one-phase-per-load order.
     ``remaining_energy_overrides`` makes cascade storage demand include its
     member-specific charge efficiency. ``power_caps_w`` applies physical hard
     caps before energy allocation, saturation checks and downstream cascade
@@ -893,6 +918,7 @@ def allocate_loads(
     # allocation entry, recorded at acceptance time — the only moment the
     # planner knows WHY a booking passed its gates.
     reasons: dict[str, list[str]] = {ld.load_id: [] for ld in config.loads}
+    rejected: dict[str, dict[int, str]] = {ld.load_id: {} for ld in config.loads}
     remaining: dict[str, float | None] = {}
     for load in config.loads:
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
@@ -1000,14 +1026,30 @@ def allocate_loads(
             if booked_any[j]
         )
 
-    def preserves_daily_max(traj: Trajectory) -> bool:
+    # Accepted continuous blocks retain their absolute peak allowance when
+    # later days/loads are tested; otherwise yesterday's accepted 94.5 % peak
+    # would veto every subsequent candidate. The allowance never accumulates.
+    peak_tolerance_days: set[date] = set()
+
+    def preserves_daily_max(
+        traj: Trajectory, peak_tolerance_day: date | None = None
+    ) -> bool:
         """F-STRICT-SURPLUS R5: the trial must still reach soc_max on every day
         the no-loads base reached it. Vetoes a pre-drain bet that would stop the
-        battery filling to max on such a day (objective 2 outranks absorbing
-        export); pre-conditioning for a FUTURE clip is untouched (that day is
-        not in base_max_days, and its target clip day still fills)."""
+        battery filling on such a day. Continuous pre-drain alone may use
+        the fixed peak tolerance on its own day (operator 2026-09-07); every
+        candidate is measured against soc_max, never against an already
+        reduced peak. Other days and load passes keep the strict max gate."""
         return all(
-            any(traj.flows[j].soc_end_percent >= soc_full for j in day_slots[day])
+            any(
+                traj.flows[j].soc_end_percent
+                >= (
+                    config.battery.soc_max_percent - PREDRAIN_PEAK_TOLERANCE_PERCENT
+                    if day == peak_tolerance_day or day in peak_tolerance_days
+                    else soc_full
+                )
+                for j in day_slots[day]
+            )
             for day in base_max_days
         )
 
@@ -1043,10 +1085,14 @@ def allocate_loads(
             trial, covered = trimmed
             commit_h = inputs.slots[i].duration
             seamless = True
+        _add_path_overheads(trial, load.load_id, covered, run_h, path_overheads)
         return trial, covered, commit_h, seamless
 
     def _gate_trial(
-        trial_ac: tuple[float, ...], covered: list[tuple[int, float]]
+        trial_ac: tuple[float, ...],
+        covered: list[tuple[int, float]],
+        *,
+        peak_tolerance_day: date | None = None,
     ) -> Trajectory | None:
         """Full-horizon re-simulation + the hard conditions BOTH passes apply,
         in the same order (Z2'' import invariant, R2 planner-G4 slot
@@ -1056,9 +1102,14 @@ def allocate_loads(
         candidate is vetoed, else the trial trajectory for the caller's
         pass-specific gates / acceptance.
         """
+
+        def reject(reason: str) -> None:
+            rejected[load.load_id].setdefault(covered[0][0], reason)
+
         if not _respects_path_power_limits(
             load.load_id, covered, run_h, path_power_limits
         ):
+            reject("path_power_limit")
             return None
         traj = simulate(
             config,
@@ -1069,12 +1120,16 @@ def allocate_loads(
             dc48_schedule=dc48_schedule,
         )
         if not import_ok(traj):  # Z2''
+            reject("additional_import")
             return None
         if not slots_serviceable(traj, covered):  # R2 planner-G4
+            reject("slot_not_serviceable")
             return None
-        if not preserves_daily_max(traj):  # R5 reach-max
+        if not preserves_daily_max(traj, peak_tolerance_day):  # R5 reach-max
+            reject("daily_peak")
             return None
         if _degrades_min_soc(traj, current, buffer_floor):  # Z3
+            reject("soc_reserve")
             return None
         return traj
 
@@ -1127,19 +1182,13 @@ def allocate_loads(
     # trajectory's export (R8): earlier bookings — same load or a higher-
     # priority one — are already re-simulated into `current`, so the old
     # intra-slot decrement approximation is replaced by the exact value.
-    loads_by_id = {load.load_id: load for load in config.loads}
-    pass1_phases = (
-        tuple((load.load_id, None) for load in config.loads)
-        if pass1_energy_phases is None
-        else pass1_energy_phases
-    )
-    for load_id, phase_budget_wh in pass1_phases:
-        load = loads_by_id[load_id]
+    for load in config.loads:
+        # Storage allocation follows the COMPLETE terminal plan, including
+        # pass 3. No recovery reservation may fragment that primary service.
+        if load.load_id in direct_surplus_only_load_ids:
+            continue
         state = states.get(load.load_id, SurplusLoadState(load_id=load.load_id))
         if not state.available:
-            continue
-        phase_remaining = None if phase_budget_wh is None else max(0.0, phase_budget_wh)
-        if phase_remaining is not None and phase_remaining <= _EPS:
             continue
         power_w = _effective_load_power_w(load, state, power_caps_w)
         saturation_power_w = _saturation_power_w(load, power_w, power_caps_w)
@@ -1148,13 +1197,7 @@ def allocate_loads(
             if schedules[load.load_id][i]:
                 continue
             total_rem = remaining[load.load_id]
-            rem = (
-                total_rem
-                if phase_remaining is None
-                else phase_remaining
-                if total_rem is None
-                else min(total_rem, phase_remaining)
-            )
+            rem = total_rem
             # Try the largest quantised run first, falling back to shorter
             # min_runtime multiples so a small battery-buffered surplus can still
             # be captured (F-SUBHOUR R1-R3). The whole-slot candidate is first,
@@ -1177,20 +1220,7 @@ def allocate_loads(
                 if spread is None:  # pragma: no cover
                     continue  # commitment overlaps an already-scheduled slot
                 trial, covered, commit_h, seamless = spread
-                power_wh = power_w * commit_h
-                phase_caps = (
-                    recovery_cumulative_caps_wh
-                    if phase_budget_wh is not None
-                    else cumulative_energy_caps_wh
-                )
-                if not _respects_cumulative_energy_cap(
-                    load.load_id,
-                    power_w,
-                    run_h[load.load_id],
-                    covered,
-                    phase_caps,
-                ):
-                    continue
+                power_wh = sum(trial[j] - extra[j] for j, _ in covered)
                 # Soft surplus condition (D-A4): battery may cover at most
                 # `battery_tolerance` of the committed energy. Spilled slots
                 # contribute their export prorated by the occupied share.
@@ -1199,28 +1229,12 @@ def allocate_loads(
                     for j, take in covered[1:]
                 )
                 battery_share = max(0.0, power_wh - surplus_cov) / power_wh
-                direct_surplus_only = load.load_id in direct_surplus_only_load_ids
-                if direct_surplus_only and any(
-                    current.flows[j].grid_export_wh * (take / inputs.slots[j].duration)
-                    + _EPS
-                    < power_w * take
-                    for j, take in covered
-                ):
-                    # F-CASCADE-STORAGE: aggregate coverage is insufficient.
-                    # Every physical run fragment must be backed by export in
-                    # that same slot; a later surplus must not conceal an
-                    # earlier draw from the house battery.  The direct-PV
-                    # recovery retry runs only after the complete terminal
-                    # plan, below.
-                    continue
                 # F-PEAK-FILL R2: an energy-limited load with budget left may
                 # pass the soft gate even over tolerance when the slot proves
                 # to be an at-max top-up (checked after the re-simulation).
                 at_max_topup = False
                 if battery_share > load.battery_tolerance + _EPS:
-                    if direct_surplus_only or not (
-                        load.energy_limited and rem is not None and rem > _EPS
-                    ):
+                    if not (load.energy_limited and rem is not None and rem > _EPS):
                         continue
                     at_max_topup = True
                 # Hard conditions via full re-simulation (Z2''/R2/R5/Z3).
@@ -1236,8 +1250,6 @@ def allocate_loads(
                 placed_h, placed_wh = _accept_candidate(
                     load, 1, i, power_w, trial, covered, traj, total_rem
                 )
-                if phase_remaining is not None:
-                    phase_remaining = max(0.0, phase_remaining - placed_wh)
                 final_note = _final_note(load, commit_h, seamless)
                 reasons[load.load_id].append(
                     f"pass 1 @ {slot.start.strftime('%m-%d %H:%M')}: "
@@ -1349,7 +1361,7 @@ def allocate_loads(
                     if spread is None:
                         continue
                     trial, covered, commit_h, seamless = spread
-                    power_wh = power_w * commit_h
+                    power_wh = sum(trial[j] - extra[j] for j, _ in covered)
                     if load.energy_limited and any(
                         inputs.slots[j].pv_wh <= 0.0 for j, _ in covered
                     ):
@@ -1537,8 +1549,8 @@ def allocate_loads(
     #      Every gate worsens monotonically with block length, so the first
     #      veto ends the extension and the last accepted block is the
     #      longest feasible one; R5 (preserve daily max) additionally pins
-    #      "the battery still fills to soc_max today" — the operator's
-    #      precondition for pre-draining at all.
+    #      "the battery still fills today" — since 2026-09-07 within the
+    #      fixed one-point peak tolerance, with all reserve gates unchanged.
     #   R6 min length: a block shorter than min_runtime is never booked
     #      (the executor dwell would deliver more than the plan accounts).
     #   R7 execution: the coordinator switches the block only after
@@ -1608,11 +1620,16 @@ def allocate_loads(
                     take = inputs.slots[j].duration
                     trial[j] += power_w * take
                     covered.append((j, take))
-                traj = _gate_trial(tuple(trial), covered)
+                _add_path_overheads(trial, load.load_id, covered, run_h, path_overheads)
+                physical_block_wh = sum(trial[j] - extra[j] for j, _ in covered)
+                traj = _gate_trial(tuple(trial), covered, peak_tolerance_day=day)
                 if traj is None:
                     break  # Z2''/R2/R5/Z3 veto: longer blocks only get worse
                 export_drop = current.total_export_wh - traj.total_export_wh
-                if export_drop + _EPS < (1.0 - load.battery_tolerance) * block_wh * rt:
+                if (
+                    export_drop + _EPS
+                    < (1.0 - load.battery_tolerance) * physical_block_wh * rt
+                ):
                     break  # the detour is not repaid (c1 at the physical rt)
                 # Dynamic-buffer floor for the block, evaluated on the NOMINAL
                 # trajectory (operator decision 2026-08-02): the alpha/band
@@ -1621,9 +1638,13 @@ def allocate_loads(
                 # recomputed every refresh; a degraded forecast retracts the
                 # recommendation; the G4 floor guard force-switches at the
                 # real-time cutoff), and R5 already pins "the battery still
-                # fills to soc_max today". The stress stays in force for the
+                # fills today within the fixed peak tolerance". Stress stays for
                 # slot-wise pass-2 bets of energy-limited loads.
-                recovery = _refill_index(traj, s, soc_full)
+                recovery = _refill_index(
+                    traj,
+                    s,
+                    config.battery.soc_max_percent - PREDRAIN_PEAK_TOLERANCE_PERCENT,
+                )
                 hi = max(recovery, covered[-1][0])
                 if _z4_reject(
                     _windowed_min_soc(traj, s, hi),
@@ -1650,6 +1671,7 @@ def allocate_loads(
             _placed_h, placed_wh = _accept_candidate(
                 load, 3, s, power_w, trial, covered, traj, remaining[load.load_id]
             )
+            peak_tolerance_days.add(day)
             reasons[load.load_id].append(
                 f"pass 3 @ {inputs.slots[s].start.strftime('%m-%d %H:%M')}: "
                 f"pre-drain block to the {day.strftime('%m-%d')} peak "
@@ -1657,6 +1679,95 @@ def allocate_loads(
                 f"({round(placed_wh)} Wh against {round(target_wh)} Wh clip), "
                 "latest feasible start"
                 + (", ends at own pass-1 booking" if end < peak else "")
+            )
+
+    # Complete an existing continuous service interval before any cascade
+    # storage is considered. Test the whole daily bridge once, so the fixed
+    # energy tolerance cannot be spent separately on every little gap.
+    for load in config.loads:
+        if not direct_surplus_only_load_ids or load.energy_limited:
+            continue
+        power_w = _effective_load_power_w(
+            load, states.get(load.load_id, SurplusLoadState(load.load_id)), power_caps_w
+        )
+        for day, day_start in horizon_days:
+            occupied = [
+                j
+                for j in range(day_start, n)
+                if inputs.slots[j].start.date() == day and schedules[load.load_id][j]
+            ]
+            if not occupied:
+                continue
+            first, last = occupied[0], occupied[-1]
+            covered = [
+                (j, inputs.slots[j].duration - run_h[load.load_id][j])
+                for j in range(first, last + 1)
+            ]
+            if not any(take > _EPS for _, take in covered):
+                continue
+            # Do not split an already committed cross-midnight dwell when
+            # consolidating the allocation records into one continuous block.
+            if any(
+                start <= last
+                and start + count > first
+                and (start < first or start + count > last + 1)
+                for start, count, _, _ in allocations[load.load_id]
+            ):
+                continue
+            trial = list(extra)
+            for j, take in covered:
+                trial[j] += power_w * take
+            _add_path_overheads(trial, load.load_id, covered, run_h, path_overheads)
+            traj = _gate_trial(tuple(trial), covered, peak_tolerance_day=day)
+            if traj is None:
+                continue
+            added_wh = sum(trial[j] - extra[j] for j, _ in covered)
+            export_drop = current.total_export_wh - traj.total_export_wh
+            if export_drop + STORAGE_TARGET_TOLERANCE_WH + _EPS < (
+                (1.0 - load.battery_tolerance) * added_wh * rt
+            ):
+                continue
+            recovery = _refill_index(
+                traj,
+                first,
+                config.battery.soc_max_percent - PREDRAIN_PEAK_TOLERANCE_PERCENT,
+            )
+            hi = max(last, recovery)
+            if _z4_reject(
+                _windowed_min_soc(traj, first, hi),
+                stress_floor_by_slot[first],
+                _windowed_min_soc(current, first, hi),
+            ):
+                continue
+            extra, current = trial, traj
+            planned_wh[load.load_id] += power_w * sum(take for _, take in covered)
+            for j, _ in covered:
+                schedules[load.load_id][j] = booked_any[j] = True
+                run_h[load.load_id][j] = inputs.slots[j].duration
+            # Allocation/reason are parallel records in the published plan.
+            # Consolidate both, otherwise the new block inherits an obsolete
+            # direct-surplus reason and later days shift to the wrong label.
+            retained = [
+                (item, reason)
+                for item, reason in zip(
+                    allocations[load.load_id], reasons[load.load_id], strict=True
+                )
+                if item[0] < first or item[0] > last
+            ]
+            allocations[load.load_id] = [item for item, _ in retained]
+            reasons[load.load_id] = [reason for _, reason in retained]
+            allocations[load.load_id].append(
+                (
+                    first,
+                    last - first + 1,
+                    3,
+                    power_w * sum(run_h[load.load_id][first : last + 1]),
+                )
+            )
+            peak_tolerance_days.add(day)
+            reasons[load.load_id].append(
+                f"pass 3 @ {inputs.slots[first].start.strftime('%m-%d %H:%M')}: "
+                "continuous terminal block before storage, gaps closed"
             )
 
     plans = [
@@ -1667,6 +1778,7 @@ def allocate_loads(
             allocations=tuple(allocations[load.load_id]),
             run_hours=tuple(run_h[load.load_id]),
             reasons=tuple(reasons[load.load_id]),
+            rejected_candidates=tuple(sorted(rejected[load.load_id].items())),
         )
         for load in config.loads
     ]
@@ -1687,6 +1799,8 @@ def _allocate_recovery_after_continuous_loads(
     path_power_limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...] = (),
     cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     *,
+    path_overheads: tuple[tuple[tuple[str, ...], float], ...] = (),
+    priority_terminals: dict[str, str] | None = None,
     allow_final_quantum_overshoot: bool = False,
     visible_export_only: bool = False,
     today_only: bool = True,
@@ -1755,6 +1869,7 @@ def _allocate_recovery_after_continuous_loads(
         run_hours = list(plan.run_hours or (0.0,) * len(inputs.slots))
         allocations = list(plan.allocations)
         reasons = list(plan.reasons)
+        rejected = dict(plan.rejected_candidates)
         planned_wh = plan.planned_energy_wh
         final_quantum_h = load.min_runtime_min / 60.0
 
@@ -1797,6 +1912,17 @@ def _allocate_recovery_after_continuous_loads(
                 trial_extra, covered = _spread_energy(
                     extra, inputs.slots, i, power_w, commit_h
                 )
+                if (
+                    priority_terminals is not None
+                    and not schedules[i]
+                    and (
+                        sum(take for _, take in covered) + _EPS < final_quantum_h
+                        or power_w * sum(take for _, take in covered) + _EPS
+                        < STORAGE_TARGET_TOLERANCE_WH
+                    )
+                ):
+                    rejected.setdefault(i, "storage_action_too_small")
+                    continue  # never start a truncated or negligible storage action
                 if today_only and any(
                     inputs.slots[j].start.date() != recovery_day for j, _take in covered
                 ):
@@ -1816,6 +1942,16 @@ def _allocate_recovery_after_continuous_loads(
                     for key, item in plans.items()
                 }
                 path_runs[load.load_id] = tuple(run_hours)
+                terminal_id = (priority_terminals or {}).get(load.load_id)
+                if terminal_id is not None and any(
+                    path_runs[terminal_id][j] < inputs.slots[j].duration - _EPS
+                    for j, _take in covered
+                ):
+                    rejected.setdefault(i, "terminal_priority")
+                    continue  # keep the terminal's gaps free of storage cycling
+                _add_path_overheads(
+                    trial_extra, load.load_id, covered, path_runs, path_overheads
+                )
                 if not _respects_path_power_limits(
                     load.load_id, covered, path_runs, path_power_limits
                 ):
@@ -1829,15 +1965,14 @@ def _allocate_recovery_after_continuous_loads(
                 ):
                     continue
                 if visible_export_only and any(
-                    current.flows[j].grid_export_wh + _EPS < power_w * take
+                    current.flows[j].grid_export_wh + _EPS < trial_extra[j] - extra[j]
                     for j, take in covered
                 ):
                     continue
                 if any(
                     inputs.slots[j].pv_wh + _EPS
                     < inputs.slots[j].ac_wh
-                    + extra[j]
-                    + power_w * take
+                    + trial_extra[j]
                     + (
                         config.inverter.standby_power_w * inputs.slots[j].duration
                         if current.flows[j].inverter_on
@@ -1855,8 +1990,10 @@ def _allocate_recovery_after_continuous_loads(
                     dc48_schedule=dc48_schedule,
                 )
                 if trial.total_import_wh > current.total_import_wh + _EPS:
+                    rejected.setdefault(i, "additional_import")
                     continue
                 if _degrades_min_soc(trial, current, protected_floor):
+                    rejected.setdefault(i, "soc_reserve")
                     continue
                 inverter_floor = max(
                     config.battery.soc_min_percent,
@@ -1868,12 +2005,13 @@ def _allocate_recovery_after_continuous_loads(
                     )
                     for j, _take in covered
                 ):
+                    rejected.setdefault(i, "slot_not_serviceable")
                     continue
                 candidate_by_day: dict = {}
-                for j, take in covered:
+                for j, _take in covered:
                     day = inputs.slots[j].start.date()
                     candidate_by_day[day] = (
-                        candidate_by_day.get(day, 0.0) + power_w * take
+                        candidate_by_day.get(day, 0.0) + trial_extra[j] - extra[j]
                     )
                 export_drop_by_day: dict = {}
                 for j, slot_j in enumerate(inputs.slots):
@@ -1885,6 +2023,7 @@ def _allocate_recovery_after_continuous_loads(
                     export_drop_by_day.get(day, 0.0) + _EPS < needed_wh
                     for day, needed_wh in candidate_by_day.items()
                 ):
+                    rejected.setdefault(i, "same_day_export")
                     continue
 
                 extra = trial_extra
@@ -1917,6 +2056,7 @@ def _allocate_recovery_after_continuous_loads(
             allocations=tuple(allocations),
             run_hours=tuple(run_hours),
             reasons=tuple(reasons),
+            rejected_candidates=tuple(sorted(rejected.items())),
         )
 
     updated_plans = [plans[plan.load_id] for plan in load_plans]
@@ -1934,6 +2074,8 @@ def _allocate_recovery_after_continuous_loads(
             power_caps_w,
             path_power_limits,
             cumulative_energy_caps_wh,
+            path_overheads=path_overheads,
+            priority_terminals=priority_terminals,
             allow_final_quantum_overshoot=True,
             visible_export_only=visible_export_only,
             today_only=today_only,
@@ -1943,6 +2085,56 @@ def _allocate_recovery_after_continuous_loads(
     return updated_plans, tuple(extra), current
 
 
+def _continuous_loads_cover_to_max(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    load_plans: Sequence[LoadPlan],
+    trajectory: Trajectory,
+    start: int,
+) -> bool:
+    """F-FEEDIN R1: deliberate export requires continuous service to full SOC.
+
+    A residual from a failed/quantised load candidate is not proof of exhausted
+    consumption. Even an unavailable load or a partial-hour gap cannot authorize
+    feed-in. With no continuous consumers this additional prerequisite is empty.
+    Check the WITH-feed-in trajectory too: delaying the peak must not move it
+    past the end of the load's run. Slots model their SOC at the end, so the
+    peak slot itself must be fully covered.
+    """
+    continuous = [load for load in config.loads if not load.energy_limited]
+    if not continuous:
+        return True
+    day = inputs.slots[start].start.date()
+    peak = next(
+        (
+            j
+            for j in range(start, len(inputs.slots))
+            if inputs.slots[j].start.date() == day
+            and trajectory.flows[j].soc_end_percent
+            >= config.battery.soc_max_percent - _EPS
+        ),
+        None,
+    )
+    if peak is None:
+        return False
+    plans = {load_plan.load_id: load_plan for load_plan in load_plans}
+    states = {state.load_id: state for state in inputs.load_states}
+    for load in continuous:
+        state = states.get(load.load_id)
+        if state is not None and (not state.available or not state.feedin_ready):
+            return False
+        load_plan = plans.get(load.load_id)
+        if load_plan is None:
+            return False
+        if any(
+            j >= len(load_plan.run_hours)
+            or load_plan.run_hours[j] < inputs.slots[j].duration - _EPS
+            for j in range(start, peak + 1)
+        ):
+            return False
+    return True
+
+
 def plan_feedin(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -1950,14 +2142,16 @@ def plan_feedin(
     extra_ac: tuple[float, ...],
     alloc_traj: Trajectory,
     *,
+    load_plans: Sequence[LoadPlan] = (),
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
 ) -> tuple[tuple[float, ...], dict[str, float]]:
     """Pre-shift the UNAVOIDABLE export into the morning surplus (F-FEEDIN).
 
     The residual export of the post-allocation trajectory (`alloc_traj`,
-    median forecast) is energy the loads provably cannot absorb — it clips at
-    midday with a full battery. This pass books that same energy as early
+    median forecast) is the candidate export target. R1 additionally requires
+    continuous load service until full SOC: quantisation leftovers alone are
+    not proof of exhausted consumption. This pass books eligible energy as early
     feed-in instead: PV surplus passed straight through to the grid while the
     battery idles (requirement 1: the battery is NEVER actively discharged
     for feed-in — step_hour has no mechanism for it and clamps feed-in to the
@@ -1983,7 +2177,7 @@ def plan_feedin(
       the setpoint. Today's slots then book exactly that value (no daily
       target, no deadline — the plan and the chart must mirror reality), 0
       books nothing at all; the following days plan automatically again
-      (manual mode ends at midnight).
+      only if automatic_enabled (the runtime pause outlasts manual mode).
     - Z4 as a BRAKE only (requirement 3): the final WITH-feed-in series is
       re-simulated under the stressed PV vector (same P10/alpha machinery as
       the `_z4_reject` / `_ramped_stress_floors` gates); on a floor violation
@@ -2020,6 +2214,8 @@ def plan_feedin(
             if manual_w is None or manual_w <= _EPS:
                 continue  # operator set 0 W: no booking, no chart lane
         else:
+            if not feedin.automatic_enabled:
+                continue  # R8: pause persists across the whole forecast horizon
             remaining = sum(alloc_traj.flows[j].grid_export_wh for j in idxs)
         if remaining <= _EPS:
             continue
@@ -2082,11 +2278,14 @@ def plan_feedin(
                 rate_w = min(
                     remaining / denom, feedin.max_w, surplus_wh / slot.duration
                 )
+            if not manual_today and not _continuous_loads_cover_to_max(
+                config, inputs, load_plans, trial, i
+            ):
+                continue
             take_wh = min(rate_w * slot.duration, remaining)
             booked[i] = take_wh
-            remaining -= take_wh
-            # Re-simulate so the next slot's SOC checks see the reduced charge.
-            trial = simulate(
+            # Validate the delayed peak before accepting this booking.
+            candidate = simulate(
                 config,
                 inputs,
                 threshold,
@@ -2095,6 +2294,13 @@ def plan_feedin(
                 dc48_schedule=dc48_schedule,
                 feedin_wh=tuple(booked),
             )
+            if not manual_today and not _continuous_loads_cover_to_max(
+                config, inputs, load_plans, candidate, i
+            ):
+                booked[i] = 0.0
+                continue
+            trial = candidate
+            remaining -= take_wh
 
     # Z4 brake: the stress must not push the reserve through the ramped floors
     # — same per-slot P10/alpha vector the allocation gates use. The relief
@@ -2307,13 +2513,14 @@ def _plan_legacy(
     inputs: PlanInputs,
     *,
     direct_surplus_only_load_ids: frozenset[str] = frozenset(),
-    pass1_energy_phases: tuple[tuple[str, float | None], ...] | None = None,
     remaining_energy_overrides: dict[str, float] | None = None,
     recovery_targets_wh: dict[str, float] | None = None,
+    priority_terminals: dict[str, str] | None = None,
     power_caps_w: dict[str, float] | None = None,
     path_power_limits: tuple[tuple[tuple[tuple[str, float], ...], float], ...] = (),
     cumulative_energy_caps_wh: dict[str, tuple[float, ...]] | None = None,
     recovery_cumulative_caps_wh: dict[str, tuple[float, ...]] | None = None,
+    path_overheads: tuple[tuple[tuple[str, ...], float], ...] = (),
 ) -> PlanResult:
     """One complete planning run — single consistent trajectory out (P2).
 
@@ -2364,10 +2571,10 @@ def _plan_legacy(
         dc24_schedule=forced_dc24,
         dc48_schedule=forced_dc48,
         direct_surplus_only_load_ids=direct_surplus_only_load_ids,
-        pass1_energy_phases=pass1_energy_phases,
         remaining_energy_overrides=remaining_energy_overrides,
         power_caps_w=power_caps_w,
         path_power_limits=path_power_limits,
+        path_overheads=path_overheads,
         cumulative_energy_caps_wh=cumulative_energy_caps_wh,
         recovery_cumulative_caps_wh=recovery_cumulative_caps_wh,
     )
@@ -2391,7 +2598,9 @@ def _plan_legacy(
             dc48_schedule=forced_dc48,
             power_caps_w=power_caps_w,
             path_power_limits=path_power_limits,
+            path_overheads=path_overheads,
             cumulative_energy_caps_wh=recovery_cumulative_caps_wh,
+            priority_terminals=priority_terminals,
         )
         # The terminal's continuous block can also expose residual export for
         # ordinary member top-up. Recovery for every member has already had
@@ -2411,7 +2620,9 @@ def _plan_legacy(
                     dc48_schedule=forced_dc48,
                     power_caps_w=power_caps_w,
                     path_power_limits=path_power_limits,
+                    path_overheads=path_overheads,
                     cumulative_energy_caps_wh=cumulative_energy_caps_wh,
+                    priority_terminals=priority_terminals,
                     visible_export_only=True,
                     today_only=False,
                     repeat_final_rounding=False,
@@ -2439,6 +2650,7 @@ def _plan_legacy(
             threshold,
             extra_ac,
             alloc_traj,
+            load_plans=load_plans,
             dc24_schedule=forced_dc24,
             dc48_schedule=forced_dc48,
         )
@@ -2623,13 +2835,11 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         for member in cascade.members
     }
     priority_loads = []
-    phase_order: list[tuple[str, bool]] = []
     emitted_cascades: set[str] = set()
     for load in config.loads:
         cascade = cascade_by_participant.get(load.load_id)
         if cascade is None:
             priority_loads.append(load)
-            phase_order.append((load.load_id, False))
             continue
         if cascade.cascade_id in emitted_cascades:
             continue
@@ -2639,10 +2849,22 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             (loads_by_id[cascade.terminal_load_id],)
             + tuple(loads_by_id[load_id] for load_id in member_ids)
         )
-        phase_order.append((cascade.terminal_load_id, False))
-        phase_order.extend((load_id, True) for load_id in member_ids)
-        phase_order.extend((load_id, False) for load_id in member_ids)
-    legacy_config = replace(config, loads=tuple(priority_loads), cascades=())
+    # A configured five-minute device dwell is a physical minimum, not a
+    # request to optimize every 20 Wh residual with another storage switch.
+    legacy_config = replace(
+        config,
+        loads=tuple(
+            replace(
+                load,
+                min_runtime_min=max(STORAGE_ACTION_MINUTES, load.min_runtime_min),
+                gate_stop_capable=False,
+            )
+            if load.load_id in member_by_id
+            else load
+            for load in priority_loads
+        ),
+        cascades=(),
+    )
     result_order = {load.load_id: index for index, load in enumerate(config.loads)}
     cascade_member_ids = frozenset(
         member.load_id for cascade in config.cascades for member in cascade.members
@@ -2690,14 +2912,19 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             for index, member in enumerate(cascade.members)
             if member.max_passthrough_power_w is not None
         )
+        path_overheads = tuple(
+            (
+                tuple(m.load_id for m in cascade.members[index + 1 :])
+                + (cascade.terminal_load_id,),
+                member.output_overhead_w,
+            )
+            for cascade in config.cascades
+            for index, member in enumerate(cascade.members)
+            if member.output_overhead_w > 0
+        )
         remaining_overrides: dict[str, float] = {}
-        phases: list[tuple[str, float | None]] = []
         recovery_targets: dict[str, float] = {}
-        for load_id, recovery_phase in phase_order:
-            member = member_by_id.get(load_id)
-            if member is None:
-                phases.append((load_id, None))
-                continue
+        for load_id, member in member_by_id.items():
             load = loads_by_id[load_id]
             state = states.get(load_id)
             soc = (
@@ -2720,13 +2947,13 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                 * load.capacity_wh
                 / member.eta_charge
             )
-            recovery_targets[load_id] = recovery_target_wh
-            phases.append(
-                (
-                    load_id,
-                    recovery_target_wh if recovery_phase else None,
-                )
+            tolerance_wh = max(
+                STORAGE_TARGET_TOLERANCE_WH,
+                load.capacity_wh * STORAGE_TARGET_TOLERANCE_PERCENT / 100,
             )
+            if recovery_target_wh * member.eta_charge <= tolerance_wh + _EPS:
+                recovery_target_wh = 0.0
+            recovery_targets[load_id] = recovery_target_wh
 
         cumulative_caps: dict[str, tuple[float, ...]] = {}
         recovery_cumulative_caps: dict[str, tuple[float, ...]] = {}
@@ -2811,11 +3038,24 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             legacy_config,
             planning_inputs,
             direct_surplus_only_load_ids=cascade_member_ids,
-            pass1_energy_phases=tuple(phases),
             remaining_energy_overrides=remaining_overrides,
             recovery_targets_wh=recovery_targets,
+            priority_terminals={
+                member.load_id: cascade.terminal_load_id
+                for cascade in config.cascades
+                for member in cascade.members
+                if (terminal_state := states.get(cascade.terminal_load_id)) is None
+                or (
+                    terminal_state.available
+                    and terminal_state.planning_power_w(
+                        loads_by_id[cascade.terminal_load_id]
+                    )
+                    > _EPS
+                )
+            },
             power_caps_w=cascade_power_caps_w,
             path_power_limits=path_power_limits,
+            path_overheads=path_overheads,
             cumulative_energy_caps_wh=cumulative_caps or None,
             recovery_cumulative_caps_wh=recovery_cumulative_caps or None,
         )

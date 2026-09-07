@@ -1,6 +1,7 @@
 # Battery Manager — Solution Strategy for the Rework
 
-> Status: historical design rationale. **Binding description of the shipped
+> Status: historical design rationale. Current precedence and tolerances:
+> [STRATEGY-CURRENT.md](STRATEGY-CURRENT.md). **Binding description of the shipped
 > planner: [docs/project-knowledge/02-planner-und-optimizer.md](project-knowledge/02-planner-und-optimizer.md)**;
 > the code map is [ARCHITECTURE.md](ARCHITECTURE.md).
 > Based on [REQUIREMENTS.md](REQUIREMENTS.md).

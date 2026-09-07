@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 from .coordinator import BatteryManagerCoordinator
+from .core.replay import recording
 
 # Entity IDs are intentionally NOT redacted (needed to interpret the state, no
 # secret). These keys are covered only defensively — the integration stores no
@@ -39,16 +40,7 @@ def _core_config(coordinator: BatteryManagerCoordinator) -> dict[str, Any]:
         config = coordinator.build_system_config()
     except Exception as err:  # never let diagnostics fail the download
         return {"error": f"could not build system config: {err}"}
-    return {
-        "battery": asdict(config.battery),
-        "charger": asdict(config.charger),
-        "inverter": asdict(config.inverter),
-        "pv": asdict(config.pv),
-        "ac_profile": asdict(config.ac_profile),
-        "dc_profile": asdict(config.dc_profile),
-        "control": asdict(config.control),
-        "loads": [asdict(load) for load in config.loads],
-    }
+    return asdict(config)
 
 
 def _subentries(entry: ConfigEntry) -> list[dict[str, Any]]:
@@ -124,6 +116,8 @@ async def async_get_config_entry_diagnostics(
         diagnostics["coordinator"] = None
         return diagnostics
 
+    captured = getattr(coordinator, "_last_planner_recording", None)
+    diagnostics["planner_recording"] = recording(*captured) if captured else None
     diagnostics["integration_version"] = coordinator.integration_version
     diagnostics["core_config"] = _core_config(coordinator)
     diagnostics["learned_state"] = coordinator.learned_state_snapshot()

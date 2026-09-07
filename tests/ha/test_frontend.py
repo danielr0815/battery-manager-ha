@@ -152,6 +152,10 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
             "b2": {
                 "name": "B2",
                 "managed_by_cascade": "chain",
+                "feedin_waiting_for_confirmation": True,
+                "rejected_candidates": [
+                    {"start": block["start"], "reason": "daily_peak"}
+                ],
                 "schedule": [block],
             }
         },
@@ -161,6 +165,12 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
     attrs = sensor.extra_state_attributes
 
     assert attrs["loads"] == []
+    assert attrs["load_decisions"]["b2"] == {
+        "name": "B2",
+        "waiting_for_confirmation": True,
+        "rejected_candidates": [{"start": block["start"], "reason": "daily_peak"}],
+    }
+    assert "load_decisions" in sensor._unrecorded_attributes
     assert attrs["cascades"] == [{"name": "Bad", "schedule": [block]}]
 
 

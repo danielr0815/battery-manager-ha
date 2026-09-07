@@ -723,6 +723,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # V8: latches True on the FIRST successful cycle and never resets, so a
         # genuine SOC dropout after a good cycle (which zeroes _successful_updates)
         # cannot re-enter the startup grace even if it happens inside the window.
+        self._last_planner_recording = None
         self._first_success_done = False
 
         self._debounce_task: asyncio.Task | None = None
@@ -1445,13 +1446,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # DEFAULT_CONFIG (merged into raw_config).
             feedin=FeedInParams(
                 enabled=bool(cfg.get(CONF_FEEDIN_ENABLED, False)),
+                automatic_enabled=self.feedin_enabled(),
                 max_w=float(cfg.get(CONF_FEEDIN_MAX_W, 1000.0)),
                 min_soc_percent=float(cfg.get(CONF_FEEDIN_MIN_SOC, 30.0)),
                 deadline_hour=int(cfg.get(CONF_FEEDIN_DEADLINE_HOUR, 9)),
                 # Manual mode (R9, operator decision 2026-08-08): the plan and
                 # the chart mirror the operator-owned setpoint for the rest of
                 # today (0 W books nothing); tomorrow plans automatically
-                # again. Unreadable entity -> None -> automatic schedule.
+                # only if the runtime switch is on. Unreadable -> None;
+                # automatic_enabled still keeps a paused schedule empty.
                 manual_w=self._feedin_manual_plan_w(),
             ),
             loads=tuple(loads),
@@ -3404,6 +3407,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 SurplusLoadState(
                     load_id=subentry_id,
                     available=available,
+                    feedin_ready=(
+                        not data.get(CONF_LOAD_CONTROL_SWITCH)
+                        or self._charging_is_active(data) is True
+                    ),
                     soc_percent=soc,
                     measured_power_w=measured,
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
@@ -3935,6 +3942,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             since = diag.get("since")
             load_plans[load_plan.load_id] = {
                 "name": load.name,
+                "feedin_waiting_for_confirmation": (
+                    config.feedin.enabled
+                    and config.feedin.automatic_enabled
+                    and not load.energy_limited
+                    and not load_state.feedin_ready
+                ),
                 # Effective active: whole-slot active_now capped by the frozen
                 # sub-hour deadline (F-SUBHOUR R8/R12), so the binary sensor an
                 # operator's automation follows flips off at the run's end.
@@ -3942,6 +3955,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # F-PREDRAIN-BLOCK: the load's pass-3 block window + the
                 # stability-gate progress (None when the plan books none).
                 "predrain_block": self._predrain_block_attr(load_plan, inputs),
+                "rejected_candidates": [
+                    {"start": inputs.slots[index].start.isoformat(), "reason": reason}
+                    for index, reason in load_plan.rejected_candidates
+                ],
                 "planned_hours": sum(load_plan.schedule),
                 "planned_energy_kwh": round(load_plan.planned_energy_wh / 1000.0, 3),
                 # Per-load today/tomorrow planned energy (analogous to the
@@ -3974,7 +3991,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     {
                         "start": slot.start.isoformat(),
                         "end": (
-                            slot.start + timedelta(hours=slot.duration)
+                            slot.start
+                            + timedelta(
+                                hours=(
+                                    load_plan.run_hours[slot.index]
+                                    if load_plan.run_hours
+                                    else slot.duration
+                                )
+                            )
                         ).isoformat(),
                         # 1 = direct surplus, 2 = preemptive ("zielbasiert")
                         "pass": pass_by_slot.get(slot.index),
@@ -4100,6 +4124,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Restprognose. Runs every successful cycle; None without an export
         # meter (the key then stays absent — backend-compat).
         realized = self._update_realized_surplus(now, daily_surplus)
+        self._last_planner_recording = (config, inputs, result)
 
         return {
             "valid": True,
@@ -5041,10 +5066,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_set_feedin_enabled(self, on: bool) -> None:
         """Runtime on/off switch for early feed-in (F-FEEDIN R6).
 
-        Off pauses the executor; the next `_apply_feedin` pass then writes the
-        setpoint 0 once (auto mode only — in manual mode the operator owns the
-        value). On resumes plan-following. Persisted like the F-N2 manual
-        flags so a restart keeps the pause.
+        Off pauses automatic planning for the entire horizon and writes the
+        setpoint 0 immediately (auto mode only — in manual mode the operator
+        owns the value, which stays visible in today's forecast). On resumes
+        planning and plan-following. Store persistence retains the pause.
         """
         if self._feedin_switch_on == on:
             return

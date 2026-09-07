@@ -37,6 +37,9 @@ ein bloßer Funktionsaufruf reicht nicht.
 | `core/test_series.py`, `test_forecast_hours.py` | `F-PREDRAIN` F1, Forecast-Bucket-/Fallback-Verträge |
 | `core/test_simulate.py` | Energieerhaltung, `DC_TOPOLOGY`, `F-PREDRAIN`, `F-FEEDIN` |
 | `core/test_optimize.py` | nummerierte Regeln der `F-*.md`-Planner-Spezifikationen |
+| `core/test_feedin_load_priority.py` | `F-FEEDIN` R1a: Dauerlauf, Teilstundenlücken, verzögerter Peak; `F-PREDRAIN-BLOCK` R5: begrenzte Peak-Toleranz und Mehrtageserhaltung |
+| `core/test_replay.py`, `ha/test_diagnostics.py` | `PLAN-REPLAY.md`: vollständige Reproduktion, unveränderter Planstand trotz neuer Optionen |
+| `core/test_evaluate_plan.py` | `PLAN-REPLAY.md`: Messabdeckung, exakte Fehlerzerlegung und ungültige Intervalle |
 | `core/test_cascade.py` | `F-CASCADE-STORAGE.md` und `CASCADE-STORAGE-DESIGN.md` |
 | `core/test_load_profile.py` | `CONSUMPTION_FORECAST.md`, D-C-Lernregeln |
 | `core/test_power_learning.py` | `F-ROBUST-POWER.md` |

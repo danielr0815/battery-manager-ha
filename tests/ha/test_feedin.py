@@ -579,6 +579,8 @@ async def test_runtime_switch_off_survives_restart(hass):
     reloaded = hass.data[DOMAIN][entry.entry_id]
     assert reloaded is not coordinator
     assert reloaded.feedin_enabled() is False
+    assert not reloaded.build_system_config().feedin.automatic_enabled
+    assert not any(p.get("feedin", 0) > 0 for p in reloaded.data["soc_forecast"])
     registry = er.async_get(hass)
     switch_eid = registry.async_get_entity_id(
         "switch", DOMAIN, f"{entry.entry_id}_{ENTITY_FEEDIN_SWITCH}"
@@ -1124,3 +1126,40 @@ async def test_removing_battery_sensor_releases_owned_export_setpoint():
     assert writes.await_count == 1
     assert writes.call_args.args[:2] == ("input_number.export", 0.0)
     assert coordinator._feedin_owned_entity is None
+
+
+async def test_runtime_switch_updates_forecast_for_all_days_and_resumes(hass):
+    """R8: actual switch services remove feed-in from chart/day totals and restore it."""
+    calls = []
+    coordinator, entry = await _setup_feedin(hass, calls)
+    moment = MORNING.replace(hour=7, minute=30)
+    await _refresh_at(hass, coordinator, moment)
+    assert any(p.get("feedin", 0) > 0 for p in coordinator.data["soc_forecast"])
+    registry = er.async_get(hass)
+    switch_eid = registry.async_get_entity_id(
+        "switch", DOMAIN, f"{entry.entry_id}_{ENTITY_FEEDIN_SWITCH}"
+    )
+    with patch.object(dt_util, "now", return_value=moment):
+        await hass.services.async_call(
+            "switch", "turn_off", {"entity_id": switch_eid}, blocking=True
+        )
+        await hass.async_block_till_done()
+    _cancel_debounce(coordinator)
+    assert not coordinator.build_system_config().feedin.automatic_enabled
+    assert not any(p.get("feedin", 0) > 0 for p in coordinator.data["soc_forecast"])
+    assert all(
+        "planned_feedin_kwh" not in day for day in coordinator.data["daily_surplus"]
+    )
+    assert coordinator.data["grid_export_kwh"] > 0
+    assert float(hass.states.get(SETPOINT).state) == 0
+    with patch.object(dt_util, "now", return_value=moment):
+        await hass.services.async_call(
+            "switch", "turn_on", {"entity_id": switch_eid}, blocking=True
+        )
+        await hass.async_block_till_done()
+    _cancel_debounce(coordinator)
+    assert coordinator.build_system_config().feedin.automatic_enabled
+    # HA coalesces immediate OFF/ON refresh requests. Drive the next refresh
+    # explicitly rather than waiting through its production cooldown.
+    await _refresh_at(hass, coordinator, moment)
+    assert any(p.get("feedin", 0) > 0 for p in coordinator.data["soc_forecast"])

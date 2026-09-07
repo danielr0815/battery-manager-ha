@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
+# Operator 2026-09-07: avoid storage cycling for forecast noise. These are
+# planning thresholds, never permission to cross physical discharge floors.
+STORAGE_ACTION_MINUTES = 15
+STORAGE_TARGET_TOLERANCE_WH = 50.0
+STORAGE_TARGET_TOLERANCE_PERCENT = 2.0
+
 
 def _require(condition: bool, message: str) -> None:
     """Fail-fast input validation for the core dataclasses (code review
@@ -193,6 +199,10 @@ class SurplusLoadState:
     # Neutral defaults preserve every legacy constructor and code path.
     soc_observed_at: datetime | None = None
     soc_source: Literal["live", "cache", "missing"] = "live"
+    # Intent may still start/wake this load. Until the controlled device is
+    # confirmed running, its forecast cannot prove consumption is exhausted
+    # and justify deliberate export. Recommendation-only callers stay neutral.
+    feedin_ready: bool = True
 
     def __post_init__(self) -> None:
         _require(
@@ -403,9 +413,12 @@ class FeedInParams:
     # owns the setpoint entity the executor writes nothing, but the plan must
     # still reflect reality — today's remaining slots book exactly this value
     # (0 = no feed-in today, nothing in the chart); tomorrow falls back to
-    # the automatic schedule. None (default) = no manual override, pure
+    # the automatic schedule if automatic_enabled. None = no manual override,
     # automatic planning; the goldens never set it.
     manual_w: float | None = None
+    # Runtime pause suppresses automatic bookings on EVERY horizon day. Manual
+    # setpoints remain observable today without implying a restart tomorrow.
+    automatic_enabled: bool = True
 
     def __post_init__(self) -> None:
         _require(
@@ -768,6 +781,9 @@ class LoadPlan:
     # assume it is populated.
     reasons: tuple[str, ...] = ()
     managed_by_cascade: bool = False
+    # First hard-gate rejection per attempted start; retained as evidence of
+    # the attempted candidate, not as a claim that all alternatives failed.
+    rejected_candidates: tuple[tuple[int, str], ...] = ()
 
     @property
     def active_now(self) -> bool:

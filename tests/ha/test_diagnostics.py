@@ -101,3 +101,42 @@ def test_diagnostics_degrade_to_explicit_errors_before_first_plan():
         "error": "could not build system config: invalid installation"
     }
     assert _last_plan_metrics(coordinator) == {"valid": False}
+
+
+async def test_diagnostics_replays_captured_effective_config_not_current_options(hass):
+    """A downloaded plan stays reproducible even after options have changed."""
+    import json
+    from dataclasses import replace
+    from datetime import datetime
+
+    from custom_components.battery_manager.core import (
+        FeedInParams,
+        HourSlot,
+        PlanInputs,
+        SystemConfig,
+        plan,
+    )
+    from custom_components.battery_manager.core.replay import decode, replay
+
+    now = datetime(2026, 9, 7, 9)
+    config = SystemConfig(feedin=FeedInParams(enabled=True, automatic_enabled=False))
+    inputs = PlanInputs(now, 90, (HourSlot(0, now, 1, 9, 1000, 100, 0),))
+    result = plan(config, inputs)
+    changed = replace(config, feedin=replace(config.feedin, automatic_enabled=True))
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2)
+    entry.add_to_hass(hass)
+    coordinator = SimpleNamespace(
+        _last_planner_recording=(config, inputs, result),
+        integration_version="0.38.0",
+        build_system_config=lambda: changed,
+        learned_state_snapshot=lambda: {},
+        data=None,
+    )
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    dump = await async_get_config_entry_diagnostics(hass, entry)
+    record = json.loads(json.dumps(dump["planner_recording"], allow_nan=False))
+    assert replay(record) == (result, True)
+    assert not decode(record["config"]).feedin.automatic_enabled
+    assert dump["core_config"]["feedin"]["automatic_enabled"]
+    assert "cascades" in dump["core_config"]
+    assert "support" in dump["core_config"]

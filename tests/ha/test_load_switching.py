@@ -4586,3 +4586,63 @@ async def test_noop_cycle_logs_no_switch_line(hass, caplog):
         for r in caplog.records
         if "-> ON (" in r.getMessage() or "-> OFF (" in r.getMessage()
     ]
+
+
+async def test_feedin_requires_confirmed_controlled_load_state(hass):
+    """A pending start, disabled gate and telemetry dropout cannot prove service."""
+    coordinator, sub_id, _data = await _setup(hass, [], energy_limited=False)
+    for plug, enable, expected in (
+        ("off", "off", False),
+        ("on", "off", False),
+        ("on", "on", True),
+        ("unavailable", "on", False),
+    ):
+        hass.states.async_set(PLUG, plug)
+        hass.states.async_set(ENABLE, enable)
+        state = next(s for s in coordinator._get_load_states() if s.load_id == sub_id)
+        assert state.feedin_ready is expected
+
+
+@pytest.mark.parametrize("minutes", [15, 30, 45])
+async def test_forecast_interval_ends_at_booked_subhour_duration(hass, minutes):
+    """The public chart must not turn a partial commitment into an hour bar."""
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core import plan as actual_plan
+
+    coordinator, sub_id, _data = await _setup(hass, [], energy_limited=False)
+
+    def partial_plan(config, inputs):
+        result = actual_plan(config, inputs)
+        plans = tuple(
+            replace(
+                item,
+                run_hours=tuple(
+                    min(minutes / 60, slot.duration) if on else 0
+                    for slot, on in zip(inputs.slots, item.schedule, strict=True)
+                ),
+            )
+            for item in result.load_plans
+        )
+        assert any(any(item.schedule) for item in plans)
+        return replace(result, load_plans=plans)
+
+    with patch(
+        "custom_components.battery_manager.coordinator.plan", side_effect=partial_plan
+    ):
+        data = await coordinator._async_update_data()
+    blocks = data["load_plans"][sub_id]["schedule"]
+    assert blocks
+    for block in blocks:
+        duration = dt_util.parse_datetime(block["end"]) - dt_util.parse_datetime(
+            block["start"]
+        )
+        assert duration <= timedelta(minutes=minutes)
+    assert any(
+        dt_util.parse_datetime(b["end"]) - dt_util.parse_datetime(b["start"])
+        == timedelta(minutes=minutes)
+        for b in blocks
+    )

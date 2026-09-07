@@ -31,6 +31,23 @@ feed-in.
   absorb. Feed-in is computed only after those alternatives; it must never hide
   an available charge opportunity. No residual export ⇒ no schedule, no
   setpoint writes.
+  **R1a (Dauerlauf vor Einspeisung, Operator 2026-09-07, v0.38.0):**
+  Restexport allein beweist keine ausgeschöpften Verbrauchsmöglichkeiten.
+  Ab JEDEM automatischen Einspeiseslot müssen ALLE konfigurierten
+  kontinuierlichen Lasten bis zum ersten Erreichen von `soc_max` am selben
+  Tag durchgehend eingeplant sein, einschließlich des Peak-Slots. Dafür
+  müssen ihre `run_hours` jede betroffene Slotdauer vollständig abdecken:
+  ein boolesches AN reicht bei Teilstunden nicht. Späterer Start, Pause,
+  fehlende Last-/Laufzeitdaten oder kein erreichbares Maximum sperren die
+  Einspeisung. Auch eine nicht verfügbare Last liefert keinen Dauerlaufnachweis.
+  Ohne konfigurierte kontinuierliche Last bleibt diese zusätzliche Bedingung
+  leer. Für Kaskaden zählt der durchgehende Root-versorgte Endlastplan;
+  isolierte Aux-Phasen schaffen keine Freigabe für gleichzeitigen Root-Export.
+  Die Bedingung wird vor UND nach jeder vorgeschlagenen Einspeisebuchung
+  geprüft: ein dadurch späterer Peak darf nicht hinter das Laufende wandern.
+  Eine verworfene Buchung verbraucht kein Einspeisebudget. Natürliches
+  Einspeisen bei voller Batterie bleibt möglich. Manuell vorgegebene Werte
+  werden gemäß R9 weiterhin als Realität abgebildet.
 - **R2 (Passthrough-only physics — the battery IDLES).** The battery is NEVER
   actively discharged for feed-in: `step_hour` serves booked feed-in from the
   slot surplus BEFORE charging (`charge = min(headroom, max(0, surplus −
@@ -93,6 +110,15 @@ feed-in.
   `switch.battery_manager_early_feed_in` (Store-persisted, default ON — the
   config toggle is the opt-in). Switching either off pauses the executor and
   writes 0 once (auto mode only).
+  **Präzisierung v0.38.0 (2026-09-07):** Der ausgeschaltete Laufzeitschalter
+  sperrt über `FeedInParams.automatic_enabled` auch die automatische Planung
+  auf ALLEN Horizont-Tagen. Die sofort angeforderte Neuberechnung veröffentlicht
+  die SOC-Kurve ohne vorgezogene Einspeisung und entfernt deren Tageswerte.
+  Natürlicher Export bleibt sichtbar. Die Store-Pause bleibt nach Neustart
+  wirksam; Wiedereinschalten erlaubt die automatische Planung erneut. Ein
+  extern manuell besessener Setpoint bleibt heute gemäß R9 sichtbar und wird
+  nicht überschrieben. Folgetage bleiben auch in diesem Fall automatisch
+  einspeisefrei, solange der Laufzeitschalter aus ist.
 - **R9 (Manuell-Modus / Ownership).** If the setpoint entity reads ≠ the value
   we last wrote, outside a `FEEDIN_MANUAL_GRACE_S = 360` s grace window after
   our own write (propagation lag, mirrors the F-N2 late-confirmation grace),
@@ -118,7 +144,8 @@ feed-in.
     daily target, no deadline, but the same surplus/SOC guards — so the SOC
     forecast and the card lane show reality instead of an auto plan nobody
     executes. **0 W books nothing** (no chart lane). Tomorrow plans
-    automatically again (manual mode ends at midnight). The manual verdict
+    automatically again only if the runtime switch is on (manual mode ends
+    at midnight; R8's runtime pause persists). The manual verdict
     therefore runs at the TOP of the update cycle, before
     `build_system_config()` — one cycle later the plan would be stale.
     The executor stays hands-off throughout; this is planning honesty, not

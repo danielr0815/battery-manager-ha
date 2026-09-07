@@ -6,6 +6,32 @@ Recovery-/Feed-in-Priorisierung ist der verbindliche Abnahmevertrag; der
 Implementierungsstand wird nicht aus einer früheren Release-Nummer abgeleitet,
 sondern durch die in diesem Dokument genannten Regressionstests nachgewiesen.
 
+## Vorrangkorrektur vom 2026-09-07: Dauerlauf vor Speicherzyklen
+
+Die aktuelle Betreiberentscheidung ersetzt bei Widersprüchen die frühere
+Recovery-Priorisierung und die minutengenauen Quellenwechsel. Verbindlich sind
+[Zielhierarchie und Toleranzen](STRATEGY-CURRENT.md): vollständiger Endlastlauf
+inklusive Vorlauf und zulässigem Lückenschluss, danach Recovery/Top-up,
+erst danach zusätzliche Entladung mit Rückladeversprechen. Speicher dürfen
+keine Lücke der verfügbaren Endlast durch einen Ladezyklus ersetzen.
+
+Eine bereits vorhandene Recovery-Unterschreitung bis max(50 Wh, 2 % der
+Mitgliedskapazität) bleibt toleriert. Sie senkt weder die harte Sicherheitsgrenze
+noch das Rückladeziel eines bewusst neu begonnenen Tiefenentladezyklus.
+Neue Root-Ladeaktionen dauern mindestens 15 Minuten bzw. die längere
+konfigurierte Mindestzeit und umfassen mindestens 50 Wh Eingangsenergie.
+Neue Aux-Quellenläufe benötigen je ununterbrochenem Abschnitt 15 Minuten;
+die Quellenprüfung erfolgt auch nach Aufteilung auf freie Fenster. Zu kurze
+Quellenreste entfallen, ohne gültige längere Abschnitte insgesamt zu verwerfen.
+Unterschreitet der erhaltene Abschnitt die Mindestlaufzeit der Endlast, entfällt
+diese Episode. SOC-Abzüge stammen nur aus den tatsächlich erhaltenen
+Abschnitten. Ein bereits
+laufender Quellenrest wird nicht wegen einer neuen Mindestzeit abgebrochen.
+
+Regressionen: `test_small_target_deviation_does_not_create_storage_micro_actions`,
+`test_storage_never_displaces_complete_terminal_plan_or_books_its_gaps`,
+`test_small_aux_source_is_skipped_instead_of_creating_a_short_handover`.
+
 ## Ziel und Geltungsbereich
 
 Battery Manager darf mehrere disjunkte lineare Ketten steuern. Jede Kette

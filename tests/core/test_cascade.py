@@ -301,10 +301,9 @@ def test_terminal_direct_use_precedes_additional_member_charging() -> None:
     # The planner may use a private priority order, but its public tuple keeps
     # SystemConfig order for Coordinator consumers that zip both contracts.
     assert [item.load_id for item in result.load_plans] == ["b1", "leaf"]
-    assert plans["leaf"].planned_energy_wh == 300.0
-    # After direct terminal use each slot retains only 135 Wh of export.  That
-    # cannot supply the member's smallest physical 150-Wh run without drawing
-    # from the house battery, so PV-only cascade charging correctly waits.
+    assert plans["leaf"].planned_energy_wh == 600.0
+    # Bridging both partial terminal bookings consumes the residual PV instead
+    # of leaving two short terminal runs and allocating a storage detour.
     assert plans["b1"].planned_energy_wh == 0.0
     assert plans["leaf"].planned_energy_wh > plans["b1"].planned_energy_wh
     assert (
@@ -314,7 +313,7 @@ def test_terminal_direct_use_precedes_additional_member_charging() -> None:
             for segment in flow.segments
             if segment.source == "direct_pv"
         )
-        == 300.0
+        == 600.0
     )
 
 
@@ -526,7 +525,8 @@ def test_aux_headroom_is_used_before_avoidable_early_feedin() -> None:
     result = plan(config, inputs)
     cascade = result.cascade_plans[0]
 
-    assert cascade.planned_aux_energy_wh > 1600
+    # The daylight terminal still has gaps: no additional deep cycle is allowed.
+    assert cascade.planned_aux_energy_wh == pytest.approx(1600)
     assert min(
         cascade.flows[-1].member_flows[index].soc_end_percent for index in range(2)
     ) == pytest.approx(50.0)
@@ -569,7 +569,9 @@ def test_preexisting_recovery_debt_outranks_member_topup_and_early_feedin() -> N
     assert result.load_plans[-1].load_id == "leaf"
     assert result.load_plans[-1].planned_energy_wh == 1500.0
     assert min(final_soc) >= 50.0
-    assert sum(flow.feedin_wh for flow in result.trajectory.flows) > 0.0
+    # Operator 2026-09-07: recovery alone does not authorize feed-in while
+    # the terminal still has a gap before the house battery fills.
+    assert sum(flow.feedin_wh for flow in result.trajectory.flows) == 0.0
 
 
 def test_recovery_uses_parallel_direct_pv_before_early_feedin() -> None:
@@ -603,8 +605,9 @@ def test_recovery_uses_parallel_direct_pv_before_early_feedin() -> None:
     cascade = result.cascade_plans[0]
     b1, b2 = result.load_plans[:2]
 
+    # Closing the terminal gaps has priority over another B1 charge quantum.
     assert [flow.soc_end_percent for flow in cascade.flows[-1].member_flows] == (
-        pytest.approx([50.0, 50.0])
+        pytest.approx([45.0, 50.0])
     )
     assert any(on1 and on2 for on1, on2 in zip(b1.schedule, b2.schedule, strict=True))
     assert sum(flow.feedin_wh for flow in result.trajectory.flows) < 200.0
@@ -657,7 +660,7 @@ def test_sunny_following_day_does_not_mask_bad_cascade_recovery_today() -> None:
     )
 
     assert [flow.soc_end_percent for flow in today_end.member_flows] == (
-        pytest.approx([50.0, 50.0])
+        pytest.approx([45.0, 50.0])
     )
     assert today_feedin < 200.0
     assert result.grid_import_kwh == 0.0
@@ -1022,7 +1025,10 @@ def test_tomorrows_export_cannot_back_today_below_target_predrain() -> None:
 
     assert min(b1_soc) == pytest.approx(50.0)
     assert cascade.recovery_deadline is None
-    assert all(flow.soc_end_percent >= 50.0 for flow in cascade.flows[-1].member_flows)
+    # Tomorrow's substantial surplus still permits top-up, followed by Aux to 50 %.
+    assert [
+        flow.soc_end_percent for flow in cascade.flows[-1].member_flows
+    ] == pytest.approx([50, 50])
     reached = dict(cascade.recovery_reached_at)
     assert reached["b1"] is not None
     assert reached["b1"].date() == date(2026, 8, 23)
@@ -1130,7 +1136,8 @@ def test_below_target_aux_is_not_used_when_terminal_already_prevents_export() ->
     # No reserve may be spent before charging. Tomorrow can now use the
     # subsequently stored energy above 50%, without a pre-drain promise.
     assert all(flow.aux_terminal_wh == 0 for flow in cascade.flows[:6])
-    assert cascade.planned_aux_energy_wh == pytest.approx(800)
+    # The complete direct terminal plan leaves less energy for storage cycling.
+    assert cascade.planned_aux_energy_wh == pytest.approx(560)
     assert min(flow.member_flows[0].soc_end_percent for flow in cascade.flows) == 48.0
     assert cascade.flows[-1].member_flows[0].soc_end_percent == pytest.approx(50.0)
 
@@ -1425,3 +1432,342 @@ def test_charge_timeline_retains_planned_duration(pv, hours):
     flow = result.cascade_plans[0].flows[0].member_flows[0]
     assert flow.charge_hours == hours
     assert flow.own_charge_input_wh == hours * 300.0
+
+
+@pytest.mark.parametrize("socs", [(90.0, 90.0), (30.0, 40.0)])
+def test_root_output_losses_match_house_trajectory_in_every_slot(socs):
+    """The house pays root supply once; isolated Aux must not drain it."""
+    config, inputs = _system(members=2, socs=socs, caps=True)
+    inputs = replace(
+        inputs, start_soc_percent=95.0, slots=_slots(1000, 1000, 1000, 0, 0, 0)
+    )
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    assert cascade.planned_root_energy_wh > 0
+    for house, flow in zip(result.trajectory.flows, cascade.flows, strict=True):
+        assert house.extra_ac_wh == pytest.approx(flow.root_input_wh)
+    loads = {item.load_id: item for item in result.load_plans}
+    for i, flow in enumerate(cascade.flows):
+        # B1 output feeds B2 and leaf; B2 output feeds only leaf. Parallel
+        # consumers share an output, so standby energy follows their union.
+        expected = sum(
+            (250.0 if key.startswith("b") else 300.0) * item.run_hours[i]
+            for key, item in loads.items()
+        )
+        expected += 5 * max(loads["b2"].run_hours[i], loads["leaf"].run_hours[i])
+        expected += 5 * loads["leaf"].run_hours[i]
+        assert flow.root_input_wh == pytest.approx(expected)
+
+
+def test_output_loss_increment_is_shared_and_ignores_other_paths():
+    trial = [150.0, 150.0]
+    optimize_core._add_path_overheads(
+        trial,
+        "leaf",
+        [(0, 0.5), (1, 0.5)],
+        {"leaf": (0.0, 0.25), "b2": (1.0, 0.0), "other": (0.0, 0.0)},
+        ((("b2", "leaf"), 20.0), (("other",), 50.0)),
+    )
+    assert trial == [150.0, 160.0]
+
+
+@pytest.mark.parametrize("soc", [48.9, 49.9, 50.0, 50.1])
+def test_small_target_deviation_does_not_create_storage_micro_actions(soc):
+    """A 22 Wh deficit and a five-minute PV fragment do not warrant cycling."""
+    config, inputs = _system(socs=(soc,))
+    config = replace(
+        config,
+        loads=tuple(
+            replace(load, min_runtime_min=5) if load.energy_limited else load
+            for load in config.loads
+        ),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=95,
+        slots=_slots(325, 325, 325, 0),
+        load_states=(
+            replace(inputs.load_states[0], soc_percent=soc),
+            inputs.load_states[1],
+        ),
+    )
+    result = plan(config, inputs)
+    storage, terminal = result.load_plans
+    assert not any(storage.schedule)
+    assert result.cascade_plans[0].planned_aux_energy_wh == 0
+    assert result.grid_import_kwh == 0
+    assert all(terminal.run_hours[i] == 1 for i in range(3))
+
+
+@pytest.mark.parametrize(
+    "pv",
+    [
+        (800, 1400, 1400, 800, 600, 300, 0),
+        (500, 1600, 1000, 700, 600, 100, 0),
+        (1400, 1400, 1400, 1000, 800, 0, 0),
+    ],
+)
+def test_storage_never_displaces_complete_terminal_plan_or_books_its_gaps(pv):
+    """Storage only takes capacity left after the full direct terminal plan."""
+    config, inputs = _system(members=2, socs=(48.9, 52.3), caps=True)
+    config = replace(
+        config,
+        loads=tuple(
+            replace(load, min_runtime_min=5)
+            if load.energy_limited
+            else replace(
+                load, nominal_power_w=447, battery_tolerance=0.15, min_runtime_min=15
+            )
+            for load in config.loads
+        ),
+    )
+    inputs = replace(inputs, start_soc_percent=77, slots=_slots(*pv))
+    terminal_only = plan(
+        config,
+        replace(
+            inputs,
+            load_states=tuple(
+                replace(state, available=False) if state.load_id != "leaf" else state
+                for state in inputs.load_states
+            ),
+        ),
+    )
+    result = plan(config, inputs)
+    terminal = result.load_plans[-1]
+    assert terminal.run_hours == terminal_only.load_plans[-1].run_hours
+    assert result.grid_import_kwh <= terminal_only.grid_import_kwh
+    for storage in result.load_plans[:-1]:
+        for i, hours in enumerate(storage.run_hours):
+            if hours:
+                assert terminal.run_hours[i] == inputs.slots[i].duration
+                assert hours >= 0.25  # all new starts in these hourly scenarios
+    assert result.cascade_plans[0].recovery_deadline is None
+
+
+def test_small_aux_source_is_skipped_instead_of_creating_a_short_handover():
+    config, inputs = _system(members=2, socs=(90, 52.3))
+    result = plan(config, replace(inputs, slots=_slots(0, 0, 0, 0)))
+    segments = [
+        segment
+        for flow in result.cascade_plans[0].flows
+        for segment in flow.segments
+        if segment.source == "aux"
+    ]
+    assert segments
+    assert all(segment.source_load_id == "b1" for segment in segments)
+    assert result.cascade_plans[0].flows[-1].member_flows[1].soc_end_percent == 52.3
+
+
+@pytest.mark.parametrize(
+    "power,buffer,confidence,dwell,start,pv,ac,expected",
+    [
+        (500, 15, 0.2, 90, 23, (1000, 3000, 200, 500), 0, (1, 0.5, 0, 0)),
+        (300, 30, 0, 15, 6, (500, 0, 3000, 0), 200, (0.75, 0, 1, 0)),
+    ],
+)
+def test_continuous_bridge_preserves_cross_midnight_dwell_and_reserve(
+    power,
+    buffer,
+    confidence,
+    dwell,
+    start,
+    pv,
+    ac,
+    expected,
+):
+    config, inputs = _system(socs=(50.0,))
+    config = replace(
+        config,
+        cascades=(),
+        battery=replace(config.battery, capacity_wh=1000),
+        control=replace(
+            config.control, soc_buffer_percent=buffer, predrain_pv_confidence=confidence
+        ),
+        loads=(
+            config.loads[0],
+            replace(config.loads[1], nominal_power_w=power, min_runtime_min=dwell),
+        ),
+    )
+    now = NOW.replace(hour=start)
+    inputs = replace(
+        inputs,
+        now=now,
+        start_soc_percent=95.0,
+        slots=tuple(
+            HourSlot(i, now + timedelta(hours=i), 1.0, (start + i) % 24, value, ac, 0.0)
+            for i, value in enumerate(pv)
+        ),
+    )
+    plans, _, trajectory = optimize_core.allocate_loads(
+        config,
+        inputs,
+        20.0,
+        simulate(config, inputs, 20.0),
+        direct_surplus_only_load_ids=frozenset({"b1"}),
+    )
+    assert plans[-1].run_hours == expected
+    assert trajectory.total_import_wh == 0
+
+
+@pytest.mark.parametrize("duration,soc", [(1 / 12, 95), (1, 20)])
+def test_recovery_rejects_truncated_start_and_inverter_cutoff(duration, soc):
+    config, inputs = _system(socs=(20.0,))
+    config = replace(
+        config,
+        loads=(
+            replace(config.loads[0], min_runtime_min=15, gate_stop_capable=False),
+            config.loads[1],
+        ),
+    )
+    inputs = replace(
+        inputs,
+        start_soc_percent=soc,
+        slots=(HourSlot(0, NOW, duration, 6, 1000 * duration, 0, 0),),
+    )
+    initial = LoadPlan("b1", (False,), 0.0, run_hours=(0.0,))
+    trajectory = simulate(config, inputs, 20.0)
+    plans, _, updated = optimize_core._allocate_recovery_after_continuous_loads(
+        config,
+        inputs,
+        20.0,
+        [initial],
+        (0.0,),
+        trajectory,
+        {"b1": 600.0},
+        priority_terminals={},
+    )
+    assert plans[0].schedule == initial.schedule
+    assert plans[0].planned_energy_wh == 0
+    assert plans[0].rejected_candidates == (
+        (0, "storage_action_too_small" if duration < 0.25 else "slot_not_serviceable"),
+    )
+    assert updated == trajectory
+
+
+def test_aux_window_trimming_must_not_create_short_source_handover():
+    config, inputs = _system(members=2, socs=(62.0, 90.0))
+    inputs = replace(inputs, slots=_slots(0.0, 0.0, 0.0))
+    base = plan(replace(config, cascades=()), inputs)
+    base = replace(
+        base,
+        load_plans=tuple(
+            replace(
+                item,
+                schedule=(False, True, False),
+                run_hours=(0.0, 1.0, 0.0),
+                planned_energy_wh=300.0,
+            )
+            if item.load_id == "leaf"
+            else item
+            for item in base.load_plans
+        ),
+    )
+    # Two separate one-hour windows: B1 supplies 48 minutes, so packing a
+    # full first window would hand over to B2 for just 12 minutes.
+    allocation = cascade_core._allocate_aux_now(
+        config.cascades[0], config, inputs, base
+    )
+    assert allocation is not None
+    segments, end_soc, _ = allocation
+    assert [(s.slot_index, s.source_load_id, s.run_hours) for s in segments] == [
+        (0, "b1", 0.8),
+        (2, "b2", 1.0),
+    ]
+    assert end_soc == pytest.approx({"b1": 50.0, "b2": 75.0})
+    assert sum(s.terminal_energy_wh for s in segments) == pytest.approx(540.0)
+
+
+def test_aux_replan_must_preserve_existing_direct_terminal_service():
+    config, inputs = _system(socs=(90.0,))
+    inputs = replace(inputs, slots=_slots(0.0, 1000.0))
+    base = plan(replace(config, cascades=()), inputs)
+    base = replace(
+        base,
+        load_plans=tuple(
+            replace(
+                item,
+                schedule=(False, True),
+                run_hours=(0.0, 1.0),
+                planned_energy_wh=300.0,
+            )
+            if item.load_id == "leaf"
+            else item
+            for item in base.load_plans
+        ),
+    )
+    degraded = replace(
+        base,
+        load_plans=tuple(
+            replace(
+                item,
+                schedule=(False, True),
+                run_hours=(0.0, 0.5),
+                planned_energy_wh=150.0,
+            )
+            if item.load_id == "leaf"
+            else item
+            for item in base.load_plans
+        ),
+    )
+    assert (
+        cascade_core._replan_candidate(
+            config.cascades[0],
+            config,
+            inputs,
+            base,
+            lambda _inputs, _segments: degraded,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "socs,expected", [((66.5, 90.0), (1.0, 0.9)), ((56.0, 56.0), None)]
+)
+def test_aux_packing_skips_source_remainder_and_preserves_episode_dwell(socs, expected):
+    config, inputs = _system(members=2, socs=socs)
+    inputs = replace(inputs, slots=_slots(0.0, 0.0, 0.0))
+    if expected is None:
+        inputs = replace(
+            inputs,
+            slots=tuple(
+                replace(slot, duration=0.5, start=NOW + timedelta(hours=i * 0.5))
+                for i, slot in enumerate(inputs.slots)
+            ),
+        )
+    base = plan(replace(config, cascades=()), inputs)
+    base = replace(
+        base,
+        load_plans=tuple(
+            replace(
+                item,
+                schedule=(False, True, False),
+                run_hours=(0.0, 1.0, 0.0),
+                planned_energy_wh=300.0,
+            )
+            if item.load_id == "leaf"
+            else item
+            for item in base.load_plans
+        ),
+    )
+    allocation = cascade_core._allocate_aux_now(
+        config.cascades[0], config, inputs, base
+    )
+    if expected is None:
+        assert allocation is None
+    else:
+        assert allocation is not None
+        segments, end_soc, _ = allocation
+        assert tuple(s.run_hours for s in segments) == pytest.approx(expected)
+        assert end_soc == pytest.approx({"b1": 51.5, "b2": 76.5})
+
+
+def test_continuous_bridge_keeps_reason_aligned_with_merged_allocation():
+    config, inputs = _system(socs=(50.0,))
+    result = plan(
+        config, replace(inputs, start_soc_percent=95.0, slots=_slots(300.0, 300.0))
+    )
+    terminal = result.load_plans[-1]
+    assert terminal.allocations == ((0, 2, 3, 600.0),)
+    assert len(terminal.reasons) == 1
+    assert "gaps closed" in terminal.reasons[0]

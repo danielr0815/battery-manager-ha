@@ -529,6 +529,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "consumption_profile",
             "consumption_forecast",
             "cascades",
+            "load_decisions",
         }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -558,6 +559,10 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                 "planned_energy_kwh": plan.get("planned_energy_kwh"),
                 "planning_power_w": plan.get("planning_power_w"),
                 "planning_power_source": plan.get("planning_power_source"),
+                "feedin_waiting_for_confirmation": plan.get(
+                    "feedin_waiting_for_confirmation", False
+                ),
+                "rejected_candidates": plan.get("rejected_candidates") or [],
                 # Per-load today/tomorrow planned energy (coordinator, plan
                 # slot-0 anchored) so the card renders a per-load heute/morgen
                 # split just like the aggregate surplus figures.
@@ -585,6 +590,16 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads_today_kwh": per_day_loads["today_kwh"],
             "loads_tomorrow_kwh": per_day_loads["tomorrow_kwh"],
             "loads": loads,
+            "load_decisions": {
+                load_id: {
+                    "name": item.get("name"),
+                    "waiting_for_confirmation": item.get(
+                        "feedin_waiting_for_confirmation", False
+                    ),
+                    "rejected_candidates": item.get("rejected_candidates") or [],
+                }
+                for load_id, item in (data.get("load_plans") or {}).items()
+            },
             "cascades": list((data.get("cascade_plans") or {}).values()),
             # Detected appliance runs (washer, dishwasher, …) as card lanes
             # (operator request 2026-08-08); [] when nothing is running.

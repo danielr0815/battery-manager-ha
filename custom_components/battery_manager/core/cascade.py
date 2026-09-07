@@ -17,6 +17,8 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 from .model import (
+    STORAGE_ACTION_MINUTES,
+    STORAGE_TARGET_TOLERANCE_WH,
     CascadeMemberFlow,
     CascadePlan,
     CascadeRuntimeState,
@@ -224,13 +226,20 @@ def _allocate_aux_now(
             (soc - target_soc) / 100.0 * load.capacity_wh,
         )
         available_h = usable_store * member.eta_discharge / source_power
-        if available_h + _EPS < _SOURCE_PROOF_H:
+        source_min_h = (
+            _SOURCE_PROOF_H
+            if continuing
+            and runtime is not None
+            and runtime.active_source_id == member.load_id
+            else STORAGE_ACTION_MINUTES / 60.0
+        )
+        if available_h + _EPS < source_min_h:
             continue
         episode_capacity_h = max(0.0, service_capacity_h - allocated_h)
         take_h = min(episode_capacity_h, available_h)
         # Never spend a switching cycle on a source that cannot carry its own
         # mandatory proof window.
-        if take_h + _EPS < _SOURCE_PROOF_H:
+        if take_h + _EPS < source_min_h:
             continue
         source_runs.append((member.load_id, take_h))
         allocated_h += take_h
@@ -276,32 +285,6 @@ def _allocate_aux_now(
         if remaining_source_h <= _EPS:
             break
     source_runs = trimmed_source_runs
-    member_indexes = {
-        member.load_id: index for index, member in enumerate(cascade.members)
-    }
-    for load_id, take_h in source_runs:
-        member_index = member_indexes[load_id]
-        member = cascade.members[member_index]
-        load = loads[load_id]
-        soc = end_soc[load_id]
-        source_power = terminal_power_w + sum(
-            item.output_overhead_w for item in cascade.members[member_index:]
-        )
-        drawn = source_power * take_h / member.eta_discharge
-        target_soc = max(
-            member.discharge_floor_soc_percent,
-            min(
-                member.recovery_soc_percent,
-                (target_soc_by_id or {}).get(
-                    member.load_id, member.recovery_soc_percent
-                ),
-            ),
-        )
-        end_soc[load_id] = max(
-            target_soc,
-            soc - 100.0 * drawn / load.capacity_wh,
-        )
-
     # Give every selected episode its minimum useful runtime first and place
     # all remaining service as late as possible.  This construction is always
     # feasible because the episode count was bounded by available source time.
@@ -358,6 +341,7 @@ def _allocate_aux_now(
 
     for window_index in selected:
         start, end = windows[window_index]
+        episode_segments_start = len(segments)
         service_h = service_by_window[window_index]
         window_h = sum(slot_capacity_h[start:end])
         episode_transition_h = transition_h
@@ -383,6 +367,27 @@ def _allocate_aux_now(
                 source_remaining_h,
                 service_h - served_in_window_h,
             )
+            # Packing into separate windows can shorten a previously valid
+            # source run. Recheck the actual uninterrupted switch interval;
+            # a rolling tail is allowed only for the source already running.
+            continuing_source = (
+                continuing
+                and window_index == selected[0]
+                and served_in_window_h <= _EPS
+                and runtime is not None
+                and source_runs[source_cursor][0] == runtime.active_source_id
+            )
+            if take_h + _EPS < STORAGE_ACTION_MINUTES / 60.0 and not continuing_source:
+                if (
+                    source_remaining_h < STORAGE_ACTION_MINUTES / 60.0
+                    and source_cursor + 1 < len(source_runs)
+                ):
+                    # Leave the tiny source remainder stored and try the next
+                    # source in this same window; never count it as consumed.
+                    source_cursor += 1
+                    source_remaining_h = source_runs[source_cursor][1]
+                    continue
+                break  # keep the useful prefix, omit the short window tail
             append_interval(
                 start,
                 end,
@@ -396,6 +401,44 @@ def _allocate_aux_now(
             if source_remaining_h <= _EPS and source_cursor + 1 < len(source_runs):
                 source_cursor += 1
                 source_remaining_h = source_runs[source_cursor][1]
+        if served_in_window_h + _EPS < required_h:
+            del segments[episode_segments_start:]
+    if not segments:
+        return None
+    member_indexes = {
+        member.load_id: index for index, member in enumerate(cascade.members)
+    }
+    consumed_h: dict[str, float] = {}
+    for segment in segments:
+        if segment.terminal_energy_wh > _EPS:
+            # These segments were constructed exclusively from Aux sources.
+            assert segment.source_load_id is not None
+            consumed_h[segment.source_load_id] = (
+                consumed_h.get(segment.source_load_id, 0.0) + segment.run_hours
+            )
+    for load_id, take_h in consumed_h.items():
+        member_index = member_indexes[load_id]
+        member = cascade.members[member_index]
+        load = loads[load_id]
+        soc = end_soc[load_id]
+        source_power = terminal_power_w + sum(
+            item.output_overhead_w for item in cascade.members[member_index:]
+        )
+        drawn = source_power * take_h / member.eta_discharge
+        target_soc = max(
+            member.discharge_floor_soc_percent,
+            min(
+                member.recovery_soc_percent,
+                (target_soc_by_id or {}).get(
+                    member.load_id, member.recovery_soc_percent
+                ),
+            ),
+        )
+        end_soc[load_id] = max(
+            target_soc,
+            soc - 100.0 * drawn / load.capacity_wh,
+        )
+
     return tuple(segments), end_soc, provisional
 
 
@@ -840,6 +883,29 @@ def _replan_candidate(
             for load_id in cascade_load_ids
         ):
             return None
+    # Aux-created charge headroom must not buy extra storage at the expense
+    # of an already accepted direct terminal interval elsewhere in the day.
+    original_terminal = _plan_by_id(base_result)[cascade.terminal_load_id]
+    updated_terminal = trial_plans[cascade.terminal_load_id]
+    if any(
+        (
+            updated_terminal.run_hours[j]
+            if updated_terminal.run_hours
+            else slot.duration
+            if updated_terminal.schedule[j]
+            else 0.0
+        )
+        + _EPS
+        < (
+            original_terminal.run_hours[j]
+            if original_terminal.run_hours
+            else slot.duration
+            if original_terminal.schedule[j]
+            else 0.0
+        )
+        for j, slot in enumerate(inputs.slots)
+    ):
+        return None
     return segments, end_soc, provisional, trial_inputs, trial_result
 
 
@@ -977,7 +1043,21 @@ def augment_cascade_plans(
         recovery_deadline = None
 
         export = _today_export_budget(trial_result, working_inputs)
-        if export is not None:
+        terminal_plan = _plan_by_id(trial_result)[cascade.terminal_load_id]
+        # Extra charge/discharge cycles are a last resort. Residuals caused by
+        # gaps in the direct terminal plan are not proof that continuous useful
+        # consumption is exhausted; do not trade those gaps for storage losses.
+        continuous_daylight = all(
+            j < len(terminal_plan.run_hours)
+            and terminal_plan.run_hours[j] >= slot.duration - _EPS
+            for j, slot in enumerate(working_inputs.slots)
+            if slot.start.date() == working_inputs.now.date() and slot.pv_wh > _EPS
+        )
+        if (
+            export is not None
+            and export[1] > STORAGE_TARGET_TOLERANCE_WH
+            and continuous_daylight
+        ):
             recovery_day, export_budget_wh = export
             targets = _conditional_targets(cascade, config, end_soc, export_budget_wh)
             conditional = _replan_candidate(

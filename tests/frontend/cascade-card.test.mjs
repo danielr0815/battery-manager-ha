@@ -317,3 +317,45 @@ test('narrow grid charts keep twelve physical pixels for axis text',()=>{
  c.shadowRoot.getElementById=()=>({getBoundingClientRect:()=>({width:300}),querySelectorAll:()=>[label]});
  c._sizeAxes();assert.equal(label.style.fontSize,'24px');
 });
+
+test('forecast explains a rejected start and pending confirmation without injecting HTML',()=>{
+ const c=new (definitions.get('battery-manager-forecast-card'))();
+ c.setConfig({entity:'sensor.test'});
+ c.hass={language:'de',config:{time_zone:'Europe/Berlin'},states:{'sensor.test':{attributes:{
+  forecast:[{t:new Date(start).toISOString(),soc:50},{t:new Date(start+3600000).toISOString(),soc:60}],
+  loads:[{name:'Entfeuchter <script>',feedin_waiting_for_confirmation:true,
+   rejected_candidates:[{start:new Date(start).toISOString(),reason:'daily_peak'}],schedule:[]}],
+ }}}};
+ assert.ok(c.shadowRoot.innerHTML.includes('Einspeisung wartet auf bestätigten Laststart'));
+ assert.ok(c.shadowRoot.innerHTML.includes('Batterie-Tagesziel'));
+ assert.ok(c.shadowRoot.innerHTML.includes('geprüfter Start verworfen'));
+ assert.ok(!c.shadowRoot.innerHTML.includes('<script>'));
+});
+
+test('each activity hint shares the full axis and preserves its accessible description',()=>{
+ const c=card(), cascade={schedule:[block(0,2)],activity_intervals:[
+  {kind:'output',load_id:'b1',start:new Date(start).toISOString(),end:new Date(start+600000).toISOString(),exact:true},
+  {kind:'output',load_id:'b1',start:new Date(start+6600000).toISOString(),end:new Date(start+7200000).toISOString(),exact:false},
+ ]};
+ const html=c._activityTracks(cascade,'b1','all');
+ const pairs=[...html.matchAll(/aria-label="([^"]+)"><\/span><span class="activity-tip" aria-hidden="true">([^<]+)<\/span>/g)];
+ assert.equal(pairs.length,2);
+ for(const [,label,hint] of pairs) {assert.equal(hint,label);assert.match(label,/AC-Ausgang/);}
+ assert.notEqual(pairs[0][1],pairs[1][1]);
+});
+
+
+test('cascade decisions include only own loads, translate reasons and escape text',()=>{
+ const c=card();c._config.entity='sensor.test';
+ c._hass.states['sensor.test']={attributes:{load_decisions:{
+  b1:{name:'Akku <script>',rejected_candidates:[{start:new Date(start).toISOString(),reason:'daily_peak'}]},
+  leaf:{name:'Endlast',waiting_for_confirmation:true,rejected_candidates:[{start:'invalid',reason:'additional_import'}]},
+  unrelated:{name:'Fremd',waiting_for_confirmation:true},
+ }}};
+ const html=c._decisions({member_details:[{load_id:'b1'}],terminal_load_id:'leaf'});
+ assert.match(html,/Planungsgründe/);assert.match(html,/Batterie-Tagesziel/);
+ assert.match(html,/Einspeisung wartet auf bestätigten Laststart/);
+ assert.match(html,/Akku &lt;script&gt;/);assert.ok(!html.includes('<script>'));
+ assert.ok(!html.includes('Fremd'));assert.ok(!html.includes('Invalid Date'));
+ assert.equal(c._decisions({terminal_load_id:'missing'}),'');
+});

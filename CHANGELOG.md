@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-07
+
+### Added
+- Versionierter Planner-Diagnoseexport mit effektiver Konfiguration, Eingaben
+  und vollständigem Ergebnis; lokal ohne Home Assistant exakt wiederholbar mit
+  `scripts/replay_plan.py`. `scripts/evaluate_plan.py` vergleicht passende
+  Messintervalle und trennt Laufzeit- von Leistungsabweichungen.
+- Erste harte Ablehnung je geprüftem Laststart in Planaufzeichnung, Sensor und
+  Prognosekarte; Wartehinweis für noch nicht bestätigte steuerbare Dauerlasten.
+
+### Changed
+- Kaskaden planen den vollständigen Entfeuchterlauf einschließlich zulässigem
+  Lückenschluss vor Speicherladungen. Laden belegt keine verbleibenden Pausen
+  der verfügbaren Endlast. Zusätzliche Tiefenentlade-/Ladezyklen erfordern
+  lückenlosen Endlastbetrieb während der PV-Zeit und mehr als 50 Wh Restexport.
+- Kleine bestehende Speicher-Zielabweichungen bis max(50 Wh, 2 % Kapazität)
+  lösen keine Recovery-Ladung aus. Neue Ladungen benötigen mindestens
+  15 Minuten und 50 Wh, neue Aux-Quellenläufe mindestens 15 Minuten;
+  laufende Restzeiten und harte Schutzgrenzen bleiben berücksichtigt.
+- Vorzeitige automatische Einspeisung setzt voraus, dass alle konfigurierten
+  kontinuierlichen Verbraucher ab dem Einspeiseslot bis zum Batterie-Maximum
+  ohne Pause eingeplant sind. Spätere Starts, Teilstundenlücken und fehlende
+  Laufzeitdaten sperren die Freigabe auch bei verbleibendem Export. Die Prüfung
+  berücksichtigt den durch Einspeisung nach hinten verschobenen SOC-Peak.
+- Vorgezogene Dauerläufe tolerieren am Tagesmaximum bis zu einen
+  SOC-Prozentpunkt Prognoseabweichung (50 Wh bei 5 kWh). Die Grenze gilt
+  absolut je Tag und wird bei weiteren Lasten nicht erneut abgezogen.
+  Mindestreserve, Netzbezugsprüfung und Mindestlaufzeit gelten weiterhin.
+
+### Fixed
+- Bei der Aux-Fensteraufteilung bleiben längere nutzbare Quellenläufe erhalten,
+  auch wenn ein anschließender Quellenrest unter 15 Minuten entfällt. Der SOC
+  berücksichtigt nur tatsächlich gebuchte Abschnitte; zu kurze Gesamtepisoden
+  werden weiterhin verworfen.
+- Die Kaskadenkarte zeigt verworfene Starts und ausstehende Lastbestätigungen
+  unter „Planungsgründe“. Speicher-Recovery veröffentlicht Ablehnungen wegen
+  Mindestgröße, Endlastvorrang, Reserve, Versorgbarkeit und Tagesexport.
+- Beim Zusammenfassen eines Entfeuchterlaufs bleiben Buchung und Begründung
+  korrekt zugeordnet.
+- Mouseover-Hinweise der Kaskaden-Aktivitätsbalken (z. B. AC-Ausgang) stehen
+  direkt über der Zeile und umbrechen innerhalb ihrer Breite, statt am unteren
+  Kartenrand abgeschnitten zu werden. Das gilt auch bei Tastaturfokus.
+- Ausgangsverluste der Kaskaden werden bereits bei jeder Root-Lastbuchung in
+  der Hausbatterie-Simulation berücksichtigt. Gemeinsam genutzte Ausgänge zählen
+  pro Laufzeit nur einmal; Aux-Verluste verbleiben im jeweiligen Speicher.
+- Ein eingeplanter, aber noch nicht bestätigter steuerbarer Dauerlaststart
+  rechtfertigt keine automatische Einspeisebuchung. Ein ausgeschalteter oder
+  unbekannter Schaltzustand hält die Freigabe bis zur Bestätigung zurück.
+- Die Prognosekarte beendet Teilstundenbalken an der gebuchten Laufdauer statt
+  am Ende der ganzen Stunde.
+- Der Laufzeitschalter für vorzeitige Einspeisung pausiert jetzt auch deren
+  automatische Planung im gesamten Prognosezeitraum. Ausschalten berechnet
+  SOC-Kurve und Tageswerte ohne vorgezogene Einspeisung neu; Einschalten nimmt
+  die Planung wieder auf. Die Pause bleibt nach Neustart erhalten. Natürliches
+  Einspeisen bleibt prognostiziert; externe manuelle Setpoints werden weiterhin
+  für heute abgebildet, ohne die Automatik für Folgetage zu aktivieren.
+- Kleine Restüberschüsse nach einer verworfenen ganzen Laufstunde gelten nicht
+  mehr automatisch als unvermeidbare vorzeitige Einspeisung. Die Nachrechnung
+  des Plans vom 07.09. um 07:13 Uhr beginnt den Entfeuchterlauf um 09:00 statt
+  10:00 Uhr und plant keine vorzeitige Einspeisung mehr (zuvor rund 237 Wh).
+
 ## [0.37.1] - 2026-09-06
 
 ### Fixed

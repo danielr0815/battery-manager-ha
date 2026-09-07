@@ -61,6 +61,18 @@ Drei strukturelle Defekte dahinter:
   Batterie muss heute trotzdem soc_max erreichen — genau die
   Operator-Bedingung „nur entladen, wenn sie eh vollläuft"), Z3
   (Buffer-Floor) und der **dynamische Puffer** (Crossover-Rampe-Floor).
+  **Präzisierung v0.38.0 (Operator 2026-09-07):** Wegen realer PV- und
+  Verbrauchsschwankungen darf der Tagespeak eines kontinuierlichen Blocks
+  bis zu **einen SOC-Prozentpunkt** unter `soc_max` liegen
+  (`PREDRAIN_PEAK_TOLERANCE_PERCENT = 1.0`, 50 Wh bei 5 kWh). Auch sein
+  nominales Erholungsfenster endet beim Erreichen dieser Grenze. Die Toleranz
+  wird nur für den eigenen Blocktag eröffnet und nach Annahme für weitere
+  Kandidaten beibehalten. Sie bleibt absolut gegen `soc_max` verankert,
+  addiert sich also weder je Last noch je Kandidat. Andere Tage erhalten
+  dadurch keine Toleranz; Import-, Serviceability- und Reserveprüfungen bleiben
+  unverändert. Das ersetzt die bisher harte Voll-Erreichung für diesen Pass,
+  nicht die Einspeisebedingung: F-FEEDIN R1a verlangt weiterhin einen
+  durchgehenden Verbraucherplan bis zum tatsächlich prognostizierten Maximum.
   **Seit v0.21.0 (Operator-Entscheid 2026-08-02) wird die Alpha-/Band-
   STRESS-Prüfung auf die Trajektorie NICHT mehr auf den Block angewendet:**
   ein Prognosefehlgriff wird intra-tag durch den Replan-Loop aufgefangen
