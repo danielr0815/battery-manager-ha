@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-09-07
+
+### Added
+- Gemeinsamer Zeitcursor für Diagramme und Aktivitätsbalken der Kaskadenkarte,
+  steuerbar per Maus, Touch und Pfeiltasten. Laden, Entladen und AC-Ausgang
+  zeigen den geplanten Zustand zur ausgewählten Zeit.
+
+### Fixed
+- Leistung, kumulierte Energie und SOC der Kaskadenkarte folgen jetzt denselben
+  geplanten Lade- und Entladezeiten wie die Aktivitätsbalken. Während Pausen
+  bleibt der SOC konstant; Teilstunden und Quellenwechsel werden zeitlich
+  aufgelöst, ohne geplante Energiemengen oder Schaltentscheidungen zu verändern.
+  Für ältere Pläne ohne Zeitangaben bleibt der Zeitfenstermittelwert als
+  ausdrücklich gekennzeichneter Fallback erhalten.
+
 ## [0.38.1] - 2026-09-07
 
 ### Fixed

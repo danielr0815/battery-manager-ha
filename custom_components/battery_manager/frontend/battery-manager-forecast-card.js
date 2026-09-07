@@ -89,6 +89,7 @@ const CASCADE_SOC_COLORS = [
 const MAX_POINTS = 1000; // forecast samples kept (stride-downsampled)
 const MAX_LANES = 12; // load + cascade + appliance + feed-in lanes below the plot
 const MAX_BLOCKS = 100; // schedule blocks rendered per lane
+const MAX_CASCADE_POINTS = 10000; // retain switching edges across the full 96-hour horizon
 
 const STRINGS = {
   en: {
@@ -2259,16 +2260,17 @@ class BatteryManagerCascadeCard extends HTMLElement {
 
   _blocks(cascade, period = "all") {
     const [from, until] = this._horizon(cascade, period);
-    return (Array.isArray(cascade?.schedule) ? cascade.schedule : [])
+    const schedule = Array.isArray(cascade?.chart_schedule) ? cascade.chart_schedule : cascade?.schedule;
+    return (Array.isArray(schedule) ? schedule : [])
       .flatMap((block) => {
         const start = this._timestamp(block?.start);
         const end = this._timestamp(block?.end);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
         const a = Math.max(start, from), b = Math.min(end, until);
         if (b <= a) return [];
-        return [{ ...block, start: a, end: b, fraction: (b - a) / (end - start),
+        return [{ ...block, start: a, end: b, roundingWh: Array.isArray(cascade?.chart_schedule) ? 0.000001 : 0.1, fraction: (b - a) / (end - start),
           activities: (Array.isArray(block.activities) ? block.activities : []).filter((v) => v && typeof v === "object") }];
-      }).sort((a, b) => a.start - b.start).slice(0, MAX_BLOCKS);
+      }).sort((a, b) => a.start - b.start).slice(0, MAX_CASCADE_POINTS);
   }
 
   _energy(block, kind, id, field = "energy_wh") {
@@ -2329,7 +2331,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     return (Array.isArray(member?.soc_forecast) ? member.soc_forecast : [])
       .map((p) => ({ time: this._timestamp(p?.t), value: num(p?.soc) }))
       .filter((p) => Number.isFinite(p.time) && p.value != null && p.value >= 0 && p.value <= 100)
-      .sort((a, b) => a.time - b.time).slice(0, MAX_POINTS);
+      .sort((a, b) => a.time - b.time).slice(0, MAX_CASCADE_POINTS);
   }
 
   _socAt(points, time) {
@@ -2355,7 +2357,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     }
     const blocks = this._blocks(cascade, period);
     const points = [];
-    let total = 0, previousEnd = null;
+    let total = 0, previousEnd = from;
     for (const block of blocks) {
       const wh = this._energy(block, kind, id);
       if (wh == null) return { points: [], unit: mode === "energy" ? "kWh" : "W", label: this._text("Keine vollständigen Energiedaten", "Incomplete energy data") };
@@ -2369,8 +2371,12 @@ class BatteryManagerCascadeCard extends HTMLElement {
       points.push({ time: block.end, value: mode === "energy" ? total / 1000 : watts });
       previousEnd = block.end;
     }
+    if (previousEnd < until) {
+      points.push({ time: previousEnd, value: mode === "energy" ? total / 1000 : 0 },
+        { time: until, value: mode === "energy" ? total / 1000 : 0 });
+    }
     return { from, until, points, blocks, kind, id, mode, historyEntity: this._historyEntity(cascade, kind, id), unit: mode === "energy" ? "kWh" : "W",
-      label: mode === "energy" ? this._text("Energie kumuliert", "Cumulative energy") : this._text("Ø Leistung je Zeitfenster", "Average power per time slot") };
+      label: mode === "energy" ? this._text("Energie kumuliert", "Cumulative energy") : cascade.chart_resolution === "activity" ? this._text("Geplante Leistung", "Planned power") : this._text("Ø Leistung je Zeitfenster", "Average power per time slot") };
   }
 
   _valueAt(series, time) {
@@ -2416,6 +2422,19 @@ class BatteryManagerCascadeCard extends HTMLElement {
 
   _showTime(time) {
     this._cursorTime = time;
+    (this._tracks || []).forEach((track, index) => {
+      const marker = this.shadowRoot.getElementById(`activity-marker-${index}`);
+      const readout = this.shadowRoot.getElementById(`activity-readout-${index}`);
+      if (!marker || !readout) return;
+      const visible = time >= track.from && time < track.until;
+      marker.hidden = !visible;
+      if (!visible) { readout.textContent = ""; return; }
+      marker.style.left = `${100 * (time - track.from) / (track.until - track.from)}%`;
+      const active = track.intervals.filter((a) => time >= a.start && time < a.end);
+      const state = active.some((a) => a.exact) ? this._text("ein", "on") :
+        active.length ? this._text("Schaltzustand unbekannt", "switching state unknown") : this._text("aus", "off");
+      readout.textContent = `${this._time(time)} · ${state}`;
+    });
     this._charts.forEach((chart, index) => {
       const marker = this.shadowRoot.getElementById(`marker-${index}`);
       const readout = this.shadowRoot.getElementById(`readout-${index}`);
@@ -2449,8 +2468,8 @@ class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   _groups(blocks) {
-    // Energies arrive rounded to 0.1 Wh. Compare powers with the resulting
-    // uncertainty, especially for a two-minute first slot; do not quantize W.
+    // Legacy energies use 0.1 Wh; activity-resolved chart energies use 0.000001 Wh.
+    // Compare powers with that rounding uncertainty, not a fixed W tolerance.
     const describe = (b) => {
       const hours = (b.end - b.start) / 3600000;
       const activities = b.activities.map((a) => ({
@@ -2458,7 +2477,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
         values: [a.energy_wh, a.stored_energy_wh].map((v) => num(v) == null ? null : num(v) * b.fraction / hours),
       })).sort((a, b) => a.key.localeCompare(b.key));
       return { activities, root: num(b.root_input_wh) == null ? null : this._energy(b, "root") / hours,
-        error: 0.05 * b.fraction / hours };
+        error: (b.roundingWh ?? 0.1) / 2 * b.fraction / hours };
     };
     const groups = [];
     for (const block of blocks) {
@@ -2503,6 +2522,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       ["charge", this._text("Laden", "Charging"), CASCADE_CHARGE_COLOR],
       ["discharge", this._text("Entladen", "Discharging"), CASCADE_DISCHARGE_COLOR],
       ["output", this._text("AC-Ausgang", "AC output"), CASCADE_OUTPUT_COLOR]];
+    this._tracks ||= [];
     return `<div class="activity-tracks"><small>${this._text("Geplante Aktivität · Balken: ein, Lücke: aus", "Planned activity · bar: on, gap: off")}</small>${kinds.map(([kind, label, color]) => {
       const intervals = cascade.activity_intervals.filter((a) => a.load_id === id && a.kind === kind)
         .map((a) => ({ start: Math.max(from, this._timestamp(a.start)), end: Math.min(until, this._timestamp(a.end)), exact: a.exact === true }))
@@ -2513,10 +2533,12 @@ class BatteryManagerCascadeCard extends HTMLElement {
         if (last && last.end >= item.start && last.exact === item.exact) last.end = Math.max(last.end, item.end);
         else merged.push({...item});
       }
+      const index = this._tracks.length;
+      this._tracks.push({ from, until, intervals: merged });
       // The axis anchors each sibling tooltip across the available width.
       // A fixed child tooltip is clipped by HA dashboard containing blocks;
       // anchoring to the tiny bar would also overflow at the right edge.
-      return `<div class="activity-row"><span>${label}</span><div class="activity-axis">${merged.map((a) => {
+      return `<div class="activity-row"><span>${label} <span id="activity-readout-${index}" aria-live="polite"></span></span><div id="activity-axis-${index}" class="activity-axis" tabindex="0" role="group" aria-label="${esc(`${label}: ${this._text("Planung; Pfeiltasten zur Zeitauswahl", "Forecast; arrow keys to select time")}`)}"><span id="activity-marker-${index}" class="activity-marker" hidden aria-hidden="true"></span>${merged.map((a) => {
         const description = `${label}: ${this._time(a.start, true)} – ${this._time(a.end, true)} · ${a.exact ? this._text("geplant", "planned") : this._text("Zeitfenster; Schaltzeiten unbekannt", "time slot; switching times unknown")}`;
         return `<span tabindex="0" class="activity-bar ${a.exact ? "" : "estimated"}" style="left:${100*(a.start-from)/(until-from)}%;width:${100*(a.end-a.start)/(until-from)}%;background-color:${color}" aria-label="${esc(description)}"></span><span class="activity-tip" aria-hidden="true">${esc(description)}</span>`;
       }).join("")}</div></div>`;
@@ -2561,7 +2583,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     return `<section class="details" id="details-${index}" tabindex="-1"><div class="section-heading"><h3>${esc(title)}</h3>${this._button(this._text("Schließen", "Close"), index, "close")}</div>
       <nav>${controls.map(([key, label]) => this._button(label, index, "metric", `data-metric="${key}"`, metric === key)).join("")}
       ${metric !== "soc" ? [["power", this._text("Leistung", "Power")], ["energy", this._text("Energie", "Energy")]].map(([key, label]) => this._button(label, index, "mode", `data-mode="${key}"`, view.mode === key)).join("") : ""}</nav>
-      <p class="muted">${esc(this._text("Planung · gestrichelte Kurve. Leistung = Durchschnitt je Zeitfenster; keine Messhistorie.", "Forecast · dashed curve. Power = slot average; no measurement history."))}</p>
+      <p class="muted">${esc(cascade.chart_resolution === "activity" ? this._text("Planung · Kurven und Balken folgen denselben geplanten Lade- und Entladezeiten. Keine Messhistorie.", "Forecast · curves and bars follow the same planned charging and discharging times. No measurement history.") : this._text("Planung · Genaue Zeitauflösung fehlt: Leistung und SOC sind über Zeitfenster gemittelt. Keine Messhistorie.", "Forecast · detailed timing unavailable: power and SOC are averaged over time slots. No measurement history."))}</p>
       ${this._plot(this._series(cascade, metric, id, view.period, view.mode), title, metric === "soc" ? CASCADE_SOC_COLORS[0] : metric === "charge" ? CASCADE_CHARGE_COLOR : metric === "discharge" ? CASCADE_DISCHARGE_COLOR : CASCADE_ROOT_COLOR)}
       ${kind === "soc" ? this._activityTracks(cascade, id, view.period) : kind === "terminal" ? this._activityTracks(cascade, cascade.terminal_load_id, view.period) : ""}
       ${metric === "soc" && num(member?.target_soc_percent) != null ? `<p class="muted">${esc(localize(this._hass, "cascade_discharge_target"))}: ${this._number(num(member.target_soc_percent), 0)} %</p>` : ""}
@@ -2633,6 +2655,27 @@ class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   _bindCharts() {
+    (this._tracks || []).forEach((track, index) => {
+      const axis = this.shadowRoot.getElementById(`activity-axis-${index}`);
+      if (!axis) return;
+      const move = (event) => {
+        const rect = axis.getBoundingClientRect();
+        if (!rect.width) return;
+        const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+        this._showTime(track.from + fraction * (track.until - track.from));
+      };
+      axis.addEventListener("pointermove", move);
+      axis.addEventListener("pointerdown", move);
+      axis.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const times = [...new Set([track.from, track.until, ...track.intervals.flatMap((a) => [a.start, a.end])])].sort((a, b) => a - b);
+        const current = this._cursorTime ?? track.from;
+        const time = event.key === "Home" ? track.from : event.key === "End" ? track.until :
+          event.key === "ArrowLeft" ? times.findLast((t) => t < current) ?? track.from : times.find((t) => t > current) ?? track.until;
+        this._showTime(time);
+      });
+    });
     this._charts.forEach((chart, index) => {
       const svg = this.shadowRoot.getElementById(`chart-${index}`);
       if (!svg) return;
@@ -2690,6 +2733,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
   _render() {
     if (!this._config || !this._hass) return;
     this._charts = [];
+    this._tracks = [];
     const entityId = this._entityId();
     const state = this._hass.states?.[entityId];
     const cascades = this._cascades();
@@ -2703,7 +2747,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       .topology{color:var(--secondary-text-color,#aaa);margin:8px 0 16px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px}.metric{display:grid;gap:5px;padding:10px;border:1px solid var(--divider-color,#444);border-radius:9px}.metric>button{font-size:.85em}.metrics strong{font-size:1.35em}.metrics span{color:var(--secondary-text-color,#aaa)}.members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:16px}.member,.terminal,.details{padding:14px;border:1px solid var(--divider-color,#444);border-radius:12px;min-width:0}.terminal{margin-top:12px}.member-energy{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:.85em}.member-energy span{flex:1;min-width:85px;color:var(--secondary-text-color,#aaa)}.member-energy b{display:block;color:var(--primary-text-color,#eee)}
       .plot{overflow-x:auto;padding:3px}svg{display:block;width:100%;min-width:300px;height:auto;touch-action:pan-y}.axis{fill:var(--secondary-text-color,#aaa);font:12px sans-serif}.grid{stroke:var(--divider-color,#444)}.forecast-line{stroke-width:2.5;stroke-dasharray:6 3;stroke-linejoin:round}.soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1;stroke-dasharray:3 5}.marker{stroke:var(--primary-text-color,#eee);stroke-width:1;stroke-dasharray:3 3}.readout{min-height:1.5em;margin-top:4px;white-space:normal;overflow-wrap:anywhere}.details{border-color:var(--primary-color,#039be5);margin:16px 0}.details:focus{outline:none}
       .agenda{list-style:none;padding:0;margin:12px 0}.event{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:12px;margin-bottom:12px}.event time{font-size:.88em;color:var(--primary-color,#039be5);padding-top:12px}.event-body{border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.event-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.flows{list-style:none;margin:8px 0;padding:0}.flows li{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--divider-color,#444)}.flow-label{flex:1;min-width:min(180px,100%)}.flows strong{font-variant-numeric:tabular-nums}.flow-label i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}
-      .history{display:inline;padding:0;min-height:0;border:0;background:none;text-decoration:underline;text-decoration-style:dotted}.history:hover{background:none}.activity-tracks{max-width:600px;margin:8px 0 12px}.activity-row{position:relative;padding-top:18px;margin:4px 0}.activity-row>span{position:absolute;top:0;font-size:.8em;color:var(--secondary-text-color)}.activity-axis{position:relative;height:10px;margin-left:8%;margin-right:2.667%;background:var(--divider-color,#444);border-radius:3px}.activity-bar{position:absolute;height:100%;border-radius:3px;min-width:2px}.activity-bar.estimated{background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,#777 3px,#777 5px)}.activity-tip{display:none;position:absolute;bottom:calc(100% + 6px);left:0;right:0;z-index:2;padding:6px;background:var(--card-background-color,#222);border:1px solid var(--divider-color,#444);border-radius:4px;font-size:12px;white-space:normal;overflow-wrap:anywhere;pointer-events:none}.activity-bar:hover + .activity-tip,.activity-axis:not(:has(.activity-bar:hover)) .activity-bar:focus + .activity-tip{display:block}.balance-residual{font-size:.85em;color:var(--secondary-text-color)}.pause{color:var(--secondary-text-color);font-size:.85em}.pause>span{padding-top:12px}
+      .history{display:inline;padding:0;min-height:0;border:0;background:none;text-decoration:underline;text-decoration-style:dotted}.history:hover{background:none}.activity-tracks{max-width:600px;margin:8px 0 12px}.activity-row{position:relative;margin:4px 0}.activity-row>span{display:block;min-height:18px;margin-bottom:2px;font-size:.8em;color:var(--secondary-text-color)}.activity-axis{position:relative;height:10px;margin-left:8%;margin-right:2.667%;background:var(--divider-color,#444);border-radius:3px}.activity-marker{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--primary-text-color,#eee);transform:translateX(-1px);z-index:1;pointer-events:none}.activity-axis:focus-visible{outline:2px solid var(--primary-color,#039be5);outline-offset:3px}.activity-bar{position:absolute;height:100%;border-radius:3px;min-width:2px}.activity-bar.estimated{background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,#777 3px,#777 5px)}.activity-tip{display:none;position:absolute;bottom:calc(100% + 6px);left:0;right:0;z-index:2;padding:6px;background:var(--card-background-color,#222);border:1px solid var(--divider-color,#444);border-radius:4px;font-size:12px;white-space:normal;overflow-wrap:anywhere;pointer-events:none}.activity-bar:hover + .activity-tip,.activity-axis:not(:has(.activity-bar:hover)) .activity-bar:focus + .activity-tip{display:block}.balance-residual{font-size:.85em;color:var(--secondary-text-color)}.pause{color:var(--secondary-text-color);font-size:.85em}.pause>span{padding-top:12px}
       .chart-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;margin-top:16px}.chart-grid>.members{display:contents}.chart-grid>.terminal,.chart-grid>.details{margin:0}.chart-grid>.details{grid-column:span 1}
       @container(min-width:740px){.chart-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
       @container(min-width:1180px){.chart-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chart-grid>.details{grid-column:span 2}}

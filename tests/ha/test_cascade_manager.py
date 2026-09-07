@@ -3066,7 +3066,10 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     cascade_plan = _aux_plan(now)
     cascade_plan.cascade_id = "chain"
     result = SimpleNamespace(cascade_plans=(cascade_plan,))
-    config = SimpleNamespace(cascades=(core_cascade,))
+    config = SimpleNamespace(
+        cascades=(core_cascade,),
+        loads=(SimpleNamespace(load_id="b1", capacity_wh=3200),),
+    )
     coordinator.hass.states.values["switch.input"].attributes["assumed_state"] = True
     slots = (HourSlot(0, now, 1.0, 6, 0.0, 0.0, 0.0),)
     payload = manager.payload(result, config, slots)["chain"]
@@ -3124,6 +3127,7 @@ async def test_payload_runtime_and_parallel_apply_contract() -> None:
     active_payload = manager.payload(result, config, slots)["chain"]
     assert active_payload["member_details"][0]["soc_forecast"] == [
         {"t": now.isoformat(), "soc": 90.0},
+        {"t": (now + timedelta(minutes=30)).isoformat(), "soc": 85.0},
         {"t": (now + timedelta(hours=1)).isoformat(), "soc": 85.0},
     ]
     assert manager._schedule_payload(core_cascade, cascade_plan, slots) == [
@@ -5448,3 +5452,191 @@ async def test_later_recovery_does_not_hide_failed_safe_off_actor(
     assert state["fault_detail"]["entity_id"] == "switch.gate"
     assert state["fault_detail"]["observed_state"] == "on"
     assert actor_confirmation_clock.elapsed == 30
+
+
+def _chart_timing_case():
+    """Charge, Root service, Aux handover and pauses within one hour."""
+    now = datetime(2026, 9, 7, 21, tzinfo=UTC)
+    cascade = LoadCascade(
+        "chain",
+        (
+            CascadeMember("b1", 20, 50, output_overhead_w=10),
+            CascadeMember("b2", 20, 50, output_overhead_w=20),
+        ),
+        "leaf",
+    )
+    config = SystemConfig(
+        loads=(
+            SurplusLoad("b1", "B1", 400, 0, 0, 0, True, 1000, 90, True),
+            SurplusLoad("b2", "B2", 400, 0, 0, 0, True, 1000, 90, True),
+            SurplusLoad("leaf", "Leaf", 300, 0, 0, 0, False),
+        ),
+        cascades=(cascade,),
+    )
+    flow = CascadeSlotFlow(
+        root_input_wh=157.5,
+        member_flows=(
+            CascadeMemberFlow("b1", 60, 52, battery_discharge_wh=80, charge_hours=0),
+            CascadeMemberFlow(
+                "b2",
+                50,
+                55,
+                own_charge_input_wh=100,
+                battery_charge_wh=90,
+                battery_discharge_wh=40,
+                charge_hours=0.25,
+            ),
+        ),
+        segments=(
+            CascadeSourceSegment(0, 0, 0.25, "direct_pv", None, True, 50),
+            CascadeSourceSegment(0, 0.5, 0.25, "aux", "b1", False, 75),
+            CascadeSourceSegment(0, 0.75, 0.125, "aux", "b2", False, 0, 0.125),
+            CascadeSourceSegment(0, 0.875, 0.125, "aux", "b2", False, 35),
+        ),
+    )
+    forecast = _aux_plan(now)
+    forecast.cascade_id = "chain"
+    forecast.flows = (flow,)
+    forecast.planned_root_energy_wh = 157.5
+    forecast.planned_aux_energy_wh = 110
+    slots = (HourSlot(0, now, 1, 23, 0, 0, 0),)
+    return config, forecast, slots
+
+
+def test_chart_slots_follow_activity_and_conserve_energy_and_soc():
+    config, forecast, slots = _chart_timing_case()
+    original = forecast.flows
+    pieces, exact = CascadeManager._chart_slots(
+        config.cascades[0], forecast, slots, config
+    )
+    assert exact
+    assert [(s.start - slots[0].start).total_seconds() / 60 for s, _ in pieces] == [
+        0,
+        15,
+        30,
+        45,
+        52.5,
+    ]
+    assert [f.root_input_wh for _, f in pieces] == [157.5, 0, 0, 0, 0]
+    for index, expected_soc in enumerate(([60, 60, 52, 52, 52], [59, 59, 59, 59, 55])):
+        assert [
+            f.member_flows[index].soc_end_percent for _, f in pieces
+        ] == expected_soc
+        for field in (
+            "own_charge_input_wh",
+            "battery_charge_wh",
+            "battery_discharge_wh",
+        ):
+            assert sum(
+                getattr(f.member_flows[index], field) for _, f in pieces
+            ) == pytest.approx(getattr(original[0].member_flows[index], field))
+    assert [sum(s.terminal_energy_wh for s in f.segments) for _, f in pieces] == [
+        50,
+        0,
+        75,
+        0,
+        35,
+    ]
+    assert sum(s.transition_hours for _, f in pieces for s in f.segments) == 0.125
+    assert forecast.flows == original
+
+
+@pytest.mark.parametrize("missing", ["duration", "discharge", "root"])
+def test_chart_slots_keep_slot_fallback_when_timing_is_unavailable(missing):
+    config, forecast, slots = _chart_timing_case()
+    flow = forecast.flows[0]
+    if missing == "duration":
+        flow = replace(
+            flow,
+            member_flows=(
+                flow.member_flows[0],
+                replace(flow.member_flows[1], charge_hours=None),
+            ),
+        )
+    elif missing == "discharge":
+        flow = replace(flow, segments=())
+    else:
+        flow = CascadeSlotFlow(root_input_wh=100)
+    forecast.flows = (flow,)
+    pieces, exact = CascadeManager._chart_slots(
+        config.cascades[0], forecast, slots, config
+    )
+    assert not exact
+    assert pieces == [(slots[0], flow)]
+
+
+async def test_chart_payload_drives_frontend_power_soc_and_energy_at_switching_times(
+    hass,
+):
+    import json
+    import subprocess
+    from pathlib import Path
+
+    config, forecast, slots = _chart_timing_case()
+    manager = CascadeManager(_LiveIncidentCoordinator(slots[0].start))
+    manager._state("chain")["enabled"] = True
+    result = SimpleNamespace(cascade_plans=(forecast,))
+    payload = manager.payload(result, config, slots)["chain"]
+    assert payload["chart_resolution"] == "activity"
+    assert len(payload["schedule"]) == 1
+    assert len(payload["chart_schedule"]) == 4  # the entirely idle quarter is omitted
+    assert [p["soc"] for p in payload["member_details"][0]["soc_forecast"]] == [
+        60,
+        60,
+        60,
+        52,
+        52,
+        52,
+    ]
+    assert [p["soc"] for p in payload["member_details"][1]["soc_forecast"]] == [
+        50,
+        59,
+        59,
+        59,
+        59,
+        55,
+    ]
+    script = Path(__file__).parents[1] / "frontend" / "backend-contract.mjs"
+    rendered = await hass.async_add_executor_job(
+        lambda: subprocess.run(
+            ["node", str(script)],
+            input=json.dumps({"timed_cascade": payload}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    manager._state("chain")["enabled"] = False
+    disabled = manager.payload(result, config, slots)["chain"]
+    assert disabled["chart_schedule"] == []
+    assert disabled["member_details"][0]["soc_forecast"] == []
+
+
+def test_chart_soc_preserves_charge_then_discharge_with_zero_net_slot_change():
+    config, forecast, slots = _chart_timing_case()
+    flow = forecast.flows[0]
+    forecast.flows = (
+        replace(
+            flow,
+            member_flows=(
+                flow.member_flows[0],
+                replace(
+                    flow.member_flows[1],
+                    battery_discharge_wh=90,
+                    soc_end_percent=50,
+                ),
+            ),
+        ),
+    )
+    pieces, exact = CascadeManager._chart_slots(
+        config.cascades[0], forecast, slots, config
+    )
+    assert exact
+    assert [f.member_flows[1].soc_end_percent for _, f in pieces] == [
+        59,
+        59,
+        59,
+        59,
+        50,
+    ]

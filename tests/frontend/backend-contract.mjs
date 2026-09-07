@@ -29,3 +29,41 @@ if (input.cascade) {
   assert.equal(input.cascade.member_details[0].soc_percent, null);
   assert.equal(card._series(input.cascade,'soc','b1','all').points.length, 0);
 }
+if (input.timed_cascade) {
+  const Card = definitions.get('battery-manager-cascade-card'), card = new Card();
+  card._config={hours:48}; card._hass={language:'de',config:{time_zone:'Europe/Berlin'}};
+  const cascade=input.timed_cascade, start=Date.parse(cascade.schedule[0].start);
+  const value=(kind,id,minute,mode='power')=>card._valueAt(card._series(cascade,kind,id,'all',mode),start+minute*60000);
+  assert.equal(value('soc','b1',20),60);
+  assert.equal(value('soc','b1',30),60);
+  assert.equal(value('soc','b1',37.5),56);
+  assert.equal(value('soc','b1',50),52);
+  assert.equal(value('soc','b2',7.5),54.5);
+  assert.equal(value('soc','b2',50),59);
+  assert.equal(value('soc','b2',56.25),57);
+  assert.equal(value('discharge','b1',20),0);
+  assert.equal(value('discharge','b1',30),320);
+  const power=card._series(cascade,'discharge','b1','all','power');
+  assert.deepEqual(Array.from(power.points.filter(p=>p.time===start+30*60000),p=>p.value),[0,320]);
+  assert.deepEqual(Array.from(power.points.filter(p=>p.time===start+45*60000),p=>p.value),[320,0]);
+  assert.equal(value('discharge','b1',45),0);
+  assert.equal(value('charge','b2',10),400);
+  assert.equal(value('charge','b2',15),0);
+  assert.equal(value('root',null,10),630);
+  assert.equal(value('root',null,20),0);
+  assert.equal(value('terminal',null,20),0);
+  assert.equal(value('terminal',null,37.5),300);
+  assert.equal(value('terminal',null,50),0);
+  assert.equal(value('terminal',null,55),280);
+  assert.equal(value('discharge','b1',20,'energy'),0);
+  assert.equal(value('discharge','b1',37.5,'energy'),.04);
+  assert.equal(value('discharge','b1',60,'energy'),.08);
+  assert.equal(value('root',null,60,'energy'),.1575);
+  assert.equal(value('terminal',null,60,'energy'),.16);
+  // Clipping inside a pause must neither prorate full-slot Wh nor move a ramp.
+  card._window=()=>[start+20*60000,start+40*60000];
+  assert.equal(value('discharge','b1',20,'energy'),0);
+  assert.ok(Math.abs(value('discharge','b1',40,'energy')-320/6/1000)<1e-9);
+  assert.equal(value('soc','b1',20),60);
+  assert.ok(Math.abs(value('soc','b1',40)-(60-8*2/3))<1e-9);
+}

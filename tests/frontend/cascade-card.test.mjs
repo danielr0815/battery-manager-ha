@@ -285,9 +285,9 @@ test('activity tracks preserve partial intervals, merge contiguous bars and clip
  {kind:'output',load_id:'b1',start:new Date(start+3600000).toISOString(),end:new Date(start+7200000).toISOString(),exact:false}]};
  const html=c._activityTracks(cascade,'b1','all');
  assert.match(html,/width:25%/);assert.match(html,/switching|Schaltzeiten unbekannt/);
- assert.equal((html.match(/tabindex="0"/g)||[]).length,2);
+ assert.equal((html.match(/class="activity-bar /g)||[]).length,2);
  c._window=()=>[start+3600000,start+7200000];
- assert.equal((c._activityTracks(cascade,'b1','today').match(/tabindex="0"/g)||[]).length,1);
+ assert.equal((c._activityTracks(cascade,'b1','today').match(/class="activity-bar /g)||[]).length,1);
 });
 
 test('small residuals use Wh and member details exclude unrelated energy flows',()=>{
@@ -358,4 +358,72 @@ test('cascade decisions include only own loads, translate reasons and escape tex
  assert.match(html,/Akku &lt;script&gt;/);assert.ok(!html.includes('<script>'));
  assert.ok(!html.includes('Fremd'));assert.ok(!html.includes('Invalid Date'));
  assert.equal(c._decisions({terminal_load_id:'missing'}),'');
+});
+
+test('slot-average discharge can precede switching; shared cursor shows the actual planned state',()=>{
+ const c=card(), cascade={schedule:[block(0,1,0,[activity('discharge',230)])],activity_intervals:[
+  {kind:'discharge',load_id:'b1',start:new Date(start+30*60000).toISOString(),end:new Date(start+3600000).toISOString(),exact:true},
+  {kind:'output',load_id:'b1',start:new Date(start).toISOString(),end:new Date(start+3600000).toISOString(),exact:false}]};
+ const series=c._series(cascade,'discharge','b1','all','power');
+ c._plot(series,'Battery','orange');
+ const html=c._activityTracks(cascade,'b1','all');
+ assert.equal((html.match(/class="activity-marker"/g)||[]).length,3);
+ const elements=new Map();
+ c.shadowRoot.getElementById=id=>{if(!elements.has(id))elements.set(id,{style:{},textContent:'',innerHTML:''});return elements.get(id);};
+ c._showTime(start+15*60000);
+ assert.equal(c._valueAt(series,start+15*60000),230);
+ for(let i=0;i<3;i++)assert.equal(elements.get(`activity-marker-${i}`).style.left,'25%');
+ assert.match(elements.get('activity-readout-0').textContent,/aus/);
+ assert.match(elements.get('activity-readout-1').textContent,/aus/);
+ assert.match(elements.get('activity-readout-2').textContent,/unbekannt/);
+ assert.match(elements.get('readout-0').textContent,/230 W/);
+ c._showTime(start+30*60000);
+ assert.match(elements.get('activity-readout-1').textContent,/ein/);
+ c._showTime(start+3600000);
+ assert.equal(elements.get('activity-marker-1').hidden,true);
+ assert.equal(elements.get('activity-readout-1').textContent,'');
+ c._showTime(start-1);
+ for(let i=0;i<3;i++)assert.equal(elements.get(`activity-marker-${i}`).hidden,true);
+});
+
+test('activity axes drive the shared cursor with scaled pointer positions and keyboard boundaries',()=>{
+ for(const [width,left] of [[536,48],[268,-50]]) {
+  const c=card(),cascade={schedule:[block(0,1)],activity_intervals:[
+   {kind:'discharge',load_id:'b1',start:new Date(start+30*60000).toISOString(),end:new Date(start+45*60000).toISOString(),exact:true}]};
+  c._activityTracks(cascade,'b1','all');
+  const listeners={};
+  c.shadowRoot.getElementById=id=>id==='activity-axis-1'?{getBoundingClientRect:()=>({width,left}),addEventListener:(name,fn)=>{listeners[name]=fn;}}:null;
+  c._bindCharts();
+  listeners.pointermove({clientX:left+width/2});
+  assert.equal(c._cursorTime,start+30*60000);
+  listeners.keydown({key:'ArrowRight',preventDefault(){}});
+  assert.equal(c._cursorTime,start+45*60000);
+  listeners.keydown({key:'ArrowLeft',preventDefault(){}});
+  assert.equal(c._cursorTime,start+30*60000);
+  listeners.keydown({key:'Home',preventDefault(){}});
+  assert.equal(c._cursorTime,start);
+  listeners.keydown({key:'End',preventDefault(){}});
+  assert.equal(c._cursorTime,start+3600000);
+  listeners.pointerdown({clientX:left-10});
+  assert.equal(c._cursorTime,start);
+  listeners.pointerdown({clientX:left+width+10});
+  assert.equal(c._cursorTime,start+3600000);
+ }
+});
+
+test('fine chart schedules retain more than 100 events and show zero power in leading and trailing pauses',()=>{
+ const c=card(),cascade={schedule:[block(0,6,1200)],chart_resolution:'activity',
+  chart_schedule:Array.from({length:120},(_,i)=>block(.5+i/30,.5+(i+1)/30,10)),
+  member_details:[{load_id:'b1',soc_forecast:[{t:new Date(start).toISOString(),soc:50},{t:new Date(start+6*3600000).toISOString(),soc:50}]}]};
+ const power=c._series(cascade,'root',null,'all','power');
+ const energy=c._series(cascade,'root',null,'all','energy');
+ assert.equal(power.blocks.length,120);
+ assert.equal(c._valueAt(power,start),0);
+ assert.equal(c._valueAt(power,start+5*3600000),0);
+ assert.equal(c._valueAt(power,start+6*3600000),0);
+ assert.equal(c._valueAt(energy,start+6*3600000),1.2);
+ assert.equal(power.points[0].time,start);
+ assert.equal(power.points.at(-1).time,start+6*3600000);
+ assert.equal(power.points.at(-1).value,0);
+ assert.equal(power.label,'Geplante Leistung');
 });

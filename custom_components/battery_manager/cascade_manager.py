@@ -13,6 +13,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -3275,11 +3276,190 @@ class CascadeManager:
                     add("output", load_id, offset, duration)
         return intervals
 
+    @staticmethod
+    def _chart_slots(
+        cascade: Any, plan: Any, slots: tuple[HourSlot, ...], config: SystemConfig
+    ) -> tuple[list[tuple[HourSlot, Any]], bool]:
+        """Split display flows at model events without changing the executable plan.
+
+        F-CASCADE-CARD: slot-average SOC used to fall before the Aux bar began.
+        Integrate unrounded stored/withdrawn Wh only during their model windows;
+        keep the original slot endpoints and energy totals authoritative.
+        """
+        pairs = list(zip(slots, plan.flows, strict=False)) if plan else []
+        capacities = {load.load_id: load.capacity_wh for load in config.loads}
+        if any(
+            (item.own_charge_input_wh > 0 and not item.charge_hours)
+            or (
+                item.battery_discharge_wh > 0
+                and not any(
+                    segment.source == "aux"
+                    and segment.source_load_id == item.load_id
+                    and segment.terminal_energy_wh > 0
+                    and segment.run_hours > 0
+                    for segment in flow.segments
+                )
+            )
+            for _, flow in pairs
+            for item in flow.member_flows
+        ):
+            return pairs, False
+        refined = []
+        for slot, flow in pairs:
+            boundaries = {0.0, slot.duration}
+            for item in flow.member_flows:
+                if item.own_charge_input_wh > 0:
+                    boundaries.add(min(slot.duration, item.charge_hours))
+            for segment in flow.segments:
+                boundaries.update(
+                    (segment.start_offset_h, segment.start_offset_h + segment.run_hours)
+                )
+            times = sorted(t for t in boundaries if 0 <= t <= slot.duration)
+            pieces = []
+            root_weights = []
+            for start, end in zip(times, times[1:], strict=False):
+                duration = end - start
+                segments = tuple(
+                    replace(
+                        segment,
+                        start_offset_h=0.0,
+                        run_hours=duration,
+                        terminal_energy_wh=segment.terminal_energy_wh
+                        * duration
+                        / segment.run_hours,
+                        transition_hours=duration if segment.transition_hours else 0.0,
+                    )
+                    for segment in flow.segments
+                    if segment.start_offset_h <= start
+                    and segment.start_offset_h + segment.run_hours >= end
+                    and segment.run_hours > 0
+                )
+                member_flows = []
+                for item in flow.member_flows:
+                    charge_h = item.charge_hours or 0.0
+                    own_segments = [
+                        segment
+                        for segment in flow.segments
+                        if segment.source == "aux"
+                        and segment.source_load_id == item.load_id
+                        and segment.terminal_energy_wh > 0
+                    ]
+                    discharge_h = sum(segment.run_hours for segment in own_segments)
+
+                    def energy_at(
+                        time,
+                        item=item,
+                        charge_h=charge_h,
+                        own_segments=own_segments,
+                        discharge_h=discharge_h,
+                    ):
+                        charged = (
+                            item.battery_charge_wh * min(time / charge_h, 1.0)
+                            if charge_h
+                            else 0.0
+                        )
+                        withdrawn = (
+                            item.battery_discharge_wh
+                            * sum(
+                                max(
+                                    0.0,
+                                    min(
+                                        time - segment.start_offset_h, segment.run_hours
+                                    ),
+                                )
+                                for segment in own_segments
+                            )
+                            / discharge_h
+                            if discharge_h
+                            else 0.0
+                        )
+                        return charged, withdrawn
+
+                    charged_start, drawn_start = energy_at(start)
+                    charged_end, drawn_end = energy_at(end)
+                    capacity = capacities[item.load_id]
+                    member_flows.append(
+                        replace(
+                            item,
+                            own_charge_input_wh=item.own_charge_input_wh
+                            * duration
+                            / charge_h
+                            if charge_h and start < charge_h
+                            else 0.0,
+                            battery_charge_wh=charged_end - charged_start,
+                            battery_discharge_wh=drawn_end - drawn_start,
+                            soc_start_percent=item.soc_start_percent
+                            if start == 0
+                            else item.soc_start_percent
+                            + 100 * (charged_start - drawn_start) / capacity,
+                            soc_end_percent=item.soc_end_percent
+                            if end == slot.duration
+                            else item.soc_start_percent
+                            + 100 * (charged_end - drawn_end) / capacity,
+                            charge_hours=duration
+                            if charge_h and start < charge_h
+                            else 0.0,
+                        )
+                    )
+                terminal_root = sum(
+                    s.terminal_energy_wh for s in segments if s.source != "aux"
+                )
+                root_weight = (
+                    sum(item.own_charge_input_wh for item in member_flows)
+                    + terminal_root
+                )
+                # Root supplies each upstream output only as long as a downstream
+                # charge or Root terminal interval needs it (same as the planner).
+                charging = {
+                    item.load_id
+                    for item in member_flows
+                    if item.own_charge_input_wh > 0
+                }
+                for index, member in enumerate(cascade.members):
+                    if terminal_root > 0 or any(
+                        m.load_id in charging for m in cascade.members[index + 1 :]
+                    ):
+                        root_weight += member.output_overhead_w * duration
+                root_weights.append(root_weight)
+                pieces.append(
+                    (
+                        replace(
+                            slot,
+                            start=slot.start + timedelta(hours=start),
+                            duration=duration,
+                        ),
+                        replace(
+                            flow, member_flows=tuple(member_flows), segments=segments
+                        ),
+                    )
+                )
+            weight_sum = sum(root_weights)
+            if flow.root_input_wh > 0 and weight_sum == 0:
+                # Old payload fixtures/plans can lack the timing of Root energy.
+                return pairs, False
+            refined.extend(
+                (
+                    piece_slot,
+                    replace(
+                        piece_flow,
+                        root_input_wh=flow.root_input_wh * weight / weight_sum
+                        if weight_sum
+                        else 0.0,
+                    ),
+                )
+                for (piece_slot, piece_flow), weight in zip(
+                    pieces, root_weights, strict=True
+                )
+            )
+        return refined, True
+
     def _schedule_payload(
         self,
         cascade: Any,
         plan: Any,
         slots: tuple[HourSlot, ...],
+        *,
+        chart_pairs: list[tuple[HourSlot, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Publish one inspectable timeline block per occupied cascade slot."""
         if plan is None:
@@ -3301,7 +3481,12 @@ class CascadeManager:
             member.load_id: index for index, member in enumerate(cascade.members)
         }
         schedule: list[dict[str, Any]] = []
-        for slot, flow in zip(slots, plan.flows, strict=False):
+        precision = 6 if chart_pairs is not None else 1
+        for slot, flow in (
+            chart_pairs
+            if chart_pairs is not None
+            else zip(slots, plan.flows, strict=False)
+        ):
             activities: list[dict[str, Any]] = []
             for member_flow in flow.member_flows:
                 charge_wh = float(member_flow.own_charge_input_wh)
@@ -3313,9 +3498,9 @@ class CascadeManager:
                             "name": member_names.get(
                                 member_flow.load_id, member_flow.load_id
                             ),
-                            "energy_wh": round(charge_wh, 1),
+                            "energy_wh": round(charge_wh, precision),
                             "stored_energy_wh": round(
-                                float(member_flow.battery_charge_wh), 1
+                                float(member_flow.battery_charge_wh), precision
                             ),
                             "soc_start_percent": round(
                                 float(member_flow.soc_start_percent), 1
@@ -3339,7 +3524,7 @@ class CascadeManager:
                             "name": member_names.get(
                                 member_flow.load_id, member_flow.load_id
                             ),
-                            "energy_wh": round(discharge_wh, 1),
+                            "energy_wh": round(discharge_wh, precision),
                             "soc_start_percent": round(
                                 float(member_flow.soc_start_percent), 1
                             )
@@ -3378,7 +3563,7 @@ class CascadeManager:
                         "kind": "terminal",
                         "load_id": cascade.terminal_load_id,
                         "name": terminal_name,
-                        "energy_wh": round(terminal_wh, 1),
+                        "energy_wh": round(terminal_wh, precision),
                         "source": source,
                         "source_load_id": segment.source_load_id,
                         "source_name": (
@@ -3442,7 +3627,7 @@ class CascadeManager:
                 {
                     "start": slot.start.isoformat(),
                     "end": (slot.start + timedelta(hours=slot.duration)).isoformat(),
-                    "root_input_wh": round(float(flow.root_input_wh), 1),
+                    "root_input_wh": round(float(flow.root_input_wh), precision),
                     "terminal_energy_wh": round(
                         sum(
                             float(segment.terminal_energy_wh)
@@ -3519,6 +3704,9 @@ class CascadeManager:
                 and not state.get("hands_off")
                 else None
             )
+            chart_pairs, chart_exact = self._chart_slots(
+                cascade, effective_plan, slots, config
+            )
             root_per_day = self._root_per_day_kwh(effective_plan, slots)
             topology = self._topology(cascade.cascade_id)
             actors = []
@@ -3568,9 +3756,7 @@ class CascadeManager:
                         )
                 soc_forecast = []
                 if effective_plan:
-                    for slot_index, (slot, flow) in enumerate(
-                        zip(slots, effective_plan.flows, strict=False)
-                    ):
+                    for slot_index, (slot, flow) in enumerate(chart_pairs):
                         if member_index >= len(flow.member_flows):
                             continue
                         member_flow = flow.member_flows[member_index]
@@ -3684,6 +3870,10 @@ class CascadeManager:
                 "root_history_entity": entity_refs(cascade.members[0].load_id)["charge"]
                 if cascade.members
                 else None,
+                "chart_schedule": self._schedule_payload(
+                    cascade, effective_plan, slots, chart_pairs=chart_pairs
+                ),
+                "chart_resolution": "activity" if chart_exact else "slot",
                 "activity_intervals": self._activity_intervals(
                     cascade, effective_plan, slots
                 ),

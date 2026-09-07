@@ -21,9 +21,10 @@ Stand: v0.37.0. Die vorhandene `battery-manager-cascade-card` verwendet weiterhi
   enthält der Sensor keine eigene Durchleitungsenergiemenge; dort wird nur der
   geplante Aktivzustand gezeigt. Es werden keine Messwerte erfunden.
 - Diagramme sind ausdrücklich Planung (gestrichelt). SOC zwischen Stützstellen
-  ist linear interpoliert. Leistung ist Wh geteilt durch die tatsächliche
-  Slotdauer, keine momentane Messung. Kumulierte Energie integriert diese
-  Slotmittelwerte ab dem Beginn des ausgewählten verfügbaren Plans.
+  ist linear interpoliert. Seit v0.38.2 liegen Stützstellen an den geplanten
+  Lade-, Entlade- und Übergangsgrenzen. Leistung ist Wh geteilt durch die
+  tatsächliche Aktivitätsdauer, keine momentane Messung. Kumulierte Energie
+  integriert diese Leistung ab dem Beginn des ausgewählten verfügbaren Plans.
 - Heute umfasst den verbleibenden Plan, keine Tageshistorie. Der vorhandene
   Ist-Tageswert wird separat beschriftet. Ohne SOC-Prognose wird auch bei
   bekanntem Start-SOC keine künstliche konstante Kurve erzeugt.
@@ -34,8 +35,8 @@ Stand: v0.37.0. Die vorhandene `battery-manager-cascade-card` verwendet weiterhi
   Dort wechseln Speicher zwischen SOC/Aufnahme/Akkuentnahme, Energiekurven
   zwischen mittlerer Leistung und kumulierter Energie.
 - Benachbarte Slots mit identischen Aktivitäten, Quellen und mittleren
-  Leistungen werden im Ablauf zu einer Phase zusammengefasst. Die Originalslots
-  bleiben Grundlage der Energie- und Cursorberechnung.
+  Leistungen werden im Ablauf zu einer Phase zusammengefasst. Die aufgelösten
+  Aktivitätsintervalle bleiben Grundlage der Energie- und Cursorberechnung.
 - Miniaturen sind maximal 600 px und Detaildiagramme maximal 900 px breit,
   damit Höhe, Linien und Achsentext auf breiten Dashboards nicht übergroß werden.
   Cursorwerte verwenden dieselbe Maximalbreite und bleiben links ausgerichtet.
@@ -91,8 +92,9 @@ gemessene Ladung. Deutsche Karten verwenden „Eingang“ für die Root-Versorgu
 - Die separate Aktion „Prognose öffnen“ öffnet weiterhin die Kartendetails.
   Überblickskennzahlen haben feste Zeitbezüge; die Auswahl darunter steuert
   Speicher, Endlast, Details und Ablauf. Gerätedetails filtern Fremdgeräte aus.
-- Die Phasengruppierung toleriert nur den aus 0,1-Wh-Rundung resultierenden
-  Leistungsfehler beider Slots. Echte Leistungswechsel und Quellenwechsel sowie
+- Die Phasengruppierung toleriert nur den aus der Energierundung resultierenden
+  Leistungsfehler beider Intervalle (ursprünglich 0,1 Wh, seit v0.38.2 im
+  aufgelösten Diagrammplan 0,000001 Wh). Echte Leistungswechsel und Quellenwechsel sowie
   Übergangsphasen und Tagesgrenzen werden nicht verschluckt.
 - Bilanzreste sind aufklappbar; kleine positive Energiemengen unter 10 Wh
   werden in Wh angezeigt. Die gelbe Linie ist die Entladegrenze, kein Ladeziel.
@@ -113,3 +115,40 @@ stehen zwei Speicher, Endlast und Details in einer Reihe. Bei schmaleren
 Containern wird umgebrochen; Diagramme können bei 280 px intern scrollen.
 Ein Historienklick öffnete für den konfigurierten Fossibot-SOC-Sensor den
 HA-Dialog mit `ha-more-info-history` und `state-history-chart-line`.
+
+
+## Gemeinsame Zeitauflösung (v0.38.2)
+
+- `chart_schedule` teilt die unveränderten Planner-Slots ausschließlich für die
+  Darstellung an Ladeenden und Quellsegmentgrenzen auf. `schedule` bleibt als
+  ursprünglicher Plan erhalten. Aufnahme, gespeicherte Energie und Akkuentnahme
+  werden aus ungerundeten Wh über ihre jeweiligen aktiven Zeiträume verteilt.
+- `soc_forecast` erhält an diesen Grenzen zusätzliche Stützstellen. Die
+  Änderung ergibt sich aus gespeicherten bzw. entnommenen Wh und der
+  konfigurierten Kapazität. Originale Slot-Endwerte bleiben erhalten. Auch
+  Laden und Entladen innerhalb desselben Slots mit netto gleicher Energie
+  ergeben eine steigende und fallende Kurve; Pausen bleiben waagerecht.
+- Die Eingangskurve berücksichtigt gleichzeitige Ladeeingänge, direkte
+  Endlastversorgung und nur die dafür benötigten Ausgangsverluste. Die
+  Root-Energiesumme des ursprünglichen Slots bleibt verbindlich. Endlastkurven
+  folgen den einzelnen Quellsegmenten; Übergänge transportieren keine Energie.
+- `chart_resolution: activity` kennzeichnet diese Auflösung. Fehlen älteren
+  Plänen Ladezeiten oder Quellsegmente, bleibt `slot` als sichtbar erklärter
+  Fallback erhalten. Es werden keine genauen Schaltzeiten aus gerundeten Wh
+  erfunden. Alle Kurven bleiben Prognosen, keine Messhistorie.
+- Der gemeinsame Cursor lässt sich in Diagrammen und Aktivitätsachsen per
+  Maus, Touch und Tastatur bewegen. Jede Spur zeigt Uhrzeit und geplanten
+  Zustand; bei nur geschätzten Intervallen bleibt der Zustand unbekannt.
+- Regressionen: `test_chart_slots_follow_activity_and_conserve_energy_and_soc`
+  prüft Energiesummen, SOC, Pausen und Übergänge. Der Backend-/Frontend-Vertrag
+  in `backend-contract.mjs` prüft Kurvenpunkte, Cursorwerte und Energieintegration
+  einschließlich eines innerhalb des Slots beschnittenen Zeitraums.
+
+
+Sichtprüfung am 07.09.2026 mit lokalem Playwright-MCP in einer temporären
+Home-Assistant-Vorschau und synthetischem Backend-Payload: Bei 1280, 390 und
+280 px kein horizontaler Seitenüberlauf. Bei 23:37 zeigt der gemeinsame Cursor
+56 % SOC sowie Laden aus, Entladen ein und AC-Ausgang ein. Die Tastaturwahl
+wechselt von 0 W um 23:00 zu 320 W am Entladestart um 23:30. SOC-Kurve und
+Balken beginnen ihre Entladung am selben Zeitpunkt; die Dashboard-Konfiguration
+wurde für diese Prüfung nicht gespeichert oder verändert.
