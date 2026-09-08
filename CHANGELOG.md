@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.2] - 2026-09-08
+
+### Fixed
+- Dashboard-Karten behalten beim regelmäßigen Datenupdate ihren bereits
+  gerenderten HA-Kartenrahmen. Dadurch fällt die Kartenhöhe während des Updates
+  nicht kurzzeitig zusammen und die Ansicht springt nicht mehr nach oben.
+  Scrollpositionen berücksichtigen auch verschachtelte Slot-Container.
+
 ## [0.41.1] - 2026-09-08
 
 ### Fixed

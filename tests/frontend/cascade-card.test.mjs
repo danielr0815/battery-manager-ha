@@ -527,3 +527,33 @@ test('visible day remains anchored when refreshed content above it grows',()=>{
  assert.equal(host.scrollTop,470);
  delete context.refreshCard;
 });
+
+test('refresh reuses the rendered HA frame while updating its content and attributes',()=>{
+ const attributes=new Map([['header','Old'],['obsolete','yes']]);
+ const frame={get attributes(){return [...attributes].map(([name,value])=>({name,value}));},
+  removeAttribute:name=>attributes.delete(name),setAttribute:(name,value)=>attributes.set(name,value),
+  replaceChildren(...nodes){this.children=nodes;}};
+ const nextFrame={attributes:[{name:'header',value:'New'}],childNodes:[{textContent:'Updated plan'}],replaceWith(node){assert.equal(node,frame);}};
+ const template={content:{querySelector:()=>nextFrame}};
+ const root={querySelector:()=>frame,querySelectorAll:()=>[],replaceChildren(content){assert.equal(content,template.content);},
+  set innerHTML(_){assert.fail('Replacing the rendered HA frame collapses its height until Lit updates');}};
+ context.refreshCard={shadowRoot:root,ownerDocument:{createElement:()=>template}};
+ vm.runInContext('replaceCardHTML(refreshCard, "new markup")',context);
+ assert.equal(template.innerHTML,'new markup');
+ assert.deepEqual([...attributes],[['header','New']]);
+ assert.equal(frame.children[0].textContent,'Updated plan');
+ delete context.refreshCard;
+});
+
+test('slotted scroll host is restored before anchoring after a browser scroll clamp',()=>{
+ let updated=false;
+ const host={scrollTop:400,scrollLeft:15,scrollHeight:2000,clientHeight:600};
+ const anchor={dataset:{viewKey:'day'},getBoundingClientRect:()=>({top:480+(updated?70:0)-host.scrollTop,bottom:900-host.scrollTop})};
+ const root={querySelectorAll:selector=>selector==='[data-view-key], [data-scroll-key]'?[anchor]:[],
+  set innerHTML(_){updated=true;host.scrollTop=0;host.scrollLeft=0;}};
+ context.refreshCard={shadowRoot:root,parentNode:{},assignedSlot:{parentNode:host}};
+ vm.runInContext('replaceCardHTML(refreshCard, "new markup")',context);
+ assert.equal(host.scrollTop,470);
+ assert.equal(host.scrollLeft,15);
+ delete context.refreshCard;
+});
