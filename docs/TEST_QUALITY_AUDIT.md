@@ -34,6 +34,7 @@ ein bloßer Funktionsaufruf reicht nicht.
 | Tests | Verifizierte Quelle bzw. Vertrag |
 |---|---|
 | `core/test_execution_projection.py`, `ha/test_execution_constraints.py`, `ha/test_predrain_block.py`, `frontend/cascade-card.test.mjs` | `F-EXECUTION-PROJECTION.md`: Restlaufzeit, Ladeziel, stabile Vorlaufgrenze, Gerätebestätigung, Prüffristen und Kartenbegründungen |
+| `core/test_compare_plan_grids.py` | `PLAN-GRID-COMPARISON.md`: Energieerhaltung, Laufzeitsperren, tatsächliche Quellensegmente, begrenzte Offline-Arbeit und Fragmentierungs-Gegenbeispiel |
 | `core/test_model.py` | physikalische Dataclass-Invarianten und unveränderte akzeptierte Werte |
 | `core/test_series.py`, `test_forecast_hours.py` | `F-PREDRAIN` F1, Forecast-Bucket-/Fallback-Verträge |
 | `core/test_simulate.py` | Energieerhaltung, `DC_TOPOLOGY`, `F-PREDRAIN`, `F-FEEDIN` |
@@ -95,3 +96,9 @@ Mutation Testing wurde in diesem Audit nicht als CI-Gate eingeführt: Die HA-
 Suite ist zustands- und zeitintensiv, und ein pauschaler Mutator würde viel
 Rauschen erzeugen. Für neue Plannerregeln bleiben gezielte Gegenbeispiele und
 Golden-Diffs die verbindliche Mutationsprobe.
+
+
+Karten-Zustand bei HA-Aktualisierung: `frontend/cascade-card.test.mjs` prüft
+verschachtelte offene/geschlossene Details anhand stabiler Tageskennungen,
+Summary-Fokus, Tabellen-Scroll und Erhalt des sichtbaren Tages bei
+Höhenänderungen vor der Leseposition. Der Datenstand wird weiterhin erneuert.

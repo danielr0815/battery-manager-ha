@@ -1,6 +1,6 @@
 # Battery Manager: zehn weitere Optimierungen
 
-Stand: 2026-09-08, Arbeitsstand 0.39.0. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
+Stand: 2026-09-08, Arbeitsstand 0.41.1. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
 Abnahmen werden unten dokumentiert. Die Schalterkorrektur
 ist bereits umgesetzt und zählt nicht zu diesen zehn weiteren Punkten.
 Ein Prüfauftrag ist kein bestätigter Defekt. Bestehende Operator-Regeln und
@@ -93,7 +93,7 @@ Netzbezugsfreigabe sind Teil dieses Plans.
 | 2 | Verbindliche Hierarchie in STRATEGY-CURRENT.md; R5-Nachtrag und historische Verweise korrigiert | Erneute Prüfung bei den folgenden Algorithmusänderungen |
 | 3 | Bekannte Mindestpausen, verbleibende normale Mindestlaufzeiten und Stabilitätsfristen im Plan; Kaskaden-Wake/Proof/Recovery/Neustart mit tatsächlicher Prüffrist separat ausgewiesen; letzter AC-Ausgang als Bestätigung der Endlast | Live-Abgleich der projizierten Grenzen; zukünftige Hardwarebestätigung bleibt ausdrücklich bedingt |
 | 4 | Späte Starts an bekannten Freigaben mit lückenlosem Stundenanschluss; 09:00/09:15/09:30/09:45 geprüft; gemeinsame Plan-/Laufende-/Segmenttimer; Aux respektiert seinen Startoffset auch beim Wiederanlauf | Freie Optimierung später Starts innerhalb einer Stunde ohne vorgegebenen Freigabezeitpunkt (Alternativenprüfung, Punkt 5); Live-Abnahme |
-| 5 | Ein gemeinsamer Lückenschluss-Versuch je Endlast und Tag; Aux bewahrt Direktläufe und erhält sichere Fensterpräfixe statt eines Gesamtvetos | Vollständiger kleiner Vergleichsmaßstab und Vergleich alternativer Quellenreihenfolgen |
+| 5 | Ein gemeinsamer Lückenschluss-Versuch je Endlast und Tag; Aux bewahrt Direktläufe und sichere Fensterpräfixe; begrenzter Offline-Rastervergleich mit realem Planner, Laufblöcken und Schutzkennzahlen | Vollständiger kleiner Vergleichsmaßstab und kontrollierte automatische Alternativenauswahl; Quellenfolgen nur mit gesondertem elektrischen Vertrag |
 | 6 | Absolute Tagesgrenze sowie Kapazitäten 2/5/10 kWh geprüft; Speicher-Zieltoleranz und Mindestgrößen neuer Aktionen durch Regressionen abgesichert | Empirischer Vergleich aufgezeichneter Tage, keine automatische Grenzwertänderung |
 | 7 | Kandidatenablehnungen, Ausführbarkeitsgrenzen und explizite Einspeise-Freigabe-/Ablehnungsgründe aus demselben Planstand in Diagnostik und beiden Karten; Recovery erklärt seine Grenzen | Weitere weiche Alternativenentscheidungen gemeinsam mit Punkt 5; Live-Abnahme |
 | 8 | Versionierte Planstände, korrelierte Schaltanforderungen/Service-Antworten, passive Rückmeldungen und Kaskaden-Recovery im lokalen Archiv; Offline-Replay aller erhaltenen Planstände | Reale Ursache anhand künftig erfasster Ereignisse eingrenzen |
@@ -204,3 +204,40 @@ rückwirkend. Neutrale Kerneingaben behalten ihre Energie- und Schaltentscheidun
 Golden-Snapshots bleiben unverändert. Reale Abnahme bleibt nach Installation
 nötig. Der nächste eigenständige Implementierungsumfang ist der begrenzte
 Alternativenvergleich für freie Startzeiten und Quellenfolgen (4/5).
+
+
+## Abschlussprüfung 2026-09-08: sinnvoller nächster Schritt (0.41.1)
+
+Der neue [Offline-Rastervergleich](PLAN-GRID-COMPARISON.md) macht Punkt 4/5
+an vorhandenen Planständen überprüfbar. Er ist bewusst keine Behauptung eines
+globalen Optimums und erfüllt noch nicht die vollständige Alternativen-Abnahme.
+Die Produktivstrategie bleibt unverändert: synthetische Gegenbeispiele zeigen,
+dass ein feineres Raster trotz mehr Nutzenergie zusätzliche Laufunterbrechungen
+erzeugen kann. Ein pauschaler Rasterwechsel wäre daher kein sicherer Abschluss.
+Ein Umordnen von `cascade.members` würde außerdem die elektrische Topologie
+ändern, nicht nur eine zulässige zeitliche Quellenalternative ausprobieren.
+
+Lesend per lokalem Playwright am 08.09.2026 gegen 17:14 Uhr Europe/Berlin geprüft:
+0.41.0 ist installiert, Integration geladen, Planaufzeichnung und neue
+Einspeisungsgründe vorhanden. Der aktuelle Plan meldet `runtime_paused`.
+Der Tagesbericht enthält erst den angebrochenen 08.09. (rund 9,7 Stunden
+Beobachtung); PV-, Wohnungsverbrauchs-, Netzbezugs- und Netzeinspeiseleistung
+sind darin noch nicht zugeordnet. Last- und Kaskaden-Eingangsmessungen sind
+vorhanden. Die Aufzeichnung meldet keine Servicefehler und keinen Speicherfehler;
+3.882 bereits verworfene Detailereignisse zeigen, dass Detailhistorie zusätzlich
+zur Zeitgrenze mengenbegrenzt ist. Tagesberichte bleiben getrennt erhalten.
+
+Der gesicherte aktuelle Plan wurde offline exakt reproduziert. Im gleichen
+55-Slot-Horizont ergeben sich mit Viertelstunden-Grenzen 220 Slots, 225,5 Wh
+mehr geplante Endlastenergie und zwei statt vier Laufblöcke. Netzbezug bleibt
+0 Wh, Restexport sinkt von 106,91 auf 8,67 Wh. Das ist ein positiver Einzelbefund,
+keine gemessene Einsparung oder Freigabe für eine allgemeine Strategieänderung.
+Vollständige Kennzahlen und Grenzen: [PLAN-GRID-COMPARISON.md](PLAN-GRID-COMPARISON.md).
+
+**Offen bleiben:** reale Tagesabnahme und empirische Kalibrierung (1/6/8/9/10),
+Live-Abgleich der Fristen (3) sowie der abgesicherte automatische
+Alternativenvergleich (4/5/7). Sinnvoll ist zunächst die Zuordnung der vier
+Messkanäle in den Optionen und die Auswertung mehrerer vollständiger Tage.
+Die Zuordnung darf insbesondere den Wohnungsverbrauch ohne BM-Lasten und die
+Richtung der Netzmessung nicht verwechseln; sie wurde bei der lesenden Prüfung
+nicht verändert. Softwareseitig stehen die dafür nötigen Werkzeuge bereit.

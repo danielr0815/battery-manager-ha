@@ -405,6 +405,52 @@ function findForecastEntity(hass, entities) {
   );
 }
 
+// Replacing the shadow tree must not reset the user's reading state on each
+// HA publication. Restore before layout/paint, including nested scroll hosts.
+function replaceCardHTML(card, html) {
+  const root = card.shadowRoot;
+  const key = node => node.dataset.viewKey || node.id;
+  const details = [...root.querySelectorAll("details[data-view-key]")];
+  const opened = new Map(details.map(node => [key(node), node.open]));
+  const focused = root.activeElement;
+  const focusKey = focused?.tagName === "SUMMARY" ? key(focused.parentElement) : null;
+  const scrolls = [];
+  for (let node = card; node; node = node.parentNode || node.host) {
+    if (typeof node.scrollTop === "number") scrolls.push([node, node.scrollTop, node.scrollLeft]);
+  }
+  const localScrolls = new Map([...root.querySelectorAll("[data-scroll-key]")]
+    .map(node => [node.dataset.scrollKey, [node.scrollTop, node.scrollLeft]]));
+  // Anchor the visible report/day when an earlier day's height changes.
+  const candidates = [...root.querySelectorAll("[data-view-key], [data-scroll-key]")];
+  const visible = candidates.filter(node => {
+    const rect = node.getBoundingClientRect?.();
+    return rect && rect.bottom > 0 && rect.top < (window.innerHeight || Infinity);
+  });
+  const anchor = visible.find(node => node.getBoundingClientRect().top >= 0) || visible.at(-1);
+  const anchorKey = anchor && (anchor.dataset.viewKey || anchor.dataset.scrollKey);
+  const anchorTop = anchor?.getBoundingClientRect().top;
+  root.innerHTML = html;
+  for (const node of root.querySelectorAll("details[data-view-key]")) {
+    if (opened.has(key(node))) node.open = opened.get(key(node));
+    if (key(node) === focusKey) node.querySelector("summary")?.focus({preventScroll:true});
+  }
+  for (const node of root.querySelectorAll("[data-scroll-key]")) {
+    const position = localScrolls.get(node.dataset.scrollKey);
+    if (position) [node.scrollTop, node.scrollLeft] = position;
+  }
+  if (anchorKey) {
+    const replacement = [...root.querySelectorAll("[data-view-key], [data-scroll-key]")]
+      .find(node => (node.dataset.viewKey || node.dataset.scrollKey) === anchorKey);
+    const delta = replacement ? replacement.getBoundingClientRect().top - anchorTop : 0;
+    const host = scrolls.find(([node]) => node.scrollHeight > node.clientHeight);
+    if (host) host[1] += delta;
+  }
+  for (const [node, top, left] of scrolls) {
+    if (node.scrollTop !== top) node.scrollTop = top;
+    if (node.scrollLeft !== left) node.scrollLeft = left;
+  }
+}
+
 function executionLines(hass, execution) {
   if (!execution || typeof execution !== "object") return [];
   const lines = [];
@@ -428,7 +474,7 @@ function feedinDecisions(hass, decisions) {
     const at = new Intl.DateTimeFormat(hass.language || "en", {timeZone:hass.config?.time_zone, weekday:"short",hour:"2-digit",minute:"2-digit"}).format(Date.parse(item.start));
     return [`<li>${esc(at)} · ${esc(localize(hass,item.reason))}</li>`];
   });
-  return `<details style="padding:12px"><summary>${esc(localize(hass,"feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
+  return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass,"feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
 function operationReport(hass, report) {
@@ -451,11 +497,11 @@ function operationReport(hass, report) {
     }).join("");
     const loads = Object.entries(day.loads || {}).map(([id,l])=>`<li>${esc(report.load_names?.[id] || id)}: ${text("Aktorzeit Ist/Plan", "Actor time actual/planned")} ${fmt(l.actual_run_hours)} / ${fmt(l.planned_run_hours)} h · ${text("Laufzeit-/Leistungsanteil", "Runtime/power component")} ${fmt(l.execution_error_wh)} / ${fmt(l.power_error_wh)} Wh · ${text("Abdeckung Aktorzeit/Energie", "Coverage actor time/energy")} ${fmt(l.runtime_coverage_hours)} / ${fmt(l.coverage_hours)} h</li>`).join("");
     const storageSoc = Object.entries(day.storage_soc || {}).map(([id,v])=>`<li>${esc(report.load_names?.[id] || id)} · SOC Min/Max: ${fmt(v.soc_min_percent)} / ${fmt(v.soc_max_percent)} %</li>`).join("");
-    return `<details><summary>${esc(day.day)} · ${text("Schaltanforderungen", "Switch requests")}: ${fmt(day.switch_requests,0)} · ${text("Zustandswechsel", "State changes")}: ${fmt(day.state_changes,0)}</summary>
-      <div style="overflow-x:auto"><table><thead><tr><th>${text("Messgröße", "Metric")}</th><th>${text("Plan", "Planned")} kWh</th><th>${text("Ist", "Actual")} kWh</th><th>Δ kWh</th><th>${text("Abdeckung", "Coverage")}</th></tr></thead><tbody>${rows}</tbody></table></div>
+    return `<details data-view-key="operation-day-${esc(day.day)}"><summary>${esc(day.day)} · ${text("Schaltanforderungen", "Switch requests")}: ${fmt(day.switch_requests,0)} · ${text("Zustandswechsel", "State changes")}: ${fmt(day.state_changes,0)}</summary>
+      <div data-scroll-key="operation-table-${esc(day.day)}" style="overflow-x:auto"><table><thead><tr><th>${text("Messgröße", "Metric")}</th><th>${text("Plan", "Planned")} kWh</th><th>${text("Ist", "Actual")} kWh</th><th>Δ kWh</th><th>${text("Abdeckung", "Coverage")}</th></tr></thead><tbody>${rows}</tbody></table></div>
       <p>SOC ${text("beobachtet Min/Max", "observed min/max")}: ${fmt(day.soc_min_percent)} / ${fmt(day.soc_max_percent)} % · ${text("Beobachtungslücke", "Observation gap")}: ${fmt(day.gap_hours)} h · ${text("Servicefehler", "Service failures")}: ${fmt(day.service_failures,0)}</p>${loads || storageSoc ? `<ul>${loads}${storageSoc}</ul>` : ""}</details>`;
   }).join("");
-  return `<details style="padding:12px"><summary>${text("Tagesvergleich · Plan und Betrieb", "Daily comparison · plan and operation")}</summary>
+  return `<details data-view-key="operation-report" style="padding:12px"><summary>${text("Tagesvergleich · Plan und Betrieb", "Daily comparison · plan and operation")}</summary>
     <p>${text("Plan und Ist beziehen sich nur auf dieselben abgedeckten Messintervalle. — bedeutet fehlende Messdaten. Aktorzeit beweist keine Nutzenergie; Abweichungen allein beweisen keine Ursache.", "Planned and actual values cover the same measured intervals only. — means missing measurements. Actor time does not prove useful energy; deviations alone do not establish a cause.")}</p>
     ${report.dropped_events ? `<p>${text("Ältere Detailereignisse wurden durch die Aufbewahrungsgrenze entfernt; Tagesberichte bleiben erhalten.", "Older detailed events were removed by the retention limit; daily reports remain.")}</p>` : ""}
     ${report.last_error ? `<p>${text("Aufzeichnungsfehler aufgetreten", "A recording error occurred")}</p>` : ""}${content}</details>`;
@@ -593,7 +639,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       return;
     }
     const detail = err instanceof Error ? err.message : String(err);
-    this.shadowRoot.innerHTML = `
+    replaceCardHTML(this, `
       <style>
         ha-card { display: block; padding: 12px 16px; }
         .error { color: var(--error-color, #db4437); }
@@ -603,7 +649,7 @@ class BatteryManagerForecastCard extends HTMLElement {
           detail
         )}</span>
       </ha-card>
-    `;
+    `);
   }
 
   _renderInner() {
@@ -637,7 +683,7 @@ class BatteryManagerForecastCard extends HTMLElement {
       body = this._renderChart(stateObj, t);
     }
 
-    this.shadowRoot.innerHTML = `
+    replaceCardHTML(this, `
       <style>
         :host { display: block; }
         ha-card { padding: 12px 12px 8px; }
@@ -699,7 +745,7 @@ class BatteryManagerForecastCard extends HTMLElement {
         ${body}
         ${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
-    `;
+    `);
     this._attachChartHandlers();
   }
 
@@ -1603,7 +1649,7 @@ class BatteryManagerConsumptionCard extends HTMLElement {
       return;
     }
     const detail = err instanceof Error ? err.message : String(err);
-    this.shadowRoot.innerHTML = `
+    replaceCardHTML(this, `
       <style>
         ha-card { display: block; padding: 12px 16px; }
         .error { color: var(--error-color, #db4437); }
@@ -1613,7 +1659,7 @@ class BatteryManagerConsumptionCard extends HTMLElement {
           detail
         )}</span>
       </ha-card>
-    `;
+    `);
   }
 
   _renderInner() {
@@ -1645,7 +1691,7 @@ class BatteryManagerConsumptionCard extends HTMLElement {
       body = this._renderChart(stateObj, t);
     }
 
-    this.shadowRoot.innerHTML = `
+    replaceCardHTML(this, `
       <style>
         :host { display: block; }
         ha-card { padding: 12px 12px 8px; }
@@ -1698,7 +1744,7 @@ class BatteryManagerConsumptionCard extends HTMLElement {
         </div>
         ${body}
       </ha-card>
-    `;
+    `);
     this._attachChartHandlers();
   }
 
@@ -2437,7 +2483,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     if (!memberId && root != null && charge != null && terminalRoot != null && root - charge - terminalRoot > 0.5) {
       add("overhead", this._text("Weitere Energie / Bilanzrest", "Other energy / balance residual"), root - charge - terminalRoot, CASCADE_OUTPUT_COLOR);
     }
-    return [...flows.entries()].map(([key, f]) => key === "overhead" ? `<li class="balance-residual"><details><summary>${esc(f.label)}: ${this._energyText(f.wh)}</summary>${esc(this._text("Differenz aus Eingang, Ladeaufnahme und direkter Endlastversorgung; enthält modellierten Eigenbedarf und Rundung.", "Difference between root input, charge input and direct terminal supply; includes modelled overhead and rounding."))}</details></li>` : `<li><span class="flow-label"><i style="background:${f.color}"></i>${esc(f.label)}</span><strong>${this._historyButton(this._historyEntity(cascade, key.startsWith("stored:") ? "soc" : key.startsWith("terminal:") ? "terminal" : key.split(":")[0], key.slice(key.indexOf(":") + 1)), this._energyText(f.wh))}</strong></li>`).join("");
+    return [...flows.entries()].map(([key, f]) => key === "overhead" ? `<li class="balance-residual"><details data-view-key="balance-${esc(cascade.cascade_id || cascade.terminal_load_id)}-${esc(blocks[0]?.start || "all")}"><summary>${esc(f.label)}: ${this._energyText(f.wh)}</summary>${esc(this._text("Differenz aus Eingang, Ladeaufnahme und direkter Endlastversorgung; enthält modellierten Eigenbedarf und Rundung.", "Difference between root input, charge input and direct terminal supply; includes modelled overhead and rounding."))}</details></li>` : `<li><span class="flow-label"><i style="background:${f.color}"></i>${esc(f.label)}</span><strong>${this._historyButton(this._historyEntity(cascade, key.startsWith("stored:") ? "soc" : key.startsWith("terminal:") ? "terminal" : key.split(":")[0], key.slice(key.indexOf(":") + 1)), this._energyText(f.wh))}</strong></li>`).join("");
   }
 
   _points(member) {
@@ -2729,7 +2775,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       }
       return messages.map((message) => `<li><strong>${esc(decision.name || id)}</strong>: ${message}</li>`);
     });
-    return rows.length ? `<details class="muted"><summary>${esc(this._text("Planungsgründe", "Planning decisions"))}</summary><ul>${rows.join("")}</ul></details>` : "";
+    return rows.length ? `<details data-view-key="cascade-decisions-${esc(cascade.cascade_id || cascade.terminal_load_id)}" class="muted"><summary>${esc(this._text("Planungsgründe", "Planning decisions"))}</summary><ul>${rows.join("")}</ul></details>` : "";
   }
 
   _renderCascade(cascade, index) {
@@ -2859,7 +2905,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
     const cascades = this._cascades();
     const body = !entityId ? esc(localize(this._hass, "no_entity")) : !state ? esc(`${localize(this._hass, "not_found")} ${entityId}`) :
       cascades.length ? cascades.map((c, i) => this._renderCascade(c, i)).join("") : esc(this._text("Keine Kaskaden konfiguriert", "No cascades configured"));
-    this.shadowRoot.innerHTML = `<ha-card header="${esc(this._config.title || localize(this._hass, "card_cascade"))}"><style>
+    replaceCardHTML(this, `<ha-card header="${esc(this._config.title || localize(this._hass, "card_cascade"))}"><style>
       :host{display:block;min-width:0}*{box-sizing:border-box}.wrap{container-type:inline-size;padding:0 16px 16px;color:var(--primary-text-color,#eee);font-size:14px;line-height:1.5;overflow-wrap:anywhere}
       .cascade{border-top:1px solid var(--divider-color,#444);padding-top:16px}.cascade+.cascade{margin-top:24px}h2,h3,h4,p{margin:0}h2{font-size:1.4em}h3{font-size:1.1em}h4{margin-top:16px}.muted,.readout,small{color:var(--secondary-text-color,#aaa);font-size:.86em}.muted{margin:8px 0}.fault{color:var(--error-color,#f66)}
       .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.section-heading>*{min-width:0}.badge{padding:3px 9px;border:1px solid var(--divider-color,#444);border-radius:12px;color:var(--secondary-text-color,#aaa);font-size:.85em}
@@ -2875,7 +2921,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       /* Bound SVG scaling on wide dashboards; keep wrapping readouts outside scrolling. */
       .plot,.readout{width:100%;max-width:600px}.details .plot,.details .readout,.details .activity-tracks{max-width:900px}
       @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}
-    </style><div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`;
+    </style><div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`);
     this._bindCharts();
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => this._sizeAxes());
   }

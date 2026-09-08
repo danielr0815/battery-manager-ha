@@ -126,3 +126,8 @@ bleiben mit neutralen Vorgaben lesbar. Ein Vergleich mit einem älteren Ergebnis
 kann wegen der ergänzten Diagnosefelder als nicht exakt gelten, auch wenn
 Energie und Schaltentscheidungen gleich bleiben; exakte Ergebnisgleichheit
 setzt denselben Softwarestand voraus.
+
+
+Für den begrenzten Vergleich ursprünglicher, 30- und 15-Minuten-Intervalle
+siehe [PLAN-GRID-COMPARISON.md](PLAN-GRID-COMPARISON.md). Dieser Offline-Bericht
+ist keine automatische Strategieänderung und keine Optimalitätsgarantie.

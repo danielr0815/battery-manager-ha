@@ -293,7 +293,7 @@ test('activity tracks preserve partial intervals, merge contiguous bars and clip
 test('small residuals use Wh and member details exclude unrelated energy flows',()=>{
  const c=card(),cascade={schedule:[block(0,1,105,[activity('charge',50,{stored_energy_wh:45}),activity('charge',50,{load_id:'b2',name:'Other',stored_energy_wh:45})])]};
  const all=c._flowList(c._blocks(cascade),cascade);
- assert.match(all,/5,0 Wh/);assert.match(all,/<details>/);
+ assert.match(all,/5,0 Wh/);assert.match(all,/<details data-view-key="balance-/);
  const member=c._flowList(c._blocks(cascade),cascade,'b1');
  assert.ok(!member.includes('Other'));assert.ok(!member.includes('Bilanzrest'));
 });
@@ -444,6 +444,8 @@ test('daily report keeps missing data, boundaries and runtime coverage visible i
   const report={days:[null,{day:'2026-09-08',switch_requests:3,state_changes:2,gap_hours:.5,metrics:{pv:{planned_wh:1000,actual_wh:900,error_wh:-100,coverage_hours:2},'cascade_input:b1':{planned_wh:500,actual_wh:400,coverage_hours:1}},loads:{b1:{actual_run_hours:2,planned_run_hours:1,runtime_coverage_hours:3}},storage_soc:{b1:{soc_min_percent:50,soc_max_percent:70}}}],load_names:{b1:'B1 <script>'},dropped_events:2,last_error:'ValueError'};
   c.hass={language:'de',config:{time_zone:'Europe/Berlin'},states:{'sensor.test':{attributes:{operation_report:report,cascades:[],forecast:[]}}}};
   assert.ok(c.shadowRoot.innerHTML.includes('Tagesvergleich'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('data-view-key="operation-report"'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('data-view-key="operation-day-2026-09-08"'),type);
   assert.ok(c.shadowRoot.innerHTML.includes('Durchleitung'),type);
   assert.ok(c.shadowRoot.innerHTML.includes('B1 &lt;script&gt;'),type);
   assert.ok(!c.shadowRoot.innerHTML.includes('<script>'),type);
@@ -485,4 +487,43 @@ test('both cards explain actual feed-in decisions, grouping adjacent reasons and
   c.hass={...c._hass,language:'en'};
   assert.match(c.shadowRoot.innerHTML,/Early feed-in disabled/);
  }
+});
+
+
+test('refresh retains nested disclosures by identity, focus and scrolling despite reordered days',()=>{
+ const make=(id,open=false)=>({dataset:{viewKey:id},open,querySelector:()=>({focus:(options)=>{focused=id;assert.equal(options.preventScroll,true);}})});
+ let focused=null;
+ const old=[make('operation-report',true),make('operation-day-2026-09-08',true),make('feedin-decisions',false)];
+ const fresh=[make('feedin-decisions',true),make('operation-report'),make('operation-day-2026-09-09'),make('operation-day-2026-09-08')];
+ const oldTable={dataset:{scrollKey:'operation-table-2026-09-08'},scrollTop:0,scrollLeft:95};
+ const newTable={dataset:{scrollKey:'operation-table-2026-09-08'},scrollTop:0,scrollLeft:0};
+ const host={scrollTop:420,scrollLeft:0};
+ let updated=false;
+ const root={activeElement:{tagName:'SUMMARY',parentElement:old[1]},querySelectorAll(selector){
+  if(selector==='details[data-view-key]') return updated?fresh:old;
+  if(selector==='[data-scroll-key]') return [updated?newTable:oldTable];
+  return [];
+ },set innerHTML(value){assert.equal(value,'new values');updated=true;host.scrollTop=0;}};
+ context.refreshCard={shadowRoot:root,parentNode:host};
+ vm.runInContext('replaceCardHTML(refreshCard, "new values")',context);
+ assert.equal(fresh[0].open,false);
+ assert.equal(fresh[1].open,true);
+ assert.equal(fresh[2].open,false);
+ assert.equal(fresh[3].open,true);
+ assert.equal(focused,'operation-day-2026-09-08');
+ assert.equal(host.scrollTop,420);
+ assert.equal(newTable.scrollLeft,95);
+ delete context.refreshCard;
+});
+
+test('visible day remains anchored when refreshed content above it grows',()=>{
+ let updated=false;
+ const node=(top)=>({dataset:{viewKey:'operation-day-2026-09-08'},getBoundingClientRect:()=>({top,bottom:top+500})});
+ const old=node(80),fresh=node(150);
+ const host={scrollTop:400,scrollLeft:0,scrollHeight:2000,clientHeight:600};
+ const root={querySelectorAll(selector){return selector==='[data-view-key], [data-scroll-key]'?[updated?fresh:old]:[];},set innerHTML(_){updated=true;}};
+ context.refreshCard={shadowRoot:root,parentNode:host};
+ vm.runInContext('replaceCardHTML(refreshCard, "new values")',context);
+ assert.equal(host.scrollTop,470);
+ delete context.refreshCard;
 });

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.1] - 2026-09-08
+
+### Fixed
+- Datenaktualisierungen erhalten geöffnete Tagesberichte, Tagesdetails,
+  Einspeisungs- und Kaskadenbegründungen sowie Bilanzdetails. Leseposition,
+  horizontaler Tabellen-Scroll und fokussierte Zusammenfassungen bleiben
+  erhalten, statt bei jedem neuen Plan zurückgesetzt zu werden.
+
+### Added
+- Offline-Rastervergleich für gespeicherte Planstände: ursprüngliche Intervalle,
+  30- und 15-Minuten-Grenzen mit unveränderten Energiemengen und Laufzeitsperren.
+  Bericht trennt Endlast-Nutzenergie von Speicherladung und zeigt genaue
+  Laufblöcke, Netzbezug, Export und tägliche SOC-Maxima. Drei Planner-Läufe,
+  höchstens 512 Intervalle und ein harter Prozess-Timeout begrenzen die Arbeit.
+  Keine automatische Übernahme einer Alternative und keine Änderung der
+  Live-Steuerung oder ihrer Toleranzen.
+
 ## [0.41.0] - 2026-09-08
 
 ### Added
