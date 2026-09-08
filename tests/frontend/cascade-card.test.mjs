@@ -454,3 +454,35 @@ test('daily report keeps missing data, boundaries and runtime coverage visible i
   assert.ok(c.shadowRoot.innerHTML.includes('Daily comparison'),type);
  }
 });
+
+
+test('execution constraints distinguish deadlines, proposals and unconfirmed restart in both languages',()=>{
+ const c=card(); c._config={entity:'sensor.test'};
+ const execution={minimum_run_until:'2026-09-08T07:45:12Z',predrain_not_before:'2026-09-08T08:00:00Z',check_at:'2026-09-08T08:01:00Z',phase:'waiting_stability',stable_plans:2,required_stable_plans:3,confirmation_pending:true};
+ c._hass.states['sensor.test']={attributes:{load_decisions:{leaf:{name:'Endlast <script>',execution}}}};
+ const html=c._decisions({terminal_load_id:'leaf'});
+ assert.match(html,/09:45:12/); assert.match(html,/2 \/ 3/);
+ assert.match(html,/Gerätebestätigung/); assert.match(html,/Endlast &lt;script&gt;/);
+ assert.ok(!html.includes('<script>'));
+ execution.phase='restart_reconciliation';
+ assert.match(c._decisions({terminal_load_id:'leaf'}),/Zustandsabgleich nach Neustart/);
+ c._hass.language='en';
+ const english=c._decisions({terminal_load_id:'leaf'});
+ assert.match(english,/reconciling state after restart/);
+ assert.match(english,/Check deadline, not a promised start/);
+});
+
+test('both cards explain actual feed-in decisions, grouping adjacent reasons and escaping unknown codes',()=>{
+ for (const type of ['battery-manager-forecast-card','battery-manager-cascade-card']) {
+  const c=new (definitions.get(type))(); c.setConfig({entity:'sensor.test'});
+  const decisions=[{start:'2026-09-08T07:00:00Z',reason:'feature_disabled'},{start:'2026-09-08T07:30:00Z',reason:'feature_disabled'},{start:'invalid',reason:'manual_setpoint'},null,{start:'2026-09-08T08:00:00Z',reason:'<script>'}];
+  c.hass={language:'de',config:{time_zone:'Europe/Berlin'},states:{'sensor.test':{attributes:{feedin_decisions:decisions,cascades:[],forecast:[]}}}};
+  assert.match(c.shadowRoot.innerHTML,/Einspeisungsgründe/);
+  assert.equal(c.shadowRoot.innerHTML.split('Vorzeitige Einspeisung deaktiviert').length-1,1);
+  assert.match(c.shadowRoot.innerHTML,/09:00/);
+  assert.match(c.shadowRoot.innerHTML,/&lt;script&gt;/);
+  assert.ok(!c.shadowRoot.innerHTML.includes('<script>'));
+  c.hass={...c._hass,language:'en'};
+  assert.match(c.shadowRoot.innerHTML,/Early feed-in disabled/);
+ }
+});

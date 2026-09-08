@@ -1166,6 +1166,62 @@ def allocate_loads(
             remaining[load.load_id] = rem - placed_wh
         return placed_h, placed_wh
 
+    # F-EXECUTION-PROJECTION: an already confirmed run owns its remaining
+    # physical dwell before optional new actions. Safety gates still veto it.
+    for load in config.loads:
+        state = states.get(load.load_id, SurplusLoadState(load.load_id))
+        if not state.available or state.minimum_run_until is None:
+            continue
+        power_w = _effective_load_power_w(load, state, power_caps_w)
+        covered = [
+            (
+                i,
+                max(
+                    0.0,
+                    min(
+                        slot.duration,
+                        (state.minimum_run_until - slot.start).total_seconds() / 3600,
+                    ),
+                ),
+            )
+            for i, slot in enumerate(inputs.slots)
+        ]
+        covered = [(i, hours) for i, hours in covered if hours > _EPS]
+        if not covered or power_w <= _EPS:
+            continue
+        # A controllable charge gate stops at its target even during physical
+        # plug dwell; reserving the whole dwell would overcharge the forecast.
+        rem = remaining[load.load_id]
+        if load.gate_stop_capable and rem is not None:
+            budget_h = max(0.0, rem / power_w)
+            capped = []
+            for i, hours in covered:
+                take = min(hours, budget_h)
+                if take > _EPS:
+                    capped.append((i, take))
+                budget_h -= take
+            covered = capped
+            if not covered:
+                continue
+        trial = list(extra)
+        for i, hours in covered:
+            trial[i] += power_w * hours
+        _add_path_overheads(trial, load.load_id, covered, run_h, path_overheads)
+        traj = _gate_trial(tuple(trial), covered)
+        if traj is None:
+            continue
+        _accept_candidate(
+            load,
+            0,
+            covered[0][0],
+            power_w,
+            trial,
+            covered,
+            traj,
+            remaining[load.load_id],
+        )
+        reasons[load.load_id].append("confirmed minimum runtime")
+
     # Pass 1 — direct-surplus hours, LOAD-OUTER in config order (F-PLANNER-
     # HONESTY R7): strict priority — a load books its complete pass-1
     # allocation before the next load sees the horizon. Slots are walked
@@ -1615,6 +1671,12 @@ def allocate_loads(
             ) = None
             block_wh = 0.0
             for s in range(end - 1, day_start - 1, -1):
+                if (
+                    state.predrain_not_before is not None
+                    and inputs.slots[s].start < state.predrain_not_before
+                ):
+                    rejected[load.load_id][s] = "waiting for stable plan"
+                    break
                 if not state.can_start_at(inputs.slots[s].start):
                     rejected[load.load_id][s] = "waiting for runtime release"
                     break
@@ -2153,6 +2215,7 @@ def plan_feedin(
     alloc_traj: Trajectory,
     *,
     load_plans: Sequence[LoadPlan] = (),
+    decisions: list[tuple[int, str]] | None = None,
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
 ) -> tuple[tuple[float, ...], dict[str, float]]:
@@ -2206,7 +2269,14 @@ def plan_feedin(
     n = len(inputs.slots)
     booked = [0.0] * n
     manual_w = feedin.manual_w
+    reasons = ["no_residual_export"] * n
+
+    def explain():
+        if decisions is not None:
+            decisions.extend(enumerate(reasons))
+
     if n == 0 or (manual_w is None and alloc_traj.total_export_wh <= _EPS):
+        explain()
         return tuple(booked), {}
 
     day_slots: dict = {}
@@ -2218,6 +2288,8 @@ def plan_feedin(
     for day, idxs in day_slots.items():
         manual_today = manual_w is not None and day == today
         if manual_today:
+            for j in idxs:
+                reasons[j] = "manual_setpoint"
             # No daily target in manual mode — the operator's value books
             # into every servable slot left today.
             remaining = math.inf
@@ -2225,12 +2297,16 @@ def plan_feedin(
                 continue  # operator set 0 W: no booking, no chart lane
         else:
             if not feedin.automatic_enabled:
+                for j in idxs:
+                    reasons[j] = "runtime_paused"
                 continue  # R8: pause persists across the whole forecast horizon
             remaining = sum(alloc_traj.flows[j].grid_export_wh for j in idxs)
         if remaining <= _EPS:
             continue
         for i in idxs:
             if remaining <= _EPS:
+                for j in idxs[idxs.index(i) :]:
+                    reasons[j] = "export_budget_exhausted"
                 break
             slot = inputs.slots[i]
             soc_start = trial.flows[i].soc_start_percent
@@ -2267,10 +2343,13 @@ def plan_feedin(
                 slot.pv_wh - slot.ac_wh - extra_ac[i] - standby_wh - giveback_wh
             )
             if surplus_wh <= _EPS:
+                reasons[i] = "no_power_surplus"
                 continue
             if soc_start <= feedin.min_soc_percent + _EPS:
+                reasons[i] = "feedin_soc_floor"
                 continue
             if soc_start >= battery.soc_max_percent - _EPS:
+                reasons[i] = "battery_already_full"
                 continue
             deadline = slot.start.replace(
                 hour=feedin.deadline_hour, minute=0, second=0, microsecond=0
@@ -2278,6 +2357,7 @@ def plan_feedin(
             if manual_today:
                 rate_w = min(manual_w, surplus_wh / slot.duration)
             elif slot.start >= deadline:
+                reasons[i] = "feedin_deadline"
                 # HARD deadline (operator decision 2026-08-08): no deliberate
                 # feed-in after the configured hour — the leftover exports
                 # naturally at midday instead of being worked off fast.
@@ -2291,6 +2371,7 @@ def plan_feedin(
             if not manual_today and not _continuous_loads_cover_to_max(
                 config, inputs, load_plans, trial, i
             ):
+                reasons[i] = "continuous_load_or_peak_unproven"
                 continue
             take_wh = min(rate_w * slot.duration, remaining)
             booked[i] = take_wh
@@ -2308,7 +2389,11 @@ def plan_feedin(
                 config, inputs, load_plans, candidate, i
             ):
                 booked[i] = 0.0
+                reasons[i] = "delayed_peak_uncovered"
                 continue
+            reasons[i] = (
+                "manual_setpoint" if manual_today else "loads_exhausted_to_maximum"
+            )
             trial = candidate
             remaining -= take_wh
 
@@ -2361,12 +2446,14 @@ def plan_feedin(
             if latest is None:  # pragma: no cover - unreachable: a violation
                 break  # worse than the no-feed-in base implies a booking <= bad
             booked[latest] = 0.0
+            reasons[latest] = "stress_reserve"
 
     by_day: dict[str, float] = {}
     for i, wh in enumerate(booked):
         if wh > _EPS:
             day = inputs.slots[i].start.date().isoformat()
             by_day[day] = by_day.get(day, 0.0) + wh
+    explain()
     return tuple(booked), by_day
 
 
@@ -2653,6 +2740,7 @@ def _plan_legacy(
     # and the trajectory chain stays bit-identical to the pre-feature plan.
     feedin_wh: tuple[float, ...] | None = None
     feedin_by_day_wh: dict[str, float] = {}
+    feedin_decisions: list[tuple[int, str]] = []
     if config.feedin.enabled and config.feedin.max_w > _EPS:
         feedin_wh, feedin_by_day_wh = plan_feedin(
             config,
@@ -2661,6 +2749,7 @@ def _plan_legacy(
             extra_ac,
             alloc_traj,
             load_plans=load_plans,
+            decisions=feedin_decisions,
             dc24_schedule=forced_dc24,
             dc48_schedule=forced_dc48,
         )
@@ -2815,6 +2904,17 @@ def _plan_legacy(
         prevented_export_by_day_wh=prevented_export_by_day,
         feedin_schedule_w=feedin_schedule_w,
         feedin_by_day_wh=feedin_by_day_wh,
+        feedin_decisions=tuple(feedin_decisions)
+        if feedin_decisions
+        else tuple(
+            (
+                i,
+                "feature_disabled"
+                if not config.feedin.enabled
+                else "feedin_power_limit",
+            )
+            for i in range(n)
+        ),
     )
 
 

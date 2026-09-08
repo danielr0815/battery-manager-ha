@@ -12,6 +12,7 @@ when the block disappears (dwell rules apply).
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from homeassistant.util import dt as dt_util
@@ -32,13 +33,15 @@ from custom_components.battery_manager.const import (
 from custom_components.battery_manager.core.model import HourSlot, LoadPlan
 
 # 04:00 local — pre-dawn, so a big clip day makes the block cover slot 0.
-EARLY = dt_util.as_local(datetime(2026, 7, 19, 2, 0, tzinfo=UTC))
-MIDDAY = dt_util.as_local(datetime(2026, 7, 19, 11, 0, tzinfo=UTC))
+EARLY = datetime(2026, 7, 19, 4, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+MIDDAY = datetime(2026, 7, 19, 13, 0, tzinfo=ZoneInfo("Europe/Berlin"))
 
 
 @pytest.fixture(autouse=True)
 async def _unload_entries_after_test(hass):
     """Cancel coordinator timers armed by integration-level planning tests."""
+    # Solar scenarios depend on the local day, never on test collection order.
+    await hass.config.async_set_time_zone("Europe/Berlin")
     yield
     await hass.async_block_till_done()
     for entry in hass.config_entries.async_entries(DOMAIN):
@@ -128,11 +131,19 @@ async def test_pass1_direct_surplus_needs_no_stability(hass):
     notifications: list[dict] = []
     entry, coordinator = await _setup(hass, calls, notifications, pinned=MIDDAY)
     _prime_block_scenario(hass, coordinator, entry, pinned=MIDDAY)
+    # Direct surplus exists at the beginning of even the short split slot.
+    _set_soc(hass, coordinator, "95")
     calls.clear()
 
     await _refresh_at(hass, coordinator, MIDDAY + timedelta(minutes=2))
     assert ("turn_on", PLUG) in calls
     assert hass.states.get(PLUG).state == "on"
+    _, inputs, _ = coordinator._last_planner_recording
+    lid = next(iter(entry.subentries))
+    # A successful actuation cannot retroactively turn an unconfirmed plan
+    # input into proof that deliberate export was already allowed.
+    assert not inputs.load_states[0].feedin_ready
+    assert coordinator.data["load_plans"][lid]["execution"]["confirmation_pending"]
 
 
 def _block_result(sub_id, start_idx, count, n_slots):

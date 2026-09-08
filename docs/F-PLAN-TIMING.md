@@ -55,8 +55,10 @@ ab. Sie sucht nicht eigenständig alle denkbaren Startminuten durch. Diese
 Alternativenprüfung gehört zum verbleibenden Punkt 5. Eine fehlende zukünftige
 Gerätebestätigung kann keine garantierte Startzeit liefern: das konservative
 Kaskaden-Startbudget und die vorhandenen Wake-/Stabilitätsdiagnosen bleiben
-maßgeblich. Eine vollständige Prognose laufender Mindestlauf-, Wake- und
-Stabilitätsphasen bleibt in Punkt 3 offen.
+maßgeblich. Seit 0.41.0 ergänzt [F-EXECUTION-PROJECTION.md](F-EXECUTION-PROJECTION.md)
+verbleibende normale Mindestlaufzeiten und Stabilitätsgrenzen. Wake-/Proof- und
+Neustartphasen werden mit tatsächlichen Prüffristen getrennt ausgewiesen;
+eine unbestätigte Hardware-Reaktion bleibt ausdrücklich bedingt.
 
 Regressionen prüfen 09:00/09:15/09:30/09:45, Energieerhaltung, Stundenanschluss,
 Vorentlade-/Recovery-Sperren, Aux-Startgrenzen, gemeinsame Pausenfristen,

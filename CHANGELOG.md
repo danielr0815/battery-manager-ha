@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-08
+
+### Added
+- Plan berücksichtigt verbleibende Mindestlaufzeiten normaler Lasten und
+  Stabilitätswartezeiten neuer Vorläufe mit exakten Zeitgrenzen. Bekannte
+  Laufzeitenergie wird vor optionalen Aktionen geprüft; Sicherheitsgrenzen
+  und abschaltbare Ladeziele behalten Vorrang.
+- Prognose- und Kaskadenkarte zeigen Ausführbarkeitsgrenzen, ausstehende
+  Bestätigungen und Einspeisungsgründe aus demselben Planstand. Wake-/Proof-
+  und Recovery-Fristen werden als Prüfgrenzen statt als Startzusagen gezeigt.
+
+### Fixed
+- Kaskaden-Endlasten ohne eigenen Stecker benötigen für automatische
+  Einspeisung einen bestätigten letzten AC-Ausgang und abgeschlossene
+  Übergänge. Ein nur geplanter Dauerlauf genügt nicht.
+- Erreichen einer zuvor geplanten Vorlauf-Startgrenze verwirft die bereits
+  gesammelten stabilen Vorschläge nicht mehr.
+
 ## [0.40.0] - 2026-09-08
 
 ### Added

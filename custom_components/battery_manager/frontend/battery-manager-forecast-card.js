@@ -93,6 +93,30 @@ const MAX_CASCADE_POINTS = 10000; // retain switching edges across the full 96-h
 
 const STRINGS = {
   en: {
+    "execution_constraints": "Execution constraints",
+    "minimum_run_until": "Earliest regular stop",
+    "predrain_not_before": "Pre-drain no earlier than",
+    "check_at": "Check deadline, not a promised start",
+    "confirmation_pending": "Device confirmation pending",
+    "waiting_stability": "Waiting for stable pre-drain plan",
+    "stable_progress": "Matching proposals",
+    "feedin_decisions": "Feed-in decisions",
+    "feature_disabled": "Early feed-in disabled",
+    "runtime_paused": "Feed-in switch paused",
+    "manual_setpoint": "Manual setpoint",
+    "no_residual_export": "No residual export forecast",
+    "no_power_surplus": "No available power surplus",
+    "feedin_soc_floor": "SOC at feed-in floor",
+    "battery_already_full": "Battery full: natural surplus",
+    "feedin_deadline": "Feed-in window ended",
+    "continuous_load_or_peak_unproven": "Continuous load operation or maximum not proven",
+    "delayed_peak_uncovered": "Load operation does not cover delayed maximum",
+    "loads_exhausted_to_maximum": "Loads continuously planned until maximum; residual surplus",
+    "stress_reserve": "Forecast uncertainty requires reserve",
+    "export_budget_exhausted": "Daily feed-in amount already allocated",
+    "feedin_power_limit": "No feed-in power allowed",
+    "waiting for stable plan": "Pre-drain stability waiting period",
+    "confirmed minimum runtime": "Confirmed remaining minimum runtime",
     fault_unknown: "Cascade fault",
     fault_invalid_topology: "Invalid storage chain configuration",
     fault_safe_off_failed: "Safety shutdown failed",
@@ -117,6 +141,7 @@ const STRINGS = {
     invalid_config: "Invalid configuration",
     invalid_entity: "\"entity\" must be an entity id string",
     invalid_hours: "\"hours\" must be a finite number",
+    cascade_phase_restart_reconciliation: "reconciling state after restart",
     cascade_phase_root: "input supply",
     cascade_phase_waking: "waking storage",
     cascade_phase_waking_members: "waking storage chain",
@@ -195,6 +220,30 @@ const STRINGS = {
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
   de: {
+    "execution_constraints": "Ausführbarkeit",
+    "minimum_run_until": "Frühestes reguläres Laufende",
+    "predrain_not_before": "Vorlauf frühestens",
+    "check_at": "Prüffrist, keine Startzusage",
+    "confirmation_pending": "Gerätebestätigung ausstehend",
+    "waiting_stability": "Warte auf stabilen Vorlaufplan",
+    "stable_progress": "Passende Vorschläge",
+    "feedin_decisions": "Einspeisungsgründe",
+    "feature_disabled": "Vorzeitige Einspeisung deaktiviert",
+    "runtime_paused": "Einspeisungsschalter pausiert",
+    "manual_setpoint": "Manueller Sollwert",
+    "no_residual_export": "Kein verbleibender Export geplant",
+    "no_power_surplus": "Kein verfügbarer Leistungsüberschuss",
+    "feedin_soc_floor": "SOC an der Einspeise-Untergrenze",
+    "battery_already_full": "Akku voll: natürlicher Überschuss",
+    "feedin_deadline": "Einspeise-Zeitfenster beendet",
+    "continuous_load_or_peak_unproven": "Durchgängiger Lastbetrieb oder Maximum nicht nachgewiesen",
+    "delayed_peak_uncovered": "Verschobenes Maximum nicht durch Lastbetrieb abgedeckt",
+    "loads_exhausted_to_maximum": "Lasten durchgängig bis zum Maximum eingeplant; verbleibender Überschuss",
+    "stress_reserve": "Prognoseunsicherheit erfordert Reserve",
+    "export_budget_exhausted": "Tages-Einspeisemenge bereits eingeplant",
+    "feedin_power_limit": "Keine Einspeiseleistung freigegeben",
+    "waiting for stable plan": "Stabilitätswartezeit für Vorlauf",
+    "confirmed minimum runtime": "Bestätigte verbleibende Mindestlaufzeit",
     fault_unknown: "Kaskadenstörung",
     fault_invalid_topology: "Ungültige Konfiguration der Speicherkette",
     fault_safe_off_failed: "Sicherheitsabschaltung fehlgeschlagen",
@@ -219,6 +268,7 @@ const STRINGS = {
     invalid_config: "Ungültige Konfiguration",
     invalid_entity: "\"entity\" muss eine Entitäts-ID als Text sein",
     invalid_hours: "\"hours\" muss eine endliche Zahl sein",
+    cascade_phase_restart_reconciliation: "Zustandsabgleich nach Neustart",
     cascade_phase_root: "Versorgung über Eingang",
     cascade_phase_waking: "weckt Speicher",
     cascade_phase_waking_members: "weckt Speicherkette",
@@ -353,6 +403,32 @@ function findForecastEntity(hass, entities) {
   return (
     candidates.find((id) => id.includes("soc_forecast")) || candidates[0] || ""
   );
+}
+
+function executionLines(hass, execution) {
+  if (!execution || typeof execution !== "object") return [];
+  const lines = [];
+  const t = key => localize(hass, key);
+  for (const key of ["minimum_run_until", "predrain_not_before", "check_at"]) {
+    const at = execution[key] ? Date.parse(execution[key]) : NaN;
+    if (Number.isFinite(at)) lines.push(`${esc(t(key))}: ${esc(new Intl.DateTimeFormat(hass.language || "en", {timeZone:hass.config?.time_zone, hour:"2-digit", minute:"2-digit", second:"2-digit"}).format(at))}`);
+  }
+  if (execution.phase === "waiting_stability") lines.push(`${esc(t("waiting_stability"))} · ${esc(t("stable_progress"))}: ${esc(execution.stable_plans)} / ${esc(execution.required_stable_plans)}`);
+  if (execution.confirmation_pending) lines.push(esc(t("confirmation_pending")));
+  if (["waking", "waking_members", "proving", "recovering", "testing_terminal", "restart_reconciliation"].includes(execution.phase)) lines.push(esc(t(`cascade_phase_${execution.phase}`)));
+  return lines;
+}
+
+function feedinDecisions(hass, decisions) {
+  if (!Array.isArray(decisions) || !decisions.length) return "";
+  let previous;
+  const rows = decisions.slice(0, 300).flatMap(item => {
+    if (!item || item.reason === previous || !Number.isFinite(Date.parse(item.start))) return [];
+    previous = item.reason;
+    const at = new Intl.DateTimeFormat(hass.language || "en", {timeZone:hass.config?.time_zone, weekday:"short",hour:"2-digit",minute:"2-digit"}).format(Date.parse(item.start));
+    return [`<li>${esc(at)} · ${esc(localize(hass,item.reason))}</li>`];
+  });
+  return `<details style="padding:12px"><summary>${esc(localize(hass,"feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
 function operationReport(hass, report) {
@@ -621,7 +697,7 @@ class BatteryManagerForecastCard extends HTMLElement {
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
         ${body}
-        ${operationReport(this._hass, stateObj?.attributes?.operation_report)}
+        ${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `;
     this._attachChartHandlers();
@@ -1094,7 +1170,7 @@ class BatteryManagerForecastCard extends HTMLElement {
           : "";
         return `<span><span class="dot" style="background:${load.color}"></span>${esc(
           load.name ?? "?"
-        )} (${detail}${powerDetail})${active}${offWindow}${wait}${release}${rejection}</span>`;
+        )} (${detail}${powerDetail})${active}${offWindow}${wait}${release}${rejection}${executionLines(this._hass, load.execution).map(text=>` · ${text}`).join("")}</span>`;
       })
       .join("");
 
@@ -2641,6 +2717,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
         const when = new Intl.DateTimeFormat(this._hass.language || "en", {timeZone: this._hass.config?.time_zone, hour: "2-digit", minute: "2-digit", second: "2-digit"}).format(release);
         messages.push(`${esc(this._text("Frühester Start nach Mindestpause", "Earliest start after minimum pause"))}: ${esc(when)}`);
       }
+      messages.push(...executionLines(this._hass, decision.execution));
       if (decision.waiting_for_confirmation) messages.push(esc(localize(this._hass, "feedin_wait")));
       for (const rejection of Array.isArray(decision.rejected_candidates) ? decision.rejected_candidates : []) {
         const time = this._timestamp(rejection?.start);
@@ -2798,7 +2875,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       /* Bound SVG scaling on wide dashboards; keep wrapping readouts outside scrolling. */
       .plot,.readout{width:100%;max-width:600px}.details .plot,.details .readout,.details .activity-tracks{max-width:900px}
       @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}
-    </style><div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}</div></ha-card>`;
+    </style><div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`;
     this._bindCharts();
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => this._sizeAxes());
   }

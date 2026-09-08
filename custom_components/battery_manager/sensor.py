@@ -530,6 +530,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "consumption_forecast",
             "cascades",
             "load_decisions",
+            "feedin_decisions",
             "operation_report",
         }
     )
@@ -558,6 +559,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                 "name": plan.get("name"),
                 "active": plan.get("active"),
                 "not_before": plan.get("not_before"),
+                "execution": plan.get("execution") or {},
                 "planned_energy_kwh": plan.get("planned_energy_kwh"),
                 "planning_power_w": plan.get("planning_power_w"),
                 "planning_power_source": plan.get("planning_power_source"),
@@ -593,10 +595,12 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads_tomorrow_kwh": per_day_loads["tomorrow_kwh"],
             "loads": loads,
             "operation_report": self.coordinator.operation_recorder.summary(),
+            "feedin_decisions": data.get("feedin_decisions") or [],
             "load_decisions": {
                 load_id: {
                     "name": item.get("name"),
                     "not_before": item.get("not_before"),
+                    "execution": item.get("execution") or {},
                     "waiting_for_confirmation": item.get(
                         "feedin_waiting_for_confirmation", False
                     ),

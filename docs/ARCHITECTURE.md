@@ -198,3 +198,14 @@ Der Coordinator persistiert das Archiv; `diagnostics.py` exportiert es und
 `sensor.py` stellt den kompakten Tagesbericht für beide Prognosekarten bereit.
 `scripts/replay_operation.py` prüft die Aufzeichnung offline. Vertrag:
 [F-OPERATION-HISTORY.md](F-OPERATION-HISTORY.md).
+
+
+### Ausführbarkeit (0.41.0)
+
+`execution.py` projiziert bekannte Executor-Grenzen und unbestätigte
+Kaskadenphasen. Der Coordinator übergibt Zeitgrenzen über `SurplusLoadState`
+an `core/series.py` und `core/optimize.py`; reine Diagnosefristen lösen keine
+Startfreigabe aus. `PlanResult.feedin_decisions` enthält die tatsächlichen
+Einspeisungsentscheidungen. `sensor.py` und beide Karten veröffentlichen den
+vor der Ausführung eingefrorenen Stand. Vertrag und Kommentar-Kürzel
+`F-EXECUTION-PROJECTION`: [F-EXECUTION-PROJECTION.md](F-EXECUTION-PROJECTION.md).

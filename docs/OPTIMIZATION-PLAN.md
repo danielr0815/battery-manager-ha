@@ -91,11 +91,11 @@ Netzbezugsfreigabe sind Teil dieses Plans.
 | --- | --- | --- |
 | 1 | Root-Ausgangsverluste in Kandidaten, Recovery und Hausbilanz korrigiert; direkte Versorgung/Laden/Aux getestet | Zusätzlicher Vergleich mit vollständigen Live-Tagen |
 | 2 | Verbindliche Hierarchie in STRATEGY-CURRENT.md; R5-Nachtrag und historische Verweise korrigiert | Erneute Prüfung bei den folgenden Algorithmusänderungen |
-| 3 | Bestätigter Schaltzustand als Einspeisevoraussetzung; bekannte Mindestpausen normaler Lasten und Kaskaden jetzt als exakte Freigabe im Plan; gemeinsame Kaskaden-Pausenquelle für Planner/Executor | Vollständige Prognose der noch laufenden Mindestlauf-, Stabilitäts- und Wake-Phasen; unbekannte Bestätigung bleibt offen |
+| 3 | Bekannte Mindestpausen, verbleibende normale Mindestlaufzeiten und Stabilitätsfristen im Plan; Kaskaden-Wake/Proof/Recovery/Neustart mit tatsächlicher Prüffrist separat ausgewiesen; letzter AC-Ausgang als Bestätigung der Endlast | Live-Abgleich der projizierten Grenzen; zukünftige Hardwarebestätigung bleibt ausdrücklich bedingt |
 | 4 | Späte Starts an bekannten Freigaben mit lückenlosem Stundenanschluss; 09:00/09:15/09:30/09:45 geprüft; gemeinsame Plan-/Laufende-/Segmenttimer; Aux respektiert seinen Startoffset auch beim Wiederanlauf | Freie Optimierung später Starts innerhalb einer Stunde ohne vorgegebenen Freigabezeitpunkt (Alternativenprüfung, Punkt 5); Live-Abnahme |
 | 5 | Ein gemeinsamer Lückenschluss-Versuch je Endlast und Tag; Aux bewahrt Direktläufe und erhält sichere Fensterpräfixe statt eines Gesamtvetos | Vollständiger kleiner Vergleichsmaßstab und Vergleich alternativer Quellenreihenfolgen |
 | 6 | Absolute Tagesgrenze sowie Kapazitäten 2/5/10 kWh geprüft; Speicher-Zieltoleranz und Mindestgrößen neuer Aktionen durch Regressionen abgesichert | Empirischer Vergleich aufgezeichneter Tage, keine automatische Grenzwertänderung |
-| 7 | Kandidatenablehnungen und Bestätigungswartezeit auch in Kaskadenkarte; Recovery nennt Mindestgröße, Endlastvorrang, Reserve, Versorgbarkeit und Tagesexport; Begründungen bei Blockzusammenfassung korrigiert | Weitere weiche Ablehnungen und explizite Einspeise-Freigabegründe |
+| 7 | Kandidatenablehnungen, Ausführbarkeitsgrenzen und explizite Einspeise-Freigabe-/Ablehnungsgründe aus demselben Planstand in Diagnostik und beiden Karten; Recovery erklärt seine Grenzen | Weitere weiche Alternativenentscheidungen gemeinsam mit Punkt 5; Live-Abnahme |
 | 8 | Versionierte Planstände, korrelierte Schaltanforderungen/Service-Antworten, passive Rückmeldungen und Kaskaden-Recovery im lokalen Archiv; Offline-Replay aller erhaltenen Planstände | Reale Ursache anhand künftig erfasster Ereignisse eingrenzen |
 | 9 | Automatische Messsammlung, persistente Tagesberichte und Kartenansicht mit Abdeckung, Laufzeit-/Leistungszuordnung und getrennten Kaskaden-Messgrenzen | Vollständige reale Tage nach Installation auswerten |
 | 10 | Geschlossene virtuelle 24-Stunden-Läufe mit echtem Planner/Executor, Geräte-Rückkopplung, Neustart, Wolken, Verbrauchsspitze, Telemetrieausfall, Tank-Sättigung und verzögerter Bestätigung; Archivvergleich per CLI | Lesende Prüfung des installierten Releases und reale Tagesabnahme |
@@ -187,3 +187,20 @@ Die virtuellen Tage prüfen Energierückmeldung, Aktorzeiten, Messlücken,
 Schaltzahlen, Speicherreserve und identische Rekonstruktion des Archivs.
 Reale Tagesdaten können erst nach Installation entstehen; ihre Auswertung
 bleibt die ausgewiesene empirische Abnahme von 1/6/8/9/10.
+
+
+## Umsetzung: Ausführbarkeit und Entscheidungsgründe (0.41.0)
+
+Cluster 3/7: [F-EXECUTION-PROJECTION.md](F-EXECUTION-PROJECTION.md) beschreibt
+verbleibende Mindestlaufzeiten normaler Lasten, stabile Vorlaufstarts und die
+Abgrenzung zu unbekannter Hardwarebestätigung. Das Stundenraster wird auch an
+bekannten Laufenden und Stabilitätsfristen geteilt. Laufzeitenergie wird vor
+optionalen Buchungen geprüft; ein abschaltbares Ladeziel bleibt vorrangig.
+
+Die Karten erklären Mindestlaufzeit, Vorlaufwartezeit, Vorschlagszahl und
+Kaskaden-Prüffristen. Einspeisungsgründe kommen unmittelbar aus den Prüfungen des
+Kerns. Ein nachfolgender Schaltversuch verändert diese Planbegründung nicht
+rückwirkend. Neutrale Kerneingaben behalten ihre Energie- und Schaltentscheidungen;
+Golden-Snapshots bleiben unverändert. Reale Abnahme bleibt nach Installation
+nötig. Der nächste eigenständige Implementierungsumfang ist der begrenzte
+Alternativenvergleich für freie Startzeiten und Quellenfolgen (4/5).

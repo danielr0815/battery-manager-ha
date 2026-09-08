@@ -75,3 +75,12 @@ voraus; synthetische Tests allein begründen keine Änderung der Grenzwerte.
 Ein Sicherheitsveto darf Restexport hinterlassen. Die Erklärung muss den
 konkreten begrenzenden Faktor nennen; ein besserer Energie-Endwert allein
 beweist noch keinen ausführbaren Plan.
+
+
+## Ausführbarkeitsgrenzen (0.41.0)
+
+Bekannte Restlaufzeiten normaler Lasten und Wartezeiten werden gemäß
+[F-EXECUTION-PROJECTION.md](F-EXECUTION-PROJECTION.md) im Plan berücksichtigt.
+Physische Sicherheitsprüfungen und abschaltbare Ladeziele bleiben vorrangig.
+Eine Kaskaden-Prüffrist ersetzt keine bestätigte Rückmeldung des letzten
+AC-Ausgangs. Einspeisungsgründe werden aus derselben Kernentscheidung angezeigt.

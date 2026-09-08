@@ -207,6 +207,10 @@ class SurplusLoadState:
     # None means no known timed lock; it never asserts hardware confirmation.
     not_before: datetime | None = None
 
+    # Known remaining physical ON dwell and pass-3-only stability floor.
+    minimum_run_until: datetime | None = None
+    predrain_not_before: datetime | None = None
+
     def can_start_at(self, when: datetime) -> bool:
         return self.not_before is None or when >= self.not_before
 
@@ -883,3 +887,4 @@ class PlanResult:
     # (shaped like `prevented_export_by_day_wh`; days without feed-in absent).
     feedin_by_day_wh: dict[str, float] = field(default_factory=dict)
     cascade_plans: tuple[CascadePlan, ...] = ()
+    feedin_decisions: tuple[tuple[int, str], ...] = ()

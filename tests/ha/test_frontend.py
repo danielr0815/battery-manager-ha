@@ -151,6 +151,7 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
         "load_plans": {
             "b2": {
                 "name": "B2",
+                "execution": {"phase": "proving", "confirmation_pending": True},
                 "managed_by_cascade": "chain",
                 "not_before": "2026-08-30T10:45:00",
                 "feedin_waiting_for_confirmation": True,
@@ -161,6 +162,7 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
             }
         },
         "cascade_plans": {"chain": {"name": "Bad", "schedule": [block]}},
+        "feedin_decisions": [{"start": block["start"], "reason": "runtime_paused"}],
     }
 
     attrs = sensor.extra_state_attributes
@@ -168,10 +170,13 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
     assert attrs["loads"] == []
     assert attrs["load_decisions"]["b2"] == {
         "name": "B2",
+        "execution": {"phase": "proving", "confirmation_pending": True},
         "not_before": "2026-08-30T10:45:00",
         "waiting_for_confirmation": True,
         "rejected_candidates": [{"start": block["start"], "reason": "daily_peak"}],
     }
+    assert attrs["feedin_decisions"] == coordinator.data["feedin_decisions"]
+    assert "feedin_decisions" in sensor._unrecorded_attributes
     assert "load_decisions" in sensor._unrecorded_attributes
     assert attrs["cascades"] == [{"name": "Bad", "schedule": [block]}]
 

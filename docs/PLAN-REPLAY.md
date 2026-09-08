@@ -118,3 +118,11 @@ verfügbare Ablehnungsgründe und Bestätigungswartezeit aufklappbar an. Die
 Zeitangaben beziehen sich auf geprüfte Kandidaten; sie bedeuten nicht, dass
 für denselben Slot keine kleinere Alternative angenommen werden konnte.
 Auch dieses Diagnoseattribut wird nicht zusätzlich im Recorder gespeichert.
+
+
+Ab 0.41.0 enthalten Lastzustände zusätzlich `minimum_run_until` und
+`predrain_not_before`, Ergebnisse zusätzlich `feedin_decisions`. Alte Eingaben
+bleiben mit neutralen Vorgaben lesbar. Ein Vergleich mit einem älteren Ergebnis
+kann wegen der ergänzten Diagnosefelder als nicht exakt gelten, auch wenn
+Energie und Schaltentscheidungen gleich bleiben; exakte Ergebnisgleichheit
+setzt denselben Softwarestand voraus.

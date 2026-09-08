@@ -231,7 +231,18 @@ def _split_at_load_release(
     lose the useful quarter before 10:00. Absolute slot boundaries let planner,
     executor and charts share that instant without a second offset convention.
     """
-    releases = sorted({state.not_before for state in states if state.not_before})
+    releases = sorted(
+        {
+            at
+            for state in states
+            for at in (
+                state.not_before,
+                state.minimum_run_until,
+                state.predrain_not_before,
+            )
+            if at
+        }
+    )
     result: list[HourSlot] = []
     for slot in slots:
         end = slot.start + timedelta(hours=slot.duration)
@@ -327,7 +338,10 @@ def build_slots(
             )
         )
 
-    if any(state.not_before is not None for state in load_states):
+    if any(
+        state.not_before or state.minimum_run_until or state.predrain_not_before
+        for state in load_states
+    ):
         slots = _split_at_load_release(slots, load_states)
     slots = _apply_appliance_runs(slots, appliance_runs)
 

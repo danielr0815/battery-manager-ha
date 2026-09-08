@@ -33,6 +33,7 @@ ein bloßer Funktionsaufruf reicht nicht.
 
 | Tests | Verifizierte Quelle bzw. Vertrag |
 |---|---|
+| `core/test_execution_projection.py`, `ha/test_execution_constraints.py`, `ha/test_predrain_block.py`, `frontend/cascade-card.test.mjs` | `F-EXECUTION-PROJECTION.md`: Restlaufzeit, Ladeziel, stabile Vorlaufgrenze, Gerätebestätigung, Prüffristen und Kartenbegründungen |
 | `core/test_model.py` | physikalische Dataclass-Invarianten und unveränderte akzeptierte Werte |
 | `core/test_series.py`, `test_forecast_hours.py` | `F-PREDRAIN` F1, Forecast-Bucket-/Fallback-Verträge |
 | `core/test_simulate.py` | Energieerhaltung, `DC_TOPOLOGY`, `F-PREDRAIN`, `F-FEEDIN` |

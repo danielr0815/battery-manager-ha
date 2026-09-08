@@ -222,6 +222,7 @@ from .core import (
     slot_starts,
 )
 from .core.series import fixed_local_time
+from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
 from .localization import message
 from .operation_recorder import OperationRecorder
@@ -2077,7 +2078,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         stable: set[str] = set()
         for load_id, signature in signatures.items():
             prev = self._predrain_block_evidence.get(load_id)
-            if prev is not None and prev[0] == signature:
+            same = prev is not None and prev[0] == signature
+            if (
+                prev is not None
+                and signature[0] is None
+                and prev[0][0] is not None
+                and prev[0][1] == signature[1]
+            ):
+                previous_start = dt_util.parse_datetime(prev[0][0])
+                same = previous_start is not None and previous_start <= now
+            if prev is not None and same:
                 count, first_seen = prev[1] + 1, prev[2]
             else:
                 count, first_seen = 1, now
@@ -3418,15 +3428,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # preemptively because the tank MIGHT be full — the device stops
             # itself when it really is, and THAT is detected via the power
             # collapse -> power-warning latch -> saturated_power_w above).
+            projection = load_execution(self, subentry_id, data, now)
             states.append(
                 SurplusLoadState(
                     load_id=subentry_id,
                     available=available,
-                    not_before=self._load_not_before(subentry_id, data, now),
-                    feedin_ready=(
-                        not data.get(CONF_LOAD_CONTROL_SWITCH)
-                        or self._charging_is_active(data) is True
-                    ),
+                    not_before=projection["not_before"],
+                    minimum_run_until=projection["minimum_run_until"],
+                    predrain_not_before=projection["predrain_not_before"],
+                    feedin_ready=not projection["confirmation_pending"],
                     soc_percent=soc,
                     measured_power_w=measured,
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
@@ -3761,6 +3771,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         config = self.build_system_config()
         load_states = self._get_load_states(now)
+        # Snapshot before actuation: a successful switch in this cycle must
+        # not retroactively change the explanation of the plan that caused it.
+        execution_by_id = {
+            state.load_id: execution_attributes(
+                load_execution(
+                    self, state.load_id, self.entry.subentries[state.load_id].data, now
+                )
+            )
+            for state in load_states
+        }
         appliance_runs = self._get_appliance_runs(now)
         ac_series, dc_series, band, quantiles_active, profile_diag = (
             self._learned_series(now, config, len(forecasts))
@@ -3981,6 +4001,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     ),
                     None,
                 ),
+                "execution": execution_by_id[load_plan.load_id],
                 "feedin_waiting_for_confirmation": (
                     config.feedin.enabled
                     and config.feedin.automatic_enabled
@@ -4211,6 +4232,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Unlike the horizon end this remains informative below 250 Wh.
             "threshold_merge_margin_wh": round(result.threshold_merge_margin_wh, 1),
             "pv_window_ends": dict(result.pv_window_ends),
+            "feedin_decisions": [
+                {"start": inputs.slots[i].start.isoformat(), "reason": reason}
+                for i, reason in result.feedin_decisions
+            ],
             "load_plans": load_plans,
             "cascade_plans": self.cascade_manager.payload(result, config, inputs.slots),
             # Detected appliance runs (washer, dishwasher, …) for the forecast
