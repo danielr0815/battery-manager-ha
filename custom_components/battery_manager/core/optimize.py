@@ -1194,6 +1194,9 @@ def allocate_loads(
         saturation_power_w = _saturation_power_w(load, power_w, power_caps_w)
         for i in range(n):
             slot = inputs.slots[i]
+            if not state.can_start_at(slot.start):
+                rejected[load.load_id][i] = "waiting for runtime release"
+                continue
             if schedules[load.load_id][i]:
                 continue
             total_rem = remaining[load.load_id]
@@ -1325,6 +1328,7 @@ def allocate_loads(
                 if (
                     load.load_id in direct_surplus_only_load_ids
                     or not state.available
+                    or not state.can_start_at(slot.start)
                     or schedules[load.load_id][i]
                 ):
                     continue
@@ -1611,6 +1615,9 @@ def allocate_loads(
             ) = None
             block_wh = 0.0
             for s in range(end - 1, day_start - 1, -1):
+                if not state.can_start_at(inputs.slots[s].start):
+                    rejected[load.load_id][s] = "waiting for runtime release"
+                    break
                 if schedules[load.load_id][s]:
                     break  # the block never overlaps own (scattered) bookings
                 block_wh += power_w * inputs.slots[s].duration
@@ -1877,6 +1884,9 @@ def _allocate_recovery_after_continuous_loads(
             if remaining <= _EPS:
                 break
             if today_only and slot.start.date() != recovery_day:
+                continue
+            if not state.can_start_at(slot.start):
+                rejected[i] = "waiting for runtime release"
                 continue
             extending_h = run_hours[i] if schedules[i] else 0.0
             free_h = max(0.0, slot.duration - extending_h)

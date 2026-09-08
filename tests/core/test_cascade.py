@@ -1771,3 +1771,49 @@ def test_continuous_bridge_keeps_reason_aligned_with_merged_allocation():
     assert terminal.allocations == ((0, 2, 3, 600.0),)
     assert len(terminal.reasons) == 1
     assert "gaps closed" in terminal.reasons[0]
+
+
+def test_aux_waits_until_terminal_runtime_release():
+    config, inputs = _system()
+    release = NOW + timedelta(hours=1)
+    inputs = replace(
+        inputs,
+        slots=_slots(0, 0, 0),
+        load_states=tuple(
+            replace(s, not_before=release) if s.load_id == "leaf" else s
+            for s in inputs.load_states
+        ),
+    )
+    result = plan(config, inputs)
+    segments = [
+        segment for flow in result.cascade_plans[0].flows for segment in flow.segments
+    ]
+    assert segments
+    assert all(inputs.slots[s.slot_index].start >= release for s in segments)
+
+
+def test_recovery_cannot_bypass_known_runtime_release():
+    config, inputs = _system(socs=(20.0,))
+    inputs = replace(
+        inputs,
+        start_soc_percent=95,
+        slots=_slots(1000, 1000),
+        load_states=tuple(
+            replace(s, not_before=NOW + timedelta(hours=1)) if s.load_id == "b1" else s
+            for s in inputs.load_states
+        ),
+    )
+    initial = LoadPlan("b1", (False, False), 0, run_hours=(0, 0))
+    trajectory = simulate(config, inputs, 20)
+    plans, _, _ = optimize_core._allocate_recovery_after_continuous_loads(
+        config,
+        inputs,
+        20,
+        [initial],
+        (0, 0),
+        trajectory,
+        {"b1": 300},
+        priority_terminals={},
+    )
+    assert plans[0].schedule == (False, True)
+    assert dict(plans[0].rejected_candidates)[0] == "waiting for runtime release"

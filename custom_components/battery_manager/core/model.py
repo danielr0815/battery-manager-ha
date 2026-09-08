@@ -203,6 +203,12 @@ class SurplusLoadState:
     # confirmed running, its forecast cannot prove consumption is exhausted
     # and justify deliberate export. Recommendation-only callers stay neutral.
     feedin_ready: bool = True
+    # Earliest physically permitted start, on the same clock as PlanInputs.
+    # None means no known timed lock; it never asserts hardware confirmation.
+    not_before: datetime | None = None
+
+    def can_start_at(self, when: datetime) -> bool:
+        return self.not_before is None or when >= self.not_before
 
     def __post_init__(self) -> None:
         _require(

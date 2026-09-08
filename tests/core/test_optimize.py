@@ -5263,3 +5263,53 @@ def test_feedin_empty_horizon_books_nothing():
     result = plan(cfg, inputs)
     assert result.feedin_schedule_w == ()
     assert result.feedin_by_day_wh == {}
+
+
+@pytest.mark.parametrize("minute", [15, 30, 45])
+def test_known_release_plans_only_after_pause_with_seamless_hour_boundary(minute):
+    now = datetime(2026, 9, 8, 9)
+    release = now.replace(minute=minute)
+    load = SurplusLoad("load", "Load", nominal_power_w=300, min_runtime_min=60)
+    config = replace(
+        SystemConfig(),
+        loads=(load,),
+        ac_profile=LoadProfile(base_w=0),
+        dc_profile=LoadProfile(base_w=0),
+    )
+    inputs = build_slots(
+        config,
+        now,
+        config.battery.soc_max_percent,
+        [20],
+        load_states=(SurplusLoadState("load", not_before=release),),
+        pv_hourly={now + timedelta(hours=i): 2000 for i in range(6)},
+    )
+    result = plan(config, inputs)
+    scheduled = result.load_plans[0]
+    assert not scheduled.schedule[0]
+    assert scheduled.schedule[1] and scheduled.schedule[2]
+    assert inputs.slots[1].start == release
+    assert scheduled.run_hours[1] == pytest.approx(1 - minute / 60)
+    assert scheduled.run_hours[2] >= minute / 60
+    assert dict(scheduled.rejected_candidates)[0] == "waiting for runtime release"
+    assert result.trajectory.total_import_wh <= 0.1
+
+
+def test_predrain_backward_extension_stops_at_runtime_release():
+    now = datetime(2026, 7, 4, 4)
+    cfg = _predrain_config(ratio=0.1, alpha=1.0, beta=1.0)
+    release = now + timedelta(hours=4)
+    states = tuple(
+        SurplusLoadState(load.load_id, not_before=release) for load in cfg.loads
+    )
+    result, inputs = make_plan(cfg, now, 50, [13, 11], load_states=states)
+    assert all(
+        not active or slot.start >= release
+        for slot, active in zip(
+            inputs.slots, result.load_plans[0].schedule, strict=True
+        )
+    )
+    assert any(
+        reason == "waiting for runtime release"
+        for _, reason in result.load_plans[0].rejected_candidates
+    )

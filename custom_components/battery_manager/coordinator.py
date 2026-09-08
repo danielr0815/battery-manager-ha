@@ -7,6 +7,7 @@ import contextlib
 import logging
 import math
 from collections import deque
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -205,6 +206,8 @@ from .core import (
     FeedInParams,
     LoadCascade,
     LoadProfile,
+    PlanInputs,
+    PlanResult,
     PVParams,
     SupportParams,
     SurplusLoad,
@@ -548,6 +551,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_soc_cache: dict[str, float] = {}
         self._load_plug_owned: dict[str, bool] = {}
         self._last_load_switch: dict[str, datetime] = {}
+        self._plan_boundary_cancel: Callable[[], None] | None = None
         self._load_charging_active: dict[str, bool] = {}
         # Dwell x replan flicker continuation (F8): the last CONFIRMED OFF per
         # load as (timestamp, flicker_eligible) — eligible only for a
@@ -3413,6 +3417,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 SurplusLoadState(
                     load_id=subentry_id,
                     available=available,
+                    not_before=self._load_not_before(subentry_id, data, now),
                     feedin_ready=(
                         not data.get(CONF_LOAD_CONTROL_SWITCH)
                         or self._charging_is_active(data) is True
@@ -3625,6 +3630,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         config: SystemConfig,
         slots,
         band: dict[str, list[float]],
+        *,
+        source_starts: tuple[datetime, ...] | None = None,
     ) -> tuple[float, dict[str, Any]]:
         """Dynamic SOC buffer from the P80−P50 band (D-C8, active immediately).
 
@@ -3636,11 +3643,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         eta_dis = config.battery.eta_discharge
         eta_inv = config.inverter.eta
         uncertainty_wh = 0.0
-        window_hours = 0
+        window_hours = 0.0
+        hour_indexes = {
+            at.replace(minute=0, second=0, microsecond=0): i
+            for i, at in enumerate(source_starts or ())
+        }
         for i, slot in enumerate(slots):
             if slot.pv_wh > slot.ac_wh + slot.dc_wh:
                 break
-            window_hours += 1
+            window_hours += slot.duration
+            i = hour_indexes.get(
+                slot.start.replace(minute=0, second=0, microsecond=0), i
+            )
             ac_band = band["ac"][i] if i < len(band["ac"]) else 0.0
             dc_band = band["dc"][i] if i < len(band["dc"]) else 0.0
             uncertainty_wh += ac_band * slot.duration / (eta_dis * eta_inv)
@@ -3779,7 +3793,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # SOC thresholds, so a widened planning buffer never moves the PSUs.
         if quantiles_active:
             buffer_percent, buffer_diag = self._dynamic_buffer(
-                config, inputs.slots, band
+                config,
+                inputs.slots,
+                band,
+                source_starts=slot_starts(now, len(forecasts)),
             )
             config = replace(
                 config,
@@ -3792,6 +3809,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         profile_diag.update(buffer_diag)
         result = await self.hass.async_add_executor_job(plan, config, inputs)
+        self._arm_plan_boundary(inputs, result)
         self._update_plan_active(result)
         self._update_predrain_block_evidence(result, inputs, now)
         self._log_night_predrain(result, inputs, config)
@@ -3948,6 +3966,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             since = diag.get("since")
             load_plans[load_plan.load_id] = {
                 "name": load.name,
+                "not_before": next(
+                    (
+                        state.not_before.isoformat()
+                        for state in inputs.load_states
+                        if state.load_id == load.load_id
+                        and state.not_before is not None
+                    ),
+                    None,
+                ),
                 "feedin_waiting_for_confirmation": (
                     config.feedin.enabled
                     and config.feedin.automatic_enabled
@@ -5765,7 +5792,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return bool(load_plan.active_now) and (deadline is None or now < deadline)
 
     def _flicker_continuation_ok(
-        self, load_id: str, now: datetime, off_time: datetime
+        self, load_id: str, now: datetime, off_time: datetime, *, record: bool = True
     ) -> bool:
         """F8: may an OFF->ON within REC_FLICKER_CONTINUATION_MIN of a
         recommendation-driven stop waive min_off as a run continuation?
@@ -5786,14 +5813,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
         if off_time in recent:
             # Same off episode retried within the window: already granted.
-            self._load_flicker_hist[load_id] = recent
+            if record:
+                self._load_flicker_hist[load_id] = recent
             return True
         if len(recent) >= REC_FLICKER_MAX_CONTINUATIONS:
             # Ping-pong budget spent: fall back to the normal min_off.
-            self._load_flicker_hist[load_id] = recent
+            if record:
+                self._load_flicker_hist[load_id] = recent
             return False
         recent.append(off_time)
-        self._load_flicker_hist[load_id] = recent
+        if record:
+            self._load_flicker_hist[load_id] = recent
         return True
 
     def _latched_hold_candidates(self) -> set[str]:
@@ -7024,6 +7054,69 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await asyncio.sleep(DEBOUNCE_SECONDS)
         await self.async_request_refresh()
 
+    def _arm_plan_boundary(self, inputs: PlanInputs, result: PlanResult) -> None:
+        """Replan at the next exact boundary; never execute a stale future plan."""
+        if self._plan_boundary_cancel is not None:
+            self._plan_boundary_cancel()
+            self._plan_boundary_cancel = None
+        if self._actuation_shutdown:
+            return
+        boundaries = {slot.start for slot in inputs.slots if slot.start > inputs.now}
+        for load_plan in result.load_plans:
+            for slot, hours in zip(inputs.slots, load_plan.run_hours, strict=False):
+                if hours > 0:
+                    boundaries.add(slot.start + timedelta(hours=hours))
+        for cascade in result.cascade_plans:
+            for slot, flow in zip(inputs.slots, cascade.flows, strict=False):
+                for segment in flow.segments:
+                    boundaries.add(slot.start + timedelta(hours=segment.start_offset_h))
+                    boundaries.add(
+                        slot.start
+                        + timedelta(hours=segment.start_offset_h + segment.run_hours)
+                    )
+        future = [at for at in boundaries if at > inputs.now]
+        if not future:
+            return
+
+        @callback
+        def refresh(_now: datetime) -> None:
+            self._plan_boundary_cancel = None
+            if not self._actuation_shutdown:
+                self.hass.async_create_task(
+                    self.async_request_refresh(), "battery_manager_plan_boundary"
+                )
+
+        self._plan_boundary_cancel = async_track_point_in_time(
+            self.hass, refresh, min(future)
+        )
+
+    def _load_not_before(
+        self, load_id: str, data: dict, now: datetime
+    ) -> datetime | None:
+        """Project a confirmed OFF dwell; never turn an unknown actor into ON."""
+        cascade_release = self.cascade_manager.load_not_before(load_id, now)
+        if cascade_release is not None:
+            return fixed_local_time(dt_util.as_local(cascade_release))
+        off_info = self._load_last_off.get(load_id)
+        if (
+            off_info
+            and off_info[1]
+            and self._flicker_continuation_ok(load_id, now, off_info[0], record=False)
+        ):
+            return None
+        last = self._last_load_switch.get(load_id)
+        if (
+            last is None
+            or not data.get(CONF_LOAD_CONTROL_SWITCH)
+            or self._charging_is_active(data) is True
+        ):
+            return None
+        minimum = int(
+            data.get(CONF_LOAD_MIN_OFF_MIN, data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+        )
+        release = last + timedelta(minutes=minimum)
+        return fixed_local_time(dt_util.as_local(release)) if release > now else None
+
     def _arm_off_timer(self, load_id: str, off_at: datetime) -> None:
         """Arm a one-shot timer to force a load OFF at its frozen run deadline.
 
@@ -7063,6 +7156,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sources on (never sourceless) and the reload re-reads and heals.
         """
         self._actuation_shutdown = True
+        if self._plan_boundary_cancel is not None:
+            self._plan_boundary_cancel()
+            self._plan_boundary_cancel = None
         await self.cascade_manager.async_shutdown()
         # F-SUBHOUR: drop any pending force-OFF timers before flush/unload so a
         # detached point-in-time callback cannot fire after teardown (R13).
@@ -7087,6 +7183,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def cleanup(self) -> None:
         """Release entity listeners and cancel pending debounce work."""
+        if self._plan_boundary_cancel is not None:
+            self._plan_boundary_cancel()
+            self._plan_boundary_cancel = None
         self.cascade_manager.cleanup()
         self.learner.async_unschedule()
         if self._unsub_state_listener is not None:

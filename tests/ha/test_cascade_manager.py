@@ -1526,6 +1526,12 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
         INPUT_OFF_POLICY_AUTO,
     )
 
+    # Plan-boundary timers use the same virtual clock as this replay. Their
+    # callback behavior is covered separately in test_planning_time.py.
+    monkeypatch.setattr(
+        "custom_components.battery_manager.coordinator.async_track_point_in_time",
+        Mock(return_value=Mock()),
+    )
     # Move the observed 22:29 state to the nearest deterministic feasibility
     # edge: the initial horizon contains the conservative 16-minute startup
     # budget plus the real 15-minute terminal dwell. Once that transition is
@@ -5640,3 +5646,41 @@ def test_chart_soc_preserves_charge_then_discharge_with_zero_net_slot_change():
         59,
         50,
     ]
+
+
+@pytest.mark.parametrize("minute", [15, 30, 45])
+async def test_late_aux_segment_does_not_wake_before_its_start(minute):
+    now = datetime(2026, 9, 8, 9, tzinfo=UTC)
+    c = _Coordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state["enabled"] = True
+    segment = CascadeSourceSegment(0, minute / 60, 0.25, "aux", "b1", False, 75)
+    item = SimpleNamespace(
+        flows=(CascadeSlotFlow(segments=(segment,)),), recovery_deadline=None
+    )
+    await manager._apply_one(
+        "chain",
+        item,
+        (SurplusLoadState("b1", soc_percent=80), SurplusLoadState("leaf")),
+        now,
+    )
+    assert c.calls == []
+    assert state["phase"] == "idle"
+
+
+def test_cascade_planning_and_execution_share_terminal_pause(monkeypatch):
+    now = datetime(2026, 9, 8, 9, tzinfo=UTC)
+    c = _Coordinator(now)
+    c.entry.subentries["leaf"].data["min_off_min"] = 15
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state["actor_off_since"] = {"switch.output": now.isoformat()}
+    monkeypatch.setattr(cascade_manager_module.dt_util, "utcnow", lambda: now)
+    assert manager.load_not_before("leaf", now) == now + timedelta(minutes=15)
+    assert manager._minimum_off_blockers("chain", {"switch.output": True}) == {
+        "switch.output"
+    }
+    assert manager.load_not_before("b1", now) is None
+    assert manager.load_not_before("other", now) is None
+    assert manager.load_not_before("leaf", now + timedelta(minutes=15)) is None

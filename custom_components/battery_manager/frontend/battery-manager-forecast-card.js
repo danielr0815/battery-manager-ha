@@ -132,6 +132,8 @@ const STRINGS = {
     nothing_planned: "nothing planned",
     active: "active",
     feedin_wait: "feed-in waits for confirmed load start",
+    "waiting for runtime release": "minimum pause has not elapsed",
+    runtime_release: "earliest start after minimum pause",
     storage_action_too_small: "storage action below minimum duration or energy",
     terminal_priority: "continuous terminal operation has priority",
     same_day_export: "insufficient same-day export to repay charging",
@@ -232,6 +234,8 @@ const STRINGS = {
     nothing_planned: "nichts geplant",
     active: "aktiv",
     feedin_wait: "Einspeisung wartet auf bestätigten Laststart",
+    "waiting for runtime release": "Mindestpause noch nicht abgelaufen",
+    runtime_release: "Frühester Start nach Mindestpause",
     storage_action_too_small: "Speicheraktion unter Mindestlaufzeit oder Mindestenergie",
     terminal_priority: "durchgängiger Endlastbetrieb hat Vorrang",
     same_day_export: "zu wenig gleichzeitiger oder späterer Tagesexport für die Ladung",
@@ -1048,6 +1052,9 @@ class BatteryManagerForecastCard extends HTMLElement {
             : "";
         const wait = load.feedin_waiting_for_confirmation
           ? ` · ${esc(t("feedin_wait"))}` : "";
+        const releaseTime = load.not_before ? new Date(load.not_before).getTime() : NaN;
+        const release = Number.isFinite(releaseTime)
+          ? ` · ${esc(t("runtime_release"))}: ${esc(whenFmt.format(releaseTime))}` : "";
         const rejected = Array.isArray(load.rejected_candidates)
           ? load.rejected_candidates[0] : null;
         const rejectedTime = rejected ? new Date(rejected.start).getTime() : NaN;
@@ -1056,7 +1063,7 @@ class BatteryManagerForecastCard extends HTMLElement {
           : "";
         return `<span><span class="dot" style="background:${load.color}"></span>${esc(
           load.name ?? "?"
-        )} (${detail}${powerDetail})${active}${offWindow}${wait}${rejection}</span>`;
+        )} (${detail}${powerDetail})${active}${offWindow}${wait}${release}${rejection}</span>`;
       })
       .join("");
 
@@ -2598,6 +2605,11 @@ class BatteryManagerCascadeCard extends HTMLElement {
       const decision = data[id];
       if (!decision || typeof decision !== "object") return [];
       const messages = [];
+      const release = this._timestamp(decision.not_before);
+      if (Number.isFinite(release)) {
+        const when = new Intl.DateTimeFormat(this._hass.language || "en", {timeZone: this._hass.config?.time_zone, hour: "2-digit", minute: "2-digit", second: "2-digit"}).format(release);
+        messages.push(`${esc(this._text("Frühester Start nach Mindestpause", "Earliest start after minimum pause"))}: ${esc(when)}`);
+      }
       if (decision.waiting_for_confirmation) messages.push(esc(localize(this._hass, "feedin_wait")));
       for (const rejection of Array.isArray(decision.rejected_candidates) ? decision.rejected_candidates : []) {
         const time = this._timestamp(rejection?.start);

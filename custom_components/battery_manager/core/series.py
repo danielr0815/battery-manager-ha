@@ -222,6 +222,43 @@ def _quantile_wh(
     return max(0.0, value) * duration
 
 
+def _split_at_load_release(
+    slots: list[HourSlot], states: tuple[SurplusLoadState, ...]
+) -> list[HourSlot]:
+    """Split only at known release instants, conserving every energy channel.
+
+    A 09:45 release must neither consume the blocked 09:00-09:45 energy nor
+    lose the useful quarter before 10:00. Absolute slot boundaries let planner,
+    executor and charts share that instant without a second offset convention.
+    """
+    releases = sorted({state.not_before for state in states if state.not_before})
+    result: list[HourSlot] = []
+    for slot in slots:
+        end = slot.start + timedelta(hours=slot.duration)
+        cuts = [slot.start, *(at for at in releases if slot.start < at < end), end]
+        for start, stop in zip(cuts, cuts[1:], strict=False):
+            duration = (stop - start).total_seconds() / 3600.0
+            fraction = duration / slot.duration
+            result.append(
+                replace(
+                    slot,
+                    index=len(result),
+                    start=start,
+                    duration=duration,
+                    pv_wh=slot.pv_wh * fraction,
+                    ac_wh=slot.ac_wh * fraction,
+                    dc_wh=slot.dc_wh * fraction,
+                    pv_p10_wh=None
+                    if slot.pv_p10_wh is None
+                    else slot.pv_p10_wh * fraction,
+                    pv_p90_wh=None
+                    if slot.pv_p90_wh is None
+                    else slot.pv_p90_wh * fraction,
+                )
+            )
+    return result
+
+
 def build_slots(
     config: SystemConfig,
     now: datetime,
@@ -290,6 +327,8 @@ def build_slots(
             )
         )
 
+    if any(state.not_before is not None for state in load_states):
+        slots = _split_at_load_release(slots, load_states)
     slots = _apply_appliance_runs(slots, appliance_runs)
 
     return PlanInputs(

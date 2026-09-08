@@ -157,19 +157,11 @@ class CascadeManager:
                 return True
         return False
 
-    def _minimum_off_blockers(
-        self, cascade_id: str, targets: dict[str, bool]
-    ) -> set[str]:
-        """Check the entire desired path before beginning a new transition.
-
-        A withdrawn energy plan still stops immediately: minimum runtime must
-        never buy unbudgeted grid energy. Persisted minimum OFF intervals stop
-        rolling replans from immediately restarting the same physical loads.
-        The final output also protects a directly connected terminal load.
-        """
+    def _actor_release_times(self, cascade_id: str) -> dict[str, datetime]:
+        """Shared physical dwell deadlines for planning and execution."""
         topology = self._topology(cascade_id)
         if topology is None:
-            return set()
+            return {}
         delays: dict[str, float] = {}
         members = topology["members"]
         for index, (_, data) in enumerate(members):
@@ -192,18 +184,53 @@ class CascadeManager:
                     delays.get(actor, 0), float(terminal.get(CONF_LOAD_MIN_OFF_MIN, 0))
                 )
         off_since = self._state(cascade_id).get("actor_off_since", {})
-        now = dt_util.utcnow()
-        blocked: set[str] = set()
-        for actor, enabled in targets.items():
-            if not enabled or self.coordinator._entity_is_on(actor):
-                continue
+        release = {}
+        for actor, delay in delays.items():
             timestamp = off_since.get(actor)
             since = dt_util.parse_datetime(timestamp) if timestamp else None
-            if since is not None and now < dt_util.as_utc(since) + timedelta(
-                minutes=delays.get(actor, 0)
-            ):
-                blocked.add(actor)
-        return blocked
+            if since is not None and not self.coordinator._entity_is_on(actor):
+                release[actor] = dt_util.as_utc(since) + timedelta(minutes=delay)
+        return release
+
+    def _minimum_off_blockers(
+        self, cascade_id: str, targets: dict[str, bool]
+    ) -> set[str]:
+        now = dt_util.utcnow()
+        return {
+            actor
+            for actor, at in self._actor_release_times(cascade_id).items()
+            if targets.get(actor) and now < at
+        }
+
+    def load_not_before(self, load_id: str, now: datetime) -> datetime | None:
+        """Earliest root service on the actual supply path of this load."""
+        for cid, entry in self.coordinator.entry.subentries.items():
+            if entry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            topology = self._topology(cid)
+            if topology is None:
+                continue
+            members = topology["members"]
+            ids = [lid for lid, _ in members]
+            if load_id not in [*ids, topology["terminal_id"]]:
+                continue
+            depth = ids.index(load_id) if load_id in ids else len(ids)
+            actors = [members[0][1].get(CONF_LOAD_CONTROL_SWITCH)]
+            actors.extend(
+                data.get(CONF_LOAD_OUTPUT_SWITCH) for _, data in members[:depth]
+            )
+            actors.append(
+                members[depth][1].get(CONF_LOAD_CHARGE_ENABLE)
+                if depth < len(ids)
+                else topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
+            )
+            future = [
+                at
+                for actor, at in self._actor_release_times(cid).items()
+                if actor in actors and at > dt_util.as_utc(now)
+            ]
+            return max(future) if future else None
+        return None
 
     def _record_observed_off(
         self, cascade_id: str, entity_id: str, current: Any
@@ -1579,7 +1606,9 @@ class CascadeManager:
         if flow is not None and (
             flow.root_input_wh > 0.0
             or any(
-                segment.source == "aux" and segment.terminal_energy_wh > 0.0
+                segment.source == "aux"
+                and segment.terminal_energy_wh > 0.0
+                and segment.start_offset_h <= 1e-9
                 for segment in flow.segments
             )
         ):
@@ -2348,7 +2377,9 @@ class CascadeManager:
                 (
                     segment.source_load_id
                     for segment in flow.segments
-                    if segment.source == "aux" and segment.source_load_id
+                    if segment.source == "aux"
+                    and segment.source_load_id
+                    and segment.start_offset_h <= 1e-9
                 ),
                 None,
             )
@@ -2976,7 +3007,7 @@ class CascadeManager:
             segment
             for flow in plan.flows[:1]
             for segment in flow.segments
-            if segment.source == "aux"
+            if segment.source == "aux" and segment.start_offset_h <= 1e-9
         ]
         desired_source = aux_segments[0].source_load_id if aux_segments else None
         if state.get("phase") == "waking_members":

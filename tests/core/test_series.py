@@ -453,3 +453,52 @@ def test_dst_slots_conserve_real_elapsed_energy(month, day, hours):
     assert inputs.slots[-1].start + timedelta(hours=1) == (
         now + timedelta(days=1)
     ).astimezone(UTC)
+
+
+@pytest.mark.parametrize("minute", [0, 15, 30, 45])
+def test_runtime_release_splits_slot_without_losing_energy(minute):
+    from core.model import SurplusLoadState
+
+    now = datetime(2026, 9, 8, 9)
+    release = now.replace(minute=minute)
+    config = SystemConfig()
+    kwargs = dict(
+        pv_hourly={now: 1000.0}, pv_hourly_p10={now: 800.0}, pv_hourly_p90={now: 1200.0}
+    )
+    baseline = build_slots(config, now, 50, [8.0], **kwargs)
+    actual = build_slots(
+        config,
+        now,
+        50,
+        [8.0],
+        load_states=(SurplusLoadState("load", not_before=release),),
+        **kwargs,
+    )
+    assert release in [slot.start for slot in actual.slots]
+    assert [slot.index for slot in actual.slots] == list(range(len(actual.slots)))
+    for field in ("pv_wh", "ac_wh", "dc_wh", "pv_p10_wh", "pv_p90_wh", "duration"):
+        assert sum(getattr(slot, field) or 0 for slot in actual.slots) == pytest.approx(
+            sum(getattr(slot, field) or 0 for slot in baseline.slots)
+        )
+    for first, second in zip(actual.slots, actual.slots[1:], strict=False):
+        from datetime import timedelta
+
+        assert first.start + timedelta(hours=first.duration) == second.start
+
+
+def test_runtime_release_keeps_appliance_profile_at_original_time():
+    from core.model import SurplusLoadState
+
+    now = datetime(2026, 9, 8, 9)
+    config = replace(SystemConfig(), ac_profile=LoadProfile(base_w=0, variable_w=0))
+    run = ApplianceRun("washer", remaining_energy_wh=100, remaining_hours=0.25)
+    actual = build_slots(
+        config,
+        now,
+        50,
+        [0],
+        appliance_runs=(run,),
+        load_states=(SurplusLoadState("load", not_before=now.replace(minute=15)),),
+    )
+    assert actual.slots[0].ac_wh == 100
+    assert actual.slots[1].ac_wh == 0

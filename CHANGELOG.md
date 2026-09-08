@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-08
+
+### Added
+- Bekannte Mindestpausen als exakte Freigabezeitpunkte im Plan. Eine Freigabe
+  um 09:45 erzeugt getrennte Zeitfenster vor und nach 09:45 und ermöglicht
+  einen lückenlosen Anschluss an 10:00. Diagnoseexport und Karten zeigen die
+  Freigabe; das Replay enthält denselben Laufzeitzustand.
+- Ein gemeinsamer Timer stößt an der nächsten Plan-, Laufende- oder
+  Kaskaden-Segmentgrenze eine frische Planung an. Er wird bei Neuplanung
+  ersetzt und beim Entladen entfernt.
+
+### Fixed
+- Aux-Segmente mit späterem Startoffset starten nicht mehr am Anfang des
+  Zeitfensters. Auch Wiederanlauf und Übernahme gemeinsam genutzter Aktoren
+  berücksichtigen den noch ausstehenden Start.
+- Kaskadenplanung und Executor verwenden dieselben bestätigten
+  Mindestpausen der jeweiligen Versorgungsstrecke. Direkte Allokation,
+  Vorentladung und Recovery dürfen eine bekannte Freigabe nicht vorziehen.
+- Zusätzliche Teilstunden erhalten PV-, Verbrauchs- und Prognoseband-Energie.
+  Laufende Geräteprofile werden zeitlich passend verteilt; der dynamische
+  Batteriepuffer verwendet weiter die Unsicherheit der ursprünglichen Stunde
+  und zählt tatsächliche Stunden statt der Anzahl der Teilfenster.
+- Die Prognose verbraucht kein Kontingent für zulässige Fortsetzungen nach
+  kurzen Empfehlungslücken; die Ausführung entscheidet weiterhin über diese.
+
 ## [0.38.2] - 2026-09-07
 
 ### Added

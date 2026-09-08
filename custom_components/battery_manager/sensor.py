@@ -556,6 +556,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             {
                 "name": plan.get("name"),
                 "active": plan.get("active"),
+                "not_before": plan.get("not_before"),
                 "planned_energy_kwh": plan.get("planned_energy_kwh"),
                 "planning_power_w": plan.get("planning_power_w"),
                 "planning_power_source": plan.get("planning_power_source"),
@@ -593,6 +594,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "load_decisions": {
                 load_id: {
                     "name": item.get("name"),
+                    "not_before": item.get("not_before"),
                     "waiting_for_confirmation": item.get(
                         "feedin_waiting_for_confirmation", False
                     ),

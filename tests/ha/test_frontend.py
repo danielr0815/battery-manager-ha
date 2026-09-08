@@ -152,6 +152,7 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
             "b2": {
                 "name": "B2",
                 "managed_by_cascade": "chain",
+                "not_before": "2026-08-30T10:45:00",
                 "feedin_waiting_for_confirmation": True,
                 "rejected_candidates": [
                     {"start": block["start"], "reason": "daily_peak"}
@@ -167,6 +168,7 @@ async def test_soc_forecast_sensor_keeps_cascade_timeline(hass):
     assert attrs["loads"] == []
     assert attrs["load_decisions"]["b2"] == {
         "name": "B2",
+        "not_before": "2026-08-30T10:45:00",
         "waiting_for_confirmation": True,
         "rejected_candidates": [{"start": block["start"], "reason": "daily_peak"}],
     }

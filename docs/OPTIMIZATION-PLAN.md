@@ -1,6 +1,6 @@
 # Battery Manager: zehn weitere Optimierungen
 
-Stand: 2026-09-07, Arbeitsstand 0.38.1. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
+Stand: 2026-09-08, Arbeitsstand 0.39.0. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
 Abnahmen werden unten dokumentiert. Die Schalterkorrektur
 ist bereits umgesetzt und zählt nicht zu diesen zehn weiteren Punkten.
 Ein Prüfauftrag ist kein bestätigter Defekt. Bestehende Operator-Regeln und
@@ -91,8 +91,8 @@ Netzbezugsfreigabe sind Teil dieses Plans.
 | --- | --- | --- |
 | 1 | Root-Ausgangsverluste in Kandidaten, Recovery und Hausbilanz korrigiert; direkte Versorgung/Laden/Aux getestet | Zusätzlicher Vergleich mit vollständigen Live-Tagen |
 | 2 | Verbindliche Hierarchie in STRATEGY-CURRENT.md; R5-Nachtrag und historische Verweise korrigiert | Erneute Prüfung bei den folgenden Algorithmusänderungen |
-| 3 | Bestätigter Schaltzustand als zusätzliche Einspeisevoraussetzung; Aus/Unbekannt sperrt | Exakte zeitliche Abbildung sämtlicher Dwell-/Wake-Wartephasen in Lastprognosen |
-| 4 | Teilstunden-Ende wird korrekt veröffentlicht; 15/30/45 Minuten geprüft | Späte Startoffsets, lückenloser Anschluss und zugehörige Executor-/Kaskadentimer |
+| 3 | Bestätigter Schaltzustand als Einspeisevoraussetzung; bekannte Mindestpausen normaler Lasten und Kaskaden jetzt als exakte Freigabe im Plan; gemeinsame Kaskaden-Pausenquelle für Planner/Executor | Vollständige Prognose der noch laufenden Mindestlauf-, Stabilitäts- und Wake-Phasen; unbekannte Bestätigung bleibt offen |
+| 4 | Späte Starts an bekannten Freigaben mit lückenlosem Stundenanschluss; 09:00/09:15/09:30/09:45 geprüft; gemeinsame Plan-/Laufende-/Segmenttimer; Aux respektiert seinen Startoffset auch beim Wiederanlauf | Freie Optimierung später Starts innerhalb einer Stunde ohne vorgegebenen Freigabezeitpunkt (Alternativenprüfung, Punkt 5); Live-Abnahme |
 | 5 | Ein gemeinsamer Lückenschluss-Versuch je Endlast und Tag; Aux bewahrt Direktläufe und erhält sichere Fensterpräfixe statt eines Gesamtvetos | Vollständiger kleiner Vergleichsmaßstab und Vergleich alternativer Quellenreihenfolgen |
 | 6 | Absolute Tagesgrenze sowie Kapazitäten 2/5/10 kWh geprüft; Speicher-Zieltoleranz und Mindestgrößen neuer Aktionen durch Regressionen abgesichert | Empirischer Vergleich aufgezeichneter Tage, keine automatische Grenzwertänderung |
 | 7 | Kandidatenablehnungen und Bestätigungswartezeit auch in Kaskadenkarte; Recovery nennt Mindestgröße, Endlastvorrang, Reserve, Versorgbarkeit und Tagesexport; Begründungen bei Blockzusammenfassung korrigiert | Weitere weiche Ablehnungen und explizite Einspeise-Freigabegründe |
@@ -157,3 +157,21 @@ Das Startbudget berücksichtigt die zusätzlichen Recovery-Zeitfenster.
 Die physische Ursache der verspäteten Fossibot-Rückmeldung bleibt offen;
 die neue Version liefert dafür Ereignis- und Zustandsbelege. Ein Live-Nachweis
 nach Installation steht noch aus.
+
+
+## Umsetzung 2026-09-08: bekannte Wartezeiten und exakte Starts
+
+Punkte 3/4: `SurplusLoadState.not_before` transportiert bestätigte Mindestpausen
+in den Kern. Nur an diesen tatsächlichen Freigaben wird das Stundenraster
+geteilt; alle Energiekanäle bleiben erhalten. Neue Buchungen vor der Freigabe
+werden in direkter Planung, Vorentladung, Recovery und Aux verworfen. Die
+Versorgungsstrecke der Kaskade verwendet dieselben OFF-Zeitstempel wie der
+Executor. Ein späterer Aux-Start wird nicht mehr auf den Slotanfang vorgezogen.
+Ein gemeinsamer Timer fordert an den relevanten Zeitgrenzen eine neue Planung
+an; er schaltet niemals einen inzwischen überholten Plan blind ein.
+
+Vertrag und Grenzen: [F-PLAN-TIMING.md](F-PLAN-TIMING.md). Das ist keine
+Behauptung, dass sämtliche Wartephasen exakt vorhersehbar wären: noch fehlende
+Gerätebestätigungen und zukünftige stabile Planstände bleiben offen. Die
+vollständige Phasenprognose und eine freie Suche nach alternativen späten
+Starts sind weiterhin ausdrücklich in der Tabelle aufgeführt.

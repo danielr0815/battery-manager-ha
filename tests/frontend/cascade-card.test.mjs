@@ -323,10 +323,11 @@ test('forecast explains a rejected start and pending confirmation without inject
  c.setConfig({entity:'sensor.test'});
  c.hass={language:'de',config:{time_zone:'Europe/Berlin'},states:{'sensor.test':{attributes:{
   forecast:[{t:new Date(start).toISOString(),soc:50},{t:new Date(start+3600000).toISOString(),soc:60}],
-  loads:[{name:'Entfeuchter <script>',feedin_waiting_for_confirmation:true,
+  loads:[{name:'Entfeuchter <script>',feedin_waiting_for_confirmation:true,not_before:new Date(start+2700000).toISOString(),
    rejected_candidates:[{start:new Date(start).toISOString(),reason:'daily_peak'}],schedule:[]}],
  }}}};
  assert.ok(c.shadowRoot.innerHTML.includes('Einspeisung wartet auf bestätigten Laststart'));
+ assert.ok(c.shadowRoot.innerHTML.includes('Frühester Start nach Mindestpause'));
  assert.ok(c.shadowRoot.innerHTML.includes('Batterie-Tagesziel'));
  assert.ok(c.shadowRoot.innerHTML.includes('geprüfter Start verworfen'));
  assert.ok(!c.shadowRoot.innerHTML.includes('<script>'));
@@ -426,4 +427,13 @@ test('fine chart schedules retain more than 100 events and show zero power in le
  assert.equal(power.points.at(-1).time,start+6*3600000);
  assert.equal(power.points.at(-1).value,0);
  assert.equal(power.label,'Geplante Leistung');
+});
+
+test('cascade decisions show precise release time and translated minimum pause',()=>{
+ const c=card();c._config={entity:'sensor.test'};
+ c._hass.states['sensor.test']={attributes:{load_decisions:{leaf:{name:'Endlast',not_before:'2026-09-08T07:45:12Z',rejected_candidates:[{start:'2026-09-08T07:00:00Z',reason:'waiting for runtime release'}]}}}};
+ const html=c._decisions({terminal_load_id:'leaf'});
+ assert.match(html,/Frühester Start nach Mindestpause/);
+ assert.match(html,/09:45:12/);
+ assert.match(html,/Mindestpause noch nicht abgelaufen/);
 });

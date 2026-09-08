@@ -1,5 +1,12 @@
 # Architektur & Datenfluss
 
+Nachtrag 0.39.0 (2026-09-08): `SurplusLoadState.not_before` ergänzt bekannte
+Laufzeitsperren. `series.build_slots` teilt das sonst stündliche Raster an
+exakten Freigaben; `coordinator._arm_plan_boundary` fordert an der nächsten
+Slot-/Laufende-/Segmentgrenze eine frische Planung an. Kaskaden-Executor und
+Prognose teilen die physischen OFF-Fristen. Vertrag und verbleibende Grenzen:
+[Zeitliche Freigaben](../F-PLAN-TIMING.md).
+
 Seit v0.26.0 ergänzt `core/cascade.py` den Root-Allokator um gemeinsame
 Storage-SOC- und Kaskaden-Entladepläne. Seit v0.30.0 darf Energie oberhalb des
 konfigurierten Entladeziels ohne Tages-Recovery-Nachweis genutzt werden.

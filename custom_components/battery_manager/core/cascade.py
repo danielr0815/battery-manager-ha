@@ -152,6 +152,12 @@ def _allocate_aux_now(
         if slot.start.date() != today:
             break
         if any(
+            state is not None and not state.can_start_at(slot.start)
+            for load_id in cascade_load_ids
+            if (state := states.get(load_id)) is not None
+        ):
+            continue
+        if any(
             index < len(plans[load_id].schedule) and plans[load_id].schedule[index]
             for load_id in cascade_load_ids
         ):
