@@ -126,6 +126,9 @@ async def async_get_config_entry_diagnostics(
         }
         for cid, state in getattr(coordinator, "_cascade_state", {}).items()
     }
+    if recorder := getattr(coordinator, "operation_recorder", None):
+        diagnostics["operation_history"] = recorder.export()
+        diagnostics["operation_report"] = recorder.summary()
     diagnostics["integration_version"] = coordinator.integration_version
     diagnostics["core_config"] = _core_config(coordinator)
     diagnostics["learned_state"] = coordinator.learned_state_snapshot()

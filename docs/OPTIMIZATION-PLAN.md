@@ -96,9 +96,9 @@ Netzbezugsfreigabe sind Teil dieses Plans.
 | 5 | Ein gemeinsamer Lückenschluss-Versuch je Endlast und Tag; Aux bewahrt Direktläufe und erhält sichere Fensterpräfixe statt eines Gesamtvetos | Vollständiger kleiner Vergleichsmaßstab und Vergleich alternativer Quellenreihenfolgen |
 | 6 | Absolute Tagesgrenze sowie Kapazitäten 2/5/10 kWh geprüft; Speicher-Zieltoleranz und Mindestgrößen neuer Aktionen durch Regressionen abgesichert | Empirischer Vergleich aufgezeichneter Tage, keine automatische Grenzwertänderung |
 | 7 | Kandidatenablehnungen und Bestätigungswartezeit auch in Kaskadenkarte; Recovery nennt Mindestgröße, Endlastvorrang, Reserve, Versorgbarkeit und Tagesexport; Begründungen bei Blockzusammenfassung korrigiert | Weitere weiche Ablehnungen und explizite Einspeise-Freigabegründe |
-| 8 | Versionierter vollständiger Kernexport und exakter lokaler Replay umgesetzt | Vollständiger externer Executor-Ereignisstrom ist Bestandteil von Punkt 10 |
-| 9 | Lokaler Messvergleich mit Abdeckung und getrennter Laufzeit-/Leistungszuordnung | Automatische Messsammlung und Tagesbericht in HA |
-| 10 | Bestehende virtuelle Executor-Verträge und Regressionen geprüft | Verbundener geschlossener Tagesreplay und spätere lesende Release-Prüfung |
+| 8 | Versionierte Planstände, korrelierte Schaltanforderungen/Service-Antworten, passive Rückmeldungen und Kaskaden-Recovery im lokalen Archiv; Offline-Replay aller erhaltenen Planstände | Reale Ursache anhand künftig erfasster Ereignisse eingrenzen |
+| 9 | Automatische Messsammlung, persistente Tagesberichte und Kartenansicht mit Abdeckung, Laufzeit-/Leistungszuordnung und getrennten Kaskaden-Messgrenzen | Vollständige reale Tage nach Installation auswerten |
+| 10 | Geschlossene virtuelle 24-Stunden-Läufe mit echtem Planner/Executor, Geräte-Rückkopplung, Neustart, Wolken, Verbrauchsspitze, Telemetrieausfall, Tank-Sättigung und verzögerter Bestätigung; Archivvergleich per CLI | Lesende Prüfung des installierten Releases und reale Tagesabnahme |
 
 Aufzeichnung und Messformat: [PLAN-REPLAY.md](PLAN-REPLAY.md). Diese Tabelle
 unterscheidet bewusst implementierte Teilstücke von noch nicht erfüllten
@@ -175,3 +175,15 @@ Behauptung, dass sämtliche Wartephasen exakt vorhersehbar wären: noch fehlende
 Gerätebestätigungen und zukünftige stabile Planstände bleiben offen. Die
 vollständige Phasenprognose und eine freie Suche nach alternativen späten
 Starts sind weiterhin ausdrücklich in der Tabelle aufgeführt.
+
+
+## Umsetzung 2026-09-08: Betriebsnachweis und Tagesvergleich (0.40.0)
+
+Der Softwareumfang des Clusters 8/9/10 ist umgesetzt. Verbindlicher Vertrag:
+[F-OPERATION-HISTORY.md](F-OPERATION-HISTORY.md); Bedienung und Replay:
+[PLAN-REPLAY.md](PLAN-REPLAY.md). Die Instrumentierung verändert keine
+Planungsentscheidungen und kalibriert keine Toleranzen automatisch.
+Die virtuellen Tage prüfen Energierückmeldung, Aktorzeiten, Messlücken,
+Schaltzahlen, Speicherreserve und identische Rekonstruktion des Archivs.
+Reale Tagesdaten können erst nach Installation entstehen; ihre Auswertung
+bleibt die ausgewiesene empirische Abnahme von 1/6/8/9/10.

@@ -847,3 +847,12 @@ SERVICE_EXPORT_HOURLY_DETAILS = "export_hourly_details"
 SERVICE_EXPORT_LEARNED_PROFILES = "export_learned_profiles"
 SERVICE_TEST_CASCADE_TERMINAL = "test_cascade_terminal"
 CONF_AS_TABLE = "as_table"
+
+
+# Optional power channels share one config/recorder contract (W or kW).
+OPERATION_POWER_SOURCES = {
+    "operation_pv_power_entity": "pv",
+    "operation_house_power_entity": "ac",
+    "operation_import_power_entity": "grid_import",
+    "operation_export_power_entity": "grid_export",
+}

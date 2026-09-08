@@ -188,3 +188,13 @@ The test suite mirrors the layer split (see [CONTRIBUTING.md](../CONTRIBUTING.md
 for commands): `tests/core/` runs the pure core anywhere (`-p no:homeassistant`);
 `tests/ha/` needs the Home Assistant test helpers (Linux/WSL/CI). Planner
 behaviour is frozen by golden snapshots (`scripts/gen_golden.py`).
+
+
+### Betriebsaufzeichnung (0.40.0)
+
+`operation_recorder.py` verbindet konfigurierte HA-Messquellen und Aktorereignisse
+mit `operation_history.py` (HA-freie Intervallbilanz und begrenztes Archiv).
+Der Coordinator persistiert das Archiv; `diagnostics.py` exportiert es und
+`sensor.py` stellt den kompakten Tagesbericht für beide Prognosekarten bereit.
+`scripts/replay_operation.py` prüft die Aufzeichnung offline. Vertrag:
+[F-OPERATION-HISTORY.md](F-OPERATION-HISTORY.md).

@@ -1798,6 +1798,8 @@ class CascadeManager:
             "reason": state.get("safe_off_reason"),
             "snapshot": snapshot,
         }
+        if recorder := getattr(self.coordinator, "operation_recorder", None):
+            recorder.event("cascade_actor", {"cascade_id": cascade_id, **record})
         journal = state.setdefault("actor_journal", [])
         journal.append(record)
         del journal[:-CASCADE_ACTOR_JOURNAL_LIMIT]

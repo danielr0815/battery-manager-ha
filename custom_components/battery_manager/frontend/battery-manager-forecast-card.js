@@ -355,6 +355,36 @@ function findForecastEntity(hass, entities) {
   );
 }
 
+function operationReport(hass, report) {
+  if (!report || !Array.isArray(report.days) || !report.days.length) return "";
+  const de = (hass.language || "en").startsWith("de");
+  const text = (a,b) => de ? a : b;
+  const fmt = (value, digits=2) => typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat(hass.language || "en", {maximumFractionDigits:digits}).format(value) : "—";
+  const labels = {pv:"PV", ac:text("Wohnungsverbrauch", "House consumption"), grid_import:text("Netzbezug", "Grid import"), grid_export:text("Netzeinspeisung", "Grid export")};
+  const days = report.days.filter(day => day && typeof day === "object").slice(-30).sort((a,b)=>String(b.day).localeCompare(String(a.day)));
+  const content = days.map(day => {
+    const metrics = day.metrics || {};
+    const keys = [...new Set([...Object.keys(labels), ...Object.keys(metrics)])];
+    const rows = keys.map(key=>{
+      const m = metrics[key];
+      const name = labels[key] || (key.startsWith("cascade_input:")
+        ? `${report.load_names?.[key.slice(14)] || key.slice(14)} · ${text("AC-Eingang einschließlich Durchleitung", "AC input including pass-through")}`
+        : report.load_names?.[key.slice(5)] || key);
+      return `<tr><th scope="row">${esc(name)}</th><td>${fmt(m?.planned_wh == null ? null : m.planned_wh/1000)}</td><td>${fmt(m?.actual_wh == null ? null : m.actual_wh/1000)}</td><td>${fmt(m?.error_wh == null ? null : m.error_wh/1000)}</td><td>${fmt(m?.coverage_hours)} h</td></tr>`;
+    }).join("");
+    const loads = Object.entries(day.loads || {}).map(([id,l])=>`<li>${esc(report.load_names?.[id] || id)}: ${text("Aktorzeit Ist/Plan", "Actor time actual/planned")} ${fmt(l.actual_run_hours)} / ${fmt(l.planned_run_hours)} h · ${text("Laufzeit-/Leistungsanteil", "Runtime/power component")} ${fmt(l.execution_error_wh)} / ${fmt(l.power_error_wh)} Wh · ${text("Abdeckung Aktorzeit/Energie", "Coverage actor time/energy")} ${fmt(l.runtime_coverage_hours)} / ${fmt(l.coverage_hours)} h</li>`).join("");
+    const storageSoc = Object.entries(day.storage_soc || {}).map(([id,v])=>`<li>${esc(report.load_names?.[id] || id)} · SOC Min/Max: ${fmt(v.soc_min_percent)} / ${fmt(v.soc_max_percent)} %</li>`).join("");
+    return `<details><summary>${esc(day.day)} · ${text("Schaltanforderungen", "Switch requests")}: ${fmt(day.switch_requests,0)} · ${text("Zustandswechsel", "State changes")}: ${fmt(day.state_changes,0)}</summary>
+      <div style="overflow-x:auto"><table><thead><tr><th>${text("Messgröße", "Metric")}</th><th>${text("Plan", "Planned")} kWh</th><th>${text("Ist", "Actual")} kWh</th><th>Δ kWh</th><th>${text("Abdeckung", "Coverage")}</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p>SOC ${text("beobachtet Min/Max", "observed min/max")}: ${fmt(day.soc_min_percent)} / ${fmt(day.soc_max_percent)} % · ${text("Beobachtungslücke", "Observation gap")}: ${fmt(day.gap_hours)} h · ${text("Servicefehler", "Service failures")}: ${fmt(day.service_failures,0)}</p>${loads || storageSoc ? `<ul>${loads}${storageSoc}</ul>` : ""}</details>`;
+  }).join("");
+  return `<details style="padding:12px"><summary>${text("Tagesvergleich · Plan und Betrieb", "Daily comparison · plan and operation")}</summary>
+    <p>${text("Plan und Ist beziehen sich nur auf dieselben abgedeckten Messintervalle. — bedeutet fehlende Messdaten. Aktorzeit beweist keine Nutzenergie; Abweichungen allein beweisen keine Ursache.", "Planned and actual values cover the same measured intervals only. — means missing measurements. Actor time does not prove useful energy; deviations alone do not establish a cause.")}</p>
+    ${report.dropped_events ? `<p>${text("Ältere Detailereignisse wurden durch die Aufbewahrungsgrenze entfernt; Tagesberichte bleiben erhalten.", "Older detailed events were removed by the retention limit; daily reports remain.")}</p>` : ""}
+    ${report.last_error ? `<p>${text("Aufzeichnungsfehler aufgetreten", "A recording error occurred")}</p>` : ""}${content}</details>`;
+}
+
 class BatteryManagerForecastCard extends HTMLElement {
   constructor() {
     super();
@@ -591,6 +621,7 @@ class BatteryManagerForecastCard extends HTMLElement {
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
         ${body}
+        ${operationReport(this._hass, stateObj?.attributes?.operation_report)}
       </ha-card>
     `;
     this._attachChartHandlers();
@@ -2767,7 +2798,7 @@ class BatteryManagerCascadeCard extends HTMLElement {
       /* Bound SVG scaling on wide dashboards; keep wrapping readouts outside scrolling. */
       .plot,.readout{width:100%;max-width:600px}.details .plot,.details .readout,.details .activity-tracks{max-width:900px}
       @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}
-    </style><div class="wrap">${body}</div></ha-card>`;
+    </style><div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}</div></ha-card>`;
     this._bindCharts();
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => this._sizeAxes());
   }

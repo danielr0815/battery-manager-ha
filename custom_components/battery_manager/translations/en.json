@@ -95,8 +95,8 @@
             }
           },
           "consumption_learning": {
-            "name": "Measurement sources for learning (optional)",
-            "description": "Optional sensors that enable the nightly profile learning.",
+            "name": "Measurement sources for learning and daily comparison (optional)",
+            "description": "Optional sources for consumption profiles and the local comparison of plan and operation.",
             "data": {
               "ac_load_entity": "AC load sensor for learned profile (optional)",
               "ac_balance_in_entities": "AC balance: inflow counters (optional)",
@@ -104,7 +104,11 @@
               "dc_load_entity": "DC load sensor for learned profile (optional)",
               "dc_balance_in_entities": "DC balance: inflow counters (optional)",
               "dc_balance_out_entities": "DC balance: outflow counters (optional)",
-              "workday_entity": "Workday sensor (optional, holidays)"
+              "workday_entity": "Workday sensor (optional, holidays)",
+              "operation_pv_power_entity": "Actual PV power for daily comparison (optional)",
+              "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional)",
+              "operation_import_power_entity": "Grid import power for daily comparison (optional)",
+              "operation_export_power_entity": "Grid export power for daily comparison (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
@@ -113,7 +117,11 @@
               "dc_load_entity": "Sensor for the DC consumer load (e.g. shunt). Enables learning of the DC profile; without it the DC profile stays static.",
               "dc_balance_in_entities": "Alternative without a direct DC load sensor: inflow counters of the DC consumption node.",
               "dc_balance_out_entities": "Outflow counters of the DC consumption node (energy that is not consumed).",
-              "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date."
+              "workday_entity": "Binary sensor of the Workday integration (on = workday). Holidays are then learned and planned like weekends; upcoming horizon days are checked via workday.check_date.",
+              "operation_pv_power_entity": "Actual PV power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "operation_import_power_entity": "Grid import power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power."
             }
           }
         }
@@ -634,8 +642,8 @@
             }
           },
           "consumption_learning": {
-            "name": "Consumption learning & measurement sources",
-            "description": "Measurement sources and parameters for the nightly profile learning.",
+            "name": "Measurement sources for learning and daily comparison (optional)",
+            "description": "Optional sources for consumption profiles and the local comparison of plan and operation.",
             "data": {
               "ac_load_entity": "AC load sensor for learned profile (optional)",
               "ac_balance_in_entities": "AC balance: inflow counters (optional)",
@@ -648,7 +656,11 @@
               "learning_max_age_days": "Max. profile age (days)",
               "profile_half_life_days": "Recency half-life (days)",
               "buffer_min_percent": "Dynamic SOC buffer: minimum (%)",
-              "buffer_max_percent": "Dynamic SOC buffer: maximum (%)"
+              "buffer_max_percent": "Dynamic SOC buffer: maximum (%)",
+              "operation_pv_power_entity": "Actual PV power for daily comparison (optional)",
+              "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional)",
+              "operation_import_power_entity": "Grid import power for daily comparison (optional)",
+              "operation_export_power_entity": "Grid export power for daily comparison (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
@@ -662,7 +674,11 @@
               "learning_max_age_days": "If the last successful learning run is older, forecasting falls back entirely to the static profile (fail-safe).",
               "profile_half_life_days": "Weighting of learning days: a day of this age still counts half. Replaces an explicit season model — smaller values follow behaviour changes faster, larger ones smooth more.",
               "buffer_min_percent": "Lower clamp of the dynamic safety buffer derived from the forecast uncertainty (P80−P50).",
-              "buffer_max_percent": "Upper clamp of the dynamic safety buffer — limits how much reserve the uncertainty may request."
+              "buffer_max_percent": "Upper clamp of the dynamic safety buffer — limits how much reserve the uncertainty may request.",
+              "operation_pv_power_entity": "Actual PV power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "operation_import_power_entity": "Grid import power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power."
             }
           },
           "support_paths": {

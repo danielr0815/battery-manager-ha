@@ -135,6 +135,7 @@ from .const import (
     DOMAIN,
     INPUT_OFF_POLICIES,
     INPUT_OFF_POLICY_KEEP,
+    OPERATION_POWER_SOURCES,
     PV_FORECAST_MODES,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_CASCADE,
@@ -256,6 +257,7 @@ _SUPPORT_SWITCH_KEYS = (
 )
 
 # Learned-consumption measurement sources (docs/CONSUMPTION_FORECAST.md §4.1)
+_OPERATION_POWER_KEYS = tuple(OPERATION_POWER_SOURCES)
 _LEARNING_SINGLE_KEYS = (CONF_AC_LOAD_ENTITY, CONF_DC_LOAD_ENTITY)
 _LEARNING_MULTI_KEYS = (
     CONF_AC_BALANCE_IN,
@@ -670,7 +672,7 @@ def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
 def _learning_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """Measurement-source fields (shared: consumers step + options)."""
     schema: dict[Any, Any] = {}
-    for key in _LEARNING_SINGLE_KEYS:
+    for key in (*_LEARNING_SINGLE_KEYS, *_OPERATION_POWER_KEYS):
         # suggested_value (not default) keeps the field clearable in the UI.
         schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = (
             _entity("sensor")
@@ -1015,6 +1017,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     # from the forecast again (F-PREDRAIN F4).
                     CONF_PV_WINDOW_END_HOUR,
                     *_LEARNING_SINGLE_KEYS,
+                    *_OPERATION_POWER_KEYS,
                     CONF_WORKDAY_ENTITY,
                 ):
                     data.setdefault(key, None)

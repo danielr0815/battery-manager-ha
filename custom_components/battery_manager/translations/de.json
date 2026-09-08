@@ -95,8 +95,8 @@
             }
           },
           "consumption_learning": {
-            "name": "Messquellen fürs Lernen (optional)",
-            "description": "Optionale Sensoren, die das nächtliche Lernen der Verbrauchsprofile aktivieren.",
+            "name": "Messquellen für Lernen und Tagesvergleich (optional)",
+            "description": "Optionale Quellen für Verbrauchsprofile und den lokalen Vergleich von Plan und Betrieb.",
             "data": {
               "ac_load_entity": "AC-Lastsensor für gelerntes Profil (optional)",
               "ac_balance_in_entities": "AC-Bilanz: Zufluss-Zähler (optional)",
@@ -104,7 +104,11 @@
               "dc_load_entity": "DC-Lastsensor für gelerntes Profil (optional)",
               "dc_balance_in_entities": "DC-Bilanz: Zufluss-Zähler (optional)",
               "dc_balance_out_entities": "DC-Bilanz: Abfluss-Zähler (optional)",
-              "workday_entity": "Werktag-Sensor (optional, Feiertage)"
+              "workday_entity": "Werktag-Sensor (optional, Feiertage)",
+              "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional)",
+              "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional)",
+              "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional)",
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor, der die AC-Verbraucherlast direkt misst (W-Sensor oder kWh-Zähler). Aktiviert das nächtliche Lernen des AC-Stundenprofils aus der Langzeitstatistik; hat Vorrang vor der Zählerbilanz. Wichtig: nicht den Netzimport und keinen Punkt wählen, der das eigene Batterieladen enthält.",
@@ -113,7 +117,11 @@
               "dc_load_entity": "Sensor für die DC-Verbraucherlast (z. B. Shunt). Aktiviert das Lernen des DC-Profils; ohne Angabe bleibt das DC-Profil statisch.",
               "dc_balance_in_entities": "Alternative ohne direkten DC-Lastsensor: Zufluss-Zähler des DC-Verbrauchsknotens.",
               "dc_balance_out_entities": "Abfluss-Zähler des DC-Verbrauchsknotens (Energie, die nicht verbraucht wird).",
-              "workday_entity": "Binary-Sensor der Workday-Integration (an = Werktag). Feiertage werden dann wie Wochenenden gelernt und geplant; Folgetage im Horizont fragt die Integration über workday.check_date ab."
+              "workday_entity": "Binary-Sensor der Workday-Integration (an = Werktag). Feiertage werden dann wie Wochenenden gelernt und geplant; Folgetage im Horizont fragt die Integration über workday.check_date ab.",
+              "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen."
             }
           }
         }
@@ -634,8 +642,8 @@
             }
           },
           "consumption_learning": {
-            "name": "Verbrauchslernen & Messquellen",
-            "description": "Messquellen und Parameter für das nächtliche Lernen der Profile.",
+            "name": "Messquellen für Lernen und Tagesvergleich (optional)",
+            "description": "Optionale Quellen für Verbrauchsprofile und den lokalen Vergleich von Plan und Betrieb.",
             "data": {
               "ac_load_entity": "AC-Lastsensor für gelerntes Profil (optional)",
               "ac_balance_in_entities": "AC-Bilanz: Zufluss-Zähler (optional)",
@@ -648,7 +656,11 @@
               "learning_max_age_days": "Max. Profilalter (Tage)",
               "profile_half_life_days": "Rezenz-Halbwertszeit (Tage)",
               "buffer_min_percent": "Dynamischer SOC-Puffer: Minimum (%)",
-              "buffer_max_percent": "Dynamischer SOC-Puffer: Maximum (%)"
+              "buffer_max_percent": "Dynamischer SOC-Puffer: Maximum (%)",
+              "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional)",
+              "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional)",
+              "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional)",
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor, der die AC-Verbraucherlast direkt misst (W-Sensor oder kWh-Zähler). Aktiviert das nächtliche Lernen des AC-Stundenprofils aus der Langzeitstatistik; hat Vorrang vor der Zählerbilanz. Wichtig: nicht den Netzimport und keinen Punkt wählen, der das eigene Batterieladen enthält.",
@@ -662,7 +674,11 @@
               "learning_max_age_days": "Ist der letzte erfolgreiche Lernlauf älter, fällt die Prognose komplett auf das statische Profil zurück (Fail-safe).",
               "profile_half_life_days": "Gewichtung der Lerntage: Ein Tag mit diesem Alter zählt noch halb. Ersetzt ein explizites Saisonmodell — kleinere Werte folgen Verhaltensänderungen schneller, größere glätten stärker.",
               "buffer_min_percent": "Untere Klemme des dynamischen Sicherheitspuffers aus der Prognose-Unsicherheit (P80−P50).",
-              "buffer_max_percent": "Obere Klemme des dynamischen Sicherheitspuffers — begrenzt, wie viel Reserve die Unsicherheit maximal anfordern darf."
+              "buffer_max_percent": "Obere Klemme des dynamischen Sicherheitspuffers — begrenzt, wie viel Reserve die Unsicherheit maximal anfordern darf.",
+              "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen."
             }
           },
           "support_paths": {

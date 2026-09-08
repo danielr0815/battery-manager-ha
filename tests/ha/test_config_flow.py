@@ -2319,3 +2319,28 @@ def test_separate_cascades_cannot_alias_one_terminal_switch():
         None,
     )
     assert result == "cascade_actor_in_use"
+
+
+async def test_operation_measurement_sources_roundtrip_and_can_be_cleared(hass):
+    from custom_components.battery_manager.const import OPERATION_POWER_SOURCES
+
+    entry = await _setup_entry(hass)
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    fields = _section_fields(form["data_schema"].schema, "consumption_learning")
+    assert set(OPERATION_POWER_SOURCES) <= {str(key) for key in fields}
+    values = {
+        key: f"sensor.observed_{metric}"
+        for key, metric in OPERATION_POWER_SOURCES.items()
+    }
+    payload = _no_change_options_payload(form["data_schema"].schema)
+    payload["consumption_learning"] = values
+    result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
+    assert result["type"] == "create_entry"
+    assert all(result["data"][key] == value for key, value in values.items())
+    await hass.async_block_till_done()
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(form["data_schema"].schema)
+    payload["consumption_learning"] = {}
+    result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
+    assert result["type"] == "create_entry"
+    assert all(result["data"][key] is None for key in OPERATION_POWER_SOURCES)

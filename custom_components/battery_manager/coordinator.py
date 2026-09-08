@@ -224,6 +224,7 @@ from .core import (
 from .core.series import fixed_local_time
 from .history_profile import ProfileLearner
 from .localization import message
+from .operation_recorder import OperationRecorder
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -728,6 +729,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # V8: latches True on the FIRST successful cycle and never resets, so a
         # genuine SOC dropout after a good cycle (which zeroes _successful_updates)
         # cannot re-enter the startup grace even if it happens inside the window.
+        self.operation_recorder = OperationRecorder(self)
         self._last_planner_recording = None
         self._first_success_done = False
 
@@ -756,6 +758,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "are re-derived at runtime"
             )
             data = None
+        self.operation_recorder.restore(data.get("operation_history") if data else None)
+        self.operation_recorder.start()
         if data:
             # Cache entries are keyed by subentry AND carry the source entity
             # id so a reconfigured load never reuses another device's SOC.
@@ -1108,6 +1112,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # F-REALIZED-SURPLUS: measured day counters + monotone true-export
             # total + last counter readings (decision 8; rationale in
             # async_load_persistent_state).
+            "operation_history": self.operation_recorder.export(),
             "realized": {
                 "date": self._realized["date"],
                 "lost_wh": self._realized["lost_wh"],
@@ -3809,6 +3814,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         profile_diag.update(buffer_diag)
         result = await self.hass.async_add_executor_job(plan, config, inputs)
+        self.operation_recorder.plan(config, inputs, result)
         self._arm_plan_boundary(inputs, result)
         self._update_plan_active(result)
         self._update_predrain_block_evidence(result, inputs, now)
@@ -5361,6 +5367,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return False
         service = "turn_on" if turn_on else "turn_off"
+        recorder = getattr(self, "operation_recorder", None)
+        request = (
+            recorder.event(
+                "command_requested",
+                {"entity_id": entity_id, "service": service, "owner": actor_owner},
+            )
+            if recorder
+            else None
+        )
         try:
             # homeassistant.* works across domains (switch, input_boolean, ...)
             await self.hass.services.async_call(
@@ -5368,12 +5383,42 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
+            if recorder:
+                recorder.event(
+                    "command_result",
+                    {
+                        "request": request,
+                        "entity_id": entity_id,
+                        "success": False,
+                        "error": type(err).__name__,
+                    },
+                )
             return False
+        except asyncio.CancelledError:
+            if recorder:
+                recorder.event(
+                    "command_cancelled", {"request": request, "entity_id": entity_id}
+                )
+            raise
+        if recorder:
+            recorder.event(
+                "command_result",
+                {"request": request, "entity_id": entity_id, "success": True},
+            )
         return True
 
     async def _set_number_value(self, entity_id: str, value: float) -> bool:
         """Write an input_number (F-FEEDIN: the external controller's AC
         setpoint). Same error semantics as _switch_entity: log + False."""
+        recorder = getattr(self, "operation_recorder", None)
+        request = (
+            recorder.event(
+                "command_requested",
+                {"entity_id": entity_id, "service": "set_value", "value": value},
+            )
+            if recorder
+            else None
+        )
         try:
             await self.hass.services.async_call(
                 "input_number",
@@ -5383,7 +5428,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             _LOGGER.error("input_number.set_value failed for %s: %s", entity_id, err)
+            if recorder:
+                recorder.event(
+                    "command_result",
+                    {
+                        "request": request,
+                        "entity_id": entity_id,
+                        "success": False,
+                        "error": type(err).__name__,
+                    },
+                )
             return False
+        except asyncio.CancelledError:
+            if recorder:
+                recorder.event(
+                    "command_cancelled", {"request": request, "entity_id": entity_id}
+                )
+            raise
+        if recorder:
+            recorder.event(
+                "command_result",
+                {"request": request, "entity_id": entity_id, "success": True},
+            )
         return True
 
     def _entity_is_on(self, entity_id: str) -> bool:
@@ -7155,6 +7221,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Cancelling mid-sequence is safe: a make-before-break leaves at worst both
         sources on (never sourceless) and the reload re-reads and heals.
         """
+        self.operation_recorder.sample()
+        self.operation_recorder.event("shutdown", {})
+        self.operation_recorder.stop()
         self._actuation_shutdown = True
         if self._plan_boundary_cancel is not None:
             self._plan_boundary_cancel()
@@ -7186,6 +7255,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._plan_boundary_cancel is not None:
             self._plan_boundary_cancel()
             self._plan_boundary_cancel = None
+        self.operation_recorder.stop()
         self.cascade_manager.cleanup()
         self.learner.async_unschedule()
         if self._unsub_state_listener is not None:

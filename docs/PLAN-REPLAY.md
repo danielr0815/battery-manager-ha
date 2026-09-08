@@ -54,13 +54,61 @@ PV- und AC-Abweichungen sind Beobachtungen, keine automatische Ursachenanalyse.
 Insbesondere wird kein PV-Clamp gesetzt und kein Auftrag an andere Projekte
 versandt. Dafür sind wiederholte, sauber zugeordnete Messungen nötig.
 
-## Grenzen des jetzigen Standes
+## Automatische Betriebsaufzeichnung ab 0.40.0
 
-Die Aufzeichnung reproduziert einen Planner-Aufruf. Sie ersetzt noch keinen
-vollständigen Executor-Tagesreplay mit allen Ereignissen, Mindestpausen,
-Neustarts und Schaltbestätigungen. Die Einzelverträge der HA-Zustandsmaschinen
-werden weiterhin mit virtueller Zeit geprüft. Für eine empirische Kalibrierung
-der Ein-Prozent-Peak-Toleranz fehlen zunächst vollständig aufgezeichnete Tage.
+Die Integration sammelt konfigurierte Leistungs-, SOC- und Aktorrückmeldungen
+lokal. Unter den optionalen Messquellen in den Integrationseinstellungen können
+vier **Leistungssensoren in W oder kW** ergänzt werden: PV, Wohnungsverbrauch,
+Netzbezug und Netzeinspeisung. Bezugs- und Einspeisesensor müssen getrennte,
+nichtnegative Leistungen liefern. Der Wohnungsverbrauch muss dieselbe AC-Grenze
+wie die Prognose abbilden und BM-Zusatzlasten ausschließen. Energiezähler in kWh
+und ein vorzeichenbehafteter Netto-Netzsensor sind hier keine Ersatzquelle.
+
+Die Prognose- und Kaskadenkarte zeigen unter **Tagesvergleich · Plan und Betrieb**
+die Tagesberichte. Lastsensoren werden übernommen. Ein Kaskaden-Eingang misst
+auch Durchleitung und wird deshalb separat mit dem vollständigen geplanten
+Versorgungspfad verglichen. Er beweist keine im Akku gespeicherte Energie.
+Bestätigte Aktorzeiten bleiben auch ohne Leistungsmessung sichtbar; ihre
+Abdeckung kann größer sein als die Abdeckung der Energiefehlerzerlegung.
+
+Der Diagnoseexport enthält `operation_history` und `operation_report`.
+Ereignisse erhalten fortlaufende Nummern und den aktiven Planbezug.
+`command_requested` ist eine aktive Anforderung, `command_result` die
+Service-Antwort, `state_changed` eine passive Rückmeldung mit HA-Context-ID.
+Ein erfolgreicher Service beweist keinen physischen Zustandswechsel.
+`cascade_actor` liefert zusätzliche Phasen- und Recovery-Belege.
+
+```bash
+python scripts/replay_operation.py /tmp/diagnostics.json
+python scripts/replay_operation.py /tmp/diagnostics.json --observations-only
+python scripts/replay_operation.py /tmp/before.json --compare /tmp/after.json
+```
+
+Das CLI benötigt kein laufendes HA. Es rekonstruiert die Tagesauswertung und
+prüft jeden erhaltenen Kernaufruf. `exact_plans`, `daily_matches` und
+`complete_event_history` weisen Ergebnisgleichheit und Vollständigkeit getrennt
+aus. Ein Unterschied bei vollständiger Aufzeichnung oder einem Planner-Ergebnis
+führt zu Exitcode 1. Verdrängte Ereignisse bleiben ausdrücklich unvollständig.
+Beide Archive werden unabhängig auf Replay-Gleichheit geprüft; ein Fehler
+im zweiten Archiv wird ebenfalls gemeldet. Der Vergleich enthält außerdem
+SOC-Grenzen, Laufzeiten und Servicefehler. Er zeigt nur gemeinsame Tage und
+Messgrößen, jeweils mit
+beiden Abdeckungen; das ist keine automatische Bewertung verschiedener Haushalte
+oder Wetterlagen. Die beobachtete Messreihe simuliert keine alternative Physik.
+
+Detailereignisse und komprimierte Pläne bleiben höchstens sieben Tage,
+50.000 Ereignisse und 32 MiB erhalten. Tagesberichte bleiben 30 Kalendertage.
+Leistungen werden höchstens fünf Minuten fortgeschrieben; veraltete Werte,
+fehlende Quellen und Neustartlücken werden nicht zu Nullenergie umgedeutet.
+Für eine empirische Toleranzkalibrierung müssen zuerst vollständige reale Tage
+mit passenden Messquellen aufgezeichnet werden.
+
+Die Regression `test_closed_operation_day_with_feedback_restart_and_telemetry`
+koppelt unabhängig davon den echten Planner und Kaskaden-Executor an ein
+simuliertes Speicher-/Lastgerät. Sie vergleicht einen Grundablauf und einen
+Ablauf mit Störungen über jeweils 24 Stunden mit virtueller Zeit. Ihr
+vereinfachtes Gerätemodell ersetzt keine Live-Abnahme. Vertrag und Grenzen:
+[F-OPERATION-HISTORY.md](F-OPERATION-HISTORY.md).
 
 ## Planungsgründe in der Kaskadenkarte
 

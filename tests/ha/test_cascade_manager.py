@@ -5684,3 +5684,236 @@ def test_cascade_planning_and_execution_share_terminal_pause(monkeypatch):
     assert manager.load_not_before("b1", now) is None
     assert manager.load_not_before("other", now) is None
     assert manager.load_not_before("leaf", now + timedelta(minutes=15)) is None
+
+
+@pytest.mark.parametrize("disturbed", [False, True])
+async def test_closed_operation_day_with_feedback_restart_and_telemetry(
+    monkeypatch, actor_confirmation_clock, disturbed
+):
+    """F-OPERATION-HISTORY: real planner/executor, a feedback-driven physical day.
+
+    The plant computes energy from confirmed switches, never from plan energy.
+    Clouds, a house peak and a saturated tank deliberately disagree with forecasts.
+    A mid-day reload preserves evidence but cannot invent the unobserved interval.
+    """
+    import math
+    from copy import deepcopy
+
+    from custom_components.battery_manager.operation_history import (
+        OperationHistory,
+        replay_history,
+    )
+
+    now = datetime(2026, 9, 8, tzinfo=UTC)
+    monkeypatch.setattr(cascade_manager_module.dt_util, "utcnow", lambda: now)
+    c = _Coordinator(now)
+    history = OperationHistory()
+    c.operation_recorder = SimpleNamespace(
+        event=lambda kind, data: history.event(now, kind, data)
+    )
+    manager = CascadeManager(c)
+    manager._state("chain")["enabled"] = True
+    config = SystemConfig(
+        loads=(
+            SurplusLoad("b1", "B1", 300, 0, 15, 15, True, 2000, 90, True),
+            SurplusLoad("leaf", "Leaf", 300, 0, 15, 15, False),
+        ),
+        cascades=(LoadCascade("chain", (CascadeMember("b1", 20, 50),), "leaf"),),
+    )
+    house_energy = config.battery.capacity_wh * 0.95
+    grid_import_wh = grid_export_wh = 0.0
+    energy = 1400.0
+    actual_leaf_wh = 0.0
+    command_count = 0
+    delayed_off = False
+    clock = actor_confirmation_clock
+
+    async def switch(entity_id, on, **kwargs):
+        nonlocal command_count, delayed_off
+        command_count += 1
+        request = history.event(
+            now, "command_requested", {"entity_id": entity_id, "on": on}
+        )
+        entity = c.hass.states.get(entity_id)
+        old = entity.state
+
+        def feedback():
+            entity.state = "on" if on else "off"
+            history.event(
+                now,
+                "state_changed",
+                {"entity_id": entity_id, "old": old, "new": entity.state},
+            )
+
+        if (
+            disturbed
+            and not delayed_off
+            and entity_id == "switch.output"
+            and not on
+            and old == "on"
+        ):
+            # The real OFF/recovery path waits on feedback with virtual time.
+            delayed_off = True
+            clock.events.append((clock.elapsed + 43, feedback))
+        else:
+            feedback()
+        history.event(now, "command_result", {"request": request, "success": True})
+        c.calls.append((entity_id, on))
+        return True
+
+    c._switch_entity = switch
+    minimum = energy
+    last_power = 0.0
+    for step in range(289):
+        now = datetime(2026, 9, 8, tzinfo=UTC) + timedelta(minutes=step * 5)
+        sunlight = (
+            max(0, math.sin((now.hour + now.minute / 60 - 6) * math.pi / 12))
+            if now.hour < 19
+            else 0
+        )
+        pv = 1200 * sunlight * (0.45 if disturbed and step % 7 == 0 else 1)
+        house = 800 if disturbed and 144 <= step < 150 else 100
+        terminal_on = c._entity_is_on("switch.output") and c._entity_is_on(
+            "switch.leaf"
+        )
+        leaf_power = (
+            (2 if disturbed and 13 <= now.hour < 15 else 300) if terminal_on else 0
+        )
+        measurements = {
+            key: {"state": str(value), "unit": "W", "reported_at": now.isoformat()}
+            for key, value in {"pv": pv, "ac": house, "load:leaf": leaf_power}.items()
+        }
+        measurements["soc"] = {
+            "state": str(100 * house_energy / config.battery.capacity_wh),
+            "reported_at": now.isoformat(),
+        }
+        measurements["soc:b1"] = {
+            "state": str(energy / 20),
+            "reported_at": now.isoformat(),
+        }
+        if disturbed and 120 <= step < 126:
+            measurements["load:leaf"]["state"] = "unavailable"
+        history.sample(now, measurements, {"load:leaf": terminal_on})
+        if step:
+            actual_leaf_wh += last_power / 12
+        if step == 288:
+            break
+        if step == 144:
+            saved = history.export()
+            history = OperationHistory()
+            history.restore(saved)
+            history.break_observation(now, "startup")
+            restored_state = deepcopy(c._cascade_state)
+            manager = CascadeManager(c)
+            c._cascade_state = restored_state
+            history.sample(now, measurements, {"load:leaf": terminal_on})
+        for name in ("sensor.soc", "sensor.input_power", "sensor.output_power"):
+            entity = c.hass.states.get(name)
+            entity.last_updated = entity.last_reported = now
+        c.hass.states.get("sensor.soc").state = str(energy / 20)
+        c.hass.states.get("sensor.output_power").state = str(leaf_power)
+        c.hass.states.get("sensor.input_power").state = str(
+            leaf_power if c._entity_is_on("switch.input") else 0
+        )
+        states = (
+            SurplusLoadState(
+                "b1", soc_percent=energy / 20, soc_source="live", soc_observed_at=now
+            ),
+            SurplusLoadState("leaf"),
+        )
+        # Recompute from current storage and actual runtime, plus a six-hour forecast.
+        inputs = PlanInputs(
+            now,
+            100 * house_energy / config.battery.capacity_wh,
+            tuple(
+                HourSlot(
+                    i,
+                    now + timedelta(hours=i),
+                    1,
+                    (now.hour + i) % 24,
+                    1000 if 8 <= (now.hour + i) % 24 < 17 else 0,
+                    100,
+                    0,
+                )
+                for i in range(6)
+            ),
+            states,
+            cascade_runtime_states=(manager.runtime_state("chain"),),
+        )
+        result = plan(config, inputs)
+        history.activate_plan(now, config, inputs, result, "day-test")
+        await manager.async_apply(config, result, states, now)
+        if manager._state("chain")["phase"] == "proving":
+            # Device publications and the executor's proof refresh happen inside
+            # the coarse energy step, before its 180-second absolute deadline.
+            for second in (1, 61):
+                observed = now + timedelta(seconds=second)
+                output = c.hass.states.get("sensor.output_power")
+                output.state = "300" if c._entity_is_on("switch.output") else "0"
+                output.last_reported = observed
+                await manager.async_apply(config, result, states, observed)
+        terminal_on = c._entity_is_on("switch.output") and c._entity_is_on(
+            "switch.leaf"
+        )
+        last_power = (
+            (2 if disturbed and 13 <= now.hour < 15 else 300) if terminal_on else 0
+        )
+        # Publish the newly confirmed operating point at the same timestamp.
+        measurements["load:leaf"]["state"] = (
+            str(last_power) if not (disturbed and 120 <= step < 126) else "unavailable"
+        )
+        # Ideal bus/storage balance is independent of the planner's prediction:
+        # clouds and house peaks alter physical SOC and hence the next plan.
+        root_on = c._entity_is_on("switch.input")
+        charge_w = (
+            min(300, max(0, (2000 - energy) * 12))
+            if root_on and c._entity_is_on("switch.gate")
+            else 0
+        )
+        root_w = charge_w + (last_power + 20 if terminal_on else 0) if root_on else 0
+        net_wh = (pv - house - root_w) / 12
+        candidate = house_energy + net_wh
+        ceiling = config.battery.capacity_wh * 0.95
+        floor = config.battery.capacity_wh * 0.20
+        imported = max(0, floor - candidate)
+        exported = max(0, candidate - ceiling)
+        house_energy = min(ceiling, max(floor, candidate))
+        grid_import_wh += imported
+        grid_export_wh += exported
+        for metric, watts in (
+            ("grid_import", imported * 12),
+            ("grid_export", exported * 12),
+        ):
+            measurements[metric] = {
+                "state": str(watts),
+                "unit": "W",
+                "reported_at": now.isoformat(),
+            }
+        history.sample(now, measurements, {"load:leaf": terminal_on})
+        if c._entity_is_on("switch.input"):
+            energy = min(2000, energy + charge_w / 12)
+        elif terminal_on:
+            energy = max(0, energy - (last_power + 20) / 12)
+        minimum = min(minimum, energy)
+        assert not manager._state("chain").get("fault"), manager._state("chain")
+    day = history.daily["2026-09-08"]
+    assert actual_leaf_wh > 500
+    assert day["metrics"]["grid_import"]["actual_wh"] == pytest.approx(grid_import_wh)
+    assert day["metrics"]["grid_export"]["actual_wh"] == pytest.approx(grid_export_wh)
+    assert day["soc_min_percent"] < day["soc_max_percent"]
+    assert command_count > 0
+    assert day["switch_requests"] == command_count
+    assert day["loads"]["leaf"]["runtime_coverage_hours"] == pytest.approx(24)
+    metric = day["metrics"]["load:leaf"]
+    if not disturbed:
+        assert metric["actual_wh"] == pytest.approx(actual_leaf_wh)
+        assert metric["coverage_hours"] == pytest.approx(24)
+    else:
+        assert delayed_off and clock.elapsed >= 43
+        assert metric["coverage_hours"] == pytest.approx(23.5)
+        assert day["loads"]["leaf"]["power_error_wh"] < 0
+    assert minimum >= 900  # Discrete 5-minute plant must retain the configured reserve.
+    exported = history.export()
+    replayed = replay_history(exported)
+    assert replayed["daily_matches"]
+    assert all(replayed["exact_plans"].values())

@@ -437,3 +437,20 @@ test('cascade decisions show precise release time and translated minimum pause',
  assert.match(html,/09:45:12/);
  assert.match(html,/Mindestpause noch nicht abgelaufen/);
 });
+
+test('daily report keeps missing data, boundaries and runtime coverage visible in both cards',()=>{
+ for (const type of ['battery-manager-forecast-card','battery-manager-cascade-card']) {
+  const c=new (definitions.get(type))(); c.setConfig({entity:'sensor.test'});
+  const report={days:[null,{day:'2026-09-08',switch_requests:3,state_changes:2,gap_hours:.5,metrics:{pv:{planned_wh:1000,actual_wh:900,error_wh:-100,coverage_hours:2},'cascade_input:b1':{planned_wh:500,actual_wh:400,coverage_hours:1}},loads:{b1:{actual_run_hours:2,planned_run_hours:1,runtime_coverage_hours:3}},storage_soc:{b1:{soc_min_percent:50,soc_max_percent:70}}}],load_names:{b1:'B1 <script>'},dropped_events:2,last_error:'ValueError'};
+  c.hass={language:'de',config:{time_zone:'Europe/Berlin'},states:{'sensor.test':{attributes:{operation_report:report,cascades:[],forecast:[]}}}};
+  assert.ok(c.shadowRoot.innerHTML.includes('Tagesvergleich'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('Durchleitung'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('B1 &lt;script&gt;'),type);
+  assert.ok(!c.shadowRoot.innerHTML.includes('<script>'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('—'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('Abdeckung Aktorzeit/Energie'),type);
+  assert.ok(c.shadowRoot.innerHTML.includes('Aufzeichnungsfehler aufgetreten'),type);
+  c.hass={...c._hass,language:'en'};
+  assert.ok(c.shadowRoot.innerHTML.includes('Daily comparison'),type);
+ }
+});

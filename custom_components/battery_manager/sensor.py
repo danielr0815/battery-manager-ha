@@ -530,6 +530,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "consumption_forecast",
             "cascades",
             "load_decisions",
+            "operation_report",
         }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -591,6 +592,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads_today_kwh": per_day_loads["today_kwh"],
             "loads_tomorrow_kwh": per_day_loads["tomorrow_kwh"],
             "loads": loads,
+            "operation_report": self.coordinator.operation_recorder.summary(),
             "load_decisions": {
                 load_id: {
                     "name": item.get("name"),

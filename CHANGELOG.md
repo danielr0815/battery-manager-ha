@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-08
+
+### Added
+- Lokale Betriebsaufzeichnung mit korrelierten Planständen, Schaltanforderungen,
+  Service-Ergebnissen, passiven Zustandswechseln und Kaskaden-Recovery.
+  Der HA-Diagnoseexport enthält das begrenzte, persistente Archiv.
+- Tagesvergleich in Prognose- und Kaskadenkarte: Plan-/Ist-Energie auf denselben
+  Messintervallen, Messabdeckung, bestätigte Aktorzeiten, getrennte Laufzeit- und
+  Leistungsabweichung, SOC-Minima/-Maxima und Schaltzahlen. Fehlende oder veraltete
+  Messungen bleiben unbekannt; Neustarts erzeugen keine geschätzte Ausfallenergie.
+- Vier optionale Leistungssensoren für PV, Wohnungsverbrauch ohne BM-Lasten,
+  Netzbezug und Netzeinspeisung. Bestehende Last- und SOC-Sensoren werden übernommen;
+  Kaskaden-Eingangsleistung berücksichtigt die Durchleitung zum nächsten Gerät.
+- Offline-Replay aller erhaltenen Planstände und Tagesberichte sowie Vergleich
+  zweier Archive über `scripts/replay_operation.py`. Virtuelle Tagesregressionen
+  verbinden Planner, Executor, Gerätezustände, Neustart, Telemetrieausfall,
+  Tank-Sättigung und verzögerte OFF-Bestätigung ohne produktive Wartezeiten.
+
+Die Planungsstrategie und ihre Toleranzen bleiben unverändert. Detailaufzeichnung:
+maximal sieben Tage, 50.000 Ereignisse und 32 MiB; Tagesberichte: 30 Kalendertage.
+
 ## [0.39.0] - 2026-09-08
 
 ### Added
