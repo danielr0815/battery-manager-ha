@@ -686,3 +686,29 @@ vollständiger Ersatz für den HA-Recorder. Recovery speichert zusätzlich den
 ursprünglichen Fehler und ob tatsächlich ein Helper-Befehl wiederholt wurde.
 Nach HA-Neustart werden unterbrochene Recovery-Läufe als `interrupted`
 markiert; ein laufendes Herunterfahren bricht Wartephasen ohne neuen Fault ab.
+
+
+## Korrektur 2026-09-09: Sperrzeiten des aktiven Versorgungspfads
+
+Beim Wechsel von Root-Wake zu Aux muss Root ausgeschaltet werden. Seine
+Wiedereinschaltsperre gilt weiterhin für Root-Versorgung und neue Starts,
+aber nicht für den bereits angenommenen Aux-Pfad. Die HA-Schicht projiziert
+für diesen Pfad die OFF-Fristen derselben ON-Aktoren, die der Executor mit
+`_aux_targets` und `_minimum_off_blockers` schützt. Nicht benötigte Root-,
+Ladefreigabe- und vorgelagerte Ausgangsaktoren sperren die Fortsetzung nicht.
+Benötigte Ausgangs- und Endlastschalter behalten ihre tatsächlichen Pausen.
+Das gilt auch während Wake/Proof und der Wiederaufnahme nach einem Neustart.
+
+`CascadeRuntimeState.aux_path_releases` trägt diese absoluten Fristen auf der
+lokalen Core-Zeitachse. `None` bedeutet unbekannte Projektion (ältere
+Aufzeichnungen / reine Core-Aufrufer), `()` einen bekannten Pfad ohne Pause.
+Nur eine laufende/angenommene Episode verwendet diese Projektion; neue
+Episoden behalten die bisherigen konservativen Startbedingungen. Fristen
+teilen das Planraster ohne Veränderung der Energiesummen. Die Prüfung der
+realen Aktoren vor einem Quellenwechsel bleibt verbindlich.
+
+Das Erledigen einer Wiederaufladungsverpflichtung ist kein Abschaltgrund für
+eine aktive Episode. Nur eine bereits beendete Episode wechselt dadurch zu
+`complete`. Der Regressionstest führt echte Coordinator-Refreshes vom Wake
+über erfolgreiche Leistungsprüfung und weitere Neuplanungen bis zum Wechsel
+B1 → B2 und zur Abschaltung bei gemeldeten 50 % aus; die Uhr läuft virtuell.

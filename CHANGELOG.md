@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.5] - 2026-09-09
+
+### Fixed
+- Laufende Kaskadenentladung bleibt nach dem Abschalten der Netzzufuhr aktiv.
+  Der Planner prüft dafür die Pausen des benötigten Ausgangspfads; die
+  Wiedereinschaltsperre der Netzzufuhr und abgeschalteter vorgelagerter
+  Ausgänge unterbrechen die Entladung nicht mehr. Neue Starts und echte
+  Ausgangs-/Endverbraucherpausen bleiben geschützt.
+- Eine erfüllte Wiederaufladungsverpflichtung beendet keine noch laufende
+  Entladung oder Leistungsprüfung. Quellenwechsel und Abschaltung bleiben
+  an den tatsächlichen Ladezustand und den aktuellen Plan gebunden.
+
 ## [0.41.4] - 2026-09-09
 
 ### Fixed

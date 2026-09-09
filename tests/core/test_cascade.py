@@ -1817,3 +1817,47 @@ def test_recovery_cannot_bypass_known_runtime_release():
     )
     assert plans[0].schedule == (False, True)
     assert dict(plans[0].rejected_candidates)[0] == "waiting for runtime release"
+
+
+@pytest.mark.parametrize(
+    "phase,path,active_now",
+    [
+        ("proving", (), True),
+        ("running", (), True),
+        ("running", (NOW + timedelta(hours=1),), False),
+        ("running", None, False),
+        ("idle", (), False),
+        ("complete", (), False),
+    ],
+)
+def test_aux_continuation_uses_output_path_not_root_pause(phase, path, active_now):
+    """Bad 2026-09-08: turning Root OFF must not revoke proven battery service.
+
+    A real output pause still blocks service; new starts and old recordings
+    without a path projection retain the full Root startup constraints.
+    """
+    config, inputs = _system(members=2, socs=(84.4, 86.0))
+    inputs = replace(
+        inputs,
+        slots=_slots(0, 0, 0, 0, 0, 0),
+        load_states=tuple(
+            replace(s, not_before=NOW + timedelta(hours=1)) for s in inputs.load_states
+        ),
+        cascade_runtime_states=(
+            CascadeRuntimeState(
+                "chain",
+                NOW.date(),
+                phase,
+                active_source_id="b1",
+                aux_path_releases=path,
+            ),
+        ),
+    )
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    assert bool(cascade.flows[0].aux_terminal_wh) is active_now
+    assert cascade.flows[0].root_input_wh == 0
+    assert result.grid_import_kwh == 0
+    assert cascade.planned_aux_energy_wh > 0
+    for member in cascade.flows[-1].member_flows:
+        assert member.soc_end_percent == pytest.approx(50)

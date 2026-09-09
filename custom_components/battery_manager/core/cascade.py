@@ -151,11 +151,19 @@ def _allocate_aux_now(
     for index, slot in enumerate(inputs.slots):
         if slot.start.date() != today:
             break
-        if any(
-            state is not None and not state.can_start_at(slot.start)
-            for load_id in cascade_load_ids
-            if (state := states.get(load_id)) is not None
-        ):
+        # An accepted Aux path needs its outputs, not a restart of Root or
+        # charging gates. Reusing Root's pause here withdrew every successful
+        # wake as soon as proof completed (Bad, 2026-09-08). Unknown projections
+        # and new episodes retain the conservative full startup constraints.
+        if continuing and runtime is not None and runtime.aux_path_releases is not None:
+            blocked = any(slot.start < at for at in runtime.aux_path_releases)
+        else:
+            blocked = any(
+                state is not None and not state.can_start_at(slot.start)
+                for load_id in cascade_load_ids
+                if (state := states.get(load_id)) is not None
+            )
+        if blocked:
             continue
         if any(
             index < len(plans[load_id].schedule) and plans[load_id].schedule[index]
@@ -676,8 +684,8 @@ def _build_plan(
         segment for segment in aux_segments if segment.slot_index == 0
     )
     if active_aux_segments:
-        runtime = CascadeRuntimeState(
-            cascade_id=cascade.cascade_id,
+        runtime = replace(
+            runtime or CascadeRuntimeState(cascade_id=cascade.cascade_id),
             episode_day=original_inputs.now.date(),
             phase="running",
             source_cursor=next(

@@ -3804,9 +3804,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pv_hourly=pv_hourly,
             pv_hourly_p10=pv_hourly_p10,
             pv_hourly_p90=pv_hourly_p90,
-        )
-        inputs = replace(
-            inputs,
             cascade_runtime_states=tuple(
                 self._cascade_runtime_state(cascade.cascade_id)
                 for cascade in config.cascades

@@ -8,7 +8,14 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
 
 from .forecast_hours import coverage_and_residual
-from .model import ApplianceRun, HourSlot, PlanInputs, SurplusLoadState, SystemConfig
+from .model import (
+    ApplianceRun,
+    CascadeRuntimeState,
+    HourSlot,
+    PlanInputs,
+    SurplusLoadState,
+    SystemConfig,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -223,7 +230,9 @@ def _quantile_wh(
 
 
 def _split_at_load_release(
-    slots: list[HourSlot], states: tuple[SurplusLoadState, ...]
+    slots: list[HourSlot],
+    states: tuple[SurplusLoadState, ...],
+    cascade_states: tuple[CascadeRuntimeState, ...] = (),
 ) -> list[HourSlot]:
     """Split only at known release instants, conserving every energy channel.
 
@@ -242,6 +251,7 @@ def _split_at_load_release(
             )
             if at
         }
+        | {at for runtime in cascade_states for at in runtime.aux_path_releases or ()}
     )
     result: list[HourSlot] = []
     for slot in slots:
@@ -282,6 +292,7 @@ def build_slots(
     pv_hourly: dict[datetime, float] | None = None,
     pv_hourly_p10: dict[datetime, float] | None = None,
     pv_hourly_p90: dict[datetime, float] | None = None,
+    cascade_runtime_states: tuple[CascadeRuntimeState, ...] = (),
 ) -> PlanInputs:
     """Assemble PlanInputs from daily forecasts and load profiles.
 
@@ -341,8 +352,8 @@ def build_slots(
     if any(
         state.not_before or state.minimum_run_until or state.predrain_not_before
         for state in load_states
-    ):
-        slots = _split_at_load_release(slots, load_states)
+    ) or any(runtime.aux_path_releases for runtime in cascade_runtime_states):
+        slots = _split_at_load_release(slots, load_states, cascade_runtime_states)
     slots = _apply_appliance_runs(slots, appliance_runs)
 
     return PlanInputs(
@@ -351,6 +362,7 @@ def build_slots(
         slots=tuple(slots),
         load_states=load_states,
         appliance_runs=appliance_runs,
+        cascade_runtime_states=cascade_runtime_states,
     )
 
 

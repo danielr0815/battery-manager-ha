@@ -644,7 +644,9 @@ async def test_wake_order_and_two_sample_power_proof() -> None:
     assert state["recovery_pending"] == []
 
 
-async def test_power_proof_tracks_forecast_recovery_below_fifty_percent() -> None:
+async def test_power_proof_tracks_forecast_recovery_below_fifty_percent(
+    monkeypatch,
+) -> None:
     """A future below-target slot creates recovery debt before SOC falls."""
     now = datetime(2026, 8, 23, 6)
     coordinator = _Coordinator(now)
@@ -671,6 +673,15 @@ async def test_power_proof_tracks_forecast_recovery_below_fifty_percent() -> Non
         manager._state("chain")["recovery_deadline"]
         == (now + timedelta(hours=6)).isoformat()
     )
+
+    monkeypatch.setattr(cascade_manager_module.ir, "async_delete_issue", Mock())
+    # A fulfilled recovery marker must not erase the accepted running state
+    # and start another Root wake while the actual SOC is still above target.
+    coordinator.calls.clear()
+    await manager._apply_one("chain", deep_plan, live, now + timedelta(seconds=72))
+    assert manager._state("chain")["phase"] == "running"
+    assert coordinator.calls == []
+    assert coordinator.hass.states.get("switch.output").state == "on"
 
 
 async def test_sleeping_member_wakes_before_terminal_is_energised() -> None:
@@ -1496,7 +1507,7 @@ async def test_live_two_fossibot_full_switch_pass_has_one_root_owner(hass) -> No
 
 @pytest.mark.parametrize("window_short", [False, True])
 async def test_live_two_fossibot_real_refreshes_keep_root_stable(
-    hass, monkeypatch, request, window_short
+    hass, monkeypatch, request, freezer, window_short
 ) -> None:
     """Drive the incident topology through complete coordinator refreshes.
 
@@ -1540,6 +1551,8 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     started = datetime(2026, 9, 1, 23, 29, 0, tzinfo=UTC)
     if window_short:
         started += timedelta(seconds=1)
+    await hass.config.async_set_time_zone("UTC")
+    freezer.move_to(started)
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -1729,6 +1742,7 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     wake_deadline = state["wake_deadline"]
     for elapsed_s in (10, 20, 30, 40, 50):
         clock["now"] = started + timedelta(seconds=elapsed_s)
+        freezer.move_to(clock["now"])
         await coordinator.async_refresh()
         if coordinator._load_switch_task is not None:
             await coordinator._load_switch_task
@@ -1744,9 +1758,11 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     # boundary. Root is switched OFF exactly once for the intended Aux
     # handover, by the cascade owner, and never cycles back ON.
     clock["now"] = started + timedelta(seconds=51)
+    freezer.move_to(clock["now"])
     hass.states.async_set("sensor.b1_input_power", "0")
     await coordinator.async_refresh()
     clock["now"] = started + timedelta(seconds=52)
+    freezer.move_to(clock["now"])
     hass.states.async_set("sensor.b2_input_power", "0")
     await coordinator.async_refresh()
 
@@ -1761,10 +1777,55 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     service_calls.clear()
     for elapsed_s in (62, 72):
         clock["now"] = started + timedelta(seconds=elapsed_s)
+        freezer.move_to(clock["now"])
         await coordinator.async_refresh()
     assert service_calls == []
     assert hass.states.get("switch.bad_waschmaschine").state == "off"
     assert state["phase"] == "proving"
+
+    # Bad 2026-09-08: the old regression stopped during proof and missed the
+    # first running replan. Real OFF dwell must not withdraw the Aux path.
+    for elapsed_s in (73, 134, 145, 180):
+        clock["now"] = started + timedelta(seconds=elapsed_s)
+        freezer.move_to(clock["now"])
+        hass.states.async_set("sensor.b1_soc", "89.4")
+        hass.states.async_set("sensor.b2_soc", "89.1")
+        hass.states.async_set("sensor.b1_input_power", "0")
+        hass.states.async_set("sensor.b2_input_power", "0")
+        hass.states.async_set("sensor.b1_output_power", "450")
+        hass.states.async_set("sensor.b2_output_power", "426.1")
+        await coordinator.async_refresh()
+    assert state["phase"] == "running"
+    assert service_calls == []
+    assert hass.states.get("switch.b1_output").state == "on"
+    assert hass.states.get("switch.b2_output").state == "on"
+    assert (
+        coordinator.cascade_manager.load_not_before("leaf", clock["now"]) > clock["now"]
+    )
+
+    # Reaching B1's real target hands over to B2. B1's newly started OFF pause
+    # must not interrupt B2, while the terminal output stays continuously ON.
+    for elapsed_s in (190, 200, 261, 275):
+        clock["now"] = started + timedelta(seconds=elapsed_s)
+        freezer.move_to(clock["now"])
+        hass.states.async_set("sensor.b1_soc", "50")
+        hass.states.async_set("sensor.b2_soc", "89.1")
+        hass.states.async_set("sensor.b2_input_power", "0")
+        hass.states.async_set("sensor.b2_output_power", "426.1")
+        await coordinator.async_refresh()
+    assert state["source"] == "b2"
+    assert state["phase"] == "running"
+    assert hass.states.get("switch.b2_output").state == "on"
+    assert service_calls == [("turn_off", "switch.b1_output")]
+
+    clock["now"] = started + timedelta(seconds=285)
+    freezer.move_to(clock["now"])
+    hass.states.async_set("sensor.b2_soc", "50")
+    await coordinator.async_refresh()
+    assert hass.states.get("switch.b2_output").state == "off"
+    assert state["phase"] == "complete"
+    coordinator.cleanup()
+    await coordinator.async_shutdown()
 
 
 async def test_live_root_rejects_generic_off_at_entity_boundary(
@@ -5917,3 +5978,50 @@ async def test_closed_operation_day_with_feedback_restart_and_telemetry(
     replayed = replay_history(exported)
     assert replayed["daily_matches"]
     assert all(replayed["exact_plans"].values())
+
+
+@pytest.mark.parametrize("phase", ["waking_members", "proving", "running"])
+@pytest.mark.parametrize("source", ["b1", "b2"])
+def test_accepted_aux_projects_only_required_output_pauses(monkeypatch, phase, source):
+    """Root/gate/upstream OFF dwell must not block the live Aux supply path."""
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.series import fixed_local_time
+
+    now = datetime(2026, 9, 9, 19, 17, 40, tzinfo=UTC)
+    c = _LiveIncidentCoordinator(now)
+    for member in ("b1", "b2"):
+        c.entry.subentries[member].data["min_off_min"] = 5
+    c.entry.subentries["leaf"].data["min_off_min"] = 15
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(phase=phase, source=source, wake_mode="aux")
+    # Root and gates just went OFF, while all outputs required by this source
+    # are physically ON. B1 may already be OFF when B2 is the source.
+    for actor in (
+        "switch.bad_waschmaschine",
+        "input_boolean.charge_b1",
+        "input_boolean.charge_b2",
+        "switch.b1_output",
+        "switch.b2_output",
+    ):
+        state.setdefault("actor_off_since", {})[actor] = now.isoformat()
+    c.hass.states.get("switch.b1_output").state = "on" if source == "b1" else "off"
+    c.hass.states.get("switch.b2_output").state = "on"
+    monkeypatch.setattr(dt_util, "utcnow", lambda: now)
+    assert manager.load_not_before("leaf", now) == now + timedelta(minutes=5)
+    assert manager.runtime_state("chain").aux_path_releases == ()
+    assert manager._minimum_off_blockers("chain", {"switch.bad_waschmaschine": True})
+
+    # A real loss of the terminal supply retains the full compressor pause,
+    # including while resuming a persisted episode after a restart.
+    c.hass.states.get("switch.b2_output").state = "off"
+    release = fixed_local_time(dt_util.as_local(now + timedelta(minutes=15)))
+    assert manager.runtime_state("chain").aux_path_releases == (release,)
+    assert manager._minimum_off_blockers("chain", {"switch.b2_output": True})
+    state.update(
+        phase="idle", restart_reconcile_pending=True, restart_source_hint=source
+    )
+    assert manager.runtime_state("chain").aux_path_releases == (release,)
+    state.pop("restart_source_hint")
+    assert manager.runtime_state("chain").aux_path_releases is None

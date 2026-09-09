@@ -547,6 +547,11 @@ class CascadeRuntimeState:
     source_cursor: int = 0
     active_source_id: str | None = None
     recovery_pending_ids: tuple[str, ...] = ()
+    # None: no HA path projection (old recordings / pure-core callers).
+    # An empty tuple explicitly means the accepted Aux path has no OFF dwell.
+    # Root/charge-gate pauses remain in SurplusLoadState.not_before and must
+    # not withdraw a running battery supply (Bad, 2026-09-08).
+    aux_path_releases: tuple[datetime, ...] | None = None
 
 
 @dataclass(frozen=True)

@@ -160,3 +160,36 @@ def test_stability_wait_vetoes_early_predrain_with_explicit_reason():
         for _, reason in after[0].rejected_candidates
     )
     assert trajectory.total_import_wh == 0
+
+
+def test_aux_output_release_splits_slots_independently_of_root_pause():
+    """A shorter output pause must not inherit Root's later restart deadline."""
+    from core.model import CascadeRuntimeState
+
+    config, inputs = case()
+    root_release = NOW + timedelta(minutes=45)
+    output_release = NOW + timedelta(minutes=20)
+    runtime = CascadeRuntimeState(
+        "chain",
+        NOW.date(),
+        "running",
+        active_source_id="b1",
+        aux_path_releases=(output_release,),
+    )
+    plain = build_slots(config, NOW, 80, [5])
+    split = build_slots(
+        config,
+        NOW,
+        80,
+        [5],
+        load_states=(SurplusLoadState("load", not_before=root_release),),
+        cascade_runtime_states=(runtime,),
+    )
+    assert [slot.start.minute for slot in split.slots[:3]] == [0, 20, 45]
+    assert split.cascade_runtime_states == (runtime,)
+    for key in ("pv_wh", "ac_wh", "dc_wh"):
+        assert sum(getattr(slot, key) for slot in plain.slots) == pytest.approx(
+            sum(getattr(slot, key) for slot in split.slots)
+        )
+    only_output = build_slots(config, NOW, 80, [5], cascade_runtime_states=(runtime,))
+    assert [slot.start.minute for slot in only_output.slots[:2]] == [0, 20]

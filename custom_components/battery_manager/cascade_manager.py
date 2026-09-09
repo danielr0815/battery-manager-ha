@@ -57,6 +57,7 @@ from .core import (
     SurplusLoadState,
     SystemConfig,
 )
+from .core.series import fixed_local_time
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -512,12 +513,31 @@ class CascadeManager:
         # reaches ``running``.
         if phase not in ("idle", "proving", "running", "recovering", "complete"):
             phase = "idle"
+        source = restart_source or active_source
+        aux_path_releases = None
+        topology = self._topology(cascade_id)
+        if (
+            phase in ("proving", "running")
+            and topology is not None
+            and source in {load_id for load_id, _ in topology["members"]}
+        ):
+            # Project the same ON vector that execution protects. Root and
+            # charge gates stay OFF for Aux; their restart dwell cannot stop
+            # an already accepted discharge. Skipped upstream outputs are
+            # likewise irrelevant after a downstream source handover.
+            targets = self._aux_targets(topology, source)
+            aux_path_releases = tuple(
+                fixed_local_time(dt_util.as_local(at))
+                for actor, at in self._actor_release_times(cascade_id).items()
+                if targets.get(actor)
+            )
         return CascadeRuntimeState(
             cascade_id=cascade_id,
             episode_day=parsed_day,
             phase=phase,
             active_source_id=restart_source or active_source,
             recovery_pending_ids=tuple(state.get("recovery_pending", [])),
+            aux_path_releases=aux_path_releases,
         )
 
     def enabled(self, cascade_id: str) -> bool:
@@ -2981,7 +3001,12 @@ class CascadeManager:
                     still_pending.append(load_id)
             state["recovery_pending"] = still_pending
             if not still_pending:
-                state["phase"] = "complete"
+                # Clearing a fulfilled recovery obligation is not an OFF
+                # transition. In particular, proof may record future recovery
+                # needs while today's sources are still above 50 %. Preserve
+                # their running/wake state instead of starting a second wake.
+                if state.get("phase") not in active_episode_phases:
+                    state["phase"] = "complete"
                 state["recovery_deadline"] = None
                 ir.async_delete_issue(
                     self.coordinator.hass,
