@@ -1111,6 +1111,20 @@
           "description": "Optionale interne Subentry-ID für bestehende YAML-Aufrufe. Bei Auswahl einer Kaskade nicht erforderlich."
         }
       }
+    },
+    "repair_consumption_history": {
+      "name": "AC-Verbrauchshistorie korrigieren",
+      "description": "Berechnet das AC-Lernen ab dem Datum neu. Nur verwenden, wenn Verkabelung und Messpunkte seitdem unverändert sind. Frühere Tage, DC-Historie und Recorder-Messwerte bleiben erhalten.",
+      "fields": {
+        "entry_id": {
+          "name": "Integration",
+          "description": "Battery-Manager-Eintrag."
+        },
+        "since": {
+          "name": "Unverändert seit",
+          "description": "Erster Tag mit sicher unveränderter Konfiguration, innerhalb des Lernfensters."
+        }
+      }
     }
   },
   "exceptions": {

@@ -711,10 +711,17 @@ house bus, add the inverter counter to the inflows.
 `dc_load_entity` (shunt) or DC balance lists.
 
 
-## Kaskadenbereinigung (v0.41.3)
+## Kaskadenbereinigung und historische Zuordnung (v0.41.4)
 
 Lineare Speicherkaskaden werden beim Lernen nur am ersten Eingang bereinigt.
 Nachgelagerte Eingänge und die Endlast enthalten dieselbe Durchleitung und
-werden nicht zusätzlich abgezogen. Der Neuaufbau aus Recorder-Historie wird
-beim Versionswechsel automatisch ausgelöst; Regeln und Regressionsnachweis:
+werden nicht zusätzlich abgezogen. Konfigurationsänderungen gelten nur für
+nachfolgende vollständige Stunden; bereits bereinigte Tageswerte bleiben
+unverändert. Noch ausstehende Stunden verwenden gespeicherte frühere
+Konfigurationsstände. Die nächtliche Profilaggregation benötigt keinen
+wiederholten Neuaufbau aller historischen Messwerte.
+
+Eine rückwirkende Korrektur ist nur über die explizite Aktion
+`battery_manager.repair_consumption_history` mit `since` möglich und setzt
+seitdem unveränderte Verkabelung voraus. Regeln, Migration und Tests:
 [F-CASCADE-CONSUMPTION.md](F-CASCADE-CONSUMPTION.md).

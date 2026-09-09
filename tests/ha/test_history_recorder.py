@@ -732,7 +732,7 @@ def test_static_fallback_watchdog_honours_window_across_midnight(hass) -> None:
 
 
 @pytest.mark.parametrize("root_in_house", [True, False])
-async def test_cascade_learning_rebuilds_history_without_repeated_pass_through(
+async def test_cascade_learning_preserves_historical_attribution(
     hass, _min_samples_2, root_in_house
 ):
     """F-CASCADE-CONSUMPTION: rebuild actual recorder samples after topology changes.
@@ -777,8 +777,6 @@ async def test_cascade_learning_rebuilds_history_without_repeated_pass_through(
     ):
         await _import(hass, _power_meta(f"sensor.{sid}"), _power_rows(values))
 
-    await _run_pinned(learner)
-    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [0.0] * 24
     cascade = ConfigSubentry(
         subentry_id="chain",
         subentry_type=SUBENTRY_TYPE_CASCADE,
@@ -790,22 +788,121 @@ async def test_cascade_learning_rebuilds_history_without_repeated_pass_through(
         },
     )
     assert hass.config_entries.async_add_subentry(learner.entry, cascade)
-    await _run_pinned(learner)
-    for day in DAYS:
-        _assert_series(learner.data["daily_hours"][day]["ac"], [36.0] * 24)
-    # Fresh rebuild bypasses the ordinary 10 W minimum damping step.
-    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [36.0] * 24
-    assert learner.data["diagnostics"]["negative_residuals"] == 0
-
-    # Old installed rule version, with an otherwise unchanged topology.
-    current = learner.data["cleaning_fingerprint"]
-    learner.data["cleaning_fingerprint"] = "[4," + current.split(",", 1)[1]
-    learner.data["daily_hours"] = {day: {"ac": [0.0] * 24, "dc": None} for day in DAYS}
-    learner.data["profiles"]["ac"]["weekday"]["p50"] = [0.0] * 24
-    await _run_pinned(learner)
-    assert learner.data["cleaning_fingerprint"] == current
-    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [36.0] * 24
-
+    with patch.object(dt_util, "now", return_value=_at(DAYS[0], 0)):
+        learner._capture_configuration(learner._raw_config())
+    # Change wiring before the last day has been learned. The previous epoch
+    # must still supply the old attribution for pending historical hours.
     assert hass.config_entries.async_remove_subentry(learner.entry, "chain")
+    with patch.object(dt_util, "now", return_value=_at(DAYS[-1], 10, 30)):
+        learner._capture_configuration(learner._raw_config())
     await _run_pinned(learner)
-    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [0.0] * 24
+    for day in DAYS[:-1]:
+        _assert_series(learner.data["daily_hours"][day]["ac"], [36.0] * 24)
+    expected = [36.0] * 10 + [None] + [0.0] * 13
+    _assert_series(learner.data["daily_hours"][DAYS[-1]]["ac"], expected)
+
+    from copy import deepcopy
+
+    previous = deepcopy(learner.data["daily_hours"])
+    assert hass.config_entries.async_add_subentry(learner.entry, cascade)
+    await _run_pinned(learner)
+    assert learner.data["daily_hours"] == previous
+    # Stable configuration and cached data require no recorder fetch at all.
+    with patch.object(learner, "_fetch_days", side_effect=AssertionError("refetch")):
+        await _run_pinned(learner)
+    assert learner.data["daily_hours"] == previous
+
+
+async def test_explicit_repair_only_changes_confirmed_ac_days(hass, _min_samples_2):
+    """R4: operator-confirmed history repairs AC only and survives reload."""
+    from copy import deepcopy
+
+    learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    await _import(hass, _power_meta("sensor.house"), _power_rows(_all_hours(80.0)))
+    await _run_pinned(learner)
+    # Emulate erroneous old cleaning and independently learned DC history.
+    for day in DAYS:
+        learner.data["daily_hours"][day] = {"ac": [0.0] * 24, "dc": [51.0] * 24}
+    learner.data["profiles"]["dc"] = {"weekday": {"p50": [51.0] * 24}}
+    learner.data["samples"]["dc"] = {"weekday": [4] * 24}
+    learner.data["ac_valid_since"] = PINNED_NOW.isoformat()
+    previous = deepcopy(learner.data)
+    with patch.object(dt_util, "now", return_value=PINNED_NOW):
+        await learner.async_repair_history(date.fromisoformat(DAYS[2]))
+    for day in DAYS[:2]:
+        assert learner.data["daily_hours"][day] == previous["daily_hours"][day]
+    for day in DAYS[2:]:
+        assert learner.data["daily_hours"][day]["ac"] == [80.0] * 24
+    for day in DAYS:
+        assert learner.data["daily_hours"][day]["dc"] == [51.0] * 24
+    assert learner.data["day_log"] == previous["day_log"]
+    assert learner.data["configuration_epochs"] == previous["configuration_epochs"]
+    assert learner.data["profiles"]["dc"] == previous["profiles"]["dc"]
+    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [80.0] * 24
+    reloaded = ProfileLearner(hass, learner.entry)
+    await reloaded.async_load()
+    assert reloaded.data == learner.data
+
+
+@pytest.mark.parametrize("failure", ["timeout", "empty", "save"])
+async def test_repair_failure_preserves_previous_state(hass, failure):
+    """R4: failed/empty repairs never publish or persist partial replacement."""
+    from copy import deepcopy
+    from unittest.mock import AsyncMock
+
+    learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    await _import(hass, _power_meta("sensor.house"), _power_rows(_all_hours(80.0)))
+    await _run_pinned(learner)
+    previous = deepcopy(learner.data)
+    if failure == "timeout":
+        context = patch.object(learner, "_fetch_days", side_effect=TimeoutError)
+        error = TimeoutError
+    elif failure == "empty":
+        context = patch.object(learner, "_fetch_days", new=AsyncMock())
+        error = ValueError
+    else:
+        context = patch.object(learner._store, "async_save", side_effect=OSError)
+        error = OSError
+    with (
+        patch.object(dt_util, "now", return_value=PINNED_NOW),
+        context,
+        pytest.raises(error),
+    ):
+        await learner.async_repair_history(date.fromisoformat(DAYS[2]))
+    assert learner.data == previous
+    assert learner._repairing is False
+
+
+async def test_failed_second_epoch_retries_whole_missing_day(hass, _min_samples_2):
+    """A recorder failure between epoch slices cannot freeze a partial day."""
+    from unittest.mock import AsyncMock
+
+    learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    await _import(hass, _power_meta("sensor.house"), _power_rows(_all_hours(80.0)))
+    with patch.object(dt_util, "now", return_value=_at(DAYS[0], 0)):
+        learner._capture_configuration(learner._raw_config())
+    hass.config_entries.async_update_entry(
+        learner.entry, options={CONF_AC_LOAD_ENTITY: "sensor.other"}
+    )
+    await _import(hass, _power_meta("sensor.other"), _power_rows(_all_hours(120.0)))
+    with patch.object(dt_util, "now", return_value=_at(DAYS[-1], 10, 30)):
+        learner._capture_configuration(learner._raw_config())
+    original = learner._fetch_days
+    calls = 0
+
+    async def fail_second(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise TimeoutError
+        await original(*args)
+
+    with patch.object(learner, "_fetch_days", new=AsyncMock(side_effect=fail_second)):
+        await _run_pinned(learner)
+    assert learner.data["daily_hours"] == {}
+    assert learner.data["day_log"] == {}
+    await _run_pinned(learner)
+    assert (
+        learner.data["daily_hours"][DAYS[-1]]["ac"]
+        == [80.0] * 10 + [None] + [120.0] * 13
+    )

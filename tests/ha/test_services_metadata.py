@@ -14,6 +14,7 @@ from homeassistant.helpers.selector import validate_selector
 
 INTEGRATION_DIR = Path(__file__).parents[2] / "custom_components" / "battery_manager"
 SERVICE_FIELDS = {
+    "repair_consumption_history": ("entry_id", "since"),
     "export_learned_profiles": ("entry_id", "file_path", "download", "as_table"),
     "export_hourly_details": ("entry_id", "file_path", "download", "as_table"),
     "test_cascade_terminal": ("device_id", "entry_id", "cascade_id"),

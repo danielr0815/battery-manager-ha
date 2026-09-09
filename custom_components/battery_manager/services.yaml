@@ -77,3 +77,20 @@ test_cascade_terminal:
       example: "01JXYZ1234567890ABCDEF"
       selector:
         text:
+
+repair_consumption_history:
+  name: Repair AC consumption history
+  description: >-
+    Recalculates AC learning from the selected date using the current configuration.
+    Only use when the wiring and measuring points have been unchanged since that date.
+    Earlier days, DC history and original Recorder measurements remain unchanged.
+  fields:
+    entry_id:
+      advanced: true
+      selector:
+        config_entry:
+          integration: battery_manager
+    since:
+      required: true
+      selector:
+        date:

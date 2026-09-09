@@ -1111,6 +1111,20 @@
           "description": "Optional internal subentry ID for existing YAML calls. Not needed when a cascade is selected."
         }
       }
+    },
+    "repair_consumption_history": {
+      "name": "Repair AC consumption history",
+      "description": "Recalculates AC learning from this date. Only use if wiring and measuring points have remained unchanged. Earlier days, DC history and Recorder measurements are preserved.",
+      "fields": {
+        "entry_id": {
+          "name": "Integration",
+          "description": "Battery Manager entry."
+        },
+        "since": {
+          "name": "Unchanged since",
+          "description": "First day with confirmed unchanged configuration, within the learning window."
+        }
+      }
     }
   },
   "exceptions": {

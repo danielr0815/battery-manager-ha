@@ -199,13 +199,14 @@ async def test_run_learning_failure_keeps_old_profile(hass, monkeypatch):
     assert learner.profiles_for_planning() is not None
 
 
-async def test_cleaning_config_change_invalidates_cached_days(hass, monkeypatch):
-    """Changed cleaning inputs must drop cached daily_hours (fingerprint)."""
+async def test_cleaning_config_change_preserves_cached_days(hass, monkeypatch):
+    """An upgrade cannot reinterpret cached days with today's configuration."""
     entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house_load"})
     learner = ProfileLearner(hass, entry)
     _prime(learner, {"ac": ["sensor.house_load"], "dc": []})
     learner.data["cleaning_fingerprint"] = "outdated"
-    learner.data["daily_hours"] = {"2026-07-01": {"ac": [100.0] * 24, "dc": None}}
+    day = (dt_util.now().date() - timedelta(days=1)).isoformat()
+    learner.data["daily_hours"] = {day: {"ac": [100.0] * 24, "dc": None}}
     hass.config.components.add("recorder")
 
     fetched: dict = {}
@@ -216,8 +217,8 @@ async def test_cleaning_config_change_invalidates_cached_days(hass, monkeypatch)
     monkeypatch.setattr(ProfileLearner, "_fetch_days", _fake_fetch)
     await learner.async_run_learning()
 
-    # The cached (contaminated) day was dropped and the full window refetched.
-    assert len(fetched["days"]) >= 42
+    assert fetched == {}
+    assert learner.data["daily_hours"][day]["ac"] == [100.0] * 24
     assert learner.data["cleaning_fingerprint"] != "outdated"
 
 
@@ -357,3 +358,90 @@ async def test_vacation_mode_uses_base_load_without_absence_bins(hass):
     # base_w only — never base_w + variable_w (D-C4).
     assert set(ac_series) == {50.0}
     assert set(dc_series) == {50.0}
+
+
+async def test_legacy_cascade_history_is_preserved_but_not_used(hass):
+    """R3: migration retires uncertain AC evidence, preserving DC and history."""
+    from copy import deepcopy
+
+    from homeassistant.config_entries import ConfigSubentry
+
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_CASCADE
+
+    entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            subentry_id="chain",
+            subentry_type=SUBENTRY_TYPE_CASCADE,
+            title="Chain",
+            unique_id=None,
+            data={},
+        ),
+    )
+    learner = ProfileLearner(hass, entry)
+    _prime(learner, {"ac": ["sensor.house"], "dc": []})
+    day = (dt_util.now().date() - timedelta(days=1)).isoformat()
+    learner.data["daily_hours"] = {day: {"ac": [0.0] * 24, "dc": [50.0] * 24}}
+    previous = deepcopy(learner.data["daily_hours"])
+    assert learner._capture_configuration(learner._raw_config())
+    assert learner.data["daily_hours"] == previous
+    assert learner.data["profiles"]["ac"] is None
+    assert learner.data["ac_valid_since"] is not None
+    assert not learner._capture_configuration(learner._raw_config())
+    assert len(learner.data["configuration_epochs"]) == 1
+
+
+@pytest.mark.parametrize("offset", [0, 1, -121])
+async def test_repair_rejects_dates_without_completed_history(hass, offset):
+    """Explicit repair cannot reinterpret future or out-of-window days."""
+    learner = ProfileLearner(
+        hass, _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    )
+    with pytest.raises(ValueError, match="learning window"):
+        await learner.async_repair_history(
+            dt_util.now().date() + timedelta(days=offset)
+        )
+
+
+async def test_repair_requires_ac_and_recorder(hass):
+    learner = ProfileLearner(hass, _entry(hass))
+    with pytest.raises(ValueError, match="Recorder"):
+        await learner.async_repair_history(dt_util.now().date() - timedelta(days=1))
+
+
+async def test_delayed_save_cannot_capture_partial_repair(hass):
+    """Pending store callbacks persist their committed snapshot, not mutations."""
+    from unittest.mock import patch
+
+    learner = ProfileLearner(hass, _entry(hass))
+    learner.data["daily_hours"] = {"2026-08-30": {"ac": [50.0] * 24, "dc": None}}
+    with patch.object(learner._store, "async_delay_save") as save:
+        learner._save()
+        callback, delay = save.call_args.args
+    learner.data["daily_hours"]["2026-08-30"]["ac"][0] = None
+    assert callback()["daily_hours"]["2026-08-30"]["ac"] == [50.0] * 24
+    assert delay == 10
+
+
+async def test_configuration_history_prunes_without_configuration_change(hass):
+    """The timeline stays bounded and retains the epoch covering window start."""
+    from copy import deepcopy
+    from unittest.mock import patch
+
+    learner = ProfileLearner(hass, _entry(hass))
+    now = dt_util.now()
+    cfg = learner._raw_config()
+    learner._capture_configuration(cfg)
+    template = learner.data["configuration_epochs"][-1]
+    learner.data["configuration_epochs"] = [
+        {**deepcopy(template), "start": (now - timedelta(days=days)).isoformat()}
+        for days in (200, 150, 100)
+    ]
+    with patch.object(dt_util, "now", return_value=now):
+        assert not learner._capture_configuration(cfg)
+    assert len(learner.data["configuration_epochs"]) == 2
+    assert (
+        learner.data["configuration_epochs"][0]["start"]
+        == (now - timedelta(days=150)).isoformat()
+    )

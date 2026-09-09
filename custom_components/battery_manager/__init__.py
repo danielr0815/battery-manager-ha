@@ -45,6 +45,7 @@ from .const import (
     LEARNED_STORE_MAJOR,
     SERVICE_EXPORT_HOURLY_DETAILS,
     SERVICE_EXPORT_LEARNED_PROFILES,
+    SERVICE_REPAIR_CONSUMPTION_HISTORY,
     SERVICE_TEST_CASCADE_TERMINAL,
     STORAGE_VERSION,
     SUBENTRY_TYPE_CASCADE,
@@ -299,6 +300,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_EXPORT_LEARNED_PROFILES,
             export_profiles_service,
             schema=export_schema,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_REPAIR_CONSUMPTION_HISTORY):
+
+        async def repair_history_service(call: ServiceCall) -> None:
+            _, target = _service_coordinator(hass, call)
+            try:
+                await target.learner.async_repair_history(call.data["since"])
+            except ValueError as err:
+                raise ServiceValidationError(str(err)) from err
+            await target.async_request_refresh()
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REPAIR_CONSUMPTION_HISTORY,
+            repair_history_service,
+            schema=vol.Schema(
+                {vol.Optional("entry_id"): str, vol.Required("since"): cv.date}
+            ),
         )
     if not hass.services.has_service(DOMAIN, SERVICE_TEST_CASCADE_TERMINAL):
 

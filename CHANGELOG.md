@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.4] - 2026-09-09
+
+### Fixed
+- Änderungen an Kaskaden und Messpunkten gelten beim Verbrauchslernen erst
+  ab ihrem Änderungszeitpunkt. Bereits bereinigte Stunden bleiben erhalten;
+  ausstehende Stunden werden anhand gespeicherter Konfigurationsstände
+  ausgewertet. Stunden mit einem Konfigurationswechsel werden ausgelassen.
+- Kein automatischer rückwirkender Neuaufbau mit heutiger Verkabelung.
+  Unsichere AC-Altdaten aus der früheren Kaskadenbereinigung bleiben erhalten,
+  werden beim Upgrade aber nicht weiter für die Prognose verwendet.
+
+### Added
+- Aktion `battery_manager.repair_consumption_history`: AC-Lernwerte gezielt ab
+  einem bestätigten Datum unveränderter Verkabelung korrigieren. Frühere
+  Tageswerte und DC-Historie bleiben erhalten. Bei fehlenden verwertbaren Daten
+  oder einem Fehler wird der vorherige Lernstand beibehalten.
+
 ## [0.41.3] - 2026-09-09
 
 ### Fixed

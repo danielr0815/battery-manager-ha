@@ -17,24 +17,46 @@ in das Abwesenheitsprofil übernommen; 09–15 Uhr wurden mit 0 W prognostiziert
   auch bei Versorgung aus einem Kaskadenakku ohne Root-Bezug.
 - **R2:** Eigenständige Lasten und Appliances behalten ihre bisherigen Regeln.
   Ein leerer Kaskadenentwurf unterdrückt keine Bereinigungsquelle.
-- **R3:** Lernregelversion 5 invalidiert den Cache der bereinigten Stunden.
-  Beim Laden startet der vorhandene Catch-up-Pfad den Neuaufbau des gesamten
-  konfigurierten Lernfensters aus verfügbarer Recorder-Historie. Die bisherigen
-  Profile dämpfen diese Korrektur nicht. Änderungen der wirksamen
-  Bereinigungsquellen durch Hinzufügen/Entfernen einer Kaskade ändern ebenfalls
-  den Fingerprint. Fehlende historische Daten bleiben den bisherigen
-  Vollständigkeits- und Fallbackregeln unterworfen.
+- **R3:** Relevante Konfigurationsänderungen öffnen einen gespeicherten
+  Zeitabschnitt mit Beginn, Messquellen und Bereinigungsregeln. Beim Reload
+  wird der neue Stand vor dem Recorder-Zugriff erfasst. Schon bereinigte
+  Stunden und ihre Tagestypen bleiben unverändert. Noch ausstehende Stunden
+  werden nur mit dem damals gültigen Stand ausgewertet; eine Stunde, in der
+  der Stand wechselt, bleibt ungelernt. Alte Abschnitte werden außerhalb des
+  Lernfensters entfernt, wobei der am Fensterbeginn gültige Stand erhalten
+  bleibt. Ein unveränderter Stand erzeugt keinen weiteren Abschnitt.
+- **R4:** Nur die explizite Aktion `repair_consumption_history` mit `since`
+  darf AC-Tageswerte ab einem bestätigten Datum neu bereinigen. Sie setzt die
+  Bestätigung voraus, dass die aktuelle Verkabelung und Messpunktzuordnung
+  seitdem unverändert sind. Frühere Tage, DC-Werte und bereits gespeicherte
+  Tagestypen bleiben erhalten. Originalmesswerte im Recorder werden nie
+  verändert. Fehler, Abbruch und ein Zeitraum ohne verwendbare AC-Stunden
+  lassen den bisherigen Lernstand bestehen. Der neue AC-Stand wird nach
+  Erfolg ohne Dämpfung durch bekannte fehlerhafte Werte übernommen und die
+  Prognose aktualisiert.
+- **R5:** Das Upgrade besitzt keine rückwirkende Konfigurationshistorie.
+  Bestehende Tageswerte bleiben erhalten. Bei konfigurierter Kaskade werden
+  alte AC-Werte als unsicher vom aktiven Lernen ausgeschlossen; das normale
+  Fallback gilt bis neue oder ausdrücklich reparierte Werte verfügbar sind.
+  Ohne alte Profile kann die Ersteinrichtung mit der vom Betreiber gewählten
+  Konfiguration das initiale Lernfenster einlesen. Danach wird ein erweitertes
+  Lernfenster nicht mit einer unbekannten früheren Verkabelung aufgefüllt.
 
-Die Messpunkt-Flags werden nicht verändert. Der Planner-Kern und seine
-Golden-Szenarien bleiben unverändert; reale Pläne verwenden die korrigierte
-Verbrauchsprognose. Historische Topologieänderungen besitzen weiterhin keine
-zeitlich versionierte Messpunktzuordnung: Der Neuaufbau verwendet die aktuelle
-Konfiguration, wie die bisherige Bereinigung bei Konfigurationsänderungen.
+## Bestätigte Reparatur der Referenzanlage
+
+Der Betreiber hat am 09.09.2026 bestätigt, dass die aktuelle Kaskade seit dem
+Beginn der laufenden Urlaubsperiode unverändert ist. Recorder: Urlaubsmodus
+am 29.08.2026 um 22:08:34 MESZ eingeschaltet. Der erste vollständige Tag ist
+**30.08.2026**. Für diese Anlage ist daher `since: "2026-08-30"` der bestätigte
+Reparaturbeginn. Das Datum ist kein fest verdrahteter Produktstandard.
 
 ## Regression
 
-`test_cascade_learning_rebuilds_history_without_repeated_pass_through` in
-`tests/ha/test_history_recorder.py` verwendet echte Recorder-Statistiken und
-prüft Root innerhalb/außerhalb des Messkreises, Durchleitung, akkubetriebene
-Endlast, unabhängige Last sowie den Neuaufbau nach Topologieänderung und aus
-alter Lernregelversion. Aus fehlerhaften 0-W-Bins werden direkt 36-W-Bins.
+Die Recorder-Tests `test_cascade_learning_preserves_historical_attribution`,
+`test_explicit_repair_only_changes_confirmed_ac_days`,
+`test_repair_failure_preserves_previous_state` und
+`test_failed_second_epoch_retries_whole_missing_day` prüfen die realen
+Statistikabfragen, Konfigurationswechsel in einem noch ungelernten Tag,
+mehrfache Durchleitung, Akkubetrieb, den unveränderten Cache, explizite
+Reparatur, Persistenz und Abbruch. Weitere Tests decken Migration,
+Aktionsvalidierung und die Veröffentlichung der neuen Prognose ab.

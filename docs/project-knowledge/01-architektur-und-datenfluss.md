@@ -577,3 +577,12 @@ Wichtigste Code-Anker dieses Dokuments:
    `_pv_wh_hourly` / `_quantile_wh` — Slot-Raster und PV-Befüllung.
 5. `custom_components/battery_manager/coordinator.py::_persistent_payload` —
    die vollständige Liste dessen, was persistiert wird.
+
+
+### Verbrauchslernen ab v0.41.4
+
+Bereinigte historische Stunden bleiben bei Änderungen der Kaskade oder der
+Messpunkte unverändert. Der Lerner speichert zeitlich gültige Konfigurationen
+für noch ausstehende Stunden. Kaskaden werden nur am Root-Eingang abgezogen.
+Ein rückwirkender Neuaufbau erfolgt ausschließlich mit bestätigtem Startdatum
+über `repair_consumption_history`; siehe [F-CASCADE-CONSUMPTION](../F-CASCADE-CONSUMPTION.md).

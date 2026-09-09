@@ -844,6 +844,7 @@ ATTR_DEVIATING_SINCE = "deviating_since"
 
 # --- Services ---
 SERVICE_EXPORT_HOURLY_DETAILS = "export_hourly_details"
+SERVICE_REPAIR_CONSUMPTION_HISTORY = "repair_consumption_history"
 SERVICE_EXPORT_LEARNED_PROFILES = "export_learned_profiles"
 SERVICE_TEST_CASCADE_TERMINAL = "test_cascade_terminal"
 CONF_AS_TABLE = "as_table"

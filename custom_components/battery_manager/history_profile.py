@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, tzinfo
 from typing import Any
 
@@ -115,7 +116,8 @@ HourMap = dict[tuple[str, int], float]
 #     delivery when max < U_thr, none when min > U_thr, hour excluded in the
 #     clamp regime in between (Rev. 4, docs/DC_TOPOLOGY.md §9).
 # v5: cascade pass-through is removed only at its root input (2026-09-09).
-_CLEANING_RULES_VERSION = 5
+# v6: retain historical attribution; changes open a new configuration epoch.
+_CLEANING_RULES_VERSION = 6
 
 
 def _default_data() -> dict[str, Any]:
@@ -128,6 +130,8 @@ def _default_data() -> dict[str, Any]:
         "attempted_at": None,
         "window_days": None,
         "cleaning_fingerprint": None,
+        "configuration_epochs": [],
+        "ac_valid_since": None,
         "source_entities": {"ac": [], "dc": []},
         "vacation_mode_active": False,
         "day_log": {},  # date -> {"daytype": ..., "vacation": bool}
@@ -190,6 +194,7 @@ class ProfileLearner:
         )
         self.data: dict[str, Any] = _default_data()
         self._lock = asyncio.Lock()
+        self._repairing = False
         self._unsub_nightly: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
@@ -225,7 +230,11 @@ class ProfileLearner:
             )
 
     def _save(self) -> None:
-        self._store.async_delay_save(lambda: self.data, 10)
+        if not self._repairing:
+            # A pending save may fire while a manual repair awaits Recorder.
+            # Capture the committed state so it cannot persist partial work.
+            snapshot = deepcopy(self.data)
+            self._store.async_delay_save(lambda: snapshot, 10)
 
     def async_schedule(self) -> None:
         """Register the nightly run; catch up when stale or reconfigured.
@@ -248,7 +257,8 @@ class ProfileLearner:
         window_changed = self.data.get("window_days") != int(
             cfg[CONF_LEARNING_WINDOW_DAYS]
         )
-        cleaning_changed = self.data.get(
+        changed = self._capture_configuration(cfg)
+        cleaning_changed = changed or self.data.get(
             "cleaning_fingerprint"
         ) != self._cleaning_fingerprint(cfg)
         # Reload-loop guard: a run that recently aborted because the recorder
@@ -344,6 +354,10 @@ class ProfileLearner:
     def diagnostics(self) -> dict[str, Any]:
         diag = dict(self.data.get("diagnostics") or {})
         diag["computed_at"] = self.data.get("computed_at")
+        diag["ac_valid_since"] = self.data.get("ac_valid_since")
+        diag["configuration_epochs"] = [
+            e["start"] for e in self.data["configuration_epochs"]
+        ]
         diag["samples"] = self.data.get("samples")
         # The learned bins themselves (W per day type and hour): visible in
         # the developer tools and usable by dashboard cards/templates.
@@ -365,6 +379,8 @@ class ProfileLearner:
             "diagnostics": self.data.get("diagnostics"),
             "validation": self.data.get("validation"),
             "day_log": self.data.get("day_log"),
+            "ac_valid_since": self.data.get("ac_valid_since"),
+            "configuration_epochs": self.data.get("configuration_epochs"),
         }
 
     # ------------------------------------------------------------------
@@ -429,6 +445,7 @@ class ProfileLearner:
 
     async def _run_learning(self) -> None:
         cfg = self._raw_config()
+        self._capture_configuration(cfg)
         sources = self._sources()
         if not any(src["active"] for src in _paths_of(sources)):
             # Nothing configured: drop learned state, planner stays static.
@@ -477,8 +494,6 @@ class ProfileLearner:
         ]
 
         self._apply_source_binding(sources)
-        cleaning_changed = self._apply_cleaning_fingerprint(cfg)
-
         daily_hours: dict[str, dict[str, Any]] = self.data["daily_hours"]
         missing: dict[str, list[str]] = {
             path: [
@@ -494,7 +509,16 @@ class ProfileLearner:
         # the days fetched in THIS run.
         self.data["diagnostics"]["negative_residuals"] = 0
         if all_missing:
-            await self._fetch_days(cfg, sources, all_missing, missing)
+            cached_hours = deepcopy(self.data["daily_hours"])
+            cached_tags = deepcopy(self.data["day_log"])
+            try:
+                await self._fetch_configuration_epochs(all_missing, missing)
+            except BaseException:
+                # A later epoch may fail after an earlier one wrote its slice.
+                # Retry the complete missing day, never freeze a partial result.
+                self.data["daily_hours"] = cached_hours
+                self.data["day_log"] = cached_tags
+                raise
 
         # Prune outside the window, then aggregate (D-C3).
         self.data["daily_hours"] = {
@@ -535,14 +559,22 @@ class ProfileLearner:
                 for day, value in self.data["daily_hours"].items()
                 if value.get(path) is not None
             }
+            if path == "ac" and (since := self.data.get("ac_valid_since")):
+                boundary = dt_util.parse_datetime(since)
+                per_day = {
+                    day: [
+                        value if self._hour_start(day, hour) >= boundary else None
+                        for hour, value in enumerate(series)
+                    ]
+                    for day, series in per_day.items()
+                }
             bins, samples = aggregate_bins(
                 per_day,
                 day_types,
                 _MIN_SAMPLES,
-                # Fresh start after a cleaning change: the old bins were
-                # computed under different rules and must not damp the
-                # corrected values via the rate limit.
-                None if cleaning_changed else self.data["profiles"].get(path),
+                # Normal configuration changes leave historical bins valid.
+                # Only explicit repair clears the affected profile.
+                self.data["profiles"].get(path),
                 LEARNING_RATE_LIMIT,
                 _CLAMPS[path],
                 weights=weights,
@@ -722,29 +754,18 @@ class ProfileLearner:
         return day_type(day, False)
 
     def _apply_source_binding(self, sources: dict[str, dict[str, Any]]) -> None:
-        """Reset a path's learned state when its source entities changed."""
-        stored = self.data.get("source_entities") or {}
-        for path in _PATHS:
-            current = sources[path]["all"]
-            if stored.get(path) != current:
-                for day_value in self.data["daily_hours"].values():
-                    day_value[path] = None
-                self.data["profiles"][path] = None
-                self.data["samples"][path] = None
+        """Track current meters without rewriting historical consumption."""
+        # Cached hours describe the physical consumption observed at that time.
+        # Changing today's meter must not reinterpret yesterday's measurements.
         self.data["source_entities"] = {path: sources[path]["all"] for path in _PATHS}
 
     def _cleaning_fingerprint(self, cfg: dict[str, Any]) -> str:
-        """Everything the D-C2 cleaning depends on, as a comparable string.
-
-        Cached daily_hours were cleaned with the configuration of their
-        fetch time; if any cleaning input changes (in_house flags, power/
-        switch entities, nominal powers, appliances, support switches), the
-        cache is invalid and must be refetched — otherwise a reconfiguration
-        would keep contaminated days in the window for weeks.
-        """
+        """Effective attribution rules; changes apply prospectively only."""
         loads, appliances = self._subentries()
         parts: list[Any] = [
             _CLEANING_RULES_VERSION,
+            self._sources(),
+            cfg.get(CONF_WORKDAY_ENTITY),
             sorted(loads, key=str),
             sorted(appliances, key=str),
         ]
@@ -756,33 +777,171 @@ class ProfileLearner:
                 CONF_SUPPORT_DC24_SWITCH,
                 CONF_SUPPORT_DC24_POWER_ENTITY,
                 CONF_DCDC_SWITCH,
-                # Rev. 4 gate inputs: a changed threshold or voltage sensor
-                # re-classifies every 48 V PSU-on hour, so the window must
-                # be re-cleaned.
+                # Gate attribution is also pinned to the hour's configuration.
                 CONF_BATTERY_VOLTAGE_ENTITY,
                 CONF_PSU48_OUTPUT_VOLTAGE_V,
             )
         )
         return repr(parts)
 
-    def _apply_cleaning_fingerprint(self, cfg: dict[str, Any]) -> bool:
-        """Drop cached days when the cleaning config changed.
+    def _capture_configuration(self, cfg: dict[str, Any]) -> bool:
+        """Persist a bounded attribution timeline before any recorder work.
 
-        The old profile stays in place until the refetch succeeds (a failing
-        run must not lose it, D-C6); the caller disables the rate limit for
-        the rebuild so stale bins cannot damp the correction.
+        Reloads observe changes even when recording is temporarily unavailable.
+        Existing hours are immutable; snapshots only attribute missing hours.
         """
         fingerprint = self._cleaning_fingerprint(cfg)
-        if self.data.get("cleaning_fingerprint") == fingerprint:
+        epochs = self.data["configuration_epochs"]
+        now = dt_util.now()
+        cutoff = now - timedelta(days=int(cfg[CONF_LEARNING_WINDOW_DAYS]))
+        pruned = False
+        while len(epochs) > 1 and dt_util.parse_datetime(epochs[1]["start"]) <= cutoff:
+            epochs.pop(0)
+            pruned = True
+        if epochs and epochs[-1]["fingerprint"] == fingerprint:
+            if pruned:
+                self._save()
             return False
-        if self.data.get("daily_hours"):
-            _LOGGER.info("Cleaning configuration changed; relearning the full window")
-        self.data["daily_hours"] = {}
-        self.data["day_log"] = {}
-        # The new fingerprint is committed by _run_learning only AFTER a
-        # successful refetch: a failed rebuild must re-trigger the fresh
-        # start (incl. the rate-limit bypass) on the next run.
+        legacy = not epochs and bool(
+            self.data.get("computed_at") or self.data["daily_hours"]
+        )
+        # A fresh installation can bootstrap its explicitly configured history.
+        # An upgrade has no old configuration snapshot: never backfill it with
+        # today's wiring, even when old recorder statistics still exist.
+        start = (
+            now
+            if epochs or legacy
+            else datetime.combine(
+                now.date() - timedelta(days=int(cfg[CONF_LEARNING_WINDOW_DAYS])),
+                datetime.min.time(),
+                now.tzinfo,
+            )
+        )
+        loads, appliances = self._subentries()
+        epochs.append(
+            {
+                "start": start.isoformat(),
+                "fingerprint": fingerprint,
+                "config": deepcopy(cfg),
+                "sources": self._sources(),
+                "loads": loads,
+                "appliances": appliances,
+            }
+        )
+        if legacy and any(
+            sub.subentry_type == SUBENTRY_TYPE_CASCADE
+            for sub in self.entry.subentries.values()
+        ):
+            # We know the old cascade cleaning was unsound, but do not know
+            # when its wiring changed. Preserve evidence; retire AC samples
+            # from planning instead of inventing corrected historical loads.
+            self.data["ac_valid_since"] = now.isoformat()
+            self.data["profiles"]["ac"] = None
+            self.data["samples"]["ac"] = None
+        self._save()
         return True
+
+    async def async_repair_history(self, since: date) -> None:
+        """Explicit operator confirmation of unchanged wiring since a date.
+
+        Only AC cleaning is repaired. Recorder measurements, older daily
+        values, DC history and previously observed day types are retained.
+        """
+        async with self._lock:
+            now = dt_util.now()
+            cfg = self._raw_config()
+            earliest = now.date() - timedelta(days=int(cfg[CONF_LEARNING_WINDOW_DAYS]))
+            if since < earliest or since >= now.date():
+                raise ValueError(
+                    "Start date must be within the current learning window"
+                )
+            if (
+                not self._sources()["ac"]["active"]
+                or "recorder" not in self.hass.config.components
+            ):
+                raise ValueError("AC measurement and Recorder must be available")
+            previous = deepcopy(self.data)
+            self._repairing = True
+            try:
+                self._capture_configuration(cfg)
+                start = self._hour_start(since.isoformat(), 0)
+                epoch = deepcopy(self.data["configuration_epochs"][-1])
+                epoch["start"] = start.isoformat()
+                self.data["configuration_epochs"] = [
+                    e
+                    for e in self.data["configuration_epochs"]
+                    if dt_util.parse_datetime(e["start"]) < start
+                ] + [epoch]
+                for day, values in self.data["daily_hours"].items():
+                    if day >= since.isoformat():
+                        values["ac"] = None
+                if self.data.get("ac_valid_since"):
+                    self.data["ac_valid_since"] = min(
+                        start, dt_util.parse_datetime(self.data["ac_valid_since"])
+                    ).isoformat()
+                # A correction must not be damped by the known-bad old bins.
+                self.data["profiles"]["ac"] = None
+                await self._run_learning()
+                repaired = [
+                    value
+                    for day, values in self.data["daily_hours"].items()
+                    if day >= since.isoformat()
+                    for value in (values.get("ac") or [])
+                    if value is not None
+                ]
+                if not repaired:
+                    raise ValueError("No usable AC history in the selected period")
+                # The action repairs AC only; do not change DC attribution or
+                # historical DC profiles as a side effect of a manual rebuild.
+                for day, values in previous["daily_hours"].items():
+                    if day in self.data["daily_hours"]:
+                        self.data["daily_hours"][day]["dc"] = values.get("dc")
+                self.data["profiles"]["dc"] = previous["profiles"]["dc"]
+                self.data["samples"]["dc"] = previous["samples"]["dc"]
+                self.data["validation"] = previous["validation"]
+                # Keep the ordinary timeline. The explicit exception applies
+                # only to this AC repair, not to future missing DC history.
+                self.data["configuration_epochs"] = previous[
+                    "configuration_epochs"
+                ] or [{**epoch, "start": now.isoformat()}]
+                await self._store.async_save(self.data)
+            except BaseException:
+                self.data = previous
+                raise
+            finally:
+                self._repairing = False
+
+    @staticmethod
+    def _hour_start(day: str, hour: int) -> datetime:
+        return datetime.combine(
+            date.fromisoformat(day),
+            datetime.min.time(),
+            dt_util.get_default_time_zone(),
+        ).replace(hour=hour)
+
+    async def _fetch_configuration_epochs(
+        self,
+        days: list[str],
+        missing: dict[str, list[str]],
+    ) -> None:
+        epochs = self.data["configuration_epochs"]
+        for index, epoch in enumerate(epochs):
+            start = dt_util.parse_datetime(epoch["start"])
+            end = (
+                dt_util.parse_datetime(epochs[index + 1]["start"])
+                if index + 1 < len(epochs)
+                else None
+            )
+            selected = [
+                day
+                for day in days
+                if self._hour_start(day, 0) + timedelta(days=1) > start
+                and (end is None or self._hour_start(day, 0) < end)
+            ]
+            if not selected:
+                continue
+            cfg = {**epoch["config"], "_epoch": epoch, "_epoch_end": end}
+            await self._fetch_days(cfg, epoch["sources"], selected, missing)
 
     # ------------------------------------------------------------------
     # History fetching & cleaning (D-C1/D-C2)
@@ -825,7 +984,8 @@ class ProfileLearner:
         for path in _PATHS:
             if sources[path]["active"]:
                 stat_ids.update(sources[path]["all"])
-        loads, appliances = self._subentries()
+        epoch = cfg["_epoch"]
+        loads, appliances = epoch["loads"], epoch["appliances"]
         for load in loads:
             if load["in_house"] and load["power_entity"]:
                 stat_ids.add(load["power_entity"])
@@ -934,10 +1094,13 @@ class ProfileLearner:
                 )
                 if holiday_hours >= LEARNING_HOLIDAY_MIN_HOURS:
                     daytype = DAY_TYPE_WEEKEND  # holiday counts as weekend
-            self.data["day_log"][day] = {
-                "daytype": daytype,
-                "vacation": vacation,
-            }
+            self.data["day_log"].setdefault(
+                day,
+                {
+                    "daytype": daytype,
+                    "vacation": vacation,
+                },
+            )
 
         # --- Support-path corrections & exclusions (D-C2 step 3) ---
         # Active support paths SHIFT power between the paths instead of
@@ -961,6 +1124,18 @@ class ProfileLearner:
             day_value = self.data["daily_hours"].setdefault(
                 day, {"ac": None, "dc": None}
             )
+            start = dt_util.as_utc(dt_util.parse_datetime(epoch["start"]))
+            end = cfg["_epoch_end"]
+            valid_hours = {
+                hour
+                for hour in range(24)
+                if dt_util.as_utc(self._hour_start(day, hour)) >= start
+                and (
+                    end is None
+                    or dt_util.as_utc(self._hour_start(day, hour) + timedelta(hours=1))
+                    <= dt_util.as_utc(end)
+                )
+            }
             psu48_draw = self._psu48_series(
                 day, cfg, fractions, coverage_start, tz, voltage_minmax
             )
@@ -997,12 +1172,16 @@ class ProfileLearner:
                 cleaned, day_negatives = clean_day(
                     load_series,
                     subtract,
-                    excluded,
+                    excluded | (set(range(24)) - valid_hours),
                     _CLAMPS[path],
                     LEARNING_NEGATIVE_RESIDUAL_WH,
                 )
                 negatives += day_negatives
-                day_value[path] = cleaned
+                series = day_value[path]
+                if series is None:
+                    series = day_value[path] = [None] * 24
+                for hour in valid_hours:
+                    series[hour] = cleaned[hour]
 
         self.data["diagnostics"]["negative_residuals"] = (
             int(self.data["diagnostics"].get("negative_residuals", 0)) + negatives

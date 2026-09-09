@@ -525,3 +525,39 @@ async def test_restart_rearms_nested_exports_for_remaining_ttl(hass):
     assert timer.call_args.args[1] == 1800
     await timer.call_args.args[2](dt_util.utcnow())
     assert not target.exists()
+
+
+async def test_repair_history_service_validates_date_and_refreshes(hass):
+    """Explicit AC repair targets the selected entry and republishes its plan."""
+    from datetime import date
+    from unittest.mock import AsyncMock
+
+    from custom_components.battery_manager.const import (
+        SERVICE_REPAIR_CONSUMPTION_HISTORY,
+    )
+
+    entry = await _setup_entry(hass)
+    coordinator = _coordinator(hass, entry)
+    with (
+        patch.object(
+            coordinator.learner, "async_repair_history", new=AsyncMock()
+        ) as repair,
+        patch.object(coordinator, "async_request_refresh", new=AsyncMock()) as refresh,
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_REPAIR_CONSUMPTION_HISTORY,
+            {"entry_id": entry.entry_id, "since": "2026-08-30"},
+            blocking=True,
+        )
+        repair.assert_awaited_once_with(date(2026, 8, 30))
+        refresh.assert_awaited_once()
+        repair.side_effect = ValueError("Invalid history")
+        with pytest.raises(ServiceValidationError, match="Invalid history"):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_REPAIR_CONSUMPTION_HISTORY,
+                {"entry_id": entry.entry_id, "since": "2026-08-30"},
+                blocking=True,
+            )
+        assert refresh.await_count == 1
