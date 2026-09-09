@@ -709,3 +709,12 @@ house bus, add the inverter counter to the inflows.
 **B3 — DC-coupled installation:** a hybrid inverter usually delivers
 "Load"/"Consumption" directly → B1. For a separate DC consumer branch:
 `dc_load_entity` (shunt) or DC balance lists.
+
+
+## Kaskadenbereinigung (v0.41.3)
+
+Lineare Speicherkaskaden werden beim Lernen nur am ersten Eingang bereinigt.
+Nachgelagerte Eingänge und die Endlast enthalten dieselbe Durchleitung und
+werden nicht zusätzlich abgezogen. Der Neuaufbau aus Recorder-Historie wird
+beim Versionswechsel automatisch ausgelöst; Regeln und Regressionsnachweis:
+[F-CASCADE-CONSUMPTION.md](F-CASCADE-CONSUMPTION.md).

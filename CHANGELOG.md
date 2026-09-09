@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.3] - 2026-09-09
+
+### Fixed
+- Verbrauchslernen bereinigt Kaskaden nur am ersten Eingang. Durchgeleitete
+  Energie wird nicht nochmals an nachgelagerten Speichern und der Endlast
+  abgezogen; dadurch wird die AC-Grundlast nicht fälschlich auf 0 W gelernt.
+  Beim Laden der neuen Version wird das historische Lernfenster automatisch
+  neu berechnet, ohne Dämpfung durch die fehlerhaften alten Profile.
+
 ## [0.41.2] - 2026-09-08
 
 ### Fixed

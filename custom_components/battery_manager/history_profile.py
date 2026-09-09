@@ -39,6 +39,8 @@ from .const import (
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_BATTERY_VOLTAGE_ENTITY,
+    CONF_CASCADE_MEMBER_IDS,
+    CONF_CASCADE_TERMINAL_LOAD_ID,
     CONF_DC_BALANCE_IN,
     CONF_DC_BALANCE_OUT,
     CONF_DC_LOAD_ENTITY,
@@ -75,6 +77,7 @@ from .const import (
     LEARNING_VACATION_MIN_HOURS,
     RECORDER_TIMEOUT_S,
     SUBENTRY_TYPE_APPLIANCE,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
     VALIDATION_HISTORY_DAYS,
 )
@@ -111,7 +114,8 @@ HourMap = dict[tuple[str, int], float]
 # v4: 48 V PSU attribution gated by LTS hourly min/max battery voltage — full
 #     delivery when max < U_thr, none when min > U_thr, hour excluded in the
 #     clamp regime in between (Rev. 4, docs/DC_TOPOLOGY.md §9).
-_CLEANING_RULES_VERSION = 4
+# v5: cascade pass-through is removed only at its root input (2026-09-09).
+_CLEANING_RULES_VERSION = 5
 
 
 def _default_data() -> dict[str, Any]:
@@ -1173,9 +1177,22 @@ class ProfileLearner:
     def _subentries(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         loads: list[dict[str, Any]] = []
         appliances: list[dict[str, Any]] = []
-        for subentry in self.entry.subentries.values():
+        # F-CASCADE-CONSUMPTION R1: downstream inputs and the terminal repeat
+        # energy already metered at the root, including battery-fed episodes
+        # with no house consumption. Subtracting them learned 0 W at 09-15 h.
+        downstream = set()
+        for cascade in self.entry.subentries.values():
+            if cascade.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            members = cascade.data.get(CONF_CASCADE_MEMBER_IDS, [])
+            if members:
+                downstream.update(members[1:])
+                downstream.add(cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID))
+        for subentry_id, subentry in self.entry.subentries.items():
             data = subentry.data
             if subentry.subentry_type == SUBENTRY_TYPE_LOAD:
+                if subentry_id in downstream:
+                    continue
                 loads.append(
                     {
                         "in_house": bool(data.get(CONF_LOAD_IN_HOUSE, True)),

@@ -729,3 +729,83 @@ def test_static_fallback_watchdog_honours_window_across_midnight(hass) -> None:
     assert validation["bias_w"] == 0.0
     assert validation["mae_w"] == 0.0
     assert validation["static_fallback_hours"] == 24
+
+
+@pytest.mark.parametrize("root_in_house", [True, False])
+async def test_cascade_learning_rebuilds_history_without_repeated_pass_through(
+    hass, _min_samples_2, root_in_house
+):
+    """F-CASCADE-CONSUMPTION: rebuild actual recorder samples after topology changes.
+
+    Exercise pass-through, a battery-fed terminal with root off, an unrelated
+    load, and roots inside/outside the house measuring point.
+    """
+    from homeassistant.config_entries import ConfigSubentry
+
+    from custom_components.battery_manager.const import (
+        CONF_CASCADE_MEMBER_IDS,
+        CONF_CASCADE_TERMINAL_LOAD_ID,
+        SUBENTRY_TYPE_CASCADE,
+    )
+
+    learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    for sid in ("b1", "b2", "terminal", "standalone"):
+        assert hass.config_entries.async_add_subentry(
+            learner.entry,
+            ConfigSubentry(
+                subentry_id=sid,
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title=sid,
+                unique_id=None,
+                data={
+                    CONF_LOAD_POWER_ENTITY: f"sensor.{sid}",
+                    CONF_LOAD_IN_HOUSE: root_in_house if sid == "b1" else True,
+                },
+            ),
+        )
+    house = _all_hours(510.0 if root_in_house else 56.0)
+    root = _all_hours(454.0)
+    for day in DAYS:
+        house[(day, 10)] = 56.0
+        root[(day, 10)] = 0.0
+    for sid, values in (
+        ("house", house),
+        ("b1", root),
+        ("b2", _all_hours(451.0)),
+        ("terminal", _all_hours(451.0)),
+        ("standalone", _all_hours(20.0)),
+    ):
+        await _import(hass, _power_meta(f"sensor.{sid}"), _power_rows(values))
+
+    await _run_pinned(learner)
+    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [0.0] * 24
+    cascade = ConfigSubentry(
+        subentry_id="chain",
+        subentry_type=SUBENTRY_TYPE_CASCADE,
+        title="Chain",
+        unique_id=None,
+        data={
+            CONF_CASCADE_MEMBER_IDS: ["b1", "b2"],
+            CONF_CASCADE_TERMINAL_LOAD_ID: "terminal",
+        },
+    )
+    assert hass.config_entries.async_add_subentry(learner.entry, cascade)
+    await _run_pinned(learner)
+    for day in DAYS:
+        _assert_series(learner.data["daily_hours"][day]["ac"], [36.0] * 24)
+    # Fresh rebuild bypasses the ordinary 10 W minimum damping step.
+    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [36.0] * 24
+    assert learner.data["diagnostics"]["negative_residuals"] == 0
+
+    # Old installed rule version, with an otherwise unchanged topology.
+    current = learner.data["cleaning_fingerprint"]
+    learner.data["cleaning_fingerprint"] = "[4," + current.split(",", 1)[1]
+    learner.data["daily_hours"] = {day: {"ac": [0.0] * 24, "dc": None} for day in DAYS}
+    learner.data["profiles"]["ac"]["weekday"]["p50"] = [0.0] * 24
+    await _run_pinned(learner)
+    assert learner.data["cleaning_fingerprint"] == current
+    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [36.0] * 24
+
+    assert hass.config_entries.async_remove_subentry(learner.entry, "chain")
+    await _run_pinned(learner)
+    assert learner.data["profiles"]["ac"]["weekday"]["p50"] == [0.0] * 24
