@@ -179,6 +179,13 @@ async def _setup(
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     coordinator = hass.data[DOMAIN][entry.entry_id]
+    # Every watchdog refresh below owns an explicit virtual time. Detach the
+    # listener before changing inputs: cancelling an already pending debounce
+    # cannot prevent a queued state event from starting another real-time plan
+    # and leaving actuator timers behind during teardown.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
     _cancel_debounce(coordinator)
     # Reset any setup-time switching so each test drives from a clean state.
     coordinator._load_plug_owned.clear()

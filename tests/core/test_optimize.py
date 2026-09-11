@@ -5051,9 +5051,11 @@ def test_feedin_rate_spreads_towards_deadline():
     """Soft deadline (requirement 4): below the caps the rate is
     remaining / hours-to-deadline, so the amount spreads over the morning and
     finishes by the deadline hour."""
+    # F-HOUSE-SUPPLY uses the smaller 4.5 kWh surplus for house demand.
+    # Keep a real residual here so this test still exercises deadline sharing.
     now = datetime(2026, 7, 4, 6, 0)
-    plain, _ = make_plan(SystemConfig(), now, 60.0, [4.5])
-    result, inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [4.5])
+    plain, _ = make_plan(SystemConfig(), now, 60.0, [4.8])
+    result, inputs = _feedin_plan(FEEDIN_2KW, now, 60.0, [4.8])
     residual = plain.trajectory.total_export_wh
     by_hour = {
         s.hour_of_day: w

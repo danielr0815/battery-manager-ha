@@ -472,16 +472,24 @@
             "off_threshold_w": "Leistungsschwelle „aus“ (W)",
             "run_energy_wh": "Energie pro Lauf (Wh)",
             "run_duration_h": "Laufdauer (h)",
-            "opportunistic_start": "Startfenster-Entität anlegen"
+            "opportunistic_start": "Startfenster-Entität anlegen",
+            "power_entity": "Leistungssensor (optional)",
+            "energy_entity": "Energiezähler (optional)",
+            "total_time_entity": "Gesamtlaufzeit-Sensor (optional)",
+            "remaining_time_entity": "Restlaufzeit-Sensor (optional)"
           },
           "data_description": {
             "name": "Anzeigename des Geräts.",
             "detection_entity": "Entität, an der ein laufendes Programm erkennbar ist: entweder ein Leistungssensor (W) oder ein Status-Sensor (z. B. „running“/„In Betrieb“).",
             "power_threshold_w": "Nur bei Leistungssensoren relevant: Ab dieser Leistung gilt das Gerät als laufend.",
             "off_threshold_w": "Nur bei Leistungssensoren relevant: Ein laufendes Gerät bleibt erkannt, bis die Leistung darunter fällt — ein kurzer Einbruch (z. B. Geschirrspüler-Pause zwischen Heizstößen) setzt den Lauf nicht zurück. Gleich der oder unter der „läuft“-Schwelle halten.",
-            "run_energy_wh": "Energieverbrauch eines typischen Programms — wird bei erkanntem Lauf als Restverbrauch in die Prognose eingerechnet.",
+            "run_energy_wh": "Energie eines typischen Programms. Rückfallwert, solange keine vollständig gemessenen Läufe vorliegen; danach wird der gelernte typische Verbrauch verwendet.",
             "run_duration_h": "Dauer eines typischen Programms in Stunden (z. B. 3,5).",
-            "opportunistic_start": "Erzeugt eine zusätzliche Entität, die anzeigt, wenn ein kompletter Lauf ab jetzt ohne Netzbezug möglich wäre — praktisch als Startsignal."
+            "opportunistic_start": "Erzeugt eine zusätzliche Entität, die anzeigt, wenn ein kompletter Lauf ab jetzt ohne Netzbezug möglich wäre — praktisch als Startsignal.",
+            "power_entity": "Gemessene Leistung in W oder kW. Vollständig beobachtete Läufe verbessern den typischen Verbrauch für künftige Planungen.",
+            "energy_entity": "Zählerstand in Wh oder kWh. Zählerdifferenzen haben beim Lernen Vorrang vor der Leistungsmessung.",
+            "total_time_entity": "Programmdauer in s, min, h oder HH:MM[:SS]; ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_total_time.",
+            "remaining_time_entity": "Restdauer in s, min, h oder HH:MM[:SS], alternativ Endzeitpunkt. Ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_remaining_time oder sensor.kuche_geschirrspuhler_remaining_program_time. Der Betriebsstatus erkennt den Lauf; eine Restzeit kann auch im Stillstand angezeigt werden."
           }
         },
         "reconfigure": {
@@ -493,16 +501,24 @@
             "off_threshold_w": "Leistungsschwelle „aus“ (W)",
             "run_energy_wh": "Energie pro Lauf (Wh)",
             "run_duration_h": "Laufdauer (h)",
-            "opportunistic_start": "Startfenster-Entität anlegen"
+            "opportunistic_start": "Startfenster-Entität anlegen",
+            "power_entity": "Leistungssensor (optional)",
+            "energy_entity": "Energiezähler (optional)",
+            "total_time_entity": "Gesamtlaufzeit-Sensor (optional)",
+            "remaining_time_entity": "Restlaufzeit-Sensor (optional)"
           },
           "data_description": {
             "name": "Anzeigename des Geräts.",
             "detection_entity": "Entität, an der ein laufendes Programm erkennbar ist: entweder ein Leistungssensor (W) oder ein Status-Sensor (z. B. „running“/„In Betrieb“).",
             "power_threshold_w": "Nur bei Leistungssensoren relevant: Ab dieser Leistung gilt das Gerät als laufend.",
             "off_threshold_w": "Nur bei Leistungssensoren relevant: Ein laufendes Gerät bleibt erkannt, bis die Leistung darunter fällt — ein kurzer Einbruch (z. B. Geschirrspüler-Pause zwischen Heizstößen) setzt den Lauf nicht zurück. Gleich der oder unter der „läuft“-Schwelle halten.",
-            "run_energy_wh": "Energieverbrauch eines typischen Programms — wird bei erkanntem Lauf als Restverbrauch in die Prognose eingerechnet.",
+            "run_energy_wh": "Energie eines typischen Programms. Rückfallwert, solange keine vollständig gemessenen Läufe vorliegen; danach wird der gelernte typische Verbrauch verwendet.",
             "run_duration_h": "Dauer eines typischen Programms in Stunden (z. B. 3,5).",
-            "opportunistic_start": "Erzeugt eine zusätzliche Entität, die anzeigt, wenn ein kompletter Lauf ab jetzt ohne Netzbezug möglich wäre — praktisch als Startsignal."
+            "opportunistic_start": "Erzeugt eine zusätzliche Entität, die anzeigt, wenn ein kompletter Lauf ab jetzt ohne Netzbezug möglich wäre — praktisch als Startsignal.",
+            "power_entity": "Gemessene Leistung in W oder kW. Vollständig beobachtete Läufe verbessern den typischen Verbrauch für künftige Planungen.",
+            "energy_entity": "Zählerstand in Wh oder kWh. Zählerdifferenzen haben beim Lernen Vorrang vor der Leistungsmessung.",
+            "total_time_entity": "Programmdauer in s, min, h oder HH:MM[:SS]; ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_total_time.",
+            "remaining_time_entity": "Restdauer in s, min, h oder HH:MM[:SS], alternativ Endzeitpunkt. Ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_remaining_time oder sensor.kuche_geschirrspuhler_remaining_program_time. Der Betriebsstatus erkennt den Lauf; eine Restzeit kann auch im Stillstand angezeigt werden."
           }
         }
       }

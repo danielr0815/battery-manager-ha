@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-11
+
+### Added
+- Haushaltsgeräte unterstützen optionale Leistungs-, Energiezähler-, Gesamt-
+  und Restlaufzeitsensoren. Die Prognose berücksichtigt die gemeldete Restzeit.
+- Vollständig gemessene Geräteläufe lernen den typischen Energiebedarf für
+  zukünftige Läufe und Startfenster; Lernwerte bleiben nach Neustarts erhalten.
+
+### Fixed
+- Die Hausversorgungsprüfung senkt die Inverter-Abschaltschwelle nur bei weniger
+  Netzbezug und Export unter Einhaltung aller nominalen und pessimistischen
+  Reserven. Sie überschreibt keine bestehenden Entscheidungen mit einer
+  pauschalen 80-%-Wiederaufladepflicht und blockiert keine bereits zulässigen
+  Last- oder Recovery-Pläne. Die bestehenden Golden-Snapshots bleiben erhalten.
+
+## [0.41.6] - 2026-09-09
+
+### Fixed
+- Der Planner prüft vor Zusatzlasten und Kaskaden, ob längerer Inverterbetrieb
+  zugleich Netzbezug und prognostizierten Überschuss reduziert. Die Bewertung
+  der verbleibenden Batterieladung verhindert diese Hausversorgung nicht mehr.
+  Nominale und pessimistische SOC-Verläufe müssen in jedem Slot die
+  Inverterreserve und den dynamischen Prognosepuffer einhalten.
+
 ## [0.41.5] - 2026-09-09
 
 ### Fixed

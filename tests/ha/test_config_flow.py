@@ -1451,7 +1451,12 @@ async def test_appliance_subentry_user_step_creates_entry(hass):
     )
     assert result["type"] == "form"
     assert result["step_id"] == "user"
-    assert {str(k) for k in result["data_schema"].schema} == set(APPLIANCE_PAYLOAD)
+    assert {str(k) for k in result["data_schema"].schema} == set(APPLIANCE_PAYLOAD) | {
+        "power_entity",
+        "energy_entity",
+        "total_time_entity",
+        "remaining_time_entity",
+    }
 
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], dict(APPLIANCE_PAYLOAD)
@@ -2344,3 +2349,30 @@ async def test_operation_measurement_sources_roundtrip_and_can_be_cleared(hass):
     result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
     assert result["type"] == "create_entry"
     assert all(result["data"][key] is None for key in OPERATION_POWER_SOURCES)
+
+
+async def test_appliance_optional_sensors_can_be_saved_and_removed(hass):
+    """Independent meter/time inputs survive reconfigure and remain clearable."""
+    entry, subentry_id = await _setup_entry_with_appliance(hass)
+    optional = {
+        "power_entity": "sensor.appliance_power",
+        "energy_entity": "sensor.appliance_energy",
+        "total_time_entity": "sensor.appliance_total",
+        "remaining_time_entity": "sensor.appliance_remaining",
+    }
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**APPLIANCE_PAYLOAD, **optional}
+    )
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+    assert dict(entry.subentries[subentry_id].data).items() >= optional.items()
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+    for marker in result["data_schema"].schema:
+        if str(marker) in optional:
+            assert marker.description["suggested_value"] == optional[str(marker)]
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], dict(APPLIANCE_PAYLOAD)
+    )
+    assert result["reason"] == "reconfigure_successful"
+    assert not optional.keys() & entry.subentries[subentry_id].data.keys()

@@ -49,6 +49,7 @@ ein bloßer Funktionsaufruf reicht nicht.
 | `core/test_golden_night_predrain.py` | bitidentischer `F-PREDRAIN`-Liveparametervertrag |
 | `core/test_module_coverage_gate.py` | 100-%-Core-/95-%-HA-Gate einschließlich fehlender Messdaten |
 | `ha/test_operation_history.py`, `ha/test_operation_recorder.py`, virtueller Tageslauf in `ha/test_cascade_manager.py` | `F-OPERATION-HISTORY.md`: Ereigniskorrelation, physische Messgrenzen, Zeit-/Energiezuordnung, begrenzter Store, Replay und geschlossener 24-Stunden-Lauf |
+| `ha/test_appliance_learning.py` | `F-APPLIANCE-TELEMETRY.md`: Einheiten, anonymisierter historischer Lauf, vollständige Lernzyklen, Pausen, Messausfälle und Persistenz |
 | `ha/test_config_flow.py` | Config-/Options-Verträge und Feature-spezifische Cross-Field-Regeln |
 | `ha/test_coordinator.py` | HA→Core-Mapping und Attributverträge der jeweiligen `F-*.md` |
 | `ha/test_load_switching.py` | Executorregeln aus `LOAD_CONTROL.md`, `F-EXECUTOR-GUARDS` und Last-Features |

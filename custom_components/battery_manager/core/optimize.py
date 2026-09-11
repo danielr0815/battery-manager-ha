@@ -464,7 +464,11 @@ def _terminal_credit_factor(full_factor: float, margin_wh: float) -> float:
 def search_threshold(
     config: SystemConfig, inputs: PlanInputs
 ) -> tuple[float, Trajectory]:
-    """Find the SOC threshold minimizing import − terminal value + export tiebreak.
+    """Find an economic threshold, then prefer reserve-safe house supply.
+
+    First minimize import − terminal value + export tiebreak. Before returning,
+    F-HOUSE-SUPPLY checks whether a lower threshold avoids both import and
+    export while preserving the nominal and pessimistic SOC reserves.
 
     Ties prefer the LOWER threshold ("Nutzen", D-A1b): drain the battery ahead
     of the next surplus rather than hoarding charge.
@@ -552,7 +556,82 @@ def search_threshold(
         # the full horizon (no merge, or a faded-credit clip below the ramp)
         # best_traj is already full-horizon at best_threshold — no rebuild.
         best_traj = simulate(config, inputs, best_threshold)
-    return best_threshold, best_traj
+    return _prefer_house_supply(config, inputs, best_threshold, best_traj)
+
+
+def _prefer_house_supply(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    threshold: float,
+    baseline: Trajectory,
+) -> tuple[float, Trajectory]:
+    """Prefer lower-import house supply only within existing reserve rules.
+
+    F-HOUSE-SUPPLY R1/R2: this is a Pareto improvement of the economic
+    decision, not a replacement threshold policy. Requiring a future 80%
+    recharge here changed even no-export and merge-bounded decisions and
+    broke the allocator's established reserve/peak contracts. Every newly
+    accepted alternative instead preserves both floors over the FULL horizon,
+    including nights after the first recharge.
+    """
+    lo = _search_lo(config)
+    if not inputs.slots or threshold <= lo:
+        return threshold, baseline
+    forced = (True,) * len(inputs.slots)
+    support = config.support
+    dc24 = forced if support.configured and support.dc24_forced_on else None
+    dc48 = forced if support.configured and support.dc48_forced_on else None
+    reference = simulate(
+        config, inputs, threshold, dc24_schedule=dc24, dc48_schedule=dc48
+    )
+    if reference.total_export_wh <= _EPS or reference.total_import_wh <= _EPS:
+        return threshold, baseline
+    stress, _, _ = _effective_uncertainty(
+        inputs, config.control.predrain_pv_confidence, config.control.upper_pv_reserve
+    )
+    battery_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
+    floors = [
+        max(battery_floor, floor)
+        for floor in _ramped_stress_floors(config, inputs, stress)
+    ]
+    selected = threshold
+    best_import = reference.total_import_wh
+    for candidate in range(lo, math.ceil(threshold)):
+        trial = simulate(
+            config, inputs, float(candidate), dc24_schedule=dc24, dc48_schedule=dc48
+        )
+        # Less export due solely to conversion loss is not useful house supply.
+        # Ascending candidates retain the lower threshold on equal import.
+        if (
+            trial.total_import_wh >= best_import - _EPS
+            or trial.total_export_wh >= reference.total_export_wh - _EPS
+        ):
+            continue
+        if any(
+            flow.soc_end_percent < floor - _EPS
+            for flow, floor in zip(trial.flows, floors, strict=True)
+        ):
+            continue
+        stressed = simulate(
+            config,
+            inputs,
+            float(candidate),
+            dc24_schedule=dc24,
+            dc48_schedule=dc48,
+            pv_scale=stress,
+        )
+        if any(
+            flow.soc_end_percent < floor - _EPS
+            for flow, floor in zip(stressed.flows, floors, strict=True)
+        ):
+            continue
+        selected = float(candidate)
+        best_import = trial.total_import_wh
+    # R3: comparisons include the same forced support, but public baseline
+    # metrics and subsequent allocation retain their WITHOUT-support contract.
+    if selected == threshold:
+        return threshold, baseline
+    return selected, simulate(config, inputs, selected)
 
 
 def _committed_hours(load, slot) -> float:
@@ -1904,7 +1983,6 @@ def _allocate_recovery_after_continuous_loads(
     current = trajectory
     protected_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
     recovery_day = inputs.now.date()
-
     for load_id, target_wh in recovery_targets_wh.items():
         load = loads[load_id]
         plan = plans[load_id]

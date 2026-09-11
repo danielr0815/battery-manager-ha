@@ -25,6 +25,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .appliance_learning import ApplianceLearning, duration_hours, measurement
 from .cascade_manager import CascadeManager
 from .const import (
     APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
@@ -32,11 +33,15 @@ from .const import (
     CASCADE_OFF_CONFIRM_GRACE_S,
     CASCADE_SAFE_OFF_RECOVERY_S,
     CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_APPLIANCE_ENERGY_ENTITY,
     CONF_APPLIANCE_OFF_THRESHOLD_W,
     CONF_APPLIANCE_OPPORTUNISTIC,
+    CONF_APPLIANCE_POWER_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_APPLIANCE_REMAINING_TIME_ENTITY,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
@@ -488,6 +493,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cascade_actor_block_warned: set[tuple[str, str | None, bool]] = set()
 
         # Appliance run tracking and load power smoothing
+        self._appliance_learning = ApplianceLearning()
+        self._appliance_observed_idle: set[str] = set()
         self._appliance_started: dict[str, datetime] = {}
         # H1: keys restored from persistence get ONE restart-boundary staleness
         # check in _get_appliance_runs, so a run that finished during downtime
@@ -891,6 +898,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # F-SUBHOUR H1: restore appliance run starts (a still-running
             # appliance keeps its real elapsed; a finished one is popped on the
             # next _get_appliance_runs when detection reads not-running).
+            self._appliance_learning.restore(data.get("appliance_energy_samples", {}))
             for k, v in data.get("appliance_started", {}).items():
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
@@ -1039,6 +1047,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
             # does not re-latch at `now` and re-inject the full run energy.
+            "appliance_energy_samples": self._appliance_learning.samples,
             "appliance_started": {
                 k: v.isoformat() for k, v in self._appliance_started.items()
             },
@@ -1209,10 +1218,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for key in keys:
                     if data.get(key):
                         entities.append(data[key])
-            elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE and data.get(
-                CONF_APPLIANCE_DETECTION_ENTITY
-            ):
-                entities.append(data[CONF_APPLIANCE_DETECTION_ENTITY])
+            elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE:
+                for key in (
+                    CONF_APPLIANCE_DETECTION_ENTITY,
+                    CONF_APPLIANCE_POWER_ENTITY,
+                    CONF_APPLIANCE_ENERGY_ENTITY,
+                    CONF_APPLIANCE_TOTAL_TIME_ENTITY,
+                    CONF_APPLIANCE_REMAINING_TIME_ENTITY,
+                ):
+                    if data.get(key):
+                        entities.append(data[key])
         return entities
 
     def build_system_config(self) -> SystemConfig:
@@ -1258,8 +1273,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     Appliance(
                         appliance_id=subentry_id,
                         name=subentry.title,
-                        run_energy_wh=float(data[CONF_APPLIANCE_RUN_ENERGY_WH]),
-                        run_duration_h=float(data[CONF_APPLIANCE_RUN_DURATION_H]),
+                        run_energy_wh=self._appliance_learning.energy(
+                            subentry_id, float(data[CONF_APPLIANCE_RUN_ENERGY_WH])
+                        ),
+                        run_duration_h=self._appliance_duration(data, dt_util.utcnow()),
                         opportunistic_start=bool(
                             data.get(CONF_APPLIANCE_OPPORTUNISTIC, False)
                         ),
@@ -3484,13 +3501,57 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable"):
             return latched  # hold last state during a dropout, do not reset
+        # F-APPLIANCE-TELEMETRY: a ready dishwasher still reports 4.5 h.
+        # Neither program duration nor a future end timestamp proves activity.
+        if state.attributes.get("device_class") in (
+            "duration",
+            "timestamp",
+        ) or entity_id in (
+            data.get(CONF_APPLIANCE_REMAINING_TIME_ENTITY),
+            data.get(CONF_APPLIANCE_TOTAL_TIME_ENTITY),
+        ):
+            return False
         try:
             power = float(state.state)
         except ValueError, TypeError:
-            return state.state.lower() in APPLIANCE_RUNNING_STATES
+            phase = state.state.lower()
+            if phase in ("pause", "paused", "rinse_hold", "actionrequired"):
+                return latched  # a pause belongs to the same measured cycle
+            return phase in APPLIANCE_RUNNING_STATES
         on_th = float(data.get(CONF_APPLIANCE_POWER_THRESHOLD_W, 10.0))
         off_th = min(float(data.get(CONF_APPLIANCE_OFF_THRESHOLD_W, on_th)), on_th)
-        return power >= (off_th if latched else on_th)
+        if state.attributes.get("unit_of_measurement") == "kW":
+            power *= 1000
+        return math.isfinite(power) and power >= (off_th if latched else on_th)
+
+    def _appliance_duration(self, data: dict[str, Any], now: datetime) -> float:
+        entity_id = data.get(CONF_APPLIANCE_TOTAL_TIME_ENTITY)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        total = duration_hours(state, now)
+        return (
+            total
+            if total is not None and total > 0
+            else float(data[CONF_APPLIANCE_RUN_DURATION_H])
+        )
+
+    @staticmethod
+    def _appliance_finished(state) -> bool:
+        """Do not teach partial consumption when a program errors or aborts."""
+        if state is None:
+            return False
+        try:
+            return math.isfinite(float(state.state))
+        except TypeError, ValueError:
+            return state.state.lower() in {
+                "off",
+                "end",
+                "finished",
+                "power_off",
+                "sleep",
+                "standby",
+                "ready",
+                "inactive",
+            }
 
     def _get_appliance_runs(self, now: datetime) -> tuple[ApplianceRun, ...]:
         runs = []
@@ -3500,7 +3561,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data = subentry.data
             entity_id = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
             state = self.hass.states.get(entity_id) if entity_id else None
-            if state is None or state.state in ("unknown", "unavailable"):
+
+            def sensor(key, data=data):
+                entity = data.get(key)
+                return self.hass.states.get(entity) if entity else None
+
+            remaining = duration_hours(
+                sensor(CONF_APPLIANCE_REMAINING_TIME_ENTITY), now, remaining=True
+            )
+            detection_valid = state is not None and state.state not in (
+                "unknown",
+                "unavailable",
+            )
+            if not detection_valid:
                 # Detection dropout (operator rule, incident 2026-08-08 — see
                 # APPLIANCE_DETECTION_MAX_DROPOUT_MIN): hold the latch across
                 # short gaps (a soak phase looks identical), but once the
@@ -3512,6 +3585,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if now - since >= timedelta(
                     minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN
                 ):
+                    self._appliance_learning.active.pop(subentry_id, None)
+                    self._appliance_observed_idle.discard(subentry_id)
                     self._appliance_started.pop(subentry_id, None)
                     self._appliance_started_restored.discard(subentry_id)
                     self._appliance_dropout_since.pop(subentry_id, None)
@@ -3522,9 +3597,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 running = self._appliance_is_running(
                     data, subentry_id in self._appliance_started
                 )
+            self._appliance_learning.observe(
+                subentry_id,
+                now,
+                running,
+                measurement(sensor(CONF_APPLIANCE_POWER_ENTITY), "power"),
+                measurement(sensor(CONF_APPLIANCE_ENERGY_ENTITY), "energy"),
+                complete_start=subentry_id in self._appliance_observed_idle,
+                valid=detection_valid and (running or self._appliance_finished(state)),
+            )
             if running:
+                self._appliance_observed_idle.discard(subentry_id)
                 started = self._appliance_started.setdefault(subentry_id, now)
-                duration = float(data[CONF_APPLIANCE_RUN_DURATION_H])
+                duration = self._appliance_duration(data, now)
                 elapsed_h = (now - started).total_seconds() / 3600.0
                 # H1 restart-boundary re-anchor: a persisted start restored across
                 # a restart may belong to a run that finished during downtime
@@ -3536,20 +3621,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if duration > 0 and elapsed_h >= duration:
                         started = self._appliance_started[subentry_id] = now
                         elapsed_h = 0.0
-                remaining_h = max(0.0, duration - elapsed_h)
+                remaining_h = (
+                    remaining
+                    if remaining is not None
+                    else max(0.0, duration - elapsed_h)
+                )
                 if remaining_h > 0 and duration > 0:
                     runs.append(
                         ApplianceRun(
                             appliance_id=subentry_id,
-                            remaining_energy_wh=float(
-                                data[CONF_APPLIANCE_RUN_ENERGY_WH]
+                            remaining_energy_wh=self._appliance_learning.energy(
+                                subentry_id, float(data[CONF_APPLIANCE_RUN_ENERGY_WH])
                             )
-                            * remaining_h
-                            / duration,
+                            * min(1.0, remaining_h / duration),
                             remaining_hours=remaining_h,
                         )
                     )
             else:
+                if detection_valid and (
+                    self._appliance_finished(state)
+                    or state.state.lower() in {"initial", "delayedstart", "reserved"}
+                ):
+                    self._appliance_observed_idle.add(subentry_id)
+                else:
+                    self._appliance_observed_idle.discard(subentry_id)
                 self._appliance_started.pop(subentry_id, None)
                 self._appliance_started_restored.discard(subentry_id)
         return tuple(runs)

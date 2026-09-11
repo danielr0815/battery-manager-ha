@@ -24,12 +24,16 @@ from .const import (
     CONF_AC_BALANCE_OUT,
     CONF_AC_LOAD_ENTITY,
     CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_APPLIANCE_ENERGY_ENTITY,
     CONF_APPLIANCE_NAME,
     CONF_APPLIANCE_OFF_THRESHOLD_W,
     CONF_APPLIANCE_OPPORTUNISTIC,
+    CONF_APPLIANCE_POWER_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_APPLIANCE_REMAINING_TIME_ENTITY,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_BUFFER_MAX_PERCENT,
@@ -1613,6 +1617,15 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
                 },
             )
         ] = _entity()
+        for key in (
+            CONF_APPLIANCE_POWER_ENTITY,
+            CONF_APPLIANCE_ENERGY_ENTITY,
+            CONF_APPLIANCE_TOTAL_TIME_ENTITY,
+            CONF_APPLIANCE_REMAINING_TIME_ENTITY,
+        ):
+            schema[
+                vol.Optional(key, description={"suggested_value": data.get(key)})
+            ] = _entity("sensor")
         schema.update(
             {
                 vol.Required(

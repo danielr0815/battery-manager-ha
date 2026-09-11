@@ -163,7 +163,18 @@ monoton in der Schwelle, der Scan entleert deterministisch bis `lo`.
 nur die Diagnose `threshold_horizon_end` (F-NIGHT-RESCUE R7), damit der
 angezeigte Horizont immer der ist, den der Scan tatsächlich benutzt hat.
 
-### 2.4 Rückgabe
+### 2.4 Hausversorgung vor optionalem Verbrauch (v0.41.6)
+
+Nach der Kostenbewertung prüft `_prefer_house_supply` niedrigere Schwellen:
+Sie müssen gleichzeitig Netzbezug und Export verringern und in jedem Slot
+nominal wie pessimistisch die Inverterreserve samt geramptem Puffer sowie
+`soc_min + soc_buffer` halten. Unter zulässigen Kandidaten gewinnt der
+kleinste Netzbezug. Erst danach werden Lasten und Kaskaden allokiert.
+Manuell erzwungene Unterstützung wird in beiden Vergleichspfaden identisch
+simuliert. Ohne zulässige Verbesserung bleibt die Kostenentscheidung bestehen.
+Regeln und Beispiel: [F-HOUSE-SUPPLY](../F-HOUSE-SUPPLY.md).
+
+### 2.5 Rückgabe
 
 `search_threshold` liefert `(threshold, base_trajectory)`, wobei die
 Basis-Trajektorie **immer über den vollen Horizont** simuliert ist

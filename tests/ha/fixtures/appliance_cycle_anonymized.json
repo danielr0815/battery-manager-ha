@@ -1,0 +1,397 @@
+{
+  "description": "Anonymized appliance-cycle regression: relative minutes, relative Wh, rounded power; no dates or entity IDs.",
+  "records": [
+    {
+      "minute": -1,
+      "status": "delayedstart",
+      "remaining_h": 4.5,
+      "power_w": 2,
+      "energy_wh": 0
+    },
+    {
+      "minute": 0,
+      "status": "run",
+      "remaining_h": 4.5,
+      "power_w": 2,
+      "energy_wh": 0
+    },
+    {
+      "minute": 5,
+      "status": "run",
+      "remaining_h": 4.433,
+      "power_w": 29,
+      "energy_wh": 1
+    },
+    {
+      "minute": 10,
+      "status": "run",
+      "remaining_h": 4.35,
+      "power_w": 21,
+      "energy_wh": 3
+    },
+    {
+      "minute": 15,
+      "status": "run",
+      "remaining_h": 4.267,
+      "power_w": 32,
+      "energy_wh": 6
+    },
+    {
+      "minute": 20,
+      "status": "run",
+      "remaining_h": 4.183,
+      "power_w": 1853,
+      "energy_wh": 111
+    },
+    {
+      "minute": 25,
+      "status": "run",
+      "remaining_h": 4.1,
+      "power_w": 1857,
+      "energy_wh": 270
+    },
+    {
+      "minute": 30,
+      "status": "run",
+      "remaining_h": 4.017,
+      "power_w": 30,
+      "energy_wh": 332
+    },
+    {
+      "minute": 35,
+      "status": "run",
+      "remaining_h": 3.933,
+      "power_w": 30,
+      "energy_wh": 334
+    },
+    {
+      "minute": 40,
+      "status": "run",
+      "remaining_h": 3.85,
+      "power_w": 21,
+      "energy_wh": 336
+    },
+    {
+      "minute": 45,
+      "status": "run",
+      "remaining_h": 3.767,
+      "power_w": 22,
+      "energy_wh": 339
+    },
+    {
+      "minute": 50,
+      "status": "run",
+      "remaining_h": 3.683,
+      "power_w": 31,
+      "energy_wh": 340
+    },
+    {
+      "minute": 55,
+      "status": "run",
+      "remaining_h": 3.6,
+      "power_w": 30,
+      "energy_wh": 343
+    },
+    {
+      "minute": 60,
+      "status": "run",
+      "remaining_h": 3.517,
+      "power_w": 27,
+      "energy_wh": 345
+    },
+    {
+      "minute": 65,
+      "status": "run",
+      "remaining_h": 3.433,
+      "power_w": 32,
+      "energy_wh": 347
+    },
+    {
+      "minute": 70,
+      "status": "run",
+      "remaining_h": 3.35,
+      "power_w": 31,
+      "energy_wh": 349
+    },
+    {
+      "minute": 75,
+      "status": "run",
+      "remaining_h": 3.267,
+      "power_w": 21,
+      "energy_wh": 351
+    },
+    {
+      "minute": 80,
+      "status": "run",
+      "remaining_h": 3.183,
+      "power_w": 17,
+      "energy_wh": 354
+    },
+    {
+      "minute": 85,
+      "status": "run",
+      "remaining_h": 3.1,
+      "power_w": 30,
+      "energy_wh": 355
+    },
+    {
+      "minute": 90,
+      "status": "run",
+      "remaining_h": 3.017,
+      "power_w": 30,
+      "energy_wh": 358
+    },
+    {
+      "minute": 95,
+      "status": "run",
+      "remaining_h": 2.933,
+      "power_w": 20,
+      "energy_wh": 360
+    },
+    {
+      "minute": 100,
+      "status": "run",
+      "remaining_h": 2.85,
+      "power_w": 36,
+      "energy_wh": 362
+    },
+    {
+      "minute": 105,
+      "status": "run",
+      "remaining_h": 2.767,
+      "power_w": 31,
+      "energy_wh": 365
+    },
+    {
+      "minute": 110,
+      "status": "run",
+      "remaining_h": 2.683,
+      "power_w": 31,
+      "energy_wh": 368
+    },
+    {
+      "minute": 115,
+      "status": "run",
+      "remaining_h": 2.6,
+      "power_w": 20,
+      "energy_wh": 369
+    },
+    {
+      "minute": 120,
+      "status": "run",
+      "remaining_h": 2.483,
+      "power_w": 1857,
+      "energy_wh": 389
+    },
+    {
+      "minute": 125,
+      "status": "run",
+      "remaining_h": 2.317,
+      "power_w": 6,
+      "energy_wh": 455
+    },
+    {
+      "minute": 130,
+      "status": "run",
+      "remaining_h": 2.233,
+      "power_w": 2,
+      "energy_wh": 455
+    },
+    {
+      "minute": 135,
+      "status": "run",
+      "remaining_h": 2.15,
+      "power_w": 2,
+      "energy_wh": 455
+    },
+    {
+      "minute": 140,
+      "status": "run",
+      "remaining_h": 2.067,
+      "power_w": 2,
+      "energy_wh": 456
+    },
+    {
+      "minute": 145,
+      "status": "run",
+      "remaining_h": 1.983,
+      "power_w": 3,
+      "energy_wh": 456
+    },
+    {
+      "minute": 150,
+      "status": "run",
+      "remaining_h": 1.9,
+      "power_w": 3,
+      "energy_wh": 456
+    },
+    {
+      "minute": 155,
+      "status": "run",
+      "remaining_h": 1.817,
+      "power_w": 3,
+      "energy_wh": 456
+    },
+    {
+      "minute": 160,
+      "status": "run",
+      "remaining_h": 1.733,
+      "power_w": 3,
+      "energy_wh": 456
+    },
+    {
+      "minute": 165,
+      "status": "run",
+      "remaining_h": 1.65,
+      "power_w": 3,
+      "energy_wh": 457
+    },
+    {
+      "minute": 170,
+      "status": "run",
+      "remaining_h": 1.567,
+      "power_w": 3,
+      "energy_wh": 457
+    },
+    {
+      "minute": 175,
+      "status": "run",
+      "remaining_h": 1.483,
+      "power_w": 3,
+      "energy_wh": 457
+    },
+    {
+      "minute": 180,
+      "status": "run",
+      "remaining_h": 1.4,
+      "power_w": 3,
+      "energy_wh": 457
+    },
+    {
+      "minute": 185,
+      "status": "run",
+      "remaining_h": 1.317,
+      "power_w": 3,
+      "energy_wh": 457
+    },
+    {
+      "minute": 190,
+      "status": "run",
+      "remaining_h": 1.233,
+      "power_w": 3,
+      "energy_wh": 458
+    },
+    {
+      "minute": 195,
+      "status": "run",
+      "remaining_h": 1.15,
+      "power_w": 3,
+      "energy_wh": 458
+    },
+    {
+      "minute": 200,
+      "status": "run",
+      "remaining_h": 1.067,
+      "power_w": 3,
+      "energy_wh": 458
+    },
+    {
+      "minute": 205,
+      "status": "run",
+      "remaining_h": 0.983,
+      "power_w": 3,
+      "energy_wh": 458
+    },
+    {
+      "minute": 210,
+      "status": "run",
+      "remaining_h": 0.9,
+      "power_w": 3,
+      "energy_wh": 459
+    },
+    {
+      "minute": 215,
+      "status": "run",
+      "remaining_h": 0.817,
+      "power_w": 3,
+      "energy_wh": 459
+    },
+    {
+      "minute": 220,
+      "status": "run",
+      "remaining_h": 0.733,
+      "power_w": 3,
+      "energy_wh": 459
+    },
+    {
+      "minute": 225,
+      "status": "run",
+      "remaining_h": 0.65,
+      "power_w": 3,
+      "energy_wh": 459
+    },
+    {
+      "minute": 230,
+      "status": "run",
+      "remaining_h": 0.567,
+      "power_w": 3,
+      "energy_wh": 459
+    },
+    {
+      "minute": 235,
+      "status": "run",
+      "remaining_h": 0.483,
+      "power_w": 3,
+      "energy_wh": 460
+    },
+    {
+      "minute": 240,
+      "status": "run",
+      "remaining_h": 0.4,
+      "power_w": 3,
+      "energy_wh": 460
+    },
+    {
+      "minute": 245,
+      "status": "run",
+      "remaining_h": 0.317,
+      "power_w": 3,
+      "energy_wh": 460
+    },
+    {
+      "minute": 250,
+      "status": "run",
+      "remaining_h": 0.233,
+      "power_w": 3,
+      "energy_wh": 460
+    },
+    {
+      "minute": 255,
+      "status": "run",
+      "remaining_h": 0.15,
+      "power_w": 3,
+      "energy_wh": 460
+    },
+    {
+      "minute": 260,
+      "status": "run",
+      "remaining_h": 0.067,
+      "power_w": 3,
+      "energy_wh": 462
+    },
+    {
+      "minute": 264,
+      "status": "finished",
+      "remaining_h": 0,
+      "power_w": 3,
+      "energy_wh": 462
+    },
+    {
+      "minute": 265,
+      "status": "ready",
+      "remaining_h": 4.5,
+      "power_w": 4,
+      "energy_wh": 462
+    }
+  ]
+}

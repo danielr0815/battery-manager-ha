@@ -472,16 +472,24 @@
             "off_threshold_w": "Stop power threshold (W)",
             "run_energy_wh": "Energy per run (Wh)",
             "run_duration_h": "Run duration (h)",
-            "opportunistic_start": "Create start-window advisor entity"
+            "opportunistic_start": "Create start-window advisor entity",
+            "power_entity": "Power sensor (optional)",
+            "energy_entity": "Energy meter (optional)",
+            "total_time_entity": "Total duration sensor (optional)",
+            "remaining_time_entity": "Remaining time sensor (optional)"
           },
           "data_description": {
             "name": "Display name of the appliance.",
             "detection_entity": "Entity that indicates a running program: either a power sensor (W) or a state sensor (e.g. \"running\").",
             "power_threshold_w": "Only relevant for power sensors: above this power the appliance counts as running.",
             "off_threshold_w": "Only relevant for power sensors: a running appliance stays detected until the power drops below this — a brief dip (e.g. a dishwasher soak between heater bursts) does not reset the run. Keep at or below the running threshold.",
-            "run_energy_wh": "Energy consumption of a typical program — added to the forecast as remaining consumption when a run is detected.",
+            "run_energy_wh": "Energy of a typical program. Used until complete measured cycles are available; then the learned typical consumption is used.",
             "run_duration_h": "Duration of a typical program in hours (e.g. 3.5).",
-            "opportunistic_start": "Creates an additional entity that indicates when a complete run could start right now without any grid import — useful as a start signal."
+            "opportunistic_start": "Creates an additional entity that indicates when a complete run could start right now without any grid import — useful as a start signal.",
+            "power_entity": "Measured power in W or kW. Fully observed cycles teach typical consumption for future planning.",
+            "energy_entity": "Meter reading in Wh or kWh. Counter differences take precedence over integrated power when learning.",
+            "total_time_entity": "Program duration in s, min, h or HH:MM[:SS]; unitless values mean minutes. For example sensor.frontlader_waschmaschine_total_time.",
+            "remaining_time_entity": "Remaining duration in s, min, h or HH:MM[:SS], or a timestamp for program end. Unitless values mean minutes. Use the operating status for run detection: remaining time may also be displayed while idle."
           }
         },
         "reconfigure": {
@@ -493,16 +501,24 @@
             "off_threshold_w": "Stop power threshold (W)",
             "run_energy_wh": "Energy per run (Wh)",
             "run_duration_h": "Run duration (h)",
-            "opportunistic_start": "Create start-window advisor entity"
+            "opportunistic_start": "Create start-window advisor entity",
+            "power_entity": "Power sensor (optional)",
+            "energy_entity": "Energy meter (optional)",
+            "total_time_entity": "Total duration sensor (optional)",
+            "remaining_time_entity": "Remaining time sensor (optional)"
           },
           "data_description": {
             "name": "Display name of the appliance.",
             "detection_entity": "Entity that indicates a running program: either a power sensor (W) or a state sensor (e.g. \"running\").",
             "power_threshold_w": "Only relevant for power sensors: above this power the appliance counts as running.",
             "off_threshold_w": "Only relevant for power sensors: a running appliance stays detected until the power drops below this — a brief dip (e.g. a dishwasher soak between heater bursts) does not reset the run. Keep at or below the running threshold.",
-            "run_energy_wh": "Energy consumption of a typical program — added to the forecast as remaining consumption when a run is detected.",
+            "run_energy_wh": "Energy of a typical program. Used until complete measured cycles are available; then the learned typical consumption is used.",
             "run_duration_h": "Duration of a typical program in hours (e.g. 3.5).",
-            "opportunistic_start": "Creates an additional entity that indicates when a complete run could start right now without any grid import — useful as a start signal."
+            "opportunistic_start": "Creates an additional entity that indicates when a complete run could start right now without any grid import — useful as a start signal.",
+            "power_entity": "Measured power in W or kW. Fully observed cycles teach typical consumption for future planning.",
+            "energy_entity": "Meter reading in Wh or kWh. Counter differences take precedence over integrated power when learning.",
+            "total_time_entity": "Program duration in s, min, h or HH:MM[:SS]; unitless values mean minutes. For example sensor.frontlader_waschmaschine_total_time.",
+            "remaining_time_entity": "Remaining duration in s, min, h or HH:MM[:SS], or a timestamp for program end. Unitless values mean minutes. Use the operating status for run detection: remaining time may also be displayed while idle."
           }
         }
       }

@@ -38,6 +38,7 @@ from .const import (
     CONF_AC_BALANCE_OUT,
     CONF_AC_LOAD_ENTITY,
     CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_APPLIANCE_POWER_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_CASCADE_MEMBER_IDS,
@@ -1385,7 +1386,8 @@ class ProfileLearner:
             ):
                 appliances.append(
                     {
-                        "detection_entity": data[CONF_APPLIANCE_DETECTION_ENTITY],
+                        "detection_entity": data.get(CONF_APPLIANCE_POWER_ENTITY)
+                        or data[CONF_APPLIANCE_DETECTION_ENTITY],
                         "power_threshold_w": float(
                             data.get(CONF_APPLIANCE_POWER_THRESHOLD_W, 10.0)
                         ),

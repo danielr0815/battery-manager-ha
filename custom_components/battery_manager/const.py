@@ -466,6 +466,10 @@ STORAGE_VERSION = 2
 # --- Appliance subentry keys ---
 SUBENTRY_TYPE_APPLIANCE = "appliance"
 CONF_APPLIANCE_NAME = "name"
+CONF_APPLIANCE_POWER_ENTITY = "power_entity"
+CONF_APPLIANCE_ENERGY_ENTITY = "energy_entity"
+CONF_APPLIANCE_TOTAL_TIME_ENTITY = "total_time_entity"
+CONF_APPLIANCE_REMAINING_TIME_ENTITY = "remaining_time_entity"
 CONF_APPLIANCE_DETECTION_ENTITY = "detection_entity"
 CONF_APPLIANCE_POWER_THRESHOLD_W = "power_threshold_w"
 CONF_APPLIANCE_OFF_THRESHOLD_W = "off_threshold_w"
@@ -488,6 +492,11 @@ APPLIANCE_RUNNING_STATES = {
     "rinsing",
     "spinning",
     "drying",
+    # Measured washer phases are part of one cycle, including load detection.
+    "detecting",
+    "steam_softening",
+    "cool_down",
+    "refreshing",
 }
 
 # Operator rule (incident 2026-08-08): a switched-off appliance takes its
