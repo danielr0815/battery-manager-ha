@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-09-12
+
+### Added
+- Haushaltsgeräte können ein aktives Programm und optional eine Programmauswahl
+  für die Vorschau erhalten. Vollständig gemessene Läufe lernen Energie und
+  Dauer getrennt pro Programm; unbekannte Programme nutzen die Gerätewerte.
+- Neue Dashboard-Karte `battery-manager-loads-card` für Überschusslasten außerhalb
+  von Kaskaden: geplante Leistung und Energie, Laufzeiten, Ladeziel,
+  Planungsleistung mit Herkunft sowie Ausführungsgründe und Warnungen.
+
 ## [0.42.0] - 2026-09-11
 
 ### Added

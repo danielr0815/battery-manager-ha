@@ -556,7 +556,20 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
         data = self.coordinator.data or {}
         loads = [
             {
+                "load_id": load_id,
                 "name": plan.get("name"),
+                **{
+                    key: plan.get(key)
+                    for key in (
+                        "available",
+                        "soc_percent",
+                        "target_soc_percent",
+                        "observed_power_w",
+                        "learned_power_w",
+                        "power_warning",
+                        "soc_stale",
+                    )
+                },
                 "active": plan.get("active"),
                 "not_before": plan.get("not_before"),
                 "execution": plan.get("execution") or {},
@@ -574,7 +587,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                 "tomorrow_kwh": plan.get("tomorrow_kwh"),
                 "schedule": plan.get("schedule") or [],
             }
-            for plan in (data.get("load_plans") or {}).values()
+            for load_id, plan in (data.get("load_plans") or {}).items()
             if not plan.get("managed_by_cascade")
         ]
         daily = data.get("daily_surplus") or []

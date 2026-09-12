@@ -152,7 +152,7 @@ To add a card:
   `…SOC forecast` sensor — **Battery Manager Forecast** appears as a
   suggestion with a live preview.
 - Or search the card picker for *Battery Manager Forecast*, *Battery Manager
-  Cascades* or *Battery Manager Consumption* (listed under *Community*).
+  Cascades*, *Battery Manager · Loads* or *Battery Manager Consumption* (listed under *Community*).
 - Or via YAML:
 
   ```yaml
@@ -174,6 +174,21 @@ To add a card:
   entity: sensor.battery_manager_soc_forecast
   # optional: title / hours as above
   ```
+
+Standalone surplus loads (including storage loads outside cascades) have their
+own card with power/energy forecasts, schedules, planning power, charge targets
+and execution reasons:
+
+```yaml
+type: custom:battery-manager-loads-card
+entity: sensor.battery_manager_soc_forecast
+# optional: title / hours as above
+```
+
+Appliances can additionally use an **Active program** sensor to learn separate
+energy and duration profiles. **Selected program for preview** is optional and
+only affects pre-start planning; it never labels a measured cycle. Unknown
+programs fall back to appliance values. See [program learning](docs/F-APPLIANCE-PROGRAMS.md).
 
 If your dashboard **resources** are managed in YAML mode, the card module is
 loaded globally instead; no manual resource entry is needed. After an

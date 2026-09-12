@@ -25,7 +25,12 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .appliance_learning import ApplianceLearning, duration_hours, measurement
+from .appliance_learning import (
+    ApplianceLearning,
+    duration_hours,
+    measurement,
+    program_name,
+)
 from .cascade_manager import CascadeManager
 from .const import (
     APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
@@ -38,9 +43,11 @@ from .const import (
     CONF_APPLIANCE_OPPORTUNISTIC,
     CONF_APPLIANCE_POWER_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_APPLIANCE_PROGRAM_ENTITY,
     CONF_APPLIANCE_REMAINING_TIME_ENTITY,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
@@ -899,6 +906,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # appliance keeps its real elapsed; a finished one is popped on the
             # next _get_appliance_runs when detection reads not-running).
             self._appliance_learning.restore(data.get("appliance_energy_samples", {}))
+            self._appliance_learning.restore_programs(
+                data.get("appliance_program_samples", {})
+            )
             for k, v in data.get("appliance_started", {}).items():
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
@@ -1048,6 +1058,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
             # does not re-latch at `now` and re-inject the full run energy.
             "appliance_energy_samples": self._appliance_learning.samples,
+            "appliance_program_samples": self._appliance_learning.program_samples,
             "appliance_started": {
                 k: v.isoformat() for k, v in self._appliance_started.items()
             },
@@ -1223,6 +1234,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     CONF_APPLIANCE_DETECTION_ENTITY,
                     CONF_APPLIANCE_POWER_ENTITY,
                     CONF_APPLIANCE_ENERGY_ENTITY,
+                    CONF_APPLIANCE_PROGRAM_ENTITY,
+                    CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
                     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
                     CONF_APPLIANCE_REMAINING_TIME_ENTITY,
                 ):
@@ -1274,9 +1287,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         appliance_id=subentry_id,
                         name=subentry.title,
                         run_energy_wh=self._appliance_learning.energy(
-                            subentry_id, float(data[CONF_APPLIANCE_RUN_ENERGY_WH])
+                            subentry_id,
+                            float(data[CONF_APPLIANCE_RUN_ENERGY_WH]),
+                            self._appliance_program(subentry_id, data),
                         ),
-                        run_duration_h=self._appliance_duration(data, dt_util.utcnow()),
+                        run_duration_h=self._appliance_duration(
+                            data, dt_util.utcnow(), subentry_id
+                        ),
                         opportunistic_start=bool(
                             data.get(CONF_APPLIANCE_OPPORTUNISTIC, False)
                         ),
@@ -3524,14 +3541,41 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             power *= 1000
         return math.isfinite(power) and power >= (off_th if latched else on_th)
 
-    def _appliance_duration(self, data: dict[str, Any], now: datetime) -> float:
+    def _appliance_program(self, key: str, data: dict[str, Any]) -> str | None:
+        """Selected program is a preview only; a running cycle uses active program."""
+        running = self._appliance_is_running(data, key in self._appliance_started)
+        entity = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
+        detection = self.hass.states.get(entity) if entity else None
+        uncertain = detection is None or detection.state in {"unknown", "unavailable"}
+        if key in self._appliance_learning.programs and (running or uncertain):
+            return self._appliance_learning.programs[key]
+        entity = data.get(
+            CONF_APPLIANCE_PROGRAM_ENTITY
+            if running
+            else CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY
+        )
+        return program_name(self.hass.states.get(entity)) if entity else None
+
+    def _appliance_duration(
+        self, data: dict[str, Any], now: datetime, key: str = ""
+    ) -> float:
         entity_id = data.get(CONF_APPLIANCE_TOTAL_TIME_ENTITY)
         state = self.hass.states.get(entity_id) if entity_id else None
         total = duration_hours(state, now)
+        program = self._appliance_program(key, data)
+        if program is not None and not self._appliance_is_running(
+            data, key in self._appliance_started
+        ):
+            # A ready appliance may still publish the previous program's total.
+            total = None
         return (
             total
             if total is not None and total > 0
-            else float(data[CONF_APPLIANCE_RUN_DURATION_H])
+            else self._appliance_learning.duration(
+                key,
+                float(data[CONF_APPLIANCE_RUN_DURATION_H]),
+                self._appliance_program(key, data),
+            )
         )
 
     @staticmethod
@@ -3586,6 +3630,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN
                 ):
                     self._appliance_learning.active.pop(subentry_id, None)
+                    self._appliance_learning.programs.pop(subentry_id, None)
                     self._appliance_observed_idle.discard(subentry_id)
                     self._appliance_started.pop(subentry_id, None)
                     self._appliance_started_restored.discard(subentry_id)
@@ -3604,12 +3649,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 measurement(sensor(CONF_APPLIANCE_POWER_ENTITY), "power"),
                 measurement(sensor(CONF_APPLIANCE_ENERGY_ENTITY), "energy"),
                 complete_start=subentry_id in self._appliance_observed_idle,
+                program=program_name(sensor(CONF_APPLIANCE_PROGRAM_ENTITY)),
                 valid=detection_valid and (running or self._appliance_finished(state)),
             )
             if running:
                 self._appliance_observed_idle.discard(subentry_id)
                 started = self._appliance_started.setdefault(subentry_id, now)
-                duration = self._appliance_duration(data, now)
+                duration = self._appliance_duration(data, now, subentry_id)
                 elapsed_h = (now - started).total_seconds() / 3600.0
                 # H1 restart-boundary re-anchor: a persisted start restored across
                 # a restart may belong to a run that finished during downtime
@@ -3631,7 +3677,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ApplianceRun(
                             appliance_id=subentry_id,
                             remaining_energy_wh=self._appliance_learning.energy(
-                                subentry_id, float(data[CONF_APPLIANCE_RUN_ENERGY_WH])
+                                subentry_id,
+                                float(data[CONF_APPLIANCE_RUN_ENERGY_WH]),
+                                self._appliance_program(subentry_id, data),
                             )
                             * min(1.0, remaining_h / duration),
                             remaining_hours=remaining_h,
@@ -4084,6 +4132,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             since = diag.get("since")
             load_plans[load_plan.load_id] = {
                 "name": load.name,
+                "available": load_state.available,
+                "soc_percent": load_state.soc_percent,
+                "target_soc_percent": load.target_soc_percent
+                if load.energy_limited
+                else None,
+                "observed_power_w": load_state.measured_power_w,
                 "not_before": next(
                     (
                         state.not_before.isoformat()

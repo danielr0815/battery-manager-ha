@@ -59,12 +59,25 @@ def duration_hours(state, now: datetime, *, remaining: bool = False) -> float | 
     return value if math.isfinite(value) and value >= 0 else None
 
 
+def program_name(state) -> str | None:
+    """Use explicit program states only; unknown never becomes a learned label."""
+    value = state.state.strip() if state is not None else ""
+    return (
+        value
+        if value.lower() not in {"", "unknown", "unavailable", "none"}
+        and len(value) <= 255
+        else None
+    )
+
+
 class ApplianceLearning:
     """Bounded median of measured cycle energies, keyed by appliance subentry."""
 
     def __init__(self):
         self.samples: dict[str, list[float]] = {}
         self.active: dict[str, dict] = {}
+        self.program_samples: dict[str, dict[str, list[list[float]]]] = {}
+        self.programs: dict[str, str | None] = {}
 
     def restore(self, data) -> None:
         if not isinstance(data, dict):
@@ -79,21 +92,89 @@ class ApplianceLearning:
                     and 0 < v <= 10000
                 ][-20:]
 
-    def energy(self, key: str, fallback: float) -> float:
+    def restore_programs(self, data) -> None:
+        """Restore bounded profiles without trusting persisted JSON types."""
+        if not isinstance(data, dict):
+            return
+        for key, profiles in data.items():
+            if not isinstance(profiles, dict):
+                continue
+            clean = {}
+            for name, values in list(profiles.items())[-32:]:
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or len(name) > 255
+                    or not isinstance(values, list)
+                ):
+                    continue
+                samples = [
+                    list(map(float, pair))
+                    for pair in values
+                    if isinstance(pair, list)
+                    and len(pair) == 2
+                    and all(
+                        isinstance(v, (int, float))
+                        and not isinstance(v, bool)
+                        and math.isfinite(v)
+                        and 0 < v <= limit
+                        for v, limit in zip(pair, (10000, 24), strict=True)
+                    )
+                ][-20:]
+                if samples:
+                    clean[name] = samples
+            self.program_samples[key] = clean
+
+    def duration(self, key: str, fallback: float, program: str | None = None) -> float:
+        values = self.program_samples.get(key, {}).get(program, [])
+        return median(pair[1] for pair in values) if values else fallback
+
+    def energy(self, key: str, fallback: float, program: str | None = None) -> float:
+        profile = self.program_samples.get(key, {}).get(program, [])
+        if profile:
+            return median(pair[0] for pair in profile)
         values = self.samples.get(key)
         return median(values) if values else fallback
 
-    def observe(self, key, now, running, power, energy, *, complete_start, valid=True):
+    def observe(
+        self,
+        key,
+        now,
+        running,
+        power,
+        energy,
+        *,
+        complete_start,
+        valid=True,
+        program=None,
+    ):
         """Integrate held power; prefer a continuous, non-resetting energy counter.
 
         Ten minutes is the maximum measurement gap. Missing samples invalidate
         that source for this cycle, rather than teaching an understated total.
         """
         cycle = self.active.get(key)
+        if running:
+            if key not in self.programs or self.programs[key] is None:
+                self.programs[key] = program
+            elif (
+                program is not None
+                and program != self.programs[key]
+                and cycle is not None
+            ):
+                # Conflicting labels can mean a restart/aborted program. Never
+                # mix two programs into a single profile (or aggregate sample).
+                cycle["valid"] = False
+            if cycle is not None and cycle["program"] is None:
+                cycle["program"] = self.programs[key]
+        else:
+            self.programs.pop(key, None)
         if cycle is None:
             if running and complete_start:
                 self.active[key] = {
                     "at": now,
+                    "started": now,
+                    "program": self.programs.get(key),
                     "power": power,
                     "energy": energy,
                     "first_energy": energy,
@@ -121,4 +202,13 @@ class ApplianceLearning:
                 measured = cycle["wh"]
             if cycle["valid"] and measured is not None and 0 < measured <= 10000:
                 self.samples[key] = (self.samples.get(key, []) + [measured])[-20:]
+                hours = (now - cycle["started"]).total_seconds() / 3600
+                name = cycle["program"]
+                if name is not None and 0 < hours <= 24:
+                    profiles = self.program_samples.setdefault(key, {})
+                    profiles[name] = (profiles.pop(name, []) + [[measured, hours]])[
+                        -20:
+                    ]
+                    while len(profiles) > 32:
+                        del profiles[next(iter(profiles))]
             del self.active[key]

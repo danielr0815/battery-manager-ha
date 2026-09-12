@@ -476,7 +476,9 @@
             "power_entity": "Leistungssensor (optional)",
             "energy_entity": "Energiezähler (optional)",
             "total_time_entity": "Gesamtlaufzeit-Sensor (optional)",
-            "remaining_time_entity": "Restlaufzeit-Sensor (optional)"
+            "remaining_time_entity": "Restlaufzeit-Sensor (optional)",
+            "program_entity": "Aktives Programm (optional)",
+            "selected_program_entity": "Ausgewähltes Programm zur Vorschau (optional)"
           },
           "data_description": {
             "name": "Anzeigename des Geräts.",
@@ -489,7 +491,9 @@
             "power_entity": "Gemessene Leistung in W oder kW. Vollständig beobachtete Läufe verbessern den typischen Verbrauch für künftige Planungen.",
             "energy_entity": "Zählerstand in Wh oder kWh. Zählerdifferenzen haben beim Lernen Vorrang vor der Leistungsmessung.",
             "total_time_entity": "Programmdauer in s, min, h oder HH:MM[:SS]; ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_total_time.",
-            "remaining_time_entity": "Restdauer in s, min, h oder HH:MM[:SS], alternativ Endzeitpunkt. Ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_remaining_time oder sensor.kuche_geschirrspuhler_remaining_program_time. Der Betriebsstatus erkennt den Lauf; eine Restzeit kann auch im Stillstand angezeigt werden."
+            "remaining_time_entity": "Restdauer in s, min, h oder HH:MM[:SS], alternativ Endzeitpunkt. Ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_remaining_time oder sensor.kuche_geschirrspuhler_remaining_program_time. Der Betriebsstatus erkennt den Lauf; eine Restzeit kann auch im Stillstand angezeigt werden.",
+            "program_entity": "Lernt Energie und Dauer getrennt je aktivem Programm. Ohne Kennung gelten die Gerätewerte.",
+            "selected_program_entity": "Nur Vorschau vor dem Start; diese Auswahl kennzeichnet keine gemessenen Durchläufe."
           }
         },
         "reconfigure": {
@@ -505,7 +509,9 @@
             "power_entity": "Leistungssensor (optional)",
             "energy_entity": "Energiezähler (optional)",
             "total_time_entity": "Gesamtlaufzeit-Sensor (optional)",
-            "remaining_time_entity": "Restlaufzeit-Sensor (optional)"
+            "remaining_time_entity": "Restlaufzeit-Sensor (optional)",
+            "program_entity": "Aktives Programm (optional)",
+            "selected_program_entity": "Ausgewähltes Programm zur Vorschau (optional)"
           },
           "data_description": {
             "name": "Anzeigename des Geräts.",
@@ -518,7 +524,9 @@
             "power_entity": "Gemessene Leistung in W oder kW. Vollständig beobachtete Läufe verbessern den typischen Verbrauch für künftige Planungen.",
             "energy_entity": "Zählerstand in Wh oder kWh. Zählerdifferenzen haben beim Lernen Vorrang vor der Leistungsmessung.",
             "total_time_entity": "Programmdauer in s, min, h oder HH:MM[:SS]; ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_total_time.",
-            "remaining_time_entity": "Restdauer in s, min, h oder HH:MM[:SS], alternativ Endzeitpunkt. Ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_remaining_time oder sensor.kuche_geschirrspuhler_remaining_program_time. Der Betriebsstatus erkennt den Lauf; eine Restzeit kann auch im Stillstand angezeigt werden."
+            "remaining_time_entity": "Restdauer in s, min, h oder HH:MM[:SS], alternativ Endzeitpunkt. Ohne Einheit Minuten. Zum Beispiel sensor.frontlader_waschmaschine_remaining_time oder sensor.kuche_geschirrspuhler_remaining_program_time. Der Betriebsstatus erkennt den Lauf; eine Restzeit kann auch im Stillstand angezeigt werden.",
+            "program_entity": "Lernt Energie und Dauer getrennt je aktivem Programm. Ohne Kennung gelten die Gerätewerte.",
+            "selected_program_entity": "Nur Vorschau vor dem Start; diese Auswahl kennzeichnet keine gemessenen Durchläufe."
           }
         }
       }

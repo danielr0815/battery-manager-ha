@@ -476,7 +476,9 @@
             "power_entity": "Power sensor (optional)",
             "energy_entity": "Energy meter (optional)",
             "total_time_entity": "Total duration sensor (optional)",
-            "remaining_time_entity": "Remaining time sensor (optional)"
+            "remaining_time_entity": "Remaining time sensor (optional)",
+            "program_entity": "Active program (optional)",
+            "selected_program_entity": "Selected program for preview (optional)"
           },
           "data_description": {
             "name": "Display name of the appliance.",
@@ -489,7 +491,9 @@
             "power_entity": "Measured power in W or kW. Fully observed cycles teach typical consumption for future planning.",
             "energy_entity": "Meter reading in Wh or kWh. Counter differences take precedence over integrated power when learning.",
             "total_time_entity": "Program duration in s, min, h or HH:MM[:SS]; unitless values mean minutes. For example sensor.frontlader_waschmaschine_total_time.",
-            "remaining_time_entity": "Remaining duration in s, min, h or HH:MM[:SS], or a timestamp for program end. Unitless values mean minutes. Use the operating status for run detection: remaining time may also be displayed while idle."
+            "remaining_time_entity": "Remaining duration in s, min, h or HH:MM[:SS], or a timestamp for program end. Unitless values mean minutes. Use the operating status for run detection: remaining time may also be displayed while idle.",
+            "program_entity": "Learns energy and duration separately for each active program. Falls back to appliance values without a program.",
+            "selected_program_entity": "Preview before starting only; this selection never labels measured cycles."
           }
         },
         "reconfigure": {
@@ -505,7 +509,9 @@
             "power_entity": "Power sensor (optional)",
             "energy_entity": "Energy meter (optional)",
             "total_time_entity": "Total duration sensor (optional)",
-            "remaining_time_entity": "Remaining time sensor (optional)"
+            "remaining_time_entity": "Remaining time sensor (optional)",
+            "program_entity": "Active program (optional)",
+            "selected_program_entity": "Selected program for preview (optional)"
           },
           "data_description": {
             "name": "Display name of the appliance.",
@@ -518,7 +524,9 @@
             "power_entity": "Measured power in W or kW. Fully observed cycles teach typical consumption for future planning.",
             "energy_entity": "Meter reading in Wh or kWh. Counter differences take precedence over integrated power when learning.",
             "total_time_entity": "Program duration in s, min, h or HH:MM[:SS]; unitless values mean minutes. For example sensor.frontlader_waschmaschine_total_time.",
-            "remaining_time_entity": "Remaining duration in s, min, h or HH:MM[:SS], or a timestamp for program end. Unitless values mean minutes. Use the operating status for run detection: remaining time may also be displayed while idle."
+            "remaining_time_entity": "Remaining duration in s, min, h or HH:MM[:SS], or a timestamp for program end. Unitless values mean minutes. Use the operating status for run detection: remaining time may also be displayed while idle.",
+            "program_entity": "Learns energy and duration separately for each active program. Falls back to appliance values without a program.",
+            "selected_program_entity": "Preview before starting only; this selection never labels measured cycles."
           }
         }
       }

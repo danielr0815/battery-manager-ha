@@ -1,9 +1,9 @@
 /**
- * Battery Manager Forecast, Consumption + Cascade Cards
+ * Battery Manager Forecast, Consumption, Cascade + Loads Cards
  *
  * Bundled with the battery_manager integration and registered as a Lovelace
  * resource automatically — no HACS frontend download needed. This module
- * registers three card types, all reading `sensor.…_soc_forecast`:
+ * registers four card types, all reading `sensor.…_soc_forecast`:
  *
  *   battery-manager-forecast-card
  *                                 the planned SOC trajectory with the full
@@ -14,6 +14,7 @@
  *                                 the planned surplus loads as their own
  *                                 layer (attribute `consumption_forecast`,
  *                                 backend >= v0.25.5)
+ *   battery-manager-loads-card    forecasts for loads outside cascades
  *   battery-manager-cascade-card  the internal Root/charge/discharge/output/
  *                                 terminal timeline of every storage cascade
  *
@@ -2794,6 +2795,10 @@ class BatteryManagerCascadeCard extends HTMLElement {
     return rows.length ? `<details data-view-key="cascade-decisions-${esc(cascade.cascade_id || cascade.terminal_load_id)}" class="muted"><summary>${esc(this._text("Planungsgründe", "Planning decisions"))}</summary><ul>${rows.join("")}</ul></details>` : "";
   }
 
+  _cardTitle() { return localize(this._hass, "card_cascade"); }
+
+  _emptyText() { return this._text("Keine Kaskaden konfiguriert", "No cascades configured"); }
+
   _renderCascade(cascade, index) {
     const view = this._ui(cascade, index);
     const members = this._memberDetails(cascade);
@@ -2920,8 +2925,8 @@ class BatteryManagerCascadeCard extends HTMLElement {
     const state = this._hass.states?.[entityId];
     const cascades = this._cascades();
     const body = !entityId ? esc(localize(this._hass, "no_entity")) : !state ? esc(`${localize(this._hass, "not_found")} ${entityId}`) :
-      cascades.length ? cascades.map((c, i) => this._renderCascade(c, i)).join("") : esc(this._text("Keine Kaskaden konfiguriert", "No cascades configured"));
-    replaceCardHTML(this, `<ha-card header="${esc(this._config.title || localize(this._hass, "card_cascade"))}"><style>
+      cascades.length ? cascades.map((c, i) => this._renderCascade(c, i)).join("") : esc(this._emptyText());
+    replaceCardHTML(this, `<ha-card header="${esc(this._config.title || this._cardTitle())}"><style>
       :host{display:block;min-width:0}*{box-sizing:border-box}.wrap{container-type:inline-size;padding:0 16px 16px;color:var(--primary-text-color,#eee);font-size:14px;line-height:1.5;overflow-wrap:anywhere}
       .cascade{border-top:1px solid var(--divider-color,#444);padding-top:16px}.cascade+.cascade{margin-top:24px}h2,h3,h4,p{margin:0}h2{font-size:1.4em}h3{font-size:1.1em}h4{margin-top:16px}.muted,.readout,small{color:var(--secondary-text-color,#aaa);font-size:.86em}.muted{margin:8px 0}.fault{color:var(--error-color,#f66)}
       .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.section-heading>*{min-width:0}.badge{padding:3px 9px;border:1px solid var(--divider-color,#444);border-radius:12px;color:var(--secondary-text-color,#aaa);font-size:.85em}
@@ -2964,5 +2969,64 @@ if (!customElements.get(CASCADE_CARD_TYPE)) {
       }
       return null;
     },
+  });
+}
+
+
+// Standalone loads share the cascade card's time clipping, exact Wh/W charts,
+// keyboard navigation and preserved UI state, but have no cascade topology.
+const LOADS_CARD_TYPE = "battery-manager-loads-card";
+class BatteryManagerLoadsCard extends BatteryManagerCascadeCard {
+  _cardTitle() { return this._text("Battery Manager · Lasten", "Battery Manager · Loads"); }
+  _emptyText() { return this._text("Keine Lasten außerhalb von Kaskaden konfiguriert", "No loads outside cascades configured"); }
+  getCardSize() { return Math.max(3, this._cascades().length * 8); }
+
+  _cascades() {
+    const attrs = this._hass?.states?.[this._entityId()]?.attributes || {};
+    const managed = new Set((Array.isArray(attrs.cascades) ? attrs.cascades : []).flatMap((c) =>
+      c ? [...(Array.isArray(c.members) ? c.members : []), ...(Array.isArray(c.member_details) ? c.member_details.map((m) => m?.load_id) : []), c.terminal_load_id] : []));
+    return (Array.isArray(attrs.loads) ? attrs.loads : []).filter((load) => load && typeof load === "object" && !load.managed_by_cascade && (!load.load_id || !managed.has(load.load_id))).slice(0, 50).map((load, index) => ({
+      ...load, cascade_id: load.load_id || `legacy-load-${index}`, terminal_load_id: load.load_id,
+      member_details: [], members: [],
+      schedule: (Array.isArray(load.schedule) ? load.schedule : []).filter((b) => b && typeof b === "object").map((b) => ({ ...b, root_input_wh: num(b.wh), activities: [] })),
+    }));
+  }
+
+  _renderCascade(load, index) {
+    const view = this._ui(load, index), blocks = this._blocks(load, view.period);
+    const source = { configured: this._text("konfiguriert", "configured"), learned: this._text("gelernt", "learned"), live: this._text("aus Messwerten", "from measurements"), saturated: this._text("Leistungsaufnahme gesättigt", "power draw saturated") }[load.planning_power_source] || "—";
+    const metrics = [
+      [this._text("Heute ab Planstart", "Today from plan start"), `${this._number(num(load.today_kwh))} kWh`],
+      [this._text("Morgen", "Tomorrow"), `${this._number(num(load.tomorrow_kwh))} kWh`],
+      [this._text("Gesamter Plan", "Full plan"), `${this._number(num(load.planned_energy_kwh))} kWh`],
+      [this._text("Planungsleistung", "Planning power"), `${this._number(num(load.planning_power_w), 0)} W · ${source}`],
+    ];
+    const state = load.active === true ? this._text("Empfehlung: ein", "Recommendation: on") : load.active === false ? this._text("Empfehlung: aus", "Recommendation: off") : this._text("Empfehlung unbekannt", "Recommendation unknown");
+    return `<section class="cascade"><header class="section-heading"><h2>${esc(load.name || load.load_id || "?")}</h2><span class="badge">${esc(state)}</span></header>
+      ${load.available === false ? `<p class="fault">${esc(this._text("Nicht verfügbar", "Unavailable"))}</p>` : ""}
+      ${load.power_warning ? `<p class="fault">${esc(this._text("Leistungsaufnahme weicht von der Erwartung ab", "Power draw differs from expectation"))}</p>` : ""}
+      ${load.soc_stale ? `<p class="fault">${esc(this._text("Veraltete Telemetrie blockiert die Ausführung", "Stale telemetry blocks execution"))}</p>` : ""}
+      <div class="metrics">${metrics.map(([label, value]) => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
+      ${load.target_soc_percent != null ? `<p class="muted">${esc(this._text("Ladestand am Planstart / Ladeziel", "State of charge at plan start / charge target"))}: ${this._number(num(load.soc_percent), 1)} % / ${this._number(num(load.target_soc_percent), 1)} %</p>` : ""}
+      <p class="muted">${esc(this._text("Robuste Leistungsschätzung während des Betriebs", "Robust power estimate while running"))}: ${this._number(num(load.observed_power_w), 0)} W · ${esc(this._text("Zuletzt gelernte Leistung", "Last learned power"))}: ${this._number(num(load.learned_power_w), 0)} W</p>
+      ${this._decisions(load)}
+      <div class="period">${[["today", this._text("Heute ab jetzt", "Today from now")], ["tomorrow", this._text("Morgen", "Tomorrow")], ["all", this._text("Gesamter Plan", "Full plan")]].map(([key, label]) => this._button(label, index, "period", `data-period="${key}"`, view.period === key)).join("")}</div>
+      <p class="muted">${esc(this._text("Prognose: geplante Leistung und kumulierte Energie im ausgewählten Zeitraum. Die Empfehlung ist kein gemessener Schaltzustand. Fehlende Werte: —.", "Forecast: planned power and cumulative energy in the selected period. The recommendation is not a measured switch state. Missing values: —."))}</p>
+      <div class="chart-grid">${[["power", this._text("Leistung", "Power")], ["energy", this._text("Energie", "Energy")]].map(([mode, label]) => `<article class="terminal"><h3>${esc(label)}</h3>${this._plot(this._series(load, "root", null, view.period, mode), label, CASCADE_ROOT_COLOR, true)}</article>`).join("")}</div>
+      <details data-view-key="load-schedule-${esc(load.cascade_id)}"><summary>${esc(this._text("Geplante Laufzeiten", "Planned running times"))}</summary>
+      ${blocks.length ? `<ol class="agenda">${blocks.map((b) => `<li class="event"><time>${esc(this._time(b.start, true))} – ${esc(this._time(b.end, true))}</time><span>${this._energyText(this._energy(b, "root"))}${b.why ? ` · ${esc(localize(this._hass, b.why))}` : ""}</span></li>`).join("")}</ol>` : `<p class="muted">${esc(this._text("Keine Laufzeit im ausgewählten Zeitraum geplant", "No running time planned in the selected period"))}</p>`}</details>
+    </section>`;
+  }
+}
+
+if (!customElements.get(LOADS_CARD_TYPE)) {
+  customElements.define(LOADS_CARD_TYPE, BatteryManagerLoadsCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: LOADS_CARD_TYPE,
+    get name() { return uiLanguage(null).startsWith("de") ? "Battery Manager · Lasten" : "Battery Manager · Loads"; },
+    get description() { return uiLanguage(null).startsWith("de") ? "Planung und Ausführung für Lasten außerhalb von Kaskaden" : "Planning and execution for loads outside cascades"; },
+    preview: true, documentationURL: DOCS_URL,
+    getEntitySuggestion: (hass, entityId) => entityId.startsWith("sensor.") && isForecastEntity(hass.states[entityId]) ? { config: { type: `custom:${LOADS_CARD_TYPE}`, entity: entityId } } : null,
   });
 }

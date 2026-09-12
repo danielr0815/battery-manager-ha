@@ -557,3 +557,45 @@ test('slotted scroll host is restored before anchoring after a browser scroll cl
  assert.equal(host.scrollLeft,15);
  delete context.refreshCard;
 });
+
+// F-STANDALONE-LOADS-CARD: exercise the registered card, not a copied renderer.
+const LoadsCard = definitions.get('battery-manager-loads-card');
+const loadsCard = (loads, cascades=[]) => {
+ const c=new LoadsCard(); c.setConfig({entity:'sensor.forecast', hours:48});
+ c.hass={language:'de',config:{time_zone:'Europe/Berlin'},states:{'sensor.forecast':{attributes:{loads,cascades}}}};
+ return c;
+};
+test('standalone card registration, exclusions and exact partial-slot energy',()=>{
+ const c=loadsCard([{load_id:'one',name:'Heizung <script>',planning_power_w:300,planning_power_source:'learned',active:true,schedule:[{...block(0,.5),wh:150},{...block(1,2),wh:200}]}, {load_id:'member'}, {load_id:'terminal'}, {load_id:'flagged',managed_by_cascade:'c1'}], [{members:['member'],terminal_load_id:'terminal'}]);
+ const loads=c._cascades(); assert.equal(loads.length,1);
+ assert.equal(c._valueAt(c._series(loads[0],'root',null,'all','power'),start+15*60000),300);
+ assert.equal(c._valueAt(c._series(loads[0],'root',null,'all','power'),start+45*60000),0);
+ assert.equal(c._valueAt(c._series(loads[0],'root',null,'all','energy'),start+120*60000),.35);
+ assert.match(c.shadowRoot.innerHTML,/Heizung &lt;script&gt;/);
+ assert.match(c.shadowRoot.innerHTML,/Empfehlung: ein/);
+ assert.match(c.shadowRoot.innerHTML,/300 W · gelernt/);
+ assert.ok(!c.shadowRoot.innerHTML.includes('<script>'));
+ const picker=context.window.customCards.find(v=>v.type==='battery-manager-loads-card');
+ assert.equal(picker.preview,true);
+ assert.ok(LoadsCard.getConfigForm().schema.some(v=>v.name==='entity'));
+});
+test('standalone card preserves period by load identity and reports missing data',()=>{
+ const c=loadsCard([{load_id:'a',name:'A'},{load_id:'b',name:'B'}]);
+ c._ui(c._cascades()[0],0).period='all';
+ c.hass={...c._hass,states:{'sensor.forecast':{attributes:{loads:[{load_id:'b',name:'B'},{load_id:'a',name:'A',available:false,soc_stale:true,target_soc_percent:90}]}}}};
+ assert.equal(c._ui(c._cascades()[1],1).period,'all');
+ assert.match(c.shadowRoot.innerHTML,/— W/);
+ assert.match(c.shadowRoot.innerHTML,/— % \/ 90,0 %/);
+ assert.match(c.shadowRoot.innerHTML,/Nicht verfügbar/);
+ assert.match(c.shadowRoot.innerHTML,/Keine Laufzeit/);
+ assert.match(loadsCard([]).shadowRoot.innerHTML,/Keine Lasten außerhalb/);
+});
+test('standalone clipping keeps energy and absent Wh stays unknown',()=>{
+ const c=loadsCard([{load_id:'a',schedule:[{...block(0,1),wh:400}]}]);
+ c._window=()=>[start+15*60000,start+45*60000];
+ const load=c._cascades()[0];
+ assert.equal(c._total(c._blocks(load,'today'),'root'),200);
+ assert.equal(c._valueAt(c._series(load,'root',null,'today','power'),start+30*60000),400);
+ const missing=loadsCard([{load_id:'m',schedule:[block(0,1)]}]);
+ assert.equal(missing._total(missing._blocks(missing._cascades()[0]),'root'),null);
+});

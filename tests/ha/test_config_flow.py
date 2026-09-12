@@ -1456,6 +1456,8 @@ async def test_appliance_subentry_user_step_creates_entry(hass):
         "energy_entity",
         "total_time_entity",
         "remaining_time_entity",
+        "program_entity",
+        "selected_program_entity",
     }
 
     result = await hass.config_entries.subentries.async_configure(
@@ -2359,6 +2361,8 @@ async def test_appliance_optional_sensors_can_be_saved_and_removed(hass):
         "energy_entity": "sensor.appliance_energy",
         "total_time_entity": "sensor.appliance_total",
         "remaining_time_entity": "sensor.appliance_remaining",
+        "program_entity": "sensor.appliance_program",
+        "selected_program_entity": "select.appliance_program",
     }
     result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
     result = await hass.config_entries.subentries.async_configure(

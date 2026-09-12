@@ -1414,6 +1414,32 @@ async def test_load_plan_dict_carries_why_and_learned_power(hass):
     assert attrs["loads"][0]["planning_power_source"] == "learned"
     sensor_schedule = attrs["loads"][0]["schedule"]
     assert sensor_schedule and all("why" in row for row in sensor_schedule)
+    assert attrs["loads"][0]["load_id"] == sub_id
+    assert attrs["loads"][0]["target_soc_percent"] == 100
+    assert attrs["loads"][0]["available"] is True
+    # F-STANDALONE-LOADS-CARD: actual coordinator -> entity -> registered JS card.
+    import json
+    import subprocess
+    from pathlib import Path
+
+    script = Path(__file__).parents[1] / "frontend" / "backend-contract.mjs"
+    completed = await hass.async_add_executor_job(
+        lambda: subprocess.run(
+            ["node", str(script)],
+            input=json.dumps(
+                {
+                    "loads_attributes": dict(attrs),
+                    "time_zone": hass.config.time_zone,
+                    "expected_load_id": sub_id,
+                    "expected_wh": sum(row["wh"] for row in sensor_schedule),
+                }
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 async def test_refresh_awaits_power_warning_update(hass):

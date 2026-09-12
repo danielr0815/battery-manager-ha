@@ -30,9 +30,11 @@ from .const import (
     CONF_APPLIANCE_OPPORTUNISTIC,
     CONF_APPLIANCE_POWER_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_APPLIANCE_PROGRAM_ENTITY,
     CONF_APPLIANCE_REMAINING_TIME_ENTITY,
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
+    CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
@@ -1626,6 +1628,13 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity("sensor")
+        for key in (
+            CONF_APPLIANCE_PROGRAM_ENTITY,
+            CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
+        ):
+            schema[
+                vol.Optional(key, description={"suggested_value": data.get(key)})
+            ] = _entity(["sensor", "select", "input_select"])
         schema.update(
             {
                 vol.Required(

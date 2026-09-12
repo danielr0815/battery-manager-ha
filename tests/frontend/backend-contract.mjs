@@ -67,3 +67,14 @@ if (input.timed_cascade) {
   assert.equal(value('soc','b1',20),60);
   assert.ok(Math.abs(value('soc','b1',40)-(60-8*2/3))<1e-9);
 }
+if (input.loads_attributes) {
+  const Card=definitions.get('battery-manager-loads-card'), card=new Card();
+  card.setConfig({entity:'sensor.forecast',hours:96});
+  card.hass={language:'de',config:{time_zone:input.time_zone},states:{'sensor.forecast':{attributes:input.loads_attributes}}};
+  const load=card._cascades()[0];
+  assert.equal(load.load_id,input.expected_load_id);
+  const energy=card._total(card._blocks(load),'root');
+  assert.ok(Math.abs(energy-input.expected_wh)<.001, `${energy} versus ${input.expected_wh}`);
+  assert.match(card.shadowRoot.innerHTML,/Planungsleistung/);
+  assert.match(card.shadowRoot.innerHTML,/Ladeziel/);
+}

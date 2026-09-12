@@ -12,6 +12,7 @@ from custom_components.battery_manager.appliance_learning import (
     ApplianceLearning,
     duration_hours,
     measurement,
+    program_name,
 )
 from custom_components.battery_manager.const import DOMAIN
 from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
@@ -375,3 +376,171 @@ def _tracked_with_required_inputs(coordinator):
         },
     ):
         return coordinator._tracked_entities()
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("unknown", None),
+        ("unavailable", None),
+        (" NONE ", None),
+        ("", None),
+        ("x" * 256, None),
+        (" Eco50 ", "Eco50"),
+    ],
+)
+def test_program_names_require_an_explicit_valid_state(value, expected):
+    assert (
+        program_name(State("sensor.program", value) if value is not None else None)
+        == expected
+    )
+
+
+def _program_cycle(learner, program, wh=600, minutes=60):
+    for minute in range(0, minutes + 1, 5):
+        learner.observe(
+            "a",
+            NOW + timedelta(minutes=minute),
+            minute < minutes,
+            None,
+            wh * minute / minutes,
+            complete_start=minute == 0,
+            program=program if minute < minutes else None,
+        )
+
+
+def test_program_profiles_keep_separate_energy_duration_and_aggregate_fallback():
+    learner = ApplianceLearning()
+    _program_cycle(learner, "eco", 600, 60)
+    _program_cycle(learner, "auto", 900, 30)
+    assert learner.energy("a", 1200, "eco") == 600
+    assert learner.energy("a", 1200, "auto") == 900
+    assert learner.duration("a", 4, "eco") == 1
+    assert learner.duration("a", 4, "auto") == 0.5
+    assert learner.energy("a", 1200, "new") == 750
+    assert learner.duration("a", 4, "new") == 4
+    assert learner.programs == {}
+
+
+def test_late_program_arrival_and_conflict_do_not_mislabel_cycles():
+    learner = ApplianceLearning()
+    for minute, program in [(0, None), (5, "eco"), (10, None), (15, None)]:
+        learner.observe(
+            "a",
+            NOW + timedelta(minutes=minute),
+            minute < 15,
+            None,
+            minute * 10,
+            complete_start=minute == 0,
+            program=program,
+        )
+    assert learner.program_samples["a"]["eco"] == [[150, 0.25]]
+    for minute, program in [(0, "eco"), (5, "auto"), (10, None)]:
+        learner.observe(
+            "a",
+            NOW + timedelta(minutes=minute),
+            minute < 10,
+            None,
+            minute * 10,
+            complete_start=minute == 0,
+            program=program,
+        )
+    assert learner.samples["a"] == [150]
+    assert "auto" not in learner.program_samples["a"]
+
+
+def test_program_storage_validation_and_bounds():
+    learner = ApplianceLearning()
+    learner.restore_programs(None)
+    learner.restore_programs(
+        {
+            "bad": [],
+            "a": {
+                "": [],
+                "x" * 256: [],
+                "invalid": None,
+                "empty": [None, [], [True, 1], [20, float("nan")], [-1, 2], [20, 25]],
+                "eco": [[100, 1]] * 25,
+            },
+        }
+    )
+    assert learner.program_samples == {"a": {"eco": [[100, 1]] * 20}}
+    for i in range(34):
+        _program_cycle(learner, f"p{i}")
+    assert len(learner.program_samples["a"]) == 32
+    assert "eco" not in learner.program_samples["a"]
+    for _ in range(22):
+        _program_cycle(learner, "p33")
+    assert len(learner.program_samples["a"]["p33"]) == 20
+
+
+async def test_selected_program_preview_and_active_program_learning(hass):
+    coordinator, key = _coordinator(
+        hass,
+        program_entity="sensor.program",
+        selected_program_entity="select.program",
+        total_time_entity="sensor.total",
+    )
+    learner = coordinator._appliance_learning
+    learner.restore_programs({key: {"eco": [[600, 3]], "auto": [[900, 1]]}})
+    hass.states.async_set("sensor.status", "ready")
+    hass.states.async_set("sensor.total", "270")
+    hass.states.async_set("select.program", "eco")
+    coordinator._get_appliance_runs(NOW)
+    preview = coordinator.build_system_config().appliances[0]
+    assert (preview.run_energy_wh, preview.run_duration_h) == (600, 3)
+    hass.states.async_set("sensor.total", "unknown")
+    for minute in range(0, 31, 5):
+        hass.states.async_set("sensor.status", "running" if minute < 30 else "finished")
+        hass.states.async_set("sensor.program", "auto" if minute < 25 else "unknown")
+        hass.states.async_set(
+            "sensor.energy", str(minute * 10), {"unit_of_measurement": "Wh"}
+        )
+        if minute == 30:
+            # Config is built before run observation: the new preview must not
+            # inherit the previous run's still-latched program for one refresh.
+            assert coordinator.build_system_config().appliances[0].run_energy_wh == 600
+        runs = coordinator._get_appliance_runs(NOW + timedelta(minutes=minute))
+        if minute == 25:
+            assert (
+                coordinator._appliance_program(
+                    key, coordinator.entry.subentries[key].data
+                )
+                == "auto"
+            )
+            assert runs[0].remaining_energy_wh == pytest.approx(900 * (1 - 25 / 60))
+    assert learner.program_samples[key]["eco"] == [[600, 3]]
+    assert learner.program_samples[key]["auto"][-1] == [300, 0.5]
+    assert coordinator.build_system_config().appliances[0].run_energy_wh == 600
+    assert {"sensor.program", "select.program"} <= set(
+        _tracked_with_required_inputs(coordinator)
+    )
+
+
+async def test_program_profile_persistence_and_midrun_start(hass):
+    from unittest.mock import AsyncMock, patch
+
+    coordinator, key = _coordinator(hass, program_entity="sensor.program")
+    coordinator._appliance_learning.restore_programs({key: {"eco": [[600, 2]]}})
+    restored, _ = _coordinator(hass)
+    with (
+        patch.object(
+            restored._store,
+            "async_load",
+            AsyncMock(return_value=coordinator._persistent_payload()),
+        ),
+        patch.object(restored.learner, "async_load", AsyncMock()),
+    ):
+        await restored.async_load_persistent_state()
+    assert restored._appliance_learning.energy(key, 1000, "eco") == 600
+    assert restored._appliance_learning.duration(key, 4, "eco") == 2
+    hass.states.async_set("sensor.status", "running")
+    hass.states.async_set("sensor.program", "eco")
+    coordinator._get_appliance_runs(NOW)
+    assert coordinator._appliance_learning.programs[key] == "eco"
+    assert coordinator._appliance_learning.active == {}
+    hass.states.async_set("sensor.status", "unavailable")
+    coordinator._get_appliance_runs(NOW)
+    coordinator._get_appliance_runs(NOW + timedelta(minutes=31))
+    assert coordinator._appliance_learning.programs == {}

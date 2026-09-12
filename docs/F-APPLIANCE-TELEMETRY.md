@@ -45,8 +45,9 @@ Unabhängige Verbrauchs- und Programmlaufzeitsensoren wurden nicht genutzt.
 ## Abgrenzung
 
 Keine automatische Gerätesteuerung, keine rückwirkende Zyklenerkennung aus
-Recorder-Daten und keine Unterscheidung verschiedener Waschprogramme. Die
-Lernwerte repräsentieren den typischen vollständigen Lauf des jeweiligen Geräts.
+Recorder-Daten. Ohne Programmeingang repräsentieren die Lernwerte den typischen
+vollständigen Lauf des jeweiligen Geräts. Optionale programmspezifische Profile
+ergänzt [F-APPLIANCE-PROGRAMS](F-APPLIANCE-PROGRAMS.md).
 
 ## Tests
 
