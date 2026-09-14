@@ -141,7 +141,7 @@
           "charger_max_power_w": "Maximale AC-Aufnahmeleistung des Batterie-Ladegeräts — begrenzt, wie schnell Überschuss eingespeichert werden kann.",
           "charger_efficiency": "Wirkungsgrad der AC→DC-Wandlung des Ladegeräts (0,92 = 8 % Verlust).",
           "charger_standby_power_w": "Eigenverbrauch des Ladegeräts, solange es aktiv ist.",
-          "inverter_max_power_w": "Maximale AC-Abgabeleistung des Entlade-Wechselrichters.",
+          "inverter_max_power_w": "Maximale AC-Abgabeleistung. Bei direkter Invertersteuerung setzt der BM diesen konfigurierbaren Wert als Entladelimit zur Freigabe; zum Sperren setzt er 0 W.",
           "inverter_efficiency": "Wirkungsgrad der DC→AC-Wandlung des Wechselrichters (0,95 = 5 % Verlust).",
           "inverter_standby_power_w": "Eigenverbrauch des Wechselrichters, solange er eingeschaltet ist.",
           "inverter_min_soc_percent": "Unter diesem Ladezustand schaltet der Wechselrichter hart ab — das Haus läuft dann aus dem Netz."
@@ -191,7 +191,8 @@
               "support_dc24_recovery_soc": "24-V-Stützung: Zurücknehmen bei SOC (%)",
               "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
               "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)",
-              "inverter_block_switch_entity": "Inverter-Sperrschalter (AN = AC-Batterieentladung gesperrt)"
+              "inverter_block_switch_entity": "Inverter-Sperrstatus (optionale Rückmeldung)",
+              "inverter_discharge_limit_entity": "Inverter-Entladelimit (number-Entity, W)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: Schalter des spannungs- und strombegrenzten 48-V-Stütznetzteils. Wird von der Integration direkt geschaltet.",
@@ -204,7 +205,8 @@
               "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %. Bei direkter Invertersteuerung wird zusätzlich ausreichende PV-Versorgung für die Rückkehr verlangt.",
               "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
               "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %.",
-              "inverter_block_switch_entity": "Aktiviert die gemeinsame direkte Steuerung von Inverter und DC-Netzteilen. AN muss Batterieentladung nach AC sperren, AUS freigeben; PV-Ladung bleibt möglich. Bisherige Automationen für diese Schalter vor der Übernahme deaktivieren. Leer: bisherige Steuerung beibehalten."
+              "inverter_block_switch_entity": "Wird ausschließlich gelesen, niemals geschaltet. Victron setzt diesen Status abhängig vom Leistungslimit. AN bestätigt gesperrte AC-Entladung; AUS bestätigt Freigabe.",
+              "inverter_discharge_limit_entity": "Aktiviert die gemeinsame direkte Steuerung. Der BM setzt 0 W zum Sperren und die konfigurierte maximale Inverterleistung zum Freigeben (Standard 2300 W). Er liest den gesetzten Wert zurück. Bisherige Automationen für das Entladelimit und die Netzteile bei Übernahme deaktivieren."
             }
           },
           "dc_devices": {
@@ -617,7 +619,7 @@
               "charger_max_power_w": "Maximale AC-Aufnahmeleistung des Batterie-Ladegeräts — begrenzt, wie schnell Überschuss eingespeichert werden kann.",
               "charger_efficiency": "Wirkungsgrad der AC→DC-Wandlung des Ladegeräts (0,92 = 8 % Verlust).",
               "charger_standby_power_w": "Eigenverbrauch des Ladegeräts, solange es aktiv ist.",
-              "inverter_max_power_w": "Maximale AC-Abgabeleistung des Entlade-Wechselrichters.",
+              "inverter_max_power_w": "Maximale AC-Abgabeleistung. Bei direkter Invertersteuerung setzt der BM diesen konfigurierbaren Wert als Entladelimit zur Freigabe; zum Sperren setzt er 0 W.",
               "inverter_efficiency": "Wirkungsgrad der DC→AC-Wandlung des Wechselrichters (0,95 = 5 % Verlust).",
               "inverter_standby_power_w": "Eigenverbrauch des Wechselrichters, solange er eingeschaltet ist.",
               "inverter_min_soc_percent": "Unter diesem Ladezustand schaltet der Wechselrichter hart ab — das Haus läuft dann aus dem Netz."
@@ -727,7 +729,8 @@
               "support_dc24_recovery_soc": "24-V-Stützung: Zurücknehmen bei SOC (%)",
               "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
               "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)",
-              "inverter_block_switch_entity": "Inverter-Sperrschalter (AN = AC-Batterieentladung gesperrt)"
+              "inverter_block_switch_entity": "Inverter-Sperrstatus (optionale Rückmeldung)",
+              "inverter_discharge_limit_entity": "Inverter-Entladelimit (number-Entity, W)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: Schalter des spannungs- und strombegrenzten 48-V-Stütznetzteils. Wird von der Integration direkt geschaltet.",
@@ -740,7 +743,8 @@
               "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %. Bei direkter Invertersteuerung wird zusätzlich ausreichende PV-Versorgung für die Rückkehr verlangt.",
               "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
               "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %.",
-              "inverter_block_switch_entity": "Aktiviert die gemeinsame direkte Steuerung von Inverter und DC-Netzteilen. AN muss Batterieentladung nach AC sperren, AUS freigeben; PV-Ladung bleibt möglich. Bisherige Automationen für diese Schalter vor der Übernahme deaktivieren. Leer: bisherige Steuerung beibehalten."
+              "inverter_block_switch_entity": "Wird ausschließlich gelesen, niemals geschaltet. Victron setzt diesen Status abhängig vom Leistungslimit. AN bestätigt gesperrte AC-Entladung; AUS bestätigt Freigabe.",
+              "inverter_discharge_limit_entity": "Aktiviert die gemeinsame direkte Steuerung. Der BM setzt 0 W zum Sperren und die konfigurierte maximale Inverterleistung zum Freigeben (Standard 2300 W). Er liest den gesetzten Wert zurück. Bisherige Automationen für das Entladelimit und die Netzteile bei Übernahme deaktivieren."
             }
           },
           "dc_devices": {

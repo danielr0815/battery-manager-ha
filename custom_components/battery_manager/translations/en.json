@@ -141,7 +141,7 @@
           "charger_max_power_w": "Maximum AC input power of the battery charger — limits how fast surplus can be stored.",
           "charger_efficiency": "AC→DC conversion efficiency of the charger (0.92 = 8 % loss).",
           "charger_standby_power_w": "Charger self-consumption while active.",
-          "inverter_max_power_w": "Maximum AC output power of the discharge inverter.",
+          "inverter_max_power_w": "Maximum AC output power. Direct inverter control uses this configurable value as the discharge limit when enabled, and 0 W when blocked.",
           "inverter_efficiency": "DC→AC conversion efficiency of the inverter (0.95 = 5 % loss).",
           "inverter_standby_power_w": "Inverter self-consumption while switched on.",
           "inverter_min_soc_percent": "Below this state of charge the inverter shuts off hard — the house then runs from the grid."
@@ -191,7 +191,8 @@
               "support_dc24_recovery_soc": "24 V support: recover at SOC (%)",
               "support_dc48_activate_soc": "48 V support: activate at SOC (%)",
               "support_dc48_recovery_soc": "48 V support: recover at SOC (%)",
-              "inverter_block_switch_entity": "Inverter blocking switch (ON blocks battery discharge to AC)"
+              "inverter_block_switch_entity": "Inverter blocked status (optional feedback)",
+              "inverter_discharge_limit_entity": "Inverter discharge limit (number entity, W)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: switch for the voltage- and current-limited 48 V support PSU. Controlled directly by the integration.",
@@ -204,7 +205,8 @@
               "support_dc24_recovery_soc": "Battery SOC at or above which the 24 V grid support switches back off. Set it a few percent above the activate level: a wider gap latches the support on longer and stops it chattering when the SOC parks on the threshold overnight. Default 11 %. With direct inverter control, return also requires sufficient PV supply.",
               "support_dc48_activate_soc": "Battery SOC at or below which the last-resort 48 V support PSU also engages (deepest protection). Keep it at or below the 24 V activate level. Default 5.5 %.",
               "support_dc48_recovery_soc": "Battery SOC at or above which the 48 V support switches back off. Must be above the 48 V activate level and at or below the 24 V recover level. Default 10 %.",
-              "inverter_block_switch_entity": "Enables coordinated direct inverter and DC PSU control. ON must block battery discharge to AC, OFF must allow it; PV charging remains possible. Disable existing automations for these actuators before takeover. Empty: retain existing control."
+              "inverter_block_switch_entity": "Read only, never switched. Victron updates this status from the power limit. ON confirms blocked AC discharge; OFF confirms release.",
+              "inverter_discharge_limit_entity": "Enables coordinated direct control. BM writes 0 W to block discharge and the configured maximum inverter power to release it (default 2300 W), then verifies readback. Disable existing discharge-limit and PSU automations at takeover."
             }
           },
           "dc_devices": {
@@ -617,7 +619,7 @@
               "charger_max_power_w": "Maximum AC input power of the battery charger — limits how fast surplus can be stored.",
               "charger_efficiency": "AC→DC conversion efficiency of the charger (0.92 = 8 % loss).",
               "charger_standby_power_w": "Charger self-consumption while active.",
-              "inverter_max_power_w": "Maximum AC output power of the discharge inverter.",
+              "inverter_max_power_w": "Maximum AC output power. Direct inverter control uses this configurable value as the discharge limit when enabled, and 0 W when blocked.",
               "inverter_efficiency": "DC→AC conversion efficiency of the inverter (0.95 = 5 % loss).",
               "inverter_standby_power_w": "Inverter self-consumption while switched on.",
               "inverter_min_soc_percent": "Below this state of charge the inverter shuts off hard — the house then runs from the grid."
@@ -727,7 +729,8 @@
               "support_dc24_recovery_soc": "24 V support: recover at SOC (%)",
               "support_dc48_activate_soc": "48 V support: activate at SOC (%)",
               "support_dc48_recovery_soc": "48 V support: recover at SOC (%)",
-              "inverter_block_switch_entity": "Inverter blocking switch (ON blocks battery discharge to AC)"
+              "inverter_block_switch_entity": "Inverter blocked status (optional feedback)",
+              "inverter_discharge_limit_entity": "Inverter discharge limit (number entity, W)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: switch for the voltage- and current-limited 48 V support PSU. Controlled directly by the integration.",
@@ -740,7 +743,8 @@
               "support_dc24_recovery_soc": "Battery SOC at or above which the 24 V grid support switches back off. Set it a few percent above the activate level: a wider gap latches the support on longer and stops it chattering when the SOC parks on the threshold overnight. Default 11 %. With direct inverter control, return also requires sufficient PV supply.",
               "support_dc48_activate_soc": "Battery SOC at or below which the last-resort 48 V support PSU also engages (deepest protection). Keep it at or below the 24 V activate level. Default 5.5 %.",
               "support_dc48_recovery_soc": "Battery SOC at or above which the 48 V support switches back off. Must be above the 48 V activate level and at or below the 24 V recover level. Default 10 %.",
-              "inverter_block_switch_entity": "Enables coordinated direct inverter and DC PSU control. ON must block battery discharge to AC, OFF must allow it; PV charging remains possible. Disable existing automations for these actuators before takeover. Empty: retain existing control."
+              "inverter_block_switch_entity": "Read only, never switched. Victron updates this status from the power limit. ON confirms blocked AC discharge; OFF confirms release.",
+              "inverter_discharge_limit_entity": "Enables coordinated direct control. BM writes 0 W to block discharge and the configured maximum inverter power to release it (default 2300 W), then verifies readback. Disable existing discharge-limit and PSU automations at takeover."
             }
           },
           "dc_devices": {

@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Gemeinsame direkte Steuerung von Inverter, 24-V-Netzteil und 48-V-Netzteil
-  über einen konfigurierten Inverter-Sperrschalter (AN = AC-Entladung gesperrt).
+  über ein konfiguriertes numerisches Entladelimit: 0 W sperrt, die
+  konfigurierbare maximale Inverterleistung (Standard 2300 W) gibt frei.
+  Der optionale Victron-Sperrstatus dient ausschließlich als Rückmeldung.
   Bestätigte Schaltfolgen verhindern Parallelbetrieb von AC-Batterieentladung
   und Netzstützung. Bestehende Installationen behalten bis zur Einrichtung
-  dieses Schalters ihre bisherige Steuerung.
+  dieses Entladelimits ihre bisherige Steuerung.
 - Gemeinsame Reserveplanung auf einem Fünf-Minuten-Raster, begrenzte
   48-V-Stromversorgung, sichtbare DC-Versorgungsdefizite und Quellenanteile
   in der Prognose. Netzgestützte Erholung gibt keine AC-Entladung frei.

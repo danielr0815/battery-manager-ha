@@ -74,6 +74,7 @@ from .const import (
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
     CONF_HOUSE_SOC_STALE_MID_PERCENT,
     CONF_INVERTER_BLOCK_SWITCH,
+    CONF_INVERTER_LIMIT_ENTITY,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
@@ -936,7 +937,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             self._support_migration = dict(data.get("support_migration") or {})
             if (
-                self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+                self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
                 and data.get("support_control_mode") != "coordinated"
             ):
                 # Legacy 'manual' can mean an external automation toggled a
@@ -1080,7 +1081,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             "support_manual": dict(self._support_manual),
             "support_control_mode": "coordinated"
-            if self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+            if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
             else "legacy",
             "support_migration": dict(self._support_migration),
             "support_state": dict(self._support_state),
@@ -1192,6 +1193,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # a dead 24 V rail (PSU manually off, DC/DC still off) is healed
         # quickly.
         for key in (
+            CONF_INVERTER_LIMIT_ENTITY,
             CONF_INVERTER_BLOCK_SWITCH,
             CONF_SUPPORT_DC24_SWITCH,
             CONF_SUPPORT_DC48_SWITCH,
@@ -1407,7 +1409,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         support_configured = bool(
             cfg.get(CONF_SUPPORT_DC24_SWITCH)
             or cfg.get(CONF_SUPPORT_DC48_SWITCH)
-            or cfg.get(CONF_INVERTER_BLOCK_SWITCH)
+            or cfg.get(CONF_INVERTER_LIMIT_ENTITY)
         )
 
         support_voltage = (
@@ -1491,7 +1493,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             support=SupportParams(
                 configured=support_configured,
-                coordinated=bool(cfg.get(CONF_INVERTER_BLOCK_SWITCH)),
+                coordinated=bool(cfg.get(CONF_INVERTER_LIMIT_ENTITY)),
                 dc24_available=bool(
                     cfg.get(CONF_SUPPORT_DC24_SWITCH) and cfg.get(CONF_DCDC_SWITCH)
                 ),
@@ -4038,10 +4040,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._coordinated_inverter_target = recommendation
             recommendation = (
                 recommendation
-                and self._entity_tristate(
-                    self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
-                )
-                is False
+                and self._inverter_limit_confirmed(False)
                 and all(
                     not self.raw_config.get(key)
                     or self._entity_tristate(self.raw_config[key]) is False
@@ -4928,7 +4927,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         per-key and per-direction, so an operator ON right after a BM OFF
         enters manual mode instead of being reverted (review finding).
         """
-        if self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH):
+        if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
             # External switches are reconciled by the common controller. They
             # must never become an implicit persistent manual request.
             return
@@ -5083,7 +5082,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         withholds actuation) so the shakedown can record what it *would* do.
         """
         return (
-            not self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+            not self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
             and self._support_manual.get("dc48", False)
             and bool(self.raw_config.get(CONF_BATTERY_VOLTAGE_ENTITY))
             and bool(self.raw_config.get(CONF_SUPPORT_DC48_SWITCH))
@@ -5464,7 +5463,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         path as permanently active (forced_on) so the SOC forecast matches
         the real winter operation.
         """
-        if self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH):
+        if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
             self._support_manual[key] = on
             self._save_persistent_state()
             await self.async_request_refresh()
@@ -5664,8 +5663,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return True
 
     async def _set_number_value(self, entity_id: str, value: float) -> bool:
-        """Write an input_number (F-FEEDIN: the external controller's AC
-        setpoint). Same error semantics as _switch_entity: log + False."""
+        """Write a number/input_number setpoint; log and return False on failure."""
         recorder = getattr(self, "operation_recorder", None)
         request = (
             recorder.event(
@@ -5677,13 +5675,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         try:
             await self.hass.services.async_call(
-                "input_number",
+                entity_id.partition(".")[0],
                 "set_value",
                 {"entity_id": entity_id, "value": value},
                 blocking=True,
             )
         except Exception as err:
-            _LOGGER.error("input_number.set_value failed for %s: %s", entity_id, err)
+            _LOGGER.error("set_value failed for %s: %s", entity_id, err)
             if recorder:
                 recorder.event(
                     "command_result",
@@ -5749,9 +5747,38 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return await self._switch_entity(then_off, False)
 
+    def _inverter_limit_confirmed(self, blocked: bool) -> bool:
+        """The watt limit is the actuator; Victron's switch is read-only proof."""
+        entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
+        target = 0.0 if blocked else float(self.raw_config["inverter_max_power_w"])
+        value = self._read_float(entity)
+        feedback = self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+        return (
+            value is not None
+            and abs(value - target) < 0.1
+            and (not feedback or self._entity_tristate(feedback) is blocked)
+        )
+
+    async def _confirm_inverter_limit(self, blocked: bool, diag: dict) -> bool:
+        entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
+        target = 0.0 if blocked else float(self.raw_config["inverter_max_power_w"])
+        diag["discharge_limit_target_w"] = target
+        # Do not hammer an already accepted number while waiting for the
+        # separate Victron feedback. Its state event resumes confirmation.
+        value = self._read_float(entity)
+        if (
+            value is None or abs(value - target) >= 0.1
+        ) and not await self._set_number_value(entity, target):
+            diag["reason"] = "inverter_limit_command_failed"
+            return False
+        if not self._inverter_limit_confirmed(blocked):
+            diag["reason"] = "inverter_limit_unconfirmed"
+            return False
+        return True
+
     async def _coordinated_data_loss(self, soc, now) -> None:
         """Keep protection operational when no economic plan can be built."""
-        if not self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH):
+        if not self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
             return
         if self._switch_task is not None and not self._switch_task.done():
             return
@@ -5803,7 +5830,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         try:
             async with self._switch_lock:
-                block = self.raw_config[CONF_INVERTER_BLOCK_SWITCH]
                 psu24 = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
                 psu48 = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
                 dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
@@ -5833,7 +5859,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if not inverter or any(desired.values()) or physical_support:
                     self._inverter_recommendation = False
-                    if not await confirmed(block, True):
+                    if not await self._confirm_inverter_limit(True, diag):
                         diag["reason"] = "inverter_block_unconfirmed"
                         return
 
@@ -5878,7 +5904,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 elif psu24:
                     # A hand-edited configuration must not turn off a rail's
                     # only confirmed source. The config flow rejects this.
-                    await confirmed(block, True)
+                    await self._confirm_inverter_limit(True, diag)
                     self._inverter_recommendation = False
                     diag["reason"] = "missing_rail_transfer_actuator"
                     return
@@ -5889,7 +5915,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if inverter and not any(desired.values()):
                     if dcdc and not await confirmed(dcdc, True):
                         return
-                    if not await confirmed(block, False):
+                    if not await self._confirm_inverter_limit(False, diag):
                         return
                     self._inverter_recommendation = True
         finally:

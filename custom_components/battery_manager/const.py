@@ -869,5 +869,7 @@ OPERATION_POWER_SOURCES = {
     "operation_export_power_entity": "grid_export",
 }
 
-# F-COORDINATED-DC-SUPPORT: ON blocks battery discharge to AC.
+# F-COORDINATED-DC-SUPPORT: Victron feedback, never an actuator.
 CONF_INVERTER_BLOCK_SWITCH = "inverter_block_switch_entity"
+
+CONF_INVERTER_LIMIT_ENTITY = "inverter_discharge_limit_entity"

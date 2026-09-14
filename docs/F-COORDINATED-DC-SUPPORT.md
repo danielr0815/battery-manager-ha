@@ -1,6 +1,6 @@
 # Gemeinsame Strategie für Inverter und DC-Netzteile
 
-Stand: 2026-09-14. **Implementiert für v0.44.0; Aktivierung durch Konfiguration des Inverter-Sperrschalters.**
+Stand: 2026-09-14. **Implementiert für v0.44.0; Aktivierung durch Konfiguration des numerischen Inverter-Entladelimits.**
 Auftrag: Inverter, 48-V-Netzteil und 24-V-Netzteil gemeinsam führen;
 Spannungen, Stromgrenzen, Wirkungsgrade und Lasten als Parameter behandeln.
 
@@ -152,7 +152,12 @@ Kein periodisches Ein/Aus-Testen allein zur Leistungsschätzung.
 ## R5 — Schaltfolgen und Zuständigkeit
 
 Ein gemeinsamer BM-Controller besitzt die drei Betriebsentscheidungen und
-die 24-V-Quellenumschaltung. Bestehende unabhängige Netzteil-Automationen
+die 24-V-Quellenumschaltung. **Der Stellwert ist das numerische Entladelimit:**
+0 W sperrt die AC-Batterieentladung, `inverter_max_power_w` gibt die konfigurierte
+Leistung frei (2300 W ist nur der Standardwert). Der BM schreibt `number.set_value`
+und liest den Wert zurück. Victron setzt den Sperrstatus selbst abhängig von
+der Leistung; der BM liest diesen optional zur zusätzlichen Bestätigung und
+schreibt niemals auf diesen Rückmeldeschalter. Bestehende unabhängige Netzteil-Automationen
 werden bei Einführung gezielt abgelöst. Empfehlungen und reale Zustände
 bleiben getrennt; HA-Serviceerfolg ist noch keine bestätigte Versorgung.
 
@@ -252,23 +257,30 @@ würde die Aufnahme erhöhen. Diese Zahlen sind Rechnungen, keine Messwerte.
 
 ## Einrichtung und Einführung
 
-Im Support-Abschnitt `inverter_block_switch_entity` konfigurieren. **AN muss
-AC-Batterieentladung sperren, AUS muss sie freigeben.** Für die untersuchte
-Anlage entspricht dies `switch.victron_vebus_disablefeedin_228`; die Integration
-enthält keine fest verdrahtete Anlagen-Entity. PV-Ladung bleibt möglich.
+Im Support-Abschnitt `inverter_discharge_limit_entity` konfigurieren. Für die
+untersuchte Anlage ist dies `number.victron_settings_ess_maxdischargepower`.
+Unter der maximalen Inverterleistung (`inverter_max_power_w`) wird der
+gewünschte Freigabewert eingestellt; 2300 W ist ein änderbarer Standardwert.
+Der BM setzt 0 W zum Sperren und diesen konfigurierten Wert zum Freigeben.
 
-Vor der Übernahme konkurrierende Inverter-/Netzteil-Automationen deaktivieren.
-Eine Automation für einen zusätzlichen Victron-Parameter darf nur bleiben,
-wenn sie eindeutig dem neuen Sperrschalter folgt und keinen eigenen
-Schaltentscheid trifft. Hardwareparameter und Schwellen prüfen; der
+Optional `inverter_block_switch_entity` als **reine Rückmeldung** auswählen;
+bei der untersuchten Anlage `switch.victron_vebus_disablefeedin_228`.
+Victron setzt diesen Status automatisch aus dem Leistungslimit. Der BM liest
+ihn, schaltet ihn aber niemals. Eine verzögerte Bestätigung hält die nächste
+Umschaltung an, ohne bereits bestätigte Sollwerte ständig neu zu schreiben.
+
+Bei Übernahme die Automation „Setze ESS Max-Discharge-Power nach Inverter-Status“
+und konkurrierende Netzteil-Automationen deaktivieren. Der BM übernimmt dann
+auch die bisherige 0/2300-W-Zuordnung vollständig; hierfür ist keine zusätzliche
+Automation mehr erforderlich. Andere unabhängige Victron-Funktionen bleiben
+von dieser Umstellung unberührt. Hardwareparameter und Schwellen prüfen; der
 Config-Flow verlangt einen DC/DC-Schalter für die 24-V-Übernahme und eine
 positive Stromgrenze für ein konfiguriertes 48-V-Netzteil.
 
-Ohne Sperrschalter bleiben bestehende Installationen und gespeicherte alte
-Planner-Replays im bisherigen Modus. Eine automatische Auswahl eines
-beliebigen Schalters wäre keine sichere Migration. Im koordinierten Modus
-steuert der BM den Inverter direkt und überprüft den realen Schalterzustand;
-der frühere unabhängige Spannungsregler ist dort inaktiv.
+Ohne konfiguriertes numerisches Entladelimit bleiben bestehende Installationen
+und gespeicherte alte Planner-Replays im bisherigen Modus. Ein ausgewählter
+Rückmeldeschalter allein aktiviert keine direkte Steuerung. Im koordinierten
+Modus ist der frühere unabhängige Spannungsregler inaktiv.
 
 Neue Diagnose: `coordinated_support` am SOC-Sensor mit Sollzustand,
 Bestätigungs-/Fehlergrund, Leistungsschätzquelle, Migration und prognostizierter
@@ -280,5 +292,5 @@ Teil dieser Version.
 Tests: `tests/core/test_coordinated_support.py` und
 `tests/ha/test_coordinated_actuation.py`; zwei zusätzliche Golden-Szenarien
 frieren Reservebetrieb und PV-Erholung ein. Bestehende Golden-Szenarien
-bleiben unverändert, da die Übernahme eine neue Aktorkonfiguration erfordert.
+bleiben unverändert, da die Übernahme eine neue Entladelimit-Konfiguration erfordert.
 Es wurde kein Live-System umgestellt.
