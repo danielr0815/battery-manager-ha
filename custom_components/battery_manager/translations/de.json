@@ -190,19 +190,21 @@
               "support_dc24_activate_soc": "24-V-Stützung: Aktivieren bei SOC (%)",
               "support_dc24_recovery_soc": "24-V-Stützung: Zurücknehmen bei SOC (%)",
               "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
-              "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)"
+              "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)",
+              "inverter_block_switch_entity": "Inverter-Sperrschalter (AN = AC-Batterieentladung gesperrt)"
             },
             "data_description": {
-              "support_dc48_switch_entity": "Optional: Schalter des Netzteils, das im Notfall mit fester Leistung die 48-V-Batterieschiene stützt. Wird von der Integration direkt geschaltet.",
-              "support_dc48_power_w": "Feste Einspeiseleistung des 48-V-Stütznetzteils, mit der die Simulation rechnet.",
+              "support_dc48_switch_entity": "Optional: Schalter des spannungs- und strombegrenzten 48-V-Stütznetzteils. Wird von der Integration direkt geschaltet.",
+              "support_dc48_power_w": "Leistungsannahme der bisherigen Steuerung. Bei direkter Invertersteuerung werden stattdessen Ausgangsspannung, Maximalstrom und Busspannung berücksichtigt.",
               "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Wird direkt geschaltet.",
               "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
               "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
               "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
               "support_dc24_activate_soc": "Batterie-SOC, bei dem (oder darunter) das 24-V-Netzteil die DC-Schiene vom DC/DC-Wandler übernimmt (Notfall-Schutzschwelle, unabhängig vom Planungspuffer). Standard 10 %.",
-              "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %.",
+              "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %. Bei direkter Invertersteuerung wird zusätzlich ausreichende PV-Versorgung für die Rückkehr verlangt.",
               "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
-              "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %."
+              "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %.",
+              "inverter_block_switch_entity": "Aktiviert die gemeinsame direkte Steuerung von Inverter und DC-Netzteilen. AN muss Batterieentladung nach AC sperren, AUS freigeben; PV-Ladung bleibt möglich. Bisherige Automationen für diese Schalter vor der Übernahme deaktivieren. Leer: bisherige Steuerung beibehalten."
             }
           },
           "dc_devices": {
@@ -261,7 +263,10 @@
       "support_dc24_recovery_not_above_activate": "Die Rücknahme-SOC der 24-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
       "support_dc48_recovery_not_above_activate": "Die Rücknahme-SOC der 48-V-Stützung muss über ihrer Aktivierungs-SOC liegen (ein Hysterese-Totband ist erforderlich).",
       "support_dc48_activate_above_dc24": "Die Aktivierungs-SOC der 48-V-Stützung muss bei oder unter der 24-V-Aktivierungs-SOC liegen (die Notfallstufe schaltet nicht später als die 24-V-Stützung).",
-      "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen."
+      "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen.",
+      "coordinated_requires_dc24_transfer": "Die koordinierte 24-V-Versorgung benötigt einen DC/DC-Schalter für die bestätigte Quellenumschaltung.",
+      "coordinated_requires_psu48_current": "Bitte den maximalen Ausgangsstrom des 48-V-Netzteils eintragen.",
+      "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum."
     },
     "abort": {
       "already_configured": "Dieses System ist bereits konfiguriert.",
@@ -547,7 +552,10 @@
       "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen.",
       "feedin_entities_required": "Die vorzeitige Einspeisung braucht sowohl den AC-Sollwert (input_number) als auch den Batterieleistungs-Sensor.",
       "feedin_max_w_out_of_range": "Die maximale Einspeiseleistung muss über 0 und höchstens 2000 W liegen.",
-      "feedin_min_soc_not_above_battery_min": "Der minimale SOC der Einspeisung muss über dem minimalen Batterie-SOC liegen."
+      "feedin_min_soc_not_above_battery_min": "Der minimale SOC der Einspeisung muss über dem minimalen Batterie-SOC liegen.",
+      "coordinated_requires_dc24_transfer": "Die koordinierte 24-V-Versorgung benötigt einen DC/DC-Schalter für die bestätigte Quellenumschaltung.",
+      "coordinated_requires_psu48_current": "Bitte den maximalen Ausgangsstrom des 48-V-Netzteils eintragen.",
+      "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum."
     },
     "step": {
       "init": {
@@ -718,19 +726,21 @@
               "support_dc24_activate_soc": "24-V-Stützung: Aktivieren bei SOC (%)",
               "support_dc24_recovery_soc": "24-V-Stützung: Zurücknehmen bei SOC (%)",
               "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
-              "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)"
+              "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)",
+              "inverter_block_switch_entity": "Inverter-Sperrschalter (AN = AC-Batterieentladung gesperrt)"
             },
             "data_description": {
-              "support_dc48_switch_entity": "Optional: Schalter des Netzteils, das im Notfall mit fester Leistung die 48-V-Batterieschiene stützt. Wird von der Integration direkt geschaltet. Feld leeren = Funktion deaktivieren.",
-              "support_dc48_power_w": "Feste Einspeiseleistung des 48-V-Stütznetzteils, mit der die Simulation rechnet.",
+              "support_dc48_switch_entity": "Optional: Schalter des spannungs- und strombegrenzten 48-V-Stütznetzteils. Wird von der Integration direkt geschaltet.",
+              "support_dc48_power_w": "Leistungsannahme der bisherigen Steuerung. Bei direkter Invertersteuerung werden stattdessen Ausgangsspannung, Maximalstrom und Busspannung berücksichtigt.",
               "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Feld leeren = Funktion deaktivieren.",
               "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
               "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
               "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
               "support_dc24_activate_soc": "Batterie-SOC, bei dem (oder darunter) das 24-V-Netzteil die DC-Schiene vom DC/DC-Wandler übernimmt (Notfall-Schutzschwelle, unabhängig vom Planungspuffer). Standard 10 %.",
-              "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %.",
+              "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %. Bei direkter Invertersteuerung wird zusätzlich ausreichende PV-Versorgung für die Rückkehr verlangt.",
               "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
-              "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %."
+              "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %.",
+              "inverter_block_switch_entity": "Aktiviert die gemeinsame direkte Steuerung von Inverter und DC-Netzteilen. AN muss Batterieentladung nach AC sperren, AUS freigeben; PV-Ladung bleibt möglich. Bisherige Automationen für diese Schalter vor der Übernahme deaktivieren. Leer: bisherige Steuerung beibehalten."
             }
           },
           "dc_devices": {

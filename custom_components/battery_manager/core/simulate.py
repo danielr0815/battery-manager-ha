@@ -43,6 +43,8 @@ def step_hour(
     feedin_eff = 0.0
 
     inverter_on = soc_percent > threshold_percent
+    if config.support.coordinated and (dc24_from_grid or dc48_support):
+        inverter_on = False
     support = config.support
 
     # --- AC balance computed early ---
@@ -129,9 +131,33 @@ def step_hour(
         and (gate_soc is None or soc_percent < gate_soc)
         and not net_charging
     )
+    if support.coordinated:
+        gate_open = (
+            gate_open
+            and support.psu48_bus_voltage_v is not None
+            and support.psu48_bus_voltage_v <= support.psu48_output_voltage_v
+        )
     psu48_delivered_wh = 0.0
     if gate_open:
         potential = support.dc48_power_w * slot.duration
+        if support.coordinated:
+            # A current-limited PSU supplies U_bus * I_max, not its nameplate
+            # power at every voltage. Unknown bus voltage receives no credit.
+            voltage = support.psu48_bus_voltage_v
+            potential = (
+                min(voltage, support.psu48_output_voltage_v)
+                / support.psu48_output_voltage_v
+                * support.psu48_max_power_w
+                * slot.duration
+                if support.psu48_max_power_w is not None
+                and voltage is not None
+                and voltage <= support.psu48_output_voltage_v
+                else 0.0
+            )
+            if voltage == support.psu48_output_voltage_v:
+                # At the regulated voltage estimate direct load coverage only;
+                # extra charging current cannot be inferred from voltage.
+                potential = min(potential, bus_load)
         if support.psu48_max_power_w is not None:
             potential = min(potential, support.psu48_max_power_w * slot.duration)
         # (a) offset concurrent bus load 1:1 on the 48 V bus (no battery).
@@ -221,10 +247,16 @@ def step_hour(
             grid_import += -balance
         # (c) DC shortfall PV could not cover imports via the charger.
         if dc_ac_demand > _EPS:
-            grid_import += dc_ac_demand
+            if support.coordinated:
+                unserved_dc_wh += dc_ac_demand * config.charger.eta
+            else:
+                grid_import += dc_ac_demand
     else:
         # No PV surplus: the DC shortfall imports via the charger.
-        grid_import += dc_ac_demand
+        if support.coordinated:
+            unserved_dc_wh += shortfall_dc
+        else:
+            grid_import += dc_ac_demand
         deficit = -balance
         if inverter_on:
             inv_floor_wh = battery.energy_wh(
@@ -308,6 +340,13 @@ def simulate(
                 f"simulate: {name} has {len(series)} entries but the horizon "
                 f"has {n_slots} slots"
             )
+
+    if config.support.configured and config.support.coordinated:
+        from .support import simulate_support
+
+        return simulate_support(
+            config, inputs, threshold_percent, extra_ac_wh, pv_scale, feedin_wh
+        )
 
     soc = inputs.start_soc_percent
     flows: list[HourFlows] = []

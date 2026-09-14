@@ -47,6 +47,7 @@ from .const import (
     CONF_DC_BALANCE_OUT,
     CONF_DC_LOAD_ENTITY,
     CONF_DCDC_SWITCH,
+    CONF_INVERTER_BLOCK_SWITCH,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_CONTROL_SWITCH,
@@ -775,6 +776,7 @@ class ProfileLearner:
             for key in (
                 CONF_SUPPORT_DC48_SWITCH,
                 CONF_SUPPORT_DC48_POWER_W,
+                CONF_INVERTER_BLOCK_SWITCH,
                 CONF_SUPPORT_DC24_SWITCH,
                 CONF_SUPPORT_DC24_POWER_ENTITY,
                 CONF_DCDC_SWITCH,
@@ -1230,6 +1232,11 @@ class ProfileLearner:
             if on <= 0.0:
                 return 0.0  # PSU off this hour: nothing to attribute, learnable
             minmax = vminmax.get((day, hour))
+            if cfg.get(CONF_INVERTER_BLOCK_SWITCH):
+                # Coordinated operation can current-limit, regulate, or charge.
+                # Switch state and an hourly voltage envelope cannot determine
+                # its energy: learn only provably gated/off hours (R6).
+                return 0.0 if minmax is not None and minmax[0] > threshold_v else None
             if minmax is None:
                 return power * on  # no voltage signal: flat approximation
             vmin, vmax = minmax

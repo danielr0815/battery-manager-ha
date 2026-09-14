@@ -93,7 +93,33 @@ def _scenarios():
         ),
         loads=(FOSSIBOT,),
     )
+    coordinated = SystemConfig(
+        support=SupportParams(
+            configured=True,
+            coordinated=True,
+            native48_base_w=35,
+            dcdc_eta=0.93,
+            psu24_eta=0.89,
+            psu48_eta=0.89,
+            psu48_max_power_w=56.994,
+            psu48_bus_voltage_v=48,
+        )
+    )
     return {
+        "coordinated_low_reserve": (
+            coordinated,
+            datetime(2026, 9, 14, 20),
+            12,
+            [0, 1.5, 2],
+            (),
+        ),
+        "coordinated_sunny_recovery": (
+            coordinated,
+            datetime(2026, 9, 14, 6),
+            6,
+            [8, 12, 10],
+            (),
+        ),
         "s1_evening_sunny": (
             base,
             datetime(2026, 7, 3, 20, 0),

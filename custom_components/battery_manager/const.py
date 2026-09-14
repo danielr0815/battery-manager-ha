@@ -868,3 +868,6 @@ OPERATION_POWER_SOURCES = {
     "operation_import_power_entity": "grid_import",
     "operation_export_power_entity": "grid_export",
 }
+
+# F-COORDINATED-DC-SUPPORT: ON blocks battery discharge to AC.
+CONF_INVERTER_BLOCK_SWITCH = "inverter_block_switch_entity"

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-14
+
+### Added
+- Gemeinsame direkte Steuerung von Inverter, 24-V-Netzteil und 48-V-Netzteil
+  über einen konfigurierten Inverter-Sperrschalter (AN = AC-Entladung gesperrt).
+  Bestätigte Schaltfolgen verhindern Parallelbetrieb von AC-Batterieentladung
+  und Netzstützung. Bestehende Installationen behalten bis zur Einrichtung
+  dieses Schalters ihre bisherige Steuerung.
+- Gemeinsame Reserveplanung auf einem Fünf-Minuten-Raster, begrenzte
+  48-V-Stromversorgung, sichtbare DC-Versorgungsdefizite und Quellenanteile
+  in der Prognose. Netzgestützte Erholung gibt keine AC-Entladung frei.
+- Im koordinierten Modus bleiben manuelle Anforderungen innerhalb der
+  gemeinsamen Steuerung; externe Schaltvorgänge starten keinen unabhängigen
+  Spannungsregler. Unmessbare Netzteilenergie wird beim Verbrauchslernen
+  nicht mehr als feste Leistung zugerechnet.
+
 ## [0.43.0] - 2026-09-12
 
 ### Added

@@ -277,6 +277,14 @@ class SupportParams:
     """
 
     configured: bool = False
+    # F-COORDINATED-DC-SUPPORT: opt in only when a confirmed inverter
+    # blocking actuator is configured; old recordings retain their semantics.
+    coordinated: bool = False
+    dc24_available: bool = True
+    dc48_available: bool = True
+    dc24_active: bool = False
+    dc48_active: bool = False
+    psu48_bus_voltage_v: float | None = None
     dc48_power_w: float = 60.0  # fixed-power PSU feeding the 48 V battery bus
     # Manual override (F-N2): the operator switched a PSU on externally —
     # the simulation must treat that path as permanently active over the
@@ -314,6 +322,14 @@ class SupportParams:
     gate_soc_percent: float | None = 40.0
 
     def __post_init__(self) -> None:
+        _require(
+            self.psu48_output_voltage_v > 0,
+            "SupportParams.psu48_output_voltage_v must be positive",
+        )
+        _require(
+            self.psu48_bus_voltage_v is None or 0 < self.psu48_bus_voltage_v <= 60,
+            "SupportParams.psu48_bus_voltage_v must be in (0, 60] or None",
+        )
         _require(
             self.dc48_power_w >= 0.0,
             f"SupportParams.dc48_power_w must be >= 0, got {self.dc48_power_w!r}",
@@ -746,6 +762,10 @@ class HourFlows:
     # surplus (after clamping), so the export composition stays traceable
     # (natural vs. pre-shifted). 0 under neutral defaults.
     feedin_wh: float = 0.0
+    support_mode: str = "battery"
+    support_dc24_start: bool = False
+    support_dc48_start: bool = False
+    inverter_start: bool = False
 
 
 @dataclass(frozen=True)

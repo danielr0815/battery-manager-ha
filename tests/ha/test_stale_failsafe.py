@@ -639,7 +639,9 @@ async def test_watchdog_above_89_is_not_checked(hass):
     """A frozen SOC above 89 % is plausible while charging/balancing."""
     calls: list[tuple[str, str]] = []
     notifications: list[dict] = []
-    _entry, coordinator = await _setup(hass, calls, notifications)
+    # This watchdog contract supplies its own expected throughput; a surplus
+    # actuator only adds unrelated quantum timers across the virtual-time jump.
+    _entry, coordinator = await _setup(hass, calls, notifications, loads=())
     _set_soc(hass, coordinator, "89.1")
 
     coordinator._expected_battery_power_w = 1000.0

@@ -73,6 +73,7 @@ from .const import (
     CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC,
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
     CONF_HOUSE_SOC_STALE_MID_PERCENT,
+    CONF_INVERTER_BLOCK_SWITCH,
     CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
@@ -443,6 +444,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # distinguishes "BM had it on before the restart" from "someone
         # switched it on while HA was down").
         self._support_manual = {"dc24": False, "dc48": False}
+        self._support_migration: dict[str, Any] = {}
         self._last_support_switch: datetime | None = None
         # Last commanded direction per PSU (for the late-confirmation
         # grace), pending unconfirmed activations, the level-triggered
@@ -932,6 +934,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._support_state[key] = bool(
                     data.get("support_state", {}).get(key, False)
                 )
+            self._support_migration = dict(data.get("support_migration") or {})
+            if (
+                self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+                and data.get("support_control_mode") != "coordinated"
+            ):
+                # Legacy 'manual' can mean an external automation toggled a
+                # relay. Never reinterpret it as a new explicit grid request.
+                self._support_migration = {
+                    "legacy_manual_requests_cleared": dict(self._support_manual)
+                }
+                self._support_manual = {"dc24": False, "dc48": False}
+                _LOGGER.info(
+                    "Coordinated DC control enabled; legacy manual requests cleared"
+                )
             # R2 controller-caused-off flag survives the reload that a config
             # change (e.g. log_only) triggers — only meaningful while the 48 V
             # switch is configured and the path is in manual mode.
@@ -1063,6 +1079,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 k: v.isoformat() for k, v in self._appliance_started.items()
             },
             "support_manual": dict(self._support_manual),
+            "support_control_mode": "coordinated"
+            if self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+            else "legacy",
+            "support_migration": dict(self._support_migration),
             "support_state": dict(self._support_state),
             "dc48_ctrl_caused_off": self._dc48_ctrl_caused_off,
             # F-L7: the latched power warning survives reloads/restarts so an
@@ -1172,6 +1192,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # a dead 24 V rail (PSU manually off, DC/DC still off) is healed
         # quickly.
         for key in (
+            CONF_INVERTER_BLOCK_SWITCH,
             CONF_SUPPORT_DC24_SWITCH,
             CONF_SUPPORT_DC48_SWITCH,
             CONF_DCDC_SWITCH,
@@ -1384,9 +1405,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
         support_configured = bool(
-            cfg.get(CONF_SUPPORT_DC24_SWITCH) or cfg.get(CONF_SUPPORT_DC48_SWITCH)
+            cfg.get(CONF_SUPPORT_DC24_SWITCH)
+            or cfg.get(CONF_SUPPORT_DC48_SWITCH)
+            or cfg.get(CONF_INVERTER_BLOCK_SWITCH)
         )
 
+        support_voltage = (
+            self._read_float(cfg[CONF_BATTERY_VOLTAGE_ENTITY])
+            if cfg.get(CONF_BATTERY_VOLTAGE_ENTITY)
+            else None
+        )
+        if support_voltage is not None and not 40 <= support_voltage <= 60:
+            support_voltage = None
         return SystemConfig(
             battery=BatteryParams(
                 capacity_wh=float(cfg["battery_capacity_wh"]),
@@ -1461,6 +1491,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             support=SupportParams(
                 configured=support_configured,
+                coordinated=bool(cfg.get(CONF_INVERTER_BLOCK_SWITCH)),
+                dc24_available=bool(
+                    cfg.get(CONF_SUPPORT_DC24_SWITCH) and cfg.get(CONF_DCDC_SWITCH)
+                ),
+                dc48_available=bool(cfg.get(CONF_SUPPORT_DC48_SWITCH)),
+                dc24_active=self._support_state["dc24"],
+                dc48_active=self._support_state["dc48"],
+                psu48_bus_voltage_v=support_voltage,
                 dc48_power_w=float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0)),
                 # Manual override (F-N2): a manually activated PSU is
                 # simulated as permanently on so the SOC forecast matches
@@ -3860,6 +3898,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         forecasts = self._get_forecasts(now)
 
         if soc is None or forecasts is None:
+            await self._coordinated_data_loss(soc, now)
             missing = "SOC" if soc is None else "PV forecasts"
             # V8 startup grace: within STARTUP_SOC_GRACE_S of the first refresh
             # and before any successful cycle, a not-yet-available SOC source
@@ -3994,6 +4033,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
         recommendation = self._apply_hysteresis(soc, threshold, config, now)
+        if config.support.coordinated:
+            recommendation = recommendation and result.inverter_on
+            self._coordinated_inverter_target = recommendation
+            recommendation = (
+                recommendation
+                and self._entity_tristate(
+                    self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+                )
+                is False
+                and all(
+                    not self.raw_config.get(key)
+                    or self._entity_tristate(self.raw_config[key]) is False
+                    for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
+                )
+            )
+            self._inverter_recommendation = recommendation
         # G4 floor guard: needs the just-updated recommendation; must run
         # BEFORE load switching so this cycle already enforces it. The rec-off
         # branch is gated on PV coverage (planner-G4 parity): the current slot's
@@ -4015,7 +4070,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc, config, pv_power_w, running_load_power_w, now
         )
         await self._apply_support_switching(result, config, now)
-        self._run_dc48_controller(now)
+        if not config.support.coordinated:
+            self._run_dc48_controller(now)
         # F11: only when a latched switchable load exists, replan with its F5
         # saturated override cleared (shadow plan, never published) so the F10
         # hold follows the normal planner's rules instead of a stricter PV gate.
@@ -4252,6 +4308,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "t": (slot.start + timedelta(hours=slot.duration)).isoformat(),
                 "soc": round(flow.soc_end_percent, 1),
             }
+            if config.support.coordinated:
+                point["support_mode"] = flow.support_mode
+                point["psu24_wh"] = round(flow.psu24_delivered_wh, 2)
+                point["psu48_wh"] = round(flow.psu48_delivered_wh, 2)
+                point["unserved_dc_wh"] = round(flow.unserved_dc_wh, 2)
             # Grid-support flags for the slot ending at this point, so the card
             # can render a 24 V / 48 V support lane. Only emitted when active,
             # to keep the forecast attribute compact.
@@ -4288,6 +4349,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "dcdc_loss_wh": flow.dcdc_loss_wh,
                 "unserved_dc_wh": flow.unserved_dc_wh,
                 "gate_open": flow.gate_open,
+                "support_mode": flow.support_mode,
                 "profile_sources": (
                     f"{_series_source(ac_series, slot.index)}"
                     f"/{_series_source(dc_series, slot.index)}"
@@ -4430,6 +4492,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 SUPPORT_MODE_MANUAL if self.feedin_manual() else SUPPORT_MODE_AUTO
             ),
             "support_dc48_controller": dict(self._dc48_ctrl_diag),
+            "coordinated_support": {
+                **getattr(self, "_coordinated_support_diag", {}),
+                "enabled": config.support.coordinated,
+                "forecast_mode": flows[0].support_mode if flows else "unknown",
+                "forecast_unserved_dc_wh": round(
+                    sum(f.unserved_dc_wh for f in flows), 2
+                ),
+                "psu48_power_source": "voltage_estimate"
+                if config.support.psu48_bus_voltage_v is not None
+                else "unknown",
+                "manual_requests": dict(self._support_manual),
+                "migration": dict(self._support_migration),
+            },
             "consumption_profile": profile_diag,
             "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
@@ -4853,6 +4928,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         per-key and per-direction, so an operator ON right after a BM OFF
         enters manual mode instead of being reverted (review finding).
         """
+        if self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH):
+            # External switches are reconciled by the common controller. They
+            # must never become an implicit persistent manual request.
+            return
         if self._switch_task is not None and not self._switch_task.done():
             return  # our own sequence is in flight: no verdict possible
         changed = False
@@ -5004,7 +5083,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         withholds actuation) so the shakedown can record what it *would* do.
         """
         return (
-            self._support_manual.get("dc48", False)
+            not self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+            and self._support_manual.get("dc48", False)
             and bool(self.raw_config.get(CONF_BATTERY_VOLTAGE_ENTITY))
             and bool(self.raw_config.get(CONF_SUPPORT_DC48_SWITCH))
         )
@@ -5384,6 +5464,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         path as permanently active (forced_on) so the SOC forecast matches
         the real winter operation.
         """
+        if self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH):
+            self._support_manual[key] = on
+            self._save_persistent_state()
+            await self.async_request_refresh()
+            return
         conf_key = (
             CONF_SUPPORT_DC24_SWITCH if key == "dc24" else CONF_SUPPORT_DC48_SWITCH
         )
@@ -5664,6 +5749,161 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return await self._switch_entity(then_off, False)
 
+    async def _coordinated_data_loss(self, soc, now) -> None:
+        """Keep protection operational when no economic plan can be built."""
+        if not self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH):
+            return
+        if self._switch_task is not None and not self._switch_task.done():
+            return
+        from .core.support import support_state
+
+        config = self.build_system_config()
+        # Unknown SOC never justifies releasing the inverter. Preserve DC
+        # supply and request both configured sources until measurements return.
+        dc24, dc48 = support_state(
+            config,
+            soc if soc is not None else config.battery.soc_min_percent,
+            self._support_state["dc24"],
+            self._support_state["dc48"],
+            False,
+        )
+        self._inverter_recommendation = False
+        self._switch_task = self.entry.async_create_background_task(
+            self.hass,
+            self._execute_coordinated_support(
+                {"dc24": dc24, "dc48": dc48}, False, config, now
+            ),
+            name="battery_manager_coordinated_protection",
+        )
+
+    async def _apply_coordinated_support(self, result, config, now) -> None:
+        """One owner for AC blocking and the two DC sources (R5).
+
+        Commands never count as confirmations. A delayed or unavailable
+        actuator leaves the old source on and AC discharge blocked.
+        """
+        if self._switch_task is not None and not self._switch_task.done():
+            return
+        desired = {"dc24": result.support_dc24_now, "dc48": result.support_dc48_now}
+        inverter = bool(
+            getattr(self, "_coordinated_inverter_target", result.inverter_on)
+        )
+        self._switch_task = self.entry.async_create_background_task(
+            self.hass,
+            self._execute_coordinated_support(desired, inverter, config, now),
+            name="battery_manager_coordinated_support",
+        )
+
+    async def _execute_coordinated_support(
+        self, desired, inverter, config, now
+    ) -> None:
+        self._coordinated_support_diag = {
+            "mode": "coordinated",
+            "reason": "waiting_for_lock",
+        }
+        try:
+            async with self._switch_lock:
+                block = self.raw_config[CONF_INVERTER_BLOCK_SWITCH]
+                psu24 = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
+                psu48 = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
+                dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
+                diag = {
+                    "mode": "coordinated",
+                    "reason": "settled",
+                    "desired": dict(desired),
+                }
+                self._coordinated_support_diag = diag
+
+                async def confirmed(entity, on):
+                    if self._entity_tristate(entity) is on:
+                        return True
+                    if not await self._switch_entity(entity, on):
+                        diag["reason"] = "command_failed"
+                        return False
+                    if self._entity_tristate(entity) is not on:
+                        diag["reason"] = "awaiting_confirmation"
+                        return False
+                    return True
+
+                # Even an unexpected external PSU activation blocks AC immediately.
+                # Release comes last, after all source confirmations below.
+                physical_support = any(
+                    entity and self._entity_tristate(entity) is not False
+                    for entity in (psu24, psu48)
+                )
+                if not inverter or any(desired.values()) or physical_support:
+                    self._inverter_recommendation = False
+                    if not await confirmed(block, True):
+                        diag["reason"] = "inverter_block_unconfirmed"
+                        return
+
+                interval = timedelta(seconds=config.control.min_switch_interval_s)
+                changes = any(
+                    entity and self._entity_tristate(entity) is not desired[key]
+                    for key, entity in (("dc24", psu24), ("dc48", psu48))
+                )
+                if (
+                    changes
+                    and self._last_support_switch is not None
+                    and now - self._last_support_switch < interval
+                ):
+                    diag["reason"] = "minimum_switch_interval"
+                    return
+                if changes:
+                    self._last_support_switch = now
+
+                # Remove 48 V support before returning the rail to the battery.
+                if psu48 and not desired["dc48"]:
+                    if not await confirmed(psu48, False):
+                        return
+                    self._support_state["dc48"] = False
+                if psu24 and dcdc:
+                    target24 = desired["dc24"]
+                    if self._entity_tristate(
+                        psu24
+                    ) is not target24 or self._entity_tristate(dcdc) is not (
+                        not target24
+                    ):
+                        if not await self._sequence_dc24(target24, psu24):
+                            diag["reason"] = "rail_transfer_failed"
+                            return
+                        if self._entity_tristate(
+                            psu24
+                        ) is not target24 or self._entity_tristate(dcdc) is not (
+                            not target24
+                        ):
+                            diag["reason"] = "rail_transfer_unconfirmed"
+                            return
+                    self._support_state["dc24"] = target24
+                elif psu24:
+                    # A hand-edited configuration must not turn off a rail's
+                    # only confirmed source. The config flow rejects this.
+                    await confirmed(block, True)
+                    self._inverter_recommendation = False
+                    diag["reason"] = "missing_rail_transfer_actuator"
+                    return
+                if psu48 and desired["dc48"]:
+                    if not await confirmed(psu48, True):
+                        return
+                    self._support_state["dc48"] = True
+                if inverter and not any(desired.values()):
+                    if dcdc and not await confirmed(dcdc, True):
+                        return
+                    if not await confirmed(block, False):
+                        return
+                    self._inverter_recommendation = True
+        finally:
+            self._save_persistent_state()
+            if self.data:
+                self.data["inverter_recommendation"] = self._inverter_recommendation
+                self.data["coordinated_support"] = {
+                    **self.data.get("coordinated_support", {}),
+                    **self._coordinated_support_diag,
+                }
+                self.data["support_dc24"] = self._support_state["dc24"]
+                self.data["support_dc48"] = self._support_state["dc48"]
+                self.async_update_listeners()
+
     async def _apply_support_switching(
         self, result, config: SystemConfig, now: datetime
     ) -> None:
@@ -5675,6 +5915,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sequence is in flight, evaluation is skipped; afterwards the idle
         re-sync adopts the real switch states.
         """
+        if config.support.coordinated:
+            await self._apply_coordinated_support(result, config, now)
+            return
         if not config.support.configured:
             return
         if self._switch_task is not None and not self._switch_task.done():

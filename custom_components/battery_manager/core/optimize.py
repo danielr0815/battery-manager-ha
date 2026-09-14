@@ -535,6 +535,7 @@ def search_threshold(
 
     best_threshold = float(hi)
     best_cost = math.inf
+    best_unserved = math.inf
     best_traj: Trajectory | None = None
 
     for candidate in range(lo, hi + 1):
@@ -545,7 +546,16 @@ def search_threshold(
             - terminal_factor * end_wh
             + control.export_tiebreak * traj.total_export_wh
         )
-        if cost < best_cost - _EPS:  # strict: ascending scan keeps lowest on ties
+        unserved = (
+            sum(f.unserved_dc_wh for f in traj.flows)
+            if config.support.coordinated
+            else 0.0
+        )
+        if unserved < best_unserved - _EPS or (
+            abs(unserved - best_unserved) <= _EPS and cost < best_cost - _EPS
+        ):
+            # R3: an unsupplied DC rail cannot win by having a lower bill.
+            best_unserved = unserved
             best_cost = cost
             best_threshold = float(candidate)
             best_traj = traj
@@ -2610,6 +2620,13 @@ def support_escalation(
     if not config.support.configured or n == 0:
         return tuple(dc24), tuple(dc48), trajectory
 
+    if config.support.coordinated:
+        return (
+            tuple(f.support_dc24_start for f in trajectory.flows),
+            tuple(f.support_dc48_start for f in trajectory.flows),
+            trajectory,
+        )
+
     control = config.control
     # Grid-support escalation thresholds are ABSOLUTE battery SOC % (D-A9),
     # deliberately independent of the planning buffer (D-C8): a dynamically
@@ -2863,7 +2880,11 @@ def _plan_legacy(
             next(i for i, f in enumerate(traj.flows) if f.soc_end_percent >= max_soc)
             + 1
         )
-        inverter_on = traj.flows[0].inverter_on
+        inverter_on = (
+            traj.flows[0].inverter_start
+            if config.support.coordinated
+            else traj.flows[0].inverter_on
+        )
     else:
         max_soc = inputs.start_soc_percent
         hours_to_max = 0

@@ -63,6 +63,7 @@ from .const import (
     CONF_HOUSE_SOC_STALE_EDGE_LOW_SOC,
     CONF_HOUSE_SOC_STALE_EDGE_PERCENT,
     CONF_HOUSE_SOC_STALE_MID_PERCENT,
+    CONF_INVERTER_BLOCK_SWITCH,
     CONF_LEARNING_MAX_AGE_DAYS,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_AVAILABILITY_ENTITY,
@@ -257,6 +258,7 @@ def _d(config: dict[str, Any], key: str) -> Any:
 
 
 _SUPPORT_SWITCH_KEYS = (
+    CONF_INVERTER_BLOCK_SWITCH,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_DCDC_SWITCH,
@@ -717,6 +719,21 @@ def _validate_support_entities(data: dict[str, Any]) -> str | None:
     chosen = [data.get(key) for key in _SUPPORT_SWITCH_KEYS if data.get(key)]
     if len(chosen) != len(set(chosen)):
         return "support_entities_not_distinct"
+    if data.get(CONF_INVERTER_BLOCK_SWITCH):
+        if data.get(CONF_SUPPORT_DC24_SWITCH) and not data.get(CONF_DCDC_SWITCH):
+            return "coordinated_requires_dc24_transfer"
+        if (
+            data.get(CONF_SUPPORT_DC48_SWITCH)
+            and float(_d(data, CONF_PSU48_MAX_CURRENT_A)) <= 0
+        ):
+            return "coordinated_requires_psu48_current"
+        if not (
+            float(_d(data, "battery_min_soc_percent"))
+            < float(_d(data, CONF_SUPPORT_DC48_ACTIVATE_SOC))
+            <= float(_d(data, CONF_SUPPORT_DC24_ACTIVATE_SOC))
+            < float(_d(data, "inverter_min_soc_percent"))
+        ):
+            return "coordinated_invalid_reserve_order"
     return None
 
 
@@ -937,6 +954,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         }
         tuning.update(_predrain_schema_fields(d))  # F-PREDRAIN pre-drain (WP3)
         support = {
+            vol.Optional(CONF_INVERTER_BLOCK_SWITCH): _entity("switch"),
             vol.Optional(CONF_SUPPORT_DC48_SWITCH): _entity("switch"),
             vol.Required(
                 CONF_SUPPORT_DC48_POWER_W, default=_d(d, CONF_SUPPORT_DC48_POWER_W)
