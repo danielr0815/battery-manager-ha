@@ -1,5 +1,10 @@
 # Planner & Optimizer
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 **Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument beschreibt den
 HA-freien Planungskern (`core/optimize.py`, `core/simulate.py`,
 `core/series.py`) exakt so, wie er implementiert ist: T*-Suche mit Merge-Probe

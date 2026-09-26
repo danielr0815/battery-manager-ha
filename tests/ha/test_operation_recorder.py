@@ -122,7 +122,7 @@ async def test_corrupt_archive_is_isolated_and_persistent_payload_roundtrips(
     restored.restore(payload["operation_history"])
     assert restored.export() == rec.export()
     rec.restore(None)
-    assert rec.export()["sequence"] > 0
+    assert rec.export()["segments"][-1]["sequence"] > 0
 
 
 async def test_switch_command_results_are_correlated_and_not_confirmation(

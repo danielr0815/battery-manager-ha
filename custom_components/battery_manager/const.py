@@ -8,11 +8,15 @@
 # MERGE_TERMINAL_RAMP_WH (F-MERGE-HYSTERESIS) rides along for the same reason:
 # it is consumed by the pure planner core, so it is defined next to its consumer
 # in core/optimize.py and re-exported here as the canonical constants module.
+from typing import Any
+
 from .core.optimize import (  # noqa: F401
     GATE_TOPUP_MIN_WH,
     MERGE_TERMINAL_RAMP_WH,
     PREDRAIN_PEAK_TOLERANCE_PERCENT,
 )
+from .core.policy import ACTOR_CONFIRM_TIMEOUT_S as ACTOR_CONFIRM_TIMEOUT_S
+from .core.policy import LOAD_SOC_CACHE_MAX_AGE_HOURS as LOAD_SOC_CACHE_MAX_AGE_HOURS
 
 DOMAIN = "battery_manager"
 
@@ -41,7 +45,7 @@ STARTUP_RETRY_ATTEMPTS = 5
 # floor prevents a chatty entity from outweighing a sparse one. The 20 % edge
 # is measured from the pre-start baseline in absolute watts of the configured
 # nominal power (normally: 0 W -> at least 20 % of nominal).
-POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S = 30.0
+POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S = ACTOR_CONFIRM_TIMEOUT_S
 POWER_CALIBRATION_START_WAIT_S = 60.0
 POWER_CALIBRATION_MIN_SAMPLE_INTERVAL_S = 5.0
 POWER_CALIBRATION_MIN_SAMPLES = 4
@@ -63,7 +67,6 @@ MAX_HISTORICAL_SOC_AGE_HOURS = 6
 MAX_HISTORICAL_FORECAST_AGE_HOURS = 72
 # A load's last-known SOC (cached while the device sleeps) is trusted for at
 # most this long; beyond it the load plans as "empty" and self-heals on wake.
-LOAD_SOC_CACHE_MAX_AGE_HOURS = 168  # 7 days
 
 # D-A8 stage 2 fail-safe: once the coordinator has had NO valid SOC/forecast
 # data for this long CONTINUOUSLY (every refresh failing, entities
@@ -237,6 +240,8 @@ CONF_LOAD_RECOVERY_SOC = "recovery_soc_percent"
 CONF_LOAD_WAKE_TIMEOUT_S = "wake_timeout_s"
 CONF_LOAD_HANDOVER_MIN_POWER_W = "handover_min_power_w"
 CONF_LOAD_HANDOVER_TIMEOUT_S = "handover_timeout_s"
+# Permit three one-minute source proof windows before declaring handover failure.
+DEFAULT_HANDOVER_TIMEOUT_S = 180
 CONF_LOAD_INPUT_ACTOR_MODE = "input_actor_mode"
 CONF_LOAD_GATE_ACTOR_MODE = "gate_actor_mode"
 CONF_LOAD_OUTPUT_ACTOR_MODE = "output_actor_mode"
@@ -259,7 +264,7 @@ CONF_CASCADE_TERMINAL_LOAD_ID = "terminal_load_id"
 CONF_CASCADE_ACTOR_TIMEOUT_S = "actor_confirmation_timeout_s"
 # Slow OFF publications get one bounded read-only grace period. Shared by
 # executor and startup budgeting so this time cannot become useful energy.
-CASCADE_OFF_CONFIRM_GRACE_S = 30.0
+CASCADE_OFF_CONFIRM_GRACE_S = ACTOR_CONFIRM_TIMEOUT_S
 # Bounded actor refresh/retry and final post-isolation observation window.
 CASCADE_SAFE_OFF_RECOVERY_S = 30.0
 CASCADE_ACTOR_JOURNAL_LIMIT = 200
@@ -660,7 +665,7 @@ REALIZED_ENERGY_UNIT_FACTORS_WH = {
 }
 
 # --- Default configuration (base entry) ---
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, Any] = {
     CONF_RESERVE_MODE: "off",
     CONF_RESERVE_GRID_ENTITY: None,
     CONF_RESERVE_TRANSFER_VERIFIED: False,
@@ -792,7 +797,7 @@ DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_RECOVERY_SOC: 50.0,
     CONF_LOAD_WAKE_TIMEOUT_S: 60,
     CONF_LOAD_HANDOVER_MIN_POWER_W: 10.0,
-    CONF_LOAD_HANDOVER_TIMEOUT_S: 180,
+    CONF_LOAD_HANDOVER_TIMEOUT_S: DEFAULT_HANDOVER_TIMEOUT_S,
     CONF_LOAD_INPUT_ACTOR_MODE: ACTOR_MODE_EXCLUSIVE,
     CONF_LOAD_GATE_ACTOR_MODE: ACTOR_MODE_EXCLUSIVE,
     CONF_LOAD_OUTPUT_ACTOR_MODE: ACTOR_MODE_EXCLUSIVE,

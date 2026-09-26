@@ -31,10 +31,11 @@ from .model import (
     SurplusLoadState,
     SystemConfig,
 )
+from .policy import CASCADE_SOURCE_PROOF_SECONDS, LOAD_SOC_CACHE_MAX_AGE_HOURS
 
 _EPS = 1e-6
-_CACHE_MAX_AGE = timedelta(days=7)
-_SOURCE_PROOF_H = 1.0 / 60.0
+_CACHE_MAX_AGE = timedelta(hours=LOAD_SOC_CACHE_MAX_AGE_HOURS)
+_SOURCE_PROOF_H = CASCADE_SOURCE_PROOF_SECONDS / 3600.0
 
 
 def _usable_soc(

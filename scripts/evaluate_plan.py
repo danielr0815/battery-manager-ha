@@ -17,7 +17,7 @@ import json
 import math
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ sys.path.insert(
     0,
     str(Path(__file__).resolve().parents[1] / "custom_components" / "battery_manager"),
 )
+from core.accounting import expected_interval  # noqa: E402
 from core.replay import decode  # noqa: E402
 
 
@@ -52,8 +53,6 @@ def evaluate(record: dict, observations: dict) -> dict:
     rows = []
     daily: dict[str, dict] = {}
     plans = {item.load_id: item for item in result.load_plans}
-    states = {item.load_id: item for item in inputs.load_states}
-    loads = {item.load_id: item for item in config.loads}
     for measured in observations["slots"]:
         start = datetime.fromisoformat(measured["start"])
         if start in seen or start not in slots:
@@ -86,6 +85,9 @@ def evaluate(record: dict, observations: dict) -> dict:
                 totals["sums"][f"actual_{key}"] += actual
                 totals["sums"][f"predicted_{key}"] += expected
                 totals["coverage_hours"][key] += duration
+        expected_loads = expected_interval(
+            record, start, start + timedelta(hours=duration), (inputs, result, config)
+        )
         load_errors = {}
         for key, measurement in measured.get("loads", {}).items():
             if key not in plans:
@@ -95,25 +97,10 @@ def evaluate(record: dict, observations: dict) -> dict:
             hours = _number(measurement.get("run_hours"), "run_hours")
             if hours is not None and not 0 <= hours <= duration:
                 raise ValueError("Measured runtime exceeds its interval")
-            planned_h = (
-                load_plan.run_hours[i]
-                if load_plan.run_hours
-                else duration * load_plan.schedule[i]
-            )
+            planned_h = expected_loads.get(f"load:{key}:run_h", 0.0)
+            planned_e = expected_loads.get(f"load:{key}", 0.0)
+            power = expected_loads.get(f"load:{key}:power_h", 0.0) / duration
             total_h = sum(load_plan.run_hours)
-            # Recover the effective power actually used, including cascade
-            # caps. An unplanned load has no such evidence; use its explicitly
-            # identified state/config fallback, never divide by zero.
-            power = (
-                load_plan.planned_energy_wh / total_h
-                if total_h
-                else (
-                    states[key].planning_power_w(loads[key])
-                    if key in states
-                    else loads[key].nominal_power_w
-                )
-            )
-            planned_e = power * planned_h
             load_errors[key] = {
                 "energy_error_wh": None if energy is None else energy - planned_e,
                 "execution_error_wh": None

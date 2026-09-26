@@ -1,5 +1,8 @@
 # F-RESIDUAL-TOPUP — latest-feasible placement for energy-limited residual top-ups
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec** for v0.8.1. Author: planning session 2026-07-10 (evening).
 Supersedes the energy-limited carve-outs of docs/F-SUBHOUR-ALLOCATION.md R1/R12
 (see §7). Extends docs/ALGORITHM.md D-A4 (v4 note).

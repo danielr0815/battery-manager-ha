@@ -81,7 +81,7 @@ Szenario darf ohne dokumentierten Grund mehr Netzbezug importieren.
 ```bash
 uv run ruff check custom_components tests scripts
 uv run ruff format --check .    # bzw. `uv run ruff format .` zum Anwenden
-uv run mypy                     # Baseline: prüft nur core/, siehe [tool.mypy]
+uv run mypy                     # gesamte Integration, siehe [tool.mypy]
 ```
 
 - Dev-Versionen sind **Mindestversionen** (`>=`) in pyproject
@@ -93,9 +93,9 @@ uv run mypy                     # Baseline: prüft nur core/, siehe [tool.mypy]
   pyproject-Kommentar).
 - `ruff format --check .` formatiert auch Python-Codeblöcke in Markdown
   (Details und Fallstricke: `docs/project-knowledge/07`).
-- mypy ist bewusst eine Baseline (nur `core/`, HA-Schicht per
-  `follow_imports = "silent"` typisiert, aber fehlerfrei gehalten wird nur
-  der Kern). Scope erweitern, bevor Regeln verschärft werden.
+- mypy prüft die gesamte Integration einschließlich HA-Schicht. Keine pauschalen
+  Fehlerunterdrückungen hinzufügen. Fachliche Typverträge stehen in
+  `docs/CODING_GUIDELINES.md`.
 - Optional: `pre-commit install` — die Hooks (`.pre-commit-config.yaml`)
   spiegeln die im Lockfile fixierte ruff-Version.
 
@@ -114,3 +114,8 @@ dem Manifest ab.
   `docs/ARCHITECTURE.md`-Glossar nachschlagen.
 - Kleine, fokussierte Änderungen; jede Änderung mit Test, der sie beweist.
 - Voller Workflow: `CONTRIBUTING.md`.
+
+Frontend: `npm ci`, `npm run build`, `npm run check:bundle`, `npm run lint`,
+`npm run format:check`, `npm test`, `npm run test:browser`.
+Quellen unter `frontend/`; das Bundle unter der bestehenden Integrations-URL
+wird eingecheckt. Lokale Browsertests sind von Live-HA-Prüfungen getrennt.

@@ -1,5 +1,8 @@
 # F-ROBUST-POWER — robust per-load planning-power estimation (v0.14.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec**, operator decision 2026-07-18. Implemented in
 `core/power_learning.py` + the sample-buffer rework in `coordinator.py`.
 

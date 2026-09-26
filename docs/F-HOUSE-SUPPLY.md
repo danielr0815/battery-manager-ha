@@ -1,5 +1,8 @@
 # Hausversorgung vor Überschusslasten
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Befund
 
 Am 09.09.2026 blieb der Inverter bei 45 % SOC ausgeschaltet (T* = 95 %),

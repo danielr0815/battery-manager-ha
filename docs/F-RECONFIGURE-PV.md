@@ -1,5 +1,8 @@
 # F-RECONFIGURE-PV — base-entry reconfigure for SOC + PV forecast sources
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec**, folded into v0.9.1. Operator need (2026-07-11):
 repoint the three PV forecast entities to the Balcony Solar Forecast
 integration without deleting the entry (which would destroy the load

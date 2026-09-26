@@ -1,5 +1,8 @@
 # F-FEEDIN — Vorzeitige Netzeinspeisung / early grid feed-in (v0.23.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: operator decision 2026-08-03. Binding spec of the early-feed-in
 feature: planner pass `plan_feedin` (core), executor pair `_apply_feedin` /
 `_execute_feedin` (HA), config section `early_feed_in`, entities

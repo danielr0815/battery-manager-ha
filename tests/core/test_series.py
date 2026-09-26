@@ -429,9 +429,9 @@ def test_dst_slots_conserve_real_elapsed_energy(month, day, hours):
     from datetime import UTC, datetime, timedelta
     from zoneinfo import ZoneInfo
 
-    from custom_components.battery_manager.core.forecast_hours import aggregate_hours
-    from custom_components.battery_manager.core.model import LoadProfile, SystemConfig
-    from custom_components.battery_manager.core.series import build_slots
+    from core.forecast_hours import aggregate_hours
+    from core.model import LoadProfile, SystemConfig
+    from core.series import build_slots
 
     now = datetime(2026, month, day, tzinfo=ZoneInfo("Europe/Berlin"))
     config = SystemConfig(ac_profile=LoadProfile(base_w=1000, variable_w=0))
@@ -502,3 +502,15 @@ def test_runtime_release_keeps_appliance_profile_at_original_time():
     )
     assert actual.slots[0].ac_wh == 100
     assert actual.slots[1].ac_wh == 0
+
+
+def test_hypothetical_run_preserves_all_other_input_contracts():
+    """Even a zero-energy probe must retain reserve and cascade state."""
+    from core.model import CascadeRuntimeState
+
+    inputs = replace(
+        build_slots(SystemConfig(), datetime(2026, 9, 26, 12), 70, [2]),
+        reserve_hold_soc_percent=50,
+        cascade_runtime_states=(CascadeRuntimeState(cascade_id="chain"),),
+    )
+    assert insert_appliance_run(inputs, 0, 1) == inputs

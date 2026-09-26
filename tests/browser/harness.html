@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><title>Battery Manager browser fixture</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: sans-serif;
+    }
+    #host {
+      width: 900px;
+      height: 650px;
+      overflow: auto;
+      border: 1px solid;
+    }
+    ha-card {
+      display: block;
+    }
+  </style>
+  <div id="host"></div>
+  <script type="module">
+    // Mimic the asynchronous HA frame lifecycle using real shadow slots and layout.
+    customElements.define(
+      "ha-card",
+      class extends HTMLElement {
+        connectedCallback() {
+          if (this.shadowRoot) return;
+          const root = this.attachShadow({ mode: "open" });
+          requestAnimationFrame(() => {
+            root.innerHTML = "<slot></slot>";
+          });
+        }
+      },
+    );
+    await import("/custom_components/battery_manager/frontend/battery-manager-forecast-card.js");
+    window.mount = (kind, attributes) => {
+      const card = document.createElement(`battery-manager-${kind}-card`);
+      card.setConfig({ entity: "sensor.plan", hours: 48 });
+      card.hass = {
+        language: "en",
+        config: { time_zone: "Europe/Berlin" },
+        states: { "sensor.plan": { attributes } },
+      };
+      document.querySelector("#host").append(card);
+      window.card = card;
+    };
+    window.ready = true;
+  </script>
+</html>

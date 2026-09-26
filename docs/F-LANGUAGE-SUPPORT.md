@@ -1,5 +1,8 @@
 # Deutsch und Englisch
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Stand: v0.36.1.
 
 ## Befund

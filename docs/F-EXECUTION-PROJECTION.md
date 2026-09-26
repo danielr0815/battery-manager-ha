@@ -1,5 +1,8 @@
 # Ausführbarkeit und Entscheidungsgründe (0.41.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Vertrag
 
 1. Bekannte Mindestpausen bleiben harte Startgrenzen. Bei normalen gesteuerten

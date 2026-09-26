@@ -1,5 +1,8 @@
 # F-EXECUTOR-GUARDS — dwell-exempt target stop, stale-SOC guard, HA deprecation
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec**, part 2/2 of v0.9.0 (operator: "Setze alles um",
 2026-07-10). Part 1 is docs/F-PLANNER-HONESTY.md. Coordinator/executor only —
 no planner-core changes, goldens untouched by construction.

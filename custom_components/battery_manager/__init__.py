@@ -15,7 +15,6 @@ from homeassistant.components.lovelace.resources import ResourceStorageCollectio
 from homeassistant.components.persistent_notification import (
     async_create as persistent_notification_create,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_STARTED,
     EVENT_HOMEASSISTANT_STOP,
@@ -54,6 +53,7 @@ from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table, format_learned_profiles_table
 from .entity import ensure_devices
 from .localization import message
+from .runtime import BatteryManagerConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,6 +135,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     forecast chart without installing anything from HACS frontend. The card
     is optional sugar: any failure here must never break the planner setup.
     """
+    _register_services(hass)
     try:
         await _async_setup_card(hass)
     except Exception:
@@ -158,7 +159,7 @@ async def _async_sweep_download_dir(hass: HomeAssistant) -> None:
     cutoff = time.time() - _DOWNLOAD_TTL_S
 
     def _sweep() -> list[tuple[Path, float]]:
-        remaining = []
+        remaining: list[tuple[Path, float]] = []
         try:
             children = list(download_dir.rglob("*"))
         except OSError:  # nothing exported yet (or directory unreadable)
@@ -240,37 +241,8 @@ async def _async_register_card_resource(
     _LOGGER.info("Registered card resource %s", versioned_url)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Battery Manager from a config entry."""
-    coordinator = BatteryManagerCoordinator(hass, entry)
-    # Device sw_version from the manifest (single source of truth, no drift).
-    # Integration.version is an AwesomeVersion — DeviceInfo needs a plain str.
-    _mf_version = (await async_get_integration(hass, DOMAIN)).version
-    coordinator.integration_version = str(_mf_version) if _mf_version else None
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
-
-    async def _on_stop(_event: Event) -> None:
-        await coordinator.async_cancel_actuation_tasks()
-        coordinator.cleanup()
-        await coordinator.async_flush_persistent_state()
-
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
-    )
-
-    # Restore SOC cache / plug ownership, then first refresh; a refresh
-    # failure is tolerated (fast retry interval during startup).
-    await coordinator.async_load_persistent_state()
-    await coordinator.async_recover_power_calibration()
-    await coordinator.cascade_manager.async_recover_terminal_tests()
-    await coordinator.async_refresh()
-
-    # HA 2026.8: one device per config subentry (core PR #175785). Created
-    # before the platforms so subentry devices carry via_device_id on the main
-    # device and every entity attaches to an already-existing device.
-    ensure_devices(hass, entry, coordinator.integration_version)
-
+def _register_services(hass: HomeAssistant) -> None:
+    """Integration actions exist for the whole HA lifecycle."""
     export_schema = vol.Schema(
         {
             vol.Optional("entry_id"): str,
@@ -341,6 +313,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
         )
 
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: BatteryManagerConfigEntry
+) -> bool:
+    """Set up Battery Manager from a config entry."""
+    coordinator = BatteryManagerCoordinator(hass, entry)
+    # Device sw_version from the manifest (single source of truth, no drift).
+    # Integration.version is an AwesomeVersion — DeviceInfo needs a plain str.
+    _mf_version = (await async_get_integration(hass, DOMAIN)).version
+    coordinator.integration_version = str(_mf_version) if _mf_version else None
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
+
+    async def _on_stop(_event: Event) -> None:
+        await coordinator.async_cancel_actuation_tasks()
+        coordinator.cleanup()
+        await coordinator.async_flush_persistent_state()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
+    )
+
+    # Restore SOC cache / plug ownership, then first refresh; a refresh
+    # failure is tolerated (fast retry interval during startup).
+    await coordinator.async_load_persistent_state()
+    await coordinator.async_recover_power_calibration()
+    await coordinator.cascade_manager.async_recover_terminal_tests()
+    await coordinator.async_refresh()
+
+    # HA 2026.8: one device per config subentry (core PR #175785). Created
+    # before the platforms so subentry devices carry via_device_id on the main
+    # device and every entity attaches to an already-existing device.
+    ensure_devices(hass, entry, coordinator.integration_version)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # After the platforms: the learner looks up the vacation switch entity.
     coordinator.async_setup_learning()
@@ -348,7 +355,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: BatteryManagerConfigEntry
+) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
@@ -366,23 +375,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
         if not hass.data[DOMAIN]:
             hass.data.pop(DOMAIN)
-            for service in (
-                SERVICE_EXPORT_HOURLY_DETAILS,
-                SERVICE_EXPORT_LEARNED_PROFILES,
-                SERVICE_TEST_CASCADE_TERMINAL,
-            ):
-                if hass.services.has_service(DOMAIN, service):
-                    hass.services.async_remove(DOMAIN, service)
 
     return unload_ok
 
 
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_reload_entry(
+    hass: HomeAssistant, entry: BatteryManagerConfigEntry
+) -> None:
     """Reload the entry when config or subentries change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_remove_entry(
+    hass: HomeAssistant, entry: BatteryManagerConfigEntry
+) -> None:
     """Clean up the per-entry storage (SOC cache, learned profiles)."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
     await Store(
@@ -392,7 +398,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     ).async_remove()
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_migrate_entry(
+    hass: HomeAssistant, entry: BatteryManagerConfigEntry
+) -> bool:
     """Migrate v1 entries: same base keys, removed controller/additional-load keys."""
     if entry.version > 2:
         return False
@@ -472,7 +480,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-def _migrate_to_subentry_devices(hass: HomeAssistant, entry: ConfigEntry) -> None:
+def _migrate_to_subentry_devices(
+    hass: HomeAssistant, entry: BatteryManagerConfigEntry
+) -> None:
     """Move subentry entity rows onto per-subentry devices (entry version 2.4).
 
     HA 2026.8.0 enforces one device per config subentry (core PR #175785, no

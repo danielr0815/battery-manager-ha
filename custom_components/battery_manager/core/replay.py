@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime
 from typing import Any
@@ -36,7 +37,7 @@ def encode(value: Any) -> Any:
         return {"date": value.isoformat()}
     if isinstance(value, tuple):
         return {"tuple": [encode(item) for item in value]}
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {"mapping": [[encode(key), encode(item)] for key, item in value.items()]}
     if value is None or isinstance(value, (str, int, float, bool)):
         return value

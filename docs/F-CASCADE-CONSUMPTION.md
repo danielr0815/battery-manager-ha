@@ -1,5 +1,8 @@
 # Kaskaden im Verbrauchslernen
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Befund (2026-09-09)
 
 Die Bad-Kaskade B1 → B2 → Entfeuchter war an allen drei Messpunkten als

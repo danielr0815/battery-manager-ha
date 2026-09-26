@@ -113,8 +113,6 @@ def test_invalid_or_oversized_input_fails_before_planning(invalid, monkeypatch):
                 for i in range(129)
             ),
         )
-    elif invalid == "duration":
-        inputs = replace(inputs, slots=(replace(inputs.slots[0], duration=0),))
     elif invalid == "gap":
         inputs = replace(
             inputs,
@@ -123,9 +121,14 @@ def test_invalid_or_oversized_input_fails_before_planning(invalid, monkeypatch):
                 replace(inputs.slots[0], start=inputs.now + timedelta(hours=2)),
             ),
         )
-    elif invalid == "nan":
-        inputs = replace(inputs, slots=(replace(inputs.slots[0], pv_wh=float("nan")),))
     record = recording(config, inputs, plan(*case()))
+    # Corrupt the recording, not a validated dataclass: construction now rejects
+    # these inputs before they can reach the offline boundary.
+    if invalid in ("duration", "nan"):
+        slot = record["inputs"]["fields"]["slots"]["tuple"][0]["fields"]
+        slot["duration" if invalid == "duration" else "pv_wh"] = (
+            0 if invalid == "duration" else float("nan")
+        )
     if invalid == "schema":
         record["schema_version"] = 99
 

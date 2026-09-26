@@ -401,7 +401,7 @@ async def test_successful_switch_stamps_dwell(hass):
     now = dt_util.now()
 
     await coordinator._execute_load_switching([(sub_id, data, True, False)], now=now)
-    assert coordinator._last_load_switch[sub_id] == now
+    assert now <= coordinator._last_load_switch[sub_id] <= dt_util.now()
 
 
 async def test_soc_cache_survives_sleeping_device(hass):
@@ -1239,7 +1239,9 @@ async def test_f10_hold_gated_off_when_conditions_unmet(hass):
     assert ("turn_on", PLUG) not in calls
 
 
-async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
+async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(
+    hass, monkeypatch
+):
     """(d) A gate loss (the shadow plan stops activating the load — the normal
     planner would no longer run it now) stops the hold after the min_runtime
     dwell via the normal path (flicker-INELIGIBLE, so min_off is not waived);
@@ -1280,6 +1282,7 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass):
     # Past min_runtime with the gate still lost: stop via the normal path.
     calls.clear()
     t_off = t0 + timedelta(minutes=31)
+    monkeypatch.setattr(dt_util, "now", lambda: t_off)
     await coordinator._apply_load_switching(
         _inactive_result(sub_id), t_off, (1.0,), 0.0, {}
     )
@@ -2767,7 +2770,9 @@ async def test_night_block_runs_exactly_planned_hours_then_force_off(hass):
     coordinator._cancel_off_timer(sub_id)
 
 
-async def test_extended_plan_extends_at_deadline_and_min_off_after_real_off(hass):
+async def test_extended_plan_extends_at_deadline_and_min_off_after_real_off(
+    hass, monkeypatch
+):
     """(b, F-SEAMLESS-RUNS revision of F-PREDRAIN §5 T9b) A mid-run plan
     extension must not move the frozen deadline (no endless run) — but AT
     the deadline a still-booked plan now extends seamlessly instead of
@@ -2819,6 +2824,7 @@ async def test_extended_plan_extends_at_deadline_and_min_off_after_real_off(hass
     # A REAL deactivation (plan off) switches off and stamps the dwell.
     inactive = _inactive_result(sub_id)
     calls.clear()
+    monkeypatch.setattr(dt_util, "now", lambda: off_now + timedelta(minutes=5))
     await coordinator._apply_load_switching(
         inactive, off_now + timedelta(minutes=5), durations
     )

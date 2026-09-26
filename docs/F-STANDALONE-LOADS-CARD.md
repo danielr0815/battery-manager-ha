@@ -1,5 +1,8 @@
 # Dashboard-Karte für Lasten außerhalb von Kaskaden
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Regeln
 
 1. `custom:battery-manager-loads-card` ist im vorhandenen Frontend-Modul und im

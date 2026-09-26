@@ -1,5 +1,8 @@
 # F-QUANTILE-BANDS — per-slot P10/P90 forecast bands replace scalar α/β
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec** for v0.10.0. Operator: "kümmere dich um v0.10.0"
 (2026-07-11). Prereqs shipped: v0.8.0 per-slot `pv_scale` vectors, v0.9.x
 gates, the balcony-solar-forecast cutover (2026-07-11), and that integration's

@@ -1,5 +1,8 @@
 # F-STRICT-SURPLUS — loads never buy import, never run planned-grid-fed, and bets settle at the true refill
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: implemented (v0.15.0).
 Operator decision 2026-07-19 (binding, verbatim intent): *"Das oberste Ziel
 ist es doch, den SOC immer maximal hoch zu halten, ohne dass eine Einspeisung

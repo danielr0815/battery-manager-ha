@@ -48,11 +48,11 @@ def _digest(result):
         "import_kwh": round(result.grid_import_kwh, 6),
         "export_kwh": round(result.grid_export_kwh, 6),
         "lost_surplus_kwh": round(result.lost_surplus_kwh, 6),
-        "appliance_windows": result.appliance_windows,
+        "appliance_windows": dict(result.appliance_windows),
         "prevented_export_by_day_wh": {
             day: round(wh, 3) for day, wh in result.prevented_export_by_day_wh.items()
         },
-        "pv_window_ends": result.pv_window_ends,
+        "pv_window_ends": dict(result.pv_window_ends),
         "threshold_horizon_end": (
             result.threshold_horizon_end.isoformat()
             if result.threshold_horizon_end is not None

@@ -8,8 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
-from custom_components.battery_manager.core import (
+from core import (
     CascadeMember,
     CascadeRuntimeState,
     FeedInParams,
@@ -22,9 +21,9 @@ from custom_components.battery_manager.core import (
     plan,
     simulate,
 )
-from custom_components.battery_manager.core import cascade as cascade_core
-from custom_components.battery_manager.core import optimize as optimize_core
-from custom_components.battery_manager.core.model import LoadPlan
+from core import cascade as cascade_core
+from core import optimize as optimize_core
+from core.model import LoadPlan
 
 NOW = datetime(2026, 8, 23, 6)
 
@@ -1864,7 +1863,7 @@ def test_aux_continuation_uses_output_path_not_root_pause(phase, path, active_no
 
 
 def test_reserve_cascade_allocation_preserves_strict_surplus_contract():
-    from custom_components.battery_manager.core import ReserveParams, SupportParams
+    from core import ReserveParams, SupportParams
 
     config, inputs = _system(socs=(50.0,))
     config = replace(

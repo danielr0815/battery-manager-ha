@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.appliance_learning import (
     ApplianceLearning,
+    ProgramSample,
     duration_hours,
     measurement,
     program_name,
@@ -435,7 +436,7 @@ def test_late_program_arrival_and_conflict_do_not_mislabel_cycles():
             complete_start=minute == 0,
             program=program,
         )
-    assert learner.program_samples["a"]["eco"] == [[150, 0.25]]
+    assert learner.program_samples["a"]["eco"] == [ProgramSample(150, 0.25)]
     for minute, program in [(0, "eco"), (5, "auto"), (10, None)]:
         learner.observe(
             "a",
@@ -465,7 +466,7 @@ def test_program_storage_validation_and_bounds():
             },
         }
     )
-    assert learner.program_samples == {"a": {"eco": [[100, 1]] * 20}}
+    assert learner.program_samples == {"a": {"eco": [ProgramSample(100, 1)] * 20}}
     for i in range(34):
         _program_cycle(learner, f"p{i}")
     assert len(learner.program_samples["a"]) == 32
@@ -510,8 +511,8 @@ async def test_selected_program_preview_and_active_program_learning(hass):
                 == "auto"
             )
             assert runs[0].remaining_energy_wh == pytest.approx(900 * (1 - 25 / 60))
-    assert learner.program_samples[key]["eco"] == [[600, 3]]
-    assert learner.program_samples[key]["auto"][-1] == [300, 0.5]
+    assert learner.program_samples[key]["eco"] == [ProgramSample(600, 3)]
+    assert learner.program_samples[key]["auto"][-1] == ProgramSample(300, 0.5)
     assert coordinator.build_system_config().appliances[0].run_energy_wh == 600
     assert {"sensor.program", "select.program"} <= set(
         _tracked_with_required_inputs(coordinator)

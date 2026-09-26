@@ -3,10 +3,10 @@
 > Start here if you want to work on the code. This is the map; the other docs in
 > `docs/` are the detailed design records for individual subsystems.
 >
-> Status: **current as of 2026-07 (v0.17.0)** — the code map and the update
-> cycle are maintained; earlier "outdated (v0.7.x)" labels in other docs
-> referred to a stale code map that has since been completed
-> (`core/forecast_hours.py`, `core/power_learning.py`) and corrected.
+> Status: **0.46.0, 2026-09-26**. Current behavior and migration contracts:
+> [CURRENT_CONTRACTS.md](CURRENT_CONTRACTS.md). Historical design records explain
+> why rules exist; they do not override the current contracts.
+
 
 Battery Manager plans hourly energy flows for an AC-coupled PV + battery system
 and turns the plan into switching recommendations (and, for the grid-support
@@ -43,10 +43,24 @@ belongs in the HA layer.
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
 | `reserve.py` | Optional year-round reserve policy: backward DC/all-load energy envelopes and forward five-minute validation (v0.45.0; see `F-YEAR-ROUND-RESERVE.md`). |
-| `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the early feed-in pass (`plan_feedin`, F-FEEDIN), the appliance-window advisor, and the last-resort grid-support escalation. |
+| `optimize.py` | Planner orchestration: threshold search, feed-in, appliance advisor and support escalation. |
+| `allocation.py`, `allocation_candidates.py` | Ordered allocation passes, shared feasibility gate, typed candidate context/results and recovery. |
+| `planning_rules.py`, `uncertainty.py`, `policy.py` | Shared pure gates, forecast bands and domain constants; reserve has no reverse optimizer import. |
+| `accounting.py` | Shared physical interval accounting for recorder and offline evaluation, including Root/Aux boundaries. |
 | `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and target-limited Aux discharge without a same-day recharge requirement. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
+
+The HA orchestration delegates load commands to `load_actuation.py`, house supply
+transitions to `coordinated_supply.py`, storage serialization to
+`runtime_persistence.py`, and daily output projection to `plan_output.py`.
+`operation_archive.py` wraps timezone-specific journals in schema 2.
+`runtime.py` defines typed entry data; `CascadeExecutionSnapshot` is the public
+read-only link between cascade execution and constraint diagnostics.
+
+Frontend source lives in `frontend/`: four card classes, shared math/time,
+translations, reports, DOM preservation and styles. `scripts/build_frontend.mjs`
+bundles them into the existing integration resource; CI rejects source/bundle drift.
 
 ### Home Assistant layer
 
@@ -128,9 +142,11 @@ debounced input changes, in this order:
    forecast is in scope for the Ist+forecast mix; the `realized` key is omitted
    entirely when no export meter is configured.
 
-Actuation runs in **entry-scoped background tasks serialized by a single
-`_switch_lock`**, deliberately detached so a cancelled refresh can't abort a
-half-finished switch sequence. Persistent state (support mode, plug ownership,
+Actuation runs in **entry-scoped background tasks**, detached from refresh
+cancellation. Supply transitions preserve their ordered lock. Ordinary loads
+cross the final queue barrier before issuing commands, but release the shared
+lock while awaiting physical feedback: one unavailable load must not block an
+independent safety shutdown. Pauses are reconciled before planner input checks. Persistent state (support mode, plug ownership,
 the R2 caused-off flag, dwell timestamps) is written via an HA `Store` and
 flushed on unload.
 

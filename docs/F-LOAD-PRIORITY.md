@@ -1,5 +1,8 @@
 # F-LOAD-PRIORITY — explicit, configurable load priority
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec** for v0.8.2. Author: planning session 2026-07-10.
 Operator request (2026-07-10): *the priority should be configurable; initially
 it may match the creation order, but every load must be assignable a different

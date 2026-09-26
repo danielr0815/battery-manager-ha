@@ -10,7 +10,6 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -50,6 +49,7 @@ from .const import (
 )
 from .coordinator import BatteryManagerCoordinator
 from .entity import BatteryManagerEntity, async_add_by_subentry
+from .runtime import BatteryManagerConfigEntry
 
 SENSOR_DESCRIPTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -173,11 +173,11 @@ def _per_day_attrs(daily: list[dict[str, Any]], value_key: str) -> dict[str, Any
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: BatteryManagerConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Battery Manager sensors."""
-    coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: BatteryManagerCoordinator = entry.runtime_data
     entities: list[Entity] = [
         BatteryManagerSensor(coordinator, description)
         for description in SENSOR_DESCRIPTIONS
@@ -355,7 +355,7 @@ class BatteryManagerSensor(BatteryManagerEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         data = self.coordinator.data or {}
-        attrs = {ATTR_LAST_UPDATE: str(data.get("last_update", ""))}
+        attrs: dict[str, Any] = {ATTR_LAST_UPDATE: str(data.get("last_update", ""))}
         if self._data_key == "grid_import_kwh":
             attrs[ATTR_GRID_EXPORT_KWH] = data.get("grid_export_kwh")
         # F-PERDAY-SURPLUS R2: the today/tomorrow split and per-day list on the

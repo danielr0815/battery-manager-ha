@@ -7,7 +7,7 @@ import contextlib
 import logging
 import math
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -33,6 +33,7 @@ from .appliance_learning import (
 )
 from .cascade_manager import CascadeManager
 from .const import (
+    ACTOR_CONFIRM_TIMEOUT_S,
     APPLIANCE_DETECTION_MAX_DROPOUT_MIN,
     APPLIANCE_RUNNING_STATES,
     CASCADE_OFF_CONFIRM_GRACE_S,
@@ -163,7 +164,6 @@ from .const import (
     INITIAL_UPDATE_INTERVAL_SECONDS,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
-    INPUT_OFF_POLICY_KEEP,
     LATCH_HOLD_OVERPOWER_FACTOR,
     LOAD_RUNTIME_MIN_W,
     LOAD_RUNTIME_TICK_MAX_S,
@@ -212,6 +212,7 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
     UPPER_PV_RESERVE_DEFAULT,
 )
+from .coordinated_supply import execute_coordinated_support
 from .core import (
     DAY_TYPE_ABSENCE,
     Appliance,
@@ -243,9 +244,19 @@ from .core.model import ReserveParams
 from .core.series import fixed_local_time
 from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
+from .load_actuation import (
+    LOAD_RETRY_INTERVAL_S,
+    ActorRequest,
+    LoadAction,
+    confirm_state,
+    execute_load_switching,
+    reconcile_feedback,
+)
 from .localization import message
 from .operation_recorder import OperationRecorder
+from .plan_output import daily_surplus_breakdown
 from .reserve_runtime import ReserveRuntime, reserve_diagnostics
+from .runtime_persistence import persistent_payload
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -398,6 +409,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # clears both). The background task handle lets unload cancel it.
         self._data_stale_since: datetime | None = None
         self._stale_shed_active = False
+        self._stale_shed_pending: set[str] = set()
+        self._load_actor_requests: dict[str, ActorRequest] = {}
+        self._pause_tasks: dict[str, asyncio.Task] = {}
         self._stale_shed_task: asyncio.Task | None = None
         # House-SOC stale watchdog (energy-based, banded sibling of the G2
         # load guard): evidence tuple (frozen value, last accumulation time,
@@ -452,9 +466,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._inverter_recommendation = False
         self._last_inverter_switch: datetime | None = None
         self._reserve_runtime = ReserveRuntime()
-        self._reserve_diag = {}
+        self._reserve_diag: dict[str, Any] = {}
+        self._coordinated_support_diag: dict[str, Any] = {}
         self._reserve_preparing = False
-        self._reserve_inverter_limit_w = None
+        self._reserve_inverter_limit_w: int | None = None
         self._support_state = {"dc24": False, "dc48": False}
         # Manual override per PSU (F-N2): entered when the switch turns on
         # externally, left when it is switched off externally; persisted
@@ -584,7 +599,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._store: Store = _RuntimeStore(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
         )
-        self._load_soc_cache: dict[str, float] = {}
+        self._load_soc_cache: dict[str, dict[str, Any]] = {}
         self._load_plug_owned: dict[str, bool] = {}
         self._last_load_switch: dict[str, datetime] = {}
         self._plan_boundary_cancel: Callable[[], None] | None = None
@@ -765,12 +780,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # genuine SOC dropout after a good cycle (which zeroes _successful_updates)
         # cannot re-enter the startup grace even if it happens inside the window.
         self.operation_recorder = OperationRecorder(self)
-        self._last_planner_recording = None
+        self._last_planner_recording: (
+            tuple[SystemConfig, PlanInputs, PlanResult] | None
+        ) = None
         self._first_success_done = False
 
         self._debounce_task: asyncio.Task | None = None
         self._listeners_setup: bool = False
-        self._unsub_state_listener = None
+        self._unsub_state_listener: Callable[[], None] | None = None
         self._setup_entity_listeners()
 
     # ------------------------------------------------------------------
@@ -998,6 +1015,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 bool(data.get("stale_shed_active", False))
                 and self._data_stale_since is not None
             )
+            self._stale_shed_pending = set(data.get("stale_shed_pending", []))
+            for entity, request in data.get("load_actor_requests", {}).items():
+                stamp = dt_util.parse_datetime(request.get("requested_at", ""))
+                if stamp is not None:
+                    self._load_actor_requests[entity] = ActorRequest(
+                        bool(request["desired"]), stamp, request.get("state", "pending")
+                    )
             # F-FEEDIN: the runtime switch, the manual-mode deadline and our
             # last written setpoint survive restarts — after a reboot "setpoint
             # ≠ ours" must still be judgeable as an external override instead
@@ -1061,129 +1085,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
 
     def _persistent_payload(self) -> dict[str, Any]:
-        return {
-            "load_soc": self._load_soc_cache,
-            "plug_owned": self._load_plug_owned,
-            "last_load_switch": {
-                k: v.isoformat() for k, v in self._last_load_switch.items()
-            },
-            "load_run_deadline": {
-                k: v.isoformat() for k, v in self._load_run_deadline.items()
-            },
-            "load_bm_enabled": dict(self._load_bm_enabled),
-            "cascade_state": self.cascade_manager.persistent_state_snapshot(),
-            # Only the accumulated total is persisted; the in-progress tick cursor
-            # is deliberately NOT — restoring it would credit the whole restart
-            # gap (up to the tick cap) as runtime the device may never have run.
-            # After a restart the first tick just re-arms the cursor (losing at
-            # most the last sub-cycle partial, which is bounded and unobservable).
-            "load_runtime_seconds": dict(self._load_runtime_seconds),
-            # F-PLANNER-HONESTY R3 / F-ROBUST-POWER: the learned planning
-            # power (write-through of the robust windowed estimate) survives
-            # restarts — unlike the live sample buffer (deliberately
-            # volatile, see async_load_persistent_state); spike-proof by the
-            # estimator's median + warm-up construction.
-            "load_learned_power": dict(self._load_learned_power_w),
-            # The samples are intentionally volatile. Only the actor-ownership
-            # marker survives so setup can force an interrupted grid-powered
-            # probe OFF before the normal planner starts.
-            "load_power_calibration_active": (
-                self._load_power_calibration_id or self._load_power_calibration_restored
-            ),
-            # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
-            # does not re-latch at `now` and re-inject the full run energy.
-            "appliance_energy_samples": self._appliance_learning.samples,
-            "appliance_program_samples": self._appliance_learning.program_samples,
-            "appliance_started": {
-                k: v.isoformat() for k, v in self._appliance_started.items()
-            },
-            "support_manual": dict(self._support_manual),
-            "support_control_mode": "coordinated"
-            if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
-            else "legacy",
-            "support_migration": dict(self._support_migration),
-            "support_state": dict(self._support_state),
-            "dc48_ctrl_caused_off": self._dc48_ctrl_caused_off,
-            # F-L7: the latched power warning survives reloads/restarts so an
-            # options save (which reloads the coordinator) does not silently
-            # drop a raised warning. Only the bool is persisted; the dwell
-            # timer re-arms after a restart (a not-yet-tripped deviation is
-            # deliberately not credited across downtime).
-            "load_power_warning": dict(self._load_power_warning),
-            # V6 (F-TANK): the learned tank samples (median = learned full-tank
-            # runtime) and the pending tank-full runtime capture survive
-            # restarts, like the power-warning latch. The per-cycle notified set
-            # is deliberately volatile (a rare duplicate push after a restart is
-            # acceptable; persisting it would over-suppress after a real reset).
-            "load_tank_samples": {
-                k: list(v) for k, v in self._load_tank_samples.items()
-            },
-            "load_tank_full_min": dict(self._load_tank_full_min),
-            # F-EXECUTOR-GUARDS G2 + F4 (7-day live audit 2026-08-02): both
-            # watchdogs survive a coordinator reload — a reload that dropped
-            # the F4 latch re-opened the exact hole it guarded against (the
-            # recommendation duty-cycled a demonstrably unplugged Fossibot B2
-            # for 110 min, ~225 Wh misbooked; the precedence freeze ran
-            # 174.7 h, so re-building the 6 h evidence from zero is not a
-            # shrug). Persisted per load is the reference value(s) the
-            # release compares against PLUS the accumulated evidence in
-            # SECONDS — not the wall-clock window start: downtime is NOT
-            # freeze evidence (while HA is down nothing is observed), so the
-            # restored clock resumes from the saved accumulation and the
-            # restart gap is never credited (the same rule as the runtime
-            # tick cursor). A clean reload flushes on unload
-            # (async_flush_persistent_state); an unclean power loss forfeits
-            # at most the delayed-save window.
-            "load_soc_stale_guard": {
-                k: {
-                    "soc": soc,
-                    "elapsed_s": max(0.0, (dt_util.utcnow() - since).total_seconds()),
-                    "latched": k in self._load_soc_stale,
-                }
-                for k, (soc, since) in self._load_soc_frozen.items()
-            },
-            "load_freeze_guard": {
-                k: {
-                    "soc": ref[0],
-                    "power": ref[1],
-                    "elapsed_s": max(0.0, (dt_util.utcnow() - ref[2]).total_seconds()),
-                    "rec_seen": ref[3],
-                    "latched": k in self._load_freeze_stale,
-                }
-                for k, ref in self._load_freeze_ref.items()
-            },
-            # D-A8 stage 2: the data-loss clock and the shed latch survive
-            # restarts (see async_load_persistent_state for the rationale).
-            "stale_since": (
-                self._data_stale_since.isoformat()
-                if self._data_stale_since is not None
-                else None
-            ),
-            "stale_shed_active": self._stale_shed_active,
-            # F-FEEDIN: see async_load_persistent_state for the rationale.
-            "feedin_switch_on": self._feedin_switch_on,
-            "feedin_manual_until": (
-                self._feedin_manual_until.isoformat()
-                if self._feedin_manual_until is not None
-                else None
-            ),
-            "feedin_last_written_w": self._feedin_last_written_w,
-            "feedin_owned_entity": self._feedin_owned_entity,
-            # F-REALIZED-SURPLUS: measured day counters + monotone true-export
-            # total + last counter readings (decision 8; rationale in
-            # async_load_persistent_state).
-            "reserve": self._reserve_runtime.export(),
-            "operation_history": self.operation_recorder.export(),
-            "realized": {
-                "date": self._realized["date"],
-                "lost_wh": self._realized["lost_wh"],
-                "prevented_wh": self._realized["prevented_wh"],
-                "feedin_wh": self._realized["feedin_wh"],
-                "true_export_total_wh": self._realized["true_export_total_wh"],
-                "external_debt_wh": self._realized["external_debt_wh"],
-                "last_readings": dict(self._realized["last_readings"]),
-            },
-        }
+        return persistent_payload(self)
 
     def _save_persistent_state(self) -> None:
         self._store.async_delay_save(self._persistent_payload, 10)
@@ -1347,7 +1249,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for cascade_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
                 continue
-            members = []
+            members: list[CascadeMember] = []
             for member_id in subentry.data.get(CONF_CASCADE_MEMBER_IDS, []):
                 member_entry = load_subentries.get(member_id)
                 if member_entry is None:
@@ -1389,7 +1291,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     LoadCascade(
                         cascade_id=cascade_id,
                         members=tuple(members),
-                        terminal_load_id=terminal_id,
+                        terminal_load_id=terminal_id or "",
                         # Worst-case time until useful Aux power is proven:
                         # every member may consume its wake timeout, every
                         # required actor edge its confirmation timeout, and
@@ -1415,7 +1317,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             + (3 * len(members) + 3)
                             * (
                                 float(
-                                    subentry.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30)
+                                    subentry.data.get(
+                                        CONF_CASCADE_ACTOR_TIMEOUT_S,
+                                        ACTOR_CONFIRM_TIMEOUT_S,
+                                    )
                                 )
                                 + CASCADE_SAFE_OFF_RECOVERY_S
                             )
@@ -1780,7 +1685,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._read_float(cfg[CONF_PV_FORECAST_DAY_AFTER]),
         ]
         if all(v is not None for v in values):
-            forecasts = [max(0.0, v) for v in values]  # type: ignore[arg-type]
+            forecasts = [max(0.0, v) for v in values if v is not None]
             self._last_valid_forecasts = forecasts
             self._last_forecast_update = now
             return forecasts
@@ -1809,18 +1714,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         keeps polling even while failing, so the 2 h mark is crossed on the
         first refresh past it). The V8 startup grace returns earlier, so the
         clock only starts on a steady-state failure. The clock and the latch
-        are persisted: a restart must neither reset the budget nor re-fire
-        an already-executed shed. The shed runs detached (pattern:
-        `_execute_load_switching`) so a cancelled refresh can never abort it
-        half-way, and exactly ONCE per outage episode — the latch is set
-        before the task starts.
+        are persisted: a restart must not reset the budget. The separate
+        pending requests survive a failed shutdown; confirmed OFFs are not
+        resent. Detached tasks survive refresh cancellation, and retries use
+        the actor's current state and minimum retry interval.
         """
         if self._data_stale_since is None:
             self._data_stale_since = now
             self._save_persistent_state()
-        if self._stale_shed_active or now - self._data_stale_since < timedelta(
-            hours=STALE_LOAD_SHED_HOURS
-        ):
+        if self._stale_shed_active:
+            if self._stale_shed_task is None or self._stale_shed_task.done():
+                self._stale_shed_task = self.entry.async_create_background_task(
+                    self.hass,
+                    self._execute_stale_load_shed(),
+                    name="battery_manager_stale_retry",
+                )
+            return
+        if now - self._data_stale_since < timedelta(hours=STALE_LOAD_SHED_HOURS):
             return
         if not any(
             subentry.subentry_type == SUBENTRY_TYPE_LOAD
@@ -1832,6 +1742,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # already covers the outage.
             return
         self._stale_shed_active = True
+        self._stale_shed_pending = {
+            key
+            for key, subentry in self.entry.subentries.items()
+            if subentry.subentry_type == SUBENTRY_TYPE_LOAD
+            and subentry.data.get(CONF_LOAD_CONTROL_SWITCH)
+        }
         self._save_persistent_state()
         _LOGGER.warning(
             "No valid input data for %d+ h — fail-safe (D-A8 stage 2):"
@@ -1985,7 +1901,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if total <= 0.0:
             return 1.0
         unit_factor = REALIZED_ENERGY_UNIT_FACTORS_WH.get(
-            state.attributes.get("unit_of_measurement")
+            state.attributes.get("unit_of_measurement") or ""
         )
         try:
             state_value = float(state.state)
@@ -2595,7 +2511,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._load_learn_ok.pop(load_plan.load_id, None)
             self._load_plan_active[load_plan.load_id] = load_plan.active_now
 
-    def _load_standby_bar(self, data: dict[str, Any]) -> float:
+    def _load_standby_bar(self, data: Mapping[str, Any]) -> float:
         """The single standby threshold, reused by the median learner, the G2
         stale-SOC evidence path, and the F4 rec-only evidence check: readings
         below max(10 W, STANDBY_FRACTION * nominal) are standby/idle draw, not a
@@ -2701,12 +2617,96 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def set_load_enabled(self, load_id: str, enabled: bool) -> None:
         """Enable/disable BM control of one load (v0.7.17 per-load switch).
 
-        Disabling holds the load UNAVAILABLE — the planner drops it and the
-        executor switches it off next cycle — WITHOUT touching the load's
-        control-switch config, so the operator can pause a device with one tap
-        and resume later. Persisted so it survives restarts."""
+        Disabling blocks new starts immediately and schedules an independent
+        stop after the remaining minimum runtime. Resume cancels that pending
+        pause. The choice survives restarts without altering actor wiring."""
         self._load_bm_enabled[load_id] = bool(enabled)
+        previous = self._pause_tasks.pop(load_id, None)
+        if previous is not None:
+            previous.cancel()
+        if not enabled:
+            self._pause_tasks[load_id] = self.entry.async_create_background_task(
+                self.hass, self._async_pause_load(load_id), name="battery_manager_pause"
+            )
         self._save_persistent_state()
+
+    async def _async_pause_load(self, load_id: str) -> None:
+        """A manual pause must finish even while planner inputs are unavailable."""
+        subentry = self.entry.subentries.get(load_id)
+        if subentry is None or not subentry.data.get(CONF_LOAD_CONTROL_SWITCH):
+            return
+        reconcile_feedback(self)
+        data = subentry.data
+        plug = data[CONF_LOAD_CONTROL_SWITCH]
+        gate = data.get(CONF_LOAD_CHARGE_ENABLE)
+        policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
+        input_must_stop = (
+            not gate
+            or policy == INPUT_OFF_POLICY_ALWAYS
+            or (
+                policy == INPUT_OFF_POLICY_AUTO
+                and self._load_plug_owned.get(load_id, False)
+            )
+        )
+        if load_id not in self.cascade_manager.managed_load_ids() and (
+            (not gate or self._entity_tristate(gate) is False)
+            and (not input_must_stop or self._entity_tristate(plug) is False)
+        ):
+            # Reconciliation is idempotent: an already stopped device has no
+            # new edge and must not repeatedly restart its minimum-off clock.
+            return
+        last = self._last_load_switch.get(load_id)
+        if last is not None and self._charging_is_active(data) is not False:
+            stop_at = last + timedelta(minutes=data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
+            delay = (stop_at - dt_util.now()).total_seconds()
+            if delay > 0 and not (self._floor_guard_active or self._stale_shed_active):
+                await asyncio.sleep(delay)
+        if not self.load_bm_enabled(load_id):
+            for cascade_id, cascade in self.entry.subentries.items():
+                if cascade.subentry_type == SUBENTRY_TYPE_CASCADE and (
+                    load_id in cascade.data.get(CONF_CASCADE_MEMBER_IDS, [])
+                    or load_id == cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+                ):
+                    await self.cascade_manager.async_safe_off(
+                        cascade_id, "manual pause"
+                    )
+                    return
+            await self._execute_load_switching(
+                [
+                    LoadAction(
+                        load_id,
+                        dict(data),
+                        False,
+                        self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]),
+                        reason="manual pause",
+                    )
+                ]
+            )
+
+    async def _switch_load_entity(self, entity_id: str, desired: bool) -> bool:
+        """Confirm physical feedback and limit retries, including service failures."""
+        state = self.hass.states.get(entity_id)
+        if state is not None and state.state == ("on" if desired else "off"):
+            self._load_actor_requests.pop(entity_id, None)
+            return True
+        now = dt_util.now()
+        previous = self._load_actor_requests.get(entity_id)
+        if previous is not None and previous.desired == desired:
+            if (now - previous.requested_at).total_seconds() < LOAD_RETRY_INTERVAL_S:
+                return False
+            if state is None or state.state not in ("on", "off"):
+                return False
+        request = ActorRequest(desired, now)
+        self._load_actor_requests[entity_id] = request
+        self._save_persistent_state()
+        if not await self._switch_entity(entity_id, desired):
+            request.state = "service_failed"
+            return False
+        if not await confirm_state(self.hass, entity_id, desired):
+            request.state = "confirmation_failed"
+            return False
+        request.state = "confirmed"
+        return True
 
     def power_calibration_supported(self, load_id: str) -> bool:
         """Whether a load has every actor/sensor needed for a manual probe."""
@@ -2809,7 +2809,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _run_load_power_calibration(
-        self, load_id: str, data: dict[str, Any], baseline_w: float
+        self, load_id: str, data: Mapping[str, Any], baseline_w: float
     ) -> None:
         """Actuate, sample new sensor publications, learn their median, release."""
         loop = asyncio.get_running_loop()
@@ -3017,7 +3017,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
     def _load_is_running(
-        self, load_id: str, data: dict[str, Any], now: datetime
+        self, load_id: str, data: Mapping[str, Any], now: datetime
     ) -> bool:
         """True while the load REALLY draws power (runtime counter, v0.7.18).
 
@@ -3119,7 +3119,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._save_persistent_state()
         self.async_update_listeners()
 
-    def _tank_enabled(self, data: dict[str, Any]) -> bool:
+    def _tank_enabled(self, data: Mapping[str, Any]) -> bool:
         """True iff the consumable-tank model is opted in for this load (V6).
 
         Requires a configured full-tank runtime > 0 AND a power-feedback sensor
@@ -3130,7 +3130,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             data.get(CONF_LOAD_POWER_ENTITY)
         )
 
-    def _tank_learned_full_min(self, subentry_id: str, data: dict[str, Any]) -> float:
+    def _tank_learned_full_min(
+        self, subentry_id: str, data: Mapping[str, Any]
+    ) -> float:
         """Learned full-tank runtime in minutes (V6): the median of the last
         observed tank-full samples, or the configured starting estimate while no
         sample exists yet."""
@@ -3140,7 +3142,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return float(data.get(CONF_LOAD_TANK_FULL_RUNTIME_MIN, 0) or 0)
 
     def _tank_remaining_min(
-        self, subentry_id: str, data: dict[str, Any]
+        self, subentry_id: str, data: Mapping[str, Any]
     ) -> float | None:
         """Remaining tank RUN time in minutes (V6), or None when the feature is
         off for this load. Learned full-tank runtime minus the runtime since the
@@ -3550,7 +3552,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if live_soc is not None
                         else (
                             fixed_local_time(dt_util.as_local(cached_at))
-                            if (cached_at := dt_util.parse_datetime(cached.get("ts")))
+                            if (
+                                cached_at := dt_util.parse_datetime(
+                                    cached.get("ts") or ""
+                                )
+                            )
                             is not None
                             else None
                         )
@@ -3568,7 +3574,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return tuple(states)
 
-    def _appliance_is_running(self, data: dict[str, Any], latched: bool) -> bool:
+    def _appliance_is_running(self, data: Mapping[str, Any], latched: bool) -> bool:
         """Detection with hysteresis (F-SUBHOUR H2).
 
         A numeric detection entity starts a run at `power_threshold_w` and keeps
@@ -3608,7 +3614,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             power *= 1000
         return math.isfinite(power) and power >= (off_th if latched else on_th)
 
-    def _appliance_program(self, key: str, data: dict[str, Any]) -> str | None:
+    def _appliance_program(self, key: str, data: Mapping[str, Any]) -> str | None:
         """Selected program is a preview only; a running cycle uses active program."""
         running = self._appliance_is_running(data, key in self._appliance_started)
         entity = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
@@ -3624,7 +3630,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return program_name(self.hass.states.get(entity)) if entity else None
 
     def _appliance_duration(
-        self, data: dict[str, Any], now: datetime, key: str = ""
+        self, data: Mapping[str, Any], now: datetime, key: str = ""
     ) -> float:
         entity_id = data.get(CONF_APPLIANCE_TOTAL_TIME_ENTITY)
         state = self.hass.states.get(entity_id) if entity_id else None
@@ -3753,9 +3759,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                     )
             else:
-                if detection_valid and (
-                    self._appliance_finished(state)
-                    or state.state.lower() in {"initial", "delayedstart", "reserved"}
+                if (
+                    detection_valid
+                    and state is not None
+                    and (
+                        self._appliance_finished(state)
+                        or state.state.lower()
+                        in {"initial", "delayedstart", "reserved"}
+                    )
                 ):
                     self._appliance_observed_idle.add(subentry_id)
                 else:
@@ -3905,6 +3916,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._actuation_shutdown or self.hass.is_stopping:
             return self.data or {}
         await self.cascade_manager.async_reconcile_topologies()
+        reconcile_feedback(self)
+        # Manual pause and restored OFF obligations do not depend on forecasts.
+        for load_id, enabled in self._load_bm_enabled.items():
+            pending = self._pause_tasks.get(load_id)
+            if not enabled and (pending is None or pending.done()):
+                self._pause_tasks[load_id] = self.entry.async_create_background_task(
+                    self.hass,
+                    self._async_pause_load(load_id),
+                    name="battery_manager_pause_reconcile",
+                )
         now = dt_util.now()
         if self._startup_at is None:
             self._startup_at = now  # V8: anchor the SOC startup grace window
@@ -4671,73 +4692,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     def _daily_surplus_breakdown(self, inputs, result) -> list[dict[str, Any]]:
-        """Per-calendar-day lost-surplus / grid-import / load-energy split
-        (F-PERDAY-SURPLUS R1 + §5 v2).
-
-        Grouped by ``slot.start.date()`` in planner-local time: a slot belongs to
-        the day it STARTS in (hourly grid, D-A7), so a 23:00 slot counts on its
-        start day even where it conceptually crosses midnight. lost_surplus mirrors
-        grid export (core: lost_surplus_kwh == grid_export_kwh), so the sums over
-        the returned entries equal the existing totals (rounding aside).
-        ``loads_kwh`` (v2, R-V2-1) sums the final trajectory's per-slot
-        ``extra_ac_wh`` — the SURPLUS-LOAD energy scheduled that day; appliances
-        are excluded by construction (they enter the AC forecast, never
-        ``extra_ac_wh``).
-
-        ``prevented_export_kwh`` (F-STRICT-SURPLUS R4) is the counterfactual:
-        the export the load runs prevented that day, taken straight from
-        ``result.prevented_export_by_day_wh`` (base minus alloc, both PRE
-        support-escalation so support PSUs never deflate it). It answers "why
-        is a load running although SOC never reaches max?" on the dashboard.
-        """
-        export_by_day: dict[str, float] = {}
-        import_by_day: dict[str, float] = {}
-        loads_by_day: dict[str, float] = {}
-        # Grid-support energy per day, so the card's legend can show the
-        # support lanes with the same heute/morgen figure as every other lane
-        # (operator ask 2026-08-03). Delivered Wh, i.e. what the PSUs actually
-        # put on their rail — not their nominal rating.
-        dc24_by_day: dict[str, float] = {}
-        dc48_by_day: dict[str, float] = {}
-        order: list[str] = []
-        for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
-            day = slot.start.date().isoformat()
-            if day not in export_by_day:
-                export_by_day[day] = 0.0
-                import_by_day[day] = 0.0
-                loads_by_day[day] = 0.0
-                dc24_by_day[day] = 0.0
-                dc48_by_day[day] = 0.0
-                order.append(day)
-            export_by_day[day] += flow.grid_export_wh
-            import_by_day[day] += flow.grid_import_wh
-            loads_by_day[day] += flow.extra_ac_wh
-            # getattr: the coordinator tests build flows as SimpleNamespace
-            # stubs, and a stub without the support fields must not break the
-            # breakdown (same defensive read as `feedin_by_day_wh` below).
-            dc24_by_day[day] += getattr(flow, "psu24_delivered_wh", 0.0) or 0.0
-            dc48_by_day[day] += getattr(flow, "psu48_delivered_wh", 0.0) or 0.0
-        prevented = result.prevented_export_by_day_wh
-        # F-FEEDIN: planned feed-in per day (ISO date -> Wh), straight from the
-        # PlanResult. Emitted ONLY when anything was booked — the card renders
-        # its stats line purely on attribute presence (backend-compat, same
-        # pattern as prevented_export_kwh != null on the frontend).
-        feedin = getattr(result, "feedin_by_day_wh", None) or {}
-        entries = []
-        for day in order:
-            entry = {
-                "date": day,
-                "lost_surplus_kwh": round(export_by_day[day] / 1000.0, 3),
-                "grid_import_kwh": round(import_by_day[day] / 1000.0, 3),
-                "loads_kwh": round(loads_by_day[day] / 1000.0, 3),
-                "prevented_export_kwh": round(prevented.get(day, 0.0) / 1000.0, 3),
-                "support_dc24_kwh": round(dc24_by_day[day] / 1000.0, 3),
-                "support_dc48_kwh": round(dc48_by_day[day] / 1000.0, 3),
-            }
-            if feedin:
-                entry["planned_feedin_kwh"] = round(feedin.get(day, 0.0) / 1000.0, 3)
-            entries.append(entry)
-        return entries
+        """Project a completed plan without mutating planner or runtime state."""
+        return daily_surplus_breakdown(inputs, result)
 
     # ------------------------------------------------------------------
     # F-REALIZED-SURPLUS realized surplus accounting
@@ -4751,7 +4707,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         counters, so the operator has to be told (review 2026-08-03)."""
         state = self.hass.states.get(entity_id)
         unit = state.attributes.get("unit_of_measurement") if state else None
-        factor = REALIZED_ENERGY_UNIT_FACTORS_WH.get(unit)
+        factor = REALIZED_ENERGY_UNIT_FACTORS_WH.get(unit or "")
         if factor is not None:
             return factor
         if entity_id not in self._realized_unit_warned:
@@ -5349,6 +5305,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return
 
+        assert voltage is not None
         # Valid reading: clear the fail-safe timer.
         self._dc48_invalid_since = None
 
@@ -6030,138 +5987,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _execute_coordinated_support(
         self, desired, inverter, config, now
     ) -> None:
-        self._coordinated_support_diag = {
-            "mode": "coordinated",
-            "reason": "waiting_for_lock",
-        }
-        try:
-            async with self._switch_lock:
-                psu24 = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
-                psu48 = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
-                dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
-                diag = {
-                    "mode": "coordinated",
-                    "reason": "settled",
-                    "desired": dict(desired),
-                }
-                self._coordinated_support_diag = diag
-
-                async def confirmed(entity, on):
-                    if self._entity_tristate(entity) is on:
-                        return True
-                    if not await self._switch_entity(entity, on):
-                        diag["reason"] = "command_failed"
-                        return False
-                    if self._entity_tristate(entity) is not on:
-                        diag["reason"] = "awaiting_confirmation"
-                        return False
-                    return True
-
-                if (
-                    config.reserve.enabled
-                    and self._reserve_grid_available() is not True
-                ):
-                    self._inverter_recommendation = False
-                    diag["reason"] = "grid_supply_unavailable"
-                    if dcdc and not await confirmed(dcdc, True):
-                        return
-                    for key, entity in (("dc24", psu24), ("dc48", psu48)):
-                        if entity and not await confirmed(entity, False):
-                            return
-                        self._support_state[key] = False
-                    # Unknown grid supply rules out PSU credit, not useful
-                    # forecast-driven battery preparation. Known grid loss
-                    # still follows the existing island/fallback protection.
-                    blocked = self._reserve_grid_available() is False or not inverter
-                    confirmed_limit = await self._confirm_inverter_limit(blocked, diag)
-                    self._inverter_recommendation = not blocked and confirmed_limit
-                    diag["reason"] = "grid_supply_unavailable"
-                    self._save_persistent_state()
-                    return
-
-                if config.reserve.enabled and not self.raw_config.get(
-                    CONF_RESERVE_TRANSFER_VERIFIED
-                ):
-                    desired = {**desired, "dc24": False}
-
-                # Even an unexpected external PSU activation blocks AC immediately.
-                # Release comes last, after all source confirmations below.
-                physical_support = any(
-                    entity and self._entity_tristate(entity) is not False
-                    for entity in (psu24, psu48)
-                )
-                if not inverter or any(desired.values()) or physical_support:
-                    self._inverter_recommendation = False
-                    if not await self._confirm_inverter_limit(True, diag):
-                        diag["reason"] = "inverter_block_unconfirmed"
-                        return
-
-                interval = timedelta(seconds=config.control.min_switch_interval_s)
-                changes = any(
-                    entity and self._entity_tristate(entity) is not desired[key]
-                    for key, entity in (("dc24", psu24), ("dc48", psu48))
-                )
-                if (
-                    changes
-                    and self._last_support_switch is not None
-                    and now - self._last_support_switch < interval
-                ):
-                    diag["reason"] = "minimum_switch_interval"
-                    return
-                if changes:
-                    self._last_support_switch = now
-
-                # Remove 48 V support before returning the rail to the battery.
-                if psu48 and not desired["dc48"]:
-                    if not await confirmed(psu48, False):
-                        return
-                    self._support_state["dc48"] = False
-                if psu24 and dcdc:
-                    target24 = desired["dc24"]
-                    if self._entity_tristate(
-                        psu24
-                    ) is not target24 or self._entity_tristate(dcdc) is not (
-                        not target24
-                    ):
-                        if not await self._sequence_dc24(target24, psu24):
-                            diag["reason"] = "rail_transfer_failed"
-                            return
-                        if self._entity_tristate(
-                            psu24
-                        ) is not target24 or self._entity_tristate(dcdc) is not (
-                            not target24
-                        ):
-                            diag["reason"] = "rail_transfer_unconfirmed"
-                            return
-                    self._support_state["dc24"] = target24
-                elif psu24:
-                    # A hand-edited configuration must not turn off a rail's
-                    # only confirmed source. The config flow rejects this.
-                    await self._confirm_inverter_limit(True, diag)
-                    self._inverter_recommendation = False
-                    diag["reason"] = "missing_rail_transfer_actuator"
-                    return
-                if psu48 and desired["dc48"]:
-                    if not await confirmed(psu48, True):
-                        return
-                    self._support_state["dc48"] = True
-                if inverter and not any(desired.values()):
-                    if dcdc and not await confirmed(dcdc, True):
-                        return
-                    if not await self._confirm_inverter_limit(False, diag):
-                        return
-                    self._inverter_recommendation = True
-        finally:
-            self._save_persistent_state()
-            if self.data:
-                self.data["inverter_recommendation"] = self._inverter_recommendation
-                self.data["coordinated_support"] = {
-                    **self.data.get("coordinated_support", {}),
-                    **self._coordinated_support_diag,
-                }
-                self.data["support_dc24"] = self._support_state["dc24"]
-                self.data["support_dc48"] = self._support_state["dc48"]
-                self.async_update_listeners()
+        await execute_coordinated_support(self, desired, inverter, config, now)
 
     async def _apply_support_switching(
         self, result, config: SystemConfig, now: datetime
@@ -6327,7 +6153,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return state.state == "on"
 
-    def _charging_is_active(self, data: dict[str, Any]) -> bool | None:
+    def _charging_is_active(self, data: Mapping[str, Any]) -> bool | None:
         """Charging is active iff the input plug is on AND (if configured)
         the charge-enable gate is on. A plug that is on for passthrough
         purposes with the gate off does NOT count as charging. Returns
@@ -6633,7 +6459,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _latch_hold_ok(
         self,
         subentry_id: str,
-        data: dict[str, Any],
+        data: Mapping[str, Any],
         pv_power_w: float,
         shadow_active: dict[str, bool],
     ) -> bool:
@@ -6750,7 +6576,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         force_off = floor_guard or self._stale_shed_active
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
         cascade_managed = self.cascade_manager.managed_load_ids()
-        actions: list[tuple[Any, ...]] = []
+        actions: list[LoadAction] = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
@@ -6907,7 +6733,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 enable_entity = data.get(CONF_LOAD_CHARGE_ENABLE)
                 if not desired and enable_entity and self._entity_is_on(enable_entity):
                     actions.append(
-                        (
+                        LoadAction(
                             subentry_id,
                             dict(data),
                             False,
@@ -7017,7 +6843,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # The planned contiguous run (h) lets the ON path freeze a deadline.
             run_h = plan.active_run_hours(slot_durations) if plan else 0.0
             actions.append(
-                (
+                LoadAction(
                     subentry_id,
                     dict(data),
                     desired,
@@ -7037,294 +6863,54 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _execute_load_switching(
         self,
-        actions: list[tuple[Any, ...]],
+        actions: Sequence[LoadAction | tuple[Any, ...]],
         now: datetime | None = None,
     ) -> None:
-        if now is None:
-            now = dt_util.now()
-        async with self._switch_lock:
-            # F-CASCADE-STORAGE live incident 2026-09-01: a generic action
-            # queued before the cascade pass repeatedly switched B1's Root
-            # input OFF while CascadeManager switched it back ON.  Filtering
-            # while the action list is built is insufficient because ownership
-            # can change before this detached task acquires the actor lock.
-            # Re-check at the final mutation boundary so a cascade always has
-            # exactly one actor owner.
-            cascade_managed = self.cascade_manager.managed_load_ids()
-            for action in actions:
-                # Tolerate the legacy 4-tuple (no planned run) so any caller
-                # that does not carry a sub-hour run just gets no deadline. The
-                # 6th element (F8 flicker_eligible, OFF actions only) defaults
-                # False — an unmarked OFF is never a flicker continuation seed.
-                subentry_id, data, activate, plug_was_on = action[:4]
-                run_h = action[4] if len(action) > 4 else 0.0
-                flicker_eligible = action[5] if len(action) > 5 else False
-                # V9a: the switch reason (7th element). A legacy short tuple
-                # (test/back-compat) falls back to a generic anlass string.
-                reason = (
-                    action[6]
-                    if len(action) > 6
-                    else ("plan slot" if activate else "plan off")
-                )
-                bypass_guards = bool(action[7]) if len(action) > 7 else False
-                if subentry_id in cascade_managed:
-                    _LOGGER.info(
-                        "Dropping queued generic switch action for cascade-managed"
-                        " load %s",
-                        subentry_id,
-                    )
-                    continue
-                plug = data[CONF_LOAD_CONTROL_SWITCH]
-                enable = data.get(CONF_LOAD_CHARGE_ENABLE)
-                subentry = self.entry.subentries.get(subentry_id)
-                label = subentry.title if subentry else subentry_id
-                if (
-                    activate
-                    and not bypass_guards
-                    and (self._floor_guard_active or self._stale_shed_active)
-                ):
-                    # G4 floor guard / D-A8 stale shed, in-flight race: the
-                    # guard may have tripped AFTER this ON was queued (a
-                    # debounced SOC refresh returns early while this task is
-                    # still running). A queued ON must never fire at/below
-                    # the floor or into an active data-loss shed — that is
-                    # exactly the unsupervised start both guards exist to
-                    # prevent.
-                    _LOGGER.info(
-                        "Floor guard or stale shed active: dropping queued"
-                        " switch-ON for %s",
-                        label,
-                    )
-                    continue
-                if activate:
-                    if enable and not await self._switch_entity(enable, True):
-                        continue
-                    if not plug_was_on:
-                        if not await self._switch_entity(plug, True):
-                            # Rollback (7-day live audit 2026-08-04): the gate
-                            # confirmed ON but the plug did not (BLE-RPC
-                            # failure) — without this OFF the gate stays
-                            # orphaned ON FOREVER: charging never becomes
-                            # active, so every later cycle sees desired ==
-                            # current and no path ever switches the gate off
-                            # (live it sat ON for 3.4 days, bypassing the
-                            # legacy automation's 20 % firmware floor). That
-                            # violates LOAD_CONTROL.md §3: the gate may only
-                            # be on while charging. The G4/shed guard drop
-                            # above runs BEFORE the enable ON, so it never
-                            # needs this rollback.
-                            if enable:
-                                if await self._switch_entity(enable, False):
-                                    _LOGGER.warning(
-                                        "Load %s: plug ON failed after the"
-                                        " charge-enable gate confirmed ON —"
-                                        " rolled the gate back OFF",
-                                        label,
-                                    )
-                                else:
-                                    # The gate stays physically on; the
-                                    # orphan sweep in _apply_load_switching
-                                    # retries every cycle until it clears.
-                                    _LOGGER.warning(
-                                        "Load %s: plug ON failed and the"
-                                        " charge-enable rollback OFF failed"
-                                        " too — the gate stays ON for now",
-                                        label,
-                                    )
-                            continue
-                        # We switched the plug on for charging: ownership
-                        # allows the 'auto' policy to switch it off again.
-                        self._load_plug_owned[subentry_id] = True
-                    self._load_charging_active[subentry_id] = True
-                    self._last_load_switch[subentry_id] = now
-                    # F8: a fresh run started — close the previous off episode
-                    # so a later stop opens a new flicker window from scratch.
-                    self._load_last_off.pop(subentry_id, None)
-                    # F-SUBHOUR (approach A) + F-RESIDUAL-TOPUP R7: freeze the
-                    # planned contiguous run and arm an active OFF at
-                    # run_start + max(min_runtime, run_h) so a sub-hour booking is
-                    # delivered exactly (no ~250 Wh over-run). Energy-limited loads
-                    # are capped the same way — the deadline is an UPPER bound over
-                    # their primary level-driven target-SOC stop, so a stale
-                    # load-SOC sensor (R8) cannot stretch a ~150 Wh top-up into a
-                    # full real_power × 1 h night charge. For a gate-stop final
-                    # quantum SHORTER than min_runtime (F-GATE-TOPUP R5) the cap
-                    # is deliberately LONGER than the booked run: it stays the
-                    # stale-SOC upper bound only, while G1's dwell-exempt target
-                    # stop is the primary stop that ends the run at `rem`.
-                    if run_h > 0.0:
-                        off_min = max(
-                            int(data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)),
-                            round(run_h * 60.0),
-                        )
-                        off_at = now + timedelta(minutes=off_min)
-                        self._load_run_deadline[subentry_id] = off_at
-                        self._arm_off_timer(subentry_id, off_at)
-                    else:
-                        self._load_run_deadline.pop(subentry_id, None)
-                        self._cancel_off_timer(subentry_id)
-                    # V9a: exactly one INFO line per confirmed switch action,
-                    # carrying the anlass derived at the decision point.
-                    _LOGGER.info("Load %s -> ON (%s)", label, reason)
-                    if subentry_id in self._load_power_calibration_release:
-                        self._complete_power_calibration_release(subentry_id)
-                else:
-                    policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
-                    if not enable and policy == INPUT_OFF_POLICY_KEEP:
-                        # Misconfiguration (blocked by the flow, but be safe):
-                        # nothing can stop the charging in this combination.
-                        _LOGGER.warning(
-                            "Load %s: policy 'keep_on' without a charge-enable"
-                            " entity cannot stop charging",
-                            label,
-                        )
-                        continue
-                    if enable and not await self._switch_entity(enable, False):
-                        # Charge-enable did not confirm off: charging is not
-                        # actually stopped — keep state and retry next cycle.
-                        continue
-                    owned = self._load_plug_owned.get(subentry_id, False)
-                    turn_plug_off = policy == INPUT_OFF_POLICY_ALWAYS or (
-                        policy == INPUT_OFF_POLICY_AUTO and owned
-                    )
-                    if not enable and policy != INPUT_OFF_POLICY_KEEP:
-                        # Without a charge-enable gate, stopping charging is
-                        # only possible by switching the input off.
-                        turn_plug_off = True
-                    if turn_plug_off and not await self._switch_entity(plug, False):
-                        # Turn-off failed: keep ownership so the plug is never
-                        # recorded as not-ours while physically ON. Without a
-                        # charge-enable gate charging is still active, so the
-                        # next cycle re-attempts the off; with a gate the gate
-                        # already stopped charging and the next charge cycle's
-                        # stop cleans the plug up (review #3).
-                        continue
-                    self._load_plug_owned[subentry_id] = False
-                    self._load_charging_active[subentry_id] = False
-                    self._last_load_switch[subentry_id] = now
-                    # F10: the latch-hold run ended (a gate dropped) — clear its
-                    # marker so a later hold re-arms the classification fresh.
-                    self._load_latch_hold.discard(subentry_id)
-                    # F8: record this confirmed OFF and whether it is a flicker
-                    # continuation candidate (a recommendation stop, not a
-                    # G4/G1 safety stop) so a re-on within the window can waive
-                    # min_off.
-                    self._load_last_off[subentry_id] = (now, flicker_eligible)
-                    # F-SUBHOUR: run finished — clear the frozen deadline + timer.
-                    self._load_run_deadline.pop(subentry_id, None)
-                    self._cancel_off_timer(subentry_id)
-                    # V9a: exactly one INFO line per confirmed switch action.
-                    _LOGGER.info(
-                        "Load %s -> OFF (%s; input %s)",
-                        label,
-                        reason,
-                        "off" if turn_plug_off else "stays on",
-                    )
-                    if subentry_id in self._load_power_calibration_release:
-                        self._complete_power_calibration_release(subentry_id)
-        self._save_persistent_state()
-        if self.data:
-            plans = self.data.get("load_plans") or {}
-            for load_id, active in self._load_charging_active.items():
-                if load_id in plans:
-                    plans[load_id]["charging_active"] = active
-            self.async_update_listeners()
-        if self._floor_guard_active:
-            # G4, in-flight race (part 2): a refresh that tripped the guard
-            # while this task was running returned early and could not queue
-            # its forced OFFs. Re-run the cycle now so any load that this
-            # task just switched on (or that is still running) is forced off
-            # immediately instead of waiting for the next poll.
-            await self.async_request_refresh()
+        await execute_load_switching(self, actions, now)
 
     async def _execute_stale_load_shed(self) -> None:
-        """D-A8 stage 2 fail-safe: force every controlled surplus load OFF
-        after STALE_LOAD_SHED_HOURS of continuous data loss.
+        """Reconcile fail-safe OFFs until physical feedback confirms each path.
 
-        Mirrors the normal executor's OFF branch (charge-enable first, then
-        the plug per input_off_policy + ownership) with two deliberate
-        deviations: NO dwell (a fail-safe must not wait out a min_runtime —
-        the same argument as the G4 floor guard's dwell exemption: every
-        dwell minute runs the load unsupervised) and the charge-enable gate
-        is switched off even under 'keep_on' (that policy exists so the
-        DEVICE keeps mains for passthrough; the gate switches no load
-        current path, and stopping the energy flow takes precedence while
-        flying blind — the PLUG still follows the policy, so a keep_on
-        device keeps its mains). Runs ONCE per outage episode (the latch is
-        set before this task starts); a switch that fails keeps its state
-        and ownership and is only retried by a later shed (after a restart
-        or a recovery + new outage), never on a timer.
+        The outage latch prevents starts; the pending set records unfinished
+        work. Independent loads confirm concurrently so an unreachable device
+        cannot delay another load's safety shutdown.
         """
         now = dt_util.now()
-        # Cascade actors have stricter ordering than independent loads: terminal
-        # first, outputs leaf-to-root, gates, then Root.  Let the sole owner run
-        # that complete sequence before the generic load loop, and exclude its
-        # members below so two executors never race the same switches.
         await self.cascade_manager.async_safety_off_active("stale-data load shed", now)
-        cascade_managed = self.cascade_manager.managed_load_ids()
-        async with self._switch_lock:
-            for subentry_id, subentry in self.entry.subentries.items():
-                if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
-                    continue
-                if subentry_id in cascade_managed:
-                    continue
-                data = subentry.data
-                plug = data.get(CONF_LOAD_CONTROL_SWITCH)
-                if not plug:
-                    continue  # recommendation-only load: nothing to actuate
-                enable = data.get(CONF_LOAD_CHARGE_ENABLE)
-                policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
-                if not enable and policy == INPUT_OFF_POLICY_KEEP:
-                    # Same misconfiguration guard as the normal OFF path:
-                    # nothing here can stop the charging.
-                    _LOGGER.warning(
-                        "Load %s: policy 'keep_on' without a charge-enable"
-                        " entity cannot stop charging (stale-data load shed)",
-                        subentry.title,
-                    )
-                    continue
-                if enable and not await self._switch_entity(enable, False):
-                    # The gate did not confirm off: charging is not actually
-                    # stopped — keep the state (and the plug ownership) for
-                    # the next shed trigger.
-                    continue
-                owned = self._load_plug_owned.get(subentry_id, False)
-                turn_plug_off = policy == INPUT_OFF_POLICY_ALWAYS or (
-                    policy == INPUT_OFF_POLICY_AUTO and owned
+        managed = self.cascade_manager.managed_load_ids()
+        actions = []
+        for load_id, subentry in self.entry.subentries.items():
+            data = subentry.data
+            plug = data.get(CONF_LOAD_CONTROL_SWITCH)
+            if (
+                subentry.subentry_type != SUBENTRY_TYPE_LOAD
+                or not plug
+                or load_id in managed
+            ):
+                continue
+            if self._charging_is_active(
+                data
+            ) is False and not self._load_plug_owned.get(load_id, False):
+                self._stale_shed_pending.discard(load_id)
+                continue
+            self._stale_shed_pending.add(load_id)
+            actions.append(
+                LoadAction(
+                    load_id,
+                    dict(data),
+                    False,
+                    self._entity_is_on(plug),
+                    reason="stale-data load shed",
                 )
-                if not enable and policy != INPUT_OFF_POLICY_KEEP:
-                    # Without a charge-enable gate, stopping charging is
-                    # only possible by switching the input off.
-                    turn_plug_off = True
-                if turn_plug_off and not await self._switch_entity(plug, False):
-                    # Keep ownership (mirrors the normal OFF path): the plug
-                    # is physically ON and was put there by us.
-                    continue
-                self._load_plug_owned[subentry_id] = False
-                self._load_charging_active[subentry_id] = False
-                # Stamp the dwell timestamp like every confirmed OFF, so a
-                # post-recovery re-ON is still min_off-gated — and record the
-                # stop as flicker-INELIGIBLE (a safety stop, like G4) so the
-                # F8 continuation cannot waive that min_off.
-                self._last_load_switch[subentry_id] = now
-                self._load_last_off[subentry_id] = (now, False)
-                self._load_latch_hold.discard(subentry_id)
-                self._load_run_deadline.pop(subentry_id, None)
-                self._cancel_off_timer(subentry_id)
-                _LOGGER.info(
-                    "Load %s -> OFF (stale-data load shed; input %s)",
-                    subentry.title,
-                    "off" if turn_plug_off else "stays on",
-                )
+            )
         self._save_persistent_state()
-        if self.data:
-            # Keep the (stale) published charging flags honest until the
-            # recovery update replaces the whole data dict.
-            plans = self.data.get("load_plans") or {}
-            for load_id, active in self._load_charging_active.items():
-                if load_id in plans:
-                    plans[load_id]["charging_active"] = active
-            self.async_update_listeners()
+        await self._execute_load_switching(actions, now)
+        for action in actions:
+            if self._charging_is_active(
+                action.data
+            ) is False and not self._load_plug_owned.get(action.load_id, False):
+                self._stale_shed_pending.discard(action.load_id)
+        self._save_persistent_state()
 
     # ------------------------------------------------------------------
     # F-FEEDIN early grid feed-in executor (docs/F-FEEDIN.md)
@@ -7916,6 +7502,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._stale_shed_task,
             self._feedin_task,
             self._load_power_calibration_task,
+            *self._pause_tasks.values(),
         ]
         for task in tasks:
             if task is not None and not task.done():

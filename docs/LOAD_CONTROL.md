@@ -445,7 +445,9 @@ older than `MAX_HISTORICAL_SOC_AGE_HOURS = 6` h) or PV forecast (cache older
 than `MAX_HISTORICAL_FORECAST_AGE_HOURS = 72` h) the update fails and all
 plan-driven entities become `unavailable` immediately. **Stage 2:** if the
 outage persists for `STALE_LOAD_SHED_HOURS = 2` more hours, the coordinator
-fires the fail-safe **exactly once per episode** (`_note_data_loss` /
+latches the fail-safe for the outage and reconciles unconfirmed OFF requests
+(no repeat for physically confirmed OFFs; at least 60 s between retries,
+known opposite state required; `_note_data_loss` /
 `_execute_stale_load_shed`): every controlled surplus load is force-switched
 off — the charge-enable gate always, the plug per `input_off_policy` and
 plug ownership — a repair issue `stale_data_load_shed` plus a push
@@ -507,3 +509,12 @@ spikes become load charge; the per-slot band check IS the hysteresis (from
 the band floor every run is rejected until PV refills). Reasons carry the
 `at-max top-up (peak fill)` wording. Continuous loads are excluded (their
 buffer form is the pass-3 block, §17).
+
+## 0.46.0: confirmation and manual pause
+
+The [current actor contract](CURRENT_CONTRACTS.md#lasten-pausieren-und-schalten)
+supersedes older descriptions that equated service completion with device
+confirmation or described shedding as one command attempt per outage. Normal
+loads have a 30 s physical feedback deadline. Pause scheduling is independent
+of planner success; the remaining minimum runtime is respected unless safety
+requires immediate shutdown. Resume cancels a pending manual pause.

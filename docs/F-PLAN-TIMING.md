@@ -1,5 +1,8 @@
 # Zeitliche Freigaben und Teilstunden (0.39.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Vertrag
 
 `SurplusLoadState.not_before` ist die früheste bekannte Freigabe für einen

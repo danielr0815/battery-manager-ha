@@ -8,7 +8,6 @@ from .const import (
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
-    CONF_LOAD_HANDOVER_TIMEOUT_S,
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_SOC_ENTITY,
@@ -39,6 +38,23 @@ def load_execution(coordinator, load_id, data, now):
         "stable_plans": 0,
         "required_stable_plans": PREDRAIN_BLOCK_STABLE_PLANS,
     }
+    requests = {
+        entity: {
+            "desired": request.desired,
+            "state": request.state,
+            "requested_at": request.requested_at.isoformat(),
+        }
+        for entity in (
+            data.get(CONF_LOAD_CONTROL_SWITCH),
+            data.get(CONF_LOAD_CHARGE_ENABLE),
+        )
+        if (request := c._load_actor_requests.get(entity)) is not None
+    }
+    result["actor_requests"] = requests
+    if requests:
+        result["confirmation_pending"] = any(
+            request["state"] != "confirmed" for request in requests.values()
+        )
     for cid, entry in c.entry.subentries.items():
         if entry.subentry_type != SUBENTRY_TYPE_CASCADE:
             continue
@@ -46,18 +62,20 @@ def load_execution(coordinator, load_id, data, now):
         terminal = entry.data.get("terminal_load_id")
         if load_id not in [*members, terminal]:
             continue
-        state = c.cascade_manager._state(cid)
-        phase = state.get("phase", "idle")
-        pending = phase in (
-            "waking",
-            "waking_members",
-            "proving",
-            "testing_terminal",
-        ) or bool(state.get("restart_reconcile_pending"))
+        state = c.cascade_manager.execution_snapshot(cid)
+        phase = state.phase
+        pending = (
+            phase
+            in (
+                "waking",
+                "waking_members",
+                "proving",
+                "testing_terminal",
+            )
+            or state.restart_reconcile_pending
+        )
         result["phase"] = (
-            "restart_reconciliation"
-            if state.get("restart_reconcile_pending")
-            else phase
+            "restart_reconciliation" if state.restart_reconcile_pending else phase
         )
         if load_id == terminal:
             upstream = c.entry.subentries.get(members[-1]) if members else None
@@ -69,24 +87,10 @@ def load_execution(coordinator, load_id, data, now):
                 or (bool(data.get(CONF_LOAD_CONTROL_SWITCH)) and current is not True)
             )
         result["confirmation_pending"] = bool(
-            pending or state.get("fault") or not state.get("enabled")
+            pending or state.fault or not state.enabled
         )
-        # Absolute failure/proof deadlines remain diagnostic; never use as not_before.
-        deadline = None
-        if phase in ("waking", "waking_members"):
-            deadline = state.get("wake_actor_deadline") or state.get("wake_deadline")
-        elif phase == "recovering":
-            deadline = state.get("retry_at")
-        result["check_at"] = dt_util.parse_datetime(deadline) if deadline else None
-        proof = c.cascade_manager._proof.get(cid)
-        if phase == "proving" and proof:
-            source = c.entry.subentries.get(state.get("source"))
-            if source is not None:
-                # This is the executor's absolute timeout, not a fresh polling
-                # interval: missing samples cannot slide it into the future.
-                result["check_at"] = proof["started"] + timedelta(
-                    seconds=float(source.data.get(CONF_LOAD_HANDOVER_TIMEOUT_S, 180))
-                )
+        # The actor owner supplies its existing absolute deadline.
+        result["check_at"] = state.check_at
         return result
     if current is True:
         last = c._last_load_switch.get(load_id)

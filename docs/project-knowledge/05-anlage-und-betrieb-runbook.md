@@ -1,5 +1,10 @@
 # Anlage & Betriebs-Runbook
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 ## Speicher-Kaskade in Betrieb nehmen
 
 Storage-Lasten mit SOC, Charge-Gate, Output-Aktor/-Leistung,

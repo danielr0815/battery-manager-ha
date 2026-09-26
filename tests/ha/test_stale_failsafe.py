@@ -491,13 +491,16 @@ async def test_shed_latch_survives_reload_and_does_not_refire(hass, hass_storage
     assert coordinator2._stale_shed_active is True  # latch restored
     assert coordinator2._data_stale_since == t1
 
-    # A load turned on during the downtime is NOT re-shed (latched already).
+    # Confirmed OFFs do not repeat across a restart.
     calls.clear()
     notifications.clear()
-    hass.states.async_set(PLUG, "on")
-    hass.states.async_set(ENABLE, "on")
     await _refresh_at(hass, coordinator2, t_shed + timedelta(minutes=20))
     assert calls == []
+    # A fresh physical ON during the outage is a new safety violation.
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    await _refresh_at(hass, coordinator2, t_shed + timedelta(minutes=21))
+    assert ("turn_off", ENABLE) in calls
     assert notifications == []
     assert hass.states.get(PLUG).state == "on"
 

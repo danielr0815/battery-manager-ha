@@ -1,5 +1,10 @@
 # Projekt-Instruktionen & Index
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 Ergänzung für **v0.45.1 (26.09.2026)**: Die optionale ganzjährige Reservepolitik
 ist in [F-YEAR-ROUND-RESERVE](../F-YEAR-ROUND-RESERVE.md) spezifiziert; der
 [Jahresbefund](../YEAR-ROUND-RESERVE-ANALYSIS-2026-09-26.md) dokumentiert die

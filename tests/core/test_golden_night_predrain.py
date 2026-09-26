@@ -92,8 +92,8 @@ def _digest(result):
             if result.stressed_min_soc_percent is None
             else round(result.stressed_min_soc_percent, 4)
         ),
-        "pv_window_ends": result.pv_window_ends,
-        "appliance_windows": result.appliance_windows,
+        "pv_window_ends": dict(result.pv_window_ends),
+        "appliance_windows": dict(result.appliance_windows),
         "prevented_export_by_day_wh": {
             day: round(wh, 3) for day, wh in result.prevented_export_by_day_wh.items()
         },

@@ -1,5 +1,8 @@
 # F-PEAK-FILL — At-max-Top-up für energie-limitierte Lasten (v0.20.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: operator decision 2026-08-01.
 
 ## 1. Befund

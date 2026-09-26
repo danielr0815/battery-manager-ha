@@ -1,5 +1,8 @@
 # Strategy: Configurable consumption profiles & seasonal awareness
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 > Status: **strategy/design only — nothing implemented** (operator request
 > 2026-08-08). Extends docs/CONSUMPTION_FORECAST.md (stages 1–2 live since
 > v0.17.0). Evaluates and partially harvests an external LLM's EMHASS

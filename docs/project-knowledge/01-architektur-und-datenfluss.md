@@ -1,5 +1,10 @@
 # Architektur & Datenfluss
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 Nachtrag 0.39.0 (2026-09-08): `SurplusLoadState.not_before` ergänzt bekannte
 Laufzeitsperren. `series.build_slots` teilt das sonst stündliche Raster an
 exakten Freigaben; `coordinator._arm_plan_boundary` fordert an der nächsten

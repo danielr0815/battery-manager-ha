@@ -1,5 +1,8 @@
 # Ganzjährige Reservepolitik
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Stand 0.45.1, 26.09.2026. Ergänzt
 [F-COORDINATED-DC-SUPPORT](F-COORDINATED-DC-SUPPORT.md).
 Bei vorhandener koordinierter Invertersteuerung ist **Aktiv** die Voreinstellung:

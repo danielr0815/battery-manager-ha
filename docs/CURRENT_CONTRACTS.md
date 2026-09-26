@@ -1,0 +1,88 @@
+# Aktuelle Verträge ab 0.46.0
+
+Dieses Dokument ist der Einstieg für das aktuelle Verhalten. Die `F-*.md` und
+ältere Versionsanalysen dokumentieren die Entscheidungs- und Änderungshistorie.
+Bei Widersprüchen zu früheren Beschreibungen gelten die hier genannten Verträge.
+Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
+[Testmatrix](TEST_MATRIX.md) benennt die ausführbaren Nachweise.
+
+## Installation und Migration
+
+Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
+Projektmetadaten tragen gemeinsam **0.46.0**. Entity-IDs, Subentries, Services,
+Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
+weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
+Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
+
+Vor dem Update gilt der normale HA-Backup-Workflow. Beim nächsten Laden wird ein
+Betriebsarchiv in Schema 1 als einzelnes Segment übernommen. Schema 2 enthält
+`schema_version: 2` und eine geordnete `segments`-Liste. Ein Segment enthält die
+bisherigen Journalfelder sowie `segment_id` und seine eigene `timezone`.
+Ein Downgrade kann das neue Archivformat nicht lesen; dafür das vorherige Backup
+verwenden. Planneraufzeichnungen behalten ihr bisheriges JSON-Format.
+
+## Lasten pausieren und schalten
+
+Der vorhandene BM-Kontrollschalter einer Last sperrt beim Ausschalten neue Starts
+sofort. Ein laufender Verbraucher erhält seine verbleibende Mindestlaufzeit;
+danach wird der Ladepfad geordnet abgeschaltet. Das gilt auch ohne gültige
+PV-Prognose. Wiederaktivieren hebt einen noch wartenden manuellen Pausenauftrag
+auf. Schutzabschaltungen dürfen die Mindestlaufzeit weiterhin übergehen.
+
+Ein Serviceaufruf ist eine Anforderung. Erst der gemeldete Gerätezustand bestätigt
+ON oder OFF. Normale Lasten warten dafür höchstens **30 Sekunden**. Dwell und
+Laufzeitgrenze beginnen mit der Bestätigung. Vor ON und nach verspäteter
+Bestätigung werden Freigabe und Schutzstatus erneut geprüft. Ein wartendes Gerät
+hält die unabhängige Abschaltung anderer Lasten nicht auf.
+
+Fehlende Bestätigungen stehen in der Ausführungsdiagnose. Unbestätigte Befehle und
+der Sicherheitsmodus werden getrennt gespeichert. Wiederholungen erfolgen
+frühestens nach **60 Sekunden** und bei bekannter Gegenstellung; `unknown` und
+`unavailable` rechtfertigen keine blinden Wiederholungen. Ein bereits bestätigtes
+OFF wird nicht erneut gesendet. Kaskaden bleiben alleinige Eigentümer ihrer
+Aktorpfade; Gate-Reihenfolge und konfigurierte Eingang-Abschaltpolitik gelten
+weiterhin. Die detaillierten Schutzregeln stehen in [LOAD_CONTROL](LOAD_CONTROL.md).
+
+## Planung und Lernen
+
+Der maximale Charger-Durchsatz umfasst DC-Versorgung, Eigenbedarf und
+Batterieladung gemeinsam. Physisch nicht lieferbare DC-Energie bleibt als
+unversorgt sichtbar und fließt in die Supportbewertung ein. Appliance-Starts
+brauchen Prognosen für ihre vollständige Laufdauer. Hypothetische Läufe behalten
+Reserve-, Support- und Kaskadenbedingungen des Ausgangsplans.
+
+Alle Kerneingaben müssen endliche physikalische Werte, positive Slotdauer,
+eindeutige Last-/Appliance-IDs und chronologisch geordnete Slots besitzen.
+Absichtlich tolerierte Altparameter, etwa die dokumentierte Behandlung eines
+invertierten SOC-Min/Max-Fensters, bleiben kompatibel. Veröffentlichte
+Ergebnisabbildungen sind defensiv kopiert und unveränderlich.
+
+Lernen arbeitet auf einer Kopie. Quellenbindung, Profile und Erfolgszeitpunkt
+werden erst nach erfolgreichem Abschluss gemeinsam übernommen. Ein Recorderfehler
+oder Abbruch beschädigt den letzten gültigen Stand nicht. Beschädigte,
+rekonstruierbare Lerndaten werden verworfen und neu gelernt. Historische
+Leistungen berücksichtigen W/kW wie Livewerte; unbekannte Zustandsintervalle
+notwendiger Bereinigungsquellen liefern keine scheinbar gültigen Nulllasten.
+
+## Archive, Zeit und Bedienung
+
+Ein HA-Zeitzonenwechsel beginnt ein neues Archivsegment. Ältere Tagesberichte
+behalten ihre ursprüngliche Zeitzone; Messintervalle überbrücken den Wechsel
+nicht. Ereignis- und Größenbudgets gelten gemeinsam über die Segmente. Offline-
+Replay prüft jedes Segment in seiner eigenen Zeitzone. Vergleiche verbinden
+nur passende Segmentidentitäten und Zeitzonen. Recorder und Offline-Evaluator
+verwenden dieselbe physische Intervallbilanz für Root-, Aux- und normale Lasten.
+
+Die vier Karten verwenden die HA-Zeitzone für sichtbare Zeiten, Hover und
+zugängliche Labels. Englisch ist die Rückfallsprache. Bei Aktualisierung bleiben
+aufgeklappte Berichte, Fokus und Scrollposition erhalten. Diagramme unterstützen
+Tastaturbedienung; Sommerzeitwechsel werden im echten Browser geprüft.
+
+## Konfiguration und Services
+
+Das Entfernen des optionalen Reserve-Netzsensors speichert ausdrücklich `None`;
+ein Reload übernimmt dadurch keinen alten Optionswert. Services werden einmal in
+`async_setup` registriert. Ein Aufruf braucht eine gültige geladene Entry-ID;
+fehlende oder entladene Entries liefern einen verständlichen Servicefehler.
+`ConfigEntry.runtime_data` enthält den typisierten Coordinator. Parameter und
+Beispiele der bestehenden Services stehen in README und `services.yaml`.

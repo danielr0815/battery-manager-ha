@@ -1,5 +1,8 @@
 # F-GATE-TOPUP — final partial quantum for gate-equipped energy-limited loads
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec** for v0.9.3. Trigger: 4-agent adversarial verification
 2026-07-11 (workflow) CONFIRMED the "stall band": an energy-limited load can
 never be re-booked once `rem < max(planning_power, nominal) × min_runtime/60`,

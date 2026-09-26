@@ -25,7 +25,7 @@ from .const import (
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
-from .operation_history import OperationHistory
+from .operation_archive import OperationArchive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class OperationRecorder:
 
     def __init__(self, coordinator):
         self.coordinator = coordinator
-        self.history = OperationHistory(coordinator.hass.config.time_zone)
+        self.history = OperationArchive(coordinator.hass.config.time_zone)
         self._cancel = None
         self._saved_at = None
         self.last_error = None
@@ -225,8 +225,8 @@ class OperationRecorder:
     def summary(self):
         return {
             "schema_version": 1,
-            "days": deepcopy(list(self.history.daily.values())[-30:]),
-            "dropped_events": self.history.dropped,
+            "days": deepcopy(self.history.reports()),
+            "dropped_events": self.history.dropped_events,
             "last_error": self.last_error,
             "sources": self._sources(),
             "load_names": {

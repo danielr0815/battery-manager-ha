@@ -1865,6 +1865,14 @@ async def test_live_root_rejects_generic_off_at_entity_boundary(
         )
 
     coordinator._switch_entity = switch_entity
+    coordinator._load_actor_requests = {}
+
+    async def switch_load_entity(entity_id: str, turn_on: bool) -> bool:
+        return await BatteryManagerCoordinator._switch_load_entity(
+            coordinator, entity_id, turn_on
+        )
+
+    coordinator._switch_load_entity = switch_load_entity
     coordinator.hass.services = hass.services
     hass.states.async_set("switch.bad_waschmaschine", "on")
     hass.states.async_set("input_boolean.charge_b1", "off")

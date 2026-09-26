@@ -1,5 +1,8 @@
 # F-PREDRAIN-BLOCK — Pre-drain als zusammenhängender Dauerlauf bis zum heutigen SOC-Peak (v0.19.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: operator decision 2026-08-01. Supersedes for CONTINUOUS loads the
 slot-wise pass-2 betting of F-PREDRAIN §3 / the F-NIGHT-RESCUE cross-day
 carve-out (energy-limited loads keep both unchanged).

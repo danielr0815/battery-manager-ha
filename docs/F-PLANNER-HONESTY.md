@@ -1,5 +1,8 @@
 # F-PLANNER-HONESTY — learned planning power, absolute lateness in pass 1, explain-plan
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec**, part 1/2 of v0.9.0 (operator: "Setze alles um",
 2026-07-10). Part 2 is docs/F-EXECUTOR-GUARDS.md. Resolves the open decision
 O1 of docs/F-RESIDUAL-TOPUP.md §8.

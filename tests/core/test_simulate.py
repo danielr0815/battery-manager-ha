@@ -667,7 +667,9 @@ def test_feedin_clamped_to_surplus_after_dc_cover():
     soc = config.battery.soc_min_percent  # empty battery: DC shortfall via PV
     slot = _slot(pv=1000.0, ac=0.0, dc=500.0)
     fed = step_hour(config, soc, slot, 99.0, feedin_wh=5000.0)
-    surplus_after_dc = 1000.0 - 500.0 / config.charger.eta
+    surplus_after_dc = (
+        1000.0 - 500.0 / config.charger.eta - config.charger.standby_power_w
+    )
     assert fed.feedin_wh == pytest.approx(surplus_after_dc)
     assert fed.grid_export_wh == pytest.approx(surplus_after_dc)
     assert fed.grid_import_wh == 0.0
@@ -702,3 +704,21 @@ def test_feedin_series_validated_and_zero_is_bit_identical():
     assert [f.soc_end_percent for f in a.flows] == [f.soc_end_percent for f in b.flows]
     assert a.total_export_wh == b.total_export_wh
     assert all(f.feedin_wh == 0.0 for f in b.flows)
+
+
+@pytest.mark.parametrize("duration", [1.0, 0.25])
+def test_dc_shortfall_cannot_bypass_charger_total_rating(duration):
+    """An empty battery cannot supply a DC load above the charger rating."""
+    from core.model import BatteryParams, ConverterParams
+
+    config = SystemConfig(
+        battery=BatteryParams(eta_charge=1, eta_discharge=1),
+        charger=ConverterParams(max_power_w=100, eta=1, standby_power_w=10),
+        support=SupportParams(dc24_share=0),
+    )
+    flow = step_hour(
+        config, 5, _slot(1000 * duration, 0, 1000 * duration, duration), 99
+    )
+    assert flow.unserved_dc_wh == pytest.approx(910 * duration)
+    assert flow.grid_export_wh == pytest.approx(900 * duration)
+    assert flow.battery_charge_wh == 0

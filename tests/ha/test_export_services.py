@@ -561,3 +561,20 @@ async def test_repair_history_service_validates_date_and_refreshes(hass):
                 blocking=True,
             )
         assert refresh.await_count == 1
+
+
+async def test_service_remains_registered_after_entry_unload_and_reports_missing_entry(
+    hass,
+):
+    entry = await _setup_entry(hass)
+    assert hass.services.has_service(DOMAIN, SERVICE_EXPORT_LEARNED_PROFILES)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.services.has_service(DOMAIN, SERVICE_EXPORT_LEARNED_PROFILES)
+    with pytest.raises(ServiceValidationError, match="No Battery Manager entry"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_EXPORT_LEARNED_PROFILES,
+            {"entry_id": entry.entry_id},
+            blocking=True,
+        )

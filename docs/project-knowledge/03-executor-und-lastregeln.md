@@ -1,5 +1,10 @@
 # Executor & Lastregeln
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 Kaskadenmitglieder tragen `managed_by_cascade` und umgehen den unabhängigen
 Load-Executor. Wake, Leistungsnachweis, Handover, Floor, Ownership, Retry und
 Safe-OFF liegen in `CascadeManager`; siehe

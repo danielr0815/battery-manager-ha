@@ -1,5 +1,8 @@
 # Betriebsaufzeichnung und Tagesvergleich
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Implementiert für 0.40.0, 2026-09-08. Cluster aus Optimierungsplan 8/9/10.
 
 ## Verbindlicher Umfang

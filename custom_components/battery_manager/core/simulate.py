@@ -197,7 +197,17 @@ def step_hour(
     # The residual DC bus shortfall is served by the charger (AC->DC), fed from
     # PV surplus first and only then from the grid — never grid-imported while
     # the same slot exports/stores PV.
-    dc_ac_demand = shortfall_dc / config.charger.eta
+    max_charger_ac = config.charger.max_power_w * slot.duration
+    standby = min(max_charger_ac, config.charger.standby_power_w * slot.duration)
+    # One AC-side rating covers DC service, converter overhead and storage.
+    # Demand above it remains physically unserved, even with abundant PV.
+    dc_capacity = max(0.0, max_charger_ac - standby) * config.charger.eta
+    served_dc = min(shortfall_dc, dc_capacity)
+    unserved_dc_wh += shortfall_dc - served_dc
+    dc_ac_demand = served_dc / config.charger.eta
+    if served_dc > _EPS:
+        dc_ac_demand += standby
+    reserved_charger_ac = dc_ac_demand
 
     if balance >= 0:
         # (a) cover the DC shortfall from PV surplus via the charger.
@@ -220,7 +230,7 @@ def step_hour(
             grid_export += feedin_eff
         # (b) charge the battery through the charger, export the rest.
         headroom = max(0.0, ceil_wh - energy)
-        max_charger_ac = config.charger.max_power_w * slot.duration
+        max_charger_ac = max(0.0, max_charger_ac - reserved_charger_ac)
         # The charger only runs on PV surplus, so its standby is surplus-
         # covered: it is part of the AC-side draw and reduces the stored
         # energy a touch instead of minting phantom grid import (F-PREDRAIN
@@ -232,7 +242,7 @@ def step_hour(
         # carve-out would create a charge asymptote just below soc_max and
         # disarm the full-line machinery (R5, merge probe, refill
         # settlement) at capacities below ~9 kWh.
-        standby = config.charger.standby_power_w * slot.duration
+        standby = 0.0 if served_dc > _EPS else standby
         needed_ac = (
             headroom / (battery.eta_charge * config.charger.eta) + standby
             if headroom > _EPS
@@ -251,13 +261,13 @@ def step_hour(
         # (c) DC shortfall PV could not cover imports via the charger.
         if dc_ac_demand > _EPS:
             if support.coordinated:
-                unserved_dc_wh += dc_ac_demand * config.charger.eta
+                unserved_dc_wh += min(served_dc, dc_ac_demand * config.charger.eta)
             else:
                 grid_import += dc_ac_demand
     else:
         # No PV surplus: the DC shortfall imports via the charger.
         if support.coordinated:
-            unserved_dc_wh += shortfall_dc
+            unserved_dc_wh += served_dc
         else:
             grid_import += dc_ac_demand
         deficit = -balance

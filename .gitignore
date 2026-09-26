@@ -369,3 +369,8 @@ version_*.txt
 
 # Playwright MCP: browser profile (contains login state) and debug output
 .playwright-mcp/
+
+# Reproducible frontend development dependencies and browser artifacts
+node_modules/
+playwright-report/
+test-results/

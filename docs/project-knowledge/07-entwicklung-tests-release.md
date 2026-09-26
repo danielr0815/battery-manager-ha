@@ -1,5 +1,10 @@
 # Entwicklung, Tests, Release
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 **Stand: `main` @ v0.35.2 (2026-09-04).** Dieses Dokument beschreibt die
 **Arbeitsumgebung und die Konventionen** dieses Repos: wie und wo die Tests
 laufen (die HA-Suite braucht Linux, WSL oder den Devcontainer), was die CI

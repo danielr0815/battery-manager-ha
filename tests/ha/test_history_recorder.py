@@ -875,7 +875,6 @@ async def test_repair_failure_preserves_previous_state(hass, failure):
 
 async def test_failed_second_epoch_retries_whole_missing_day(hass, _min_samples_2):
     """A recorder failure between epoch slices cannot freeze a partial day."""
-    from unittest.mock import AsyncMock
 
     learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
     await _import(hass, _power_meta("sensor.house"), _power_rows(_all_hours(80.0)))
@@ -887,17 +886,17 @@ async def test_failed_second_epoch_retries_whole_missing_day(hass, _min_samples_
     await _import(hass, _power_meta("sensor.other"), _power_rows(_all_hours(120.0)))
     with patch.object(dt_util, "now", return_value=_at(DAYS[-1], 10, 30)):
         learner._capture_configuration(learner._raw_config())
-    original = learner._fetch_days
+    original = ProfileLearner._fetch_days
     calls = 0
 
-    async def fail_second(*args):
+    async def fail_second(worker, *args):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise TimeoutError
-        await original(*args)
+        await original(worker, *args)
 
-    with patch.object(learner, "_fetch_days", new=AsyncMock(side_effect=fail_second)):
+    with patch.object(ProfileLearner, "_fetch_days", new=fail_second):
         await _run_pinned(learner)
     assert learner.data["daily_hours"] == {}
     assert learner.data["day_log"] == {}

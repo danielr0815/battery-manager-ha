@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import date, datetime
+from math import isfinite
+from types import MappingProxyType
 from typing import Literal
 
 # Operator 2026-09-07: avoid storage cycling for forecast noise. These are
@@ -20,6 +23,17 @@ def _require(condition: bool, message: str) -> None:
     fails every comparison below, so it is rejected by the same checks."""
     if not condition:
         raise ValueError(message)
+
+
+def _finite_fields(value: object) -> None:
+    """All numeric model inputs must be finite, including optional limits."""
+    assert is_dataclass(value)
+    for item in fields(value):
+        number = getattr(value, item.name)
+        if isinstance(number, (float, int)) and not isinstance(number, bool):
+            _require(
+                isfinite(number), f"{type(value).__name__}.{item.name} must be finite"
+            )
 
 
 @dataclass(frozen=True)
@@ -46,6 +60,7 @@ class BatteryParams:
             "BatteryParams.eta_discharge must be in (0, 1], "
             f"got {self.eta_discharge!r}",
         )
+        _finite_fields(self)
 
     def energy_wh(self, soc_percent: float) -> float:
         return soc_percent / 100.0 * self.capacity_wh
@@ -76,6 +91,7 @@ class ConverterParams:
             "ConverterParams.standby_power_w must be >= 0, "
             f"got {self.standby_power_w!r}",
         )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -93,6 +109,7 @@ class PVParams:
             self.peak_power_w >= 0.0,
             f"PVParams.peak_power_w must be >= 0, got {self.peak_power_w!r}",
         )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -113,6 +130,7 @@ class LoadProfile:
             self.variable_w >= 0.0,
             f"LoadProfile.variable_w must be >= 0, got {self.variable_w!r}",
         )
+        _finite_fields(self)
 
     def power_w(self, hour_of_day: int) -> float:
         power = self.base_w
@@ -165,6 +183,7 @@ class SurplusLoad:
             f"SurplusLoad.battery_tolerance must be in [0, 1], "
             f"got {self.battery_tolerance!r}",
         )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -323,6 +342,9 @@ class SupportParams:
 
     def __post_init__(self) -> None:
         _require(
+            0.0 <= self.dc24_share <= 1.0, "SupportParams.dc24_share must be in [0, 1]"
+        )
+        _require(
             self.psu48_output_voltage_v > 0,
             "SupportParams.psu48_output_voltage_v must be positive",
         )
@@ -355,6 +377,7 @@ class SupportParams:
                 cap is None or cap >= 0.0,
                 f"SupportParams.{name} must be >= 0 or None, got {cap!r}",
             )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -418,6 +441,10 @@ class ControlParams:
     # forecast shape.
     pv_window_end_hour: int | None = None
 
+    def __post_init__(self) -> None:
+        _require(self.min_switch_interval_s >= 0, "Switch interval must be nonnegative")
+        _finite_fields(self)
+
 
 @dataclass(frozen=True)
 class FeedInParams:
@@ -465,6 +492,7 @@ class FeedInParams:
             self.manual_w is None or self.manual_w >= 0.0,
             f"FeedInParams.manual_w must be None or >= 0, got {self.manual_w!r}",
         )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -523,6 +551,7 @@ class CascadeMember:
             self.output_overhead_w >= 0.0,
             "CascadeMember.output_overhead_w must be >= 0",
         )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -551,6 +580,7 @@ class LoadCascade:
             self.startup_transition_s >= 0.0,
             "LoadCascade.startup_transition_s must be >= 0",
         )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -642,6 +672,7 @@ class ReserveParams:
 
     def __post_init__(self) -> None:
         _require(1 <= self.upper_pv_factor <= 1.5, "Invalid reserve upper PV factor")
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -671,6 +702,14 @@ class SystemConfig:
     reserve: ReserveParams = field(default_factory=ReserveParams)
 
     def __post_init__(self) -> None:
+        for label, ids in (
+            ("load", [load.load_id for load in self.loads]),
+            ("appliance", [appliance.appliance_id for appliance in self.appliances]),
+        ):
+            _require(
+                all(ids) and len(ids) == len(set(ids)) if ids else True,
+                f"Invalid or duplicate {label} IDs",
+            )
         _require(
             not self.reserve.enabled
             or (self.support.configured and self.support.coordinated),
@@ -740,6 +779,14 @@ class HourSlot:
     pv_p10_wh: float | None = None
     pv_p90_wh: float | None = None
 
+    def __post_init__(self) -> None:
+        _require(self.duration > 0, "HourSlot.duration must be positive")
+        _require(
+            min(self.pv_wh, self.ac_wh, self.dc_wh) >= 0,
+            "Slot energies must be nonnegative",
+        )
+        _finite_fields(self)
+
 
 @dataclass(frozen=True)
 class PlanInputs:
@@ -752,6 +799,14 @@ class PlanInputs:
     appliance_runs: tuple[ApplianceRun, ...] = ()
     cascade_runtime_states: tuple[CascadeRuntimeState, ...] = ()
     reserve_hold_soc_percent: float | None = None
+
+    def __post_init__(self) -> None:
+        _require(0 <= self.start_soc_percent <= 100, "Start SOC must be in [0, 100]")
+        for previous, current in zip(self.slots, self.slots[1:], strict=False):
+            _require(
+                current.start > previous.start, "Slot starts must be strictly ordered"
+            )
+        _finite_fields(self)
 
 
 @dataclass(frozen=True)
@@ -889,7 +944,7 @@ class PlanResult:
     inverter_on: bool  # raw policy for slot 0 (hysteresis applied by caller)
     trajectory: Trajectory
     load_plans: tuple[LoadPlan, ...]
-    appliance_windows: dict[str, bool]
+    appliance_windows: Mapping[str, bool]
     support_dc24_now: bool
     support_dc48_now: bool
     grid_import_kwh: float
@@ -910,7 +965,7 @@ class PlanResult:
     stressed_min_soc_percent: float | None = None
     # Per calendar day (ISO date -> local hour): the last "strong PV" slot of
     # that day's absorption window (F4). Empty when no day has strong PV.
-    pv_window_ends: dict[str, int] = field(default_factory=dict)
+    pv_window_ends: Mapping[str, int] = field(default_factory=dict)
     # End of the merge-bounded threshold horizon (F-NIGHT-RESCUE R7): the T*
     # scan was truncated at this time because the battery is provably full and
     # clipping there even under the stressed PV. None = full-horizon scan.
@@ -925,7 +980,7 @@ class PlanResult:
     # winter PSU cannot deflate the figure (base = no loads / no PSUs; alloc =
     # accepted loads / no PSUs). The counterfactual that makes "why is a load
     # running although SOC never reaches max?" answerable on the dashboard.
-    prevented_export_by_day_wh: dict[str, float] = field(default_factory=dict)
+    prevented_export_by_day_wh: Mapping[str, float] = field(default_factory=dict)
     # --- F-FEEDIN early feed-in (docs/F-FEEDIN.md) ---
     # Planned feed-in power per slot (W, index-aligned with the slots): the
     # unavoidable residual export, pre-shifted into the morning surplus. Empty
@@ -934,6 +989,16 @@ class PlanResult:
     feedin_schedule_w: tuple[float, ...] = ()
     # Per calendar day (ISO date -> Wh): the feed-in actually booked that day
     # (shaped like `prevented_export_by_day_wh`; days without feed-in absent).
-    feedin_by_day_wh: dict[str, float] = field(default_factory=dict)
+    feedin_by_day_wh: Mapping[str, float] = field(default_factory=dict)
     cascade_plans: tuple[CascadePlan, ...] = ()
     feedin_decisions: tuple[tuple[int, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        # Copy first: retained caller dictionaries cannot mutate a published plan.
+        for name in (
+            "appliance_windows",
+            "pv_window_ends",
+            "prevented_export_by_day_wh",
+            "feedin_by_day_wh",
+        ):
+            object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))

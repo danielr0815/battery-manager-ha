@@ -1,5 +1,8 @@
 # F-TANK — consumable-tank runtime model + saturation feed-back (F5, V6)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Verified 7-day forensics (2026-07-24). The cellar dehumidifier is a surplus
 load (~409 W learned, power feedback `sensor.fritz_powerline_546e_power`). When
 its water tank is full the device shuts down internally and draws only ~2 W,

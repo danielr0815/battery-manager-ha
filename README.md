@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![CI](https://github.com/danielr0815/battery-manager-ha/actions/workflows/validate.yml/badge.svg)](https://github.com/danielr0815/battery-manager-ha/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/github/license/danielr0815/battery-manager-ha.svg)](LICENSE)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.3.0+-blue.svg)](https://www.home-assistant.io/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.8.0+-blue.svg)](https://www.home-assistant.io/)
 
 Simulation-based battery energy optimization for AC-coupled PV systems without
 feed-in remuneration: the integration plans hourly energy flows over the full
@@ -130,7 +130,7 @@ Two things worth knowing:
 ## Dashboard cards (bundled)
 
 The integration ships its own Lovelace cards — no extra HACS frontend
-download. All three register automatically from one bundled module:
+download. All four register automatically from one bundled module:
 
 - **Battery Manager Forecast** renders the planned SOC trajectory, the
   inverter threshold T*, the reserve zone, the per-load surplus schedule
@@ -252,7 +252,7 @@ uv run ruff check custom_components tests
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow (golden snapshots,
-versioning, pre-commit, type-check baseline) and
+versioning, pre-commit, type checking for the entire integration) and
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 The simulation core (`custom_components/battery_manager/core/`) is free of
@@ -295,3 +295,12 @@ serves the `/local/` link. Hardened behaviour (v0.17.0):
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Upgrade to 0.46.0
+
+Requires Home Assistant **2026.8.0**. Existing entity IDs, service names and card
+configurations remain valid. Load pauses now stop after remaining minimum runtime
+without waiting for a successful forecast; device feedback confirms switching.
+Operating archives migrate to segmented schema 2 so timezone changes preserve old
+daily reports. See [current contracts and migration](docs/CURRENT_CONTRACTS.md)
+and the [review implementation record](docs/REVIEW_0.46.0.md).

@@ -1,6 +1,6 @@
 # Testqualitäts- und Anforderungs-Audit
 
-**Stand: 2026-09-04.** Ziel dieses Audits ist nicht maximale Zeilenabdeckung,
+**Historischer Auditstand: 2026-09-04; ergänzt für 0.46.0 am 2026-09-26.** Ziel dieses Audits ist nicht maximale Zeilenabdeckung,
 sondern die Frage, ob ein Test ein von außen beobachtbares Verhalten, eine
 fachliche Regel oder einen expliziten Fehlervertrag beweist.
 
@@ -23,7 +23,9 @@ fachliche Regel oder einen expliziten Fehlervertrag beweist.
   hinter `Path.resolve()` und war damit plattformabhängig. Sie läuft nun vor
   jeder Pfadauflösung und besitzt einen expliziten Sicherheitstest.
 
-Kein vorhandener Test wurde als reiner Coverage-Pseudotest identifiziert.
+Der damalige Audit erkannte keinen weiteren Pseudotest. Das Review für 0.46.0
+identifizierte später den Quelltextfragment-Test für den Energiehover; er wurde
+durch ausgeführte Energie- und Browserprüfungen ersetzt.
 Nicht jeder Test zitiert eine nummerierte F-/R-Regel: Framework-Glue wird gegen
 den öffentlichen HA-Vertrag oder den Modulvertrag geprüft. Ein Test ist nur
 dann ausreichend, wenn seine Assertions diesen Vertrag konkret beobachten;
@@ -104,3 +106,11 @@ Karten-Zustand bei HA-Aktualisierung: `frontend/cascade-card.test.mjs` prüft
 verschachtelte offene/geschlossene Details anhand stabiler Tageskennungen,
 Summary-Fokus, Tabellen-Scroll und Erhalt des sichtbaren Tages bei
 Höhenänderungen vor der Leseposition. Der Datenstand wird weiterhin erneuert.
+
+## Ergänzungen 0.46.0
+
+Die [Risikomatrix](TEST_MATRIX.md) und der [Reviewnachweis](REVIEW_0.46.0.md)
+führen die neuen Fehlerverträge auf. Branch-Coverage wird zusätzlich berichtet;
+die bestehenden Zeilengates werden nicht abgeschwächt. Timeouttests steuern die
+Zeit und prüfen die produktive Frist separat. Die lokale Playwright-Suite
+beobachtet echtes DOM/Shadow DOM, Tastatur, Fokus, Scrollen und Frame-Rendering.

@@ -405,10 +405,4 @@ def insert_appliance_run(
         remaining_hours=duration_h,
     )
     new_slots = _apply_appliance_runs(list(inputs.slots), (run,))
-    return PlanInputs(
-        now=inputs.now,
-        start_soc_percent=inputs.start_soc_percent,
-        slots=tuple(new_slots),
-        load_states=inputs.load_states,
-        appliance_runs=inputs.appliance_runs,
-    )
+    return replace(inputs, slots=tuple(new_slots))

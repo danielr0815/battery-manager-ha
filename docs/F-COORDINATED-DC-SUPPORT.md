@@ -1,5 +1,8 @@
 # Gemeinsame Strategie für Inverter und DC-Netzteile
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Stand: 2026-09-14. **Implementiert für v0.44.0; Aktivierung durch Konfiguration des numerischen Inverter-Entladelimits.**
 Auftrag: Inverter, 48-V-Netzteil und 24-V-Netzteil gemeinsam führen;
 Spannungen, Stromgrenzen, Wirkungsgrade und Lasten als Parameter behandeln.

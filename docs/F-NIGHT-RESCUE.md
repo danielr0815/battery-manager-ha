@@ -1,5 +1,8 @@
 # F-NIGHT-RESCUE — round-trip-honest c1, merge-bounded threshold, crossover buffer ramp
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 > **v0.19.0 supersession (docs/F-PREDRAIN-BLOCK.md):** the cross-day NIGHT
 > carve-out (overnight pre-drain for a next-day clip) is RETIRED for
 > CONTINUOUS loads — their pre-drain is now ONE contiguous block to today's

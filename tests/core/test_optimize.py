@@ -3551,7 +3551,7 @@ def test_ramped_stress_floor_follows_stressed_crossover():
     def slot(i, hour, pv):
         return HourSlot(
             index=i,
-            start=datetime(2026, 7, 12, hour, 0),
+            start=datetime(2026, 7, 12, 21) + timedelta(hours=i),
             duration=1.0,
             hour_of_day=hour,
             pv_wh=pv,
@@ -3969,7 +3969,7 @@ def test_r6_suppresses_daylight_afternoon_crossday_below_strong_cutoff():
     limited loads never book zero-PV slots anyway (daylight rule), and the
     predicate's night branch stays pinned by
     test_crossday_daytime_bet_predicate."""
-    import core.optimize as opt
+    import core.allocation as opt
 
     fb = SurplusLoad(
         load_id="fb",
@@ -4305,26 +4305,10 @@ def test_energy_limited_priority_load_reaches_target_when_surplus_permits():
 # ---------------------------------------------------------------------------
 
 
-def test_pv_windows_skips_zero_duration_slots():
-    """A degenerate zero-duration slot must be skipped BEFORE the pv/duration
-    division — it can never count as a strong-PV slot."""
-    slots = (
-        HourSlot(
-            index=0,
-            start=datetime(2026, 7, 4, 7),
-            duration=0.0,
-            hour_of_day=7,
-            pv_wh=999999.0,
-            ac_wh=0.0,
-            dc_wh=0.0,
-        ),
-        _esc_slot(1, pv=300.0, dc=0.0, hour=8),
-        _esc_slot(2, pv=300.0, dc=0.0, hour=9),
-    )
-    inputs = PlanInputs(
-        now=datetime(2026, 7, 4, 7), start_soc_percent=50.0, slots=slots
-    )
-    assert pv_windows(inputs, 200.0, None) == {datetime(2026, 1, 1).date(): (1, 2)}
+def test_zero_duration_forecast_is_rejected_before_planning():
+    """Invalid slot energy must not enter any planner or division by duration."""
+    with pytest.raises(ValueError, match="duration must be positive"):
+        HourSlot(0, datetime(2026, 7, 4, 7), 0.0, 7, 999999.0, 0.0, 0.0)
 
 
 def test_pv_windows_end_hour_drops_window_starting_after_it():
@@ -5315,3 +5299,24 @@ def test_predrain_backward_extension_stops_at_runtime_release():
         reason == "waiting for runtime release"
         for _, reason in result.load_plans[0].rejected_candidates
     )
+
+
+def test_appliance_start_requires_its_entire_runtime_in_the_horizon():
+    washer = Appliance("washer", "Washer", 1000, 2, opportunistic_start=True)
+    config = SystemConfig(appliances=(washer,))
+    now = datetime(2026, 7, 4, 12)
+    inputs = PlanInputs(now, 95, (HourSlot(0, now, 0.5, 12, 3000, 0, 0),))
+    result = plan(config, inputs)
+    assert result.appliance_windows == {"washer": False}
+
+
+def test_published_result_mappings_are_defensive_and_read_only():
+    from dataclasses import replace
+
+    inputs = PlanInputs(datetime(2026, 7, 4), 50, ())
+    original = {"washer": True}
+    result = replace(plan(SystemConfig(), inputs), appliance_windows=original)
+    original["washer"] = False
+    assert result.appliance_windows["washer"] is True
+    with pytest.raises(TypeError):
+        result.appliance_windows["washer"] = False

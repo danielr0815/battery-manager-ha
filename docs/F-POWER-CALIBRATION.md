@@ -1,5 +1,8 @@
 # F-POWER-CALIBRATION — manuelle Bestimmung der Last-Planungsleistung
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Anlass und Ziel
 
 Der normale robuste Leistungsschätzer lernt nur während einer vom Battery

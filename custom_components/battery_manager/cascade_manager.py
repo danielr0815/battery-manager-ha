@@ -13,7 +13,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +24,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ACTOR_CONFIRM_TIMEOUT_S,
     ACTOR_MODE_EXCLUSIVE,
     ACTOR_MODE_SHARED,
     CASCADE_ACTOR_JOURNAL_LIMIT,
@@ -47,6 +48,7 @@ from .const import (
     CONF_LOAD_RECOVERY_SOC,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_WAKE_TIMEOUT_S,
+    DEFAULT_HANDOVER_TIMEOUT_S,
     DOMAIN,
     SUBENTRY_TYPE_CASCADE,
 )
@@ -57,13 +59,14 @@ from .core import (
     SurplusLoadState,
     SystemConfig,
 )
+from .core.policy import CASCADE_SOURCE_PROOF_SECONDS
 from .core.series import fixed_local_time
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-_PROOF_SECONDS = 60
+_PROOF_SECONDS = CASCADE_SOURCE_PROOF_SECONDS
 _RETRY_DELAY = timedelta(minutes=15)
 _RESTART_ACTOR_WAIT = timedelta(seconds=60)
 _ACTOR_CONFIRM_POLL_S = 0.1
@@ -78,6 +81,17 @@ _STABLE_PHASES = frozenset(
 
 class _MinimumOffPending(Exception):
     """A planned start must wait; this is not an actor failure."""
+
+
+@dataclass(frozen=True)
+class CascadeExecutionSnapshot:
+    """Stable public diagnostic view, with no references to mutable actor state."""
+
+    phase: str
+    enabled: bool
+    fault: str | None
+    restart_reconcile_pending: bool
+    check_at: datetime | None
 
 
 class CascadeManager:
@@ -115,6 +129,34 @@ class CascadeManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.async_cancel_terminal_tests()
+
+    def execution_snapshot(self, cascade_id: str) -> CascadeExecutionSnapshot:
+        state = self._state(cascade_id)
+        phase = state.get("phase", "idle")
+        deadline = None
+        if phase in ("waking", "waking_members"):
+            deadline = state.get("wake_actor_deadline") or state.get("wake_deadline")
+        elif phase == "recovering":
+            deadline = state.get("retry_at")
+        check_at = dt_util.parse_datetime(deadline) if deadline else None
+        proof = self._proof.get(cascade_id)
+        if phase == "proving" and proof:
+            source = self.coordinator.entry.subentries.get(state.get("source") or "")
+            if source is not None:
+                check_at = proof["started"] + timedelta(
+                    seconds=float(
+                        source.data.get(
+                            CONF_LOAD_HANDOVER_TIMEOUT_S, DEFAULT_HANDOVER_TIMEOUT_S
+                        )
+                    )
+                )
+        return CascadeExecutionSnapshot(
+            phase,
+            bool(state.get("enabled")),
+            state.get("fault"),
+            bool(state.get("restart_reconcile_pending")),
+            check_at,
+        )
 
     def load_is_active(self, load_id: str) -> bool:
         """Use the owned physical path, never compatibility recommendations."""
@@ -519,6 +561,7 @@ class CascadeManager:
         if (
             phase in ("proving", "running")
             and topology is not None
+            and source is not None
             and source in {load_id for load_id, _ in topology["members"]}
         ):
             # Project the same ON vector that execution protects. Root and
@@ -666,7 +709,7 @@ class CascadeManager:
                     if load is not None:
                         actor_data.append(load.data)
                 terminal_id = subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
-                terminal = self.coordinator.entry.subentries.get(terminal_id)
+                terminal = self.coordinator.entry.subentries.get(terminal_id or "")
                 if terminal is not None:
                     actor_data.append(terminal.data)
             else:
@@ -818,7 +861,7 @@ class CascadeManager:
             # equality stable after the storage JSON round-trip (0.36.2 incident).
             members.append([load_id, dict(load.data)])
         terminal_id = cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
-        terminal = self.coordinator.entry.subentries.get(terminal_id)
+        terminal = self.coordinator.entry.subentries.get(terminal_id or "")
         if not members or terminal is None:
             return None
         return {
@@ -1413,7 +1456,7 @@ class CascadeManager:
 
     def _actors_not_confirmed_off(self, topology: dict[str, Any]) -> list[str]:
         """Return actors whose live state is not an explicit ``off``."""
-        entities = []
+        entities: list[str] = []
         for _load_id, data in topology["members"]:
             entities.extend(
                 data.get(key)
@@ -1441,7 +1484,7 @@ class CascadeManager:
         self, topology: dict[str, Any]
     ) -> tuple[dict[str, bool], list[str]]:
         """Return confirmed ON/OFF states and actors not ready after startup."""
-        entities = []
+        entities: list[str] = []
         root = topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH)
         if root:
             entities.append(root)
@@ -1661,6 +1704,7 @@ class CascadeManager:
         if self._stopping():
             raise asyncio.CancelledError
         task = asyncio.current_task()
+        assert task is not None
         self._actor_tasks.add(task)
         try:
             if entity_id and turn_on:
@@ -1690,6 +1734,7 @@ class CascadeManager:
             "command_retried": False,
             "initial_error": deepcopy(state.get("last_actor_error")),
         }
+        assert entity_id is not None
         state["actor_recovery"] = recovery
         self._actor_event(cascade_id, "actor_recovery_started", entity_id, target)
         _LOGGER.warning(
@@ -1843,6 +1888,7 @@ class CascadeManager:
             CASCADE_SAFE_OFF_RECOVERY_S,
         )
         task = asyncio.current_task()
+        assert task is not None
         self._actor_tasks.add(task)
         try:
             async with asyncio.timeout(CASCADE_SAFE_OFF_RECOVERY_S):
@@ -1905,7 +1951,9 @@ class CascadeManager:
             return True
         cascade = self.coordinator.entry.subentries.get(cascade_id)
         timeout_s = float(
-            cascade.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30) if cascade else 30
+            cascade.data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, ACTOR_CONFIRM_TIMEOUT_S)
+            if cascade
+            else ACTOR_CONFIRM_TIMEOUT_S
         )
         self._actor_event(cascade_id, "command_started", entity_id, target_state)
         try:
@@ -2079,7 +2127,7 @@ class CascadeManager:
                     if (load := self.coordinator.entry.subentries.get(lid)) is not None
                 ]
                 terminal = self.coordinator.entry.subentries.get(
-                    data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+                    data.get(CONF_CASCADE_TERMINAL_LOAD_ID) or ""
                 )
                 topology = {
                     "members": members,
@@ -2597,7 +2645,7 @@ class CascadeManager:
         index = int(state.get("wake_member_index", -1))
         deadline_value = state.get("wake_deadline")
         try:
-            deadline = datetime.fromisoformat(deadline_value)
+            deadline = datetime.fromisoformat(deadline_value or "")
         except TypeError, ValueError:
             deadline = now
         if not self._member_woke(cascade_id, topology):
@@ -2710,8 +2758,10 @@ class CascadeManager:
 
         if mode == "aux":
             source_id = state.get("source")
-            return bool(source_id) and await self._finish_wake(
-                cascade_id, source_id, now
+            return (
+                source_id is not None
+                and bool(source_id)
+                and await self._finish_wake(cascade_id, source_id, now)
             )
         return await self._finish_root(cascade_id, topology, plan)
 
@@ -3167,6 +3217,8 @@ class CascadeManager:
                     state["phase"] = "recovering"
                     state["warning"] = "telemetry_unavailable"
                 return
+            assert source_state is not None and source_state.soc_percent is not None
+            assert leaf_power is not None
             self._telemetry_unknown_since.pop(cascade_id, None)
             previous = self._aux_tick.get(cascade_id)
             if previous is not None:
@@ -3362,7 +3414,7 @@ class CascadeManager:
             for item in flow.member_flows
         ):
             return pairs, False
-        refined = []
+        refined: list[tuple[HourSlot, Any]] = []
         for slot, flow in pairs:
             boundaries = {0.0, slot.duration}
             for item in flow.member_flows:
@@ -3767,7 +3819,7 @@ class CascadeManager:
             )
             root_per_day = self._root_per_day_kwh(effective_plan, slots)
             topology = self._topology(cascade.cascade_id)
-            actors = []
+            actors: list[str] = []
             if topology is not None:
                 for _load_id, values in topology["members"]:
                     actors.extend(

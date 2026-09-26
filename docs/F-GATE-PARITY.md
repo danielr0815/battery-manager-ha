@@ -1,5 +1,8 @@
 # F-GATE-PARITY — one gate set for both load classes, priority decides
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec**, implemented in v0.13.0. Operator decision 2026-07-17:
 
 > **Structural note (2026-07, v0.17.0):** the gates themselves were

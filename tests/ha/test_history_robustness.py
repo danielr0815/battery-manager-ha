@@ -49,6 +49,18 @@ def _issue(hass, issue_id):
     return ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
 
 
+_real_wait_for = asyncio.wait_for
+
+
+async def _timeout_now(awaitable, timeout):
+    # Check the real production contract; close the deliberately unrun coroutine.
+    assert timeout == 300
+    if getattr(awaitable, "cr_code", None) is asyncio.Event.wait.__code__:
+        awaitable.close()
+        raise TimeoutError
+    return await _real_wait_for(awaitable, timeout)
+
+
 class _HungRecorder:
     """Recorder stand-in whose executor jobs never finish (hung DB)."""
 
@@ -62,7 +74,7 @@ async def test_recorder_timeout_creates_issue_and_frees_lock(hass, monkeypatch, 
     entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house_load"})
     learner = ProfileLearner(hass, entry)
     hass.config.components.add("recorder")
-    monkeypatch.setattr(history_profile, "RECORDER_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(history_profile.asyncio, "wait_for", _timeout_now)
     monkeypatch.setattr(history_profile, "get_instance", lambda hass: _HungRecorder())
 
     with caplog.at_level(logging.WARNING):
@@ -77,7 +89,7 @@ async def test_recorder_timeout_creates_issue_and_frees_lock(hass, monkeypatch, 
 
     # A later run is not blocked by the timed-out one (watchdog on the test
     # itself: without the released lock this await would hang).
-    await asyncio.wait_for(learner.async_run_learning(), timeout=1)
+    await learner.async_run_learning()
     assert not learner._lock.locked()
 
 
@@ -87,7 +99,7 @@ async def test_recorder_issues_resolve_on_next_success(hass, monkeypatch):
     entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house_load"})
     learner = ProfileLearner(hass, entry)
     hass.config.components.add("recorder")
-    monkeypatch.setattr(history_profile, "RECORDER_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(history_profile.asyncio, "wait_for", _timeout_now)
     monkeypatch.setattr(history_profile, "get_instance", lambda hass: _HungRecorder())
     await learner.async_run_learning()
 
@@ -240,3 +252,161 @@ async def test_stale_attempt_does_not_suppress_catchup(hass, monkeypatch):
     learner.async_schedule()
     start.assert_called_once()
     learner.async_unschedule()
+
+
+async def test_failed_source_change_preserves_committed_profile(hass, monkeypatch):
+    from copy import deepcopy
+    from unittest.mock import AsyncMock
+
+    entry = _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.new"})
+    learner = ProfileLearner(hass, entry)
+    learner.data["source_entities"] = {"ac": ["sensor.old"], "dc": []}
+    learner.data["computed_at"] = dt_util.now().isoformat()
+    before = deepcopy(learner.data)
+    hass.config.components.add("recorder")
+    monkeypatch.setattr(
+        ProfileLearner,
+        "_fetch_configuration_epochs",
+        AsyncMock(side_effect=TimeoutError),
+    )
+    await learner.async_run_learning()
+    assert learner.data == before
+    assert learner.profiles_for_planning() is None
+
+
+async def test_malformed_store_is_discarded(hass, monkeypatch, caplog):
+    from unittest.mock import AsyncMock
+
+    learner = ProfileLearner(hass, _entry(hass))
+    for data in (
+        ["valid JSON, wrong schema"],
+        {"version": LEARNED_STORE_VERSION, "profiles": []},
+        {
+            "version": LEARNED_STORE_VERSION,
+            "configuration_epochs": [{"start": "broken timestamp", "config": {}}],
+        },
+        {
+            "version": LEARNED_STORE_VERSION,
+            "profiles": {"ac": {"weekday": {"p50": [float("nan")] * 24}}},
+        },
+    ):
+        monkeypatch.setattr(learner._store, "async_load", AsyncMock(return_value=data))
+        await learner.async_load()
+        assert learner.profiles_for_planning() is None
+    assert "malformed" in caplog.text
+
+
+async def test_history_power_units_and_unknown_intervals(hass, monkeypatch):
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock
+
+    from homeassistant.core import State
+
+    from custom_components.battery_manager.history_profile import _running_predicate
+
+    learner = ProfileLearner(hass, _entry(hass))
+    start = datetime(2026, 9, 25, tzinfo=UTC)
+    end = start + timedelta(hours=3)
+    for value, unit in (("500", "W"), ("0.5", "kW")):
+        rows = [
+            State(
+                "sensor.appliance",
+                value,
+                {"unit_of_measurement": unit},
+                last_updated=start,
+            ),
+            State(
+                "sensor.appliance",
+                "unavailable",
+                last_updated=start + timedelta(hours=1),
+            ),
+            State(
+                "sensor.appliance",
+                "0",
+                {"unit_of_measurement": unit},
+                last_updated=start + timedelta(hours=2),
+            ),
+        ]
+        monkeypatch.setattr(
+            learner, "_recorder_job", AsyncMock(return_value={"sensor.appliance": rows})
+        )
+        changes, _coverage = await learner._state_changes(
+            "sensor.appliance", start, end, _running_predicate(100)
+        )
+        assert [active for _, active in changes] == [True, None, False]
+
+
+async def test_complete_learned_store_roundtrip_and_corrupt_nested_sections(
+    hass, monkeypatch
+):
+    from copy import deepcopy
+    from unittest.mock import AsyncMock
+
+    learner = ProfileLearner(hass, _entry(hass))
+    learner._capture_configuration(learner._raw_config())
+    learner.data["profiles"]["ac"] = {"weekday": {"p50": [125.0] * 24}}
+    learner.data["samples"]["ac"] = {"weekday": [7] * 24}
+    learner.data["day_log"] = {"2026-09-01": {"daytype": "weekday", "vacation": False}}
+    learner.data["validation"]["ac"] = [
+        {"day": "2026-09-01", "bias_w": -1, "mae_w": 2, "hours": 24}
+    ]
+    valid = deepcopy(learner.data)
+    loaded = ProfileLearner(hass, learner.entry)
+    monkeypatch.setattr(loaded._store, "async_load", AsyncMock(return_value=valid))
+    await loaded.async_load()
+    assert loaded.data == valid
+
+    # Each field feeds a different consumer: schedule timestamps, cleaning
+    # epochs, profile interpolation, watchdog arithmetic and diagnostics.
+    for field, value in (
+        ("computed_at", "2026-09-01T12:00:00"),
+        ("source_entities", {"ac": "sensor.not_a_list"}),
+        ("configuration_epochs", [None]),
+        (
+            "configuration_epochs",
+            [{**valid["configuration_epochs"][0], "loads": [False]}],
+        ),
+        ("configuration_epochs", [{**valid["configuration_epochs"][0], "sources": []}]),
+        ("configuration_epochs", [{**valid["configuration_epochs"][0], "sources": {}}]),
+        ("day_log", {"not-a-day": {}}),
+        ("day_log", {"2026-09-01": None}),
+        ("daily_hours", {"2026-09-01": {"ac": [1] * 23}}),
+        ("samples", {"ac": {"weekday": [2]}}),
+        ("validation", {"ac": [None]}),
+        ("validation", {"ac": [{"day": "2026-09-01", "bias_w": "bad"}]}),
+        ("validation", {"ac": {}}),
+        ("diagnostics", {"negative_residuals": "bad"}),
+        ("profiles", {"ac": {"weekday": {"p50": [float("inf")] * 24}}}),
+    ):
+        candidate = {**deepcopy(valid), field: value}
+        isolated = ProfileLearner(hass, learner.entry)
+        monkeypatch.setattr(
+            isolated._store, "async_load", AsyncMock(return_value=candidate)
+        )
+        await isolated.async_load()
+        assert isolated.data["profiles"]["ac"] is None, field
+        assert isolated.data["computed_at"] is None, field
+
+
+async def test_cancelled_learning_keeps_the_committed_profile(hass, monkeypatch):
+    from copy import deepcopy
+
+    learner = ProfileLearner(hass, _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.new"}))
+    learner.data["profiles"]["ac"] = {"weekday": {"p50": [100.0] * 24}}
+    before = deepcopy(learner.data)
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    async def interrupted(worker):
+        worker.data["profiles"]["ac"] = None
+        entered.set()
+        await never.wait()
+
+    monkeypatch.setattr(ProfileLearner, "_run_learning_working_copy", interrupted)
+    task = asyncio.create_task(learner.async_run_learning())
+    await entered.wait()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    assert learner.data == before
+    assert not learner._lock.locked()

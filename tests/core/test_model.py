@@ -31,7 +31,7 @@ def test_battery_params_valid_defaults():
 
 @pytest.mark.parametrize("capacity", [0.0, -1.0, float("nan")])
 def test_battery_capacity_must_be_positive(capacity):
-    with pytest.raises(ValueError, match=r"capacity_wh must be > 0"):
+    with pytest.raises(ValueError, match=r"capacity_wh must be (?:> 0|finite)"):
         BatteryParams(capacity_wh=capacity)
 
 

@@ -1,5 +1,10 @@
 # HA-Integration: Entities, Attribute, Config-Flow
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 Eine Cascade-Subentry erzeugt Root-Empfehlung, Mode/Forecast, gewichteten SOC,
 Automation, Fault und Fault-Reset. Der SOC-Prognose-Sensor liefert `cascades`;
 `custom:battery-manager-cascade-card` rendert diesen Vertrag.

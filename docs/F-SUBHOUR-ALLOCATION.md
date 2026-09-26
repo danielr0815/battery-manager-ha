@@ -1,5 +1,8 @@
 # F‑SUBHOUR — Sub‑hour surplus‑load allocation (+ appliance‑run status)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **design approved, implementation in progress** · Author: planner work,
 2026‑07‑09 · Scope: `battery_manager` core planner + coordinator executor.
 

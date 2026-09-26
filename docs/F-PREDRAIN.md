@@ -1,5 +1,8 @@
 # F-PREDRAIN — Hourly PV forecast & two-buffer pre-drain allocation (v0.8.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 > **v0.19.0 supersession (docs/F-PREDRAIN-BLOCK.md):** for CONTINUOUS loads
 > the slot-wise pass-2 pre-drain below is RETIRED — replaced by ONE
 > contiguous block to today's SOC peak with an executor-side stability gate.

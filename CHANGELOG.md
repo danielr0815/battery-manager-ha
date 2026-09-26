@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-26
+
+### Fixed
+- Normale Lasten bestätigen ON/OFF über Gerätestatus mit 30 s Frist; ausstehende
+  OFF-Aufträge überleben Fehler und Neustart. Wiederholungen frühestens nach
+  60 s bei bekannter Gegenstellung. Wartende ON-Aufträge respektieren Pause und
+  Schutzstatus; Pause beendet laufende Lasten nach verbleibender Mindestlaufzeit.
+- Chargerbudget gilt gemeinsam für DC, Eigenbedarf und Laden. Appliance-Starts
+  brauchen den vollständigen Prognosehorizont; Hypothesen erhalten Reserve- und
+  Kaskadenbedingungen. Gemeinsame Root-/Aux-Intervallbilanz verhindert Doppelzählung.
+- Lernläufe übernehmen Ergebnisse atomar; beschädigte Lerndaten werden verworfen.
+  Historische W/kW-Werte und unbekannte Intervalle werden korrekt behandelt.
+- Entfernte Reserve-Netzsensorzuordnung bleibt nach Reload entfernt.
+- Karten verwenden die HA-Zeitzone auch in zugänglichen Labels und Energiehover.
+
+### Changed
+- Mindestversion Home Assistant 2026.8.0. Bestehende IDs, Services und Karten-URL
+  bleiben erhalten; keine zusätzlichen Python-Laufzeitabhängigkeiten.
+- Archivschema 2 bewahrt Segmente mit ursprünglicher Zeitzone; Schema 1 wird
+  automatisch übernommen. Downgrade des Archivs erfordert ein vorheriges Backup.
+- Fachliche Coordinator- und Planner-Module, unveränderliche Ergebnisabbildungen,
+  gemeinsame Konstanten und Typprüfung über die gesamte Integration.
+- Frontendquellen modularisiert; reproduzierbares esbuild-Bundle, ESLint,
+  Prettier und echte lokale Browsertests ergänzen die schnellen Berechnungstests.
+- Releaseprüfung verwendet den tatsächlichen Zielcommit ohne Schreibzugriff auf
+  main. Isolierte Kerntests einschließlich Windows und zusätzliche Branchberichte.
+
+### Documentation
+- Aktuelle Verträge, Migration, Coding Guidelines, Risikomatrix und Nachverfolgung
+  der 32 Findings; historische Entscheidungsunterlagen eindeutig gekennzeichnet.
+
 ## [0.45.1] - 2026-09-26
 
 ### Changed

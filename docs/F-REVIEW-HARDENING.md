@@ -1,5 +1,8 @@
 # Review-Korrekturen: Kaskaden, Zeitintervalle und Messwerte
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Befund: Im Code-Review im September 2026 wurden 14 Fehler reproduziert. Sie
 betrafen insbesondere endlose Leistungsnachweise, bei Konfigurationsänderungen
 vergessene Aktoren, physisch unzulässige Durchleitung, erfundenen SOC und

@@ -1,5 +1,10 @@
 # Forensik Juli 2026 & offene Punkte
 
+> **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
+> historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
+> aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),
+> aktuelle Code-Map: [ARCHITECTURE](../ARCHITECTURE.md).
+
 **Stand: `main` @ v0.17.0 (Arbeitsstand 2026-07-31).** Dieses Dokument destilliert die
 7-Tage-Entscheidungsforensik (17.–24.07.2026, 65-Agenten-Analyse mit
 adversarialer Verifikation: 23 Befunde bestätigt/plausibel, 3 widerlegt) und

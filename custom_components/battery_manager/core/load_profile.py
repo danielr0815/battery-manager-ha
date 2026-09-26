@@ -21,11 +21,11 @@ DAY_TYPES = (DAY_TYPE_WEEKDAY, DAY_TYPE_WEEKEND, DAY_TYPE_ABSENCE)
 
 # A "day series" is a list of 24 hourly energy values in Wh (numerically
 # equal to the mean W of that hour); None = no data for that hour.
-DaySeries = list  # list[float | None]
+type DaySeries = list[float | None]
 
-# Bins: {day type: [24 x float | None]}; samples: {day type: [24 x int]}
-Bins = dict
-Samples = dict
+# Profiles contain day type -> quantile -> hourly Wh; sample counts are separate.
+type Bins = dict[str, dict[str, DaySeries]]
+type Samples = dict[str, list[int]]
 
 # Absolute minimum change allowed per run: keeps the relative rate limit
 # from freezing bins at (or near) 0 W forever.

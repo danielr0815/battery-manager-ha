@@ -1,0 +1,22 @@
+{
+  "name": "battery-manager-cards",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build_frontend.mjs",
+    "check:bundle": "node scripts/build_frontend.mjs --check",
+    "lint": "eslint frontend scripts/*.mjs tests/frontend tests/browser",
+    "format:check": "prettier --check frontend scripts/*.mjs tests/frontend tests/browser *.mjs package.json",
+    "test": "node --test tests/frontend/*.test.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
+    "acorn": "8.18.0",
+    "esbuild": "0.28.2",
+    "eslint": "10.11.0",
+    "globals": "17.12.0",
+    "prettier": "3.9.9"
+  }
+}

@@ -1,5 +1,8 @@
 # Kaskadenkachel: Energiefluss und Diagramme
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Stand: v0.37.0. Die vorhandene `battery-manager-cascade-card` verwendet weiterhin
 `entity`, `title` und `hours` (6–96, Standard 48). Kein neuer Kartentyp nötig.
 

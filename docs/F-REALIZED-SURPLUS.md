@@ -1,5 +1,8 @@
 # F-REALIZED-SURPLUS — Ist-Bilanz des Überschusses / realized surplus accounting (v0.24.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: operator decision 2026-08-03. Binding spec of the measured ("Ist")
 surplus accounting: the coordinator pair `_counter_delta` /
 `_update_realized_surplus` (HA only — `core/` is untouched), the options

@@ -1,5 +1,8 @@
 # F-SEAMLESS-RUNS — no artificial OFF at quantum boundaries (v0.14.0)
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec**, operator decision 2026-07-18. Implemented in
 `coordinator.py` (`_seamless_extension_ok`, the deadline branch of
 `_apply_load_switching`, `_maintain_recommendation_deadline`).

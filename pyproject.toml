@@ -9,7 +9,7 @@
 
 [project]
 name = "battery-manager-ha"
-version = "0.45.1"
+version = "0.46.0"
 description = "Solar-battery optimizer for Home Assistant: SOC forecast, discharge-threshold planning, surplus-load and grid-support control."
 readme = "README.md"
 # Floor matches homeassistant's own requirement (HA >= 2026.3 needs 3.14.2+).
@@ -41,8 +41,10 @@ Changelog = "https://github.com/danielr0815/battery-manager-ha/blob/main/CHANGEL
 # (production incident; fix = one device per subentry + registry migration).
 # phacc therefore leads the HA version.
 [dependency-groups]
+# Windows has no system IANA database; DST tests need this development-only data.
+core-test = ["pytest>=9.0.3", "pytest-cov>=7.1.0", "tzdata>=2026.3"]
 dev = [
-    "homeassistant>=2026.7.4",
+    "homeassistant>=2026.8.0",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8.0",
@@ -55,10 +57,9 @@ dev = [
 # Not a PyPI package (no [build-system] above): uv only manages the dev
 # environment, it must not try to build/install the project itself.
 package = false
-# Security overrides ahead of upstream: homeassistant 2026.7.4 pins
-# pillow==12.2.0 / pyjwt==2.12.1 exactly, both with open CVEs. HA 2026.8
-# pins the fixed versions (verified against 2026.8.0b2), so these floors
-# only anticipate upstream — REMOVE them at the dev-floor bump to 2026.8.
+# Additional security floors retained from the 2026.7 development environment.
+# HA 2026.8.0 itself pins these fixed versions. Keeping the explicit floors
+# preserves the safeguard while remaining compatible with the supported HA floor.
 override-dependencies = ["pillow>=12.3.0", "pyjwt>=2.13.0"]
 
 [tool.pytest.ini_options]
@@ -102,14 +103,11 @@ exclude_also = [
     "raise NotImplementedError",
 ]
 
-# Type checking is a BASELINE, not a gate: errors are only reported for the
-# pure planner core (no Home Assistant imports, fully typed dataclasses).
-# `follow_imports = "silent"` still analyses the HA layer for types (core
-# imports from it) but suppresses its errors; widen the scope before
-# tightening any rule. Run: `mypy` (via `uv run mypy`).
+# Check the entire integration. Third-party imports are followed for types,
+# while only our own modules are reported. Runtime dependencies remain empty.
 [tool.mypy]
 python_version = "3.14"
-files = ["custom_components/battery_manager/core"]
+files = ["custom_components/battery_manager"]
 mypy_path = "custom_components/battery_manager"
 ignore_missing_imports = true
 follow_imports = "silent"

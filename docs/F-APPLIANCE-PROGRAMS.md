@@ -1,5 +1,8 @@
 # Programmspezifisches Lernen für Haushaltsgeräte
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Regeln
 
 1. Optionale Eingänge `program_entity` (aktives Programm) und

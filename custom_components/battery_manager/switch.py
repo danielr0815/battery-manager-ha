@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import Entity
@@ -25,15 +24,16 @@ from .const import (
 )
 from .coordinator import BatteryManagerCoordinator
 from .entity import BatteryManagerEntity, async_add_by_subentry
+from .runtime import BatteryManagerConfigEntry
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: BatteryManagerConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the vacation-mode switch and the manual support-override switches."""
-    coordinator: BatteryManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: BatteryManagerCoordinator = entry.runtime_data
     entities: list[Entity] = [BatteryManagerVacationSwitch(coordinator)]
 
     # A manual-override switch per configured support PSU (F-N2/R3). A

@@ -1,5 +1,8 @@
 # F-CASCADE-STORAGE — kaskadierte Überschusslasten mit Speichern
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: normative Feature-Spezifikation. Der Planungsnachtrag vom 2026-09-02
 ersetzt den bisherigen Ein-Episoden-/Recovery-Sperrvertrag. Die hier relevante
 Recovery-/Feed-in-Priorisierung ist der verbindliche Abnahmevertrag; der

@@ -35,6 +35,25 @@ def read(path):
 
 def compare(left, right):
     """Keep coverage beside every comparison; never rank disjoint days silently."""
+    if left.get("schema_version") == 2 or right.get("schema_version") == 2:
+
+        def segments(archive):
+            parts = archive.get("segments", [archive])
+            return {
+                (part.get("segment_id", "legacy"), part["timezone"]): part
+                for part in parts
+            }
+
+        a, b = segments(left), segments(right)
+        return {
+            identity: {
+                "timezone": zone,
+                "daily": compare(a[identity, zone], b[identity, zone]),
+            }
+            for identity, zone in sorted(a.keys() & b.keys())
+        }
+    if left["timezone"] != right["timezone"]:
+        return {}
     differences = {}
     for day in sorted(set(left["daily"]) & set(right["daily"])):
         a, b = left["daily"][day], right["daily"][day]

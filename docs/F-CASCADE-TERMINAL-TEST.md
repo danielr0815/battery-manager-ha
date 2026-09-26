@@ -1,5 +1,8 @@
 # F-CASCADE-TERMINAL-TEST — versteckte Endlast-Diagnose
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Zweck
 
 Die Home-Assistant-Werkzeugaktion

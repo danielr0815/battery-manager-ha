@@ -19,6 +19,7 @@ from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 
 from .const import (
+    ACTOR_CONFIRM_TIMEOUT_S,
     ACTOR_MODES,
     CONF_AC_BALANCE_IN,
     CONF_AC_BALANCE_OUT,
@@ -376,7 +377,7 @@ def _validate_support_hysteresis(data: dict[str, Any]) -> str | None:
     r24 = data.get(CONF_SUPPORT_DC24_RECOVERY_SOC)
     a48 = data.get(CONF_SUPPORT_DC48_ACTIVATE_SOC)
     r48 = data.get(CONF_SUPPORT_DC48_RECOVERY_SOC)
-    if any(v is None for v in (a24, r24, a48, r48)):
+    if a24 is None or r24 is None or a48 is None or r48 is None:
         return None
     a24, r24, a48, r48 = float(a24), float(r24), float(a48), float(r48)
     if a24 >= r24:
@@ -1071,6 +1072,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     # F-REALIZED-SURPLUS: cleared = forecast-only again (the
                     # realized sensors are dropped from the registry).
                     CONF_EXPORT_METER_ENTITY,
+                    CONF_RESERVE_GRID_ENTITY,
                     # Cleared = unset the site override so the window end derives
                     # from the forecast again (F-PREDRAIN F4).
                     CONF_PV_WINDOW_END_HOUR,
@@ -1489,8 +1491,8 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                     cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID),
                 ):
                     continue
-                error = CascadeSubentryFlow._validate(
-                    SimpleNamespace(_get_entry=lambda: proposed),
+                error = CascadeSubentryFlow._validate_entry(
+                    proposed,
                     {**cascade.data, CONF_LOAD_NAME: cascade.title},
                     cascade_id,
                 )
@@ -1763,7 +1765,7 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
 class CascadeSubentryFlow(ConfigSubentryFlow):
     """Configure a disjoint, ordered storage-output cascade."""
 
-    def _load_options(self, energy_limited: bool) -> list[dict[str, str]]:
+    def _load_options(self, energy_limited: bool) -> list[selector.SelectOptionDict]:
         return [
             {"value": subentry_id, "label": subentry.title}
             for subentry_id, subentry in self._get_entry().subentries.items()
@@ -1802,13 +1804,22 @@ class CascadeSubentryFlow(ConfigSubentryFlow):
                 ),
                 vol.Required(
                     CONF_CASCADE_ACTOR_TIMEOUT_S,
-                    default=data.get(CONF_CASCADE_ACTOR_TIMEOUT_S, 30),
+                    default=data.get(
+                        CONF_CASCADE_ACTOR_TIMEOUT_S, ACTOR_CONFIRM_TIMEOUT_S
+                    ),
                 ): _number(1, 1800, 1, "s"),
             }
         )
 
     def _validate(self, data: dict[str, Any], edited_id: str | None) -> str | None:
-        entry = self._get_entry()
+        return self._validate_entry(self._get_entry(), data, edited_id)
+
+    @staticmethod
+    def _validate_entry(
+        entry: ConfigEntry | SimpleNamespace,
+        data: dict[str, Any],
+        edited_id: str | None,
+    ) -> str | None:
         member_ids = list(data.get(CONF_CASCADE_MEMBER_IDS, []))
         terminal_id = data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
         if not str(data.get(CONF_LOAD_NAME, "")).strip():
@@ -1823,7 +1834,7 @@ class CascadeSubentryFlow(ConfigSubentryFlow):
             for subentry_id, subentry in entry.subentries.items()
             if subentry.subentry_type == SUBENTRY_TYPE_LOAD
         }
-        terminal = loads.get(terminal_id)
+        terminal = loads.get(terminal_id or "")
         if terminal is None or terminal.data.get(CONF_LOAD_ENERGY_LIMITED, False):
             return "cascade_terminal_invalid"
 
@@ -1858,12 +1869,12 @@ class CascadeSubentryFlow(ConfigSubentryFlow):
 
         actors: list[str] = []
         for index, member_id in enumerate(member_ids):
-            subentry = loads.get(member_id)
-            if subentry is None or not subentry.data.get(
+            member_entry = loads.get(member_id)
+            if member_entry is None or not member_entry.data.get(
                 CONF_LOAD_ENERGY_LIMITED, False
             ):
                 return "cascade_member_invalid"
-            values = subentry.data
+            values = member_entry.data
             if not all(
                 values.get(key)
                 for key in (

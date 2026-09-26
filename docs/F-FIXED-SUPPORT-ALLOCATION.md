@@ -1,5 +1,8 @@
 # F-FIXED-SUPPORT-ALLOCATION — fixed PSU schedules participate in surplus allocation
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: implemented (v0.25.8).
 Operator decisions 2026-08-22.
 

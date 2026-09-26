@@ -2106,7 +2106,7 @@ def test_cascade_validator_rejects_each_unsafe_topology_contract():
             CONF_CASCADE_TERMINAL_LOAD_ID: terminal,
             **overrides,
         }
-        return CascadeSubentryFlow._validate(flow, payload, None)
+        return CascadeSubentryFlow._validate_entry(flow._get_entry(), payload, None)
 
     assert validate([], **{CONF_LOAD_NAME: " "}) == "name_required"
     assert validate([]) == "cascade_members_required"
@@ -2216,9 +2216,15 @@ def test_cascade_validator_rejects_load_or_actor_owned_by_another_chain():
         CONF_CASCADE_TERMINAL_LOAD_ID: "candidate_leaf",
     }
 
-    assert CascadeSubentryFlow._validate(flow, payload, None) == "cascade_actor_in_use"
+    assert (
+        CascadeSubentryFlow._validate_entry(flow._get_entry(), payload, None)
+        == "cascade_actor_in_use"
+    )
     payload[CONF_CASCADE_MEMBER_IDS] = ["owned"]
-    assert CascadeSubentryFlow._validate(flow, payload, None) == "cascade_member_in_use"
+    assert (
+        CascadeSubentryFlow._validate_entry(flow._get_entry(), payload, None)
+        == "cascade_member_in_use"
+    )
 
 
 def test_load_reconfigure_checks_cascade_before_writing_and_clears_optional_fields():
@@ -2316,8 +2322,8 @@ def test_separate_cascades_cannot_alias_one_terminal_switch():
             ),
         }
     )
-    result = CascadeSubentryFlow._validate(
-        SimpleNamespace(_get_entry=lambda: entry),
+    result = CascadeSubentryFlow._validate_entry(
+        entry,
         {
             c.CONF_LOAD_NAME: "B",
             c.CONF_CASCADE_MEMBER_IDS: ["b"],
@@ -2380,3 +2386,23 @@ async def test_appliance_optional_sensors_can_be_saved_and_removed(hass):
     )
     assert result["reason"] == "reconfigure_successful"
     assert not optional.keys() & entry.subentries[subentry_id].data.keys()
+
+
+async def test_cleared_reserve_grid_sensor_stays_cleared_after_reload(hass):
+    from custom_components.battery_manager.const import CONF_RESERVE_GRID_ENTITY
+
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_RESERVE_GRID_ENTITY: "binary_sensor.old_grid"}
+    )
+    await hass.async_block_till_done()
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(form["data_schema"].schema)
+    for section in payload.values():
+        section.pop(CONF_RESERVE_GRID_ENTITY, None)
+    result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
+    assert result["type"] == "create_entry"
+    assert entry.options[CONF_RESERVE_GRID_ENTITY] is None
+    await hass.async_block_till_done()
+    assert entry.runtime_data.raw_config[CONF_RESERVE_GRID_ENTITY] is None
+    assert entry.runtime_data._reserve_grid_available() is None

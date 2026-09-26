@@ -1,5 +1,8 @@
 # F-PERDAY-SURPLUS — per-day lost-surplus and import breakdown
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec** for v0.9.1. Operator request (2026-07-11): *"Ich
 möchte den Überschuss immer für heute und morgen separat angezeigt bekommen."*
 

@@ -1,5 +1,8 @@
 # F-RESCUE-EXPORT — pass-1 energy-limited loads rescue present export first
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 Status: **binding spec** for v0.9.2. Operator decision 2026-07-11 (live
 observation: Fossibot F2400-B at 73.9 % SOC idle while the house battery sat
 at 99 % and ~1.7 kW was exported; the plan had deferred its 0.3 kWh charge to

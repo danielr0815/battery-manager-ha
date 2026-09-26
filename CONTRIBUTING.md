@@ -74,8 +74,23 @@ uv run python scripts/check_module_coverage.py
 
 The full HA suite also requires Node.js 22+ to verify real backend payloads
 against the bundled cards. CI and the devcontainer provide it. Run the standalone
-frontend suite with `node --test tests/frontend/cascade-card.test.mjs`.
-The pure core suite still needs only Python.
+frontend checks with:
+
+```bash
+npm ci
+npm run lint
+npm run format:check
+npm run check:bundle
+npm test
+npx playwright install chromium
+npm run test:browser
+```
+
+Edit `frontend/`, then run `npm run build` and commit both sources and bundle.
+The browser suite serves a local fixture; it does not access a live HA system.
+The pure core suite needs only Python. On a machine without Home Assistant use
+`uv sync --locked --only-group core-test` and `uv run --no-sync pytest tests/core
+-p no:homeassistant`; CI proves this on Linux and Windows.
 
 HA tests replace the coordinator's production five-second entity debounce with
 an immediate yield in `tests/ha/conftest.py`; a dedicated mock-based test keeps
@@ -115,11 +130,9 @@ uv run ruff format --check .    # or `uv run ruff format .` to apply
 Optional but recommended: `uvx pre-commit install` — the hooks in
 `.pre-commit-config.yaml` run the locked ruff on every commit.
 
-[mypy](https://mypy.readthedocs.io/) runs in CI as a **baseline**, not a full
-gate: it reports errors only for the pure planner core
-(`custom_components/battery_manager/core/`); the HA layer is analysed for
-types but its errors are suppressed (`follow_imports = "silent"`, see
-`[tool.mypy]` in `pyproject.toml`). Widen the scope before tightening rules.
+[mypy](https://mypy.readthedocs.io/) checks **every integration module**,
+including the Home Assistant layer. New code must keep this gate clean; do not
+hide a missing type contract with blanket exclusions or error suppressions.
 
 ```bash
 uv run mypy
@@ -146,8 +159,12 @@ Explain the diff in your PR.
 
 ## Versioning & releases
 
-- Releases are immutable Git tags/GitHub releases built from `main`; HACS uses
-  those versions rather than an undocumented moving branch SHA.
+- Prepare the release by running the **Release validation and preparation**
+  workflow with the exact target commit and intended `vX.Y.Z` tag. The workflow
+  resolves the commit once and runs the same quality gates against that SHA.
+  Publish the tag only after it passes. Published releases are checked again
+  against their actual tag commit; no release job rewrites `main`.
+- HACS uses immutable release tags, not an undocumented moving branch SHA.
 - For every user-visible change, bump
   `custom_components/battery_manager/manifest.json` **and** `pyproject.toml` to
   the same version, and move the entry from `[Unreleased]` to `[x.y.z]` in
@@ -167,3 +184,10 @@ Explain the diff in your PR.
 
 Small, focused PRs are easiest to review. If you're planning something large,
 open an issue first to discuss the approach.
+
+## Coding contracts
+
+Follow [Coding Guidelines](docs/CODING_GUIDELINES.md), the current
+[behavior contracts](docs/CURRENT_CONTRACTS.md), and the
+[risk matrix](docs/TEST_MATRIX.md). Branch coverage is a supplementary CI artifact;
+line coverage remains the independent 100 % core / 95 % per-module gate.

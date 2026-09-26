@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Callable
-from copy import deepcopy
+from copy import copy, deepcopy
 from datetime import date, datetime, time, timedelta, tzinfo
+from functools import partial
 from typing import Any
 
 from homeassistant.components.recorder import get_instance, history
@@ -32,6 +34,7 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .appliance_learning import measurement
 from .const import (
     APPLIANCE_RUNNING_STATES,
     CONF_AC_BALANCE_IN,
@@ -96,6 +99,7 @@ from .core import (
     on_fractions,
     profile_value,
 )
+from .core.load_profile import Bins
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -150,6 +154,155 @@ def _default_data() -> dict[str, Any]:
             "missing_statistics": [],
         },
     }
+
+
+def _stored_datetime(raw: str) -> datetime:
+    value = dt_util.parse_datetime(raw)
+    if value is None:
+        raise ValueError("Invalid stored timestamp")
+    return value
+
+
+def _valid_learned_data(data: Any) -> bool:
+    """Reject damaged reconstructible state before it can reach planner consumers."""
+    if not isinstance(data, dict):
+        return False
+
+    def finite_tree(value: Any) -> bool:
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, dict):
+            return all(
+                isinstance(key, str) and finite_tree(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return all(finite_tree(item) for item in value)
+        return value is None or isinstance(value, (str, bool, int))
+
+    if not finite_tree(data):
+        return False
+    defaults = _default_data()
+    for key, default in defaults.items():
+        value = data.get(key, default)
+        if isinstance(default, dict) and not isinstance(value, dict):
+            return False
+        if isinstance(default, list) and not isinstance(value, list):
+            return False
+    for key in ("computed_at", "attempted_at", "ac_valid_since"):
+        value = data.get(key)
+        if value is not None and (
+            not isinstance(value, str)
+            or (parsed := dt_util.parse_datetime(value)) is None
+            or parsed.tzinfo is None
+        ):
+            return False
+    for values in data.get("source_entities", {}).values():
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            return False
+    previous_epoch: datetime | None = None
+    for epoch in data.get("configuration_epochs", []):
+        if not isinstance(epoch, dict) or not isinstance(epoch.get("start"), str):
+            return False
+        started = dt_util.parse_datetime(epoch["start"])
+        if (
+            started is None
+            or started.tzinfo is None
+            or (previous_epoch is not None and started <= previous_epoch)
+            or not isinstance(epoch.get("config"), dict)
+            or not isinstance(epoch.get("fingerprint"), str)
+        ):
+            return False
+        previous_epoch = started
+        for collection in ("loads", "appliances"):
+            values = epoch.get(collection)
+            if not isinstance(values, list) or not all(
+                isinstance(v, dict) for v in values
+            ):
+                return False
+        sources = epoch.get("sources")
+        if not isinstance(sources, dict):
+            return False
+        for path in _PATHS:
+            source = sources.get(path)
+            if not isinstance(source, dict) or not isinstance(
+                source.get("active"), bool
+            ):
+                return False
+            if any(
+                not isinstance(source.get(key), list)
+                or not all(isinstance(item, str) for item in source[key])
+                for key in ("in", "out", "all")
+            ):
+                return False
+
+    def series(value: Any) -> bool:
+        return (
+            isinstance(value, list)
+            and len(value) == 24
+            and all(
+                v is None
+                or (
+                    isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and math.isfinite(v)
+                    and v >= 0
+                )
+                for v in value
+            )
+        )
+
+    for profile in data.get("profiles", {}).values():
+        if profile is None:
+            continue
+        if not isinstance(profile, dict):
+            return False
+        for bins in profile.values():
+            if not isinstance(bins, dict) or not all(series(v) for v in bins.values()):
+                return False
+    for day, paths in data.get("daily_hours", {}).items():
+        try:
+            date.fromisoformat(day)
+        except ValueError, TypeError:
+            return False
+        if not isinstance(paths, dict) or not all(
+            v is None or series(v) for v in paths.values()
+        ):
+            return False
+    for counts in data.get("samples", {}).values():
+        if counts is not None and (
+            not isinstance(counts, dict)
+            or not all(series(values) for values in counts.values())
+        ):
+            return False
+    for day, entry in data.get("day_log", {}).items():
+        try:
+            date.fromisoformat(day)
+        except ValueError, TypeError:
+            return False
+        if (
+            not isinstance(entry, dict)
+            or entry.get("daytype") not in _MIN_SAMPLES
+            or not isinstance(entry.get("vacation", False), bool)
+        ):
+            return False
+    for rows in data.get("validation", {}).values():
+        if not isinstance(rows, list):
+            return False
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("day"), str):
+                return False
+            if any(
+                not isinstance(row.get(key), (float, int))
+                for key in ("bias_w", "mae_w", "hours")
+            ):
+                return False
+    diagnostics = data.get("diagnostics", defaults["diagnostics"])
+    return (
+        isinstance(diagnostics.get("negative_residuals", 0), (int, float))
+        and isinstance(diagnostics.get("coverage", {}), dict)
+        and isinstance(diagnostics.get("missing_statistics", []), list)
+    )
 
 
 class _LearnedProfileStore(Store):
@@ -214,6 +367,17 @@ class ProfileLearner:
             _LOGGER.exception(
                 "Discarding learned consumption profiles: the store could "
                 "not be read; the window is relearned from recorder history"
+            )
+            return
+        if stored and (
+            not isinstance(stored, dict)
+            or (
+                stored.get("version") == LEARNED_STORE_VERSION
+                and not _valid_learned_data(stored)
+            )
+        ):
+            _LOGGER.warning(
+                "Discarding malformed learned consumption profiles; relearning from recorder history"
             )
             return
         if stored and stored.get("version") == LEARNED_STORE_VERSION:
@@ -328,7 +492,7 @@ class ProfileLearner:
         raw = self.data.get("attempted_at")
         return dt_util.parse_datetime(raw) if raw else None
 
-    def profiles_for_planning(self) -> dict[str, Any] | None:
+    def profiles_for_planning(self) -> dict[str, Bins | None] | None:
         """Return the learned bins per path, or None if absent/stale (D-C6).
 
         A profile learned from other source entities than the currently
@@ -446,6 +610,17 @@ class ProfileLearner:
             _LOGGER.exception("Consumption-profile learning run failed")
 
     async def _run_learning(self) -> None:
+        # All profile fields, source bindings and timestamps commit together.
+        # A failed/cancelled Recorder request cannot publish a new binding for
+        # old bins. A shallow worker shares HA services, never mutable data.
+        worker = copy(self)
+        worker.data = deepcopy(self.data)
+        worker._repairing = True
+        await worker._run_learning_working_copy()
+        self.data = worker.data
+        self._save()
+
+    async def _run_learning_working_copy(self) -> None:
         cfg = self._raw_config()
         self._capture_configuration(cfg)
         sources = self._sources()
@@ -562,7 +737,7 @@ class ProfileLearner:
                 if value.get(path) is not None
             }
             if path == "ac" and (since := self.data.get("ac_valid_since")):
-                boundary = dt_util.parse_datetime(since)
+                boundary = _stored_datetime(since)
                 per_day = {
                     day: [
                         value if self._hour_start(day, hour) >= boundary else None
@@ -798,7 +973,7 @@ class ProfileLearner:
         now = dt_util.now()
         cutoff = now - timedelta(days=int(cfg[CONF_LEARNING_WINDOW_DAYS]))
         pruned = False
-        while len(epochs) > 1 and dt_util.parse_datetime(epochs[1]["start"]) <= cutoff:
+        while len(epochs) > 1 and _stored_datetime(epochs[1]["start"]) <= cutoff:
             epochs.pop(0)
             pruned = True
         if epochs and epochs[-1]["fingerprint"] == fingerprint:
@@ -873,14 +1048,14 @@ class ProfileLearner:
                 self.data["configuration_epochs"] = [
                     e
                     for e in self.data["configuration_epochs"]
-                    if dt_util.parse_datetime(e["start"]) < start
+                    if _stored_datetime(e["start"]) < start
                 ] + [epoch]
                 for day, values in self.data["daily_hours"].items():
                     if day >= since.isoformat():
                         values["ac"] = None
                 if self.data.get("ac_valid_since"):
                     self.data["ac_valid_since"] = min(
-                        start, dt_util.parse_datetime(self.data["ac_valid_since"])
+                        start, _stored_datetime(self.data["ac_valid_since"])
                     ).isoformat()
                 # A correction must not be damped by the known-bad old bins.
                 self.data["profiles"]["ac"] = None
@@ -929,7 +1104,7 @@ class ProfileLearner:
     ) -> None:
         epochs = self.data["configuration_epochs"]
         for index, epoch in enumerate(epochs):
-            start = dt_util.parse_datetime(epoch["start"])
+            start = _stored_datetime(epoch["start"])
             end = (
                 dt_util.parse_datetime(epochs[index + 1]["start"])
                 if index + 1 < len(epochs)
@@ -1075,11 +1250,17 @@ class ProfileLearner:
         # state are UNKNOWN, not "off" — they must never be cleaned with 0.
         fractions: dict[str, dict[tuple[str, int], float]] = {}
         coverage_start: dict[str, datetime | None] = {}
+        unknown_fractions: dict[str, dict[tuple[str, int], float]] = {}
         for entity_id, predicate in switch_specs:
             changes, first_known = await self._state_changes(
                 entity_id, start_local, end_local, predicate
             )
-            fractions[entity_id] = on_fractions(changes, start_local, end_local)
+            fractions[entity_id] = on_fractions(
+                [(at, value is True) for at, value in changes], start_local, end_local
+            )
+            unknown_fractions[entity_id] = on_fractions(
+                [(at, value is None) for at, value in changes], start_local, end_local
+            )
             coverage_start[entity_id] = first_known
 
         # --- Day tagging (D-C4, holidays §5.3) ---
@@ -1127,7 +1308,7 @@ class ProfileLearner:
             day_value = self.data["daily_hours"].setdefault(
                 day, {"ac": None, "dc": None}
             )
-            start = dt_util.as_utc(dt_util.parse_datetime(epoch["start"]))
+            start = dt_util.as_utc(_stored_datetime(epoch["start"]))
             end = cfg["_epoch_end"]
             valid_hours = {
                 hour
@@ -1148,6 +1329,15 @@ class ProfileLearner:
             support_excluded = self._unresolvable_support_hours(
                 day, cfg, fractions, coverage_start, tz, p24_series is not None
             )
+            # A required cleaning source that went unavailable after its first
+            # row is not evidence of an inactive device. Drop every affected hour.
+            support_excluded |= {
+                hour
+                for entity, values in unknown_fractions.items()
+                if entity not in (vacation_entity, workday_entity)
+                for hour in range(24)
+                if values.get((day, hour), 0.0) > 0
+            }
             appliance_excluded = _excluded_hours(
                 day, status_appliances, fractions, coverage_start, tz
             )
@@ -1164,7 +1354,7 @@ class ProfileLearner:
                     if psu48_draw is not None:
                         subtract.append(psu48_draw)
                     if p24_series is not None:
-                        subtract.append(p24_series)
+                        subtract.append([value for value in p24_series])
                     excluded = support_excluded | appliance_excluded
                 else:
                     # DC additions = negative subtractions (clean_day sums).
@@ -1337,7 +1527,12 @@ class ProfileLearner:
                 continue
             if load["power_entity"] in hour_maps:
                 result.append(
-                    _day_series_zero_filled(hour_maps[load["power_entity"]], day)
+                    [
+                        value
+                        for value in _day_series_zero_filled(
+                            hour_maps[load["power_entity"]], day
+                        )
+                    ]
                 )
             elif load["control_switch"]:
                 switch = load["control_switch"]
@@ -1358,7 +1553,12 @@ class ProfileLearner:
         for appliance in appliances:
             entity_id = appliance["detection_entity"]
             if entity_id in hour_maps:
-                result.append(_day_series_zero_filled(hour_maps[entity_id], day))
+                result.append(
+                    [
+                        value
+                        for value in _day_series_zero_filled(hour_maps[entity_id], day)
+                    ]
+                )
         return result
 
     def _subentries(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1414,7 +1614,7 @@ class ProfileLearner:
         start_local: datetime,
         end_local: datetime,
         predicate: Callable[[str], bool],
-    ) -> tuple[list[tuple[datetime, bool]], datetime | None]:
+    ) -> tuple[list[tuple[datetime, bool | None]], datetime | None]:
         """Predicate changes in weekly chunks, plus the coverage start.
 
         The coverage start is the timestamp of the first known state row
@@ -1422,23 +1622,30 @@ class ProfileLearner:
         no history at all for this entity in the window — callers must not
         interpret that as "off".
         """
-        changes: list[tuple[datetime, bool]] = []
+        changes: list[tuple[datetime, bool | None]] = []
         cursor = start_local
         while cursor < end_local:
             chunk_end = min(cursor + timedelta(days=7), end_local)
             states = await self._recorder_job(
-                lambda s=cursor, e=chunk_end: history.state_changes_during_period(
+                partial(
+                    history.state_changes_during_period,
                     self.hass,
-                    dt_util.as_utc(s),
-                    dt_util.as_utc(e),
+                    dt_util.as_utc(cursor),
+                    dt_util.as_utc(chunk_end),
                     entity_id=entity_id,
-                    no_attributes=True,
+                    no_attributes=False,
                 )
             )
-            changes.extend(
-                (dt_util.as_local(state.last_updated), predicate(state.state))
-                for state in states.get(entity_id, [])
-            )
+            for state in states.get(entity_id, []):
+                raw = state.state
+                if raw.lower() in ("unknown", "unavailable", ""):
+                    active = None
+                elif state.attributes.get("unit_of_measurement") in ("W", "kW"):
+                    watts = measurement(state, "power")
+                    active = predicate(str(watts)) if watts is not None else None
+                else:
+                    active = predicate(raw)
+                changes.append((dt_util.as_local(state.last_updated), active))
             cursor = chunk_end
         changes.sort(key=lambda item: item[0])
         return changes, (changes[0][0] if changes else None)
@@ -1563,6 +1770,8 @@ def _rows_to_hour_map(
             continue
         wh = float(raw) * 1000.0 if use_change else float(raw)
         start = row.get("start")
+        if not isinstance(start, (datetime, int, float)):
+            continue
         local = dt_util.as_local(
             dt_util.utc_from_timestamp(start)
             if isinstance(start, (int, float))
@@ -1588,6 +1797,8 @@ def _rows_to_minmax_map(
         if lo is None or hi is None:
             continue
         start = row.get("start")
+        if not isinstance(start, (datetime, int, float)):
+            continue
         local = dt_util.as_local(
             dt_util.utc_from_timestamp(start)
             if isinstance(start, (int, float))

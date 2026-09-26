@@ -21,9 +21,9 @@ from .support import SUPPORT_STEP_HOURS, support_state
 def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | None):
     # Reuse the existing collapsed-band rule rather than calling a cold-start
     # P90 a reliable upper bound. The scalar remains explicitly uncalibrated.
-    from .optimize import _effective_uncertainty
+    from .uncertainty import effective_uncertainty
 
-    _, upper, _ = _effective_uncertainty(
+    _, upper, _ = effective_uncertainty(
         inputs, config.control.predrain_pv_confidence, config.reserve.upper_pv_factor
     )
     steps: list[tuple[int, HourSlot, float, float]] = []

@@ -1,5 +1,8 @@
 # Optionale Messwerte für Haushaltsgeräte
 
+> **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
+> etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
+
 ## Befund
 
 Geräteläufe verwendeten ausschließlich konfigurierte Energie und Dauer.
