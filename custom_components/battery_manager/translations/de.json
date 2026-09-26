@@ -163,7 +163,11 @@
               "predrain_pv_confidence": "PV-Vertrauen (unterer Puffer)",
               "upper_pv_reserve": "PV-Reserve (oberer Puffer)",
               "strong_pv_cutoff_w": "Schwelle 'Sonne hinter dem Haus'",
-              "pv_window_end_hour": "Festes PV-Fensterende"
+              "pv_window_end_hour": "Festes PV-Fensterende",
+              "reserve_mode": "Ganzjährige Reserve",
+              "reserve_upper_pv_factor": "Oberes PV-Szenario ohne Prognoseband",
+              "reserve_grid_available_entity": "Netzverfügbarkeit",
+              "reserve_transfer_verified": "24-V-Rückfall bei Netz- und HA-Ausfall geprüft"
             },
             "data_description": {
               "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -174,7 +178,11 @@
               "predrain_pv_confidence": "Pessimismus des Stresstests für den unteren Puffer: Die PV des Folgetages wird mit diesem Faktor gemindert, und der Lauf muss die Wechselrichter-Reserve über ihrem Boden halten. 1,0 = Prognose voll vertrauen (Empfehlung: 0,5).",
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
               "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
-              "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten."
+              "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten.",
+              "reserve_mode": "Aus behält die bisherige Planung bei. Schattenbetrieb zeichnet die neue Planung auf. Aktiv steuert erst nach 48 beobachteten Stunden.",
+              "reserve_upper_pv_factor": "Unkalibrierter Ersatzfaktor bei fehlendem P90; 1,20 entspricht 20 % Aufschlag. Keine Einspeisefreiheitsgarantie.",
+              "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
+              "reserve_transfer_verified": "Vor aktivem Halten muss der DC/DC die 24-V-Schiene bei Netzausfall auch ohne laufendes HA übernehmen können."
             }
           },
           "support_paths": {
@@ -268,7 +276,10 @@
       "support_dc48_recovery_above_dc24": "Die Rücknahme-SOC der 48-V-Stützung muss bei oder unter der 24-V-Rücknahme-SOC liegen.",
       "coordinated_requires_dc24_transfer": "Die koordinierte 24-V-Versorgung benötigt einen DC/DC-Schalter für die bestätigte Quellenumschaltung.",
       "coordinated_requires_psu48_current": "Bitte den maximalen Ausgangsstrom des 48-V-Netzteils eintragen.",
-      "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum."
+      "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum.",
+      "reserve_requires_coordinated_support": "Reserve benötigt das numerische Inverter-Entladelimit.",
+      "reserve_requires_grid_signal": "Aktive Reserve benötigt ein Signal für Netzverfügbarkeit.",
+      "reserve_requires_verified_transfer": "Vor Aktivierung den autonomen 24-V-Rückfall prüfen und bestätigen."
     },
     "abort": {
       "already_configured": "Dieses System ist bereits konfiguriert.",
@@ -557,7 +568,10 @@
       "feedin_min_soc_not_above_battery_min": "Der minimale SOC der Einspeisung muss über dem minimalen Batterie-SOC liegen.",
       "coordinated_requires_dc24_transfer": "Die koordinierte 24-V-Versorgung benötigt einen DC/DC-Schalter für die bestätigte Quellenumschaltung.",
       "coordinated_requires_psu48_current": "Bitte den maximalen Ausgangsstrom des 48-V-Netzteils eintragen.",
-      "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum."
+      "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum.",
+      "reserve_requires_coordinated_support": "Reserve benötigt das numerische Inverter-Entladelimit.",
+      "reserve_requires_grid_signal": "Aktive Reserve benötigt ein Signal für Netzverfügbarkeit.",
+      "reserve_requires_verified_transfer": "Vor Aktivierung den autonomen 24-V-Rückfall prüfen und bestätigen."
     },
     "step": {
       "init": {
@@ -637,7 +651,11 @@
               "predrain_pv_confidence": "PV-Vertrauen (unterer Puffer)",
               "upper_pv_reserve": "PV-Reserve (oberer Puffer)",
               "strong_pv_cutoff_w": "Schwelle 'Sonne hinter dem Haus'",
-              "pv_window_end_hour": "Festes PV-Fensterende"
+              "pv_window_end_hour": "Festes PV-Fensterende",
+              "reserve_mode": "Ganzjährige Reserve",
+              "reserve_upper_pv_factor": "Oberes PV-Szenario ohne Prognoseband",
+              "reserve_grid_available_entity": "Netzverfügbarkeit",
+              "reserve_transfer_verified": "24-V-Rückfall bei Netz- und HA-Ausfall geprüft"
             },
             "data_description": {
               "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -648,7 +666,11 @@
               "predrain_pv_confidence": "Pessimismus des Stresstests für den unteren Puffer: Die PV des Folgetages wird mit diesem Faktor gemindert, und der Lauf muss die Wechselrichter-Reserve über ihrem Boden halten. 1,0 = Prognose voll vertrauen (Empfehlung: 0,5).",
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
               "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
-              "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten."
+              "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten.",
+              "reserve_mode": "Aus behält die bisherige Planung bei. Schattenbetrieb zeichnet die neue Planung auf. Aktiv steuert erst nach 48 beobachteten Stunden.",
+              "reserve_upper_pv_factor": "Unkalibrierter Ersatzfaktor bei fehlendem P90; 1,20 entspricht 20 % Aufschlag. Keine Einspeisefreiheitsgarantie.",
+              "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
+              "reserve_transfer_verified": "Vor aktivem Halten muss der DC/DC die 24-V-Schiene bei Netzausfall auch ohne laufendes HA übernehmen können."
             }
           },
           "consumption_profile": {
@@ -854,6 +876,13 @@
       "options": {
         "exclusive": "Exklusiv durch Battery Manager gesteuert",
         "shared": "Gemeinsam genutzt (manuelle Eingriffe respektieren)"
+      }
+    },
+    "reserve_mode": {
+      "options": {
+        "off": "Aus",
+        "shadow": "Schattenbetrieb",
+        "active": "Aktiv (nach Schattenbetrieb)"
       }
     }
   },

@@ -1,0 +1,251 @@
+"""Reserve rollout, persistent intent, confirmed limits and failed grid supply."""
+
+from datetime import UTC, datetime, timedelta
+from unittest.mock import Mock, patch
+
+import pytest
+from homeassistant.util import dt as dt_util
+from test_coordinated_actuation import DCDC, LIMIT, PSU24, PSU48, execute
+from test_coordinated_actuation import rig as rig
+
+from custom_components.battery_manager.config_flow import _validate_support_entities
+from custom_components.battery_manager.const import (
+    CONF_DCDC_SWITCH,
+    CONF_INVERTER_LIMIT_ENTITY,
+    CONF_RESERVE_GRID_ENTITY,
+    CONF_RESERVE_MODE,
+    CONF_RESERVE_TRANSFER_VERIFIED,
+    CONF_SUPPORT_DC24_SWITCH,
+)
+from custom_components.battery_manager.reserve_runtime import (
+    MAX_OBSERVATION_GAP_SECONDS,
+    SHADOW_SECONDS,
+    ReserveRuntime,
+)
+
+START = datetime(2026, 9, 26, tzinfo=UTC)
+
+
+def observe(r, seconds, soc=80, solar=True, preparing=False, signature="plant"):
+    r.observe(
+        START + timedelta(seconds=seconds),
+        soc,
+        solar_only=solar,
+        preparing=preparing,
+        signature=signature,
+    )
+
+
+def test_shadow_requires_48_observed_hours_and_excludes_outages():
+    assert SHADOW_SECONDS == 48 * 3600
+    r = ReserveRuntime()
+    for seconds in range(0, SHADOW_SECONDS, MAX_OBSERVATION_GAP_SECONDS):
+        observe(r, seconds)
+    assert not r.ready
+    observe(r, SHADOW_SECONDS)
+    assert r.ready
+    r.interrupt()
+    observe(r, SHADOW_SECONDS * 2)
+    assert r.observed_seconds == SHADOW_SECONDS
+    observe(r, SHADOW_SECONDS * 2 + 10, signature="replacement_battery")
+    assert not r.ready and r.observed_seconds == 0
+
+
+def test_intent_does_not_follow_involuntary_loss_or_grid_charge():
+    r = ReserveRuntime()
+    observe(r, 0, 80)
+    observe(r, 300, 79)
+    assert r.hold_soc == 80
+    observe(r, 600, 78, preparing=True)
+    assert r.hold_soc == 79
+    observe(r, 900, 80, solar=False)
+    observe(r, 1200, 82, solar=True)
+    assert r.hold_soc == 79
+    observe(r, 1500, 83, solar=True)
+    assert r.hold_soc == 80
+    # Neither downtime nor a backwards clock may award observed time/energy.
+    before = r.export()
+    observe(r, 7200, 90)
+    observe(r, 7000, 90)
+    assert r.export() == before
+
+
+def test_restart_restores_intent_without_counting_downtime():
+    r = ReserveRuntime()
+    observe(r, 0, 80)
+    observe(r, 300, 80)
+    restored = ReserveRuntime()
+    restored.restore(r.export())
+    observe(restored, 4000, 90)
+    assert restored.hold_soc == 80
+    assert restored.observed_seconds == 300
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        [],
+        {},
+        {"hold_soc": float("nan"), "observed_seconds": -1},
+        {"hold_soc": 101, "observed_seconds": "bad"},
+    ],
+)
+def test_corrupt_state_cannot_enable_active_control(value):
+    r = ReserveRuntime()
+    r.restore(value)
+    assert not r.ready
+    assert r.hold_soc is None
+
+
+def test_active_configuration_requires_source_and_independent_transfer():
+    assert (
+        _validate_support_entities({CONF_RESERVE_MODE: "shadow"})
+        == "reserve_requires_coordinated_support"
+    )
+    c = {CONF_RESERVE_MODE: "active", CONF_INVERTER_LIMIT_ENTITY: LIMIT}
+    assert _validate_support_entities(c) == "reserve_requires_grid_signal"
+    c |= {
+        CONF_RESERVE_GRID_ENTITY: "binary_sensor.grid",
+        CONF_SUPPORT_DC24_SWITCH: PSU24,
+        CONF_DCDC_SWITCH: DCDC,
+    }
+    assert _validate_support_entities(c) == "reserve_requires_verified_transfer"
+    c[CONF_RESERVE_TRANSFER_VERIFIED] = True
+    assert _validate_support_entities(c) is None
+
+
+async def test_bounded_inverter_limit_is_written_and_confirmed(rig, hass):
+    c, calls, _, _ = rig
+    c._reserve_inverter_limit_w = 125
+    await execute(c, inverter=True)
+    assert (LIMIT, 125) in calls
+    assert c._inverter_limit_confirmed(False)
+    assert not any(entity == LIMIT and value == 2300 for entity, value in calls)
+
+
+async def test_grid_loss_restores_dc_before_waiting_for_dead_inverter(rig, hass):
+    c, calls, dead, _ = rig
+    c.raw_config.update(
+        {
+            CONF_RESERVE_MODE: "active",
+            CONF_RESERVE_GRID_ENTITY: "binary_sensor.grid",
+            CONF_RESERVE_TRANSFER_VERIFIED: True,
+        }
+    )
+    c._reserve_runtime.observed_seconds = SHADOW_SECONDS
+    hass.states.async_set("binary_sensor.grid", "off")
+    hass.states.async_set(DCDC, "off")
+    hass.states.async_set(PSU24, "on")
+    dead.add(LIMIT)
+    await execute(c, dc24=True, dc48=True)
+    assert calls[:2] == [(DCDC, True), (PSU24, False)]
+    assert calls.index((DCDC, True)) < calls.index((LIMIT, 0))
+    assert c._coordinated_support_diag["reason"] == "grid_supply_unavailable"
+
+
+async def test_failed_dc_restore_keeps_existing_source(rig, hass):
+    c, calls, dead, _ = rig
+    c.raw_config.update(
+        {
+            CONF_RESERVE_MODE: "active",
+            CONF_RESERVE_GRID_ENTITY: "binary_sensor.grid",
+            CONF_RESERVE_TRANSFER_VERIFIED: True,
+        }
+    )
+    c._reserve_runtime.observed_seconds = SHADOW_SECONDS
+    hass.states.async_set(DCDC, "off")
+    hass.states.async_set(PSU24, "on")
+    dead.add(DCDC)
+    await execute(c, dc24=True)
+    assert calls == [(DCDC, True)]
+    assert hass.states.get(PSU24).state == "on"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("on", True),
+        ("AC_INPUT_1", True),
+        ("AC_INPUT_2", True),
+        ("off", False),
+        ("DISCONNECTED", False),
+        ("unknown", None),
+    ],
+)
+async def test_grid_signal_requires_known_fresh_state(rig, hass, value, expected):
+    c, *_ = rig
+    c.raw_config[CONF_RESERVE_GRID_ENTITY] = "sensor.grid"
+    hass.states.async_set("sensor.grid", value)
+    assert c._reserve_grid_available() is expected
+    with patch(
+        "custom_components.battery_manager.coordinator.dt_util.utcnow",
+        return_value=dt_util.utcnow() + timedelta(seconds=31),
+    ):
+        assert c._reserve_grid_available() is None
+
+
+async def test_solar_evidence_requires_fresh_power_units(rig, hass):
+    c, *_ = rig
+    assert c._reserve_power(None) is None
+    hass.states.async_set("sensor.power", "1.2", {"unit_of_measurement": "kW"})
+    assert c._reserve_power("sensor.power") == 1200
+    hass.states.async_set("sensor.power", "12", {"unit_of_measurement": "kWh"})
+    assert c._reserve_power("sensor.power") is None
+
+
+async def test_shadow_then_active_runs_real_plans_and_preserves_physical_baseline(
+    rig, hass
+):
+    from test_coordinator import ENTRY_DATA
+
+    c, calls, _, _ = rig
+    c.raw_config.update(
+        {
+            **ENTRY_DATA,
+            CONF_RESERVE_MODE: "shadow",
+            CONF_RESERVE_GRID_ENTITY: "binary_sensor.grid",
+            CONF_RESERVE_TRANSFER_VERIFIED: True,
+            "operation_pv_power_entity": "sensor.actual_pv",
+            "operation_import_power_entity": "sensor.actual_import",
+        }
+    )
+    hass.states.async_set("binary_sensor.grid", "on")
+    hass.states.async_set("sensor.actual_pv", "100", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.actual_import", "0", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.test_soc", "80")
+    for entity in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(entity, "0", {"unit_of_measurement": "kWh"})
+    # Foreground plan uses real core/actuation. No production delays or
+    # state listeners that could immediately replan test-generated reports.
+    c._save_persistent_state = Mock()
+    c.data = await c._async_update_data()
+    if c._switch_task:
+        await c._switch_task
+    assert c.data["reserve"]["mode"] == "shadow"
+    assert c.data["reserve"]["inverter_limit_w"] == 0
+    assert c.data["support_dc24"] is False
+    assert not any(entity in (PSU24, PSU48) and value for entity, value in calls)
+    c._reserve_runtime.observed_seconds = SHADOW_SECONDS
+    c.raw_config[CONF_RESERVE_MODE] = "active"
+    c.data = await c._async_update_data()
+    if c._switch_task:
+        await c._switch_task
+    assert c.data["reserve"]["mode"] == "active"
+    assert c.data["inverter_recommendation"] is False
+    assert (LIMIT, 0) in calls
+    assert (PSU24, True) in calls
+    assert c._persistent_payload()["reserve"]["hold_soc"] == 80
+    # Turning the policy off invalidates the previous rollout qualification.
+    c.raw_config[CONF_RESERVE_MODE] = "off"
+    c.data = await c._async_update_data()
+    if c._switch_task:
+        await c._switch_task
+    assert c.data["reserve"]["mode"] == "off"
+    assert not c._reserve_runtime.ready
+    # Forecast or SOC loss interrupts observed shadow time as well.
+    c._get_soc = Mock(return_value=None)
+    c._first_success_done = True
+    with pytest.raises(Exception, match="No valid input data"):
+        await c._async_update_data()
+    assert c._reserve_runtime._last_at is None

@@ -16,6 +16,14 @@ from .core.optimize import (  # noqa: F401
 
 DOMAIN = "battery_manager"
 
+# Opt-in policy; shadow time is measured, never a real-time test delay.
+CONF_RESERVE_MODE = "reserve_mode"
+CONF_RESERVE_UPPER_FACTOR = "reserve_upper_pv_factor"
+CONF_RESERVE_GRID_ENTITY = "reserve_grid_available_entity"
+CONF_RESERVE_TRANSFER_VERIFIED = "reserve_transfer_verified"
+RESERVE_MODES = ["off", "shadow", "active"]
+
+
 INTEGRATION_NAME = "Battery Manager"
 # The version is NOT hard-coded here (it drifted from manifest.json for
 # releases): the device sw_version is read from the manifest at runtime —
@@ -653,6 +661,10 @@ REALIZED_ENERGY_UNIT_FACTORS_WH = {
 
 # --- Default configuration (base entry) ---
 DEFAULT_CONFIG = {
+    CONF_RESERVE_MODE: "off",
+    CONF_RESERVE_GRID_ENTITY: None,
+    CONF_RESERVE_TRANSFER_VERIFIED: False,
+    CONF_RESERVE_UPPER_FACTOR: 1.2,
     # Battery
     "battery_capacity_wh": 5000.0,
     "battery_min_soc_percent": 5.0,

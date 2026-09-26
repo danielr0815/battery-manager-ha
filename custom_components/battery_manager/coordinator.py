@@ -122,6 +122,10 @@ from .const import (
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_PV_WINDOW_END_HOUR,
+    CONF_RESERVE_GRID_ENTITY,
+    CONF_RESERVE_MODE,
+    CONF_RESERVE_TRANSFER_VERIFIED,
+    CONF_RESERVE_UPPER_FACTOR,
     CONF_SOC_ENTITY,
     CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
@@ -235,11 +239,13 @@ from .core import (
     quantile_band_slots,
     slot_starts,
 )
+from .core.model import ReserveParams
 from .core.series import fixed_local_time
 from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
 from .localization import message
 from .operation_recorder import OperationRecorder
+from .reserve_runtime import ReserveRuntime, reserve_diagnostics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -438,6 +444,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._displayed_threshold: float | None = None
         self._inverter_recommendation = False
         self._last_inverter_switch: datetime | None = None
+        self._reserve_runtime = ReserveRuntime()
+        self._reserve_diag = {}
+        self._reserve_preparing = False
+        self._reserve_inverter_limit_w = None
         self._support_state = {"dc24": False, "dc48": False}
         # Manual override per PSU (F-N2): entered when the switch turns on
         # externally, left when it is switched off externally; persisted
@@ -776,6 +786,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "are re-derived at runtime"
             )
             data = None
+        self._reserve_runtime.restore(data.get("reserve") if data else None)
         self.operation_recorder.restore(data.get("operation_history") if data else None)
         self.operation_recorder.start()
         if data:
@@ -1154,6 +1165,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # F-REALIZED-SURPLUS: measured day counters + monotone true-export
             # total + last counter readings (decision 8; rationale in
             # async_load_persistent_state).
+            "reserve": self._reserve_runtime.export(),
             "operation_history": self.operation_recorder.export(),
             "realized": {
                 "date": self._realized["date"],
@@ -1193,6 +1205,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # a dead 24 V rail (PSU manually off, DC/DC still off) is healed
         # quickly.
         for key in (
+            CONF_RESERVE_GRID_ENTITY,
             CONF_INVERTER_LIMIT_ENTITY,
             CONF_INVERTER_BLOCK_SWITCH,
             CONF_SUPPORT_DC24_SWITCH,
@@ -1420,6 +1433,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if support_voltage is not None and not 40 <= support_voltage <= 60:
             support_voltage = None
         return SystemConfig(
+            reserve=ReserveParams(
+                enabled=(
+                    cfg.get(CONF_RESERVE_MODE) == "active"
+                    and self._reserve_runtime.ready
+                    and bool(cfg.get(CONF_INVERTER_LIMIT_ENTITY))
+                    and bool(cfg.get(CONF_RESERVE_GRID_ENTITY))
+                    and (
+                        not cfg.get(CONF_SUPPORT_DC24_SWITCH)
+                        or bool(cfg.get(CONF_RESERVE_TRANSFER_VERIFIED))
+                    )
+                ),
+                upper_pv_factor=float(cfg.get(CONF_RESERVE_UPPER_FACTOR, 1.2)),
+            ),
             battery=BatteryParams(
                 capacity_wh=float(cfg["battery_capacity_wh"]),
                 soc_min_percent=float(cfg["battery_min_soc_percent"]),
@@ -3900,6 +3926,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         forecasts = self._get_forecasts(now)
 
         if soc is None or forecasts is None:
+            self._reserve_runtime.interrupt()
             await self._coordinated_data_loss(soc, now)
             missing = "SOC" if soc is None else "PV forecasts"
             # V8 startup grace: within STARTUP_SOC_GRACE_S of the first refresh
@@ -4014,8 +4041,113 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "soc_buffer_effective": config.control.soc_buffer_percent,
             }
         profile_diag.update(buffer_diag)
-        result = await self.hass.async_add_executor_job(plan, config, inputs)
+        reserve_mode = self.raw_config.get(CONF_RESERVE_MODE, "off")
+        self._reserve_diag = {"mode": "off"}
+        self._reserve_inverter_limit_w = None
+        if reserve_mode != "off" and config.support.coordinated:
+            # A known PV-only increase may raise intent. Missing observations
+            # must never turn grid-supported charging into a solar credit.
+            pv_entity = self.raw_config.get("operation_pv_power_entity")
+            import_entity = self.raw_config.get("operation_import_power_entity")
+            pv_value = self._reserve_power(pv_entity)
+            import_value = self._reserve_power(import_entity)
+            solar_only = (
+                pv_value is not None
+                and pv_value > 0
+                and import_value is not None
+                and import_value <= 0
+                and all(
+                    not self.raw_config.get(key)
+                    or self._entity_tristate(self.raw_config[key]) is False
+                    for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
+                )
+            )
+            # Only switching shadow -> active may reuse the observed soak.
+            # Changed hardware ratings, source evidence or protection options
+            # require a new observation period, just like replaced actors.
+            signature = repr(
+                tuple(
+                    sorted(
+                        (key, value)
+                        for key, value in self.raw_config.items()
+                        if key != CONF_RESERVE_MODE
+                    )
+                )
+            )
+            self._reserve_runtime.observe(
+                now,
+                soc,
+                solar_only=solar_only,
+                preparing=self._reserve_preparing,
+                signature=signature,
+            )
+            inputs = replace(
+                inputs, reserve_hold_soc_percent=self._reserve_runtime.hold_soc
+            )
+            # The baseline is observable even in active mode, so added reserve
+            # import is never misreported as import purchased by optional loads.
+            baseline_config = replace(
+                config, reserve=replace(config.reserve, enabled=False)
+            )
+            baseline = await self.hass.async_add_executor_job(
+                plan, baseline_config, inputs
+            )
+            reserve_config = replace(
+                config, reserve=replace(config.reserve, enabled=True)
+            )
+            if self._reserve_grid_available() is not True:
+                reserve_config = replace(
+                    reserve_config,
+                    support=replace(
+                        reserve_config.support,
+                        dc24_available=False,
+                        dc48_available=False,
+                        dc24_forced_on=False,
+                        dc48_forced_on=False,
+                    ),
+                )
+            candidate = await self.hass.async_add_executor_job(
+                plan, reserve_config, inputs
+            )
+            active = config.reserve.enabled and self._reserve_runtime.ready
+            self._reserve_diag = reserve_diagnostics(
+                reserve_config,
+                inputs,
+                candidate,
+                baseline,
+                self._reserve_runtime,
+                "active" if active else "shadow",
+            )
+            self._reserve_diag["requested_mode"] = reserve_mode
+            self._reserve_diag["grid_available"] = self._reserve_grid_available()
+            self._reserve_diag["solar_credit_verified"] = solar_only
+            self._reserve_diag["forecast_archive"] = (
+                "operation_history:7d_raw/30d_report"
+            )
+            config, result = (
+                (reserve_config, candidate) if active else (baseline_config, baseline)
+            )
+            first = (
+                candidate.trajectory.flows[0] if candidate.trajectory.flows else None
+            )
+            self._reserve_preparing = bool(
+                active
+                and first
+                and not first.support_dc24_start
+                and (first.inverter_start or first.reserve_dc_ceiling_percent < soc)
+            )
+            if active:
+                self._reserve_inverter_limit_w = (
+                    max(0, int(first.inverter_limit_w)) if first else 0
+                )
+            self._save_persistent_state()
+        else:
+            self._reserve_runtime = ReserveRuntime()
+            self._reserve_preparing = False
+            result = await self.hass.async_add_executor_job(plan, config, inputs)
         self.operation_recorder.plan(config, inputs, result)
+        if self._reserve_diag.get("mode") in ("shadow", "active"):
+            self.operation_recorder.reserve(self._reserve_diag)
         self._arm_plan_boundary(inputs, result)
         self._update_plan_active(result)
         self._update_predrain_block_evidence(result, inputs, now)
@@ -4034,7 +4166,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._expected_battery_power_w = None
 
         threshold = self._apply_threshold_inertia(result.threshold_percent, config)
-        recommendation = self._apply_hysteresis(soc, threshold, config, now)
+        if config.reserve.enabled:
+            # Stopping is immediate; release still observes the existing dwell.
+            release_ready = (
+                self._last_inverter_switch is None
+                or now - self._last_inverter_switch
+                >= timedelta(seconds=config.control.min_switch_interval_s)
+            )
+            recommendation = bool(
+                result.inverter_on
+                and self._reserve_inverter_limit_w
+                and (self._inverter_recommendation or release_ready)
+            )
+            if recommendation != self._inverter_recommendation:
+                self._last_inverter_switch = now
+            self._inverter_recommendation = recommendation
+        else:
+            recommendation = self._apply_hysteresis(soc, threshold, config, now)
         if config.support.coordinated:
             recommendation = recommendation and result.inverter_on
             self._coordinated_inverter_target = recommendation
@@ -4491,6 +4639,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 SUPPORT_MODE_MANUAL if self.feedin_manual() else SUPPORT_MODE_AUTO
             ),
             "support_dc48_controller": dict(self._dc48_ctrl_diag),
+            "reserve": dict(self._reserve_diag),
             "coordinated_support": {
                 **getattr(self, "_coordinated_support_diag", {}),
                 "enabled": config.support.coordinated,
@@ -5747,10 +5896,48 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return await self._switch_entity(then_off, False)
 
+    def _reserve_power(self, entity) -> float | None:
+        state = self.hass.states.get(entity) if entity else None
+        if (
+            state is None
+            or not 0 <= (dt_util.utcnow() - state.last_reported).total_seconds() <= 30
+        ):
+            return None
+        value = self._read_float(entity)
+        unit = state.attributes.get("unit_of_measurement")
+        return (
+            value * (1000 if unit == "kW" else 1)
+            if value is not None and unit in ("W", "kW")
+            else None
+        )
+
+    def _reserve_grid_available(self) -> bool | None:
+        entity = self.raw_config.get(CONF_RESERVE_GRID_ENTITY)
+        state = self.hass.states.get(entity) if entity else None
+        if (
+            state is None
+            or not 0 <= (dt_util.utcnow() - state.last_reported).total_seconds() <= 30
+        ):
+            return None
+        value = state.state.lower()
+        if value in ("on", "ac_input_1", "ac_input_2"):
+            return True
+        if value in ("off", "disconnected", "not_connected"):
+            return False
+        return None
+
     def _inverter_limit_confirmed(self, blocked: bool) -> bool:
         """The watt limit is the actuator; Victron's switch is read-only proof."""
         entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
-        target = 0.0 if blocked else float(self.raw_config["inverter_max_power_w"])
+        target = (
+            0.0
+            if blocked
+            else float(
+                self._reserve_inverter_limit_w
+                if self._reserve_inverter_limit_w is not None
+                else self.raw_config["inverter_max_power_w"]
+            )
+        )
         value = self._read_float(entity)
         feedback = self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
         return (
@@ -5761,7 +5948,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _confirm_inverter_limit(self, blocked: bool, diag: dict) -> bool:
         entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
-        target = 0.0 if blocked else float(self.raw_config["inverter_max_power_w"])
+        target = (
+            0.0
+            if blocked
+            else float(
+                self._reserve_inverter_limit_w
+                if self._reserve_inverter_limit_w is not None
+                else self.raw_config["inverter_max_power_w"]
+            )
+        )
         diag["discharge_limit_target_w"] = target
         # Do not hammer an already accepted number while waiting for the
         # separate Victron feedback. Its state event resumes confirmation.
@@ -5850,6 +6045,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         diag["reason"] = "awaiting_confirmation"
                         return False
                     return True
+
+                if (
+                    config.reserve.enabled
+                    and self._reserve_grid_available() is not True
+                ):
+                    self._inverter_recommendation = False
+                    diag["reason"] = "grid_supply_unavailable"
+                    if dcdc and not await confirmed(dcdc, True):
+                        return
+                    for key, entity in (("dc24", psu24), ("dc48", psu48)):
+                        if entity and not await confirmed(entity, False):
+                            return
+                        self._support_state[key] = False
+                    await self._confirm_inverter_limit(True, diag)
+                    diag["reason"] = "grid_supply_unavailable"
+                    self._save_persistent_state()
+                    return
 
                 # Even an unexpected external PSU activation blocks AC immediately.
                 # Release comes last, after all source confirmations below.
@@ -7568,6 +7780,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._actuation_shutdown:
             return
         boundaries = {slot.start for slot in inputs.slots if slot.start > inputs.now}
+        if self._reserve_inverter_limit_w is not None:
+            boundaries.add(inputs.now + timedelta(minutes=5))
         for load_plan in result.load_plans:
             for slot, hours in zip(inputs.slots, load_plan.run_hours, strict=False):
                 if hours > 0:

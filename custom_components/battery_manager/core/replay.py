@@ -84,4 +84,4 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
     if not isinstance(config, SystemConfig) or not isinstance(inputs, PlanInputs):
         raise ValueError("Recording must contain SystemConfig and PlanInputs")
     result = plan(config, inputs)
-    return result, encode(result) == record["result"]
+    return result, encode(result) == encode(decode(record["result"]))

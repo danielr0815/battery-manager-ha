@@ -138,6 +138,7 @@ def step_hour(
             and support.psu48_bus_voltage_v <= support.psu48_output_voltage_v
         )
     psu48_delivered_wh = 0.0
+    psu48_battery_charge_wh = 0.0
     if gate_open:
         potential = support.dc48_power_w * slot.duration
         if support.coordinated:
@@ -174,6 +175,8 @@ def step_hour(
         absorbed = min(remainder * battery.eta_charge, headroom)
         energy += absorbed
         battery_charge += absorbed
+        # Reserve-only detail: old recordings keep their neutral added field.
+        psu48_battery_charge_wh = absorbed if config.reserve.enabled else 0.0
         psu48_delivered_wh = direct + absorbed / battery.eta_charge
         grid_import += psu48_delivered_wh / support.psu48_eta
 
@@ -287,6 +290,7 @@ def step_hour(
         extra_ac_wh=extra_ac_wh,
         support_dc24=dc24_from_grid and support.configured,
         support_dc48=dc48_support and support.configured,
+        psu48_battery_charge_wh=psu48_battery_charge_wh,
         psu48_delivered_wh=psu48_delivered_wh,
         psu24_delivered_wh=psu24_delivered_wh,
         dcdc_input_wh=dcdc_input_wh,
@@ -340,6 +344,15 @@ def simulate(
                 f"simulate: {name} has {len(series)} entries but the horizon "
                 f"has {n_slots} slots"
             )
+
+    if (
+        config.reserve.enabled
+        and config.support.configured
+        and config.support.coordinated
+    ):
+        from .reserve import simulate_reserve
+
+        return simulate_reserve(config, inputs, extra_ac_wh, pv_scale, feedin_wh)
 
     if config.support.configured and config.support.coordinated:
         from .support import simulate_support

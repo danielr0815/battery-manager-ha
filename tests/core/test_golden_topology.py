@@ -16,6 +16,7 @@ from pathlib import Path
 from core.model import (
     LoadProfile,
     PVParams,
+    ReserveParams,
     SupportParams,
     SurplusLoad,
     SurplusLoadState,
@@ -76,6 +77,19 @@ def _run(config, now, soc, fc, states=()):
 
 
 def _scenarios():
+    reserve = SystemConfig(
+        reserve=ReserveParams(enabled=True),
+        support=SupportParams(
+            configured=True,
+            coordinated=True,
+            native48_base_w=35,
+            dcdc_eta=0.93,
+            psu24_eta=0.89,
+            psu48_eta=0.89,
+            psu48_max_power_w=49.56 * 1.15,
+            psu48_bus_voltage_v=52,
+        ),
+    )
     base = SystemConfig()
     loads_cfg = SystemConfig(loads=(FOSSIBOT, DEHUMID))
     sup = SystemConfig(support=SupportParams(configured=True, gate_soc_percent=100.0))
@@ -106,6 +120,27 @@ def _scenarios():
         )
     )
     return {
+        "reserve_dark_winter": (
+            reserve,
+            datetime(2026, 12, 1, 18),
+            80.0,
+            [0, 0.5, 0.5],
+            (),
+        ),
+        "reserve_sunny_winter": (
+            reserve,
+            datetime(2026, 12, 1, 18),
+            80.0,
+            [0, 5.5, 1],
+            (),
+        ),
+        "reserve_summer_preparation": (
+            reserve,
+            datetime(2026, 7, 1, 18),
+            90.0,
+            [0, 13, 12],
+            (),
+        ),
         "coordinated_low_reserve": (
             coordinated,
             datetime(2026, 9, 14, 20),

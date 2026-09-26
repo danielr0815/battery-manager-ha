@@ -1861,3 +1861,27 @@ def test_aux_continuation_uses_output_path_not_root_pause(phase, path, active_no
     assert cascade.planned_aux_energy_wh > 0
     for member in cascade.flows[-1].member_flows:
         assert member.soc_end_percent == pytest.approx(50)
+
+
+def test_reserve_cascade_allocation_preserves_strict_surplus_contract():
+    from custom_components.battery_manager.core import ReserveParams, SupportParams
+
+    config, inputs = _system(socs=(50.0,))
+    config = replace(
+        config,
+        reserve=ReserveParams(True),
+        support=SupportParams(
+            configured=True,
+            coordinated=True,
+            psu48_bus_voltage_v=52,
+        ),
+    )
+    inputs = replace(inputs, start_soc_percent=90)
+    baseline = plan(
+        replace(config, cascades=(), loads=()), replace(inputs, load_states=())
+    )
+    allocated = plan(config, inputs)
+    assert allocated.grid_import_kwh <= baseline.grid_import_kwh + 1e-6
+    assert sum(p.planned_energy_wh for p in allocated.load_plans) > 0
+    assert allocated.grid_export_kwh < baseline.grid_export_kwh
+    assert allocated.trajectory.min_soc_percent >= config.battery.soc_min_percent

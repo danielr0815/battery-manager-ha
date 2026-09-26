@@ -94,6 +94,7 @@ const MAX_CASCADE_POINTS = 10000; // retain switching edges across the full 96-h
 
 const STRINGS = {
   en: {
+    reserve_no_emergency_benefit: "No proven overall benefit from emergency feed-in",
     "execution_constraints": "Execution constraints",
     "minimum_run_until": "Earliest regular stop",
     "predrain_not_before": "Pre-drain no earlier than",
@@ -221,6 +222,7 @@ const STRINGS = {
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
   de: {
+    reserve_no_emergency_benefit: "Kein nachgewiesener Gesamtnutzen einer Notfalleinspeisung",
     "execution_constraints": "Ausführbarkeit",
     "minimum_run_until": "Frühestes reguläres Laufende",
     "predrain_not_before": "Vorlauf frühestens",
@@ -494,6 +496,32 @@ function feedinDecisions(hass, decisions) {
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass,"feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
+function reserveReport(hass, reserve) {
+  if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
+  const de = (hass?.language || "en").startsWith("de");
+  const t = (a,b) => de ? a : b;
+  const fmt = (value) => typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "—";
+  const at = Date.parse(reserve.preparation_start);
+  const start = Number.isFinite(at) ? new Intl.DateTimeFormat(hass?.language || "en", {timeZone:hass?.config?.time_zone, weekday:"short", hour:"2-digit", minute:"2-digit"}).format(at) : "—";
+  const rows = [
+    [t("Halteziel / Ist-SOC", "Hold target / actual SOC"), `${fmt(reserve.hold_soc_percent)} / ${fmt(reserve.actual_soc_percent)} %`],
+    [t("Benötigter zusätzlicher Freiraum", "Additional headroom needed"), `${fmt(reserve.headroom_wh)} Wh`],
+    [t("Vorbereitung ab", "Preparation from"), start],
+    [t("Erwarteter Mindest-SOC", "Expected minimum SOC"), `${fmt(reserve.expected_min_soc_percent)} %`],
+    [t("Zusätzlicher Netzbezug für Reserve", "Additional grid import for reserve"), `${fmt(reserve.extra_grid_import_wh)} Wh`],
+    [t("Verbleibende Batterieentladung", "Remaining battery discharge"), `${fmt(reserve.remaining_discharge_wh)} Wh`],
+    [t("Fehlende Reserve", "Reserve shortfall"), `${fmt(reserve.hold_shortfall_wh)} Wh`],
+    [t("Technisch bedingte Netzteilladung", "Incidental PSU charging"), `${fmt(reserve.incidental_grid_charge_wh)} Wh`],
+    [t("Erwartete 48-V-Stützung", "Expected 48 V support"), `${fmt(reserve.psu48_delivered_wh)} Wh`],
+    [t("Inverterlimit jetzt", "Inverter limit now"), `${fmt(reserve.inverter_limit_w)} W`],
+  ];
+  return `<details data-view-key="reserve-policy" style="padding:12px"><summary>${t("Ganzjährige Reserve", "Year-round reserve")} · ${reserve.mode === "shadow" ? t("Schattenbetrieb", "Shadow") : t("Aktiv", "Active")}</summary>
+    <p>${t("Beobachteter Schattenbetrieb", "Observed shadow operation")}: ${fmt(reserve.shadow_observed_hours)} / 48 h</p>
+    <dl>${rows.map(([label,value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+    ${reserve.hold_achievable === false ? `<p>${t("Die vorhandenen Netzteile können den SOC derzeit nicht vollständig halten.", "The available PSUs cannot fully hold SOC at present.")}</p>` : ""}
+    <p>${t("Prognosebänder, sonst unkalibrierter PV-Faktor", "Forecast bands, otherwise uncalibrated PV factor")}: ${fmt(reserve.upper_pv_factor)} · ${t("Keine gezielte Netzladung. Einspeisung nur bei nachgewiesenem Notfallnutzen.", "No targeted grid recharge. Feed-in requires proven emergency benefit.")}</p></details>`;
+}
+
 function operationReport(hass, report) {
   if (!report || !Array.isArray(report.days) || !report.days.length) return "";
   const de = (hass.language || "en").startsWith("de");
@@ -760,7 +788,7 @@ class BatteryManagerForecastCard extends HTMLElement {
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
         ${body}
-        ${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
+        ${reserveReport(this._hass, stateObj?.attributes?.reserve)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `);
     this._attachChartHandlers();
@@ -773,7 +801,7 @@ class BatteryManagerForecastCard extends HTMLElement {
     const a = stateObj.attributes;
     const parts = [];
     const threshold = num(a.soc_threshold_percent);
-    if (threshold !== undefined) {
+    if (threshold !== undefined && a.reserve?.mode !== "active") {
       parts.push(`T* ${Math.round(threshold)} %`);
     }
     // Per-day today/tomorrow figures from the `daily` breakdown (import +

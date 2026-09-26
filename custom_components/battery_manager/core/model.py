@@ -634,6 +634,17 @@ class CascadePlan:
 
 
 @dataclass(frozen=True)
+class ReserveParams:
+    """Opt-in preservation; the upper scenario is not a probability guarantee."""
+
+    enabled: bool = False
+    upper_pv_factor: float = 1.2
+
+    def __post_init__(self) -> None:
+        _require(1 <= self.upper_pv_factor <= 1.5, "Invalid reserve upper PV factor")
+
+
+@dataclass(frozen=True)
 class SystemConfig:
     """Complete static system description."""
 
@@ -657,8 +668,14 @@ class SystemConfig:
     loads: tuple[SurplusLoad, ...] = ()
     appliances: tuple[Appliance, ...] = ()
     cascades: tuple[LoadCascade, ...] = ()
+    reserve: ReserveParams = field(default_factory=ReserveParams)
 
     def __post_init__(self) -> None:
+        _require(
+            not self.reserve.enabled
+            or (self.support.configured and self.support.coordinated),
+            "Reserve requires coordinated support",
+        )
         if not self.cascades:
             return
         loads = {load.load_id: load for load in self.loads}
@@ -734,6 +751,7 @@ class PlanInputs:
     load_states: tuple[SurplusLoadState, ...] = ()
     appliance_runs: tuple[ApplianceRun, ...] = ()
     cascade_runtime_states: tuple[CascadeRuntimeState, ...] = ()
+    reserve_hold_soc_percent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -766,6 +784,12 @@ class HourFlows:
     support_dc24_start: bool = False
     support_dc48_start: bool = False
     inverter_start: bool = False
+    # New diagnostics append to the positional contract; old records default to zero.
+    psu48_battery_charge_wh: float = 0.0
+    reserve_preparation_start: datetime | None = None
+    reserve_ceiling_percent: float = 0.0
+    reserve_dc_ceiling_percent: float = 0.0
+    inverter_limit_w: float = 0.0
 
 
 @dataclass(frozen=True)

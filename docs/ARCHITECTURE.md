@@ -42,6 +42,7 @@ belongs in the HA layer.
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
+| `reserve.py` | Optional year-round reserve policy: backward DC/all-load energy envelopes and forward five-minute validation (v0.45.0; see `F-YEAR-ROUND-RESERVE.md`). |
 | `optimize.py` | `plan`: the planner. Threshold search, surplus-load allocation, the early feed-in pass (`plan_feedin`, F-FEEDIN), the appliance-window advisor, and the last-resort grid-support escalation. |
 | `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and target-limited Aux discharge without a same-day recharge requirement. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
@@ -53,6 +54,7 @@ belongs in the HA layer.
 |---|---|
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
+| `reserve_runtime.py` | Persisted reserve intent, observed 48-hour shadow qualification and reserve diagnostics. |
 | `cascade_manager.py` | Sole actor owner for storage chains: wake, proof, handover, Root return, Safe-OFF and daily state. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |

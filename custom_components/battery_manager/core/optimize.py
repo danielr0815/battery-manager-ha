@@ -494,6 +494,10 @@ def search_threshold(
     The returned base trajectory is ALWAYS full-horizon at the chosen threshold
     (the allocation gates keep differencing complete horizons, R6).
     """
+    if config.reserve.enabled and config.support.coordinated:
+        threshold = float(_search_lo(config))
+        return threshold, simulate(config, inputs, threshold)
+
     battery = config.battery
     control = config.control
 
@@ -2352,7 +2356,18 @@ def plan_feedin(
     `prevented_export_by_day_wh` counterfactual deliberately keeps comparing
     base vs. alloc WITHOUT feed-in.
     """
-    feedin = config.feedin
+    if config.reserve.enabled and config.feedin.manual_w is None:
+        if decisions is not None:
+            decisions.extend(
+                (i, "reserve_no_emergency_benefit") for i in range(len(inputs.slots))
+            )
+        return (0.0,) * len(inputs.slots), {}
+
+    feedin = (
+        replace(config.feedin, automatic_enabled=False)
+        if config.reserve.enabled
+        else config.feedin
+    )
     battery = config.battery
     n = len(inputs.slots)
     booked = [0.0] * n
@@ -2964,7 +2979,11 @@ def _plan_legacy(
     }
     # F-NIGHT-RESCUE R7: surface the merge bound the T* scan used, so the
     # 04:13-class events ("why did the threshold jump?") are visible.
-    merge_end, merge_margin_wh = _threshold_merge_probe(config, inputs)
+    merge_end, merge_margin_wh = (
+        (None, 0.0)
+        if config.reserve.enabled
+        else _threshold_merge_probe(config, inputs)
+    )
     if merge_margin_wh < MERGE_TERMINAL_RAMP_WH:
         merge_end = None
     threshold_horizon_end = None
@@ -3019,6 +3038,13 @@ def _plan_legacy(
 
 def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """Plan the system, retaining an exact fast path for non-cascade setups."""
+    if config.reserve.enabled:
+        config = replace(
+            config,
+            control=replace(
+                config.control, upper_pv_reserve=config.reserve.upper_pv_factor
+            ),
+        )
     if not config.cascades:
         return _plan_legacy(config, inputs)
 

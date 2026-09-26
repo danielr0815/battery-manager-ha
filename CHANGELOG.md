@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-26
+
+### Added
+- Optional ganzjährige Reservepolitik: zeitabhängiger PV-Freiraum, bevorzugte
+  DC-Nutzung und rechtzeitige, energielimitierte AC-Entladung. Ohne absehbare
+  Sättigung bleibt der vorhandene SOC soweit physisch möglich erhalten.
+- Aus/Schatten/Aktiv mit 48 tatsächlich beobachteten Stunden vor aktiver
+  Steuerung, persistentem Halteziel, Netzverfügbarkeit und geprüftem
+  autonomem 24-V-Rückfall als Aktivierungsvoraussetzungen.
+- Reserve-Diagnose und Card mit Halteziel, Freiraum, erreichbarer Reserve,
+  Restentladung, Netzteilanteilen und zusätzlichem Netzbezug gegenüber dem
+  bisherigen Planner. Prognosen und Schattenentscheidungen werden im
+  vorhandenen begrenzten Betriebsjournal nachvollziehbar aufgezeichnet.
+
+### Changed
+- Im Reservebetrieb verwendet der Planner vorhandene P90-Bänder, andernfalls
+  einen separat konfigurierbaren Faktor (Standard 1,20, unkalibriert).
+  Inverterlimits werden aus der unmittelbar zulässigen Entladeenergie bestimmt.
+- Eine aktuelle 48-V-Spannung ersetzt im Reservebetrieb den festen SOC-Proxy;
+  für abweichende zukünftige SOC-Werte wird keine sichere Leistung erfunden.
+  Technisch bedingte Netzteilladung bleibt von solarem Reserveaufbau getrennt.
+- Die bisherige reine zeitliche Exportverschiebung ist im Reservebetrieb
+  mangels nachgewiesenem Notfall-Gesamtnutzen gesperrt. Manuelle Vorgaben
+  bleiben als Ist-Zustand sichtbar, erlauben keine automatische Fortsetzung.
+- Historische Planner-Replays ergänzen neue neutrale Felder beim Vergleich.
+  Bestehende Installationen und Golden-Szenarien ohne Reserve bleiben gleich.
+
 ## [0.44.0] - 2026-09-14
 
 ### Added

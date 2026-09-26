@@ -211,6 +211,17 @@ class OperationRecorder:
             )
         self._schedule_save()
 
+    def reserve(self, diagnostic):
+        # The linked plan contains the original forecast, bands and factor.
+        # Scalar shadow evidence is small enough for the existing bounded log.
+        self._safe(
+            self.history.event,
+            dt_util.utcnow(),
+            "reserve_policy",
+            {key: value for key, value in diagnostic.items() if key != "curve"},
+        )
+        self._schedule_save()
+
     def summary(self):
         return {
             "schema_version": 1,

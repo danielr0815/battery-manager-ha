@@ -122,6 +122,10 @@ from .const import (
     CONF_PV_FORECAST_TODAY,
     CONF_PV_FORECAST_TOMORROW,
     CONF_PV_WINDOW_END_HOUR,
+    CONF_RESERVE_GRID_ENTITY,
+    CONF_RESERVE_MODE,
+    CONF_RESERVE_TRANSFER_VERIFIED,
+    CONF_RESERVE_UPPER_FACTOR,
     CONF_SOC_ENTITY,
     CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
@@ -145,6 +149,7 @@ from .const import (
     INPUT_OFF_POLICY_KEEP,
     OPERATION_POWER_SOURCES,
     PV_FORECAST_MODES,
+    RESERVE_MODES,
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
@@ -562,6 +567,26 @@ def _predrain_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """
     return {
         vol.Required(
+            CONF_RESERVE_MODE, default=_d(current, CONF_RESERVE_MODE)
+        ): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=RESERVE_MODES,
+                translation_key="reserve_mode",
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Optional(
+            CONF_RESERVE_GRID_ENTITY,
+            description={"suggested_value": current.get(CONF_RESERVE_GRID_ENTITY)},
+        ): _entity(["binary_sensor", "sensor"]),
+        vol.Required(
+            CONF_RESERVE_TRANSFER_VERIFIED,
+            default=_d(current, CONF_RESERVE_TRANSFER_VERIFIED),
+        ): selector.BooleanSelector(),
+        vol.Required(
+            CONF_RESERVE_UPPER_FACTOR, default=_d(current, CONF_RESERVE_UPPER_FACTOR)
+        ): _number(1.0, 1.5, 0.05),
+        vol.Required(
             CONF_PV_FORECAST_MODE, default=_d(current, CONF_PV_FORECAST_MODE)
         ): selector.SelectSelector(
             selector.SelectSelectorConfig(
@@ -721,6 +746,17 @@ def _validate_support_entities(data: dict[str, Any]) -> str | None:
     chosen = [data.get(key) for key in _SUPPORT_SWITCH_KEYS if data.get(key)]
     if len(chosen) != len(set(chosen)):
         return "support_entities_not_distinct"
+    if data.get(CONF_RESERVE_MODE, "off") != "off" and not data.get(
+        CONF_INVERTER_LIMIT_ENTITY
+    ):
+        return "reserve_requires_coordinated_support"
+    if data.get(CONF_RESERVE_MODE) == "active":
+        if not data.get(CONF_RESERVE_GRID_ENTITY):
+            return "reserve_requires_grid_signal"
+        if data.get(CONF_SUPPORT_DC24_SWITCH) and not data.get(
+            CONF_RESERVE_TRANSFER_VERIFIED
+        ):
+            return "reserve_requires_verified_transfer"
     if data.get(CONF_INVERTER_LIMIT_ENTITY):
         if data.get(CONF_SUPPORT_DC24_SWITCH) and not data.get(CONF_DCDC_SWITCH):
             return "coordinated_requires_dc24_transfer"

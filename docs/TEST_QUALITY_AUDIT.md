@@ -33,6 +33,7 @@ ein bloßer Funktionsaufruf reicht nicht.
 
 | Tests | Verifizierte Quelle bzw. Vertrag |
 |---|---|
+| `core/test_reserve.py`, Reserve-Fall in `core/test_cascade.py`, `ha/test_reserve_runtime.py`, Reserve-Card-Test | `F-YEAR-ROUND-RESERVE.md`: zeitlicher Freiraum, DC-Vorrang, physische Restentladung, Strict-Surplus, getrennte Netzteilladung, persistente Absicht, Schattenfreigabe, Quellenrückfall und Notfall-Sperre |
 | `core/test_execution_projection.py`, `ha/test_execution_constraints.py`, `ha/test_predrain_block.py`, `frontend/cascade-card.test.mjs` | `F-EXECUTION-PROJECTION.md`: Restlaufzeit, Ladeziel, stabile Vorlaufgrenze, Gerätebestätigung, Prüffristen und Kartenbegründungen |
 | `core/test_compare_plan_grids.py` | `PLAN-GRID-COMPARISON.md`: Energieerhaltung, Laufzeitsperren, tatsächliche Quellensegmente, begrenzte Offline-Arbeit und Fragmentierungs-Gegenbeispiel |
 | `core/test_model.py` | physikalische Dataclass-Invarianten und unveränderte akzeptierte Werte |

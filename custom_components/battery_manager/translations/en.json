@@ -163,7 +163,11 @@
               "predrain_pv_confidence": "PV confidence (lower buffer)",
               "upper_pv_reserve": "PV reserve (upper buffer)",
               "strong_pv_cutoff_w": "'Sun behind the house' threshold (W)",
-              "pv_window_end_hour": "Fixed PV window end (hour, optional)"
+              "pv_window_end_hour": "Fixed PV window end (hour, optional)",
+              "reserve_mode": "Year-round reserve",
+              "reserve_upper_pv_factor": "Upper PV scenario without forecast bands",
+              "reserve_grid_available_entity": "Grid availability",
+              "reserve_transfer_verified": "24 V fallback tested for grid and HA failure"
             },
             "data_description": {
               "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -174,7 +178,11 @@
               "predrain_pv_confidence": "Pessimism of the lower-buffer stress test: the next day's PV is de-rated by this factor and the run must still keep the inverter reserve above its floor. 1.0 = trust the forecast fully (recommendation: 0.5).",
               "upper_pv_reserve": "Optimism of the upper-buffer opportunity test: in-window pre-drains are justified against a PV forecast scaled up by this factor. 1.0 = gate off (recommendation: 1.2).",
               "strong_pv_cutoff_w": "Average power above which an hour counts as strong PV (inside the absorption window). After the last such hour the sun is 'behind the house' and the upper reserve may be spent (recommendation: 200 W).",
-              "pv_window_end_hour": "Optional site override: cap the PV window's end at the last hour before this local hour (e.g. a roof shaded from mid-afternoon). Empty = derive purely from the forecast."
+              "pv_window_end_hour": "Optional site override: cap the PV window's end at the last hour before this local hour (e.g. a roof shaded from mid-afternoon). Empty = derive purely from the forecast.",
+              "reserve_mode": "Off retains the existing planner. Shadow records the new policy. Active controls only after 48 observed hours.",
+              "reserve_upper_pv_factor": "Uncalibrated fallback without P90; 1.20 means a 20% uplift. Not a zero-export guarantee.",
+              "reserve_grid_available_entity": "Fresh on/off signal or Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Missing or stale values do not prove grid supply.",
+              "reserve_transfer_verified": "Before active holding, the DC/DC must restore the 24 V rail on grid loss even without HA running."
             }
           },
           "support_paths": {
@@ -268,7 +276,10 @@
       "support_dc48_recovery_above_dc24": "The 48 V support recover-SOC must be at or below the 24 V recover-SOC.",
       "coordinated_requires_dc24_transfer": "Coordinated 24 V supply requires a DC/DC switch for confirmed source transfer.",
       "coordinated_requires_psu48_current": "Enter the rated maximum current of the 48 V PSU.",
-      "coordinated_invalid_reserve_order": "Required: battery minimum < 48 V activation <= 24 V activation < inverter minimum."
+      "coordinated_invalid_reserve_order": "Required: battery minimum < 48 V activation <= 24 V activation < inverter minimum.",
+      "reserve_requires_coordinated_support": "Reserve requires the numeric inverter discharge limit.",
+      "reserve_requires_grid_signal": "Active reserve requires a grid availability signal.",
+      "reserve_requires_verified_transfer": "Verify and confirm autonomous 24 V fallback before activation."
     },
     "abort": {
       "already_configured": "This system is already configured.",
@@ -557,7 +568,10 @@
       "feedin_min_soc_not_above_battery_min": "The feed-in minimum SOC must be above the battery minimum SOC.",
       "coordinated_requires_dc24_transfer": "Coordinated 24 V supply requires a DC/DC switch for confirmed source transfer.",
       "coordinated_requires_psu48_current": "Enter the rated maximum current of the 48 V PSU.",
-      "coordinated_invalid_reserve_order": "Required: battery minimum < 48 V activation <= 24 V activation < inverter minimum."
+      "coordinated_invalid_reserve_order": "Required: battery minimum < 48 V activation <= 24 V activation < inverter minimum.",
+      "reserve_requires_coordinated_support": "Reserve requires the numeric inverter discharge limit.",
+      "reserve_requires_grid_signal": "Active reserve requires a grid availability signal.",
+      "reserve_requires_verified_transfer": "Verify and confirm autonomous 24 V fallback before activation."
     },
     "step": {
       "init": {
@@ -637,7 +651,11 @@
               "predrain_pv_confidence": "PV confidence (lower buffer)",
               "upper_pv_reserve": "PV reserve (upper buffer)",
               "strong_pv_cutoff_w": "'Sun behind the house' threshold (W)",
-              "pv_window_end_hour": "Fixed PV window end (hour, optional)"
+              "pv_window_end_hour": "Fixed PV window end (hour, optional)",
+              "reserve_mode": "Year-round reserve",
+              "reserve_upper_pv_factor": "Upper PV scenario without forecast bands",
+              "reserve_grid_available_entity": "Grid availability",
+              "reserve_transfer_verified": "24 V fallback tested for grid and HA failure"
             },
             "data_description": {
               "soc_buffer_percent": "Safety reserve above the battery minimum: planning keeps this buffer free for forecast errors (recommendation: 5 %).",
@@ -648,7 +666,11 @@
               "predrain_pv_confidence": "Pessimism of the lower-buffer stress test: the next day's PV is de-rated by this factor and the run must still keep the inverter reserve above its floor. 1.0 = trust the forecast fully (recommendation: 0.5).",
               "upper_pv_reserve": "Optimism of the upper-buffer opportunity test: in-window pre-drains are justified against a PV forecast scaled up by this factor. 1.0 = gate off (recommendation: 1.2).",
               "strong_pv_cutoff_w": "Average power above which an hour counts as strong PV (inside the absorption window). After the last such hour the sun is 'behind the house' and the upper reserve may be spent (recommendation: 200 W).",
-              "pv_window_end_hour": "Optional site override: cap the PV window's end at the last hour before this local hour (e.g. a roof shaded from mid-afternoon). Empty = derive purely from the forecast."
+              "pv_window_end_hour": "Optional site override: cap the PV window's end at the last hour before this local hour (e.g. a roof shaded from mid-afternoon). Empty = derive purely from the forecast.",
+              "reserve_mode": "Off retains the existing planner. Shadow records the new policy. Active controls only after 48 observed hours.",
+              "reserve_upper_pv_factor": "Uncalibrated fallback without P90; 1.20 means a 20% uplift. Not a zero-export guarantee.",
+              "reserve_grid_available_entity": "Fresh on/off signal or Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Missing or stale values do not prove grid supply.",
+              "reserve_transfer_verified": "Before active holding, the DC/DC must restore the 24 V rail on grid loss even without HA running."
             }
           },
           "consumption_profile": {
@@ -854,6 +876,13 @@
       "options": {
         "exclusive": "Controlled exclusively by Battery Manager",
         "shared": "Shared (respect manual changes)"
+      }
+    },
+    "reserve_mode": {
+      "options": {
+        "off": "Off",
+        "shadow": "Shadow",
+        "active": "Active (after shadow period)"
       }
     }
   },
