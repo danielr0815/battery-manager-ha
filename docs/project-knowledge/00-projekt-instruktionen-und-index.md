@@ -1,10 +1,10 @@
 # Projekt-Instruktionen & Index
 
-Ergänzung für **v0.45.0 (26.09.2026)**: Die optionale ganzjährige Reservepolitik
+Ergänzung für **v0.45.1 (26.09.2026)**: Die optionale ganzjährige Reservepolitik
 ist in [F-YEAR-ROUND-RESERVE](../F-YEAR-ROUND-RESERVE.md) spezifiziert; der
 [Jahresbefund](../YEAR-ROUND-RESERVE-ANALYSIS-2026-09-26.md) dokumentiert die
-Messgrundlage und deren Grenzen. Standard bleibt Aus, aktive Einführung erfordert
-48 beobachtete Stunden Schattenbetrieb.
+Messgrundlage und deren Grenzen. Bei koordinierter Steuerung startet die Politik
+sofort anhand der Prognosen; Schattenbetrieb ist optional, ohne 48-Stunden-Pflicht.
 
 Für lineare Speicher-Kaskaden sind
 [`../F-CASCADE-STORAGE.md`](../F-CASCADE-STORAGE.md) (Spezifikation) und

@@ -13,6 +13,7 @@ from custom_components.battery_manager.const import (
     CONF_DCDC_SWITCH,
     CONF_INVERTER_BLOCK_SWITCH,
     CONF_INVERTER_LIMIT_ENTITY,
+    CONF_RESERVE_MODE,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_SWITCH,
     DOMAIN,
@@ -31,6 +32,8 @@ async def rig(hass):
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
+            # This module verifies the original source-transfer policy.
+            CONF_RESERVE_MODE: "off",
             CONF_INVERTER_BLOCK_SWITCH: BLOCK,
             CONF_INVERTER_LIMIT_ENTITY: LIMIT,
             CONF_SUPPORT_DC24_SWITCH: PSU24,

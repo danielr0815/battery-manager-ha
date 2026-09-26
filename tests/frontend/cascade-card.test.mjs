@@ -603,6 +603,8 @@ test('standalone clipping keeps energy and absent Wh stays unknown',()=>{
 test('reserve report separates requested reserve and physically achievable support',()=>{
  const html=vm.runInContext('reserveReport',context)({language:'de',config:{time_zone:'Europe/Berlin'}},{mode:'shadow',hold_soc_percent:80,actual_soc_percent:70,hold_achievable:false,headroom_wh:1000,shadow_observed_hours:12,preparation_start:'<script>',upper_pv_factor:1.2});
  assert.match(html,/Schattenbetrieb/);
+ assert.match(html,/ohne Wartezeit/);
+ assert.doesNotMatch(html,/48 h/);
  assert.match(html,/80.0 \/ 70.0/);
  assert.match(html,/nicht vollständig halten/);
  assert.doesNotMatch(html,/<script>/);

@@ -1,13 +1,12 @@
-"""Persistent intent and observed shadow time; no actuator ownership here."""
+"""Persistent reserve intent and observation diagnostics; no activation delay."""
 
 from __future__ import annotations
 
 import math
 from datetime import datetime
 
-# Two observed days are required before a new reserve policy may own actors.
-# Downtime and missing observations must never silently count as a soak test.
-SHADOW_SECONDS = 48 * 3600
+# Gaps must not invent a solar gain or hide involuntary loss. Observation time
+# is diagnostic only, never a prerequisite for forecast-driven actuation.
 MAX_OBSERVATION_GAP_SECONDS = 600
 
 
@@ -22,10 +21,6 @@ class ReserveRuntime:
         self._last_solar_only = False
         self.signature = None
 
-    @property
-    def ready(self):
-        return self.observed_seconds >= SHADOW_SECONDS
-
     def restore(self, value):
         if not isinstance(value, dict):
             return
@@ -38,7 +33,7 @@ class ReserveRuntime:
             and math.isfinite(seconds)
             and seconds >= 0
         ):
-            self.observed_seconds = min(float(seconds), SHADOW_SECONDS)
+            self.observed_seconds = float(seconds)
         self.signature = value.get("signature")
 
     def export(self):
@@ -70,7 +65,7 @@ class ReserveRuntime:
             self.hold_soc = soc
         elapsed = (now - self._last_at).total_seconds() if self._last_at else 0
         if 0 < elapsed <= MAX_OBSERVATION_GAP_SECONDS:
-            self.observed_seconds = min(SHADOW_SECONDS, self.observed_seconds + elapsed)
+            self.observed_seconds += elapsed
             delta = soc - self._last_soc
             # Only both endpoints with PSUs off can raise the solar intent.
             # No gap/restart and no PSU-origin increment buys future AC supply.
@@ -103,7 +98,9 @@ def reserve_diagnostics(config, inputs, result, baseline, runtime, mode):
     minimum = result.trajectory.min_soc_percent
     return {
         "mode": mode,
-        "shadow_ready": runtime.ready,
+        "shadow_ready": True,  # Compatible field: no observation prerequisite.
+        "shadow_required_hours": 0,
+        "control_basis": "forecast",
         "shadow_observed_hours": round(runtime.observed_seconds / 3600, 2),
         "hold_soc_percent": round(hold, 2),
         "actual_soc_percent": inputs.start_soc_percent,

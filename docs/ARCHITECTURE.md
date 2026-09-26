@@ -54,7 +54,7 @@ belongs in the HA layer.
 |---|---|
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
-| `reserve_runtime.py` | Persisted reserve intent, observed 48-hour shadow qualification and reserve diagnostics. |
+| `reserve_runtime.py` | Persisted reserve intent and observation diagnostics; forecast control starts immediately (v0.45.1). |
 | `cascade_manager.py` | Sole actor owner for storage chains: wake, proof, handover, Root return, Safe-OFF and daily state. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |

@@ -1,8 +1,12 @@
 # Ganzjährige Reservepolitik
 
-Implementiert in 0.45.0, 26.09.2026. Ergänzt
+Stand 0.45.1, 26.09.2026. Ergänzt
 [F-COORDINATED-DC-SUPPORT](F-COORDINATED-DC-SUPPORT.md).
-Die Voreinstellung bleibt **Aus**. Bestehende Installationen behalten ihren Planner.
+Bei vorhandener koordinierter Invertersteuerung ist **Aktiv** die Voreinstellung:
+Die Regeln greifen sofort anhand der Prognosen und des aktuellen SOC, ohne Lern-
+oder Wartephase. Explizit gespeichertes **Aus** oder **Schattenbetrieb** bleibt
+respektiert. Ohne numerischen Inverteraktor bleibt die bisherige Politik bestehen.
+Diese Betreiberentscheidung ersetzt die 48-Stunden-Pflicht aus 0.45.0.
 
 ## Anforderungen und Priorität
 
@@ -99,24 +103,32 @@ Neue Optionen in den Planner-Einstellungen:
 
 | Option | Bedeutung |
 |---|---|
-| `reserve_mode` | `off`, `shadow`, `active`; Standard `off` |
+| `reserve_mode` | `off`, `shadow`, `active`; Standard `active` mit koordiniertem Inverteraktor, sonst `off` |
 | `reserve_upper_pv_factor` | Unkalibrierter oberer Ersatzfaktor, Standard 1,20 |
 | `reserve_grid_available_entity` | Frisches Netzsignal, binary_sensor oder sensor |
 | `reserve_transfer_verified` | Betreiber bestätigt den unabhängig von HA geprüften 24-V-Rückfall |
 
 Reservebetrieb erfordert die koordinierte Steuerung mit numerischem Inverterlimit.
-Für aktive Steuerung sind Netzsignal und, bei konfiguriertem 24-V-Netzteil,
-der verifizierte autonome Rückfall erforderlich. Anerkannte Netzwerte sind
+Die Prognoseplanung beginnt ohne vorherige Messhistorie. Für Netzteilbeiträge
+ist weiterhin ein frisches Netzsignal erforderlich; für die Übernahme der 24-V-
+Schiene zusätzlich der verifizierte autonome Rückfall. Fehlende Nachweise sperren
+nur die betreffenden Quellen, nicht den aktiven Reserveplanner. Anerkannte Netzwerte sind
 `on`/`AC_INPUT_1`/`AC_INPUT_2` bzw. `off`/`DISCONNECTED`/`NOT_CONNECTED`.
 Unbekannte oder über 30 Sekunden alte Werte gelten nicht als verfügbare Quelle.
 Das Signal muss auch bei konstantem Zustand regelmäßig aktualisiert werden.
 
-Vor Übernahme sind **48 tatsächlich beobachtete Stunden** erforderlich. Lücken
-über zehn Minuten und Ausfallzeiten zählen nicht mit. Gültige Zeit und Halteziel
-werden persistiert; ein Neustart erfindet keine Zwischenbeobachtungen. Änderungen
-an der Konfiguration, außer dem Wechsel Schatten → Aktiv, beginnen die Prüfung
-neu. Ausschalten verwirft die bisherige Freigabe. Während Schattenbetrieb wird
-der bisherige Plan ausgeführt und der Reservekandidat nur diagnostiziert.
+**Keine 48-Stunden-Wartezeit:** Ein frischer SOC und verwertbare PV-/Verbrauchs-
+prognosen reichen für die sofortige Planung. Messungen für Quellenbestätigung,
+Schutzgrenzen und Energiebilanz bleiben notwendig; sie trainieren keine neue
+Freigabeschwelle. Halteziel und Diagnose-Beobachtungszeit werden persistiert.
+Lücken über zehn Minuten und Ausfallzeiten erzeugen keine fiktive Beobachtung.
+Konfigurationsänderungen aktualisieren das Ziel ohne erneute Wartephase.
+
+**Schattenbetrieb bleibt optional:** Nur wenn ausdrücklich gewählt, wird der
+bisherige Plan ausgeführt und der Reservekandidat diagnostiziert. Ein Wechsel
+auf Aktiv wirkt beim nächsten gültigen Planungslauf, auch mit null vorherigen
+Beobachtungsstunden. Das kompatible Diagnosefeld `shadow_ready` ist immer wahr;
+`shadow_required_hours` beträgt null. Es gibt keine automatische Kalibrierung.
 
 Bei Netzverlust stellt die aktive Steuerung zuerst den DC/DC-Pfad wieder her,
 bevor sie auf einen eventuell nicht erreichbaren Inverter wartet. Erst bestätigte
@@ -169,7 +181,7 @@ Kalibrierung des Faktors. Jahresmesswerte ersetzen keine damaligen Prognosen.
 Automatische Nachweise: dunkler Horizont, DC-vorrangige Entladung, genutzte frühe
 AC-Fenster, Teilstunden, P90/Peak-Begrenzung, zu schwache PSU, offene/geschlossene
 Spannungsgates, getrennte Netzteilladung, Strict-Surplus einschließlich Kaskaden,
-Neustart, Messlücke, 48-Stunden-Vertrag mit virtueller Uhr, bestätigte begrenzte
+Neustart, Messlücke, sofortiger Start ohne Historie, optionale Schattenwahl, bestätigte begrenzte
 Inverterleistung, Netzverlust und gescheiterte DC/DC-Bestätigung. Bestehende
 Golden-Szenarien bleiben unverändert; drei Reserve-Szenarien kommen hinzu.
 
@@ -180,26 +192,28 @@ Restentladung bestehen. Erwartete Importe: Winter 5,871348 kWh, sonniger Winter
 2,952247 kWh, Sommer 0,663483 kWh. Im Sommer verbleibt ohne hinreichende nutzbare
 Lasten trotz Vorbereitung Export; die Politik erfindet keine Entladesenke.
 
-Rollout nach Release über den üblichen HACS-Weg:
+Einführung über den üblichen HACS-Weg:
 
-1. Aktuellen Diagnoseexport und bisherige Optionen sichern. Netzsignal,
-   Leistungsquellen, Schutzgrenzen und Hardwareleistungen zuordnen.
-2. Reale unabhängige Netzladesperre auf Zusammenspiel prüfen. Keine Automation
-   darf einen Wiederaufladeauftrag erzeugen oder gegen das Inverterlimit arbeiten.
-3. Autonomen 24-V-Rückfall bei Netzausfall und HA-Ausfall praktisch verifizieren.
+1. Mit dem Update startet die neue Politik auf vorhandenen koordinierten
+   Installationen sofort, sofern kein Modus ausdrücklich gespeichert ist.
+   Ein zuvor gewähltes Aus/Schatten bei Bedarf auf **Aktiv** ändern.
+2. Netzsignal, Leistungsquellen, Schutzgrenzen und Hardwareleistungen zuordnen.
+   Ohne Netzsignal bleiben Netzteilbeiträge gesperrt; Inverter-Vorbereitung für
+   prognostizierte PV-Spitzen ist trotzdem möglich. Bei nachgewiesenem Netzausfall
+   gilt der Quellenrückfall mit Invertersperre im Netzbetrieb.
+3. Für 24-V-Netzstützung den autonomen Rückfall bei Netzausfall und HA-Ausfall
+   praktisch verifizieren. Ohne Bestätigung bleibt die Schiene am DC/DC.
 4. Konkurrenz um Aktoren auflösen: insbesondere
    `automation.energie_steuerung_48v_netzteil` auf dieser Anlage ablösen, sobald
    die koordinierte Steuerung deren vollständige Verantwortung übernimmt.
-   Ihre bisherigen Regeln vorher sichern. Die unabhängige Netzladesperre ist
-   davon getrennt und wird nicht pauschal abgeschaltet.
-5. Alle finalen Optionen setzen, anschließend mindestens 48 beobachtete Stunden
-   **Schattenbetrieb**. Importdifferenz, DC-Pfade, Freiraum, Restentladung und
-   Schaltbestätigungen anhand tatsächlicher Messungen beurteilen.
-6. Erst danach bewusst **Aktiv** wählen. Bei unplausiblen Quellennachweisen,
-   Versorgungslücken oder Schaltkonflikten zurück auf **Aus**; das stellt die
-   bisherige Plannerpolitik wieder her. Keine externe Konkurrenzautomation
-   unkoordiniert parallel aktivieren.
+   Regeln vorher sichern; die unabhängige Netzladesperre getrennt auf
+   Zusammenspiel prüfen und nicht pauschal abschalten.
+5. Importdifferenz, DC-Pfade, Freiraum, Restentladung und Schaltbestätigungen
+   während des laufenden Betriebs beobachten. Bei Bedarf ist Schattenbetrieb
+   freiwillig wählbar; es gibt keine Mindestdauer.
+6. Rückkehr zur bisherigen Plannerpolitik über **Aus**. Keine externe
+   Konkurrenzautomation unkoordiniert parallel aktivieren.
 
-Code und virtuelle Tests ersetzen weder die reale 48-Stunden-Beobachtung noch
-die Ausfallprüfung. Diese Implementierung verändert keine Live-Optionen und
-schaltet keine bestehende Automation eigenmächtig ab.
+Code und virtuelle Tests ersetzen keine reale Ausfallprüfung. Das Update ändert
+keine gespeicherten Live-Optionen und schaltet keine externe Automation ab;
+bei fehlender Moduswahl ändert sich jedoch ausdrücklich der wirksame Standard.

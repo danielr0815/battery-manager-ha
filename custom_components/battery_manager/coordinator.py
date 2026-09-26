@@ -373,7 +373,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Alias kept deliberately (R10): the code base reads `self.entry`
         # everywhere; `self.config_entry` is the base-class attribute.
         self.entry = entry
-        self.raw_config = {**DEFAULT_CONFIG, **entry.data, **entry.options}
+        stored_config = {**entry.data, **entry.options}
+        self.raw_config = {**DEFAULT_CONFIG, **stored_config}
+        # Operator request 2026-09-26: forecast control starts immediately on
+        # coordinated installations. Preserve an explicitly selected off/shadow.
+        if CONF_RESERVE_MODE not in stored_config:
+            self.raw_config[CONF_RESERVE_MODE] = (
+                "active" if stored_config.get(CONF_INVERTER_LIMIT_ENTITY) else "off"
+            )
         # Single source of truth for the version, set from manifest.json in
         # async_setup_entry (the device sw_version — avoids a hard-coded
         # constant drifting from the manifest).
@@ -1436,13 +1443,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reserve=ReserveParams(
                 enabled=(
                     cfg.get(CONF_RESERVE_MODE) == "active"
-                    and self._reserve_runtime.ready
                     and bool(cfg.get(CONF_INVERTER_LIMIT_ENTITY))
-                    and bool(cfg.get(CONF_RESERVE_GRID_ENTITY))
-                    and (
-                        not cfg.get(CONF_SUPPORT_DC24_SWITCH)
-                        or bool(cfg.get(CONF_RESERVE_TRANSFER_VERIFIED))
-                    )
                 ),
                 upper_pv_factor=float(cfg.get(CONF_RESERVE_UPPER_FACTOR, 1.2)),
             ),
@@ -4062,9 +4063,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
                 )
             )
-            # Only switching shadow -> active may reuse the observed soak.
-            # Changed hardware ratings, source evidence or protection options
-            # require a new observation period, just like replaced actors.
+            # Configuration changes reset the retained intent, never impose
+            # a learning/soak delay on the forecast-driven policy.
             signature = repr(
                 tuple(
                     sorted(
@@ -4106,10 +4106,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         dc48_forced_on=False,
                     ),
                 )
+            elif not self.raw_config.get(CONF_RESERVE_TRANSFER_VERIFIED):
+                # Immediate planning does not prove an autonomous rail fallback.
+                # Keep the DC/DC supplying 24 V until that path is confirmed.
+                reserve_config = replace(
+                    reserve_config,
+                    support=replace(
+                        reserve_config.support,
+                        dc24_available=False,
+                        dc24_forced_on=False,
+                    ),
+                )
             candidate = await self.hass.async_add_executor_job(
                 plan, reserve_config, inputs
             )
-            active = config.reserve.enabled and self._reserve_runtime.ready
+            active = config.reserve.enabled
             self._reserve_diag = reserve_diagnostics(
                 reserve_config,
                 inputs,
@@ -6058,10 +6069,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if entity and not await confirmed(entity, False):
                             return
                         self._support_state[key] = False
-                    await self._confirm_inverter_limit(True, diag)
+                    # Unknown grid supply rules out PSU credit, not useful
+                    # forecast-driven battery preparation. Known grid loss
+                    # still follows the existing island/fallback protection.
+                    blocked = self._reserve_grid_available() is False or not inverter
+                    confirmed_limit = await self._confirm_inverter_limit(blocked, diag)
+                    self._inverter_recommendation = not blocked and confirmed_limit
                     diag["reason"] = "grid_supply_unavailable"
                     self._save_persistent_state()
                     return
+
+                if config.reserve.enabled and not self.raw_config.get(
+                    CONF_RESERVE_TRANSFER_VERIFIED
+                ):
+                    desired = {**desired, "dc24": False}
 
                 # Even an unexpected external PSU activation blocks AC immediately.
                 # Release comes last, after all source confirmations below.

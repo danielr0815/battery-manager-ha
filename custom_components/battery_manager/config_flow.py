@@ -260,6 +260,8 @@ def _notify_targets(options: list[str]):
 
 
 def _d(config: dict[str, Any], key: str) -> Any:
+    if key == CONF_RESERVE_MODE and key not in config:
+        return "active" if config.get(CONF_INVERTER_LIMIT_ENTITY) else "off"
     return config.get(key, DEFAULT_CONFIG.get(key))
 
 
@@ -750,13 +752,6 @@ def _validate_support_entities(data: dict[str, Any]) -> str | None:
         CONF_INVERTER_LIMIT_ENTITY
     ):
         return "reserve_requires_coordinated_support"
-    if data.get(CONF_RESERVE_MODE) == "active":
-        if not data.get(CONF_RESERVE_GRID_ENTITY):
-            return "reserve_requires_grid_signal"
-        if data.get(CONF_SUPPORT_DC24_SWITCH) and not data.get(
-            CONF_RESERVE_TRANSFER_VERIFIED
-        ):
-            return "reserve_requires_verified_transfer"
     if data.get(CONF_INVERTER_LIMIT_ENTITY):
         if data.get(CONF_SUPPORT_DC24_SWITCH) and not data.get(CONF_DCDC_SWITCH):
             return "coordinated_requires_dc24_transfer"

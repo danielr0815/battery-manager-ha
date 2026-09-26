@@ -516,7 +516,8 @@ function reserveReport(hass, reserve) {
     [t("Inverterlimit jetzt", "Inverter limit now"), `${fmt(reserve.inverter_limit_w)} W`],
   ];
   return `<details data-view-key="reserve-policy" style="padding:12px"><summary>${t("Ganzjährige Reserve", "Year-round reserve")} · ${reserve.mode === "shadow" ? t("Schattenbetrieb", "Shadow") : t("Aktiv", "Active")}</summary>
-    <p>${t("Beobachteter Schattenbetrieb", "Observed shadow operation")}: ${fmt(reserve.shadow_observed_hours)} / 48 h</p>
+    <p>${t("Steuerung anhand der Prognosen, ohne Wartezeit.", "Forecast-driven control without a waiting period.")}</p>
+    ${reserve.mode === "shadow" ? `<p>${t("Beobachtungszeit (optional)", "Observation time (optional)")}: ${fmt(reserve.shadow_observed_hours)} h</p>` : ""}
     <dl>${rows.map(([label,value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
     ${reserve.hold_achievable === false ? `<p>${t("Die vorhandenen Netzteile können den SOC derzeit nicht vollständig halten.", "The available PSUs cannot fully hold SOC at present.")}</p>` : ""}
     <p>${t("Prognosebänder, sonst unkalibrierter PV-Faktor", "Forecast bands, otherwise uncalibrated PV factor")}: ${fmt(reserve.upper_pv_factor)} · ${t("Keine gezielte Netzladung. Einspeisung nur bei nachgewiesenem Notfallnutzen.", "No targeted grid recharge. Feed-in requires proven emergency benefit.")}</p></details>`;

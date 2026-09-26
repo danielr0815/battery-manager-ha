@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-09-26
+
+### Changed
+- Reservepolitik steuert bei vorhandener koordinierter Invertersteuerung sofort
+  anhand der Prognosen und des aktuellen SOC. Keine vorgeschaltete Lernphase
+  und keine 48-Stunden-Wartezeit; Schattenbetrieb bleibt optional.
+- Bestehende koordinierte Installationen ohne explizite Reserve-Moduswahl
+  verwenden die neue Politik unmittelbar. Aus/Schatten bleiben respektierte
+  ausdrückliche Einstellungen; Anlagen ohne Inverteraktor bleiben unverändert.
+- Fehlende Netz- oder autonome 24-V-Rückfallnachweise sperren nur die betroffenen
+  Netzteilpfade, nicht die Prognoseplanung. Schutzgrenzen, aktuelle Messungen und
+  bestätigte Schaltfolgen bleiben verbindlich.
+
 ## [0.45.0] - 2026-09-26
 
 ### Added
