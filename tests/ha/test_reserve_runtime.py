@@ -217,6 +217,10 @@ async def test_immediate_active_and_optional_shadow_use_real_plans(
     # Foreground plan uses real core/actuation. No production delays or
     # state listeners that could immediately replan test-generated reports.
     c._save_persistent_state = Mock()
+    # This test owns each planning transition explicitly. A wall-clock hour
+    # boundary during a CI run must not start a concurrent background plan.
+    # Boundary scheduling has its own execution-projection contract tests.
+    c._arm_plan_boundary = Mock()
     c.data = await c._async_update_data()
     if c._switch_task:
         await c._switch_task

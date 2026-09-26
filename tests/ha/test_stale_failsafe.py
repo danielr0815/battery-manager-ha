@@ -127,7 +127,9 @@ def _set_soc(hass, coordinator, value):
 async def _refresh_at(hass, coordinator, moment):
     """One explicit coordinator refresh pinned to `moment` (background tasks
     — shed executor included — complete inside the same pinned window)."""
-    with _at(moment):
+    # A historical virtual plan boundary is in the real clock's past and
+    # would otherwise fire immediately, racing this explicitly pinned update.
+    with _at(moment), patch.object(coordinator, "_arm_plan_boundary"):
         await coordinator.async_refresh()
         await hass.async_block_till_done()
     _cancel_debounce(coordinator)
@@ -175,7 +177,12 @@ async def _setup(
         subentries_data=subentries,
     )
     entry.add_to_hass(hass)
-    with _at(pinned):
+    with (
+        _at(pinned),
+        patch(
+            "custom_components.battery_manager.coordinator.BatteryManagerCoordinator._arm_plan_boundary"
+        ),
+    ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     coordinator = hass.data[DOMAIN][entry.entry_id]
