@@ -1,50 +1,75 @@
-"""Persistent reserve intent and observation diagnostics; no activation delay."""
+"""Historical reserve observations; never a physical setpoint or control gate."""
 
 from __future__ import annotations
 
 import math
 from datetime import datetime
+from typing import Any, TypedDict
+
+from .core.model import PlanInputs, PlanResult, SystemConfig
 
 # Gaps must not invent a solar gain or hide involuntary loss. Observation time
 # is diagnostic only, never a prerequisite for forecast-driven actuation.
 MAX_OBSERVATION_GAP_SECONDS = 600
+# Version 2 separates historical references from physical reserve decisions.
+RESERVE_POLICY_VERSION = 2
+
+
+class ReserveObservationState(TypedDict):
+    """Legacy JSON shape retained for observations from earlier releases."""
+
+    policy_version: int
+    hold_soc: float | None
+    observed_seconds: float
+    signature: str | None
 
 
 class ReserveRuntime:
-    """Keep the requested reserve distinct from involuntary battery loss."""
+    """Track a historical reference without authorizing or vetoing any actuator.
 
-    def __init__(self):
-        self.hold_soc = None
+    ``hold_soc`` retains its stored name for compatibility. Its initial balance
+    has unknown origin; subsequent verified solar observations only explain
+    changes. Neither the balance nor missing meter data is a reserve setpoint.
+    """
+
+    def __init__(self) -> None:
+        self.policy_version = RESERVE_POLICY_VERSION
+        self.hold_soc: float | None = None
         self.observed_seconds = 0.0
-        self._last_at = None
-        self._last_soc = None
+        self._last_at: datetime | None = None
+        self._last_soc: float | None = None
         self._last_solar_only = False
-        self.signature = None
+        self.signature: str | None = None
 
-    def restore(self, value):
+    def restore(self, value: object) -> None:
         if not isinstance(value, dict):
             return
+        version = value.get("policy_version")
+        self.policy_version = (
+            version if type(version) is int and version >= RESERVE_POLICY_VERSION else 1
+        )
         hold = value.get("hold_soc")
         seconds = value.get("observed_seconds")
-        if isinstance(hold, (int, float)) and math.isfinite(hold) and 0 <= hold <= 100:
-            self.hold_soc = float(hold)
-        if (
-            isinstance(seconds, (int, float))
-            and math.isfinite(seconds)
-            and seconds >= 0
-        ):
-            self.observed_seconds = float(seconds)
-        self.signature = value.get("signature")
+        hold = _finite_number(hold)
+        if hold is not None and 0 <= hold <= 100:
+            self.hold_soc = hold
+        seconds = _finite_number(seconds)
+        if seconds is not None and seconds >= 0:
+            self.observed_seconds = seconds
+        signature = value.get("signature")
+        self.signature = signature if isinstance(signature, str) else None
 
-    def export(self):
+    def export(self) -> ReserveObservationState:
         return {
+            "policy_version": self.policy_version,
             "hold_soc": self.hold_soc,
             "observed_seconds": self.observed_seconds,
             "signature": self.signature,
         }
 
-    def interrupt(self):
-        self._last_at = self._last_soc = None
+    def interrupt(self) -> None:
+        self._last_at = None
+        self._last_soc = None
         self._last_solar_only = False
 
     def observe(
@@ -55,7 +80,7 @@ class ReserveRuntime:
         solar_only: bool,
         preparing: bool,
         signature: str,
-    ):
+    ) -> None:
         if signature != self.signature:
             self.hold_soc = None
             self.observed_seconds = 0.0
@@ -66,9 +91,10 @@ class ReserveRuntime:
         elapsed = (now - self._last_at).total_seconds() if self._last_at else 0
         if 0 < elapsed <= MAX_OBSERVATION_GAP_SECONDS:
             self.observed_seconds += elapsed
+            assert self._last_soc is not None
             delta = soc - self._last_soc
-            # Only both endpoints with PSUs off can raise the solar intent.
-            # No gap/restart and no PSU-origin increment buys future AC supply.
+            # Both endpoints need verified solar-only supply. A rising SOC with
+            # missing meters is unknown provenance, not evidence of solar gain.
             if delta > 0 and solar_only and self._last_solar_only:
                 self.hold_soc = min(
                     100.0, self.hold_soc + max(0.0, min(delta, soc - self.hold_soc))
@@ -79,9 +105,30 @@ class ReserveRuntime:
         self._last_solar_only = solar_only
 
 
-def reserve_diagnostics(config, inputs, result, baseline, runtime, mode):
-    """Expose requested and reachable energy separately, also in shadow mode."""
+def _finite_number(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
+def reserve_diagnostics(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    result: PlanResult,
+    baseline: PlanResult,
+    runtime: ReserveRuntime,
+    mode: str,
+) -> dict[str, Any]:
+    """Render the core's physical decision separately from historical provenance.
+
+    Legacy hold fields remain readable for existing consumers. They describe a
+    reference balance only and must not be interpreted as a desired setpoint.
+    """
     flows = result.trajectory.flows
+    decision = result.trajectory.reserve_decision
     b = config.battery
     hold = min(
         b.soc_max_percent,
@@ -103,21 +150,24 @@ def reserve_diagnostics(config, inputs, result, baseline, runtime, mode):
         "control_basis": "forecast",
         "shadow_observed_hours": round(runtime.observed_seconds / 3600, 2),
         "hold_soc_percent": round(hold, 2),
+        "historical_reference_soc_percent": round(runtime.hold_soc, 2)
+        if runtime.hold_soc is not None
+        else None,
+        "reference_semantics": "historical_observation_only",
+        "preparation_horizon_end": decision.preparation_horizon_end.isoformat()
+        if decision is not None
+        else None,
+        "decision_reason": decision.reason if decision is not None else None,
         "actual_soc_percent": inputs.start_soc_percent,
         "expected_min_soc_percent": round(minimum, 2),
-        "headroom_wh": round(
-            max(
-                0.0,
-                b.energy_wh(
-                    inputs.start_soc_percent - flows[0].reserve_ceiling_percent
-                ),
-            ),
-            1,
-        )
-        if flows
+        "headroom_wh": round(decision.headroom_wh, 1) if decision is not None else 0.0,
+        "unavoidable_export_wh": round(decision.unavoidable_export_wh, 1)
+        if decision is not None
         else 0.0,
         "preparation_start": preparation,
-        "inverter_limit_w": round(flows[0].inverter_limit_w, 1) if flows else 0.0,
+        "inverter_limit_w": round(decision.inverter_limit_w, 1)
+        if decision is not None
+        else 0.0,
         "hold_shortfall_wh": round(
             max(0.0, b.energy_wh(hold - inputs.start_soc_percent)), 1
         ),

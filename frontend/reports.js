@@ -59,24 +59,38 @@ export function reserveReport(hass, reserve) {
   const t = (key) => localize(hass, key);
   const fmt = (value) =>
     typeof value === "number" && Number.isFinite(value)
-      ? value.toFixed(1)
+      ? new Intl.NumberFormat(hass?.language || "en", {
+          maximumFractionDigits: 1,
+        }).format(value)
       : "—";
-  const at = Date.parse(reserve.preparation_start);
-  const start = Number.isFinite(at)
-    ? new Intl.DateTimeFormat(hass?.language || "en", {
-        timeZone: hass?.config?.time_zone || "UTC",
-        weekday: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(at)
-    : "—";
+  const time = (value) => {
+    const at = typeof value === "string" ? Date.parse(value) : NaN;
+    return Number.isFinite(at)
+      ? new Intl.DateTimeFormat(hass?.language || "en", {
+          timeZone: hass?.config?.time_zone || "UTC",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hourCycle: "h23",
+          timeZoneName: "short",
+        }).format(at)
+      : "—";
+  };
   const rows = [
     [
-      t("report_hold_target_actual_soc"),
-      `${fmt(reserve.hold_soc_percent)} / ${fmt(reserve.actual_soc_percent)} %`,
+      t("report_preparation_horizon_end"),
+      time(reserve.preparation_horizon_end),
     ],
+    [t("report_actual_soc"), `${fmt(reserve.actual_soc_percent)} %`],
     [t("report_additional_headroom_needed"), `${fmt(reserve.headroom_wh)} Wh`],
-    [t("report_preparation_from"), start],
+    [
+      t("report_unavoidable_export"),
+      `${fmt(reserve.unavoidable_export_wh)} Wh`,
+    ],
+    [t("report_preparation_from"), time(reserve.preparation_start)],
+    [t("report_inverter_limit_now"), `${fmt(reserve.inverter_limit_w)} W`],
     [
       t("report_expected_minimum_soc"),
       `${fmt(reserve.expected_min_soc_percent)} %`,
@@ -89,7 +103,6 @@ export function reserveReport(hass, reserve) {
       t("report_remaining_battery_discharge"),
       `${fmt(reserve.remaining_discharge_wh)} Wh`,
     ],
-    [t("report_reserve_shortfall"), `${fmt(reserve.hold_shortfall_wh)} Wh`],
     [
       t("report_incidental_psu_charging"),
       `${fmt(reserve.incidental_grid_charge_wh)} Wh`,
@@ -98,14 +111,23 @@ export function reserveReport(hass, reserve) {
       t("report_expected_48_v_support"),
       `${fmt(reserve.psu48_delivered_wh)} Wh`,
     ],
-    [t("report_inverter_limit_now"), `${fmt(reserve.inverter_limit_w)} W`],
   ];
-  return `<details data-view-key="reserve-policy" style="padding:12px"><summary>${t("report_year_round_reserve")} · ${reserve.mode === "shadow" ? t("report_shadow") : t("report_active")}</summary>
-    <p>${t("report_forecast_driven_control_without_a_waiting_period")}</p>
-    ${reserve.mode === "shadow" ? `<p>${t("report_observation_time_optional")}: ${fmt(reserve.shadow_observed_hours)} h</p>` : ""}
+  const reason = reserve.decision_reason;
+  const reasonKey = `reserve_decision_${reason}`;
+  const translatedReason =
+    typeof reason === "string" && reason ? t(reasonKey) : reasonKey;
+  const reasonText =
+    translatedReason === reasonKey
+      ? t("report_reserve_decision_unknown")
+      : translatedReason;
+  return `<details data-view-key="reserve-policy" style="padding:12px"><summary>${esc(t("report_year_round_reserve"))} · ${esc(reserve.mode === "shadow" ? t("report_shadow") : t("report_active"))}</summary>
+    <p>${esc(t("report_preparation_today_tomorrow"))}</p>
+    <p>${esc(t("report_reserve_energy_policy"))}</p>
+    <p>${esc(t("report_forecast_driven_control_without_a_waiting_period"))}</p>
+    <p data-reserve-reason="${esc(reason || "unknown")}">${esc(t("report_reserve_decision"))}: ${esc(reasonText)}</p>
+    ${reserve.mode === "shadow" ? `<p>${esc(t("report_reserve_shadow_explanation"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
-    ${reserve.hold_achievable === false ? `<p>${t("report_the_available_psus_cannot_fully_hold_soc_at_present")}</p>` : ""}
-    <p>${t("report_forecast_bands_otherwise_uncalibrated_pv_factor")}: ${fmt(reserve.upper_pv_factor)} · ${t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit")}</p></details>`;
+    <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} · ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 
 export function operationReport(hass, report) {

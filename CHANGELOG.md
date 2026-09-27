@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-09-27
+
+### Added
+- Acht Sensoren je Haushaltsgerät für Zustand, Programm, Restzeit, Ende,
+  gemessenen Durchgangsverbrauch, Planungswerte und Lernstatus, unabhängig
+  von der Aktivierung opportunistischer Startempfehlungen.
+- Haushaltsgerätekarte mit Programmprofilen, beobachteten Spannen,
+  Stichprobenzahlen, letzter bekannter Lernzeit, letzten 20 angenommenen oder
+  verworfenen Beobachtungen und nachvollziehbaren Datenquellen.
+- Authentifizierte lesende WebSocket-Ausgabe und identische Diagnosesnapshots;
+  umfangreiche Historien bleiben außerhalb häufig aufgezeichneter Attribute.
+- Konkrete Startempfehlungsgründe aus der vorhandenen Simulation ohne
+  zusätzliche Optimizer-Läufe.
+
+### Changed
+- Gerätebeobachtung läuft unabhängig von wirtschaftlicher Planung über
+  Quellenereignisse und einen Minutentakt. Programmwechsel widerrufen alte
+  Empfehlungen; Messwerte und Profile bleiben bei Planungsfehlern sichtbar.
+- Persistenz ergänzt begrenzte Metadaten, ohne bestehende Lernproben oder
+  unbekannte historische Zeitpunkte zu verändern. Keine Gerätesteuerung,
+  keine neuen Python-Laufzeitabhängigkeiten.
+
+
+- Aktiver Reservebetrieb bevorzugt DC aus der Batterie und bereitet nur PV bis
+  Ende morgen in der HA-Zeitzone vor. Zusätzliche AC-Entladung erfolgt möglichst
+  spät und nur im benötigten Umfang; keine neue feste Nachtreserve.
+- Reservekarte erklärt tatsächlichen Horizont, Speicherbedarf, erlaubte Leistung
+  und Entscheidungsgrund. T* entfällt im aktiven Modus; die technische
+  Inverter-Untergrenze bleibt eindeutig gekennzeichnet.
+
+### Fixed
+- Physikalisch erreichbare Rückwärtsrechnung berücksichtigt AC-/DC-Untergrenzen
+  getrennt und trägt unvermeidbaren Export nicht als weitere Entladungspflicht
+  zurück. Frühe einzige AC-Gelegenheiten bleiben nutzbar.
+- Historische Haltewerte können keine 24-/48-V-Schutzanforderung mehr überstimmen.
+  Hoher SOC führt nicht länger zu pauschaler wirtschaftlicher Netzteil-Haltung;
+  alte Anforderungen werden mit bestätigter Quellenübergabe abgeglichen.
+- Aktuelle SOC-Schutzbedingungen gelten auch für wartende Schaltaufträge und
+  unmittelbar vor der tatsächlichen AC-Freigabe. Fehlgeschlagene Quellenübergaben
+  bei Netzausfall verhindern nicht mehr die Anforderung der physischen AC-Sperre.
+- Während der Planung geänderte manuelle Netzteilwünsche überstimmen veraltete
+  Ziele. Gemeinsame Serialisierung schützt laufende bestätigte Quellenübergaben.
+
 ## [0.46.1] - 2026-09-27
 
 ### Fixed

@@ -225,7 +225,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
     const a = stateObj.attributes;
     const parts = [];
     const threshold = num(a.soc_threshold_percent);
-    if (threshold !== undefined && a.reserve?.mode !== "active") {
+    if (a.reserve?.mode === "active") {
+      const floor = num(a.inverter_min_soc_percent);
+      if (floor !== undefined && floor >= 0 && floor <= 100)
+        parts.push(`${t("inverter_floor")} ${Math.round(floor)} %`);
+    } else if (threshold !== undefined) {
       parts.push(`T* ${Math.round(threshold)} %`);
     }
     // Per-day today/tomorrow figures from the `daily` breakdown (import +
@@ -465,7 +469,8 @@ export class BatteryManagerForecastCard extends HTMLElement {
 
     const svg = [];
 
-    // Zones: hard SOC limits and the planning reserve (min + buffer).
+    // Active reserve uses forecast headroom, not the legacy min+buffer target.
+    // Keep the technical battery floor distinct from the inverter AC floor.
     // num() guarantees finite inputs; the clamp keeps a garbage value from
     // producing a negative-height rect (invalid SVG, dropped by browsers).
     const socMin = num(a.battery_min_soc_percent) ?? 0;
@@ -473,7 +478,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
     const buffer = num(a.soc_buffer_percent) ?? 0;
     const invMin = num(a.inverter_min_soc_percent);
     const plotW = width - margin.left - margin.right;
-    const reserve = Math.max(0, Math.min(socMin + buffer, 100));
+    const activeReserve = a.reserve?.mode === "active";
+    const reserve = Math.max(
+      0,
+      Math.min(socMin + (activeReserve ? 0 : buffer), 100),
+    );
     if (reserve > 0) {
       svg.push(
         `<rect x="${margin.left}" y="${y(reserve)}" width="${plotW}"
@@ -522,16 +531,28 @@ export class BatteryManagerForecastCard extends HTMLElement {
 
     // Inverter cut-off (dotted) and threshold T* (dashed); out-of-range
     // values would land outside the plot, so skip them entirely.
-    if (invMin !== undefined && invMin > reserve && invMin <= 100) {
+    const showInverterFloor =
+      invMin !== undefined &&
+      invMin >= 0 &&
+      invMin <= 100 &&
+      (activeReserve || invMin > reserve);
+    if (showInverterFloor) {
       svg.push(
-        `<line x1="${margin.left}" y1="${y(invMin)}"
+        `<line data-marker="inverter-floor" x1="${margin.left}" y1="${y(invMin)}"
           x2="${width - margin.right}" y2="${y(invMin)}" stroke="${text}"
           stroke-width="1" stroke-dasharray="1 3"/>`,
       );
     }
+    if (activeReserve && showInverterFloor) {
+      svg.push(`<text data-marker="inverter-floor-label" x="${width - margin.right - 2}" y="${y(invMin) - 3}"
+        text-anchor="end" font-size="9" fill="${text}">${esc(t("inverter_floor"))} ${Math.round(invMin)} %</text>`);
+    }
     const threshold = num(a.soc_threshold_percent);
     const showThreshold =
-      threshold !== undefined && threshold >= 0 && threshold <= 100;
+      !activeReserve &&
+      threshold !== undefined &&
+      threshold >= 0 &&
+      threshold <= 100;
     if (showThreshold) {
       svg.push(
         `<line x1="${margin.left}" y1="${y(threshold)}"
@@ -616,6 +637,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
       t1,
       lang,
       lanes,
+      inverterFloor: activeReserve && showInverterFloor ? invMin : undefined,
     };
 
     const whenFmt = dateTimeFormat(this._hass, {
@@ -642,6 +664,9 @@ export class BatteryManagerForecastCard extends HTMLElement {
         maxP.time,
       )})` +
       (showThreshold ? `, ${t("threshold")} ${Math.round(threshold)} %` : "") +
+      (activeReserve && showInverterFloor
+        ? `, ${t("inverter_floor")} ${Math.round(invMin)} %`
+        : "") +
       ".";
     const statsText = this._statsLine(stateObj, t);
 
@@ -939,7 +964,13 @@ export class BatteryManagerForecastCard extends HTMLElement {
         );
       });
     const activeLanes = (meta.lanes || []).filter((lane) => covering(lane));
-    const when = esc(`${fmt.format(nearest.time)} · ${nearest.soc} %`);
+    const floorText =
+      meta.inverterFloor === undefined
+        ? ""
+        : ` · ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
+    const when = esc(
+      `${fmt.format(nearest.time)} · ${nearest.soc} %${floorText}`,
+    );
     const chips = activeLanes
       .map((lane) => {
         const block = covering(lane);

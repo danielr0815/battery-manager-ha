@@ -22,6 +22,8 @@ from .model import (
     STORAGE_ACTION_MINUTES,
     STORAGE_TARGET_TOLERANCE_PERCENT,
     STORAGE_TARGET_TOLERANCE_WH,
+    ApplianceAdvisory,
+    ApplianceAdvisoryReason,
     CascadeSourceSegment,
     LoadPlan,
     PlanInputs,
@@ -106,6 +108,7 @@ from .planning_rules import (
     pv_windows as pv_windows,
 )
 from .policy import FULL_SOC_TOLERANCE_PERCENT
+from .reserve import reserve_planning_scope
 from .series import insert_appliance_run
 from .simulate import simulate
 from .uncertainty import (
@@ -704,6 +707,8 @@ def appliance_windows(
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
     feedin_wh: tuple[float, ...] | None = None,
+    *,
+    advisories: dict[str, ApplianceAdvisory] | None = None,
 ) -> dict[str, bool]:
     """Advisor (G3): could a full appliance run start now without extra import?
 
@@ -714,6 +719,10 @@ def appliance_windows(
     (e.g. winter operation with a forced 48 V PSU). The same holds for the
     booked feed-in series (F-FEEDIN): the trial must see the pass-through so
     the comparison stays apples-to-apples.
+
+    ``advisories`` optionally receives the failed gates from these same trials.
+    Disabled advisors have no entry; the HA layer explains configuration and
+    live safety vetoes separately from this forecast decision.
     """
     windows: dict[str, bool] = {}
     buffer_floor = config.battery.soc_min_percent + config.control.soc_buffer_percent
@@ -736,13 +745,26 @@ def appliance_windows(
         # no slots the trial imports 0 Wh and never degrades the min SOC, so
         # both gates below pass vacuously and the advisor used to green-light
         # a run on zero evidence.
-        windows[appliance.appliance_id] = (
+        horizon_ok = (
             bool(traj.flows)
             and sum(slot.duration for slot in inputs.slots) + _EPS
             >= appliance.run_duration_h
-            and traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
-            and not _degrades_min_soc(traj, planned_trajectory, buffer_floor)
         )
+        import_ok = traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
+        soc_ok = not _degrades_min_soc(traj, planned_trajectory, buffer_floor)
+        allowed = horizon_ok and import_ok and soc_ok
+        windows[appliance.appliance_id] = allowed
+        if advisories is not None:
+            reasons: list[ApplianceAdvisoryReason] = []
+            if not horizon_ok:
+                reasons.append("forecast_horizon_short")
+            if not import_ok:
+                reasons.append("extra_grid_import")
+            if not soc_ok:
+                reasons.append("soc_condition")
+            advisories[appliance.appliance_id] = ApplianceAdvisory(
+                allowed, tuple(reasons)
+            )
     return windows
 
 
@@ -1015,6 +1037,7 @@ def _plan_legacy(
     dc24, dc48, traj = support_escalation(
         config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
     )
+    advisories: dict[str, ApplianceAdvisory] = {}
     windows = appliance_windows(
         config,
         inputs,
@@ -1024,6 +1047,7 @@ def _plan_legacy(
         dc24_schedule=dc24,
         dc48_schedule=dc48,
         feedin_wh=feedin_wh,
+        advisories=advisories,
     )
 
     if traj.flows:
@@ -1143,6 +1167,7 @@ def _plan_legacy(
         trajectory=traj,
         load_plans=tuple(load_plans),
         appliance_windows=windows,
+        appliance_advisories=advisories,
         support_dc24_now=bool(dc24[0]) if dc24 else False,
         support_dc48_now=bool(dc48[0]) if dc48 else False,
         grid_import_kwh=traj.total_import_wh / 1000.0,
@@ -1176,7 +1201,15 @@ def _plan_legacy(
 
 
 def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
-    """Plan the system, retaining an exact fast path for non-cascade setups."""
+    """Plan with a call-scoped reserve cache, also shared by nested cascades."""
+    if not config.reserve.enabled:
+        return _plan_in_scope(config, inputs)
+    with reserve_planning_scope():
+        return _plan_in_scope(config, inputs)
+
+
+def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
+    """Retain the exact planning path and its existing cascade ordering."""
     if config.reserve.enabled:
         config = replace(
             config,

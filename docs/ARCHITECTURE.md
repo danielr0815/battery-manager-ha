@@ -3,7 +3,7 @@
 > Start here if you want to work on the code. This is the map; the other docs in
 > `docs/` are the detailed design records for individual subsystems.
 >
-> Status: **0.46.0, 2026-09-26**. Current behavior and migration contracts:
+> Status: **0.47.0, 2026-09-27**. Current behavior and migration contracts:
 > [CURRENT_CONTRACTS.md](CURRENT_CONTRACTS.md). Historical design records explain
 > why rules exist; they do not override the current contracts.
 
@@ -42,7 +42,7 @@ belongs in the HA layer.
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
-| `reserve.py` | Optional year-round reserve policy: backward DC/all-load energy envelopes and forward five-minute validation (v0.45.0; see `F-YEAR-ROUND-RESERVE.md`). |
+| `reserve.py`, `reserve_energy.py` | DC-first reserve: rolling today/tomorrow preparation, reachable reference/export budgets and physical inverse energy transitions; shared transfer primitives with the simulator. See `F-RESERVE-DC-FIRST.md`. |
 | `optimize.py` | Planner orchestration: threshold search, feed-in, appliance advisor and support escalation. |
 | `allocation.py`, `allocation_candidates.py` | Ordered allocation passes, shared feasibility gate, typed candidate context/results and recovery. |
 | `planning_rules.py`, `uncertainty.py`, `policy.py` | Shared pure gates, forecast bands and domain constants; reserve has no reverse optimizer import. |
@@ -58,7 +58,7 @@ transitions to `coordinated_supply.py`, storage serialization to
 `runtime.py` defines typed entry data; `CascadeExecutionSnapshot` is the public
 read-only link between cascade execution and constraint diagnostics.
 
-Frontend source lives in `frontend/`: four card classes, shared math/time,
+Frontend source lives in `frontend/`: five card classes, shared math/time,
 translations, reports, DOM preservation and styles. `scripts/build_frontend.mjs`
 bundles them into the existing integration resource; CI rejects source/bundle drift.
 
@@ -68,7 +68,7 @@ bundles them into the existing integration resource; CI rejects source/bundle dr
 |---|---|
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
-| `reserve_runtime.py` | Persisted reserve intent and observation diagnostics; forecast control starts immediately (v0.45.1). |
+| `reserve_runtime.py` | Historical observation reference and reserve-policy migration marker; publishes the core decision without deriving a separate control target. |
 | `cascade_manager.py` | Sole actor owner for storage chains: wake, proof, handover, Root return, Safe-OFF and daily state. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |
 | `history_profile.py` | The consumption learner: fetches recorder LTS, cleans out self-controlled loads, and builds the AC/DC profile + uncertainty bands. |
@@ -237,3 +237,27 @@ Refresh ist eine Entry-gebundene Hintergrundaufgabe nach dem Entity-Setup.
 `core/planning_control.py` enthält ausschließlich den HA-freien Abbruchkontext;
 `core/simulation_steps.py` teilt begrenzt gecachte, unveränderliche Teilintervalle
 zwischen Vergleichs- und Reserveplanung. Siehe [Verträge und Nachweise](F-PLANNING-LATENCY.md).
+
+## Appliance observability
+
+`appliance_runtime.py` serializes observations on the HA event loop, maintains
+planner-independent device snapshots and publishes them to appliance entities.
+`appliance_sensor.py` owns compact entities; `appliance_api.py` exposes the
+read-only authenticated WebSocket view consumed by `frontend/appliances-card.js`.
+`appliance_learning.py` owns bounded profile and observation metadata. Core
+advisory reasons reuse the existing simulation and do not change allocation.
+See [APPLIANCE_VISIBILITY](APPLIANCE_VISIBILITY.md) for lifecycle/data contracts.
+
+### Reserveentscheidung ab 0.47.0
+
+`core.reserve` liefert `Trajectory.reserve_decision` als unveränderlichen
+`ReserveDecision`. Die Zeitgrenze folgt den lokalen Slot-Kalendertagen; die
+spätere Vorschau rollt das Fenster vorwärts. `reserve_runtime` veröffentlicht
+Werte und Begründung direkt in HA-Diagnose/Forecast-Attributen. Die Karte leitet
+kein Ziel aus T* oder historischen Beobachtungswerten ab.
+
+Der Coordinator gleicht automatische Alt-Halteanforderungen oberhalb der
+bestehenden Erholungsschwellen ab, ohne bestätigte physische Zustände vorzeitig
+umzuschreiben. Die alte Policy-Version bleibt bis zur abgeschlossenen Übergabe
+bzw. Übernahme durch gültigen Schutz erhalten. Die koordinierte Aktorsteuerung
+prüft aktuellen SOC unter ihrem Lock und erneut vor AC-Freigabe.

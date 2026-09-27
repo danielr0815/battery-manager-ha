@@ -8,6 +8,11 @@ export function replaceCardHTML(card, html) {
   const focused = root.activeElement;
   const focusKey =
     focused?.tagName === "SUMMARY" ? key(focused.parentElement) : null;
+  const controlKey = focused?.dataset?.focusKey;
+  const selection =
+    controlKey && typeof focused.selectionStart === "number"
+      ? [focused.selectionStart, focused.selectionEnd]
+      : null;
   const scrolls = [];
   for (
     let node = card;
@@ -60,6 +65,14 @@ export function replaceCardHTML(card, html) {
     if (opened.has(key(node))) node.open = opened.get(key(node));
     if (key(node) === focusKey)
       node.querySelector("summary")?.focus({ preventScroll: true });
+  }
+  if (controlKey) {
+    const control = [...root.querySelectorAll("[data-focus-key]")].find(
+      (node) => node.dataset.focusKey === controlKey,
+    );
+    control?.focus({ preventScroll: true });
+    if (selection && control?.setSelectionRange)
+      control.setSelectionRange(...selection);
   }
   for (const node of root.querySelectorAll("[data-scroll-key]")) {
     const position = localScrolls.get(node.dataset.scrollKey);

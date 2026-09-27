@@ -1,5 +1,9 @@
 # Ganzjährige Reservepolitik
 
+> **Abgelöst ab 0.47.0:** Für Vorbereitungshorizont, DC-Vorrang, Netzteil-Haltung
+> und Haltewert-Diagnose gilt [F-RESERVE-DC-FIRST](F-RESERVE-DC-FIRST.md).
+> Die folgende Beschreibung bewahrt die historische Entscheidung.
+
 > **Entscheidungs- und Änderungshistorie.** Der aktuelle Einstieg und
 > etwaige ablösende Verträge stehen in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md).
 

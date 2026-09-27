@@ -1,6 +1,6 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.46.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.47.0. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
@@ -29,6 +29,14 @@ Branch-Coverage als Bericht ohne neues Prozentziel.
 | Teilstunden + Energiehover + Tastatur | Exakte Wh, erreichbare Diagrammdaten | `browser/cards.spec.mjs`, `frontend/cascade-card.test.mjs` |
 | Kern ohne HA + Windows | Kein HA-Import und keine Testhelfer nötig | CI `core-only` |
 | Release-Tag + Versionsstand | Tag, Manifest und Projektversion konsistent; gleicher SHA für Gates | `scripts/check_release.py`, Releaseworkflow |
+
+| Reserve + Prognose übermorgen | Heutige AC-Freigabe nur aus heute/morgen; lokale DST-Tage | `core/test_reserve.py`, `core/test_reserve_live_regression.py` |
+| Reserve + unvermeidbarer Export + AC-/DC-Floor | Späte nötige Entladung, keine unerreichbare Null-Export-Schuld | `core/test_reserve_reachability.py`, `core/test_reserve_energy.py` |
+| Reserve + Ledger 0 + SOC 6 % | Schutz bleibt aktiv; Herkunft ist ausschließlich Diagnose | `ha/test_reserve_policy.py`, `ha/test_reserve_runtime.py` |
+| Upgrade + alte PSU-Haltung + fehlende Bestätigung | Physischer Zustand bleibt erhalten, geordnete Rückkehr wird erneut abgeglichen | `ha/test_reserve_policy.py` |
+| Reserve + wartender Aktorauftrag + gefallener SOC | Aktueller Schutz vor alter AC-Freigabe | `ha/test_reserve_policy.py` |
+| Active/Shadow + HA-Zeitzone + DST + Tastatur | Reservegründe statt T*-Ziel; technische Untergrenze bleibt zugänglich | `browser/cards.spec.mjs` |
+| Haushaltsgerät + fehlender Plan/Profil + Programmwechsel | Beobachtung unabhängig verfügbar, alte Startfreigabe widerrufen | `ha/test_appliance_views.py`, `ha/test_appliance_history.py`, `browser/appliances.spec.mjs` |
 
 Golden-Dateien werden nur für beabsichtigte fachliche Änderungen erneuert und
 jeder zusätzliche Netzbezug begründet. Die Refactorings für 0.46.0 verändern die

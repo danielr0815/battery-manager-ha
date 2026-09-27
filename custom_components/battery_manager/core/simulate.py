@@ -12,8 +12,15 @@ from math import isfinite
 
 from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
 from .planning_control import check_cancelled
+from .reserve_energy import (
+    FLOW_EPSILON_WH,
+    charger_dc_demand,
+    dc_discharge,
+    dc_loads,
+    pv_storage_charge,
+)
 
-_EPS = 1e-9
+_EPS = FLOW_EPSILON_WH
 
 
 def step_hour(
@@ -95,10 +102,7 @@ def step_hour(
     # `dc24_share` of the REMAINING load sits on the 24 V rail and the rest is
     # native 48 V bus load. Neutral defaults (base=0, share=1.0) => whole load
     # on the rail, bit-for-bit as before.
-    native48_base_wh = min(slot.dc_wh, support.native48_base_w * slot.duration)
-    remaining_dc_wh = slot.dc_wh - native48_base_wh
-    rail_wh = remaining_dc_wh * support.dc24_share
-    native48_wh = native48_base_wh + (remaining_dc_wh - rail_wh)
+    native48_wh, rail_wh = dc_loads(config, slot)
     psu24_delivered_wh = 0.0
     dcdc_input_wh = 0.0
     dcdc_loss_wh = 0.0
@@ -202,12 +206,11 @@ def step_hour(
     # while PV is simultaneously stored/exported (energy conservation). ---
     shortfall_dc = 0.0
     if bus_load > _EPS:
-        needed_from_store = bus_load / battery.eta_discharge
-        available = max(0.0, energy - floor_wh)
-        used = min(needed_from_store, available)
+        used, shortfall_dc = dc_discharge(
+            energy, floor_wh, bus_load, battery.eta_discharge
+        )
         energy -= used
         battery_discharge += used
-        shortfall_dc = (needed_from_store - used) * battery.eta_discharge
 
     # --- AC balance settlement ---
     # The residual DC bus shortfall is served by the charger (AC->DC), fed from
@@ -217,12 +220,10 @@ def step_hour(
     standby = min(max_charger_ac, config.charger.standby_power_w * slot.duration)
     # One AC-side rating covers DC service, converter overhead and storage.
     # Demand above it remains physically unserved, even with abundant PV.
-    dc_capacity = max(0.0, max_charger_ac - standby) * config.charger.eta
-    served_dc = min(shortfall_dc, dc_capacity)
+    served_dc, dc_ac_demand = charger_dc_demand(
+        shortfall_dc, max_charger_ac, standby, config.charger.eta
+    )
     unserved_dc_wh += shortfall_dc - served_dc
-    dc_ac_demand = served_dc / config.charger.eta
-    if served_dc > _EPS:
-        dc_ac_demand += standby
     reserved_charger_ac = dc_ac_demand
 
     if balance >= 0:
@@ -245,29 +246,18 @@ def step_hour(
             balance -= feedin_eff
             grid_export += feedin_eff
         # (b) charge the battery through the charger, export the rest.
-        headroom = max(0.0, ceil_wh - energy)
         max_charger_ac = max(0.0, max_charger_ac - reserved_charger_ac)
-        # The charger only runs on PV surplus, so its standby is surplus-
-        # covered: it is part of the AC-side draw and reduces the stored
-        # energy a touch instead of minting phantom grid import (F-PREDRAIN
-        # L1's ~10 Wh artifacts per flipped charging hour accumulated over
-        # the 3-day horizon, exhausted the Z2'' slack and vetoed whole
-        # pre-drain blocks, live 2026-08-03). needed_ac compensates the
-        # standby so a nearly-full battery still reaches the ceiling exactly
-        # (a real charger ramps to cover its own standby) — otherwise the
-        # carve-out would create a charge asymptote just below soc_max and
-        # disarm the full-line machinery (R5, merge probe, refill
-        # settlement) at capacities below ~9 kWh.
-        standby = 0.0 if served_dc > _EPS else standby
-        needed_ac = (
-            headroom / (battery.eta_charge * config.charger.eta) + standby
-            if headroom > _EPS
-            else 0.0  # full battery: the charger is off, no standby at all
+        charger_ac, stored = pv_storage_charge(
+            energy,
+            ceil_wh,
+            balance,
+            max_charger_ac,
+            standby,
+            config.charger.eta,
+            battery.eta_charge,
+            served_dc,
         )
-        charger_ac = min(balance, max_charger_ac, needed_ac)
         if charger_ac > _EPS:
-            ac_in = max(0.0, charger_ac - standby)
-            stored = ac_in * config.charger.eta * battery.eta_charge
             energy += stored
             battery_charge += stored
             balance -= charger_ac

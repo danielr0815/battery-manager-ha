@@ -451,7 +451,8 @@ test("picker and editor labels follow HA language rather than browser language",
           : "Battery Manager Cascades",
       ),
     );
-    for (const Card of definitions.values()) {
+    for (const kind of ["forecast", "consumption", "cascade", "loads"]) {
+      const Card = definitions.get(`battery-manager-${kind}-card`);
       const form = Card.getConfigForm();
       assert.equal(
         form.computeLabel({ name: "hours" }),
@@ -1418,28 +1419,181 @@ test("standalone clipping keeps energy and absent Wh stays unknown", () => {
   );
 });
 
-test("reserve report separates requested reserve and physically achievable support", () => {
-  const html = vm.runInContext("reserveReport", context)(
-    { language: "de", config: { time_zone: "Europe/Berlin" } },
-    {
-      mode: "shadow",
-      hold_soc_percent: 80,
-      actual_soc_percent: 70,
-      hold_achievable: false,
-      headroom_wh: 1000,
-      shadow_observed_hours: 12,
-      preparation_start: "<script>",
-      upper_pv_factor: 1.2,
+test("reserve report explains the physical headroom policy without inventing a hold target", () => {
+  const render = vm.runInContext("reserveReport", context);
+  for (const mode of ["active", "shadow"]) {
+    const html = render(
+      { language: "de", config: { time_zone: "Europe/Berlin" } },
+      {
+        mode,
+        hold_soc_percent: 88,
+        hold_shortfall_wh: 999,
+        hold_achievable: false,
+        actual_soc_percent: 70,
+        headroom_wh: 1000,
+        unavoidable_export_wh: 250,
+        inverter_limit_w: 125,
+        decision_reason: "pv_headroom_preparation",
+        preparation_horizon_end: "2026-09-28T22:00:00Z",
+        preparation_start: "<script>",
+        upper_pv_factor: 1.2,
+      },
+    );
+    assert.match(html, /heute und morgen/);
+    assert.match(html, /zusätzlichen Freiraum im Speicher/);
+    assert.match(html, /Aktuell erlaubte Inverterleistung/);
+    assert.match(html, /125 W/);
+    assert.match(html, /Unvermeidbare prognostizierte Einspeisung/);
+    assert.match(html, /250 Wh/);
+    assert.match(html, /29\.09\.2026, 00:00/);
+    assert.match(html, /Ist-SOC/);
+    assert.doesNotMatch(html, /Halteziel|Fehlende Reserve|88|999|<script>/);
+    if (mode === "shadow")
+      assert.match(html, /bisherige Steuerung bleibt aktiv/);
+  }
+  assert.equal(render({}, { mode: "off" }), "");
+});
+
+function reserveForecastCard(mode, language = "en") {
+  const c = new (definitions.get("battery-manager-forecast-card"))();
+  c.setConfig({ entity: "sensor.reserve" });
+  c.hass = {
+    language,
+    config: { time_zone: "Europe/Berlin" },
+    states: {
+      "sensor.reserve": {
+        attributes: {
+          soc_threshold_percent: 73,
+          battery_min_soc_percent: 5,
+          battery_max_soc_percent: 95,
+          inverter_min_soc_percent: 20,
+          soc_buffer_percent: 8,
+          reserve: { mode, decision_reason: "no_preparation_needed" },
+          forecast: [
+            { t: "2026-09-27T10:00:00+02:00", soc: 50 },
+            { t: "2026-09-27T11:00:00+02:00", soc: 55 },
+          ],
+        },
+      },
     },
+  };
+  return c;
+}
+
+test("active reserve removes legacy threshold from summary, SVG, accessibility and hover", () => {
+  for (const language of ["de", "en"]) {
+    const c = reserveForecastCard("active", language);
+    const floor =
+      language === "de" ? "Inverter-Untergrenze" : "Inverter lower limit";
+    const html = c.shadowRoot.innerHTML;
+    assert.doesNotMatch(html, /T\*|threshold 73|Schwelle 73/);
+    assert.ok(html.includes(`${floor} 20 %`));
+    assert.match(html, /data-marker="inverter-floor"/);
+    assert.match(html, new RegExp(`aria-label="[^"]*${floor} 20 %`));
+    const marker = {},
+      readout = {};
+    c.shadowRoot.getElementById = (id) => (id === "readout" ? readout : marker);
+    c._showSlot(0);
+    assert.ok(readout.innerHTML.includes(`${floor} 20 %`));
+    assert.doesNotMatch(readout.innerHTML, /T\*|73/);
+  }
+});
+
+test("off and shadow preserve the legacy threshold while the active policy does not", () => {
+  for (const mode of ["off", "shadow"]) {
+    const html = reserveForecastCard(mode).shadowRoot.innerHTML;
+    assert.match(html, /T\* 73 %/);
+    assert.match(html, /aria-label="[^"]*threshold 73 %/);
+  }
+});
+
+test("reserve horizon follows HA local midnight across both DST transitions", () => {
+  const render = vm.runInContext("reserveReport", context);
+  for (const [timestamp, date] of [
+    ["2026-03-29T22:00:00Z", "30.03.2026"],
+    ["2026-10-25T23:00:00Z", "26.10.2026"],
+  ]) {
+    const html = render(
+      { language: "de", config: { time_zone: "Europe/Berlin" } },
+      { mode: "active", preparation_horizon_end: timestamp },
+    );
+    assert.ok(html.includes(`${date}, 00:00`));
+    assert.match(html, /Kein Entscheidungsgrund verfügbar/);
+  }
+});
+
+test("reserve decisions expose concrete bilingual reasons and unknown codes stay diagnostic", () => {
+  const render = vm.runInContext("reserveReport", context);
+  const cases = [
+    [
+      "no_preparation_needed",
+      "No additional AC discharge for PV preparation is needed now",
+      "Aktuell ist keine zusätzliche AC-Entladung",
+    ],
+    ["pv_headroom_preparation", "Forecast PV requires", "erwartete PV-Energie"],
+    [
+      "dc_support_protection",
+      "DC supply protection",
+      "Schutz der DC-Versorgung",
+    ],
+    [
+      "manual_support",
+      "Manual PSU support",
+      "Manuell angeforderte Netzteilstützung",
+    ],
+    ["no_ac_demand", "No usable AC demand", "kein nutzbarer AC-Verbrauch"],
+  ];
+  for (const [reason, en, de] of cases)
+    for (const [language, text] of [
+      ["en", en],
+      ["de", de],
+    ]) {
+      assert.ok(
+        render(
+          { language },
+          { mode: "active", decision_reason: reason },
+        ).includes(text),
+      );
+    }
+  const unknown = render(
+    { language: "en" },
+    { mode: "active", decision_reason: "<img src=x>" },
   );
-  assert.match(html, /Schattenbetrieb/);
-  assert.match(html, /ohne Wartezeit/);
-  assert.doesNotMatch(html, /48 h/);
-  assert.match(html, /80.0 \/ 70.0/);
-  assert.match(html, /nicht vollständig halten/);
-  assert.doesNotMatch(html, /<script>/);
-  assert.equal(
-    vm.runInContext("reserveReport", context)({}, { mode: "off" }),
-    "",
-  );
+  assert.match(unknown, /No decision reason available/);
+  assert.doesNotMatch(unknown, /<img/);
+});
+
+test("reserve with zero current headroom can still announce preparation later", () => {
+  const render = vm.runInContext("reserveReport", context);
+  for (const [language, reason, label] of [
+    [
+      "en",
+      "No additional AC discharge for PV preparation is needed now.",
+      "Additional headroom needed now",
+    ],
+    [
+      "de",
+      "Aktuell ist keine zusätzliche AC-Entladung zur PV-Vorbereitung nötig.",
+      "Jetzt zusätzlich benötigter Freiraum",
+    ],
+  ]) {
+    const html = render(
+      { language, config: { time_zone: "Europe/Berlin" } },
+      {
+        mode: "active",
+        decision_reason: "no_preparation_needed",
+        headroom_wh: 0,
+        inverter_limit_w: 0,
+        preparation_start: "2026-09-28T04:00:00Z",
+        preparation_horizon_end: "2026-09-28T22:00:00Z",
+      },
+    );
+    assert.ok(html.includes(reason));
+    assert.ok(html.includes(label));
+    assert.match(html, /06:00/);
+    assert.doesNotMatch(
+      html,
+      /No additional PV headroom is needed today or tomorrow|Heute und morgen wird kein zusätzlicher PV-Freiraum benötigt/,
+    );
+  }
 });

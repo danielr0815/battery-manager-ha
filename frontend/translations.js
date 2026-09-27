@@ -171,6 +171,7 @@ export const STRINGS = {
     cascade_phase_unknown: "unknown status",
     now: "now",
     threshold: "threshold",
+    inverter_floor: "Inverter lower limit",
     import: "grid import",
     lost: "lost surplus",
     prevented: "prevented export",
@@ -419,6 +420,7 @@ export const STRINGS = {
     cascade_phase_unknown: "Status unbekannt",
     now: "jetzt",
     threshold: "Schwelle",
+    inverter_floor: "Inverter-Untergrenze",
     import: "Netzimport",
     lost: "verlorener Überschuss",
     prevented: "verhinderter Export",
@@ -513,17 +515,36 @@ export function localize(hass, key) {
 }
 
 Object.assign(STRINGS.en, {
-  report_hold_target_actual_soc: "Hold target / actual SOC",
-  report_additional_headroom_needed: "Additional headroom needed",
+  report_actual_soc: "Actual SOC",
+  report_preparation_horizon_end: "Prepare for PV until",
+  report_preparation_today_tomorrow:
+    "PV preparation considers today and tomorrow in the Home Assistant time zone.",
+  report_reserve_energy_policy:
+    "Retain surplus energy; discharge only as needed to make room for forecast PV. The inverter lower limit is a technical AC discharge limit, not a reserve or discharge target.",
+  report_unavoidable_export: "Unavoidable forecast export",
+  report_reserve_decision: "Current decision",
+  report_reserve_decision_unknown: "No decision reason available",
+  report_reserve_shadow_explanation:
+    "Shadow calculation only. The existing control policy remains active.",
+  reserve_decision_no_preparation_needed:
+    "No additional AC discharge for PV preparation is needed now.",
+  reserve_decision_pv_headroom_preparation:
+    "Forecast PV requires additional battery headroom.",
+  reserve_decision_dc_support_protection:
+    "DC supply protection determines the current source switching and AC discharge limit.",
+  reserve_decision_manual_support:
+    "Manual PSU support blocks AC battery discharge.",
+  reserve_decision_no_ac_demand:
+    "No usable AC demand for battery discharge is forecast.",
+  report_additional_headroom_needed: "Additional headroom needed now",
   report_preparation_from: "Preparation from",
   report_expected_minimum_soc: "Expected minimum SOC",
   report_additional_grid_import_for_reserve:
     "Additional grid import for reserve",
   report_remaining_battery_discharge: "Remaining battery discharge",
-  report_reserve_shortfall: "Reserve shortfall",
   report_incidental_psu_charging: "Incidental PSU charging",
   report_expected_48_v_support: "Expected 48 V support",
-  report_inverter_limit_now: "Inverter limit now",
+  report_inverter_limit_now: "Currently permitted inverter power",
   report_year_round_reserve: "Year-round reserve",
   report_shadow: "Shadow",
   report_active: "Active",
@@ -561,17 +582,36 @@ Object.assign(STRINGS.en, {
   report_a_recording_error_occurred: "A recording error occurred",
 });
 Object.assign(STRINGS.de, {
-  report_hold_target_actual_soc: "Halteziel / Ist-SOC",
-  report_additional_headroom_needed: "Benötigter zusätzlicher Freiraum",
+  report_actual_soc: "Ist-SOC",
+  report_preparation_horizon_end: "PV-Vorbereitung bis",
+  report_preparation_today_tomorrow:
+    "Die PV-Vorbereitung berücksichtigt heute und morgen in der Home-Assistant-Zeitzone.",
+  report_reserve_energy_policy:
+    "Übrige Energie erhalten; nur so weit entladen, wie für die erwartete PV-Energie nötig. Die Inverter-Untergrenze ist eine technische AC-Entladegrenze, kein Reserve- oder Entladeziel.",
+  report_unavoidable_export: "Unvermeidbare prognostizierte Einspeisung",
+  report_reserve_decision: "Aktuelle Entscheidung",
+  report_reserve_decision_unknown: "Kein Entscheidungsgrund verfügbar",
+  report_reserve_shadow_explanation:
+    "Nur Schattenrechnung. Die bisherige Steuerung bleibt aktiv.",
+  reserve_decision_no_preparation_needed:
+    "Aktuell ist keine zusätzliche AC-Entladung zur PV-Vorbereitung nötig.",
+  reserve_decision_pv_headroom_preparation:
+    "Die erwartete PV-Energie benötigt zusätzlichen Freiraum im Speicher.",
+  reserve_decision_dc_support_protection:
+    "Der Schutz der DC-Versorgung bestimmt die aktuelle Quellenumschaltung und AC-Entladegrenze.",
+  reserve_decision_manual_support:
+    "Manuell angeforderte Netzteilstützung sperrt die AC-Batterieentladung.",
+  reserve_decision_no_ac_demand:
+    "Es ist kein nutzbarer AC-Verbrauch für die Batterieentladung prognostiziert.",
+  report_additional_headroom_needed: "Jetzt zusätzlich benötigter Freiraum",
   report_preparation_from: "Vorbereitung ab",
   report_expected_minimum_soc: "Erwarteter Mindest-SOC",
   report_additional_grid_import_for_reserve:
     "Zusätzlicher Netzbezug für Reserve",
   report_remaining_battery_discharge: "Verbleibende Batterieentladung",
-  report_reserve_shortfall: "Fehlende Reserve",
   report_incidental_psu_charging: "Technisch bedingte Netzteilladung",
   report_expected_48_v_support: "Erwartete 48-V-Stützung",
-  report_inverter_limit_now: "Inverterlimit jetzt",
+  report_inverter_limit_now: "Aktuell erlaubte Inverterleistung",
   report_year_round_reserve: "Ganzjährige Reserve",
   report_shadow: "Schattenbetrieb",
   report_active: "Aktiv",

@@ -179,7 +179,7 @@
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
               "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
               "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten.",
-              "reserve_mode": "Aktiv steuert sofort anhand der Prognosen und des aktuellen SOC, ohne Lern- oder Wartezeit. Bei koordinierter Steuerung ist dies die Voreinstellung. Schattenbetrieb ist optional; Aus verwendet die bisherige Planung.",
+              "reserve_mode": "Aktiv versorgt DC bevorzugt aus der Batterie. Zusätzliche AC-Entladung schafft nur den bis Ende morgen benötigten PV-Freiraum, möglichst spät und nach HA-Ortszeit. Bestehende Schutzschwellen bleiben wirksam; es gibt keine neue feste Nachtreserve und keine Lernwartezeit. Voreinstellung bei koordinierter Steuerung. Schatten berechnet nur zum Vergleich; Aus verwendet die bisherige Planung.",
               "reserve_upper_pv_factor": "Unkalibrierter Ersatzfaktor bei fehlendem P90; 1,20 entspricht 20 % Aufschlag. Keine Einspeisefreiheitsgarantie.",
               "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
               "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort."
@@ -667,7 +667,7 @@
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
               "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
               "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten.",
-              "reserve_mode": "Aktiv steuert sofort anhand der Prognosen und des aktuellen SOC, ohne Lern- oder Wartezeit. Bei koordinierter Steuerung ist dies die Voreinstellung. Schattenbetrieb ist optional; Aus verwendet die bisherige Planung.",
+              "reserve_mode": "Aktiv versorgt DC bevorzugt aus der Batterie. Zusätzliche AC-Entladung schafft nur den bis Ende morgen benötigten PV-Freiraum, möglichst spät und nach HA-Ortszeit. Bestehende Schutzschwellen bleiben wirksam; es gibt keine neue feste Nachtreserve und keine Lernwartezeit. Voreinstellung bei koordinierter Steuerung. Schatten berechnet nur zum Vergleich; Aus verwendet die bisherige Planung.",
               "reserve_upper_pv_factor": "Unkalibrierter Ersatzfaktor bei fehlendem P90; 1,20 entspricht 20 % Aufschlag. Keine Einspeisefreiheitsgarantie.",
               "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
               "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort."
@@ -978,6 +978,43 @@
       },
       "cascade_soc": {
         "name": "{name} SOC"
+      },
+      "appliance_status": {
+        "name": "Betriebszustand",
+        "state": {
+          "idle": "Inaktiv",
+          "running": "Läuft",
+          "paused": "Pausiert",
+          "finished": "Beendet",
+          "error": "Fehler"
+        }
+      },
+      "appliance_program": {
+        "name": "Programm"
+      },
+      "appliance_remaining": {
+        "name": "Restlaufzeit"
+      },
+      "appliance_expected_end": {
+        "name": "Voraussichtliches Ende"
+      },
+      "appliance_cycle_energy": {
+        "name": "Verbrauch im laufenden Durchgang"
+      },
+      "appliance_planning_energy": {
+        "name": "Angenommener Gesamtverbrauch"
+      },
+      "appliance_planning_duration": {
+        "name": "Angenommene Gesamtdauer"
+      },
+      "appliance_learning": {
+        "name": "Lernstatus",
+        "state": {
+          "no_data": "Noch keine Lerndaten",
+          "measuring": "Durchgang wird beobachtet",
+          "learned": "Lernwerte vorhanden",
+          "invalid": "Messung nicht verwertbar"
+        }
       }
     },
     "binary_sensor": {

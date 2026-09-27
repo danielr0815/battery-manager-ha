@@ -43,11 +43,13 @@ def inputs(soc, series):
     return PlanInputs(NOW, soc, slots, reserve_hold_soc_percent=soc)
 
 
-def test_dark_week_preserves_available_reserve_without_invented_grid_charge():
+def test_dark_week_uses_dc_battery_until_protection_without_invented_grid_charge():
     c = config()
     r = simulate(c, inputs(80, [(0, 100, 60)] * 72), 20)
     assert all(f.inverter_output_wh == 0 for f in r.flows)
-    assert all(f.psu24_delivered_wh == pytest.approx(40) for f in r.flows)
+    assert r.flows[0].psu24_delivered_wh == 0
+    assert r.flows[0].battery_discharge_wh == pytest.approx(60)
+    assert any(f.psu24_delivered_wh == pytest.approx(40) for f in r.flows)
     assert all(f.psu48_delivered_wh == 0 for f in r.flows)
     assert r.end_soc_percent == pytest.approx(5)
     assert sum(f.unserved_dc_wh for f in r.flows) > 0
@@ -108,7 +110,7 @@ def test_planner_publishes_same_reserve_switching_as_simulation():
     c = config()
     i = inputs(80, [(0, 100, 60)])
     p = plan(c, i)
-    assert p.support_dc24_now and p.support_dc48_now
+    assert not p.support_dc24_now and not p.support_dc48_now
     assert not p.inverter_on
     assert p.trajectory == simulate(c, i, p.threshold_percent)
 
@@ -193,18 +195,19 @@ def test_latest_preparation_time_excludes_involuntary_native_discharge():
     assert dark.flows[0].reserve_preparation_start is None
 
 
-def test_measured_voltage_can_hold_high_soc_without_proxy_or_grid_recharge():
+def test_measured_voltage_does_not_request_grid_holding_at_high_soc():
     c = config(psu48_max_power_w=57)
     c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49.56))
     r = simulate(c, inputs(80, [(0, 100, 60)] * 12), 20)
-    assert r.end_soc_percent == pytest.approx(80)
-    assert all(f.psu48_delivered_wh == pytest.approx(20) for f in r.flows)
+    assert r.flows[0].soc_end_percent == pytest.approx(74)
+    assert r.end_soc_percent < 10
+    assert all(f.psu48_delivered_wh == 0 for f in r.flows)
     assert all(f.psu48_battery_charge_wh == 0 for f in r.flows)
     assert all(f.inverter_output_wh == 0 for f in r.flows)
 
 
 def test_incidental_grid_charge_never_releases_ac_discharge_in_darkness():
-    c = config(psu48_max_power_w=57)
+    c = config(psu48_max_power_w=57, dc24_forced_on=True, dc48_forced_on=True)
     c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49))
     r = simulate(c, inputs(80, [(0, 100, 60)] * 8), 20)
     assert sum(f.psu48_battery_charge_wh for f in r.flows) > 0
@@ -245,7 +248,8 @@ def test_withdrawn_pv_forecast_immediately_revokes_preparation_budget():
     assert before.trajectory.flows[0].inverter_limit_w > 0
     after = plan(c, replace(i, slots=(i.slots[0], replace(i.slots[1], pv_wh=0))))
     assert after.trajectory.flows[0].inverter_limit_w == 0
-    assert after.support_dc24_now
+    assert not after.support_dc24_now
+    assert after.trajectory.flows[0].battery_discharge_wh == pytest.approx(100)
     assert not after.inverter_on
 
 

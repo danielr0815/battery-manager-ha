@@ -306,11 +306,25 @@ class ApplianceStartWindowSensor(BatteryManagerEntity, BinarySensorEntity):
         self._subentry_id = subentry_id
         self._attr_translation_placeholders = {"name": title}
 
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.appliances.subscribe(self.async_write_ha_state)
+        )
+
     @property
     def is_on(self) -> bool | None:
+        snapshot = self.coordinator.appliances.entity_snapshot(self._subentry_id)
+        if snapshot is not None:
+            return snapshot["recommendation"]["allowed"]
         data = self.coordinator.data or {}
         windows = data.get("appliance_windows") or {}
         return windows.get(self._subentry_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        snapshot = self.coordinator.appliances.entity_snapshot(self._subentry_id)
+        return {"reasons": snapshot["recommendation"]["reasons"]} if snapshot else {}
 
 
 class SupportPathSensor(BatteryManagerEntity, BinarySensorEntity):

@@ -129,6 +129,7 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
 
     coordinator = SimpleNamespace(
         _planning=PlanningRunner(),
+        appliances=SimpleNamespace(payload=lambda: {"appliances": []}),
         _cascade_state={
             "chain": {
                 "actor_journal": [{"event": "confirmation_failed"}],

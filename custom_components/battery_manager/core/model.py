@@ -273,6 +273,19 @@ class Appliance:
     opportunistic_start: bool = False  # expose "may start on surplus" advisor
 
 
+type ApplianceAdvisoryReason = Literal[
+    "forecast_horizon_short", "extra_grid_import", "soc_condition"
+]
+
+
+@dataclass(frozen=True)
+class ApplianceAdvisory:
+    """Existing start decision and every failed gate, without another simulation."""
+
+    allowed: bool
+    reasons: tuple[ApplianceAdvisoryReason, ...] = ()
+
+
 @dataclass(frozen=True)
 class ApplianceRun:
     """A detected running appliance: remaining consumption to add to AC load."""
@@ -798,6 +811,8 @@ class PlanInputs:
     load_states: tuple[SurplusLoadState, ...] = ()
     appliance_runs: tuple[ApplianceRun, ...] = ()
     cascade_runtime_states: tuple[CascadeRuntimeState, ...] = ()
+    # Historical observation reference only. Retained for old recordings;
+    # neither AC preparation nor protection may depend on this ledger.
     reserve_hold_soc_percent: float | None = None
 
     def __post_init__(self) -> None:
@@ -847,6 +862,30 @@ class HourFlows:
     inverter_limit_w: float = 0.0
 
 
+ReserveDecisionReason = Literal[
+    "no_preparation_needed",
+    "pv_headroom_preparation",
+    "dc_support_protection",
+    "manual_support",
+    "no_ac_demand",
+]
+
+
+@dataclass(frozen=True)
+class ReserveDecision:
+    """Current physical reserve decision shared by replay and HA diagnostics.
+
+    Headroom and unavoidable export describe the upper PV scenario within
+    the binding horizon, rather than a fixed SOC target or a solar guarantee.
+    """
+
+    preparation_horizon_end: datetime
+    inverter_limit_w: float
+    headroom_wh: float
+    unavoidable_export_wh: float
+    reason: ReserveDecisionReason
+
+
 @dataclass(frozen=True)
 class Trajectory:
     """Result of simulating one policy over all slots."""
@@ -855,6 +894,7 @@ class Trajectory:
     total_import_wh: float
     total_export_wh: float
     end_soc_percent: float
+    reserve_decision: ReserveDecision | None = None
 
     @property
     def min_soc_percent(self) -> float:
@@ -992,6 +1032,8 @@ class PlanResult:
     feedin_by_day_wh: Mapping[str, float] = field(default_factory=dict)
     cascade_plans: tuple[CascadePlan, ...] = ()
     feedin_decisions: tuple[tuple[int, str], ...] = ()
+    # Additive explanation of appliance_windows; absent in older recordings.
+    appliance_advisories: Mapping[str, ApplianceAdvisory] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Copy first: retained caller dictionaries cannot mutate a published plan.
@@ -1000,5 +1042,6 @@ class PlanResult:
             "pv_window_ends",
             "prevented_export_by_day_wh",
             "feedin_by_day_wh",
+            "appliance_advisories",
         ):
             object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))

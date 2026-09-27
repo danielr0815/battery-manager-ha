@@ -141,3 +141,101 @@ test("DST fallback uses HA wall time through both occurrences of 02:00", async (
   await chart.press("ArrowRight");
   await expect(page.locator("#readout")).toContainText("03:00");
 });
+
+test("active reserve labels the technical inverter floor without displaying a legacy target", async ({
+  page,
+}) => {
+  await page.evaluate((attrs) => window.mount("forecast", attrs), {
+    ...attributes,
+    soc_threshold_percent: 73,
+    inverter_min_soc_percent: 20,
+    battery_min_soc_percent: 5,
+    soc_buffer_percent: 10,
+    reserve: {
+      mode: "active",
+      decision_reason: "pv_headroom_preparation",
+      preparation_horizon_end: "2026-09-27T22:00:00Z",
+      headroom_wh: 600,
+      unavoidable_export_wh: 250,
+      inverter_limit_w: 125,
+      actual_soc_percent: 70,
+      hold_soc_percent: 88,
+    },
+  });
+  const chart = page.locator("#chart");
+  await expect(page.locator("ha-card")).not.toContainText("T*");
+  await expect(chart).toHaveAttribute(
+    "aria-label",
+    /Inverter lower limit 20 %/,
+  );
+  await expect(chart).not.toHaveAttribute("aria-label", /threshold/);
+  await expect(page.locator('[data-marker="inverter-floor-label"]')).toHaveText(
+    "Inverter lower limit 20 %",
+  );
+  await chart.focus();
+  await chart.press("Home");
+  await expect(page.locator("#readout")).toContainText(
+    "Inverter lower limit 20 %",
+  );
+  await expect(page.locator("#readout")).not.toContainText("T*");
+  const report = page.locator('[data-view-key="reserve-policy"]');
+  await report.locator("summary").click();
+  await expect(report).toContainText("today and tomorrow");
+  await expect(report).toContainText("600 Wh");
+  await expect(report).toContainText("250 Wh");
+  await expect(report).toContainText("125 W");
+  await expect(report).not.toContainText("88");
+  await page.evaluate(() => {
+    window.card.hass = { ...window.card._hass, language: "de" };
+  });
+  await expect(page.locator('[data-marker="inverter-floor-label"]')).toHaveText(
+    "Inverter-Untergrenze 20 %",
+  );
+  await expect(report).toContainText("heute und morgen");
+  await expect(report).toContainText("28.09.2026, 00:00");
+  await expect(report).toContainText("kein Reserve- oder Entladeziel");
+  await expect(report).not.toContainText("Halteziel");
+});
+
+for (const mode of ["off", "shadow"])
+  test(`reserve ${mode}: legacy threshold remains visible`, async ({
+    page,
+  }) => {
+    await page.evaluate((attrs) => window.mount("forecast", attrs), {
+      ...attributes,
+      soc_threshold_percent: 73,
+      inverter_min_soc_percent: 20,
+      reserve: { mode },
+    });
+    await expect(page.locator("svg")).toContainText("T* 73 %");
+    await expect(page.locator("#chart")).toHaveAttribute(
+      "aria-label",
+      /threshold 73 %/,
+    );
+  });
+
+for (const [timestamp, date] of [
+  ["2026-03-29T22:00:00Z", "30.03.2026"],
+  ["2026-10-25T23:00:00Z", "26.10.2026"],
+])
+  test(`reserve horizon remains HA midnight around ${date}`, async ({
+    page,
+  }) => {
+    await page.evaluate(
+      (attrs) => {
+        window.mount("forecast", attrs);
+        window.card.hass = { ...window.card._hass, language: "de" };
+      },
+      {
+        ...attributes,
+        reserve: {
+          mode: "active",
+          preparation_horizon_end: timestamp,
+          decision_reason: "no_preparation_needed",
+        },
+      },
+    );
+    const report = page.locator('[data-view-key="reserve-policy"]');
+    await report.locator("summary").click();
+    await expect(report).toContainText(`${date}, 00:00`);
+  });

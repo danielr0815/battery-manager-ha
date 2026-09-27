@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from .appliance_sensor import APPLIANCE_SENSORS, ApplianceSensor
 from .const import (
     ATTR_GRID_EXPORT_KWH,
     ATTR_LAST_UPDATE,
@@ -42,6 +43,7 @@ from .const import (
     ENTITY_SUPPORT_DC24_MODE,
     ENTITY_SUPPORT_DC48_MODE,
     ENTITY_TRUE_EXPORT_ENERGY,
+    SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
     SUPPORT_MODE_AUTO,
@@ -245,6 +247,11 @@ async def async_setup_entry(
                 SurplusLoadPlanningPowerSensor(
                     coordinator, subentry_id, subentry.title
                 ),
+            ]
+        elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE:
+            per_subentry[subentry_id] = [
+                ApplianceSensor(coordinator, subentry_id, description)
+                for description in APPLIANCE_SENSORS
             ]
         elif subentry.subentry_type == SUBENTRY_TYPE_CASCADE:
             per_subentry[subentry_id] = [

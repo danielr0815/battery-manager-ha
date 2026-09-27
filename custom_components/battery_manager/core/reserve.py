@@ -1,26 +1,87 @@
-"""Year-round preservation with DC-first, latest feasible PV preparation.
+"""DC-first reserve with reachable, latest preparation for today and tomorrow.
 
-Two backward envelopes are essential: using only the all-load envelope would
-buy DC grid energy tonight and empty the battery through AC tomorrow morning.
-The DC envelope spends the required headroom on native consumption first; the
-all-load envelope identifies the last opportunity for additional AC discharge.
-Neither envelope assumes that an enabled PSU actually supplies its nameplate.
+A maximum-useful-discharge reference measures unavoidable export. Its physical
+inverse schedules only the remaining necessary AC, without carrying impossible
+zero-export debt into earlier hours. Automatic support is selected independently
+on the actual trajectory; reference switches never become future PSU commands.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import fields, replace
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, fields, replace
+from datetime import UTC, date, datetime, timedelta
 
-from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
+from .model import (
+    HourFlows,
+    HourSlot,
+    PlanInputs,
+    ReserveDecision,
+    ReserveDecisionReason,
+    SystemConfig,
+    Trajectory,
+)
+from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
 from .simulate import step_hour
 from .simulation_steps import split_slot
 from .support import support_state
 
+# A planning call probes many nearby load schedules. The cache expires with that
+# call and cannot leak a source, forecast or cancellation context into the next.
+MAX_CACHED_RESERVE_PROBES = 128
+MAX_CACHED_BATTERY_STEPS = 8192
+
+
+@dataclass
+class _ReserveCache:
+    references: dict[int, object] = field(default_factory=dict)
+    budgets: dict[
+        tuple[int, int, float, float, float], tuple[HourSlot, BatteryStep]
+    ] = field(default_factory=dict)
+    variants: dict[tuple[int, bool, bool], SystemConfig] = field(default_factory=dict)
+    trajectories: dict[tuple[object, ...], Trajectory] = field(default_factory=dict)
+
+
+_reserve_cache: ContextVar[_ReserveCache | None] = ContextVar(
+    "reserve_cache", default=None
+)
+
+
+@contextmanager
+def reserve_planning_scope() -> Iterator[None]:
+    """Nested cascade planning shares the owner cache; errors always release it."""
+    if _reserve_cache.get() is not None:
+        yield
+        return
+    token = _reserve_cache.set(_ReserveCache())
+    try:
+        yield
+    finally:
+        _reserve_cache.reset(token)
+
+
+def _budget(
+    config: SystemConfig, slot: HourSlot, extra: float, upper: float, feedin: float
+) -> BatteryStep:
+    cache = _reserve_cache.get()
+    if cache is None:
+        return BatteryStep.build(config, slot, extra, upper, feedin)
+    # Retain identity-keyed immutable objects until the owning plan ends.
+    cache.references[id(config)] = config
+    key = id(config), id(slot), extra, upper, feedin
+    entry = cache.budgets.get(key)
+    if entry is None:
+        result = BatteryStep.build(config, slot, extra, upper, feedin)
+        if len(cache.budgets) >= MAX_CACHED_BATTERY_STEPS:
+            del cache.budgets[next(iter(cache.budgets))]
+        cache.budgets[key] = (slot, result)
+        return result
+    return entry[1]
+
 
 def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | None):
-    # Reuse the existing collapsed-band rule rather than calling a cold-start
-    # P90 a reliable upper bound. The scalar remains explicitly uncalibrated.
     from .uncertainty import effective_uncertainty
 
     _, upper, _ = effective_uncertainty(
@@ -42,41 +103,38 @@ def _expanded_slots(
     )
 
 
-def _envelopes(config: SystemConfig, steps):
-    battery, support = config.battery, config.support
-    maximum = battery.energy_wh(battery.soc_max_percent)
-    dc = [maximum] * (len(steps) + 1)
-    all_loads = dc.copy()
-    for j in range(len(steps) - 1, -1, -1):
-        _, slot, extra, upper = steps[j]
-        rail = max(0.0, slot.dc_wh - support.native48_base_w * slot.duration)
-        rail *= support.dc24_share
-        served_rail = (
-            min(rail, support.dcdc_max_power_w * slot.duration)
-            if support.dcdc_max_power_w is not None
-            else rail
+def _slot_end(slot: HourSlot) -> datetime:
+    """Add real elapsed time, including a repeated or skipped DST hour."""
+    if slot.start.tzinfo is None:
+        return slot.start + timedelta(hours=slot.duration)
+    return (slot.start.astimezone(UTC) + timedelta(hours=slot.duration)).astimezone(
+        slot.start.tzinfo
+    )
+
+
+def _envelope(
+    budgets: list[BatteryStep], start: int, end: int, energy: float
+) -> tuple[list[float], float]:
+    """Two linear passes; each step enters at most two rolling daily windows.
+
+    Reference energy/export concern the battery branch, not an assumed future
+    protection latch. Physical support may supersede this budget in the actual
+    forward run; unknown PSU output is never credited as guaranteed energy.
+    """
+    reachable = [energy]
+    spill: list[float] = []
+    for budget in budgets[start:end]:
+        energy, exported = budget.project(energy)
+        reachable.append(energy)
+        spill.append(exported)
+    ceiling = [budgets[start].maximum] * (end - start + 1)
+    for offset in range(end - start - 1, -1, -1):
+        budget = budgets[start + offset]
+        ceiling[offset] = max(
+            reachable[offset],
+            budget.incoming_ceiling(ceiling[offset + 1], spill[offset]),
         )
-        bus = slot.dc_wh - rail + served_rail / support.dcdc_eta
-        pv = min(slot.pv_wh * upper, config.pv.peak_power_w * slot.duration)
-        balance = pv - slot.ac_wh - extra
-        charge = (
-            max(
-                0.0,
-                min(max(0.0, balance), config.charger.max_power_w * slot.duration)
-                - config.charger.standby_power_w * slot.duration,
-            )
-            * config.charger.eta
-            * battery.eta_charge
-        )
-        discharge = bus / battery.eta_discharge
-        ac = min(max(0.0, -balance), config.inverter.max_power_w * slot.duration) / (
-            config.inverter.eta * battery.eta_discharge
-        )
-        # Do not clamp at the protection floor: a negative envelope is useful
-        # evidence of impossible absorption, not permission to cross that floor.
-        dc[j] = min(maximum, dc[j + 1] - charge + discharge)
-        all_loads[j] = min(maximum, all_loads[j + 1] - charge + discharge + ac)
-    return dc, all_loads
+    return ceiling, sum(spill)
 
 
 def simulate_reserve(
@@ -86,32 +144,82 @@ def simulate_reserve(
     pv_scale: float | Sequence[float],
     feedin: tuple[float, ...] | None,
 ) -> Trajectory:
-    """Apply the same physical reserve policy in every allocation/stress probe."""
+    """Reuse only identical immutable probes within the current planner call."""
+    cache = _reserve_cache.get()
+    if cache is None:
+        return _simulate_reserve(config, inputs, extra_ac, pv_scale, feedin)
+    cache.references[id(config)] = config
+    cache.references[id(inputs)] = inputs
+    key = (
+        id(config),
+        id(inputs),
+        extra_ac,
+        pv_scale if isinstance(pv_scale, (int, float)) else tuple(pv_scale),
+        feedin,
+    )
+    result = cache.trajectories.get(key)
+    if result is None:
+        result = _simulate_reserve(config, inputs, extra_ac, pv_scale, feedin)
+        if len(cache.trajectories) >= MAX_CACHED_RESERVE_PROBES:
+            del cache.trajectories[next(iter(cache.trajectories))]
+        cache.trajectories[key] = result
+    return result
+
+
+def _simulate_reserve(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+) -> Trajectory:
+    """Execute real source protection and bounded, rolling reserve preparation."""
     steps = _steps(config, inputs, extra_ac)
-    dc_envelope, ac_envelope = _envelopes(config, steps)
+    budgets = [
+        _budget(
+            config,
+            slot,
+            extra,
+            upper,
+            (feedin[i] if feedin else 0.0) * slot.duration / inputs.slots[i].duration,
+        )
+        for i, slot, extra, upper in steps
+    ]
     battery, support = config.battery, config.support
     soc = inputs.start_soc_percent
     dc24, dc48 = support.dc24_active, support.dc48_active
     buckets: list[list[HourFlows]] = [[] for _ in inputs.slots]
-    # Only voltage credit and rail capacity change the support configuration.
-    # Validate each variant once per simulation rather than per time step.
-    variants: dict[tuple[bool, bool], SystemConfig] = {}
+    cache = _reserve_cache.get()
+    variants: dict[tuple[int, bool, bool], SystemConfig] = (
+        cache.variants if cache is not None else {}
+    )
+    current_day: date | None = None
+    window_start = 0
+    ceiling: list[float] = []
+    decision: ReserveDecision | None = None
     for j, (i, slot, extra, _) in enumerate(steps):
+        energy = battery.energy_wh(soc)
+        if slot.start.date() != current_day:
+            current_day = slot.start.date()
+            exclusive_day = current_day + timedelta(days=2)
+            window_start = j
+            end = j
+            while end < len(steps) and steps[end][1].start.date() < exclusive_day:
+                end += 1
+            ceiling, unavoidable_export = _envelope(budgets, j, end, energy)
+            horizon_end = _slot_end(steps[end - 1][1])
+        following_ceiling = ceiling[j - window_start + 1]
         scale = pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i]
-        # A measured voltage is useful at the observed SOC, not a voltage
-        # forecast for an arbitrarily different future SOC. In this local band
-        # it supersedes the old fixed 40% proxy; outside it no power is credited.
         voltage_credit = (
             abs(soc - inputs.start_soc_percent) <= config.control.hysteresis_percent
             and scale >= 1
         )
-        rail = max(0.0, slot.dc_wh - support.native48_base_w * slot.duration)
-        rail *= support.dc24_share
+        _, rail = dc_loads(config, slot)
         rail_available = support.dc24_available and not (
             support.psu24_max_power_w is not None
             and rail > support.psu24_max_power_w * slot.duration
         )
-        key = voltage_credit, rail_available
+        key = id(config), voltage_credit, rail_available
         if key not in variants:
             variants[key] = replace(
                 config,
@@ -132,69 +240,100 @@ def simulate_reserve(
         natural = step_hour(
             effective, soc, slot, 100, extra, pv_scale=scale, feedin_wh=export
         )
-        energy = battery.energy_wh(soc)
-        after_dc = battery.energy_wh(natural.soc_end_percent)
-        # A planned deficit belongs to DC first, even when AC discharge could
-        # be postponed further. This avoids paying for DC to discharge AC later.
-        need_dc = energy + natural.battery_charge_wh > dc_envelope[j + 1] + 1e-6
-        ac_budget = max(
-            0.0,
-            after_dc
-            - max(
-                ac_envelope[j + 1],
-                battery.energy_wh(config.control.inverter_min_soc_percent),
-            ),
-        )
         pv_recovery = natural.battery_charge_wh >= natural.battery_discharge_wh and (
             natural.battery_charge_wh > 0
         )
-        hold = not need_dc and not pv_recovery and ac_budget <= 1e-6
-        emergency24, emergency48 = support_state(
-            effective, min(soc, natural.soc_end_percent), dc24, dc48, pv_recovery
+        # Only genuine protection/hysteresis or a manual source request can
+        # select PSUs. Historical reserve_hold_soc_percent is data, not control.
+        dc24, dc48 = support_state(effective, soc, dc24, dc48, pv_recovery)
+        protected = (
+            step_hour(effective, soc, slot, 100, extra, dc24, dc48, scale, export)
+            if dc24 or dc48
+            else natural
         )
-        dc24 = source.dc24_available and (hold or emergency24 or source.dc24_forced_on)
-        dc48 = source.dc48_available and (hold or emergency48 or source.dc48_forced_on)
-        # Preserve existing low-SOC protection, but do not let its latch turn
-        # reserve holding into grid charging after solar recovery/preparation.
-        if need_dc or pv_recovery:
-            dc24 = source.dc24_available and (
-                source.dc24_forced_on or soc <= config.control.support_dc24_activate_soc
+        dc24, dc48 = support_state(
+            effective, min(soc, protected.soc_end_percent), dc24, dc48, pv_recovery
+        )
+        pv = slot.pv_wh * scale
+        if scale > 1:
+            pv = min(pv, config.pv.peak_power_w * slot.duration)
+        useful_ac = slot.ac_wh + extra > pv + ENERGY_EPSILON_WH
+        ac_budget = (
+            max(
+                0.0,
+                battery.energy_wh(natural.soc_end_percent)
+                - max(following_ceiling, budgets[j].inverter_floor),
             )
-            dc48 = source.dc48_available and (
-                source.dc48_forced_on or soc <= config.control.support_dc48_activate_soc
-            )
-        intended = inputs.reserve_hold_soc_percent
-        if intended is not None and soc > intended + config.control.hysteresis_percent:
-            dc48 = source.dc48_available and source.dc48_forced_on
+            if useful_ac and not (dc24 or dc48)
+            else 0.0
+        )
         limit = min(
             config.inverter.max_power_w,
             ac_budget * battery.eta_discharge * config.inverter.eta / slot.duration,
         )
-        if dc24 or dc48:
+        if limit <= ENERGY_EPSILON_WH:
             limit = 0.0
-        flow = step_hour(
-            effective,
-            soc,
-            slot,
-            config.control.inverter_min_soc_percent if limit > 1e-6 else 100,
-            extra,
-            dc24,
-            dc48,
-            scale,
-            export,
-            inverter_limit_w=limit,
+        if not limit and (dc24, dc48) == (
+            protected.support_dc24,
+            protected.support_dc48,
+        ):
+            flow = protected
+        else:
+            flow = step_hour(
+                effective,
+                soc,
+                slot,
+                config.control.inverter_min_soc_percent if limit else 100,
+                extra,
+                dc24,
+                dc48,
+                scale,
+                export,
+                inverter_limit_w=limit,
+            )
+        # Unusual configured thresholds must receive the same look-ahead
+        # protection as the coordinated legacy simulator, even after AC use.
+        next24, next48 = support_state(
+            effective, min(soc, flow.soc_end_percent), dc24, dc48, pv_recovery
         )
+        if (next24, next48) != (dc24, dc48):
+            dc24, dc48 = next24, next48
+            limit = 0.0
+            flow = step_hour(
+                effective, soc, slot, 100, extra, dc24, dc48, scale, export
+            )
+        if decision is None:
+            reason: ReserveDecisionReason = "no_preparation_needed"
+            if (dc24 and source.dc24_forced_on) or (dc48 and source.dc48_forced_on):
+                reason = "manual_support"
+            elif dc24 or dc48:
+                reason = "dc_support_protection"
+            elif limit:
+                reason = "pv_headroom_preparation"
+            elif not useful_ac:
+                reason = "no_ac_demand"
+            decision = ReserveDecision(
+                preparation_horizon_end=horizon_end,
+                inverter_limit_w=limit,
+                headroom_wh=max(
+                    0.0,
+                    battery.energy_wh(natural.soc_end_percent)
+                    - max(following_ceiling, budgets[j].inverter_floor),
+                ),
+                unavoidable_export_wh=unavoidable_export,
+                reason=reason,
+            )
         flow = replace(
             flow,
             reserve_preparation_start=slot.start
-            if (need_dc or limit > 1e-6) and flow.battery_discharge_wh > 1e-6
+            if flow.inverter_output_wh > ENERGY_EPSILON_WH
             else None,
             inverter_start=flow.inverter_on,
             inverter_limit_w=limit,
-            reserve_ceiling_percent=battery.soc_percent(max(0.0, ac_envelope[j + 1])),
-            reserve_dc_ceiling_percent=battery.soc_percent(
-                max(0.0, dc_envelope[j + 1])
-            ),
+            reserve_ceiling_percent=battery.soc_percent(following_ceiling),
+            # Compatibility field: DC now remains on battery until protection;
+            # both expose the same physical preparation envelope.
+            reserve_dc_ceiling_percent=battery.soc_percent(following_ceiling),
             support_dc24_start=dc24,
             support_dc48_start=dc48,
             support_mode="dc48"
@@ -208,33 +347,39 @@ def simulate_reserve(
         buckets[i].append(flow)
         soc = flow.soc_end_percent
     flows: list[HourFlows] = []
-    energy_fields = [f.name for f in fields(HourFlows) if f.name.endswith("_wh")]
+    energy_fields = [
+        field.name for field in fields(HourFlows) if field.name.endswith("_wh")
+    ]
     for parts in buckets:
         first = parts[0]
         flows.append(
             replace(
                 first,
                 **{
-                    name: sum(getattr(p, name) for p in parts) for name in energy_fields
+                    name: sum(getattr(part, name) for part in parts)
+                    for name in energy_fields
                 },
                 reserve_preparation_start=next(
                     (
-                        p.reserve_preparation_start
-                        for p in parts
-                        if p.reserve_preparation_start is not None
+                        part.reserve_preparation_start
+                        for part in parts
+                        if part.reserve_preparation_start is not None
                     ),
                     None,
                 ),
                 soc_end_percent=parts[-1].soc_end_percent,
-                inverter_on=all(p.inverter_on for p in parts),
-                support_dc24=any(p.support_dc24 for p in parts),
-                support_dc48=any(p.support_dc48 for p in parts),
-                gate_open=any(p.gate_open for p in parts),
+                inverter_on=all(part.inverter_on for part in parts),
+                support_dc24=any(part.support_dc24 for part in parts),
+                support_dc48=any(part.support_dc48 for part in parts),
+                gate_open=any(part.gate_open for part in parts),
             )
         )
+    if decision is None:
+        decision = ReserveDecision(inputs.now, 0.0, 0.0, 0.0, "no_preparation_needed")
     return Trajectory(
         tuple(flows),
-        sum(f.grid_import_wh for f in flows),
-        sum(f.grid_export_wh for f in flows),
+        sum(flow.grid_import_wh for flow in flows),
+        sum(flow.grid_export_wh for flow in flows),
         soc,
+        reserve_decision=decision,
     )

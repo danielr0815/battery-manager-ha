@@ -133,5 +133,6 @@ async def async_get_config_entry_diagnostics(
     diagnostics["core_config"] = _core_config(coordinator)
     diagnostics["learned_state"] = coordinator.learned_state_snapshot()
     diagnostics["planning"] = coordinator._planning.snapshot()
+    diagnostics["appliances"] = coordinator.appliances.payload()
     diagnostics["last_plan_metrics"] = _last_plan_metrics(coordinator)
     return diagnostics

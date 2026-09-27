@@ -45,3 +45,53 @@ def test_schema_preserves_date_keys_and_rejects_executable_or_invalid_types():
         replay({"schema_version": 99})
     with pytest.raises(ValueError, match="SystemConfig"):
         replay({"schema_version": 1, "config": encode(value), "inputs": None})
+
+
+def test_advisory_recording_roundtrip_checks_reasons_and_reads_older_records():
+    """Missing old diagnostics remain compatible; present reasons are audited."""
+    from core.model import Appliance, ApplianceAdvisory
+
+    now = datetime(2026, 9, 27, 12)
+    config = SystemConfig(appliances=(Appliance("washer", "Washer", 1000, 2, True),))
+    inputs = PlanInputs(now, 80, (HourSlot(0, now, 1, 12, 2000, 0, 0),))
+    result = plan(config, inputs)
+    assert result.appliance_advisories == {
+        "washer": ApplianceAdvisory(False, ("forecast_horizon_short",))
+    }
+    record = json.loads(json.dumps(recording(config, inputs, result), allow_nan=False))
+    assert replay(record) == (result, True)
+
+    record["result"]["fields"]["appliance_advisories"] = encode(
+        {"washer": ApplianceAdvisory(False, ("extra_grid_import",))}
+    )
+    assert not replay(record)[1]
+
+    record["result"]["fields"].pop("appliance_advisories")
+    assert replay(record) == (result, True)
+    # Legacy compatibility excludes only the absent additive field, never an
+    # existing decision or energy measurement.
+    record["result"]["fields"]["grid_import_kwh"] += 1
+    assert not replay(record)[1]
+
+
+def test_reserve_recording_checks_decision_and_preserves_legacy_energy_comparison():
+    from core.model import ReserveParams, SupportParams
+
+    now = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    config = SystemConfig(
+        reserve=ReserveParams(enabled=True),
+        support=SupportParams(configured=True, coordinated=True),
+    )
+    inputs = PlanInputs(now, 80, (HourSlot(0, now, 1, 12, 0, 100, 50),))
+    result = plan(config, inputs)
+    assert result.trajectory.reserve_decision is not None
+    record = json.loads(json.dumps(recording(config, inputs, result), allow_nan=False))
+    assert replay(record) == (result, True)
+
+    trajectory = record["result"]["fields"]["trajectory"]["fields"]
+    trajectory["reserve_decision"]["fields"]["reason"] = "pv_headroom_preparation"
+    assert not replay(record)[1]
+    trajectory.pop("reserve_decision")
+    assert replay(record) == (result, True)
+    trajectory["total_import_wh"] += 1
+    assert not replay(record)[1]

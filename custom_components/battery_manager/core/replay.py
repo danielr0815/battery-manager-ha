@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from datetime import date, datetime
 from typing import Any
 
@@ -85,4 +85,23 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
     if not isinstance(config, SystemConfig) or not isinstance(inputs, PlanInputs):
         raise ValueError("Recording must contain SystemConfig and PlanInputs")
     result = plan(config, inputs)
-    return result, encode(result) == encode(decode(record["result"]))
+    expected = decode(record["result"])
+    compared = result
+    if (
+        isinstance(expected, PlanResult)
+        and "appliance_advisories" not in record["result"]["fields"]
+    ):
+        # Old recordings never captured these explanations. Compare every
+        # previously recorded field, while new recordings check reasons too.
+        compared = replace(result, appliance_advisories={})
+    if (
+        isinstance(expected, PlanResult)
+        and "reserve_decision" not in record["result"]["fields"]["trajectory"]["fields"]
+    ):
+        # A historical recording has no explanatory reserve snapshot to
+        # compare. Its physical flows still participate in the comparison.
+        compared = replace(
+            compared,
+            trajectory=replace(compared.trajectory, reserve_decision=None),
+        )
+    return result, encode(compared) == encode(expected)

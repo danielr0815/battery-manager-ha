@@ -175,6 +175,7 @@ var STRINGS = {
     cascade_phase_unknown: "unknown status",
     now: "now",
     threshold: "threshold",
+    inverter_floor: "Inverter lower limit",
     import: "grid import",
     lost: "lost surplus",
     prevented: "prevented export",
@@ -385,6 +386,7 @@ var STRINGS = {
     cascade_phase_unknown: "Status unbekannt",
     now: "jetzt",
     threshold: "Schwelle",
+    inverter_floor: "Inverter-Untergrenze",
     import: "Netzimport",
     lost: "verlorener \xDCberschuss",
     prevented: "verhinderter Export",
@@ -464,16 +466,27 @@ function localize(hass, key) {
   return (STRINGS[lang] || STRINGS.en)[key] || STRINGS.en[key] || key;
 }
 Object.assign(STRINGS.en, {
-  report_hold_target_actual_soc: "Hold target / actual SOC",
-  report_additional_headroom_needed: "Additional headroom needed",
+  report_actual_soc: "Actual SOC",
+  report_preparation_horizon_end: "Prepare for PV until",
+  report_preparation_today_tomorrow: "PV preparation considers today and tomorrow in the Home Assistant time zone.",
+  report_reserve_energy_policy: "Retain surplus energy; discharge only as needed to make room for forecast PV. The inverter lower limit is a technical AC discharge limit, not a reserve or discharge target.",
+  report_unavoidable_export: "Unavoidable forecast export",
+  report_reserve_decision: "Current decision",
+  report_reserve_decision_unknown: "No decision reason available",
+  report_reserve_shadow_explanation: "Shadow calculation only. The existing control policy remains active.",
+  reserve_decision_no_preparation_needed: "No additional AC discharge for PV preparation is needed now.",
+  reserve_decision_pv_headroom_preparation: "Forecast PV requires additional battery headroom.",
+  reserve_decision_dc_support_protection: "DC supply protection determines the current source switching and AC discharge limit.",
+  reserve_decision_manual_support: "Manual PSU support blocks AC battery discharge.",
+  reserve_decision_no_ac_demand: "No usable AC demand for battery discharge is forecast.",
+  report_additional_headroom_needed: "Additional headroom needed now",
   report_preparation_from: "Preparation from",
   report_expected_minimum_soc: "Expected minimum SOC",
   report_additional_grid_import_for_reserve: "Additional grid import for reserve",
   report_remaining_battery_discharge: "Remaining battery discharge",
-  report_reserve_shortfall: "Reserve shortfall",
   report_incidental_psu_charging: "Incidental PSU charging",
   report_expected_48_v_support: "Expected 48 V support",
-  report_inverter_limit_now: "Inverter limit now",
+  report_inverter_limit_now: "Currently permitted inverter power",
   report_year_round_reserve: "Year-round reserve",
   report_shadow: "Shadow",
   report_active: "Active",
@@ -504,16 +517,27 @@ Object.assign(STRINGS.en, {
   report_a_recording_error_occurred: "A recording error occurred"
 });
 Object.assign(STRINGS.de, {
-  report_hold_target_actual_soc: "Halteziel / Ist-SOC",
-  report_additional_headroom_needed: "Ben\xF6tigter zus\xE4tzlicher Freiraum",
+  report_actual_soc: "Ist-SOC",
+  report_preparation_horizon_end: "PV-Vorbereitung bis",
+  report_preparation_today_tomorrow: "Die PV-Vorbereitung ber\xFCcksichtigt heute und morgen in der Home-Assistant-Zeitzone.",
+  report_reserve_energy_policy: "\xDCbrige Energie erhalten; nur so weit entladen, wie f\xFCr die erwartete PV-Energie n\xF6tig. Die Inverter-Untergrenze ist eine technische AC-Entladegrenze, kein Reserve- oder Entladeziel.",
+  report_unavoidable_export: "Unvermeidbare prognostizierte Einspeisung",
+  report_reserve_decision: "Aktuelle Entscheidung",
+  report_reserve_decision_unknown: "Kein Entscheidungsgrund verf\xFCgbar",
+  report_reserve_shadow_explanation: "Nur Schattenrechnung. Die bisherige Steuerung bleibt aktiv.",
+  reserve_decision_no_preparation_needed: "Aktuell ist keine zus\xE4tzliche AC-Entladung zur PV-Vorbereitung n\xF6tig.",
+  reserve_decision_pv_headroom_preparation: "Die erwartete PV-Energie ben\xF6tigt zus\xE4tzlichen Freiraum im Speicher.",
+  reserve_decision_dc_support_protection: "Der Schutz der DC-Versorgung bestimmt die aktuelle Quellenumschaltung und AC-Entladegrenze.",
+  reserve_decision_manual_support: "Manuell angeforderte Netzteilst\xFCtzung sperrt die AC-Batterieentladung.",
+  reserve_decision_no_ac_demand: "Es ist kein nutzbarer AC-Verbrauch f\xFCr die Batterieentladung prognostiziert.",
+  report_additional_headroom_needed: "Jetzt zus\xE4tzlich ben\xF6tigter Freiraum",
   report_preparation_from: "Vorbereitung ab",
   report_expected_minimum_soc: "Erwarteter Mindest-SOC",
   report_additional_grid_import_for_reserve: "Zus\xE4tzlicher Netzbezug f\xFCr Reserve",
   report_remaining_battery_discharge: "Verbleibende Batterieentladung",
-  report_reserve_shortfall: "Fehlende Reserve",
   report_incidental_psu_charging: "Technisch bedingte Netzteilladung",
   report_expected_48_v_support: "Erwartete 48-V-St\xFCtzung",
-  report_inverter_limit_now: "Inverterlimit jetzt",
+  report_inverter_limit_now: "Aktuell erlaubte Inverterleistung",
   report_year_round_reserve: "Ganzj\xE4hrige Reserve",
   report_shadow: "Schattenbetrieb",
   report_active: "Aktiv",
@@ -622,6 +646,8 @@ function replaceCardHTML(card, html) {
   const opened = new Map(details.map((node) => [key(node), node.open]));
   const focused = root.activeElement;
   const focusKey = focused?.tagName === "SUMMARY" ? key(focused.parentElement) : null;
+  const controlKey = focused?.dataset?.focusKey;
+  const selection = controlKey && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
   const scrolls = [];
   for (let node = card; node; node = node.assignedSlot || node.parentNode || node.host) {
     if (typeof node.scrollTop === "number")
@@ -661,6 +687,14 @@ function replaceCardHTML(card, html) {
     if (opened.has(key(node))) node.open = opened.get(key(node));
     if (key(node) === focusKey)
       node.querySelector("summary")?.focus({ preventScroll: true });
+  }
+  if (controlKey) {
+    const control = [...root.querySelectorAll("[data-focus-key]")].find(
+      (node) => node.dataset.focusKey === controlKey
+    );
+    control?.focus({ preventScroll: true });
+    if (selection && control?.setSelectionRange)
+      control.setSelectionRange(...selection);
   }
   for (const node of root.querySelectorAll("[data-scroll-key]")) {
     const position = localScrolls.get(node.dataset.scrollKey);
@@ -733,21 +767,35 @@ function feedinDecisions(hass, decisions) {
 function reserveReport(hass, reserve) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
-  const fmt = (value) => typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "\u2014";
-  const at = Date.parse(reserve.preparation_start);
-  const start = Number.isFinite(at) ? new Intl.DateTimeFormat(hass?.language || "en", {
-    timeZone: hass?.config?.time_zone || "UTC",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(at) : "\u2014";
+  const fmt = (value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", {
+    maximumFractionDigits: 1
+  }).format(value) : "\u2014";
+  const time = (value) => {
+    const at = typeof value === "string" ? Date.parse(value) : NaN;
+    return Number.isFinite(at) ? new Intl.DateTimeFormat(hass?.language || "en", {
+      timeZone: hass?.config?.time_zone || "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "short"
+    }).format(at) : "\u2014";
+  };
   const rows = [
     [
-      t("report_hold_target_actual_soc"),
-      `${fmt(reserve.hold_soc_percent)} / ${fmt(reserve.actual_soc_percent)} %`
+      t("report_preparation_horizon_end"),
+      time(reserve.preparation_horizon_end)
     ],
+    [t("report_actual_soc"), `${fmt(reserve.actual_soc_percent)} %`],
     [t("report_additional_headroom_needed"), `${fmt(reserve.headroom_wh)} Wh`],
-    [t("report_preparation_from"), start],
+    [
+      t("report_unavoidable_export"),
+      `${fmt(reserve.unavoidable_export_wh)} Wh`
+    ],
+    [t("report_preparation_from"), time(reserve.preparation_start)],
+    [t("report_inverter_limit_now"), `${fmt(reserve.inverter_limit_w)} W`],
     [
       t("report_expected_minimum_soc"),
       `${fmt(reserve.expected_min_soc_percent)} %`
@@ -760,7 +808,6 @@ function reserveReport(hass, reserve) {
       t("report_remaining_battery_discharge"),
       `${fmt(reserve.remaining_discharge_wh)} Wh`
     ],
-    [t("report_reserve_shortfall"), `${fmt(reserve.hold_shortfall_wh)} Wh`],
     [
       t("report_incidental_psu_charging"),
       `${fmt(reserve.incidental_grid_charge_wh)} Wh`
@@ -768,15 +815,20 @@ function reserveReport(hass, reserve) {
     [
       t("report_expected_48_v_support"),
       `${fmt(reserve.psu48_delivered_wh)} Wh`
-    ],
-    [t("report_inverter_limit_now"), `${fmt(reserve.inverter_limit_w)} W`]
+    ]
   ];
-  return `<details data-view-key="reserve-policy" style="padding:12px"><summary>${t("report_year_round_reserve")} \xB7 ${reserve.mode === "shadow" ? t("report_shadow") : t("report_active")}</summary>
-    <p>${t("report_forecast_driven_control_without_a_waiting_period")}</p>
-    ${reserve.mode === "shadow" ? `<p>${t("report_observation_time_optional")}: ${fmt(reserve.shadow_observed_hours)} h</p>` : ""}
+  const reason = reserve.decision_reason;
+  const reasonKey = `reserve_decision_${reason}`;
+  const translatedReason = typeof reason === "string" && reason ? t(reasonKey) : reasonKey;
+  const reasonText = translatedReason === reasonKey ? t("report_reserve_decision_unknown") : translatedReason;
+  return `<details data-view-key="reserve-policy" style="padding:12px"><summary>${esc(t("report_year_round_reserve"))} \xB7 ${esc(reserve.mode === "shadow" ? t("report_shadow") : t("report_active"))}</summary>
+    <p>${esc(t("report_preparation_today_tomorrow"))}</p>
+    <p>${esc(t("report_reserve_energy_policy"))}</p>
+    <p>${esc(t("report_forecast_driven_control_without_a_waiting_period"))}</p>
+    <p data-reserve-reason="${esc(reason || "unknown")}">${esc(t("report_reserve_decision"))}: ${esc(reasonText)}</p>
+    ${reserve.mode === "shadow" ? `<p>${esc(t("report_reserve_shadow_explanation"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
-    ${reserve.hold_achievable === false ? `<p>${t("report_the_available_psus_cannot_fully_hold_soc_at_present")}</p>` : ""}
-    <p>${t("report_forecast_bands_otherwise_uncalibrated_pv_factor")}: ${fmt(reserve.upper_pv_factor)} \xB7 ${t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit")}</p></details>`;
+    <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} \xB7 ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 function operationReport(hass, report) {
   if (!report || !Array.isArray(report.days) || !report.days.length) return "";
@@ -982,7 +1034,11 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     const a = stateObj.attributes;
     const parts = [];
     const threshold = num(a.soc_threshold_percent);
-    if (threshold !== void 0 && a.reserve?.mode !== "active") {
+    if (a.reserve?.mode === "active") {
+      const floor = num(a.inverter_min_soc_percent);
+      if (floor !== void 0 && floor >= 0 && floor <= 100)
+        parts.push(`${t("inverter_floor")} ${Math.round(floor)} %`);
+    } else if (threshold !== void 0) {
       parts.push(`T* ${Math.round(threshold)} %`);
     }
     const daily = Array.isArray(a.daily) ? a.daily : null;
@@ -1150,7 +1206,11 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     const buffer = num(a.soc_buffer_percent) ?? 0;
     const invMin = num(a.inverter_min_soc_percent);
     const plotW = width - margin.left - margin.right;
-    const reserve = Math.max(0, Math.min(socMin + buffer, 100));
+    const activeReserve = a.reserve?.mode === "active";
+    const reserve = Math.max(
+      0,
+      Math.min(socMin + (activeReserve ? 0 : buffer), 100)
+    );
     if (reserve > 0) {
       svg.push(
         `<rect x="${margin.left}" y="${y(reserve)}" width="${plotW}"
@@ -1192,15 +1252,20 @@ var BatteryManagerForecastCard = class extends HTMLElement {
         );
       }
     }
-    if (invMin !== void 0 && invMin > reserve && invMin <= 100) {
+    const showInverterFloor = invMin !== void 0 && invMin >= 0 && invMin <= 100 && (activeReserve || invMin > reserve);
+    if (showInverterFloor) {
       svg.push(
-        `<line x1="${margin.left}" y1="${y(invMin)}"
+        `<line data-marker="inverter-floor" x1="${margin.left}" y1="${y(invMin)}"
           x2="${width - margin.right}" y2="${y(invMin)}" stroke="${text}"
           stroke-width="1" stroke-dasharray="1 3"/>`
       );
     }
+    if (activeReserve && showInverterFloor) {
+      svg.push(`<text data-marker="inverter-floor-label" x="${width - margin.right - 2}" y="${y(invMin) - 3}"
+        text-anchor="end" font-size="9" fill="${text}">${esc(t("inverter_floor"))} ${Math.round(invMin)} %</text>`);
+    }
     const threshold = num(a.soc_threshold_percent);
-    const showThreshold = threshold !== void 0 && threshold >= 0 && threshold <= 100;
+    const showThreshold = !activeReserve && threshold !== void 0 && threshold >= 0 && threshold <= 100;
     if (showThreshold) {
       svg.push(
         `<line x1="${margin.left}" y1="${y(threshold)}"
@@ -1268,7 +1333,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       t0,
       t1,
       lang,
-      lanes
+      lanes,
+      inverterFloor: activeReserve && showInverterFloor ? invMin : void 0
     };
     const whenFmt = dateTimeFormat(this._hass, {
       weekday: "short",
@@ -1285,7 +1351,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       minP.time
     )}), ${t("sr_max")} ${Math.round(maxP.soc)} % (${whenFmt.format(
       maxP.time
-    )})` + (showThreshold ? `, ${t("threshold")} ${Math.round(threshold)} %` : "") + ".";
+    )})` + (showThreshold ? `, ${t("threshold")} ${Math.round(threshold)} %` : "") + (activeReserve && showInverterFloor ? `, ${t("inverter_floor")} ${Math.round(invMin)} %` : "") + ".";
     const statsText = this._statsLine(stateObj, t);
     const legend = loads.map((load) => {
       const planned = num(load.planned_energy_kwh) ?? 0;
@@ -1479,7 +1545,10 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       return Number.isFinite(s) && Number.isFinite(e) && nearest.time >= s && nearest.time < e;
     });
     const activeLanes = (meta.lanes || []).filter((lane) => covering(lane));
-    const when = esc(`${fmt.format(nearest.time)} \xB7 ${nearest.soc} %`);
+    const floorText = meta.inverterFloor === void 0 ? "" : ` \xB7 ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
+    const when = esc(
+      `${fmt.format(nearest.time)} \xB7 ${nearest.soc} %${floorText}`
+    );
     const chips = activeLanes.map((lane) => {
       const block = covering(lane);
       if (lane.kind === "cascade") {
@@ -3160,5 +3229,589 @@ if (!customElements.get(LOADS_CARD_TYPE)) {
     preview: true,
     documentationURL: DOCS_URL,
     getEntitySuggestion: (hass, entityId) => entityId.startsWith("sensor.") && isForecastEntity(hass.states[entityId]) ? { config: { type: `custom:${LOADS_CARD_TYPE}`, entity: entityId } } : null
+  });
+}
+
+// frontend/appliances-translations.js
+var TEXT = {
+  en: {
+    title: "Appliances",
+    description: "Observed appliance cycles, planning estimates and learned profiles",
+    entry: "Battery Manager installation",
+    devices: "Appliances",
+    card_title: "Card title",
+    all: "No selection includes all appliances",
+    choose: "Select an installation in the card editor.",
+    loading: "Loading appliances\u2026",
+    empty: "No appliances configured for this selection.",
+    error: "Appliance data could not be updated.",
+    stale: "The last received data is shown.",
+    retry: "Retry",
+    unknown: "Unknown",
+    idle: "Idle",
+    running: "Running",
+    paused: "Paused",
+    finished: "Finished",
+    program: "Program",
+    active: "Active program",
+    selected: "Selected program",
+    selected_profile: "Used for planning",
+    power: "Measured power",
+    remaining: "Remaining time",
+    expected_end: "Expected end",
+    cycle_energy: "Observed cycle energy",
+    started_at: "Cycle started",
+    ended_at: "Cycle ended",
+    incomplete: "Incomplete observation",
+    complete: "Complete observation",
+    planning: "Planning estimate",
+    planned_energy: "Energy for planning",
+    planned_duration: "Duration for planning",
+    source: "Source",
+    profiles: "Learned profiles",
+    no_profiles: "No learned profile yet.",
+    device_profile: "Device-wide energy profile",
+    history: "Recent cycles",
+    no_history: "No observed cycles yet.",
+    sources: "Source entities",
+    no_sources: "No source entities configured.",
+    reported: "Last reported",
+    available: "Available",
+    unavailable: "Unavailable",
+    learning: "Learning",
+    samples: "Accepted cycles",
+    last_learned: "Last learned",
+    accepted: "Accepted for learning",
+    rejected: "Not used for learning",
+    reasons: "Reasons",
+    recommendation_yes: "A start is currently recommended",
+    recommendation_no: "A start is currently not recommended",
+    recommendation_unknown: "No current start recommendation",
+    median: "Median",
+    single: "Single observation",
+    observed_range: "Observed range",
+    duration: "Duration",
+    energy: "Energy",
+    profile_note: "Values describe observed cycles, not a power curve or a confidence interval.",
+    unassigned: "No program assigned",
+    open_entity: "Open entity details",
+    no_data: "No data",
+    yes: "Yes",
+    no: "No",
+    configured: "Configured",
+    learned: "Learned",
+    sensor: "Sensor",
+    measured: "Measured",
+    estimated: "Estimated",
+    fallback: "Fallback",
+    counter: "Energy counter",
+    integration: "Power integration",
+    program_profile: "Program profile",
+    device: "Device profile",
+    none: "No source",
+    collecting: "Collecting observations",
+    ready: "Profile available",
+    insufficient: "Not enough observations",
+    disabled: "Disabled",
+    detection: "Run detection",
+    selected_program: "Selected program",
+    active_program: "Active program",
+    total_time: "Total duration",
+    remaining_time: "Remaining duration",
+    energy_counter: "Energy counter",
+    power_sensor: "Power sensor"
+  },
+  de: {
+    title: "Haushaltsger\xE4te",
+    description: "Beobachtete Ger\xE4tel\xE4ufe, Planungswerte und gelernte Profile",
+    entry: "Battery-Manager-Installation",
+    devices: "Haushaltsger\xE4te",
+    card_title: "Kartentitel",
+    all: "Ohne Auswahl werden alle Ger\xE4te angezeigt",
+    choose: "Eine Installation im Karteneditor ausw\xE4hlen.",
+    loading: "Ger\xE4tedaten werden geladen\u2026",
+    empty: "F\xFCr diese Auswahl sind keine Haushaltsger\xE4te eingerichtet.",
+    error: "Die Ger\xE4tedaten konnten nicht aktualisiert werden.",
+    stale: "Die zuletzt empfangenen Daten werden angezeigt.",
+    retry: "Erneut versuchen",
+    unknown: "Unbekannt",
+    idle: "Bereit",
+    running: "L\xE4uft",
+    paused: "Pausiert",
+    finished: "Beendet",
+    program: "Programm",
+    active: "Aktives Programm",
+    selected: "Ausgew\xE4hltes Programm",
+    selected_profile: "F\xFCr Planung verwendet",
+    power: "Gemessene Leistung",
+    remaining: "Restzeit",
+    expected_end: "Voraussichtliches Ende",
+    cycle_energy: "Beobachtete Laufenergie",
+    started_at: "Laufbeginn",
+    ended_at: "Laufende",
+    incomplete: "Unvollst\xE4ndige Beobachtung",
+    complete: "Vollst\xE4ndige Beobachtung",
+    planning: "Planungswerte",
+    planned_energy: "Energie f\xFCr die Planung",
+    planned_duration: "Dauer f\xFCr die Planung",
+    source: "Quelle",
+    profiles: "Gelernte Profile",
+    no_profiles: "Noch kein gelerntes Profil vorhanden.",
+    device_profile: "Ger\xE4teweites Energieprofil",
+    history: "Letzte L\xE4ufe",
+    no_history: "Noch keine beobachteten L\xE4ufe vorhanden.",
+    sources: "Quell-Entities",
+    no_sources: "Keine Quell-Entities zugeordnet.",
+    reported: "Zuletzt gemeldet",
+    available: "Verf\xFCgbar",
+    unavailable: "Nicht verf\xFCgbar",
+    learning: "Lernen",
+    samples: "Akzeptierte L\xE4ufe",
+    last_learned: "Zuletzt gelernt",
+    accepted: "Zum Lernen verwendet",
+    rejected: "Nicht zum Lernen verwendet",
+    reasons: "Gr\xFCnde",
+    recommendation_yes: "Ein Start wird aktuell empfohlen",
+    recommendation_no: "Ein Start wird aktuell nicht empfohlen",
+    recommendation_unknown: "Keine aktuelle Startempfehlung",
+    median: "Median",
+    single: "Einzelbeobachtung",
+    observed_range: "Beobachtete Spanne",
+    duration: "Dauer",
+    energy: "Energie",
+    profile_note: "Die Werte beschreiben beobachtete L\xE4ufe, keine Leistungskurve und kein Konfidenzintervall.",
+    unassigned: "Keinem Programm zugeordnet",
+    open_entity: "Entity-Details \xF6ffnen",
+    no_data: "Keine Daten",
+    yes: "Ja",
+    no: "Nein",
+    configured: "Konfiguriert",
+    learned: "Gelernt",
+    sensor: "Sensor",
+    measured: "Gemessen",
+    estimated: "Gesch\xE4tzt",
+    fallback: "Ersatzwert",
+    counter: "Energiez\xE4hler",
+    integration: "Leistungsintegration",
+    program_profile: "Programmprofil",
+    device: "Ger\xE4teprofil",
+    none: "Keine Quelle",
+    collecting: "Beobachtungen werden gesammelt",
+    ready: "Profil vorhanden",
+    insufficient: "Noch nicht gen\xFCgend Beobachtungen",
+    disabled: "Deaktiviert",
+    detection: "Lauferkennung",
+    selected_program: "Ausgew\xE4hltes Programm",
+    active_program: "Aktives Programm",
+    total_time: "Gesamtdauer",
+    remaining_time: "Restdauer",
+    energy_counter: "Energiez\xE4hler",
+    power_sensor: "Leistungssensor"
+  }
+};
+function applianceText(hass, key) {
+  const language = uiLanguage(hass).toLowerCase().startsWith("de") ? "de" : "en";
+  return TEXT[language][key] ?? TEXT.en[key] ?? String(key ?? TEXT[language].unknown);
+}
+Object.assign(TEXT.en, {
+  device_error: "Device error",
+  measuring: "Observing a cycle",
+  invalid: "Observation not usable",
+  reported: "Reported by device",
+  last_reported: "Last reported",
+  integrated_power: "Integrated measured power",
+  device_profile: "Device-wide energy profile",
+  disabled: "Start advice disabled",
+  no_valid_plan: "No valid plan available",
+  safety_block: "Safety conditions block a start",
+  forecast_horizon_short: "Forecast does not cover a complete cycle",
+  extra_grid_import: "Starting would require additional grid energy",
+  soc_condition: "Battery conditions are not met",
+  missing_start: "Cycle start was not observed",
+  measurement_gap: "Measurement gap",
+  clock_changed: "Clock changed during the cycle",
+  detection_unknown: "Run detection was unavailable",
+  aborted: "Cycle aborted",
+  program_changed: "Program changed during the cycle",
+  missing_measurement: "No energy measurement",
+  invalid_energy: "Invalid energy measurement",
+  restart: "Observation interrupted by a restart",
+  counter_reset: "Energy counter reset",
+  invalid_duration: "Invalid observed duration",
+  warnings: "Observation notes"
+});
+Object.assign(TEXT.de, {
+  device_error: "Ger\xE4tefehler",
+  measuring: "Lauf wird beobachtet",
+  invalid: "Beobachtung nicht verwertbar",
+  reported: "Vom Ger\xE4t gemeldet",
+  last_reported: "Zuletzt gemeldet",
+  integrated_power: "Integrierte gemessene Leistung",
+  device_profile: "Ger\xE4teweites Energieprofil",
+  disabled: "Startberatung deaktiviert",
+  no_valid_plan: "Kein g\xFCltiger Plan vorhanden",
+  safety_block: "Schutzbedingungen verhindern einen Start",
+  forecast_horizon_short: "Prognose deckt keinen vollst\xE4ndigen Lauf ab",
+  extra_grid_import: "Ein Start w\xFCrde zus\xE4tzlichen Netzbezug erfordern",
+  soc_condition: "Batteriebedingungen sind nicht erf\xFCllt",
+  missing_start: "Laufbeginn wurde nicht beobachtet",
+  measurement_gap: "Messl\xFCcke",
+  clock_changed: "Uhrzeit w\xE4hrend des Laufs ge\xE4ndert",
+  detection_unknown: "Lauferkennung war nicht verf\xFCgbar",
+  aborted: "Lauf abgebrochen",
+  program_changed: "Programm w\xE4hrend des Laufs ge\xE4ndert",
+  missing_measurement: "Keine Energiemessung",
+  invalid_energy: "Ung\xFCltige Energiemessung",
+  restart: "Beobachtung durch Neustart unterbrochen",
+  counter_reset: "Energiez\xE4hler zur\xFCckgesetzt",
+  invalid_duration: "Ung\xFCltige beobachtete Dauer",
+  warnings: "Beobachtungshinweise"
+});
+
+// frontend/appliances-card.js
+var APPLIANCES_CARD_TYPE = "battery-manager-appliances-card";
+var EDITOR_TYPE = `${APPLIANCES_CARD_TYPE}-editor`;
+var WS_TYPE = "battery_manager/appliances";
+var MAX_ITEMS = 100;
+var list = (value) => Array.isArray(value) ? value.filter((item) => item && typeof item === "object").slice(0, MAX_ITEMS) : [];
+var STYLE = `<style>
+:host{display:block;color:var(--primary-text-color)}ha-card{overflow:hidden}.wrap{padding:16px}h2{font-size:20px;margin:0 0 16px}h3{font-size:17px;margin:0}h4{font-size:14px;margin:12px 0 6px}.appliance{border-top:1px solid var(--divider-color,#ddd);padding:16px 0}.appliance:first-of-type{border-top:0}.heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.status{font-size:13px;border:1px solid var(--divider-color,#ddd);border-radius:12px;padding:2px 9px}.muted,.source{color:var(--secondary-text-color);font-size:13px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin:14px 0}.metric{display:flex;flex-direction:column;gap:4px}.metric span{font-size:13px;color:var(--secondary-text-color)}.metric strong{font-size:16px;font-weight:500}details{margin:8px 0}summary{cursor:pointer;padding:9px 0;font-weight:500}button,select,input{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--divider-color,#aaa);border-radius:5px;padding:6px 10px;background:var(--card-background-color,#fff)}.entity{border:0;background:none;padding:5px 0;color:var(--primary-color,#1976d2);text-align:left;overflow-wrap:anywhere}button:focus-visible,summary:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--primary-color,#1976d2);outline-offset:3px}.table-scroll{overflow:auto;max-height:360px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:8px;vertical-align:top;border-bottom:1px solid var(--divider-color,#ddd)}th{font-weight:600}td{min-width:90px}p{line-height:1.45;overflow-wrap:anywhere}.warning{color:var(--error-color,#b3261e)}.profile{padding:4px 0 12px}.editor{display:grid;gap:16px;padding:12px}.editor label{display:grid;gap:6px}.editor input,.editor select{width:100%;box-sizing:border-box;padding:8px;background:var(--card-background-color,#fff);border:1px solid var(--divider-color,#888);border-radius:4px}.editor select[multiple]{min-height:120px}.editor small{color:var(--secondary-text-color)}
+</style>`;
+function configValue(config) {
+  if (!config || typeof config !== "object" || config.entry_id != null && typeof config.entry_id !== "string" || config.title != null && typeof config.title !== "string" || config.appliance_ids != null && (!Array.isArray(config.appliance_ids) || config.appliance_ids.some((id) => typeof id !== "string"))) {
+    throw new Error(`${APPLIANCES_CARD_TYPE}: invalid configuration`);
+  }
+  const result = { ...config, entry_id: config.entry_id || "" };
+  if (config.appliance_ids?.length)
+    result.appliance_ids = [...new Set(config.appliance_ids)];
+  else delete result.appliance_ids;
+  return result;
+}
+var BatteryManagerAppliancesCard = class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._connected = false;
+    this._generation = 0;
+    this._inFlight = false;
+    this._pending = false;
+    this._scheduled = false;
+    this._payload = null;
+    this._error = false;
+  }
+  connectedCallback() {
+    this._connected = true;
+    this._refresh();
+  }
+  disconnectedCallback() {
+    this._connected = false;
+    this._generation++;
+    this._pending = false;
+  }
+  setConfig(config) {
+    this._config = configValue(config);
+    this._generation++;
+    this._payload = null;
+    this._error = false;
+    this._signal = void 0;
+    this._render();
+    this._refresh();
+  }
+  set hass(hass) {
+    const presentationChanged = hass.language !== this._hass?.language || hass.config?.time_zone !== this._hass?.config?.time_zone;
+    this._hass = hass;
+    const ids = this._config?.appliance_ids;
+    const signal = JSON.stringify(
+      Object.entries(hass.states || {}).filter(
+        ([, state]) => state?.attributes?.entry_id === this._config?.entry_id && state.attributes.appliance_id && (!ids || ids.includes(state.attributes.appliance_id))
+      ).map(([id, state]) => [id, state.attributes.revision, state.state]).sort(([a], [b]) => a.localeCompare(b))
+    );
+    if (signal !== this._signal) {
+      this._signal = signal;
+      this._refresh();
+    }
+    if (presentationChanged) this._render();
+  }
+  getCardSize() {
+    return 4;
+  }
+  getGridOptions() {
+    return { rows: 4, columns: 12, min_rows: 2, min_columns: 6 };
+  }
+  static getConfigElement() {
+    return document.createElement(EDITOR_TYPE);
+  }
+  static getStubConfig(hass) {
+    const state = Object.values(hass?.states || {}).find(
+      (item) => item.attributes?.appliance_id && item.attributes?.entry_id
+    );
+    return { entry_id: state?.attributes.entry_id || "" };
+  }
+  _refresh() {
+    if (!this._connected || !this._hass?.callWS || !this._config?.entry_id)
+      return;
+    if (this._inFlight) {
+      this._pending = true;
+      return;
+    }
+    if (this._scheduled) return;
+    this._scheduled = true;
+    Promise.resolve().then(() => {
+      this._scheduled = false;
+      if (this._connected && this._config?.entry_id) return this._fetch();
+    });
+  }
+  async _fetch() {
+    this._inFlight = true;
+    this._pending = false;
+    const generation = this._generation;
+    const signal = this._signal;
+    const request = { type: WS_TYPE, entry_id: this._config.entry_id };
+    if (this._config.appliance_ids)
+      request.appliance_ids = this._config.appliance_ids;
+    try {
+      const value = await this._hass.callWS(request);
+      if (!this._connected || generation !== this._generation || signal !== this._signal)
+        return;
+      if (value?.entry_id !== request.entry_id || !Array.isArray(value.appliances) || num(value.revision) === void 0)
+        throw new Error("Invalid appliance response");
+      this._payload = value;
+      this._error = false;
+      this._render();
+    } catch (_err) {
+      if (this._connected && generation === this._generation && signal === this._signal) {
+        this._error = true;
+        this._render();
+      }
+    } finally {
+      this._inFlight = false;
+      if (this._pending) this._refresh();
+    }
+  }
+  _t(key) {
+    return applianceText(this._hass, key);
+  }
+  _number(value, unit = "", digits = 1) {
+    const number = num(value);
+    return number === void 0 ? "\u2014" : `${new Intl.NumberFormat(this._hass?.language || "en", { maximumFractionDigits: digits }).format(number)}${unit ? ` ${unit}` : ""}`;
+  }
+  _time(value) {
+    if (typeof value !== "string" || !value) return "\u2014";
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? dateTimeFormat(this._hass, {
+      dateStyle: "short",
+      timeStyle: "short"
+    }).format(timestamp) : "\u2014";
+  }
+  _metric(label, value, source) {
+    return `<div class="metric"><span>${esc(this._t(label))}</span><strong>${esc(value)}</strong>${source ? `<small class="source">${esc(this._t(source))}</small>` : ""}</div>`;
+  }
+  _reasons(value) {
+    return Array.isArray(value) && value.length ? `<ul>${value.slice(0, MAX_ITEMS).map((reason) => `<li>${esc(this._t(reason))}</li>`).join("")}</ul>` : "";
+  }
+  _details(id, label, body) {
+    return `<details data-view-key="${esc(id)}"><summary>${esc(this._t(label))}</summary>${body}</details>`;
+  }
+  _profile(profile, device = false) {
+    const count = num(profile.count) ?? 0;
+    const statisticalLabel = count === 1 ? "single" : count > 1 ? "median" : "no_data";
+    const range = (low, high, unit, factor = 1) => num(low) !== void 0 && num(high) !== void 0 ? `${this._number(num(low) * factor, unit)} \u2013 ${this._number(num(high) * factor, unit)}` : "\u2014";
+    return `<div class="profile"><h4>${esc(device ? this._t("device_profile") : profile.program || this._t("unassigned"))}${profile.selected ? ` \xB7 ${esc(this._t("selected_profile"))}` : ""}</h4>
+      <p class="muted">${esc(this._t(statisticalLabel))} \xB7 ${esc(this._t("samples"))}: ${esc(this._number(count, "", 0))}</p>
+      <div class="metrics">${this._metric("energy", this._number(profile.energy_wh, "Wh"))}${device ? "" : this._metric("duration", num(profile.duration_h) === void 0 ? "\u2014" : this._number(num(profile.duration_h) * 60, "min"))}</div>
+      <p class="muted">${esc(this._t("observed_range"))} \xB7 ${esc(this._t("energy"))}: ${esc(range(profile.energy_min_wh, profile.energy_max_wh, "Wh"))}${device ? "" : ` \xB7 ${esc(this._t("duration"))}: ${esc(range(profile.duration_min_h, profile.duration_max_h, "min", 60))}`}</p>
+      <p class="muted">${esc(this._t("last_learned"))}: ${esc(this._time(profile.last_learned_at))}</p></div>`;
+  }
+  _history(appliance) {
+    const rows = list(appliance.learning?.history);
+    if (!rows.length)
+      return `<p class="muted">${esc(this._t("no_history"))}</p>`;
+    return `<div class="table-scroll" data-scroll-key="history-${esc(appliance.id)}"><table><thead><tr>${["program", "started_at", "ended_at", "duration", "energy", "learning"].map((key) => `<th scope="col">${esc(this._t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.program || this._t("unassigned"))}</td><td>${esc(this._time(row.started_at))}</td><td>${esc(this._time(row.ended_at))}</td><td>${esc(num(row.duration_h) === void 0 ? "\u2014" : this._number(num(row.duration_h) * 60, "min"))}</td><td>${esc(this._number(row.energy_wh, "Wh"))}<br><span class="muted">${esc(this._t(row.measurement_source || "none"))}</span></td><td>${esc(this._t(row.accepted ? "accepted" : "rejected"))}<br>${esc(this._t(row.complete ? "complete" : "incomplete"))}${this._reasons(row.reasons)}${this._reasons(row.warnings)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  _sources(appliance) {
+    const rows = list(appliance.sources);
+    if (!rows.length)
+      return `<p class="muted">${esc(this._t("no_sources"))}</p>`;
+    return `<div class="table-scroll" data-scroll-key="sources-${esc(appliance.id)}"><table><thead><tr>${["source", "available", "last_reported"].map((key) => `<th scope="col">${esc(this._t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(this._t(row.kind || "unknown"))}<br><button class="entity" data-entity-id="${esc(row.entity_id)}" data-focus-key="entity-${esc(appliance.id)}-${esc(row.kind)}" title="${esc(this._t("open_entity"))}">${esc(row.entity_id)}</button></td><td>${esc(this._t(row.available ? "available" : "unavailable"))}<br>${esc(row.state ?? "\u2014")}</td><td>${esc(this._time(row.last_reported))}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  _appliance(appliance) {
+    const observation = appliance.observation || {};
+    const planning = appliance.planning || {};
+    const learning = appliance.learning || {};
+    const recommendation = appliance.recommendation || {};
+    const profiles = list(learning.profiles);
+    const status = [
+      "idle",
+      "running",
+      "paused",
+      "finished",
+      "error",
+      "unknown"
+    ].includes(appliance.status) ? appliance.status : "unknown";
+    const profileBody = `${learning.device_profile && typeof learning.device_profile === "object" ? this._profile(learning.device_profile, true) : ""}${profiles.map((profile) => this._profile(profile)).join("")}`;
+    return `<section class="appliance" data-view-key="appliance-${esc(appliance.id)}"><div class="heading"><h3>${esc(appliance.name || appliance.id)}</h3><span class="status">${esc(this._t(status === "error" ? "device_error" : status))}</span></div>
+      <p>${esc(this._t(appliance.program_source === "selected" ? "selected" : appliance.program_source === "active" ? "active" : "program"))}: ${esc(appliance.program || "\u2014")}</p>
+      <div class="metrics">${this._metric("power", this._number(observation.power_w, "W"))}${this._metric("remaining", this._number(observation.remaining_minutes, "min"), observation.remaining_source)}${this._metric("expected_end", this._time(observation.expected_end))}${this._metric("cycle_energy", this._number(observation.cycle_energy_wh, "Wh"), observation.energy_source)}</div>
+      ${observation.started_at ? `<p class="muted">${esc(this._t("started_at"))}: ${esc(this._time(observation.started_at))} \xB7 ${esc(this._t(observation.complete ? "complete" : "incomplete"))}</p>` : ""}
+      <p>${esc(this._t(recommendation.allowed === true ? "recommendation_yes" : recommendation.allowed === false ? "recommendation_no" : "recommendation_unknown"))}</p>${this._reasons(recommendation.reasons)}
+      ${this._details(`planning-${appliance.id}`, "planning", `<div class="metrics">${this._metric("planned_energy", this._number(planning.energy_wh, "Wh"), planning.energy_source)}${this._metric("planned_duration", this._number(planning.duration_minutes, "min"), planning.duration_source)}</div>`)}
+      ${this._details(`profiles-${appliance.id}`, "profiles", `<p class="muted">${esc(this._t("learning"))}: ${esc(this._t(learning.status || "unknown"))} \xB7 ${esc(this._t("samples"))}: ${esc(this._number(learning.sample_count, "", 0))} \xB7 ${esc(this._t("last_learned"))}: ${esc(this._time(learning.last_learned_at))}</p>${this._reasons(learning.reasons)}${this._reasons(learning.warnings)}${profileBody || `<p class="muted">${esc(this._t("no_profiles"))}</p>`}<p class="muted">${esc(this._t("profile_note"))}</p>`)}
+      ${this._details(`history-${appliance.id}`, "history", this._history(appliance))}
+      ${this._details(`sources-${appliance.id}`, "sources", this._sources(appliance))}</section>`;
+  }
+  _render() {
+    if (!this._config) return;
+    const appliances = list(this._payload?.appliances).filter(
+      (item) => typeof item.id === "string" && (!this._config.appliance_ids || this._config.appliance_ids.includes(item.id))
+    );
+    let body = appliances.map((appliance) => this._appliance(appliance)).join("");
+    if (!body)
+      body = `<p class="muted">${esc(this._t(!this._config.entry_id ? "choose" : this._payload ? "empty" : this._error ? "no_data" : "loading"))}</p>`;
+    replaceCardHTML(
+      this,
+      `${STYLE}<ha-card><div class="wrap"><h2>${esc(this._config.title ?? this._t("title"))}</h2>${this._error ? `<p class="warning" role="status">${esc(this._t("error"))}${this._payload ? ` ${esc(this._t("stale"))}` : ""}</p><button data-focus-key="retry" id="retry">${esc(this._t("retry"))}</button>` : ""}${body}</div></ha-card>`
+    );
+    this.shadowRoot.getElementById("retry")?.addEventListener("click", () => this._refresh());
+    for (const button of this.shadowRoot.querySelectorAll("[data-entity-id]"))
+      button.addEventListener(
+        "click",
+        () => this.dispatchEvent(
+          new CustomEvent("hass-more-info", {
+            detail: { entityId: button.dataset.entityId },
+            bubbles: true,
+            composed: true
+          })
+        )
+      );
+  }
+};
+var BatteryManagerAppliancesEditor = class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._generation = 0;
+    this._entries = [];
+    this._devices = [];
+    this._connected = false;
+  }
+  connectedCallback() {
+    this._connected = true;
+    this._load();
+  }
+  disconnectedCallback() {
+    this._connected = false;
+    this._generation++;
+    this._loadingKey = void 0;
+    this._loadedKey = void 0;
+  }
+  setConfig(config) {
+    this._config = configValue(config);
+    this._generation++;
+    this._loadingKey = void 0;
+    this._loadedKey = void 0;
+    this._render();
+    this._load();
+  }
+  set hass(hass) {
+    const changed = this._hass?.language !== hass.language;
+    this._hass = hass;
+    if (changed) this._render();
+    this._load();
+  }
+  async _load() {
+    if (!this._connected || !this._config || !this._hass?.callWS) return;
+    const key = this._config.entry_id;
+    if (key === this._loadedKey || key === this._loadingKey) return;
+    const generation = ++this._generation;
+    this._loadingKey = key;
+    try {
+      const [entries, devices] = await Promise.all([
+        this._hass.callWS({ type: WS_TYPE }),
+        key ? this._hass.callWS({ type: WS_TYPE, entry_id: key }) : Promise.resolve({ appliances: [] })
+      ]);
+      if (!this._connected || generation !== this._generation) return;
+      this._entries = list(entries?.entries);
+      this._devices = list(devices?.appliances);
+      this._loadedKey = key;
+      this._error = false;
+    } catch (_err) {
+      if (!this._connected || generation !== this._generation) return;
+      this._error = true;
+    } finally {
+      if (this._connected && generation === this._generation) {
+        this._loadingKey = void 0;
+        this._render();
+      }
+    }
+  }
+  _emit() {
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: {
+          config: { type: `custom:${APPLIANCES_CARD_TYPE}`, ...this._config }
+        },
+        bubbles: true,
+        composed: true
+      })
+    );
+  }
+  _render() {
+    if (!this._config) return;
+    const t = (key) => applianceText(this._hass, key);
+    const entries = [...this._entries];
+    if (this._config.entry_id && !entries.some((entry) => entry.entry_id === this._config.entry_id))
+      entries.push({
+        entry_id: this._config.entry_id,
+        title: this._config.entry_id
+      });
+    const devices = [...this._devices];
+    for (const id of this._config.appliance_ids || [])
+      if (!devices.some((device) => device.id === id))
+        devices.push({ id, name: id });
+    replaceCardHTML(
+      this,
+      `${STYLE}<div class="editor"><label>${esc(t("entry"))}<select id="entry" data-focus-key="entry"><option value="">\u2014</option>${entries.map((entry) => `<option value="${esc(entry.entry_id)}"${entry.entry_id === this._config.entry_id ? " selected" : ""}>${esc(entry.title)}</option>`).join("")}</select></label><label>${esc(t("devices"))}<select id="devices" data-focus-key="devices" multiple>${devices.map((device) => `<option value="${esc(device.id)}"${this._config.appliance_ids?.includes(device.id) ? " selected" : ""}>${esc(device.name)}</option>`).join("")}</select><small>${esc(t("all"))}</small></label><label>${esc(t("card_title"))}<input id="title" data-focus-key="title" value="${esc(this._config.title || "")}"></label>${this._error ? `<p class="warning">${esc(t("error"))}</p><button id="retry" data-focus-key="retry">${esc(t("retry"))}</button>` : ""}</div>`
+    );
+    this.shadowRoot.getElementById("entry")?.addEventListener("change", (event) => {
+      this._config.entry_id = event.target.value;
+      this._generation++;
+      this._loadingKey = void 0;
+      this._loadedKey = void 0;
+      this._error = false;
+      delete this._config.appliance_ids;
+      this._devices = [];
+      this._emit();
+      this._render();
+      this._load();
+    });
+    this.shadowRoot.getElementById("devices")?.addEventListener("change", (event) => {
+      const ids = [...event.target.selectedOptions].map(
+        (option) => option.value
+      );
+      if (ids.length) this._config.appliance_ids = ids;
+      else delete this._config.appliance_ids;
+      this._emit();
+    });
+    this.shadowRoot.getElementById("title")?.addEventListener("input", (event) => {
+      this._config.title = event.target.value;
+      this._emit();
+    });
+    this.shadowRoot.getElementById("retry")?.addEventListener("click", () => this._load());
+  }
+};
+if (!customElements.get(APPLIANCES_CARD_TYPE)) {
+  customElements.define(APPLIANCES_CARD_TYPE, BatteryManagerAppliancesCard);
+  customElements.define(EDITOR_TYPE, BatteryManagerAppliancesEditor);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: APPLIANCES_CARD_TYPE,
+    get name() {
+      return `Battery Manager \xB7 ${applianceText(null, "title")}`;
+    },
+    get description() {
+      return applianceText(null, "description");
+    },
+    preview: true,
+    documentationURL: DOCS_URL
   });
 }

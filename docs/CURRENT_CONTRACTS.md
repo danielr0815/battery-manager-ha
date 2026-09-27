@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.46.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.47.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -73,7 +73,7 @@ Replay prüft jedes Segment in seiner eigenen Zeitzone. Vergleiche verbinden
 nur passende Segmentidentitäten und Zeitzonen. Recorder und Offline-Evaluator
 verwenden dieselbe physische Intervallbilanz für Root-, Aux- und normale Lasten.
 
-Die vier Karten verwenden die HA-Zeitzone für sichtbare Zeiten, Hover und
+Die fünf Karten verwenden die HA-Zeitzone für sichtbare Zeiten, Hover und
 zugängliche Labels. Englisch ist die Rückfallsprache. Bei Aktualisierung bleiben
 aufgeklappte Berichte, Fokus und Scrollposition erhalten. Diagramme unterstützen
 Tastaturbedienung; Sommerzeitwechsel werden im echten Browser geprüft.
@@ -99,3 +99,30 @@ Die Diagnose enthält laufende Phase und gemessene Phasenlaufzeiten unter
 `planning`. Wiederverwendung validierter Konfigurationen und unveränderlicher
 Teilintervalle reduziert Rechenarbeit ohne Lockerung fachlicher Gates. Details,
 Messwerkzeug und Nachweise: [Planungsdauer](F-PLANNING-LATENCY.md).
+
+## Haushaltsgeräte ab 0.47.0
+
+Gerätebeobachtung und Profile bleiben ohne wirtschaftlichen Plan verfügbar.
+Acht Geräte-Sensoren und die Haushaltsgerätekarte trennen Messung, Schätzung,
+Konfiguration und gelernte Werte. Begrenzte Zusatzmetadaten erklären die letzten
+20 angenommenen/verworfenen Beobachtungen; bestehende Profile behalten ihre
+Werte und fehlende historische Zeitstempel bleiben unbekannt. Kein automatischer
+Gerätestart und keine zusätzlichen Optimizer-Simulationen. Der vollständige
+aktuelle Vertrag steht in [APPLIANCE_VISIBILITY](APPLIANCE_VISIBILITY.md).
+
+## Reservebetrieb ab 0.47.0
+
+Native DC-Lasten nutzen die Batterie bis zur notwendigen Schutzunterstützung.
+Zusätzliche AC-Entladung schafft ausschließlich bis Ende morgen benötigten
+Speicherraum, möglichst spät und unter Beachtung tatsächlich verfügbarer
+AC-Last/Leistung. Übermorgen löst keine heutige Vorbereitung aus. Die bisherige
+technische Inverter-Untergrenze bleibt bestehen, ist aber kein Entladeziel.
+Es gibt keine zusätzliche feste Nachtreserve und keine pauschale Netzübernahme
+bei hohem SOC. Unvermeidbarer Export erzwingt keine sinnlose Zusatzentladung.
+
+Historische Haltewerte beeinflussen keine Aktorentscheidung. Schutzanforderungen
+bleiben unabhängig von Planung und Herkunftsnachweis wirksam. Alte wirtschaftliche
+Netzteil-Haltungen werden bestätigt zur Batterie zurückgeführt. Diagnose und Karte
+zeigen Vorbereitungshorizont, Speicherbedarf, erlaubte Leistung und den konkreten
+Entscheidungsgrund statt eines vermeintlichen T*-Ziels. Aktueller Vertrag und
+Migrationsdetails: [DC bevorzugen](F-RESERVE-DC-FIRST.md).

@@ -1,4 +1,4 @@
-"""Reserve rollout, persistent intent, confirmed limits and failed grid supply."""
+"""Historical reserve references, forecast control and confirmed source transfers."""
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
@@ -15,6 +15,7 @@ from custom_components.battery_manager.const import (
     CONF_RESERVE_GRID_ENTITY,
     CONF_RESERVE_MODE,
     CONF_RESERVE_TRANSFER_VERIFIED,
+    CONF_SOC_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
 )
 from custom_components.battery_manager.reserve_runtime import (
@@ -123,6 +124,8 @@ async def test_bounded_inverter_limit_is_written_and_confirmed(rig, hass):
 
 async def test_grid_loss_restores_dc_before_waiting_for_dead_inverter(rig, hass):
     c, calls, dead, _ = rig
+    c.raw_config[CONF_SOC_ENTITY] = "sensor.test_soc"
+    hass.states.async_set("sensor.test_soc", "80")
     c.raw_config.update(
         {
             CONF_RESERVE_MODE: "active",
@@ -142,6 +145,8 @@ async def test_grid_loss_restores_dc_before_waiting_for_dead_inverter(rig, hass)
 
 async def test_failed_dc_restore_keeps_existing_source(rig, hass):
     c, calls, dead, _ = rig
+    c.raw_config[CONF_SOC_ENTITY] = "sensor.test_soc"
+    hass.states.async_set("sensor.test_soc", "80")
     c.raw_config.update(
         {
             CONF_RESERVE_MODE: "active",
@@ -153,8 +158,9 @@ async def test_failed_dc_restore_keeps_existing_source(rig, hass):
     hass.states.async_set(PSU24, "on")
     dead.add(DCDC)
     await execute(c, dc24=True)
-    assert calls == [(DCDC, True)]
+    assert calls == [(DCDC, True), (LIMIT, 0)]
     assert hass.states.get(PSU24).state == "on"
+    assert float(hass.states.get(LIMIT).state) == 0
 
 
 @pytest.mark.parametrize(
@@ -227,7 +233,10 @@ async def test_immediate_active_and_optional_shadow_use_real_plans(
     assert c.data["reserve"]["mode"] == initial_mode
     assert c.data["reserve"]["inverter_limit_w"] == 0
     assert c.data["reserve"]["shadow_required_hours"] == 0
-    assert c.data["support_dc24"] is (initial_mode == "active" and verified)
+    # High SOC preserves the battery from discretionary AC discharge, while
+    # native DC demand still uses the battery until actual support is needed.
+    assert not c.data["support_dc24"]
+    assert not c.data["support_dc48"]
     if initial_mode == "shadow":
         assert not any(entity in (PSU24, PSU48) and value for entity, value in calls)
     c.raw_config[CONF_RESERVE_MODE] = "active"
@@ -237,7 +246,8 @@ async def test_immediate_active_and_optional_shadow_use_real_plans(
     assert c.data["reserve"]["mode"] == "active"
     assert c.data["inverter_recommendation"] is False
     assert (LIMIT, 0) in calls
-    assert ((PSU24, True) in calls) is verified
+    assert (PSU24, True) not in calls
+    assert (PSU48, True) not in calls
     assert c._persistent_payload()["reserve"]["hold_soc"] == 80
     assert c._reserve_runtime.observed_seconds < 60
     # Turning the policy off clears the retained policy state.
@@ -290,6 +300,8 @@ async def test_missing_grid_evidence_blocks_psus_but_not_forecast_preparation(
 ):
     c, calls, *_ = rig
     c.raw_config[CONF_RESERVE_MODE] = "active"
+    c.raw_config[CONF_SOC_ENTITY] = "sensor.test_soc"
+    hass.states.async_set("sensor.test_soc", "80")
     c._reserve_inverter_limit_w = 125
     await execute(c, dc24=True, dc48=True, inverter=True)
     assert (LIMIT, 125) in calls
@@ -300,6 +312,8 @@ async def test_missing_grid_evidence_blocks_psus_but_not_forecast_preparation(
 
 async def test_unverified_rail_cannot_be_transferred_by_active_policy(rig, hass):
     c, calls, *_ = rig
+    c.raw_config[CONF_SOC_ENTITY] = "sensor.test_soc"
+    hass.states.async_set("sensor.test_soc", "80")
     c.raw_config.update(
         {CONF_RESERVE_MODE: "active", CONF_RESERVE_GRID_ENTITY: "binary_sensor.grid"}
     )
@@ -308,3 +322,104 @@ async def test_unverified_rail_cannot_be_transferred_by_active_policy(rig, hass)
     assert (PSU24, True) not in calls
     assert (DCDC, False) not in calls
     assert (PSU48, True) in calls
+
+
+def test_legacy_zero_reference_survives_restart_but_unknown_solar_never_earns_credit():
+    runtime = ReserveRuntime()
+    runtime.restore({"hold_soc": 0, "observed_seconds": 300, "signature": "plant"})
+    observe(runtime, 3600, 6, solar=False)
+    observe(runtime, 3900, 30, solar=False)
+    assert runtime.hold_soc == 0
+    assert runtime.observed_seconds == 600
+    assert runtime.export() == {
+        "policy_version": 1,
+        "hold_soc": 0,
+        "observed_seconds": 600,
+        "signature": "plant",
+    }
+    # The first newly verifiable point does not credit the preceding unknown
+    # interval; only a second verified endpoint can attribute a subsequent gain.
+    observe(runtime, 4200, 50, solar=True)
+    assert runtime.hold_soc == 0
+    observe(runtime, 4500, 51, solar=True)
+    assert runtime.hold_soc == 1
+
+
+@pytest.mark.parametrize("invalid", [True, 10**1000, float("inf"), "6", [], {}])
+def test_malformed_reference_is_discarded_without_inventing_a_control_target(invalid):
+    runtime = ReserveRuntime()
+    runtime.restore({"hold_soc": invalid, "observed_seconds": invalid, "signature": []})
+    assert runtime.export() == {
+        "policy_version": 1,
+        "hold_soc": None,
+        "observed_seconds": 0,
+        "signature": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "stored, expected", [(None, 1), (True, 1), (0, 1), (1, 1), (2, 2), (3, 3)]
+)
+def test_policy_migration_marker_survives_observation_until_confirmed(stored, expected):
+    runtime = ReserveRuntime()
+    assert runtime.policy_version == 2
+    runtime.restore({"policy_version": stored, "hold_soc": 80, "signature": "plant"})
+    observe(runtime, 0, 80)
+    assert runtime.policy_version == expected
+    restored = ReserveRuntime()
+    restored.restore(runtime.export())
+    assert restored.policy_version == expected
+    runtime.policy_version = 2
+    assert runtime.export()["policy_version"] == 2
+
+
+def test_diagnostics_use_typed_decision_and_keep_history_out_of_physical_values():
+    from dataclasses import replace
+
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        PlanInputs,
+        ReserveDecision,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+    from custom_components.battery_manager.reserve_runtime import reserve_diagnostics
+
+    config = SystemConfig()
+    inputs = PlanInputs(START, 80, (HourSlot(0, START, 1, 0, 0, 0, 0),))
+    baseline = plan(config, inputs)
+    decision = ReserveDecision(
+        preparation_horizon_end=START + timedelta(days=2),
+        inverter_limit_w=125.26,
+        headroom_wh=345.67,
+        unavoidable_export_wh=678.91,
+        reason="pv_headroom_preparation",
+    )
+    result = replace(
+        baseline, trajectory=replace(baseline.trajectory, reserve_decision=decision)
+    )
+    runtime = ReserveRuntime()
+    runtime.restore({"hold_soc": 0, "observed_seconds": 300, "signature": "old"})
+    diagnostics = reserve_diagnostics(
+        config, inputs, result, baseline, runtime, "active"
+    )
+    assert (
+        diagnostics["preparation_horizon_end"]
+        == (START + timedelta(days=2)).isoformat()
+    )
+    assert diagnostics["decision_reason"] == "pv_headroom_preparation"
+    assert diagnostics["headroom_wh"] == 345.7
+    assert diagnostics["unavoidable_export_wh"] == 678.9
+    assert diagnostics["inverter_limit_w"] == 125.3
+    assert diagnostics["historical_reference_soc_percent"] == 0
+    assert diagnostics["reference_semantics"] == "historical_observation_only"
+    assert runtime.hold_soc == 0
+    historical = reserve_diagnostics(
+        config, inputs, baseline, baseline, ReserveRuntime(), "shadow"
+    )
+    assert historical["preparation_horizon_end"] is None
+    assert historical["decision_reason"] is None
+    assert historical["headroom_wh"] == 0
+    assert historical["unavoidable_export_wh"] == 0
+    assert historical["inverter_limit_w"] == 0
+    assert historical["historical_reference_soc_percent"] is None

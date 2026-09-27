@@ -44,6 +44,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         ),
         # F-SUBHOUR H1: persist the appliance run start so a restart mid-run
         # does not re-latch at `now` and re-inject the full run energy.
+        "appliance_metadata": self._appliance_learning.metadata_payload(),
         "appliance_energy_samples": self._appliance_learning.samples,
         "appliance_program_samples": {
             key: {

@@ -36,7 +36,11 @@ Grid ──────────────┤
 
 Every ~5 minutes (and on input changes, debounced) the planner runs:
 
-1. **Threshold search** — for every candidate SOC threshold the full horizon
+1. **Battery policy** — active reserve mode keeps DC consumers on the battery
+   until protection is needed. AC discharge creates only the extra space required
+   by PV **today and tomorrow**, as late as the available AC load permits. There
+   is no additional fixed night reserve, and later forecast days cannot trigger
+   today's preparation. With reserve mode off, **threshold search** applies: for every candidate SOC threshold the full horizon
    is simulated with the *actual* policy `inverter on ⇔ SOC > threshold`; the
    candidate with the lowest cost (grid import − terminal battery value +
    small export penalty) wins. "Make room before a sunny day, hold reserve
@@ -58,7 +62,7 @@ Every ~5 minutes (and on input changes, debounced) the planner runs:
 | Entity | Meaning |
 |---|---|
 | `binary_sensor.…_inverter_recommendation` | Recommended state for the real discharge inverter (hysteresis + minimum switch interval applied) |
-| `sensor.…_soc_threshold` | Optimal SOC threshold (%) from the search |
+| `sensor.…_soc_threshold` | Legacy threshold-search result (%); not the control target in active reserve mode |
 | `sensor.…_min/max_soc_forecast` | SOC range over the horizon |
 | `sensor.…_hours_to_max_soc` | Hours until the maximum SOC is reached |
 | `sensor.…_grid_import_forecast` | Expected grid import over the **whole planning horizon** (kWh, not just today; per-day split in the `daily` / `today_kwh` / `tomorrow_kwh` attributes) |
@@ -130,10 +134,11 @@ Two things worth knowing:
 ## Dashboard cards (bundled)
 
 The integration ships its own Lovelace cards — no extra HACS frontend
-download. All four register automatically from one bundled module:
+download. All five register automatically from one bundled module:
 
 - **Battery Manager Forecast** renders the planned SOC trajectory, the
-  inverter threshold T*, the reserve zone, the per-load surplus schedule
+  inverter threshold T* outside active reserve mode, the technical inverter
+  floor, the reserve decision and its horizon, the per-load surplus schedule
   and any detected appliance runs (washer, dishwasher, …), all from
   `sensor.…_soc_forecast`. Storage cascades appear as one black-box timeline
   lane containing only their Root-boundary energy per slot.
@@ -222,6 +227,18 @@ series:
 
 </details>
 
+### Household appliances: status and learned profiles
+
+From 0.47.0, every configured appliance has sensors for operating state, program,
+remaining time, finish time, cycle consumption, planning assumptions and learning
+status — even with start advice disabled. The new
+`custom:battery-manager-appliances-card` also shows program profiles, the latest
+accepted/rejected observations and their data sources. Select the Battery Manager
+entry and optionally individual appliances in the card editor.
+
+Setup, value sources, limitations and migration:
+[Appliance visibility](docs/APPLIANCE_VISIBILITY.md).
+
 ## Documentation
 
 | Document | What it covers |
@@ -304,3 +321,16 @@ without waiting for a successful forecast; device feedback confirms switching.
 Operating archives migrate to segmented schema 2 so timezone changes preserve old
 daily reports. See [current contracts and migration](docs/CURRENT_CONTRACTS.md)
 and the [review implementation record](docs/REVIEW_0.46.0.md).
+
+## Upgrade to 0.47.0
+
+The new appliance sensors/card expose observations and learned profiles even
+before the first valid plan. See [appliance visibility](docs/APPLIANCE_VISIBILITY.md).
+
+Active reserve mode now prioritizes battery-powered DC consumption and limits
+extra AC preparation to today and tomorrow in the HA timezone. Protection
+thresholds remain unchanged. Historical holding values no longer override PSU
+protection or authorize discharge. Old automatic high-SOC PSU holding requests
+are reconciled through the existing confirmed source-transfer sequence.
+The forecast card explains the actual reserve decision instead of presenting
+T* as a target. See [reserve behavior and migration](docs/F-RESERVE-DC-FIRST.md).

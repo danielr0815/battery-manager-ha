@@ -135,6 +135,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     forecast chart without installing anything from HACS frontend. The card
     is optional sugar: any failure here must never break the planner setup.
     """
+    from .appliance_api import async_register_appliance_api
+
+    async_register_appliance_api(hass)
     _register_services(hass)
     try:
         await _async_setup_card(hass)
@@ -339,6 +342,7 @@ async def async_setup_entry(
     # Restore state before exposing entities. The first economic plan runs
     # after platform setup; CPU work must never block entry initialization.
     await coordinator.async_load_persistent_state()
+    coordinator.appliances.start()
     await coordinator.async_recover_power_calibration()
     await coordinator.cascade_manager.async_recover_terminal_tests()
     coordinator.async_set_updated_data({"valid": False, "startup_pending": True})

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_DCDC_SWITCH,
@@ -12,6 +15,7 @@ from .const import (
     CONF_SUPPORT_DC48_SWITCH,
 )
 from .core import SystemConfig
+from .core.support import support_state
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -51,19 +55,83 @@ async def execute_coordinated_support(
                     return False
                 return True
 
+            manual_changed = (
+                config.support.dc24_forced_on != self._support_manual["dc24"]
+                or config.support.dc48_forced_on != self._support_manual["dc48"]
+            )
+            if manual_changed or config.reserve.enabled:
+                # Planning may have waited while either SOC or a manual request
+                # changed. The ownership lock protects this final input check.
+                soc = self._get_soc(dt_util.now())
+                latched = {"dc24": False, "dc48": False}
+                if manual_changed:
+                    cancelled = {
+                        "dc24": config.support.dc24_forced_on
+                        and not self._support_manual["dc24"],
+                        "dc48": config.support.dc48_forced_on
+                        and not self._support_manual["dc48"],
+                    }
+                    config = replace(
+                        config,
+                        support=replace(
+                            config.support,
+                            dc24_forced_on=self._support_manual["dc24"],
+                            dc48_forced_on=self._support_manual["dc48"],
+                        ),
+                    )
+                    for key, entity, recovery in (
+                        ("dc24", psu24, config.control.support_dc24_recovery_soc),
+                        ("dc48", psu48, config.control.support_dc48_recovery_soc),
+                    ):
+                        actual = self._entity_tristate(entity) if entity else False
+                        # Only the cancelled manual path loses its old hold.
+                        # Other protection latches retain their core release
+                        # rules, including PV recovery for the 24 V rail.
+                        latched[key] = (
+                            self._support_state[key] if actual is None else actual
+                        ) and (not cancelled[key] or soc is None or soc < recovery)
+                    # A cancelled manual ON cannot survive in the old targets.
+                    # Retain only current protection until a fresh economic plan.
+                    desired = {"dc24": False, "dc48": False}
+                    inverter = False
+                protect24, protect48 = support_state(
+                    config,
+                    soc if soc is not None else config.battery.soc_min_percent,
+                    latched["dc24"],
+                    latched["dc48"],
+                    False,
+                )
+                desired = {
+                    "dc24": desired["dc24"] or protect24,
+                    "dc48": desired["dc48"] or protect48,
+                }
+                if soc is None or soc <= config.control.inverter_min_soc_percent:
+                    inverter = False
+                diag["desired"] = dict(desired)
+
             if config.reserve.enabled and self._reserve_grid_available() is not True:
                 self._inverter_recommendation = False
                 diag["reason"] = "grid_supply_unavailable"
                 if dcdc and not await confirmed(dcdc, True):
+                    # Preserve the existing rail source, but a failed transfer
+                    # cannot leave battery AC discharge enabled during outage.
+                    await self._confirm_inverter_limit(True, diag)
                     return
                 for key, entity in (("dc24", psu24), ("dc48", psu48)):
                     if entity and not await confirmed(entity, False):
+                        await self._confirm_inverter_limit(True, diag)
                         return
                     self._support_state[key] = False
                 # Unknown grid supply rules out PSU credit, not useful
                 # forecast-driven battery preparation. Known grid loss
                 # still follows the existing island/fallback protection.
-                blocked = self._reserve_grid_available() is False or not inverter
+                soc = self._get_soc(dt_util.now())
+                blocked = (
+                    self._reserve_grid_available() is False
+                    or not inverter
+                    or soc is None
+                    or soc <= config.control.inverter_min_soc_percent
+                )
                 confirmed_limit = await self._confirm_inverter_limit(blocked, diag)
                 self._inverter_recommendation = not blocked and confirmed_limit
                 diag["reason"] = "grid_supply_unavailable"
@@ -137,6 +205,15 @@ async def execute_coordinated_support(
             if inverter and not any(desired.values()):
                 if dcdc and not await confirmed(dcdc, True):
                     return
+                if config.reserve.enabled:
+                    # Device confirmations can themselves be delayed. Re-read
+                    # SOC at the last possible point before releasing AC.
+                    soc = self._get_soc(dt_util.now())
+                    if soc is None or soc <= config.control.inverter_min_soc_percent:
+                        await self._confirm_inverter_limit(True, diag)
+                        self._inverter_recommendation = False
+                        diag["reason"] = "soc_protection"
+                        return
                 if not await self._confirm_inverter_limit(False, diag):
                     return
                 self._inverter_recommendation = True

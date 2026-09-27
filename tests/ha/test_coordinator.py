@@ -1145,7 +1145,7 @@ async def test_appliance_dropout_without_latch_stays_off(hass):
     assert coordinator._get_appliance_runs(now + timedelta(hours=2)) == ()
 
 
-async def test_appliance_run_is_published_for_the_card(hass):
+async def test_appliance_run_is_published_for_the_card(hass, freezer):
     """Card lane (operator request 2026-08-08): a detected run lands in
     data["appliance_plans"] with the subentry title and one block
     now -> run end carrying the remaining energy."""
@@ -1162,6 +1162,7 @@ async def test_appliance_run_is_published_for_the_card(hass):
         SUBENTRY_TYPE_APPLIANCE,
     )
 
+    freezer.move_to(dt_util.utcnow())
     _set_input_states(hass)
     hass.states.async_set("sensor.dw_power", "500")  # appliance running
     entry = MockConfigEntry(

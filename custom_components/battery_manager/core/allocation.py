@@ -47,6 +47,22 @@ from .uncertainty import (
 )
 
 
+def _preconditioning_opportunity_possible(
+    nominal_need: float,
+    nominal_export: float,
+    optimistic_need: float,
+    optimistic_export: float | None,
+) -> bool:
+    """Bound rescued export without assuming any trial's future SOC or switches.
+
+    A trajectory cannot export negative energy. Even a perfect trial therefore
+    cannot rescue more than its accepted nominal/optimistic baseline exports.
+    """
+    return nominal_export + _EPS >= nominal_need or (
+        optimistic_export is not None and optimistic_export + _EPS >= optimistic_need
+    )
+
+
 def allocate_loads(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -643,6 +659,25 @@ def allocate_loads(
                             # shorter quantised candidates (incl. the gate-stop
                             # final quantum) still get their chance below.
                             continue
+                        need = (1.0 - load.battery_tolerance) * power_wh * rt
+                        need_c2 = (1.0 - load.battery_tolerance) * power_wh
+                        # A September forecast left only a small export residue,
+                        # but hundreds of impossible runtime quanta still ran
+                        # the complete reserve simulation. c1/c2 cannot rescue
+                        # more than their own total baseline export. Keep the
+                        # existing first rejection explanation unchanged; when
+                        # none exists, evaluate the usual gates in their order.
+                        if i in rejected[load.load_id] and not (
+                            _preconditioning_opportunity_possible(
+                                need,
+                                current.total_export_wh,
+                                need_c2,
+                                current_beta.total_export_wh
+                                if current_beta is not None and in_window(i)
+                                else None,
+                            )
+                        ):
+                            continue
                         trial_tuple = tuple(trial)
                         traj = _gate_trial(load.load_id, trial_tuple, covered)
                         if traj is None:
@@ -676,8 +711,6 @@ def allocate_loads(
                         # run drops export ~1:1 and passes even more easily; the
                         # factor only stops billing the detour's losses twice.
                         # Z2'/Z3/Z4 still bound how deep the drain may go (R3).
-                        need = (1.0 - load.battery_tolerance) * power_wh * rt
-                        need_c2 = (1.0 - load.battery_tolerance) * power_wh
                         trial_beta = None
                         via_beta = False  # which gate accepted -> reason string (R13)
                         # (c1) nominal refill OR (c2) optimistic in-window insurance

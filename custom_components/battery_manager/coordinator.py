@@ -31,6 +31,7 @@ from .appliance_learning import (
     measurement,
     program_name,
 )
+from .appliance_runtime import ApplianceRuntime
 from .cascade_manager import CascadeManager
 from .const import (
     ACTOR_CONFIRM_TIMEOUT_S,
@@ -46,7 +47,6 @@ from .const import (
     CONF_APPLIANCE_POWER_THRESHOLD_W,
     CONF_APPLIANCE_PROGRAM_ENTITY,
     CONF_APPLIANCE_REMAINING_TIME_ENTITY,
-    CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
     CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
@@ -256,7 +256,11 @@ from .localization import message
 from .operation_recorder import OperationRecorder
 from .plan_output import daily_surplus_breakdown
 from .planning import PLANNING_SOC_TOLERANCE_PERCENT, PlanningRunner
-from .reserve_runtime import ReserveRuntime, reserve_diagnostics
+from .reserve_runtime import (
+    RESERVE_POLICY_VERSION,
+    ReserveRuntime,
+    reserve_diagnostics,
+)
 from .runtime_persistence import persistent_payload
 
 _LOGGER = logging.getLogger(__name__)
@@ -467,6 +471,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._inverter_recommendation = False
         self._last_inverter_switch: datetime | None = None
         self._reserve_runtime = ReserveRuntime()
+        self._reserve_legacy_hold_sources: set[str] = set()
         self._reserve_diag: dict[str, Any] = {}
         self._coordinated_support_diag: dict[str, Any] = {}
         self._reserve_preparing = False
@@ -550,6 +555,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # continuous dropout the run is treated as OFF (operator rule) —
         # shorter dropouts keep holding the latch (soak phases).
         self._appliance_dropout_since: dict[str, datetime] = {}
+        self.appliances = ApplianceRuntime(self)
         # Robust planning-power estimation (docs/F-ROBUST-POWER.md): per load
         # a rolling buffer of ACCEPTED (timestamp, watts) samples — only
         # readings past the v0.6.2 standby bar while the load runs at BM's
@@ -953,6 +959,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._appliance_learning.restore_programs(
                 data.get("appliance_program_samples", {})
             )
+            self._appliance_learning.restore_metadata(
+                data.get("appliance_metadata", {}), now=dt_util.utcnow()
+            )
             for k, v in data.get("appliance_started", {}).items():
                 ts = dt_util.parse_datetime(v) if isinstance(v, str) else None
                 if ts is not None:
@@ -1350,12 +1359,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if support_voltage is not None and not 40 <= support_voltage <= 60:
             support_voltage = None
+        reserve_active = cfg.get(CONF_RESERVE_MODE) == "active" and bool(
+            cfg.get(CONF_INVERTER_LIMIT_ENTITY)
+        )
         return SystemConfig(
             reserve=ReserveParams(
-                enabled=(
-                    cfg.get(CONF_RESERVE_MODE) == "active"
-                    and bool(cfg.get(CONF_INVERTER_LIMIT_ENTITY))
-                ),
+                enabled=reserve_active,
                 upper_pv_factor=float(cfg.get(CONF_RESERVE_UPPER_FACTOR, 1.2)),
             ),
             battery=BatteryParams(
@@ -1436,8 +1445,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     cfg.get(CONF_SUPPORT_DC24_SWITCH) and cfg.get(CONF_DCDC_SWITCH)
                 ),
                 dc48_available=bool(cfg.get(CONF_SUPPORT_DC48_SWITCH)),
-                dc24_active=self._support_state["dc24"],
-                dc48_active=self._support_state["dc48"],
+                dc24_active=self._support_state["dc24"]
+                and (
+                    not reserve_active
+                    or "dc24" not in self._reserve_legacy_hold_sources
+                ),
+                dc48_active=self._support_state["dc48"]
+                and (
+                    not reserve_active
+                    or "dc48" not in self._reserve_legacy_hold_sources
+                ),
                 psu48_bus_voltage_v=support_voltage,
                 dc48_power_w=float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0)),
                 # Manual override (F-N2): a manually activated PSU is
@@ -3638,24 +3655,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _appliance_duration(
         self, data: Mapping[str, Any], now: datetime, key: str = ""
     ) -> float:
-        entity_id = data.get(CONF_APPLIANCE_TOTAL_TIME_ENTITY)
-        state = self.hass.states.get(entity_id) if entity_id else None
-        total = duration_hours(state, now)
-        program = self._appliance_program(key, data)
-        if program is not None and not self._appliance_is_running(
-            data, key in self._appliance_started
-        ):
-            # A ready appliance may still publish the previous program's total.
-            total = None
-        return (
-            total
-            if total is not None and total > 0
-            else self._appliance_learning.duration(
-                key,
-                float(data[CONF_APPLIANCE_RUN_DURATION_H]),
-                self._appliance_program(key, data),
-            )
-        )
+        return self.appliances.duration(data, now, key)[0]
 
     @staticmethod
     def _appliance_finished(state) -> bool:
@@ -3677,6 +3677,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
 
     def _get_appliance_runs(self, now: datetime) -> tuple[ApplianceRun, ...]:
+        return self.appliances.update(now)
+
+    def _observe_appliance_runs(self, now: datetime) -> tuple[ApplianceRun, ...]:
         runs = []
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
@@ -3708,7 +3711,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if now - since >= timedelta(
                     minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN
                 ):
-                    self._appliance_learning.active.pop(subentry_id, None)
+                    self._appliance_learning.discard(
+                        subentry_id, now, "detection_unknown"
+                    )
                     self._appliance_learning.programs.pop(subentry_id, None)
                     self._appliance_observed_idle.discard(subentry_id)
                     self._appliance_started.pop(subentry_id, None)
@@ -3730,6 +3735,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 complete_start=subentry_id in self._appliance_observed_idle,
                 program=program_name(sensor(CONF_APPLIANCE_PROGRAM_ENTITY)),
                 valid=detection_valid and (running or self._appliance_finished(state)),
+                invalid_reason="aborted" if detection_valid else "detection_unknown",
             )
             if running:
                 self._appliance_observed_idle.discard(subentry_id)
@@ -3975,6 +3981,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = dt_util.now()
         self._update_house_soc_watchdog(now)
         soc = self._get_soc(now)
+        self._reserve_reconcile_legacy_hold(soc)
         config = self.build_system_config()
         low = soc is not None and soc <= config.control.inverter_min_soc_percent
         grid = self._reserve_grid_available() if config.reserve.enabled else True
@@ -3994,6 +4001,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif low:
             self._inverter_recommendation = False
             self._update_floor_guard(soc, config, now=now)
+            self.appliances.set_floor_guard(True)
             if self.data:
                 self.data["inverter_recommendation"] = False
                 self.data["floor_guard_active"] = True
@@ -4012,7 +4020,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async with self._update_lock:
             self._update_task = asyncio.current_task()
             try:
-                return await self._async_update_data_serial()
+                data = await self._async_update_data_serial()
+                if not data.get("valid"):
+                    self.appliances.plan_failed()
+                return data
+            except BaseException:
+                self.appliances.plan_failed()
+                raise
             finally:
                 self._update_task = None
 
@@ -4049,6 +4063,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # entity itself and unlatches on the first changed reading).
         self._update_house_soc_watchdog(now)
         soc = self._get_soc(now)
+        self._reserve_reconcile_legacy_hold(soc)
         forecasts = self._get_forecasts(now)
 
         if soc is None or forecasts is None:
@@ -4119,6 +4134,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for state in load_states
         }
         appliance_runs = self._get_appliance_runs(now)
+        appliance_signature = self.appliances.planning_signature()
         ac_series, dc_series, band, quantiles_active, profile_diag = (
             self._learned_series(now, config, len(forecasts))
         )
@@ -4274,7 +4290,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             self._save_persistent_state()
         else:
+            # Disabling observations does not confirm a pending source transfer.
+            # Keep the migration marker for a later return to active policy.
+            policy_version = self._reserve_runtime.policy_version
             self._reserve_runtime = ReserveRuntime()
+            self._reserve_runtime.policy_version = policy_version
+            self._reserve_legacy_hold_sources.clear()
+            self._support_migration.pop("reserve_holding_pending", None)
             self._reserve_preparing = False
             result = await self._async_plan("standard", config, inputs)
         self.operation_recorder.plan(config, inputs, result)
@@ -4673,6 +4695,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # meter (the key then stays absent — backend-compat).
         realized = self._update_realized_surplus(now, daily_surplus)
         self._last_planner_recording = (config, inputs, result)
+        self.appliances.plan_updated(
+            result, inputs, floor_guard, config, appliance_signature
+        )
 
         return {
             "valid": True,
@@ -5682,8 +5707,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         the real winter operation.
         """
         if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
-            self._support_manual[key] = on
-            self._save_persistent_state()
+            # Keep the executor's manual snapshot stable through confirmations.
+            # Refresh outside the lock: its actuation must acquire it again.
+            async with self._switch_lock:
+                self._support_manual[key] = on
+                self._save_persistent_state()
             await self.async_request_refresh()
             return
         conf_key = (
@@ -6040,6 +6068,61 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return True
 
+    def _reserve_reconcile_legacy_hold(self, soc: float | None) -> None:
+        """Retire old economic PSU requests without inventing confirmations.
+
+        The pre-0.47 policy used physical ON as a protection latch even when
+        it had only requested high-SOC grid holding. Keep that state until
+        the ordered return to the battery is confirmed; only its planning
+        latch is cleared. Retaining the old policy version retries this
+        reconciliation after a failed transfer or restart.
+        """
+        if self.raw_config.get(
+            CONF_RESERVE_MODE
+        ) != "active" or not self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
+            # Shadow and legacy operation retain their actual protection latch;
+            # an unfinished active-policy transfer cannot leak into either.
+            self._reserve_legacy_hold_sources.clear()
+            self._support_migration.pop("reserve_holding_pending", None)
+            return
+        if (
+            soc is None
+            or self._reserve_runtime.policy_version >= RESERVE_POLICY_VERSION
+        ):
+            return
+        config = self.build_system_config()
+        pending = set()
+        for key, entity_key, recovery in (
+            (
+                "dc24",
+                CONF_SUPPORT_DC24_SWITCH,
+                config.control.support_dc24_recovery_soc,
+            ),
+            (
+                "dc48",
+                CONF_SUPPORT_DC48_SWITCH,
+                config.control.support_dc48_recovery_soc,
+            ),
+        ):
+            entity = self.raw_config.get(entity_key)
+            if not entity:
+                continue
+            actual = self._entity_tristate(entity)
+            if actual is False:
+                # A persisted ON may have changed while HA was down. Real OFF
+                # confirmation clears that stale latch, not the manual request.
+                self._support_state[key] = False
+                continue
+            if self._support_manual[key] or soc < recovery:
+                continue
+            if actual is True or self._support_state[key]:
+                pending.add(key)
+        self._reserve_legacy_hold_sources = pending
+        self._support_migration["reserve_holding_pending"] = sorted(pending)
+        if not pending:
+            self._reserve_runtime.policy_version = RESERVE_POLICY_VERSION
+        self._save_persistent_state()
+
     async def _coordinated_data_loss(self, soc, now) -> None:
         """Keep protection operational when no economic plan can be built."""
         if not self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
@@ -6054,8 +6137,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         dc24, dc48 = support_state(
             config,
             soc if soc is not None else config.battery.soc_min_percent,
-            self._support_state["dc24"],
-            self._support_state["dc48"],
+            config.support.dc24_active,
+            config.support.dc48_active,
             False,
         )
         self._inverter_recommendation = False
@@ -7595,6 +7678,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         self.operation_recorder.sample()
         self.operation_recorder.event("shutdown", {})
+        self.appliances.stop()
         self.operation_recorder.stop()
         self._actuation_shutdown = True
         if self._plan_boundary_cancel is not None:
@@ -7634,6 +7718,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._plan_boundary_cancel is not None:
             self._plan_boundary_cancel()
             self._plan_boundary_cancel = None
+        self.appliances.stop()
         self.operation_recorder.stop()
         self.cascade_manager.cleanup()
         self.learner.async_unschedule()
