@@ -8,8 +8,10 @@ the battery. Emergency support paths (D-A9) can shift DC loads to the grid.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import isfinite
 
 from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
+from .planning_control import check_cancelled
 
 _EPS = 1e-9
 
@@ -24,8 +26,22 @@ def step_hour(
     dc48_support: bool = False,
     pv_scale: float = 1.0,
     feedin_wh: float = 0.0,
+    *,
+    inverter_limit_w: float | None = None,
 ) -> HourFlows:
     """Simulate one slot; returns all flows. Never mutates anything."""
+    # Reserve changes an operating limit, not the validated plant configuration.
+    # Avoid reconstructing SystemConfig for every five-minute candidate step.
+    inverter_power_w = config.inverter.max_power_w
+    if inverter_limit_w is not None:
+        if (
+            not isfinite(inverter_limit_w)
+            or not 0 <= inverter_limit_w <= inverter_power_w
+        ):
+            raise ValueError(
+                "Inverter limit must be finite and within configured power"
+            )
+        inverter_power_w = inverter_limit_w
     battery = config.battery
     energy = battery.energy_wh(soc_percent)
     floor_wh = battery.energy_wh(battery.soc_min_percent)
@@ -277,7 +293,7 @@ def step_hour(
             )
             available_store = max(0.0, energy - inv_floor_wh)
             available_ac = available_store * battery.eta_discharge * config.inverter.eta
-            max_inv_ac = config.inverter.max_power_w * slot.duration
+            max_inv_ac = inverter_power_w * slot.duration
             ac_out = min(deficit, max_inv_ac, available_ac)
             if ac_out > _EPS:
                 drawn = ac_out / (battery.eta_discharge * config.inverter.eta)
@@ -341,6 +357,7 @@ def simulate(
     SHORTER than the horizon used to crash with a bare IndexError mid-run
     (code review 2026-07) and now fails up-front with a speaking ValueError.
     """
+    check_cancelled()
     n_slots = len(inputs.slots)
     for name, series in (
         ("extra_ac_wh", extra_ac_wh),

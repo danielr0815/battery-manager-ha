@@ -125,7 +125,10 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
     changed = replace(config, feedin=replace(config.feedin, automatic_enabled=True))
     entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2)
     entry.add_to_hass(hass)
+    from custom_components.battery_manager.planning import PlanningRunner
+
     coordinator = SimpleNamespace(
+        _planning=PlanningRunner(),
         _cascade_state={
             "chain": {
                 "actor_journal": [{"event": "confirmation_failed"}],

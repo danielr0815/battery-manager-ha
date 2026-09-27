@@ -227,3 +227,13 @@ Startfreigabe aus. `PlanResult.feedin_decisions` enthält die tatsächlichen
 Einspeisungsentscheidungen. `sensor.py` und beide Karten veröffentlichen den
 vor der Ausführung eingefrorenen Stand. Vertrag und Kommentar-Kürzel
 `F-EXECUTION-PROJECTION`: [F-EXECUTION-PROJECTION.md](F-EXECUTION-PROJECTION.md).
+
+### Planungslebenszyklus ab 0.46.1
+
+`planning.py` verwaltet gemessene Executor-Phasen, periodische Schutzprüfungen
+und das kooperative Abbruchsignal. Der Coordinator serialisiert Aktualisierungen
+und prüft Eingangsaktualität vor Veröffentlichung und Aktorfreigaben. Der erste
+Refresh ist eine Entry-gebundene Hintergrundaufgabe nach dem Entity-Setup.
+`core/planning_control.py` enthält ausschließlich den HA-freien Abbruchkontext;
+`core/simulation_steps.py` teilt begrenzt gecachte, unveränderliche Teilintervalle
+zwischen Vergleichs- und Reserveplanung. Siehe [Verträge und Nachweise](F-PLANNING-LATENCY.md).

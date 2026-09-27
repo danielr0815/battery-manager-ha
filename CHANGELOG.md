@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-09-27
+
+### Fixed
+- Die Einrichtung wartet nicht mehr auf die erste Optimierung. Prognose-Entities
+  bleiben bis zum ersten gültigen Ergebnis unverfügbar; die Diagnose zeigt
+  laufende Planungsphase und gemessene Laufzeiten.
+- Reserve- und Vergleichsplanung verwenden validierte Konfigurationen und
+  unveränderliche Fünf-Minuten-Slots wieder. Aussichtsloses Peak-Fill wird vor
+  der teuren Simulation ausgeschlossen; Energie- und Schaltentscheidungen
+  bleiben unverändert, die Ablehnungsdiagnose wird präzisiert.
+- Planung läuft pro Coordinator seriell und wird beim Entladen auch im
+  CPU-Worker kooperativ abgebrochen. SOC-Schutz und Quellenrückfall werden
+  während der Berechnung geprüft; veraltete SOC-/Zeitabschnitt-Ergebnisse
+  werden vor Veröffentlichung und Aktorfreigabe verworfen.
+
+### Documentation
+- Reproduzierbares Offline-Benchmarkwerkzeug und Analyse der Startverzögerung
+  einschließlich des Vergleichs mit 0.45.1 und 0.46.0.
+
 ## [0.46.0] - 2026-09-26
 
 ### Fixed

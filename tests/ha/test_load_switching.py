@@ -5,6 +5,7 @@ on; ownership rule / configurable input-off policy; last-known-SOC caching.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from homeassistant.config_entries import ConfigSubentryData
@@ -1412,7 +1413,7 @@ def _shadow_scenario(sub_id, saturated, forecasts):
     tank -> the honest plan books NOTHING, the deadlock; None = the full-power
     counterfactual the shadow plan uses)."""
     from dataclasses import replace as _replace
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from custom_components.battery_manager.core.model import (
         ControlParams,
@@ -1434,7 +1435,11 @@ def _shadow_scenario(sub_id, saturated, forecasts):
     config = SystemConfig(control=control, loads=(load,))
     states = (SurplusLoadState(load_id=sub_id, saturated_power_w=saturated),)
     inputs = build_slots(
-        config, datetime(2026, 7, 4, 6, 0), 84.0, forecasts, load_states=states
+        config,
+        datetime(2026, 7, 4, 6, 0, tzinfo=UTC),
+        84.0,
+        forecasts,
+        load_states=states,
     )
     return config, inputs, states
 
@@ -1461,9 +1466,16 @@ async def test_f11_shadow_plan_holds_battery_fed_pass2_run(hass):
     honest = _plan(config, honest_inputs)
     assert honest.load_plans[0].active_now is False
     # Shadow plan: the override cleared -> the planner activates slot 0 (pass 2).
-    shadow_active = await coordinator._latch_shadow_active(
-        config, honest_inputs, honest_states
-    )
+    with (
+        patch.object(coordinator, "_get_soc", return_value=84.0),
+        patch(
+            "custom_components.battery_manager.coordinator.dt_util.now",
+            return_value=honest_inputs.now,
+        ),
+    ):
+        shadow_active = await coordinator._latch_shadow_active(
+            config, honest_inputs, honest_states
+        )
     assert shadow_active.get(sub_id) is True
     # The honest inputs were not mutated by the shadow run (purity).
     assert honest_inputs.load_states[0].saturated_power_w == 0.0
@@ -1493,7 +1505,14 @@ async def test_f11_no_hold_without_lost_export_coverage(hass):
     _latched(coordinator, sub_id)
 
     config, inputs, states = _shadow_scenario(sub_id, 0.0, [0.5, 0.5])
-    shadow_active = await coordinator._latch_shadow_active(config, inputs, states)
+    with (
+        patch.object(coordinator, "_get_soc", return_value=84.0),
+        patch(
+            "custom_components.battery_manager.coordinator.dt_util.now",
+            return_value=inputs.now,
+        ),
+    ):
+        shadow_active = await coordinator._latch_shadow_active(config, inputs, states)
     assert shadow_active.get(sub_id, False) is False
 
     calls.clear()

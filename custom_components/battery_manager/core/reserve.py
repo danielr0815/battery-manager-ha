@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import fields, replace
-from datetime import timedelta
 
 from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
 from .simulate import step_hour
-from .support import SUPPORT_STEP_HOURS, support_state
+from .simulation_steps import split_slot
+from .support import support_state
 
 
 def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | None):
@@ -26,23 +26,20 @@ def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | 
     _, upper, _ = effective_uncertainty(
         inputs, config.control.predrain_pv_confidence, config.reserve.upper_pv_factor
     )
-    steps: list[tuple[int, HourSlot, float, float]] = []
-    for i, slot in enumerate(inputs.slots):
-        elapsed = 0.0
-        while elapsed < slot.duration - 1e-9:
-            duration = min(SUPPORT_STEP_HOURS, slot.duration - elapsed)
-            ratio = duration / slot.duration
-            small = replace(
-                slot,
-                start=slot.start + timedelta(hours=elapsed),
-                duration=duration,
-                pv_wh=slot.pv_wh * ratio,
-                ac_wh=slot.ac_wh * ratio,
-                dc_wh=slot.dc_wh * ratio,
-            )
-            steps.append((i, small, (extra[i] if extra else 0.0) * ratio, upper[i]))
-            elapsed += duration
-    return steps
+    return [
+        (i, small, (extra[i] if extra else 0.0) * ratio, upper[i])
+        for i, small, ratio in _expanded_slots(inputs.slots)
+    ]
+
+
+def _expanded_slots(
+    slots: tuple[HourSlot, ...],
+) -> tuple[tuple[int, HourSlot, float], ...]:
+    return tuple(
+        (i, small, ratio)
+        for i, slot in enumerate(slots)
+        for small, ratio in split_slot(slot)
+    )
 
 
 def _envelopes(config: SystemConfig, steps):
@@ -96,23 +93,39 @@ def simulate_reserve(
     soc = inputs.start_soc_percent
     dc24, dc48 = support.dc24_active, support.dc48_active
     buckets: list[list[HourFlows]] = [[] for _ in inputs.slots]
+    # Only voltage credit and rail capacity change the support configuration.
+    # Validate each variant once per simulation rather than per time step.
+    variants: dict[tuple[bool, bool], SystemConfig] = {}
     for j, (i, slot, extra, _) in enumerate(steps):
         scale = pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i]
         # A measured voltage is useful at the observed SOC, not a voltage
         # forecast for an arbitrarily different future SOC. In this local band
         # it supersedes the old fixed 40% proxy; outside it no power is credited.
-        source = replace(support, gate_soc_percent=None)
-        if abs(soc - inputs.start_soc_percent) > config.control.hysteresis_percent:
-            source = replace(source, psu48_bus_voltage_v=None)
-        if scale < 1:
-            source = replace(source, psu48_bus_voltage_v=None)
-        rail = max(0.0, slot.dc_wh - source.native48_base_w * slot.duration)
-        rail *= source.dc24_share
-        if source.psu24_max_power_w is not None and rail > (
-            source.psu24_max_power_w * slot.duration
-        ):
-            source = replace(source, dc24_available=False)
-        effective = replace(config, support=source)
+        voltage_credit = (
+            abs(soc - inputs.start_soc_percent) <= config.control.hysteresis_percent
+            and scale >= 1
+        )
+        rail = max(0.0, slot.dc_wh - support.native48_base_w * slot.duration)
+        rail *= support.dc24_share
+        rail_available = support.dc24_available and not (
+            support.psu24_max_power_w is not None
+            and rail > support.psu24_max_power_w * slot.duration
+        )
+        key = voltage_credit, rail_available
+        if key not in variants:
+            variants[key] = replace(
+                config,
+                support=replace(
+                    support,
+                    gate_soc_percent=None,
+                    psu48_bus_voltage_v=support.psu48_bus_voltage_v
+                    if voltage_credit
+                    else None,
+                    dc24_available=rail_available,
+                ),
+            )
+        effective = variants[key]
+        source = effective.support
         export = (
             (feedin[i] if feedin else 0.0) * slot.duration / inputs.slots[i].duration
         )
@@ -159,9 +172,6 @@ def simulate_reserve(
         )
         if dc24 or dc48:
             limit = 0.0
-        effective = replace(
-            effective, inverter=replace(config.inverter, max_power_w=limit)
-        )
         flow = step_hour(
             effective,
             soc,
@@ -172,6 +182,7 @@ def simulate_reserve(
             dc48,
             scale,
             export,
+            inverter_limit_w=limit,
         )
         flow = replace(
             flow,

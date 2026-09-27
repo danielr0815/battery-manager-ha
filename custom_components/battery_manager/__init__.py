@@ -336,12 +336,12 @@ async def async_setup_entry(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
     )
 
-    # Restore SOC cache / plug ownership, then first refresh; a refresh
-    # failure is tolerated (fast retry interval during startup).
+    # Restore state before exposing entities. The first economic plan runs
+    # after platform setup; CPU work must never block entry initialization.
     await coordinator.async_load_persistent_state()
     await coordinator.async_recover_power_calibration()
     await coordinator.cascade_manager.async_recover_terminal_tests()
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data({"valid": False, "startup_pending": True})
 
     # HA 2026.8: one device per config subentry (core PR #175785). Created
     # before the platforms so subentry devices carry via_device_id on the main
@@ -350,6 +350,9 @@ async def async_setup_entry(
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # After the platforms: the learner looks up the vacation switch entity.
+    coordinator._initial_refresh_task = entry.async_create_background_task(
+        hass, coordinator.async_refresh(), name="battery_manager_initial_plan"
+    )
     coordinator.async_setup_learning()
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     return True

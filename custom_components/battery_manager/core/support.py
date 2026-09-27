@@ -8,12 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import fields, replace
-from datetime import timedelta
 
 from .model import HourFlows, PlanInputs, SystemConfig, Trajectory
 from .simulate import step_hour
-
-SUPPORT_STEP_HOURS = 1 / 12
+from .simulation_steps import SUPPORT_STEP_HOURS as SUPPORT_STEP_HOURS
+from .simulation_steps import split_slot
 
 
 def support_state(
@@ -68,20 +67,11 @@ def simulate_support(
         ):
             # Never switch away from a working DC/DC to an undersized PSU.
             support = replace(support, dc24_available=False)
-        effective = replace(config, support=support)
+        effective = (
+            config if support is config.support else replace(config, support=support)
+        )
         parts: list[HourFlows] = []
-        elapsed = 0.0
-        while elapsed < slot.duration - 1e-9:
-            duration = min(SUPPORT_STEP_HOURS, slot.duration - elapsed)
-            ratio = duration / slot.duration
-            small = replace(
-                slot,
-                start=slot.start + timedelta(hours=elapsed),
-                duration=duration,
-                pv_wh=slot.pv_wh * ratio,
-                ac_wh=slot.ac_wh * ratio,
-                dc_wh=slot.dc_wh * ratio,
-            )
+        for small, ratio in split_slot(slot):
             # Only PV sufficient for the full DC demand can release support.
             # The PSU's own charging must not create an AC cycling loop.
             recovering = slot.pv_wh * scale > (
@@ -123,7 +113,6 @@ def simulate_support(
                 )
             parts.append(flow)
             soc = flow.soc_end_percent
-            elapsed += duration
         first = parts[0]
         flows.append(
             replace(

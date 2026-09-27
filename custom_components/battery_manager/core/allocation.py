@@ -493,6 +493,12 @@ def allocate_loads(
                         if not (load.energy_limited and rem is not None and rem > _EPS):
                             continue
                         at_max_topup = True
+                    # A dark slot cannot satisfy the later peak-fill condition.
+                    # Reject it before simulating every runtime quantum across
+                    # the whole horizon (startup latency incident 2026-09-27).
+                    if at_max_topup and slot.pv_wh <= slot.ac_wh + slot.dc_wh:
+                        rejected[load.load_id].setdefault(i, "no_peak_fill_surplus")
+                        continue
                     # Hard conditions via full re-simulation (Z2''/R2/R5/Z3).
                     traj = _gate_trial(load.load_id, tuple(trial), covered)
                     if traj is None:

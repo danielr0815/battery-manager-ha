@@ -255,6 +255,7 @@ from .load_actuation import (
 from .localization import message
 from .operation_recorder import OperationRecorder
 from .plan_output import daily_surplus_breakdown
+from .planning import PLANNING_SOC_TOLERANCE_PERCENT, PlanningRunner
 from .reserve_runtime import ReserveRuntime, reserve_diagnostics
 from .runtime_persistence import persistent_payload
 
@@ -771,6 +772,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
         self.learner = ProfileLearner(hass, entry)
 
+        self._planning = PlanningRunner()
+        self._update_lock = asyncio.Lock()
+        self._update_task: asyncio.Task | None = None
+        self._initial_refresh_task: asyncio.Task | None = None
+        self._planning_protection_task: asyncio.Task | None = None
         self._startup_complete = False
         self._successful_updates = 0
         # V8: anchor of the SOC startup grace window, stamped on the first
@@ -3912,7 +3918,105 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Update cycle
     # ------------------------------------------------------------------
 
+    async def _async_plan(
+        self, phase: str, config: SystemConfig, inputs: PlanInputs
+    ) -> PlanResult:
+        async def protect_inputs() -> None:
+            await self._async_planning_protection()
+            self._ensure_planning_inputs(inputs)
+
+        await protect_inputs()
+        result = await self._planning.async_run(
+            self.hass, plan, phase, config, inputs, protect_inputs
+        )
+        self._ensure_planning_inputs(inputs)
+        return result
+
+    def _ensure_planning_inputs(self, inputs: PlanInputs) -> None:
+        if self._actuation_shutdown:
+            raise asyncio.CancelledError
+        now = dt_util.now()
+        slot_end = dt_util.as_utc(inputs.slots[0].start) + timedelta(
+            hours=inputs.slots[0].duration
+        )
+        current_soc = self._get_soc(now)
+        initial_soc = inputs.start_soc_percent
+        control = self.build_system_config().control
+        thresholds = (
+            control.inverter_min_soc_percent,
+            control.inverter_min_soc_percent + control.hysteresis_percent,
+            control.support_dc24_activate_soc,
+            control.support_dc24_recovery_soc,
+            control.support_dc48_activate_soc,
+            control.support_dc48_recovery_soc,
+        )
+        changed = current_soc is None or (
+            current_soc != initial_soc
+            and (
+                abs(current_soc - initial_soc)
+                > min(PLANNING_SOC_TOLERANCE_PERCENT, control.hysteresis_percent)
+                or any(
+                    min(initial_soc, current_soc)
+                    <= threshold
+                    <= max(initial_soc, current_soc)
+                    for threshold in thresholds
+                )
+            )
+        )
+        if changed or now >= slot_end:
+            raise UpdateFailed(
+                "Planning inputs changed during calculation; awaiting fresh plan"
+            )
+
+    async def _async_planning_protection(self) -> None:
+        """Evaluate protective actions without waiting for economic planning."""
+        if self._actuation_shutdown:
+            return
+        now = dt_util.now()
+        self._update_house_soc_watchdog(now)
+        soc = self._get_soc(now)
+        config = self.build_system_config()
+        low = soc is not None and soc <= config.control.inverter_min_soc_percent
+        grid = self._reserve_grid_available() if config.reserve.enabled else True
+        physical_support = any(
+            self.raw_config.get(key)
+            and self._entity_tristate(self.raw_config[key]) is not False
+            for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
+        )
+        # Unknown grid blocks PSU use, not already-authorized battery discharge.
+        # Only an active/unknown PSU or known grid loss needs an immediate block.
+        grid_block = grid is False or (grid is None and physical_support)
+        if soc is None or low or grid_block:
+            await self._coordinated_data_loss(soc, now)
+        if soc is None:
+            await self._note_data_loss(now)
+            await self._feedin_force_zero("SOC unavailable during planning")
+        elif low:
+            self._inverter_recommendation = False
+            self._update_floor_guard(soc, config, now=now)
+            if self.data:
+                self.data["inverter_recommendation"] = False
+                self.data["floor_guard_active"] = True
+                self.async_update_listeners()
+            await self._feedin_force_zero("G4 floor guard during planning")
+            if self._stale_shed_task is None or self._stale_shed_task.done():
+                self._stale_shed_task = self.entry.async_create_background_task(
+                    self.hass,
+                    self._execute_stale_load_shed("G4 floor guard"),
+                    name="battery_manager_planning_floor_guard",
+                )
+
     async def _async_update_data(self) -> dict[str, Any]:
+        # Direct refreshes and debounced sensor updates may overlap. A single
+        # owner prevents parallel CPU searches and out-of-order actuation.
+        async with self._update_lock:
+            self._update_task = asyncio.current_task()
+            try:
+                return await self._async_update_data_serial()
+            finally:
+                self._update_task = None
+
+    async def _async_update_data_serial(self) -> dict[str, Any]:
         if self._actuation_shutdown or self.hass.is_stopping:
             return self.data or {}
         await self.cascade_manager.async_reconcile_topologies()
@@ -4110,9 +4214,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             baseline_config = replace(
                 config, reserve=replace(config.reserve, enabled=False)
             )
-            baseline = await self.hass.async_add_executor_job(
-                plan, baseline_config, inputs
-            )
+            baseline = await self._async_plan("baseline", baseline_config, inputs)
             reserve_config = replace(
                 config, reserve=replace(config.reserve, enabled=True)
             )
@@ -4138,9 +4240,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         dc24_forced_on=False,
                     ),
                 )
-            candidate = await self.hass.async_add_executor_job(
-                plan, reserve_config, inputs
-            )
+            candidate = await self._async_plan("reserve", reserve_config, inputs)
             active = config.reserve.enabled
             self._reserve_diag = reserve_diagnostics(
                 reserve_config,
@@ -4176,7 +4276,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             self._reserve_runtime = ReserveRuntime()
             self._reserve_preparing = False
-            result = await self.hass.async_add_executor_job(plan, config, inputs)
+            result = await self._async_plan("standard", config, inputs)
         self.operation_recorder.plan(config, inputs, result)
         if self._reserve_diag.get("mode") in ("shadow", "active"):
             self.operation_recorder.reserve(self._reserve_diag)
@@ -4248,13 +4348,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         floor_guard = self._update_floor_guard(
             soc, config, pv_power_w, running_load_power_w, now
         )
-        await self._apply_support_switching(result, config, now)
-        if not config.support.coordinated:
-            self._run_dc48_controller(now)
         # F11: only when a latched switchable load exists, replan with its F5
         # saturated override cleared (shadow plan, never published) so the F10
         # hold follows the normal planner's rules instead of a stricter PV gate.
         shadow_active = await self._latch_shadow_active(config, inputs, load_states)
+        self._ensure_planning_inputs(inputs)
+        await self._apply_support_switching(result, config, now)
+        if not config.support.coordinated:
+            self._run_dc48_controller(now)
         await self._apply_load_switching(
             result,
             now,
@@ -6447,9 +6548,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for state in load_states
         )
         shadow_inputs = replace(inputs, load_states=shadow_states)
-        shadow_result = await self.hass.async_add_executor_job(
-            plan, config, shadow_inputs
-        )
+        shadow_result = await self._async_plan("load_shadow", config, shadow_inputs)
         return {
             lp.load_id: lp.active_now
             for lp in shadow_result.load_plans
@@ -6868,7 +6967,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         await execute_load_switching(self, actions, now)
 
-    async def _execute_stale_load_shed(self) -> None:
+    async def _execute_stale_load_shed(
+        self, reason: str = "stale-data load shed"
+    ) -> None:
         """Reconcile fail-safe OFFs until physical feedback confirms each path.
 
         The outage latch prevents starts; the pending set records unfinished
@@ -6876,7 +6977,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cannot delay another load's safety shutdown.
         """
         now = dt_util.now()
-        await self.cascade_manager.async_safety_off_active("stale-data load shed", now)
+        await self.cascade_manager.async_safety_off_active(reason, now)
         managed = self.cascade_manager.managed_load_ids()
         actions = []
         for load_id, subentry in self.entry.subentries.items():
@@ -6900,11 +7001,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     dict(data),
                     False,
                     self._entity_is_on(plug),
-                    reason="stale-data load shed",
+                    reason=reason,
                 )
             )
         self._save_persistent_state()
-        await self._execute_load_switching(actions, now)
+        if actions:
+            await self._execute_load_switching(actions, now)
         for action in actions:
             if self._charging_is_active(
                 action.data
@@ -7363,6 +7465,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
+        if self._planning.phase is not None and (
+            self._planning_protection_task is None
+            or self._planning_protection_task.done()
+        ):
+            self._planning_protection_task = self.entry.async_create_background_task(
+                self.hass,
+                self._async_planning_protection(),
+                name="battery_manager_planning_protection",
+            )
         if self._debounce_task is not None and not self._debounce_task.done():
             # A window is already armed: absorb this event instead of
             # cancelling and restarting the sleep. Restarting starves the
@@ -7495,6 +7606,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for load_id in list(self._load_off_timer):
             self._cancel_off_timer(load_id)
         tasks = [
+            self._initial_refresh_task,
+            self._update_task,
+            self._planning_protection_task,
             self._switch_task,
             self._dc48_ctrl_task,
             self._load_switch_task,
@@ -7504,6 +7618,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_power_calibration_task,
             *self._pause_tasks.values(),
         ]
+        tasks = list(
+            dict.fromkeys(task for task in tasks if task is not asyncio.current_task())
+        )
         for task in tasks:
             if task is not None and not task.done():
                 task.cancel()

@@ -23,3 +23,32 @@ def immediate_coordinator_debounce(monkeypatch):
         "custom_components.battery_manager.coordinator.DEBOUNCE_SECONDS",
         0,
     )
+
+
+@pytest.fixture(autouse=True)
+def settle_initial_plans(monkeypatch):
+    """Existing behavior tests await the initial plan when settling HA work.
+
+    Entry setup now intentionally returns before planning. Tests that inspect
+    that intermediate state explicitly pass wait_background_tasks=False; all
+    other tests wait for the actual entry-owned initial task, not a time delay.
+    """
+    import asyncio
+
+    from homeassistant.core import HomeAssistant
+
+    original = HomeAssistant.async_block_till_done
+
+    async def settle(hass, wait_background_tasks=None):
+        if wait_background_tasks is None:
+            for coordinator in list(hass.data.get("battery_manager", {}).values()):
+                task = getattr(coordinator, "_initial_refresh_task", None)
+                if task is not None and not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        if not task.cancelled():
+                            raise
+        await original(hass, wait_background_tasks=bool(wait_background_tasks))
+
+    monkeypatch.setattr(HomeAssistant, "async_block_till_done", settle)

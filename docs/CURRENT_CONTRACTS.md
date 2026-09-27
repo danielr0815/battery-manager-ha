@@ -86,3 +86,16 @@ ein Reload übernimmt dadurch keinen alten Optionswert. Services werden einmal i
 fehlende oder entladene Entries liefern einen verständlichen Servicefehler.
 `ConfigEntry.runtime_data` enthält den typisierten Coordinator. Parameter und
 Beispiele der bestehenden Services stehen in README und `services.yaml`.
+
+## Initialisierung und Planungsdauer ab 0.46.1
+
+Die erste Planung läuft nach Einrichtung der Entities im Hintergrund. Bis zum
+validen Ergebnis bleiben Prognose-Entities unverfügbar. Aktualisierungen laufen
+pro Coordinator seriell; Entladen stoppt auch die CPU-Berechnung kooperativ.
+SOC-Schutz und Quellenrückfall werden während einer Rechnung unabhängig geprüft.
+Veraltete SOC- oder Zeitabschnitt-Ergebnisse dürfen keine Aktoren freigeben.
+
+Die Diagnose enthält laufende Phase und gemessene Phasenlaufzeiten unter
+`planning`. Wiederverwendung validierter Konfigurationen und unveränderlicher
+Teilintervalle reduziert Rechenarbeit ohne Lockerung fachlicher Gates. Details,
+Messwerkzeug und Nachweise: [Planungsdauer](F-PLANNING-LATENCY.md).
