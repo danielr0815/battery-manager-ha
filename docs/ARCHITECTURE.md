@@ -42,7 +42,7 @@ belongs in the HA layer.
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
-| `reserve.py`, `reserve_energy.py` | DC-first reserve: rolling today/tomorrow preparation, reachable reference/export budgets and physical inverse energy transitions; shared transfer primitives with the simulator. See `F-RESERVE-DC-FIRST.md`. |
+| `reserve.py`, `reserve_schedule.py`, `reserve_energy.py` | DC-first reserve: rolling today/tomorrow preparation, nominal DC energy obligation, high-load AC priority, upper-PV export budgets and physical inverse transitions shared with simulation. See `F-RESERVE-LOAD-PRIORITY.md`. |
 | `optimize.py` | Planner orchestration: threshold search, feed-in, appliance advisor and support escalation. |
 | `allocation.py`, `allocation_candidates.py` | Ordered allocation passes, shared feasibility gate, typed candidate context/results and recovery. |
 | `planning_rules.py`, `uncertainty.py`, `policy.py` | Shared pure gates, forecast bands and domain constants; reserve has no reverse optimizer import. |

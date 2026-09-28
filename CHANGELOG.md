@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-28
+
+### Changed
+- Aktive Reserve hält zunächst Energie für prognostizierten DC-Verbrauch zurück.
+  Zusätzliche AC-Entladung darf keine vermeidbare spätere DC-Netzversorgung
+  erzwingen. Technische Schutzbedingungen und manuelle Vorgaben bleiben vorrangig.
+- Nötige AC-Entladung bevorzugt hohe nutzbare AC-Restlast vor schwacher Nachtlast;
+  bei gleicher Leistung weiterhin möglichst spät. Verglichen wird Leistung,
+  nicht Slotenergie. PV-Versorgung, Teilstunden und rechtzeitiger Speicherraum
+  werden berücksichtigt; eine starre Nachtsperre gibt es nicht.
+
+### Fixed
+- Die wirtschaftliche Netzteilhaltung verwendet nicht mehr den mit AC-Abgabe
+  berechneten Referenz-SOC als Halteziel. Damit entfällt die im Liveplan
+  beobachtete Netzversorgung am Nachmittag mit anschließender AC-Entladung
+  derselben zuvor erhaltenen Energie. Details: `docs/F-RESERVE-LOAD-PRIORITY.md`.
+
 ## [0.48.0] - 2026-09-28
 
 ### Added

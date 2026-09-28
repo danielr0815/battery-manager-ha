@@ -1,6 +1,6 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.48.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.49.0. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
@@ -51,3 +51,12 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | SOC-Sensor + Schaltspur + Recorder | Vollständige Intervallliste mit allen drei Zuständen, Attribut von Recorder ausgenommen | `ha/test_coordinator.py::test_forecast_curve_carries_support_flags` |
 | Optionale Netzteile + HA-Refresh + Maus/Tastatur + fehlende Daten | Einblendung/Fokus erhalten, subhourige Grenzen erreichbar, fehlend bleibt unbekannt | `frontend/switching.test.mjs`, `browser/cards.spec.mjs` |
 | Schaltspur + DST + Replay | Zeitintervalle in verstrichener Zeit, wiederholte Stunden unterscheidbar, alte Aufzeichnungen lesbar | `core/test_switching_schedule.py`, `frontend/switching.test.mjs` |
+
+## Lastabhängige Reservevorbereitung
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+|---|---|---|
+| Hohe Abendlast + geringe Nachtlast + Teilstunden | Nötige AC-Abgabe nach W priorisiert, Gleichstand spät, keine Entladung allein für Eigenbedarf | `core/test_reserve_priority.py` |
+| AC-Entnahme + späterer DC-Bedarf + unsichere PV | Kein optionaler AC-Verbrauch zulasten der prognostizierten DC-Versorgung; obere PV ist kein DC-Versorgungsnachweis | `core/test_reserve_priority.py` |
+| Netzteilhaltung + spätere AC-Abgabe im Liveplan | Kein Nachmittags-Netzbezug zur Finanzierung späterer AC-Entladung | Anonymisierte Fixture `reserve_load_priority.json`, `core/test_reserve_priority.py` |
+| Hohe Last nach PV-Peak + niedrige Last davor | Rechtzeitiger Speicherraum bleibt möglich; keine starre Nachtsperre | `core/test_reserve_priority.py` |

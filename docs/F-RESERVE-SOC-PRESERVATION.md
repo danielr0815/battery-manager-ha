@@ -1,5 +1,8 @@
 # Prognoseabhängige SOC-Erhaltung für DC und AC ab 0.47.1
 
+> Ab 0.49.0 präzisiert [Lastpriorisierung](F-RESERVE-LOAD-PRIORITY.md) den
+> zeitübergreifenden DC-Vorrang und ersetzt die rein späteste AC-Auswahl.
+
 Dieser Vertrag ersetzt die wirtschaftliche Quellenwahl aus F-RESERVE-DC-FIRST.
 Die physische Energieabbildung, Schutzbedingungen und lokalen Kalenderhorizonte
 bleiben bestehen. Operatorvorgabe 28.09.2026: SOC insgesamt nur so weit absenken,

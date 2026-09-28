@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.48.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.49.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -146,3 +146,20 @@ Geräterückmeldungen, manuelle Eingriffe und Freigabesperren können vom Plan
 abweichen; die Zeitspur ist kein Betriebsnachweis. Nachweise:
 `tests/core/test_switching_schedule.py`, `tests/ha/test_coordinator.py`,
 `tests/frontend/switching.test.mjs`, `tests/browser/cards.spec.mjs`.
+
+## DC-Vorrang und lastabhängige AC-Vorbereitung (0.49.0)
+
+Die [Lastpriorisierung](F-RESERVE-LOAD-PRIORITY.md) ersetzt die rein späteste
+AC-Vorbereitung. DC-Verbrauch hat zeitübergreifend Vorrang: Nominale PV darf
+zukünftigen DC-Bedarf decken, die optimistische obere PV-Prognose begründet
+hingegen nur Speicherplatzbedarf. AC nutzt nur den verbleibenden Energieraum.
+Höhere nutzbare AC-Restlast wird vor niedriger Last gewählt; bei Gleichstand die
+spätere Gelegenheit. Entscheidend sind W und die PV-Deadline, keine festen
+Uhrzeiten. Dunkle Zeiträume können weiterhin AC-Abgabe benötigen, wenn die
+stärkeren Lastfenster erst nach dem relevanten PV-Überschuss liegen.
+
+Eine wirtschaftliche Netzteilhaltung darf keine spätere zusätzliche AC-Abgabe
+finanzieren. Die DC-Obergrenze enthält deshalb keinen angehobenen Zielpfad aus
+einer maximalen AC-Referenz. Schutz, manuelle Quellen, heutiger/morgiger lokaler
+Horizont und physische Grenzen bleiben erhalten. Die Quellenwahl ist weiterhin
+prognoseabhängig; ein späterer Forecastwechsel kann frühere Entscheidungen ändern.

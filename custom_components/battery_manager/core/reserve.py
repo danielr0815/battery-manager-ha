@@ -1,9 +1,8 @@
-"""SOC preservation with reachable, latest preparation for today and tomorrow.
+"""SOC preservation with DC-first preparation for today and tomorrow.
 
-A maximum-useful-discharge reference measures unavoidable export. Its physical
-inverse schedules only the remaining necessary AC, without carrying impossible
-zero-export debt into earlier hours. Automatic support is selected independently
-on the actual trajectory; reference switches never become future PSU commands.
+Only energy beyond the nominal DC obligation can prepare upper-PV headroom.
+Necessary AC uses higher useful house demand first, and later times on ties.
+Automatic support follows the same DC envelope, never an AC reference curve.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from .model import (
     Trajectory,
 )
 from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
+from .reserve_schedule import preparation_envelope
 from .simulate import step_hour
 from .simulation_steps import split_slot, switching_schedule
 from .support import support_state
@@ -112,40 +112,6 @@ def _slot_end(slot: HourSlot) -> datetime:
     )
 
 
-def _envelope(
-    budgets: list[BatteryStep], start: int, end: int, energy: float
-) -> tuple[list[float], list[float], float]:
-    """Two linear passes; each step enters at most two rolling daily windows.
-
-    Reference energy/export concern the battery branch, not an assumed future
-    protection latch. Physical support may supersede this budget in the actual
-    forward run; unknown PSU output is never credited as guaranteed energy.
-    """
-    reachable = [energy]
-    spill: list[float] = []
-    for budget in budgets[start:end]:
-        energy, exported = budget.project(energy)
-        reachable.append(energy)
-        spill.append(exported)
-    ceiling = [budgets[start].maximum] * (end - start + 1)
-    dc_ceiling = ceiling.copy()
-    for offset in range(end - start - 1, -1, -1):
-        budget = budgets[start + offset]
-        ceiling[offset] = max(
-            reachable[offset],
-            budget.incoming_ceiling(ceiling[offset + 1], spill[offset]),
-        )
-        # DC has priority over discretionary AC use: do not buy DC support
-        # now merely because the same energy could be dumped through AC later.
-        dc_ceiling[offset] = max(
-            reachable[offset],
-            replace(budget, ac=0.0).incoming_ceiling(
-                dc_ceiling[offset + 1], spill[offset]
-            ),
-        )
-    return ceiling, dc_ceiling, sum(spill)
-
-
 def simulate_reserve(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -194,7 +160,33 @@ def _simulate_reserve(
         )
         for i, slot, extra, upper in steps
     ]
+    nominal_budgets = [
+        _budget(
+            config,
+            slot,
+            extra,
+            pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i],
+            (feedin[i] if feedin else 0.0) * slot.duration / inputs.slots[i].duration,
+        )
+        for i, slot, extra, _ in steps
+    ]
+    # Group equal demand densities despite harmless division roundoff. PV
+    # already serving the house is not a useful battery discharge opportunity.
+    priorities = [
+        round(
+            min(config.inverter.max_power_w, max(0.0, -budget.balance) / slot.duration),
+            6,
+        )
+        for budget, (_, slot, _, _) in zip(nominal_budgets, steps, strict=True)
+    ]
     battery, support = config.battery, config.support
+    protection_floor = battery.energy_wh(
+        max(
+            battery.soc_min_percent,
+            config.control.support_dc24_activate_soc if support.dc24_available else 0,
+            config.control.support_dc48_activate_soc if support.dc48_available else 0,
+        )
+    )
     soc = inputs.start_soc_percent
     # Economic holding must not become a protection latch on the next plan.
     # Only an active source below its recovery threshold retains that latch.
@@ -207,7 +199,6 @@ def _simulate_reserve(
     )
     current_day: date | None = None
     window_start = 0
-    ceiling: list[float] = []
     decision: ReserveDecision | None = None
     for j, (i, slot, extra, _) in enumerate(steps):
         energy = battery.energy_wh(soc)
@@ -218,10 +209,18 @@ def _simulate_reserve(
             end = j
             while end < len(steps) and steps[end][1].start.date() < exclusive_day:
                 end += 1
-            ceiling, dc_ceiling, unavoidable_export = _envelope(budgets, j, end, energy)
+            envelope = preparation_envelope(
+                budgets[j:end],
+                nominal_budgets[j:end],
+                priorities[j:end],
+                protection_floor,
+                energy,
+            )
+            unavoidable_export = envelope.unavoidable_export_wh
             horizon_end = _slot_end(steps[end - 1][1])
-        following_ceiling = ceiling[j - window_start + 1]
-        following_dc_ceiling = dc_ceiling[j - window_start + 1]
+        following_ceiling = envelope.ac_ceiling[j - window_start]
+        following_dc_ceiling = envelope.dc_ceiling[j - window_start]
+        following_minimum = envelope.dc_minimum[j - window_start]
         scale = pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i]
         voltage_credit = (
             abs(soc - inputs.start_soc_percent) <= config.control.hysteresis_percent
@@ -307,7 +306,7 @@ def _simulate_reserve(
             max(
                 0.0,
                 battery.energy_wh(natural.soc_end_percent)
-                - max(following_ceiling, budgets[j].inverter_floor),
+                - max(following_ceiling, following_minimum, budgets[j].inverter_floor),
             )
             if useful_ac and not (dc24 or dc48)
             else 0.0
@@ -366,7 +365,9 @@ def _simulate_reserve(
                 headroom_wh=max(
                     0.0,
                     battery.energy_wh(natural.soc_end_percent)
-                    - max(following_ceiling, budgets[j].inverter_floor),
+                    - max(
+                        following_ceiling, following_minimum, budgets[j].inverter_floor
+                    ),
                 ),
                 unavoidable_export_wh=unavoidable_export,
                 reason=reason,

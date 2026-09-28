@@ -193,7 +193,9 @@ class BatteryStep:
         )
         return after_dc + stored, export + remainder - intake
 
-    def incoming_ceiling(self, following: float, export: float) -> float:
+    def incoming_ceiling(
+        self, following: float, export: float, *, ac: bool = True
+    ) -> float:
         """Largest input meeting the next ceiling and the attainable export budget.
 
         The two PV branches are separated where the battery can supply the full
@@ -201,8 +203,12 @@ class BatteryStep:
         same charger power cap; above it PV can charge the remaining headroom.
         """
         if self.balance < 0:
-            ac = self.ac if following >= self.inverter_floor - ENERGY_EPSILON_WH else 0
-            return min(self.maximum, following + self.dc + ac)
+            allowed_ac = (
+                self.ac
+                if ac and following >= self.inverter_floor - ENERGY_EPSILON_WH
+                else 0
+            )
+            return min(self.maximum, following + self.dc + allowed_ac)
 
         intake = min(max(0.0, self.balance - self.feedin), self.charger_limit)
         capture = max(0.0, self.balance - export)
