@@ -12,7 +12,7 @@ from dataclasses import fields, replace
 from .model import HourFlows, PlanInputs, SystemConfig, Trajectory
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS as SUPPORT_STEP_HOURS
-from .simulation_steps import split_slot
+from .simulation_steps import split_slot, switching_schedule
 
 
 def support_state(
@@ -123,6 +123,9 @@ def simulate_support(
                 soc_end_percent=soc,
                 inverter_on=all(p.inverter_on for p in parts),
                 inverter_start=first.inverter_on,
+                switching_schedule=switching_schedule(
+                    (small for small, _ in split_slot(slot)), parts
+                ),
                 support_dc24=any(p.support_dc24 for p in parts),
                 support_dc48=any(p.support_dc48 for p in parts),
                 support_dc24_start=first.support_dc24,

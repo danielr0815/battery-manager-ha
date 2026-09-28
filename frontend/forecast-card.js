@@ -1,3 +1,4 @@
+import { switchingLanes, switchingDetails } from "./switching.js";
 import { dateTimeFormat, nextHour, localHour } from "./time.js";
 import { forecast_card_style_0, forecast_card_style_1 } from "./styles.js";
 import { localize } from "./translations.js";
@@ -72,11 +73,21 @@ export class BatteryManagerForecastCard extends HTMLElement {
     ) {
       throw new Error(`${CARD_TYPE}: ${localize(this._hass, "invalid_hours")}`);
     }
+    if (
+      config.show_power_supplies != null &&
+      typeof config.show_power_supplies !== "boolean"
+    ) {
+      throw new Error(
+        `${CARD_TYPE}: ${localize(this._hass, "invalid_show_power_supplies")}`,
+      );
+    }
     this._config = {
       hours: 48,
+      show_power_supplies: false,
       ...config,
     };
     this._lastState = undefined;
+    this._showPowerSupplies = this._config.show_power_supplies === true;
     this._render();
   }
 
@@ -122,6 +133,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
           selector: { entity: { domain: "sensor" } },
         },
         { name: "title", selector: { text: {} } },
+        { name: "show_power_supplies", selector: { boolean: {} } },
         {
           name: "hours",
           default: 48,
@@ -438,7 +450,9 @@ export class BatteryManagerForecastCard extends HTMLElement {
           },
         ]
       : [];
+    const switchLanes = switchingLanes(a, t0, t1, this._showPowerSupplies, t);
     const lanes = [
+      ...switchLanes,
       ...loads.filter((l) => l.schedule.length > 0),
       ...cascades.filter((l) => l.schedule.length > 0),
       ...appliances.filter((l) => l.schedule.length > 0),
@@ -589,6 +603,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
     // Load lanes below the plot
     lanes.forEach((load, i) => {
       const laneY = margin.top + plotH + 4 + i * (laneH + laneGap);
+      if (load.kind === "switching") {
+        svg.push(
+          `<text x="${margin.left - 3}" y="${laneY + laneH - 1}" text-anchor="end" font-size="8" fill="${text}">${esc(load.shortName)}</text>`,
+        );
+      }
       for (const block of load.schedule) {
         const start = new Date(block.start).getTime();
         const end = new Date(block.end).getTime();
@@ -601,10 +620,15 @@ export class BatteryManagerForecastCard extends HTMLElement {
           continue;
         }
         const bx = x(Math.max(start, t0));
-        const bw = Math.max(x(Math.min(end, t1)) - bx, 2);
+        const bw = Math.max(
+          x(Math.min(end, t1)) - bx,
+          load.kind === "switching" ? 0 : 2,
+        );
+        const off = load.kind === "switching" && !block.on;
         svg.push(
           `<rect x="${bx.toFixed(1)}" y="${laneY}" width="${bw.toFixed(1)}"
-            height="${laneH}" rx="2" fill="${load.color}" opacity="0.85"/>`,
+            height="${laneH}" rx="2" fill="${off ? text : load.color}" opacity="${off ? "0.18" : "0.85"}"
+            ${load.kind === "switching" ? `data-switching="${load.key}" data-state="${block.on ? "on" : "off"}"` : ""}/>`,
         );
         // Per-block power label (feed-in lane); only when the block is wide
         // enough to carry legible text.
@@ -626,8 +650,19 @@ export class BatteryManagerForecastCard extends HTMLElement {
       `<g id="hover-marker"></g>`,
     );
 
+    // Keyboard and hover visit every switch edge without inventing SOC values
+    // between the hourly samples. Energy curves retain their original samples.
+    const interactionPoints = new Map(points.map((p) => [p.time, p]));
+    for (const lane of switchLanes) {
+      for (const b of lane.schedule) {
+        for (const time of [b.start, b.end]) {
+          if (!interactionPoints.has(time))
+            interactionPoints.set(time, { time });
+        }
+      }
+    }
     this._chartMeta = {
-      points,
+      points: [...interactionPoints.values()].sort((a, b) => a.time - b.time),
       x,
       y,
       margin,
@@ -798,6 +833,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
         ${svg.join("\n")}
       </svg>
       <div class="readout" id="readout" aria-live="polite">&nbsp;</div>
+      ${switchingDetails(switchLanes, this._hass, this._showPowerSupplies, t)}
       <div class="visually-hidden">${esc(summary)} ${esc(statsText)} ${esc(
         t("kbd_hint"),
       )}</div>
@@ -814,6 +850,12 @@ export class BatteryManagerForecastCard extends HTMLElement {
   // ------------------------------------------------------------------
 
   _attachChartHandlers() {
+    this.shadowRoot
+      .getElementById("show-power-supplies")
+      ?.addEventListener("change", (ev) => {
+        this._showPowerSupplies = ev.target.checked;
+        this._render();
+      });
     const target = this.shadowRoot.getElementById("hover-target");
     if (!target || !this._chartMeta) {
       return;
@@ -902,7 +944,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
     const time =
       meta.t0 +
       ((px - meta.margin.left) /
-        (svg.viewBox.baseVal.width - meta.margin.left - 10)) *
+        (svg.viewBox.baseVal.width - meta.margin.left - meta.margin.right)) *
         (meta.t1 - meta.t0);
     // Forecast points are slot boundaries: point 0 starts slot 0, point 1
     // starts slot 1 while also carrying slot 0's ending SOC.  Selecting the
@@ -941,8 +983,12 @@ export class BatteryManagerForecastCard extends HTMLElement {
         y2="${meta.margin.top + meta.plotH + meta.lanesH}"
         stroke="var(--secondary-text-color)" stroke-width="1"
         stroke-dasharray="3 3"/>
-      <circle cx="${cx}" cy="${meta.y(nearest.soc)}" r="3"
-        fill="var(--primary-color, #03a9f4)"/>`;
+      ${
+        nearest.soc == null
+          ? ""
+          : `<circle cx="${cx}" cy="${meta.y(nearest.soc)}" r="3"
+        fill="var(--primary-color, #03a9f4)"/>`
+      }`;
     const fmt = dateTimeFormat(this._hass, {
       weekday: "short",
       hour: "2-digit",
@@ -963,17 +1009,28 @@ export class BatteryManagerForecastCard extends HTMLElement {
           nearest.time < e
         );
       });
-    const activeLanes = (meta.lanes || []).filter((lane) => covering(lane));
+    const activeLanes = (meta.lanes || []).filter(
+      (lane) => lane.kind === "switching" || covering(lane),
+    );
     const floorText =
       meta.inverterFloor === undefined
         ? ""
         : ` · ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
     const when = esc(
-      `${fmt.format(nearest.time)} · ${nearest.soc} %${floorText}`,
+      `${fmt.format(nearest.time)}${nearest.soc == null ? "" : ` · ${nearest.soc} %`}${floorText}`,
     );
     const chips = activeLanes
       .map((lane) => {
         const block = covering(lane);
+        if (lane.kind === "switching") {
+          const state = block
+            ? t(block.on ? "card_on" : "card_off")
+            : t("switching_unavailable");
+          const until = block
+            ? ` · ${t("switching_until")} ${fmt.format(block.end)}`
+            : "";
+          return `<span class="chip">${esc(lane.name)}: ${esc(state + until)}</span>`;
+        }
         if (lane.kind === "cascade") {
           const wh = num(block?.root_input_wh) ?? num(block?.wh);
           const energy = wh != null ? ` ${Math.round(wh)} Wh` : "";

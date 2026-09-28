@@ -825,6 +825,17 @@ class PlanInputs:
 
 
 @dataclass(frozen=True)
+class SwitchingInterval:
+    """Planned switch states on [start, end), not measured device feedback."""
+
+    start: datetime
+    end: datetime
+    inverter_on: bool
+    support_dc24: bool
+    support_dc48: bool
+
+
+@dataclass(frozen=True)
 class HourFlows:
     """Energy flows of one simulated slot."""
 
@@ -860,6 +871,8 @@ class HourFlows:
     reserve_ceiling_percent: float = 0.0
     reserve_dc_ceiling_percent: float = 0.0
     inverter_limit_w: float = 0.0
+    # Retain sub-hour decisions before hourly energy aggregation loses edges.
+    switching_schedule: tuple[SwitchingInterval, ...] = ()
 
 
 ReserveDecisionReason = Literal[

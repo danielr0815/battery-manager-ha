@@ -1,6 +1,6 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.47.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.48.0. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
@@ -42,3 +42,12 @@ Golden-Dateien werden nur für beabsichtigte fachliche Änderungen erneuert und
 jeder zusätzliche Netzbezug begründet. Die Refactorings für 0.46.0 verändern die
 bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 10 W tatsächlichen Eigenbedarf statt denselben Betrag gleichzeitig zu exportieren.
+
+## Schaltprognose
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+|---|---|---|
+| Schaltspur + stündliche Aggregation + Teilstunden | Ein-/Aus-Wechsel aus kleinen Planerschritten bleiben erhalten, keine Änderung der Energiebilanzen | `core/test_switching_schedule.py`, Golden-Suites |
+| SOC-Sensor + Schaltspur + Recorder | Vollständige Intervallliste mit allen drei Zuständen, Attribut von Recorder ausgenommen | `ha/test_coordinator.py::test_forecast_curve_carries_support_flags` |
+| Optionale Netzteile + HA-Refresh + Maus/Tastatur + fehlende Daten | Einblendung/Fokus erhalten, subhourige Grenzen erreichbar, fehlend bleibt unbekannt | `frontend/switching.test.mjs`, `browser/cards.spec.mjs` |
+| Schaltspur + DST + Replay | Zeitintervalle in verstrichener Zeit, wiederholte Stunden unterscheidbar, alte Aufzeichnungen lesbar | `core/test_switching_schedule.py`, `frontend/switching.test.mjs` |

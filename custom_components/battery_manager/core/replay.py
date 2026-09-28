@@ -104,4 +104,24 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
             compared,
             trajectory=replace(compared.trajectory, reserve_decision=None),
         )
+    if isinstance(expected, PlanResult) and len(expected.trajectory.flows) == len(
+        compared.trajectory.flows
+    ):
+        recorded_flows = record["result"]["fields"]["trajectory"]["fields"]["flows"][
+            "tuple"
+        ]
+        compared = replace(
+            compared,
+            trajectory=replace(
+                compared.trajectory,
+                flows=tuple(
+                    flow
+                    if "switching_schedule" in recorded["fields"]
+                    else replace(flow, switching_schedule=())
+                    for flow, recorded in zip(
+                        compared.trajectory.flows, recorded_flows, strict=True
+                    )
+                ),
+            ),
+        )
     return result, encode(compared) == encode(expected)

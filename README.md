@@ -151,6 +151,15 @@ download. All five register automatically from one bundled module:
   their own layer and a total line; the legend carries per-day kWh.
   Bars on the static fallback profile render dimmed.
 
+The SOC chart includes an inverter on/off timeline. Enable **Show 24/48 V
+power supplies** directly in the card to add the PSU timelines; set
+`show_power_supplies: true` in the editor/YAML to show them by default.
+Colour means on, grey means off. **Planned switching times** lists exact periods
+in the HA timezone. These are planned states, not confirmed physical operation.
+Coordinated support and active reserve retain the planner's five-minute steps
+(including partial slots); legacy planning uses its hourly slot resolution.
+Older backends without timing data show “No switching forecast”.
+
 To add a card:
 
 - **Easiest (HA 2026.6+):** edit a dashboard → *Add card* → pick the
@@ -166,6 +175,7 @@ To add a card:
   # optional:
   # title: SOC-Prognose
   # hours: 48        # horizon shown (6–96)
+  # show_power_supplies: true  # show planned 24/48 V PSU states by default
   ```
 
   ```yaml

@@ -242,6 +242,7 @@ from .core import (
 )
 from .core.model import ReserveParams
 from .core.series import fixed_local_time
+from .core.simulation_steps import switching_schedule
 from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
 from .load_actuation import (
@@ -4777,6 +4778,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if run.appliance_id in self.entry.subentries
             ],
             "soc_forecast": soc_forecast,
+            "switching_schedule": [
+                {
+                    "start": interval.start.isoformat(),
+                    "end": interval.end.isoformat(),
+                    "inverter_on": interval.inverter_on,
+                    "dc24_on": interval.support_dc24,
+                    "dc48_on": interval.support_dc48,
+                }
+                for interval in switching_schedule(
+                    inputs.slots, result.trajectory.flows
+                )
+            ],
             # Static planning context for the bundled forecast card
             "plan_params": {
                 "battery_min_soc_percent": config.battery.soc_min_percent,

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-28
+
+### Added
+- SOC-Karte zeigt geplante Ein-/Aus-Zeiten des Inverters direkt unter der Kurve.
+  24-/48-V-Netzteile sind per Checkbox zuschaltbar; `show_power_supplies: true`
+  aktiviert sie standardmäßig (auch im visuellen Karteneditor).
+- Aufklappbare Schaltzeitenliste und Maus-/Tastaturanzeige erhalten Wechsel
+  innerhalb einer Stunde aus der tatsächlichen Fünf-Minuten-Planung. Ein und Aus
+  sind explizit sichtbar; fehlende Prognosen bleiben unbekannt. Zeitangaben folgen
+  der HA-Zeitzone, die Liste unterscheidet doppelte Stunden beim Herbstwechsel.
+- Neues Sensorattribut `switching_schedule` mit `start`, `end`, `inverter_on`,
+  `dc24_on` und `dc48_on`; von der Recorder-Aufzeichnung ausgeschlossen.
+  Replays prüfen neue Zeitdaten und können ältere Aufzeichnungen weiterhin lesen.
+
+### Changed
+- Prognose-Zeitdaten sind rein diagnostisch: Energieplanung, Schaltregeln und
+  Golden-Snapshots bleiben unverändert. Angezeigt wird der Plan, keine bestätigte
+  Geräteschaltung; der klassische Plan behält seine Stundenauflösung.
+
 ## [0.47.1] - 2026-09-28
 
 ### Fixed

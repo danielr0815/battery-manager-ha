@@ -25,7 +25,7 @@ from .model import (
 )
 from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
 from .simulate import step_hour
-from .simulation_steps import split_slot
+from .simulation_steps import split_slot, switching_schedule
 from .support import support_state
 
 # A planning call probes many nearby load schedules. The cache expires with that
@@ -398,7 +398,7 @@ def _simulate_reserve(
     energy_fields = [
         field.name for field in fields(HourFlows) if field.name.endswith("_wh")
     ]
-    for parts in buckets:
+    for slot, parts in zip(inputs.slots, buckets, strict=True):
         first = parts[0]
         flows.append(
             replace(
@@ -416,6 +416,9 @@ def _simulate_reserve(
                     None,
                 ),
                 soc_end_percent=parts[-1].soc_end_percent,
+                switching_schedule=switching_schedule(
+                    (small for small, _ in split_slot(slot)), parts
+                ),
                 inverter_on=all(part.inverter_on for part in parts),
                 support_dc24=any(part.support_dc24 for part in parts),
                 support_dc48=any(part.support_dc48 for part in parts),

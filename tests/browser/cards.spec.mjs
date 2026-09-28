@@ -239,3 +239,122 @@ for (const [timestamp, date] of [
     await report.locator("summary").click();
     await expect(report).toContainText(`${date}, 00:00`);
   });
+
+const switchingSchedule = [
+  {
+    start: "2026-09-26T10:00:00+02:00",
+    end: "2026-09-26T10:15:00+02:00",
+    inverter_on: true,
+    dc24_on: false,
+    dc48_on: false,
+  },
+  {
+    start: "2026-09-26T10:15:00+02:00",
+    end: "2026-09-26T10:35:00+02:00",
+    inverter_on: false,
+    dc24_on: true,
+    dc48_on: false,
+  },
+  {
+    start: "2026-09-26T10:35:00+02:00",
+    end: "2026-09-26T12:00:00+02:00",
+    inverter_on: false,
+    dc24_on: true,
+    dc48_on: true,
+  },
+];
+test("forecast shows inverter on/off and visits sub-hour edges without invented SOC", async ({
+  page,
+}) => {
+  await page.evaluate((attrs) => window.mount("forecast", attrs), {
+    ...attributes,
+    switching_schedule: switchingSchedule,
+  });
+  await expect(page.locator('[data-switching="inverter_on"]')).toHaveCount(2);
+  await expect(page.locator('[data-switching="dc24_on"]')).toHaveCount(0);
+  const chart = page.locator("svg#chart");
+  await chart.focus();
+  await chart.press("Home");
+  await expect(page.locator("#readout")).toContainText("Inverter: on");
+  await chart.press("ArrowRight");
+  await expect(page.locator("#readout")).toContainText("10:15");
+  await expect(page.locator("#readout")).toContainText("Inverter: off");
+  await expect(page.locator("#readout")).not.toContainText("%");
+  await expect(page.locator("#hover-marker circle")).toHaveCount(0);
+  await page.locator('[data-view-key="switching-times"] summary').click();
+  await expect(page.locator(".switching-details")).toContainText("10:15");
+  await expect(page.locator(".switching-details")).toContainText("12:00");
+});
+test("supply toggle, focus and exact-time disclosure survive HA updates", async ({
+  page,
+}) => {
+  await page.evaluate((attrs) => window.mount("forecast", attrs), {
+    ...attributes,
+    switching_schedule: switchingSchedule,
+  });
+  await page.getByLabel("Show 24/48 V power supplies").check();
+  await expect(page.locator('[data-switching="dc24_on"]')).toHaveCount(2);
+  await expect(page.locator('[data-switching="dc48_on"]')).toHaveCount(2);
+  await page.evaluate(() => {
+    window.card.hass = {
+      ...window.card._hass,
+      states: {
+        "sensor.plan": {
+          attributes: { ...window.card._hass.states["sensor.plan"].attributes },
+        },
+      },
+    };
+  });
+  await expect(page.getByLabel("Show 24/48 V power supplies")).toBeChecked();
+  await expect(page.getByLabel("Show 24/48 V power supplies")).toBeFocused();
+  const chart = page.locator("svg#chart");
+  await chart.focus();
+  await chart.press("Home");
+  await chart.press("ArrowRight");
+  await chart.press("ArrowRight");
+  await expect(page.locator("#readout")).toContainText("10:35");
+  await expect(page.locator("#readout")).toContainText("48 V power supply: on");
+  // Pointer and keyboard agree immediately before/after the 10:35 edge.
+  const box = await chart.boundingBox();
+  const view = await chart.evaluate((el) => el.viewBox.baseVal.width);
+  for (const [minute, state] of [
+    [34, "off"],
+    [36, "on"],
+  ]) {
+    await page.mouse.move(
+      box.x + ((32 + ((view - 62) * minute) / 120) / view) * box.width,
+      box.y + 40,
+    );
+    await expect(page.locator("#readout")).toContainText(
+      `48 V power supply: ${state}`,
+    );
+  }
+  await page.getByLabel("Show 24/48 V power supplies").uncheck();
+  await expect(page.locator('[data-switching="dc24_on"]')).toHaveCount(0);
+});
+test("power supplies can be enabled in card config and remain readable on a narrow card", async ({
+  page,
+}) => {
+  await page.evaluate(
+    (attrs) => {
+      window.mount("forecast", attrs);
+      document.querySelector("#host").style.width = "340px";
+      window.card.setConfig({
+        entity: "sensor.plan",
+        show_power_supplies: true,
+      });
+    },
+    { ...attributes, switching_schedule: switchingSchedule },
+  );
+  await expect(page.getByLabel("Show 24/48 V power supplies")).toBeChecked();
+  await expect(page.locator('[data-switching="dc48_on"]')).toHaveCount(2);
+  await page.locator(".switching-details summary").click();
+  await expect(page.locator(".switching-details")).toContainText(
+    "24 V power supply",
+  );
+  expect(
+    await page
+      .locator("ha-card")
+      .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+  ).toBe(true);
+});

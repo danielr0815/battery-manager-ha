@@ -80,6 +80,18 @@ async def test_forecast_curve_carries_support_flags(hass):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     curve = coordinator.data["soc_forecast"]
     assert any(p.get("dc24") or p.get("dc48") for p in curve)
+    schedule = coordinator.data["switching_schedule"]
+    assert schedule[0]["start"] == curve[0]["t"]
+    assert schedule[-1]["end"] == curve[-1]["t"]
+    assert all(
+        a["end"] == b["start"] for a, b in zip(schedule, schedule[1:], strict=False)
+    )
+    assert any(b["dc24_on"] or b["dc48_on"] for b in schedule)
+    from custom_components.battery_manager.sensor import BatteryManagerSocForecastSensor
+
+    sensor = BatteryManagerSocForecastSensor(coordinator)
+    assert sensor.extra_state_attributes["switching_schedule"] == schedule
+    assert "switching_schedule" in sensor._unrecorded_attributes
 
 
 async def test_setup_creates_coordinator_with_active_listeners(hass):

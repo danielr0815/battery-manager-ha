@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.47.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.48.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -127,3 +127,22 @@ reine Diagnose. Reserveanzeige und Aktordiagnose erklären wirtschaftliche Haltu
 und eine fehlende 24-V-Freigabe. Aktueller Vertrag und Golden-Diffs:
 [SOC-Erhaltung](F-RESERVE-SOC-PRESERVATION.md). Die physische Energieabbildung und
 Kalenderhorizonte aus [DC bevorzugen](F-RESERVE-DC-FIRST.md) bleiben erhalten.
+
+## Geplante Schaltzeiten in der SOC-Karte (0.48.0)
+
+`switching_schedule` am SOC-Prognosesensor enthält zusammenhängende Intervalle
+`[start, end)` mit `inverter_on`, `dc24_on`, `dc48_on`. Koordinierte Versorgung
+und aktive Reserve erhalten die Entscheidungen der kleinen Simulationsschritte;
+Stundenflags (`all`/`any`) oder Energiefluss ersetzen diese Zeitdaten nicht.
+Unveränderte Zustände werden über Stundengrenzen zusammengefasst. Der klassische
+Planner liefert seine vorhandene Slotauflösung. Das Attribut ist unaufgezeichnet.
+
+Inverter standardmäßig sichtbar, Netzteile per Checkbox oder Kartenoption
+`show_power_supplies` zuschaltbar. Die aufgeklappte Liste und der Diagrammcursor
+zeigen geplante Ein-/Aus-Zeiten in HA-Ortszeit; die Liste benennt den UTC-Offset
+bzw. die Zeitzone auch für doppelte Herbststunden. Fehlende Intervalle sind
+unbekannt. Zwischen SOC-Messpunkten wird kein zusätzlicher SOC erfunden.
+Geräterückmeldungen, manuelle Eingriffe und Freigabesperren können vom Plan
+abweichen; die Zeitspur ist kein Betriebsnachweis. Nachweise:
+`tests/core/test_switching_schedule.py`, `tests/ha/test_coordinator.py`,
+`tests/frontend/switching.test.mjs`, `tests/browser/cards.spec.mjs`.

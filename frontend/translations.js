@@ -2,6 +2,16 @@
 
 export const STRINGS = {
   en: {
+    inverter_lane: "Inverter",
+    psu24_lane: "24 V power supply",
+    psu48_lane: "48 V power supply",
+    field_show_power_supplies: "Show 24/48 V power supplies",
+    invalid_show_power_supplies: "show_power_supplies must be true or false",
+    switching_hint: "Planned operation · colour: on · grey: off",
+    switching_times: "Planned switching times",
+    switching_unavailable: "No switching forecast",
+    switching_until: "until",
+
     card_stored_in_battery: "stored in battery",
     card_battery_withdrawal_incl_losses: "battery withdrawal incl. losses",
     card_storage_unknown_source: "Storage (unknown source)",
@@ -245,6 +255,17 @@ export const STRINGS = {
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
   de: {
+    inverter_lane: "Inverter",
+    psu24_lane: "24-V-Netzteil",
+    psu48_lane: "48-V-Netzteil",
+    field_show_power_supplies: "24/48-V-Netzteile anzeigen",
+    invalid_show_power_supplies:
+      "show_power_supplies muss true oder false sein",
+    switching_hint: "Geplanter Betrieb · farbig: ein · grau: aus",
+    switching_times: "Geplante Schaltzeiten",
+    switching_unavailable: "Keine Schaltprognose",
+    switching_until: "bis",
+
     card_stored_in_battery: "im Akku gespeichert",
     card_battery_withdrawal_incl_losses: "Akkuentnahme inkl. Verlusten",
     card_storage_unknown_source: "Speicher (Quelle unbekannt)",

@@ -531,6 +531,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
     _unrecorded_attributes = frozenset(
         {
             "forecast",
+            "switching_schedule",
             "loads",
             "appliances",
             "consumption_profile",
@@ -601,6 +602,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
         per_day_loads = _per_day_attrs(daily, "loads_kwh")
         return {
             "forecast": data.get("soc_forecast") or [],
+            "switching_schedule": data.get("switching_schedule") or [],
             "soc_threshold_percent": data.get("soc_threshold_percent"),
             "grid_import_kwh": data.get("grid_import_kwh"),
             "lost_surplus_kwh": data.get("lost_surplus_kwh"),
