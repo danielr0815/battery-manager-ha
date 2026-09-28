@@ -524,6 +524,8 @@ Object.assign(STRINGS.en, {
   report_unavoidable_export: "Unavoidable forecast export",
   report_reserve_decision: "Current decision",
   report_reserve_decision_unknown: "No decision reason available",
+  report_dc24_transfer_unverified:
+    "24 V grid takeover is blocked: independent DC/DC fallback during grid and Home Assistant outages has not been confirmed in the settings.",
   report_reserve_shadow_explanation:
     "Shadow calculation only. The existing control policy remains active.",
   reserve_decision_no_preparation_needed:
@@ -532,6 +534,8 @@ Object.assign(STRINGS.en, {
     "Forecast PV requires additional battery headroom.",
   reserve_decision_dc_support_protection:
     "DC supply protection determines the current source switching and AC discharge limit.",
+  reserve_decision_dc_reserve_holding:
+    "DC power supplies preserve battery energy that is not needed for forecast PV headroom.",
   reserve_decision_manual_support:
     "Manual PSU support blocks AC battery discharge.",
   reserve_decision_no_ac_demand:
@@ -591,6 +595,8 @@ Object.assign(STRINGS.de, {
   report_unavoidable_export: "Unvermeidbare prognostizierte Einspeisung",
   report_reserve_decision: "Aktuelle Entscheidung",
   report_reserve_decision_unknown: "Kein Entscheidungsgrund verfügbar",
+  report_dc24_transfer_unverified:
+    "24-V-Netzübernahme gesperrt: Der unabhängige DC/DC-Rückfall bei Netz- und Home-Assistant-Ausfall ist in den Einstellungen nicht bestätigt.",
   report_reserve_shadow_explanation:
     "Nur Schattenrechnung. Die bisherige Steuerung bleibt aktiv.",
   reserve_decision_no_preparation_needed:
@@ -599,6 +605,8 @@ Object.assign(STRINGS.de, {
     "Die erwartete PV-Energie benötigt zusätzlichen Freiraum im Speicher.",
   reserve_decision_dc_support_protection:
     "Der Schutz der DC-Versorgung bestimmt die aktuelle Quellenumschaltung und AC-Entladegrenze.",
+  reserve_decision_dc_reserve_holding:
+    "Die DC-Netzteile erhalten Batterieenergie, deren Entnahme für den erwarteten PV-Speicherbedarf nicht nötig ist.",
   reserve_decision_manual_support:
     "Manuell angeforderte Netzteilstützung sperrt die AC-Batterieentladung.",
   reserve_decision_no_ac_demand:

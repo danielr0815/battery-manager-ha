@@ -4266,6 +4266,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._reserve_runtime,
                 "active" if active else "shadow",
             )
+            self._reserve_diag["dc24_transfer_verified"] = bool(
+                self.raw_config.get(CONF_RESERVE_TRANSFER_VERIFIED)
+            )
             self._reserve_diag["requested_mode"] = reserve_mode
             self._reserve_diag["grid_available"] = self._reserve_grid_available()
             self._reserve_diag["solar_credit_verified"] = solar_only

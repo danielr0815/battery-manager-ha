@@ -43,12 +43,12 @@ def inputs(soc, series):
     return PlanInputs(NOW, soc, slots, reserve_hold_soc_percent=soc)
 
 
-def test_dark_week_uses_dc_battery_until_protection_without_invented_grid_charge():
+def test_dark_week_preserves_rail_energy_without_invented_48v_output():
     c = config()
     r = simulate(c, inputs(80, [(0, 100, 60)] * 72), 20)
     assert all(f.inverter_output_wh == 0 for f in r.flows)
-    assert r.flows[0].psu24_delivered_wh == 0
-    assert r.flows[0].battery_discharge_wh == pytest.approx(60)
+    assert r.flows[0].psu24_delivered_wh == pytest.approx(40)
+    assert r.flows[0].battery_discharge_wh == pytest.approx(20)
     assert any(f.psu24_delivered_wh == pytest.approx(40) for f in r.flows)
     assert all(f.psu48_delivered_wh == 0 for f in r.flows)
     assert r.end_soc_percent == pytest.approx(5)
@@ -110,7 +110,7 @@ def test_planner_publishes_same_reserve_switching_as_simulation():
     c = config()
     i = inputs(80, [(0, 100, 60)])
     p = plan(c, i)
-    assert not p.support_dc24_now and not p.support_dc48_now
+    assert p.support_dc24_now and p.support_dc48_now
     assert not p.inverter_on
     assert p.trajectory == simulate(c, i, p.threshold_percent)
 
@@ -195,13 +195,14 @@ def test_latest_preparation_time_excludes_involuntary_native_discharge():
     assert dark.flows[0].reserve_preparation_start is None
 
 
-def test_measured_voltage_does_not_request_grid_holding_at_high_soc():
+def test_measured_48v_support_preserves_soc_without_grid_recharging():
     c = config(psu48_max_power_w=57)
     c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49.56))
     r = simulate(c, inputs(80, [(0, 100, 60)] * 12), 20)
-    assert r.flows[0].soc_end_percent == pytest.approx(74)
-    assert r.end_soc_percent < 10
-    assert all(f.psu48_delivered_wh == 0 for f in r.flows)
+    assert r.flows[0].soc_end_percent == pytest.approx(80)
+    assert r.end_soc_percent == pytest.approx(80)
+    assert all(f.psu48_delivered_wh == pytest.approx(20) for f in r.flows)
+    assert r.reserve_decision.reason == "dc_reserve_holding"
     assert all(f.psu48_battery_charge_wh == 0 for f in r.flows)
     assert all(f.inverter_output_wh == 0 for f in r.flows)
 
@@ -248,8 +249,9 @@ def test_withdrawn_pv_forecast_immediately_revokes_preparation_budget():
     assert before.trajectory.flows[0].inverter_limit_w > 0
     after = plan(c, replace(i, slots=(i.slots[0], replace(i.slots[1], pv_wh=0))))
     assert after.trajectory.flows[0].inverter_limit_w == 0
-    assert not after.support_dc24_now
-    assert after.trajectory.flows[0].battery_discharge_wh == pytest.approx(100)
+    assert after.support_dc24_now and after.support_dc48_now
+    # Unknown 48 V contribution stays conservative; the 80 Wh rail is held.
+    assert after.trajectory.flows[0].battery_discharge_wh == pytest.approx(20)
     assert not after.inverter_on
 
 
@@ -267,3 +269,65 @@ def test_legacy_grid_charge_record_keeps_additive_diagnostics_neutral():
     for flow in record["result"]["fields"]["trajectory"]["fields"]["flows"]["tuple"]:
         flow["fields"].pop("psu48_battery_charge_wh")
     assert replay(record)[1]
+
+
+@pytest.mark.parametrize("soc", [15, 38, 80])
+def test_dark_reserve_starts_both_psus_above_protection_thresholds(soc):
+    c = config(psu48_max_power_w=57)
+    c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49.56))
+    r = simulate(c, inputs(soc, [(0, 100, 60)] * 12), 20)
+    assert r.flows[0].support_dc24_start and r.flows[0].support_dc48_start
+    assert r.min_soc_percent == pytest.approx(soc)
+    assert r.end_soc_percent == pytest.approx(soc)
+    assert r.reserve_decision.reason == "dc_reserve_holding"
+    assert all(f.inverter_output_wh == 0 for f in r.flows)
+
+
+def test_new_pv_forecast_releases_economic_support_without_waiting_for_recovery():
+    c = config(psu48_max_power_w=57)
+    c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49.56))
+    dark = inputs(80, [(0, 500, 100), (0, 0, 0)])
+    held = plan(c, dark)
+    assert held.support_dc24_now and held.support_dc48_now
+    # Replan from confirmed ON states. They must not become permanent latches.
+    c = replace(c, support=replace(c.support, dc24_active=True, dc48_active=True))
+    sunny = replace(dark, slots=(dark.slots[0], replace(dark.slots[1], pv_wh=700)))
+    released = plan(c, sunny)
+    assert not released.support_dc24_now and not released.support_dc48_now
+    assert released.trajectory.flows[0].inverter_output_wh > 0
+    assert released.trajectory.total_export_wh == pytest.approx(0, abs=1e-6)
+
+
+def test_dc_only_preparation_waits_until_needed_and_captures_future_pv():
+    c = config()
+    c = replace(c, support=replace(c.support, native48_base_w=0))
+    r = simulate(c, inputs(80, [(0, 0, 100)] * 3 + [(250, 0, 0)]), 20)
+    assert r.flows[0].support_dc24_start
+    assert r.flows[0].soc_end_percent == pytest.approx(80)
+    assert sum(f.battery_discharge_wh for f in r.flows) == pytest.approx(100)
+    assert r.total_export_wh == pytest.approx(0, abs=1e-6)
+    assert r.end_soc_percent == pytest.approx(95)
+    assert all(f.inverter_output_wh == 0 for f in r.flows)
+
+
+def test_pv_covering_dc_releases_economic_support_without_purchasing_solar_export():
+    c = config(dc24_active=True, dc48_active=True)
+    r = simulate(c, inputs(80, [(200, 100, 60)]), 20)
+    assert not r.flows[0].support_dc24 and not r.flows[0].support_dc48
+    assert r.flows[0].psu24_delivered_wh == 0
+    assert r.flows[0].psu48_delivered_wh == 0
+    assert r.end_soc_percent == pytest.approx(84)
+
+
+def test_near_full_weak_pv_must_not_be_displaced_by_grid_support():
+    c = config()
+    c = replace(c, charger=replace(c.charger, eta=0.9, standby_power_w=10))
+    r = simulate(c, inputs(95, [(170, 100, 60)] * 4), 20)
+    # PV almost covers DC, so natural SOC drifts down. PSU24 would instead
+    # fill the battery and export PV; a capped end SOC alone misses this.
+    assert r.total_export_wh == pytest.approx(0, abs=1e-6)
+    assert not r.flows[0].support_dc24_start
+    # Later small transfers may offset conversion loss, provided all PV still
+    # fits. Holding the SOC is the goal; prohibiting those transfers is not.
+    assert r.end_soc_percent >= 94.5
+    assert all(f.inverter_output_wh == 0 for f in r.flows)

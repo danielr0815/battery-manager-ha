@@ -18,7 +18,7 @@ from custom_components.battery_manager.const import (
 from custom_components.battery_manager.reserve_runtime import ReserveRuntime
 
 
-def configure(c, hass, soc, *, evidence=False):
+def configure(c, hass, soc, *, evidence=False, sun=0):
     c.raw_config.update(
         {
             **ENTRY_DATA,
@@ -38,7 +38,7 @@ def configure(c, hass, soc, *, evidence=False):
     hass.states.async_set("binary_sensor.grid", "on")
     hass.states.async_set("sensor.test_soc", str(soc))
     for entity in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
-        hass.states.async_set(entity, "0", {"unit_of_measurement": "kWh"})
+        hass.states.async_set(entity, str(sun), {"unit_of_measurement": "kWh"})
     c._arm_plan_boundary = Mock()  # This test owns every planning transition.
 
 
@@ -77,7 +77,7 @@ async def test_zero_historical_reference_cannot_turn_off_low_soc_support(
 
 
 @pytest.mark.parametrize("evidence", [False, True])
-async def test_high_soc_uses_native_battery_without_meter_setup_or_grid_holding(
+async def test_high_soc_preserves_dc_energy_without_requiring_solar_meter_setup(
     rig, hass, freezer, evidence
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
@@ -86,11 +86,13 @@ async def test_high_soc_uses_native_battery_without_meter_setup_or_grid_holding(
     configure(c, hass, 80, evidence=evidence)
     result = await update(c)
     assert not result["inverter_recommendation"]
-    assert not result["support_dc24"] and not result["support_dc48"]
-    assert hass.states.get(DCDC).state == "on"
-    assert not any(entity in (PSU24, PSU48) and on for entity, on in calls)
+    assert result["support_dc24"] and result["support_dc48"]
+    assert hass.states.get(DCDC).state == "off"
+    assert calls.index((LIMIT, 0)) < calls.index((PSU24, True))
+    assert calls.index((PSU24, True)) < calls.index((DCDC, False))
+    assert calls.index((DCDC, False)) < calls.index((PSU48, True))
     diagnostics = result["reserve"]
-    assert diagnostics["decision_reason"] == "no_preparation_needed"
+    assert diagnostics["decision_reason"] == "dc_reserve_holding"
     assert diagnostics["headroom_wh"] == 0
     assert diagnostics["inverter_limit_w"] == 0
     assert diagnostics["solar_credit_verified"] is evidence
@@ -104,7 +106,7 @@ async def test_high_soc_restored_grid_holding_returns_to_confirmed_native_source
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
-    configure(c, hass, 80)
+    configure(c, hass, 80, sun=10)
     c._reserve_runtime.restore({"hold_soc": 0})
     c._support_state = {"dc24": True, "dc48": True}
     hass.states.async_set(LIMIT, "0")
@@ -116,8 +118,11 @@ async def test_high_soc_restored_grid_holding_returns_to_confirmed_native_source
     assert not result["support_dc24"] and not result["support_dc48"]
     assert calls.index((PSU48, False)) < calls.index((DCDC, True))
     assert calls.index((DCDC, True)) < calls.index((PSU24, False))
-    assert not any(entity == LIMIT and value > 0 for entity, value in calls)
-    assert not result["inverter_recommendation"]
+    release = next(
+        i for i, (entity, value) in enumerate(calls) if entity == LIMIT and value > 0
+    )
+    assert calls.index((PSU24, False)) < release
+    assert float(hass.states.get(LIMIT).state) > 0
     assert hass.states.get(DCDC).state == "on"
     # Confirmation is observed on the next serialized planning/protection pass.
     c._reserve_reconcile_legacy_hold(80)
@@ -129,7 +134,7 @@ async def test_old_grid_holding_is_not_removed_before_native_source_confirmation
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, dead, _ = rig
-    configure(c, hass, 80)
+    configure(c, hass, 80, sun=10)
     c._reserve_runtime.restore({"hold_soc": 0})
     c._support_state = {"dc24": True, "dc48": False}
     hass.states.async_set(PSU24, "on")
@@ -334,7 +339,7 @@ async def test_actual_off_during_restart_clears_stale_on_latch_without_reactivat
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
-    configure(c, hass, 80)
+    configure(c, hass, 80, sun=10)
     c._reserve_runtime.restore({"hold_soc": 0})
     c._support_state = {"dc24": True, "dc48": True}
     assert hass.states.get(PSU24).state == "off"

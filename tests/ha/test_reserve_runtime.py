@@ -231,12 +231,12 @@ async def test_immediate_active_and_optional_shadow_use_real_plans(
     if c._switch_task:
         await c._switch_task
     assert c.data["reserve"]["mode"] == initial_mode
+    assert c.data["reserve"]["dc24_transfer_verified"] is verified
     assert c.data["reserve"]["inverter_limit_w"] == 0
     assert c.data["reserve"]["shadow_required_hours"] == 0
-    # High SOC preserves the battery from discretionary AC discharge, while
-    # native DC demand still uses the battery until actual support is needed.
-    assert not c.data["support_dc24"]
-    assert not c.data["support_dc48"]
+    # Active preservation requests DC sources immediately; shadow only reports.
+    assert c.data["support_dc24"] is (initial_mode == "active" and verified)
+    assert c.data["support_dc48"] is (initial_mode == "active")
     if initial_mode == "shadow":
         assert not any(entity in (PSU24, PSU48) and value for entity, value in calls)
     c.raw_config[CONF_RESERVE_MODE] = "active"
@@ -246,8 +246,8 @@ async def test_immediate_active_and_optional_shadow_use_real_plans(
     assert c.data["reserve"]["mode"] == "active"
     assert c.data["inverter_recommendation"] is False
     assert (LIMIT, 0) in calls
-    assert (PSU24, True) not in calls
-    assert (PSU48, True) not in calls
+    assert ((PSU24, True) in calls) is verified
+    assert (PSU48, True) in calls
     assert c._persistent_payload()["reserve"]["hold_soc"] == 80
     assert c._reserve_runtime.observed_seconds < 60
     # Turning the policy off clears the retained policy state.
@@ -322,6 +322,8 @@ async def test_unverified_rail_cannot_be_transferred_by_active_policy(rig, hass)
     assert (PSU24, True) not in calls
     assert (DCDC, False) not in calls
     assert (PSU48, True) in calls
+    assert c._coordinated_support_diag["dc24_block_reason"] == "transfer_unverified"
+    assert c._coordinated_support_diag["desired"]["dc24"] is False
 
 
 def test_legacy_zero_reference_survives_restart_but_unknown_solar_never_earns_credit():

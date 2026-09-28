@@ -110,19 +110,20 @@ Werte und fehlende historische Zeitstempel bleiben unbekannt. Kein automatischer
 Gerätestart und keine zusätzlichen Optimizer-Simulationen. Der vollständige
 aktuelle Vertrag steht in [APPLIANCE_VISIBILITY](APPLIANCE_VISIBILITY.md).
 
-## Reservebetrieb ab 0.47.0
+## Reservebetrieb ab 0.47.1
 
-Native DC-Lasten nutzen die Batterie bis zur notwendigen Schutzunterstützung.
-Zusätzliche AC-Entladung schafft ausschließlich bis Ende morgen benötigten
-Speicherraum, möglichst spät und unter Beachtung tatsächlich verfügbarer
-AC-Last/Leistung. Übermorgen löst keine heutige Vorbereitung aus. Die bisherige
-technische Inverter-Untergrenze bleibt bestehen, ist aber kein Entladeziel.
-Es gibt keine zusätzliche feste Nachtreserve und keine pauschale Netzübernahme
-bei hohem SOC. Unvermeidbarer Export erzwingt keine sinnlose Zusatzentladung.
+Aktive Reserve erhält vorhandene Batterieenergie auch für DC: Verfügbare Netzteile
+übernehmen, wenn diese Entnahme keinen benötigten PV-Speicherraum schafft. Der
+bindende Horizont bleibt heute und morgen in HA-Ortszeit. Natürlicher DC-Verbrauch
+schafft nötigen Platz vor zusätzlicher AC-Entladung; diese erfolgt möglichst spät.
+Übermorgen löst keine heutige Vorbereitung aus. Netzteilbetrieb darf keine
+nutzbare PV verdrängen, unbekannte 48-V-Leistung wird nicht als gesichert gerechnet.
+Es gibt kein festes Nachtziel und keine gezielte Netzladung.
 
-Historische Haltewerte beeinflussen keine Aktorentscheidung. Schutzanforderungen
-bleiben unabhängig von Planung und Herkunftsnachweis wirksam. Alte wirtschaftliche
-Netzteil-Haltungen werden bestätigt zur Batterie zurückgeführt. Diagnose und Karte
-zeigen Vorbereitungshorizont, Speicherbedarf, erlaubte Leistung und den konkreten
-Entscheidungsgrund statt eines vermeintlichen T*-Ziels. Aktueller Vertrag und
-Migrationsdetails: [DC bevorzugen](F-RESERVE-DC-FIRST.md).
+Schutzschwellen, manuelle Anforderungen, Netzverfügbarkeit und bestätigter
+24-V-Rückfall bleiben verbindlich. Wirtschaftliches Halten ist keine Schutz-Latch;
+eine geänderte Prognose kann wieder freigeben. Historische SOC-Haltewerte bleiben
+reine Diagnose. Reserveanzeige und Aktordiagnose erklären wirtschaftliche Haltung
+und eine fehlende 24-V-Freigabe. Aktueller Vertrag und Golden-Diffs:
+[SOC-Erhaltung](F-RESERVE-SOC-PRESERVATION.md). Die physische Energieabbildung und
+Kalenderhorizonte aus [DC bevorzugen](F-RESERVE-DC-FIRST.md) bleiben erhalten.

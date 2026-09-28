@@ -866,6 +866,7 @@ ReserveDecisionReason = Literal[
     "no_preparation_needed",
     "pv_headroom_preparation",
     "dc_support_protection",
+    "dc_reserve_holding",
     "manual_support",
     "no_ac_demand",
 ]

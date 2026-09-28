@@ -3,7 +3,7 @@
 > Start here if you want to work on the code. This is the map; the other docs in
 > `docs/` are the detailed design records for individual subsystems.
 >
-> Status: **0.47.0, 2026-09-27**. Current behavior and migration contracts:
+> Status: **0.47.1, 2026-09-28**. Current behavior and migration contracts:
 > [CURRENT_CONTRACTS.md](CURRENT_CONTRACTS.md). Historical design records explain
 > why rules exist; they do not override the current contracts.
 

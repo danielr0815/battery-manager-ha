@@ -1,4 +1,4 @@
-"""DC-first reserve with reachable, latest preparation for today and tomorrow.
+"""SOC preservation with reachable, latest preparation for today and tomorrow.
 
 A maximum-useful-discharge reference measures unavoidable export. Its physical
 inverse schedules only the remaining necessary AC, without carrying impossible
@@ -114,7 +114,7 @@ def _slot_end(slot: HourSlot) -> datetime:
 
 def _envelope(
     budgets: list[BatteryStep], start: int, end: int, energy: float
-) -> tuple[list[float], float]:
+) -> tuple[list[float], list[float], float]:
     """Two linear passes; each step enters at most two rolling daily windows.
 
     Reference energy/export concern the battery branch, not an assumed future
@@ -128,13 +128,22 @@ def _envelope(
         reachable.append(energy)
         spill.append(exported)
     ceiling = [budgets[start].maximum] * (end - start + 1)
+    dc_ceiling = ceiling.copy()
     for offset in range(end - start - 1, -1, -1):
         budget = budgets[start + offset]
         ceiling[offset] = max(
             reachable[offset],
             budget.incoming_ceiling(ceiling[offset + 1], spill[offset]),
         )
-    return ceiling, sum(spill)
+        # DC has priority over discretionary AC use: do not buy DC support
+        # now merely because the same energy could be dumped through AC later.
+        dc_ceiling[offset] = max(
+            reachable[offset],
+            replace(budget, ac=0.0).incoming_ceiling(
+                dc_ceiling[offset + 1], spill[offset]
+            ),
+        )
+    return ceiling, dc_ceiling, sum(spill)
 
 
 def simulate_reserve(
@@ -187,7 +196,10 @@ def _simulate_reserve(
     ]
     battery, support = config.battery, config.support
     soc = inputs.start_soc_percent
-    dc24, dc48 = support.dc24_active, support.dc48_active
+    # Economic holding must not become a protection latch on the next plan.
+    # Only an active source below its recovery threshold retains that latch.
+    protect24 = support.dc24_active and soc < config.control.support_dc24_recovery_soc
+    protect48 = support.dc48_active and soc < config.control.support_dc48_recovery_soc
     buckets: list[list[HourFlows]] = [[] for _ in inputs.slots]
     cache = _reserve_cache.get()
     variants: dict[tuple[int, bool, bool], SystemConfig] = (
@@ -206,9 +218,10 @@ def _simulate_reserve(
             end = j
             while end < len(steps) and steps[end][1].start.date() < exclusive_day:
                 end += 1
-            ceiling, unavoidable_export = _envelope(budgets, j, end, energy)
+            ceiling, dc_ceiling, unavoidable_export = _envelope(budgets, j, end, energy)
             horizon_end = _slot_end(steps[end - 1][1])
         following_ceiling = ceiling[j - window_start + 1]
+        following_dc_ceiling = dc_ceiling[j - window_start + 1]
         scale = pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i]
         voltage_credit = (
             abs(soc - inputs.start_soc_percent) <= config.control.hysteresis_percent
@@ -243,17 +256,49 @@ def _simulate_reserve(
         pv_recovery = natural.battery_charge_wh >= natural.battery_discharge_wh and (
             natural.battery_charge_wh > 0
         )
-        # Only genuine protection/hysteresis or a manual source request can
-        # select PSUs. Historical reserve_hold_soc_percent is data, not control.
-        dc24, dc48 = support_state(effective, soc, dc24, dc48, pv_recovery)
+        protect24, protect48 = support_state(
+            effective, soc, protect24, protect48, pv_recovery
+        )
+        dc24, dc48 = protect24, protect48
         protected = (
             step_hour(effective, soc, slot, 100, extra, dc24, dc48, scale, export)
             if dc24 or dc48
             else natural
         )
-        dc24, dc48 = support_state(
-            effective, min(soc, protected.soc_end_percent), dc24, dc48, pv_recovery
+        protect24, protect48 = support_state(
+            effective,
+            min(soc, protected.soc_end_percent),
+            protect24,
+            protect48,
+            pv_recovery,
         )
+        dc24, dc48 = protect24, protect48
+        # Operator 2026-09-28: preserve DC energy too when it is not needed
+        # for forecast headroom. Protection thresholds are a last resort, not
+        # an economic discharge target. Never credit unknown PSU output.
+        holding = False
+        if natural.battery_discharge_wh > natural.battery_charge_wh + ENERGY_EPSILON_WH:
+            held = step_hour(
+                effective,
+                soc,
+                slot,
+                100,
+                extra,
+                source.dc24_available,
+                source.dc48_available,
+                scale,
+                export,
+            )
+            if (
+                battery.energy_wh(held.soc_end_percent)
+                <= following_dc_ceiling + ENERGY_EPSILON_WH
+                # At the battery ceiling, capped end SOC can hide extra spill.
+                # Never buy rail energy that displaces usable PV in this step.
+                and held.grid_export_wh <= natural.grid_export_wh + ENERGY_EPSILON_WH
+            ):
+                holding = True
+                dc24 = dc24 or source.dc24_available
+                dc48 = dc48 or source.dc48_available
         pv = slot.pv_wh * scale
         if scale > 1:
             pv = min(pv, config.pv.peak_power_w * slot.duration)
@@ -293,9 +338,10 @@ def _simulate_reserve(
             )
         # Unusual configured thresholds must receive the same look-ahead
         # protection as the coordinated legacy simulator, even after AC use.
-        next24, next48 = support_state(
-            effective, min(soc, flow.soc_end_percent), dc24, dc48, pv_recovery
+        protect24, protect48 = support_state(
+            effective, min(soc, flow.soc_end_percent), protect24, protect48, pv_recovery
         )
+        next24, next48 = dc24 or protect24, dc48 or protect48
         if (next24, next48) != (dc24, dc48):
             dc24, dc48 = next24, next48
             limit = 0.0
@@ -306,8 +352,10 @@ def _simulate_reserve(
             reason: ReserveDecisionReason = "no_preparation_needed"
             if (dc24 and source.dc24_forced_on) or (dc48 and source.dc48_forced_on):
                 reason = "manual_support"
-            elif dc24 or dc48:
+            elif protect24 or protect48:
                 reason = "dc_support_protection"
+            elif holding and (dc24 or dc48):
+                reason = "dc_reserve_holding"
             elif limit:
                 reason = "pv_headroom_preparation"
             elif not useful_ac:
@@ -331,9 +379,9 @@ def _simulate_reserve(
             inverter_start=flow.inverter_on,
             inverter_limit_w=limit,
             reserve_ceiling_percent=battery.soc_percent(following_ceiling),
-            # Compatibility field: DC now remains on battery until protection;
-            # both expose the same physical preparation envelope.
-            reserve_dc_ceiling_percent=battery.soc_percent(following_ceiling),
+            # Both paths use the physical preparation envelope, never an old
+            # historical hold SOC or a new fixed night reserve.
+            reserve_dc_ceiling_percent=battery.soc_percent(following_dc_ceiling),
             support_dc24_start=dc24,
             support_dc48_start=dc48,
             support_mode="dc48"

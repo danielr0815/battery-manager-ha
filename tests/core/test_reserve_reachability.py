@@ -110,7 +110,7 @@ def test_legacy_hold_cannot_override_low_soc_support(hold):
     assert flow.soc_end_percent > 5.4
 
 
-def test_high_soc_uses_dc_battery_without_economic_psu_holding():
+def test_high_soc_holding_reports_incidental_charge_separately():
     config = plant()
     config = replace(
         config,
@@ -123,9 +123,13 @@ def test_high_soc_uses_dc_battery_without_economic_psu_holding():
         ),
     )
     result = simulate(config, series(80, [(0, 100, 60)]), 20)
-    assert result.flows[0].soc_end_percent == pytest.approx(74)
-    assert not result.flows[0].support_dc24
-    assert not result.flows[0].support_dc48
+    flow = result.flows[0]
+    assert flow.soc_end_percent > 80
+    assert flow.support_dc24 and flow.support_dc48
+    assert flow.battery_discharge_wh == 0
+    assert flow.psu48_battery_charge_wh == pytest.approx(
+        (flow.soc_end_percent - 80) * 10
+    )
     assert result.flows[0].inverter_output_wh == 0
 
 
@@ -151,13 +155,14 @@ def test_source_protection_also_wins_when_custom_ac_floor_is_below_support():
     assert result.reserve_decision.reason == "dc_support_protection"
 
 
-def test_reference_preparation_does_not_preemptively_switch_dc_to_grid():
+def test_no_sun_preserves_dc_energy_instead_of_spending_the_remaining_soc():
     config = plant()
     config = replace(config, support=replace(config.support, dc24_available=True))
     result = simulate(config, series(80, [(0, 600, 0), (0, 0, 650)]), 20)
     assert result.flows[0].inverter_output_wh == 0
-    assert not result.flows[1].support_dc24
-    assert result.flows[1].soc_end_percent == pytest.approx(15)
+    assert result.flows[1].support_dc24
+    assert result.flows[1].soc_end_percent == pytest.approx(80)
+    assert result.flows[1].psu24_delivered_wh == pytest.approx(650)
 
 
 @pytest.mark.parametrize("month, day, expected_hours", [(3, 28, 35), (10, 24, 37)])

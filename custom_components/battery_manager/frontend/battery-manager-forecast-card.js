@@ -473,10 +473,12 @@ Object.assign(STRINGS.en, {
   report_unavoidable_export: "Unavoidable forecast export",
   report_reserve_decision: "Current decision",
   report_reserve_decision_unknown: "No decision reason available",
+  report_dc24_transfer_unverified: "24 V grid takeover is blocked: independent DC/DC fallback during grid and Home Assistant outages has not been confirmed in the settings.",
   report_reserve_shadow_explanation: "Shadow calculation only. The existing control policy remains active.",
   reserve_decision_no_preparation_needed: "No additional AC discharge for PV preparation is needed now.",
   reserve_decision_pv_headroom_preparation: "Forecast PV requires additional battery headroom.",
   reserve_decision_dc_support_protection: "DC supply protection determines the current source switching and AC discharge limit.",
+  reserve_decision_dc_reserve_holding: "DC power supplies preserve battery energy that is not needed for forecast PV headroom.",
   reserve_decision_manual_support: "Manual PSU support blocks AC battery discharge.",
   reserve_decision_no_ac_demand: "No usable AC demand for battery discharge is forecast.",
   report_additional_headroom_needed: "Additional headroom needed now",
@@ -524,10 +526,12 @@ Object.assign(STRINGS.de, {
   report_unavoidable_export: "Unvermeidbare prognostizierte Einspeisung",
   report_reserve_decision: "Aktuelle Entscheidung",
   report_reserve_decision_unknown: "Kein Entscheidungsgrund verf\xFCgbar",
+  report_dc24_transfer_unverified: "24-V-Netz\xFCbernahme gesperrt: Der unabh\xE4ngige DC/DC-R\xFCckfall bei Netz- und Home-Assistant-Ausfall ist in den Einstellungen nicht best\xE4tigt.",
   report_reserve_shadow_explanation: "Nur Schattenrechnung. Die bisherige Steuerung bleibt aktiv.",
   reserve_decision_no_preparation_needed: "Aktuell ist keine zus\xE4tzliche AC-Entladung zur PV-Vorbereitung n\xF6tig.",
   reserve_decision_pv_headroom_preparation: "Die erwartete PV-Energie ben\xF6tigt zus\xE4tzlichen Freiraum im Speicher.",
   reserve_decision_dc_support_protection: "Der Schutz der DC-Versorgung bestimmt die aktuelle Quellenumschaltung und AC-Entladegrenze.",
+  reserve_decision_dc_reserve_holding: "Die DC-Netzteile erhalten Batterieenergie, deren Entnahme f\xFCr den erwarteten PV-Speicherbedarf nicht n\xF6tig ist.",
   reserve_decision_manual_support: "Manuell angeforderte Netzteilst\xFCtzung sperrt die AC-Batterieentladung.",
   reserve_decision_no_ac_demand: "Es ist kein nutzbarer AC-Verbrauch f\xFCr die Batterieentladung prognostiziert.",
   report_additional_headroom_needed: "Jetzt zus\xE4tzlich ben\xF6tigter Freiraum",
@@ -827,6 +831,7 @@ function reserveReport(hass, reserve) {
     <p>${esc(t("report_forecast_driven_control_without_a_waiting_period"))}</p>
     <p data-reserve-reason="${esc(reason || "unknown")}">${esc(t("report_reserve_decision"))}: ${esc(reasonText)}</p>
     ${reserve.mode === "shadow" ? `<p>${esc(t("report_reserve_shadow_explanation"))}</p>` : ""}
+    ${reserve.dc24_transfer_verified === false ? `<p data-reserve-transfer="unverified">${esc(t("report_dc24_transfer_unverified"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} \xB7 ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }

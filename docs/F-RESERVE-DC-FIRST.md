@@ -1,5 +1,9 @@
 # Reservebetrieb ab 0.47.0: DC zuerst, AC nur für benötigten Speicherraum
 
+> Ab 0.47.1 ersetzt [SOC-Erhaltung](F-RESERVE-SOC-PRESERVATION.md) die hier
+> beschriebene Entladung nativer DC-Lasten bis zur Schutzschwelle. Die folgenden
+> Befunde und Abnahmewerte dokumentieren den historischen Stand 0.47.0.
+
 Dieser Vertrag ersetzt die Halte- und Horizontregeln aus
 [F-YEAR-ROUND-RESERVE](F-YEAR-ROUND-RESERVE.md). Er gilt im aktiven Reservebetrieb;
 Schattenbetrieb berechnet dieselbe Entscheidung ohne sie auszuführen.

@@ -142,6 +142,8 @@ async def execute_coordinated_support(
                 CONF_RESERVE_TRANSFER_VERIFIED
             ):
                 desired = {**desired, "dc24": False}
+                diag["desired"] = dict(desired)
+                diag["dc24_block_reason"] = "transfer_unverified"
 
             # Even an unexpected external PSU activation blocks AC immediately.
             # Release comes last, after all source confirmations below.

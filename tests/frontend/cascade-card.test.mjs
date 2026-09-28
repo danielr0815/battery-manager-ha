@@ -1542,6 +1542,11 @@ test("reserve decisions expose concrete bilingual reasons and unknown codes stay
       "Manuell angeforderte Netzteilstützung",
     ],
     ["no_ac_demand", "No usable AC demand", "kein nutzbarer AC-Verbrauch"],
+    [
+      "dc_reserve_holding",
+      "DC power supplies preserve",
+      "DC-Netzteile erhalten",
+    ],
   ];
   for (const [reason, en, de] of cases)
     for (const [language, text] of [
@@ -1595,5 +1600,21 @@ test("reserve with zero current headroom can still announce preparation later", 
       html,
       /No additional PV headroom is needed today or tomorrow|Heute und morgen wird kein zusätzlicher PV-Freiraum benötigt/,
     );
+  }
+});
+
+test("reserve report identifies the actual 24 V transfer block", () => {
+  const render = vm.runInContext("reserveReport", context);
+  for (const language of ["de", "en"]) {
+    const blocked = render(
+      { language },
+      { mode: "active", dc24_transfer_verified: false },
+    );
+    assert.match(blocked, /data-reserve-transfer="unverified"/);
+    const cleared = render(
+      { language },
+      { mode: "active", dc24_transfer_verified: true },
+    );
+    assert.doesNotMatch(cleared, /data-reserve-transfer/);
   }
 });

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.1] - 2026-09-28
+
+### Fixed
+- Aktive Reserve erhält jetzt auch Energie für die DC-Verbraucher: 24-/48-V-Netzteile
+  übernehmen bereits oberhalb der Schutzschwellen, wenn die Entnahme nicht für
+  PV-Speicherraum heute/morgen benötigt wird. Neue Prognosen lösen wirtschaftliche
+  Halteanforderungen wieder; Schutz, manuelle Vorgaben und bestätigte Übergaben
+  bleiben erhalten. Nötiger DC-Verbrauch hat Vorrang vor zusätzlicher AC-Entladung.
+- Netzteilbetrieb darf keine nutzbare PV verdrängen. Fehlende oder physikalisch
+  unmögliche 48-V-Abgabe wird weiterhin nicht als gesicherte SOC-Erhaltung gerechnet.
+- Reserveanzeige erklärt wirtschaftliche DC-Haltung und eine fehlende Bestätigung
+  des unabhängigen 24-V-Rückfalls. Die Aktordiagnose zeigt das tatsächlich gesperrte
+  24-V-Ziel statt eines zuvor berechneten Einschaltwunsches.
+
+### Changed
+- Mehr Netzbezug zur SOC-Erhaltung ist im aktiven Reservebetrieb beabsichtigt;
+  die Regel aus 0.47.0, DC ohne Speicherbedarf bis zur Schutzschwelle zu entladen,
+  entfällt. Details und Golden-Energiebilanzen: `docs/F-RESERVE-SOC-PRESERVATION.md`.
+
 ## [0.47.0] - 2026-09-27
 
 ### Added
