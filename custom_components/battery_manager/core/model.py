@@ -898,6 +898,8 @@ class ReserveDecision:
     headroom_wh: float
     unavoidable_export_wh: float
     reason: ReserveDecisionReason
+    # Current stored energy reserved for DC and future solar preparation.
+    live_ac_floor_percent: float = 100.0
 
 
 @dataclass(frozen=True)

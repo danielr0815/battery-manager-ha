@@ -2406,3 +2406,32 @@ async def test_cleared_reserve_grid_sensor_stays_cleared_after_reload(hass):
     await hass.async_block_till_done()
     assert entry.runtime_data.raw_config[CONF_RESERVE_GRID_ENTITY] is None
     assert entry.runtime_data._reserve_grid_available() is None
+
+
+async def test_live_ac_power_sources_are_saved_and_explicitly_clearable(hass):
+    from custom_components.battery_manager.const import LIVE_AC_POWER_KEYS
+
+    entry = await _setup_entry(hass)
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(flow["data_schema"].schema)
+    bindings = dict(
+        zip(
+            LIVE_AC_POWER_KEYS,
+            ("sensor.grid", "sensor.ac_in", "sensor.ac_out"),
+            strict=True,
+        )
+    )
+    payload["consumption_learning"].update(bindings)
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"], user_input=payload
+    )
+    assert result["type"] == "create_entry"
+    assert all(entry.options[key] == entity for key, entity in bindings.items())
+    await hass.async_block_till_done()
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(flow["data_schema"].schema)
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"], user_input=payload
+    )
+    assert result["type"] == "create_entry"
+    assert all(entry.options[key] is None for key in LIVE_AC_POWER_KEYS)

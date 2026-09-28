@@ -371,6 +371,14 @@ def _simulate_reserve(
                 ),
                 unavoidable_export_wh=unavoidable_export,
                 reason=reason,
+                live_ac_floor_percent=battery.soc_percent(
+                    max(
+                        following_dc_ceiling,
+                        following_minimum,
+                        budgets[j].inverter_floor,
+                    )
+                    + nominal_budgets[j].dc
+                ),
             )
         flow = replace(
             flow,

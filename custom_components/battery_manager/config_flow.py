@@ -148,6 +148,7 @@ from .const import (
     DOMAIN,
     INPUT_OFF_POLICIES,
     INPUT_OFF_POLICY_KEEP,
+    LIVE_AC_POWER_KEYS,
     OPERATION_POWER_SOURCES,
     PV_FORECAST_MODES,
     RESERVE_MODES,
@@ -710,7 +711,7 @@ def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
 def _learning_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """Measurement-source fields (shared: consumers step + options)."""
     schema: dict[Any, Any] = {}
-    for key in (*_LEARNING_SINGLE_KEYS, *_OPERATION_POWER_KEYS):
+    for key in (*_LEARNING_SINGLE_KEYS, *_OPERATION_POWER_KEYS, *LIVE_AC_POWER_KEYS):
         # suggested_value (not default) keeps the field clearable in the UI.
         schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = (
             _entity("sensor")
@@ -1078,6 +1079,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     CONF_PV_WINDOW_END_HOUR,
                     *_LEARNING_SINGLE_KEYS,
                     *_OPERATION_POWER_KEYS,
+                    *LIVE_AC_POWER_KEYS,
                     CONF_WORKDAY_ENTITY,
                 ):
                     data.setdefault(key, None)

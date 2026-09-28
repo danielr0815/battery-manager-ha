@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.49.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.50.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -163,3 +163,26 @@ finanzieren. Die DC-Obergrenze enthält deshalb keinen angehobenen Zielpfad aus
 einer maximalen AC-Referenz. Schutz, manuelle Quellen, heutiger/morgiger lokaler
 Horizont und physische Grenzen bleiben erhalten. Die Quellenwahl ist weiterhin
 prognoseabhängig; ein späterer Forecastwechsel kann frühere Entscheidungen ändern.
+
+## Schnelle AC-Freigabe bei gemessenem Bedarf (0.50.0)
+
+Aktive Reserve mit koordiniertem Inverter nutzt alle fünf Sekunden die aktuellen
+Leistungsmessungen. Eine bisher für später vorgesehene AC-Gelegenheit darf
+vorgezogen werden, wenn gespeicherte Energie oberhalb der DC-/Reservegrenze und
+des SOC-Puffers vorhanden ist. Der Core liefert diese Grenze; der schnelle Pfad
+startet keine Optimierung und schaltet keine Netzteile um.
+
+Ab 100 W gemessener AC-Restlast wird freigegeben; unter 50 W beginnt eine
+zehnminütige Ausschaltverzögerung. Erneuter Bedarf ab 50 W setzt die Frist zurück.
+Die direkte Bilanz aus saldierter Netzleistung und AC-Ein-/Ausgang des Inverters
+bleibt auch bei erfolgreich auf null geregeltem Netzbezug aussagekräftig und
+enthält keinen DC-Verbrauch. Alternativ werden frische Hauslast und PV verwendet,
+optional ergänzt um Netzbezug. W/kW werden normalisiert.
+
+SOC, die verwendeten Leistungsmessungen und Netzstatus dürfen höchstens 30 Sekunden alt sein. Planbudget
+höchstens fünf Minuten und nicht über den aktuellen Quellslot hinaus. Schutz,
+manuelle oder geplante DC-Versorgung, unbekannte Quellen und erschöpftes Budget
+übergehen jede Haltefrist. Fehlende Live-Leistungsquellen lassen den normalen
+Planner weiterarbeiten. Keine wiederhergestellte Freigabe nach Neustart; neue
+Messungen und ein neuer Plan sind nötig. Details und Tests:
+[Gemessener AC-Bedarf](F-LIVE-AC-DEMAND.md).

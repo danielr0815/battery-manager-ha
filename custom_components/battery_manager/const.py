@@ -890,3 +890,11 @@ OPERATION_POWER_SOURCES = {
 CONF_INVERTER_BLOCK_SWITCH = "inverter_block_switch_entity"
 
 CONF_INVERTER_LIMIT_ENTITY = "inverter_discharge_limit_entity"
+
+# Optional direct AC balance: grid import positive, converter AC input positive
+# toward the inverter, AC output positive toward loads (negative for AC PV).
+LIVE_AC_POWER_KEYS = (
+    "live_ac_grid_power_entity",
+    "live_ac_input_power_entity",
+    "live_ac_output_power_entity",
+)

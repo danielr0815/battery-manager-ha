@@ -108,7 +108,10 @@
               "operation_pv_power_entity": "Actual PV power for daily comparison (optional)",
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional)",
               "operation_import_power_entity": "Grid import power for daily comparison (optional)",
-              "operation_export_power_entity": "Grid export power for daily comparison (optional)"
+              "operation_export_power_entity": "Grid export power for daily comparison (optional)",
+              "live_ac_grid_power_entity": "Live AC: signed grid power (optional)",
+              "live_ac_input_power_entity": "Live AC: inverter AC input power (optional)",
+              "live_ac_output_power_entity": "Live AC: inverter AC output power (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
@@ -121,7 +124,10 @@
               "operation_pv_power_entity": "Actual PV power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_import_power_entity": "Grid import power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
-              "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power."
+              "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "live_ac_grid_power_entity": "Positive import, negative export. Configure all three live AC sources together; current power in W/kW.",
+              "live_ac_input_power_entity": "Positive toward the inverter from the AC grid; negative from the inverter toward the grid. Not battery power.",
+              "live_ac_output_power_entity": "Positive toward AC loads; negative AC solar feeding the inverter. This AC balance excludes DC consumers."
             }
           }
         }
@@ -716,7 +722,10 @@
               "operation_pv_power_entity": "Actual PV power for daily comparison (optional)",
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional)",
               "operation_import_power_entity": "Grid import power for daily comparison (optional)",
-              "operation_export_power_entity": "Grid export power for daily comparison (optional)"
+              "operation_export_power_entity": "Grid export power for daily comparison (optional)",
+              "live_ac_grid_power_entity": "Live AC: signed grid power (optional)",
+              "live_ac_input_power_entity": "Live AC: inverter AC input power (optional)",
+              "live_ac_output_power_entity": "Live AC: inverter AC output power (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor measuring the AC consumer load directly (W sensor or kWh counter). Enables nightly learning of the hourly AC profile from long-term statistics; takes precedence over the counter balance. Important: do not pick the grid import or any point that includes the system's own battery charging.",
@@ -734,7 +743,10 @@
               "operation_pv_power_entity": "Actual PV power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_import_power_entity": "Grid import power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
-              "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power."
+              "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "live_ac_grid_power_entity": "Positive import, negative export. Configure all three live AC sources together; current power in W/kW.",
+              "live_ac_input_power_entity": "Positive toward the inverter from the AC grid; negative from the inverter toward the grid. Not battery power.",
+              "live_ac_output_power_entity": "Positive toward AC loads; negative AC solar feeding the inverter. This AC balance excludes DC consumers."
             }
           },
           "support_paths": {

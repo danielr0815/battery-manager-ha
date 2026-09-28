@@ -535,6 +535,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "loads",
             "appliances",
             "consumption_profile",
+            "live_ac",
             "consumption_forecast",
             "cascades",
             "load_decisions",
@@ -641,6 +642,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "gate_calibration": data.get("gate_calibration") or {},
             "coordinated_support": data.get("coordinated_support") or {},
             "reserve": data.get("reserve") or {},
+            "live_ac": data.get("live_ac") or {},
             # F-PREDRAIN observability (docs/F-PREDRAIN.md §3.5): per-day PV
             # source, the import the allocation added over base (bounded by the
             # 50 Wh artifact slack since F-STRICT-SURPLUS R1, not a trade), the

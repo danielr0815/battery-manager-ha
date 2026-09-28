@@ -240,11 +240,13 @@ from .core import (
     quantile_band_slots,
     slot_starts,
 )
+from .core.live_ac import LIVE_AC_REPLAN_LEAD_S
 from .core.model import ReserveParams
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
 from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
+from .live_ac import LiveACRuntime
 from .load_actuation import (
     LOAD_RETRY_INTERVAL_S,
     ActorRequest,
@@ -472,6 +474,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._inverter_recommendation = False
         self._last_inverter_switch: datetime | None = None
         self._reserve_runtime = ReserveRuntime()
+        self.live_ac = LiveACRuntime(self)
         self._reserve_legacy_hold_sources: set[str] = set()
         self._reserve_diag: dict[str, Any] = {}
         self._coordinated_support_diag: dict[str, Any] = {}
@@ -4186,7 +4189,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         profile_diag.update(buffer_diag)
         reserve_mode = self.raw_config.get(CONF_RESERVE_MODE, "off")
         self._reserve_diag = {"mode": "off"}
-        self._reserve_inverter_limit_w = None
         if reserve_mode != "off" and config.support.coordinated:
             # A known PV-only increase may raise intent. Missing observations
             # must never turn grid-supported charging into a solar credit.
@@ -4288,6 +4290,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and not first.support_dc24_start
                 and (first.inverter_start or first.reserve_dc_ceiling_percent < soc)
             )
+            if not active:
+                self._reserve_inverter_limit_w = None
             if active:
                 self._reserve_inverter_limit_w = (
                     max(0, int(first.inverter_limit_w)) if first else 0
@@ -4302,7 +4306,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._reserve_legacy_hold_sources.clear()
             self._support_migration.pop("reserve_holding_pending", None)
             self._reserve_preparing = False
+            self._reserve_inverter_limit_w = None
             result = await self._async_plan("standard", config, inputs)
+        self.live_ac.set_plan(config, inputs, result)
         self.operation_recorder.plan(config, inputs, result)
         if self._reserve_diag.get("mode") in ("shadow", "active"):
             self.operation_recorder.reserve(self._reserve_diag)
@@ -4342,7 +4348,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             recommendation = self._apply_hysteresis(soc, threshold, config, now)
         if config.support.coordinated:
-            recommendation = recommendation and result.inverter_on
+            recommendation = (recommendation and result.inverter_on) or bool(
+                self.live_ac.refresh()
+            )
             self._coordinated_inverter_target = recommendation
             recommendation = (
                 recommendation
@@ -4827,6 +4835,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "manual_requests": dict(self._support_manual),
                 "migration": dict(self._support_migration),
             },
+            "live_ac": dict(self.live_ac.diagnostics),
             "consumption_profile": profile_diag,
             "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
@@ -6039,18 +6048,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return None
 
+    def _effective_inverter_limit_w(self) -> int | float:
+        if self._reserve_inverter_limit_w is None:
+            return float(self.raw_config["inverter_max_power_w"])
+        return max(self._reserve_inverter_limit_w, self.live_ac.refresh())
+
     def _inverter_limit_confirmed(self, blocked: bool) -> bool:
         """The watt limit is the actuator; Victron's switch is read-only proof."""
         entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
-        target = (
-            0.0
-            if blocked
-            else float(
-                self._reserve_inverter_limit_w
-                if self._reserve_inverter_limit_w is not None
-                else self.raw_config["inverter_max_power_w"]
-            )
-        )
+        target = 0.0 if blocked else float(self._effective_inverter_limit_w())
         value = self._read_float(entity)
         feedback = self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
         return (
@@ -6061,16 +6067,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _confirm_inverter_limit(self, blocked: bool, diag: dict) -> bool:
         entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
-        target = (
-            0.0
-            if blocked
-            else float(
-                self._reserve_inverter_limit_w
-                if self._reserve_inverter_limit_w is not None
-                else self.raw_config["inverter_max_power_w"]
-            )
-        )
+        target = 0.0 if blocked else float(self._effective_inverter_limit_w())
         diag["discharge_limit_target_w"] = target
+        self.live_ac.note_command(target)
         # Do not hammer an already accepted number while waiting for the
         # separate Victron feedback. Its state event resumes confirmation.
         value = self._read_float(entity)
@@ -7555,6 +7554,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass, self._tracked_entities(), self._handle_entity_change
             )
             self._listeners_setup = True
+            self.live_ac.start()
         except Exception as err:
             _LOGGER.warning(
                 "Failed to set up entity listeners: %s. Relying on polling.", err
@@ -7599,6 +7599,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         boundaries = {slot.start for slot in inputs.slots if slot.start > inputs.now}
         if self._reserve_inverter_limit_w is not None:
             boundaries.add(inputs.now + timedelta(minutes=5))
+        if self.live_ac.envelope is not None and self.live_ac.sources_configured():
+            # Refresh before expiry, rather than dropping a held permission
+            # every five minutes while its replacement is still computing.
+            refresh_at = self.live_ac.envelope.expires - timedelta(
+                seconds=LIVE_AC_REPLAN_LEAD_S
+            )
+            if refresh_at > dt_util.as_utc(inputs.now):
+                boundaries.add(refresh_at)
         for load_plan in result.load_plans:
             for slot, hours in zip(inputs.slots, load_plan.run_hours, strict=False):
                 if hours > 0:
@@ -7697,6 +7705,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.appliances.stop()
         self.operation_recorder.stop()
         self._actuation_shutdown = True
+        self.live_ac.stop()
         if self._plan_boundary_cancel is not None:
             self._plan_boundary_cancel()
             self._plan_boundary_cancel = None
@@ -7706,6 +7715,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for load_id in list(self._load_off_timer):
             self._cancel_off_timer(load_id)
         tasks = [
+            self.live_ac.task,
             self._initial_refresh_task,
             self._update_task,
             self._planning_protection_task,
@@ -7736,6 +7746,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._plan_boundary_cancel = None
         self.appliances.stop()
         self.operation_recorder.stop()
+        self.live_ac.stop()
         self.cascade_manager.cleanup()
         self.learner.async_unschedule()
         if self._unsub_state_listener is not None:

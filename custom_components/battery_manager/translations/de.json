@@ -108,7 +108,10 @@
               "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional)",
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional)",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional)",
-              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)"
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)",
+              "live_ac_grid_power_entity": "Live-AC: saldierte Netzleistung (optional)",
+              "live_ac_input_power_entity": "Live-AC: Inverter AC-Eingangsleistung (optional)",
+              "live_ac_output_power_entity": "Live-AC: Inverter AC-Ausgangsleistung (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor, der die AC-Verbraucherlast direkt misst (W-Sensor oder kWh-Zähler). Aktiviert das nächtliche Lernen des AC-Stundenprofils aus der Langzeitstatistik; hat Vorrang vor der Zählerbilanz. Wichtig: nicht den Netzimport und keinen Punkt wählen, der das eigene Batterieladen enthält.",
@@ -121,7 +124,10 @@
               "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
-              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen."
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "live_ac_grid_power_entity": "Netzbezug positiv, Export negativ. Alle drei Live-AC-Quellen gemeinsam zuordnen; aktuelle Leistung in W/kW.",
+              "live_ac_input_power_entity": "Positiv: vom AC-Netz zum Inverter; negativ: vom Inverter ins AC-Netz. Keine Batterieleistung.",
+              "live_ac_output_power_entity": "Positiv: vom Inverter zu AC-Verbrauchern; negativ: AC-Solarleistung zurück zum Inverter. Die AC-Bilanz enthält keine DC-Verbraucher."
             }
           }
         }
@@ -716,7 +722,10 @@
               "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional)",
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional)",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional)",
-              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)"
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)",
+              "live_ac_grid_power_entity": "Live-AC: saldierte Netzleistung (optional)",
+              "live_ac_input_power_entity": "Live-AC: Inverter AC-Eingangsleistung (optional)",
+              "live_ac_output_power_entity": "Live-AC: Inverter AC-Ausgangsleistung (optional)"
             },
             "data_description": {
               "ac_load_entity": "Sensor, der die AC-Verbraucherlast direkt misst (W-Sensor oder kWh-Zähler). Aktiviert das nächtliche Lernen des AC-Stundenprofils aus der Langzeitstatistik; hat Vorrang vor der Zählerbilanz. Wichtig: nicht den Netzimport und keinen Punkt wählen, der das eigene Batterieladen enthält.",
@@ -734,7 +743,10 @@
               "operation_pv_power_entity": "PV-Istleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
-              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen."
+              "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "live_ac_grid_power_entity": "Netzbezug positiv, Export negativ. Alle drei Live-AC-Quellen gemeinsam zuordnen; aktuelle Leistung in W/kW.",
+              "live_ac_input_power_entity": "Positiv: vom AC-Netz zum Inverter; negativ: vom Inverter ins AC-Netz. Keine Batterieleistung.",
+              "live_ac_output_power_entity": "Positiv: vom Inverter zu AC-Verbrauchern; negativ: AC-Solarleistung zurück zum Inverter. Die AC-Bilanz enthält keine DC-Verbraucher."
             }
           },
           "support_paths": {

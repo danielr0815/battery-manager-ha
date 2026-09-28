@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-28
+
+### Added
+- Aktive Reserve berücksichtigt gemessene AC-Restlast alle fünf Sekunden,
+  unabhängig von der vollständigen Planung. Verfügbare Energie für spätere
+  AC-Vorbereitung kann früher genutzt werden, ohne DC-Reserve oder SOC-Puffer
+  anzutasten. Direkte Netz-/AC-In-/AC-Out-Bilanz oder vorhandene Haus-/PV-
+  Leistungsmessungen, ohne zusätzliche Gerätestarts.
+- Live-Freigabe ab 100 W Restlast, Abschaltung erst nach zehn Minuten
+  ununterbrochen unter 50 W. Die AC-Leistungsbilanz verhindert das Abschaltpendeln
+  bei erfolgreich auf null geregeltem Netzbezug. Schutz, Quellenanforderungen,
+  Messausfall und abgelaufenes Budget übergehen die Verzögerung.
+- Diagnose `live_ac` am SOC-Prognosesensor erklärt Live-Limit, Restlast,
+  verbleibendes Budget, Haltefrist und Gerätebestätigung. Die Zeitspur bleibt
+  ausdrücklich eine Prognose. Vertrag: `docs/F-LIVE-AC-DEMAND.md`.
+
 ## [0.49.0] - 2026-09-28
 
 ### Changed
