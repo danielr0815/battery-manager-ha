@@ -725,3 +725,33 @@ Eine rückwirkende Korrektur ist nur über die explizite Aktion
 `battery_manager.repair_consumption_history` mit `since` möglich und setzt
 seitdem unveränderte Verkabelung voraus. Regeln, Migration und Tests:
 [F-CASCADE-CONSUMPTION.md](F-CASCADE-CONSUMPTION.md).
+
+
+## Nachprüfung und sichtbare Datenqualität (v0.51.0)
+
+Unvollständige Tage der letzten sieben abgeschlossenen lokalen Kalendertage
+werden bei einem Lernlauf erneut aus dem Recorder gelesen. Die Zuordnung
+verwendet die gespeicherten Konfigurationsepochen. Nur bisher fehlende Stunden
+werden ergänzt; gültige Werte (auch 0 W), historische Tagtypen und die
+AC-Gültigkeitsgrenze bleiben erhalten. Die Transaktion veröffentlicht Werte
+und Diagnosen erst nach erfolgreichem Abschluss. Das ist keine rückwirkende
+Neuberechnung mit der heutigen Verdrahtung und keine Lockerung der
+Ausschlussregeln. Ältere Lücken werden nicht automatisch nachgelesen.
+
+`consumption_profile.minimum_samples` und `gap_retry_days` erklären den
+Lernvertrag. Das optionale additive Diagnosefeld `excluded_hours` enthält
+`Datum -> ac/dc -> lokale Stunde -> Liste von Grundcodes`, begrenzt auf sieben
+Tage. Alte Stores sind kompatibel; nicht dokumentierte Altlücken erhalten
+keinen erfundenen technischen Grund. `historical_context_missing` bezeichnet
+fehlenden historischen Kontext, z. B. eine Konfigurationsgrenze innerhalb einer
+Stunde. Weitere Gründe: `measurement_missing`, `negative_balance`,
+`support_unresolved`, `state_unavailable`, `appliance_unresolved`, `psu48_unresolved` und
+`subtraction_missing`. Mehrere Gründe können dieselbe Stunde betreffen.
+Ein nachgelieferter gültiger Wert entfernt den betreffenden Ausschluss.
+
+Die Verbrauchskarte zeigt Zählerstände der Lernstichprobe je Stunde/Tagtyp
+und die beobachteten Ausschlüsse in einem ausklappbaren Abschnitt. Die
+AC-Historiengrenze wird in der HA-Zeitzone angezeigt. Ein `S/L`-Slot dunkelt nur
+AC ab, `L/S` nur DC; geplante Lasten bleiben unabhängig davon sichtbar. Die
+DC-Markierung bezieht sich auf das gemeinsame gelernte DC-Profil, nicht auf
+getrennte Messprofile für 24 V und 48 V.

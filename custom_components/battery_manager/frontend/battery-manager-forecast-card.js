@@ -146,7 +146,7 @@ function switchingDetails(lanes, hass, showSupplies, t) {
 // frontend/styles.js
 var forecast_card_style_0 = "<style>\n        ha-card { display: block; padding: 12px 16px; }\n        .error { color: var(--error-color, #db4437); }\n      </style>";
 var forecast_card_style_1 = "<style>\n        :host { display: block; }\n        ha-card { padding: 12px 12px 8px; }\n        .header {\n          display: flex; flex-wrap: wrap; align-items: baseline;\n          justify-content: space-between; gap: 4px 12px; padding: 0 4px 6px;\n        }\n        .title {\n          font-size: 1.1em; font-weight: 500;\n          color: var(--primary-text-color);\n        }\n        .stats {\n          font-size: 0.85em; color: var(--secondary-text-color);\n        }\n        .msg {\n          padding: 24px 8px; color: var(--secondary-text-color);\n        }\n        svg { display: block; }\n        svg:focus { outline: none; }\n        svg:focus-visible {\n          outline: 2px solid var(--primary-color, #03a9f4);\n          outline-offset: 2px; border-radius: 2px;\n        }\n        .visually-hidden {\n          position: absolute; width: 1px; height: 1px; margin: -1px;\n          padding: 0; overflow: hidden; clip: rect(0 0 0 0);\n          clip-path: inset(50%); white-space: nowrap; border: 0;\n        }\n        .legend {\n          display: flex; flex-wrap: wrap; gap: 2px 14px;\n          padding: 6px 4px 0; font-size: 0.8em;\n          color: var(--secondary-text-color);\n        }\n        .legend .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n        .legend .active {\n          color: var(--primary-color); font-weight: 500;\n        }\n        .legend .off {\n          font-style: italic; opacity: 0.8;\n        }\n        .readout {\n          font-size: 0.8em; color: var(--secondary-text-color);\n          text-align: right; min-height: 1.2em; padding: 2px 4px 0;\n        }\n        .readout .chip { margin-left: 8px; white-space: nowrap; }\n        .switching-controls { display:flex; flex-wrap:wrap; align-items:center; gap:4px 16px; padding:6px 4px; font-size:.8em; color:var(--secondary-text-color); }\n        .switching-controls label { display:flex; align-items:center; min-height:36px; cursor:pointer; }\n        .switching-details { padding:4px; font-size:.85em; color:var(--secondary-text-color); }\n        .switching-details summary { cursor:pointer; min-height:32px; }\n        .switching-details section { margin:8px 0; }\n        .switching-details ul { padding-left:20px; margin:4px 0 12px; }\n        .switching-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }\n        .readout .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n      </style>";
-var consumption_card_style_0 = "<style>\n        ha-card { display: block; padding: 12px 16px; }\n        .error { color: var(--error-color, #db4437); }\n      </style>";
+var consumption_card_style_0 = "<style>\n        ha-card { display: block; padding: 12px 16px; }\n        .error { color: var(--error-color, #db4437); }\n        #consumption-learning { margin-top: 12px; color: var(--secondary-text-color); }\n        #consumption-learning summary { cursor: pointer; padding: 8px 0; }\n        #consumption-learning table { width: 100%; border-collapse: collapse; font-size: .85em; }\n        #consumption-learning td, #consumption-learning th { text-align: left; padding: 4px; border-bottom: 1px solid var(--divider-color); overflow-wrap: anywhere; }\n      </style>";
 var consumption_card_style_1 = "<style>\n        :host { display: block; }\n        ha-card { padding: 12px 12px 8px; }\n        .header {\n          display: flex; flex-wrap: wrap; align-items: baseline;\n          justify-content: space-between; gap: 4px 12px; padding: 0 4px 6px;\n        }\n        .title {\n          font-size: 1.1em; font-weight: 500;\n          color: var(--primary-text-color);\n        }\n        .stats {\n          font-size: 0.85em; color: var(--secondary-text-color);\n        }\n        .msg { padding: 24px 8px; color: var(--secondary-text-color); }\n        svg { display: block; }\n        svg:focus { outline: none; }\n        svg:focus-visible {\n          outline: 2px solid var(--primary-color, #03a9f4);\n          outline-offset: 2px; border-radius: 2px;\n        }\n        .visually-hidden {\n          position: absolute; width: 1px; height: 1px; margin: -1px;\n          padding: 0; overflow: hidden; clip: rect(0 0 0 0);\n          clip-path: inset(50%); white-space: nowrap; border: 0;\n        }\n        .legend {\n          display: flex; flex-wrap: wrap; gap: 2px 14px;\n          padding: 6px 4px 0; font-size: 0.8em;\n          color: var(--secondary-text-color);\n        }\n        .legend .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n        .readout {\n          font-size: 0.8em; color: var(--secondary-text-color);\n          text-align: right; min-height: 1.2em; padding: 2px 4px 0;\n        }\n        .readout .chip { margin-left: 8px; white-space: nowrap; }\n        .readout .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n      </style>";
 var cascade_card_style_0 = "<style>\n      :host{display:block;min-width:0}*{box-sizing:border-box}.wrap{container-type:inline-size;padding:0 16px 16px;color:var(--primary-text-color,#eee);font-size:14px;line-height:1.5;overflow-wrap:anywhere}\n      .cascade{border-top:1px solid var(--divider-color,#444);padding-top:16px}.cascade+.cascade{margin-top:24px}h2,h3,h4,p{margin:0}h2{font-size:1.4em}h3{font-size:1.1em}h4{margin-top:16px}.muted,.readout,small{color:var(--secondary-text-color,#aaa);font-size:.86em}.muted{margin:8px 0}.fault{color:var(--error-color,#f66)}\n      .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.section-heading>*{min-width:0}.badge{padding:3px 9px;border:1px solid var(--divider-color,#444);border-radius:12px;color:var(--secondary-text-color,#aaa);font-size:.85em}\n      button{font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:left;cursor:pointer;border:1px solid var(--divider-color,#444);border-radius:9px;background:var(--secondary-background-color,#222);color:var(--primary-text-color,#eee);padding:9px 12px;min-height:44px;max-width:100%}button:hover,button[aria-pressed=true]{border-color:var(--primary-color,#039be5);background:color-mix(in srgb,var(--primary-color,#039be5) 12%,transparent)}button:focus-visible,svg:focus-visible{outline:2px solid var(--primary-color,#039be5);outline-offset:2px}nav,.period{display:flex;gap:6px;flex-wrap:wrap}.period{margin:16px 0}\n      .topology{color:var(--secondary-text-color,#aaa);margin:8px 0 16px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px}.metric{display:grid;gap:5px;padding:10px;border:1px solid var(--divider-color,#444);border-radius:9px}.metric>button{font-size:.85em}.metrics strong{font-size:1.35em}.metrics span{color:var(--secondary-text-color,#aaa)}.members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:16px}.member,.terminal,.details{padding:14px;border:1px solid var(--divider-color,#444);border-radius:12px;min-width:0}.terminal{margin-top:12px}.member-energy{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:.85em}.member-energy span{flex:1;min-width:85px;color:var(--secondary-text-color,#aaa)}.member-energy b{display:block;color:var(--primary-text-color,#eee)}\n      .plot{overflow-x:auto;padding:3px}svg{display:block;width:100%;min-width:300px;height:auto;touch-action:pan-y}.axis{fill:var(--secondary-text-color,#aaa);font:12px sans-serif}.grid{stroke:var(--divider-color,#444)}.forecast-line{stroke-width:2.5;stroke-dasharray:6 3;stroke-linejoin:round}.soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1;stroke-dasharray:3 5}.marker{stroke:var(--primary-text-color,#eee);stroke-width:1;stroke-dasharray:3 3}.readout{min-height:1.5em;margin-top:4px;white-space:normal;overflow-wrap:anywhere}.details{border-color:var(--primary-color,#039be5);margin:16px 0}.details:focus{outline:none}\n      .agenda{list-style:none;padding:0;margin:12px 0}.event{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:12px;margin-bottom:12px}.event time{font-size:.88em;color:var(--primary-color,#039be5);padding-top:12px}.event-body{border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.event-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.flows{list-style:none;margin:8px 0;padding:0}.flows li{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--divider-color,#444)}.flow-label{flex:1;min-width:min(180px,100%)}.flows strong{font-variant-numeric:tabular-nums}.flow-label i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}\n      .history{display:inline;padding:0;min-height:0;border:0;background:none;text-decoration:underline;text-decoration-style:dotted}.history:hover{background:none}.activity-tracks{max-width:600px;margin:8px 0 12px}.activity-row{position:relative;margin:4px 0}.activity-row>span{display:block;min-height:18px;margin-bottom:2px;font-size:.8em;color:var(--secondary-text-color)}.activity-axis{position:relative;height:10px;margin-left:8%;margin-right:2.667%;background:var(--divider-color,#444);border-radius:3px}.activity-marker{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--primary-text-color,#eee);transform:translateX(-1px);z-index:1;pointer-events:none}.activity-axis:focus-visible{outline:2px solid var(--primary-color,#039be5);outline-offset:3px}.activity-bar{position:absolute;height:100%;border-radius:3px;min-width:2px}.activity-bar.estimated{background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,#777 3px,#777 5px)}.activity-tip{display:none;position:absolute;bottom:calc(100% + 6px);left:0;right:0;z-index:2;padding:6px;background:var(--card-background-color,#222);border:1px solid var(--divider-color,#444);border-radius:4px;font-size:12px;white-space:normal;overflow-wrap:anywhere;pointer-events:none}.activity-bar:hover + .activity-tip,.activity-axis:not(:has(.activity-bar:hover)) .activity-bar:focus + .activity-tip{display:block}.balance-residual{font-size:.85em;color:var(--secondary-text-color)}.pause{color:var(--secondary-text-color);font-size:.85em}.pause>span{padding-top:12px}\n      .chart-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;margin-top:16px}.chart-grid>.members{display:contents}.chart-grid>.terminal,.chart-grid>.details{margin:0}.chart-grid>.details{grid-column:span 1}\n      @container(min-width:740px){.chart-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}\n      @container(min-width:1180px){.chart-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chart-grid>.details{grid-column:span 2}}\n      @container(min-width:1600px){.chart-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.chart-grid>.details{grid-column:span 1}}\n      /* Bound SVG scaling on wide dashboards; keep wrapping readouts outside scrolling. */\n      .plot,.readout{width:100%;max-width:600px}.details .plot,.details .readout,.details .activity-tracks{max-width:900px}\n      @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}\n    </style>";
 
@@ -369,7 +369,27 @@ var STRINGS = {
     cascade_root_today_tomorrow: "Root today/tomorrow",
     cascade_used_today: "used today",
     cascade_discharge_target: "discharge limit",
-    static_hint: "dimmed bars = static fallback profile",
+    static_hint: "dimmed segments = static fallback profile",
+    profile_valid_since: "AC history valid from",
+    profile_reason_historical_context_missing: "Historical configuration or exclusion reason unavailable",
+    profile_reason_state_unavailable: "Required switch or device state unavailable",
+    profile_learned: "learned",
+    profile_static: "fallback",
+    profile_details: "Learning data and excluded hours",
+    profile_samples_note: "Valid comparison days per hour / required minimum. Weekdays, weekends and absence are learned separately.",
+    profile_daytype: "Day type",
+    profile_hour: "Hour",
+    profile_weekday: "Weekday",
+    profile_weekend: "Weekend",
+    profile_absence: "Absence",
+    profile_exclusions_note: "Observed exclusions from the last seven days. Recent gaps are rechecked using their historical configuration; accepted values remain unchanged. Older gaps may have no recorded reason.",
+    profile_no_exclusions: "No recorded exclusions. This does not prove complete history.",
+    profile_reason_measurement_missing: "Measurement missing",
+    profile_reason_negative_balance: "Negative meter balance",
+    profile_reason_support_unresolved: "24 V supply or switch history unresolved",
+    profile_reason_appliance_unresolved: "Appliance consumption cannot be separated",
+    profile_reason_psu48_unresolved: "48 V supply energy cannot be determined",
+    profile_reason_subtraction_missing: "Correction measurement missing",
     no_consumption: "No consumption forecast on this sensor \u2014 needs Battery Manager v0.25.5+."
   },
   de: {
@@ -589,7 +609,27 @@ var STRINGS = {
     cascade_root_today_tomorrow: "Eingang heute/morgen",
     cascade_used_today: "heute genutzt",
     cascade_discharge_target: "Entladegrenze",
-    static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
+    static_hint: "abgedunkelte Anteile = statisches Fallback-Profil",
+    profile_valid_since: "AC-Historie g\xFCltig ab",
+    profile_reason_historical_context_missing: "Historische Konfiguration oder Ausschlussgrund fehlt",
+    profile_reason_state_unavailable: "Ben\xF6tigter Schalter- oder Ger\xE4tezustand nicht verf\xFCgbar",
+    profile_learned: "gelernt",
+    profile_static: "Fallback",
+    profile_details: "Lerndaten und ausgeschlossene Stunden",
+    profile_samples_note: "G\xFCltige Vergleichstage je Stunde / erforderliche Mindestanzahl. Werktage, Wochenenden und Abwesenheit werden getrennt gelernt.",
+    profile_daytype: "Tagtyp",
+    profile_hour: "Stunde",
+    profile_weekday: "Werktag",
+    profile_weekend: "Wochenende",
+    profile_absence: "Abwesenheit",
+    profile_exclusions_note: "Beobachtete Ausschl\xFCsse der letzten sieben Tage. Aktuelle L\xFCcken werden mit der damaligen Konfiguration nachgepr\xFCft; akzeptierte Werte bleiben erhalten. F\xFCr \xE4ltere L\xFCcken kann der Grund fehlen.",
+    profile_no_exclusions: "Keine Ausschlussgr\xFCnde aufgezeichnet. Das best\xE4tigt keine l\xFCckenlose Historie.",
+    profile_reason_measurement_missing: "Messwert fehlt",
+    profile_reason_negative_balance: "Negative Z\xE4hlerbilanz",
+    profile_reason_support_unresolved: "24-V-Versorgung oder Schalterhistorie nicht eindeutig",
+    profile_reason_appliance_unresolved: "Ger\xE4teverbrauch nicht abgrenzbar",
+    profile_reason_psu48_unresolved: "Energie des 48-V-Netzteils nicht bestimmbar",
+    profile_reason_subtraction_missing: "Messwert zur Verbrauchsbereinigung fehlt",
     no_consumption: "Keine Verbrauchsprognose im Sensor \u2014 ben\xF6tigt Battery Manager v0.25.5+."
   }
 };
@@ -1880,7 +1920,7 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       body = this._message(t("no_consumption"));
     } else {
       header = this._config.title ?? t("chart_label_consumption");
-      body = this._renderChart(stateObj, t);
+      body = this._renderChart(stateObj, t) + this._renderLearning(stateObj.attributes.consumption_profile, t);
     }
     replaceCardHTML(
       this,
@@ -1907,7 +1947,9 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       dc48: num(p.dc48_w) ?? 0,
       dc24: num(p.dc24_w) ?? 0,
       loads: num(p.loads_w) ?? 0,
-      learned: typeof p.src === "string" && p.src === "L/L"
+      learned: typeof p.src === "string" && p.src === "L/L",
+      acLearned: typeof p.src === "string" && p.src.split("/")[0] === "L",
+      dcLearned: typeof p.src === "string" && p.src.split("/")[1] === "L"
     })).filter((p) => Number.isFinite(p.time));
     points.sort((a2, b) => a2.time - b.time);
     points = points.map((p, i) => ({
@@ -1991,14 +2033,14 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       const x0 = x(p.time);
       const bw = Math.max(x(p.time + durs[i] * 36e5) - x0 - 1, 1);
       barMeta.push({ cx: x0 + bw / 2 });
-      const opacity = p.learned ? 0.88 : 0.35;
-      svg.push(`<g opacity="${opacity}">`);
+      svg.push(`<g>`);
       let cum = 0;
       for (const layer of layers) {
         const v = p[layer.key];
         if (v > 0.05) {
+          const learned = layer.key === "ac" ? p.acLearned : layer.key === "loads" || p.dcLearned;
           svg.push(
-            `<rect x="${x0.toFixed(1)}" y="${y(cum + v).toFixed(1)}"
+            `<rect data-layer="${layer.key}" opacity="${learned ? 0.88 : 0.35}" x="${x0.toFixed(1)}" y="${y(cum + v).toFixed(1)}"
               width="${bw.toFixed(1)}" height="${(y(cum) - y(cum + v)).toFixed(
               1
             )}" fill="${layer.color}"/>`
@@ -2102,6 +2144,39 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     )} ${esc(t("kbd_hint"))}</div>
       <div class="legend">${legend}</div>
     `;
+  }
+  _renderLearning(profile, t) {
+    if (!profile?.samples) return "";
+    const rows = [];
+    for (const daytype of ["weekday", "weekend", "absence"]) {
+      const minimum = profile.minimum_samples?.[daytype];
+      for (let hour = 0; hour < 24; hour++) {
+        const cells = ["ac", "dc"].map((path) => {
+          const count = profile.samples?.[path]?.[daytype]?.[hour];
+          return count == null ? "\u2014" : `${count}${minimum == null ? "" : ` / ${minimum}`}`;
+        });
+        rows.push(
+          `<tr><td>${esc(t(`profile_${daytype}`))}</td><td>${hour}:00</td><td>${esc(cells[0])}</td><td>${esc(cells[1])}</td></tr>`
+        );
+      }
+    }
+    const exclusions = [];
+    for (const [day, paths] of Object.entries(profile.excluded_hours || {}).sort().reverse()) {
+      for (const [path, hours] of Object.entries(paths)) {
+        for (const [hour, reasons] of Object.entries(hours)) {
+          exclusions.push(
+            `<tr><td>${esc(day)} ${esc(hour)}:00</td><td>${esc(path.toUpperCase())}</td><td>${esc(reasons.map((reason) => t(`profile_reason_${reason}`)).join(", "))}</td></tr>`
+          );
+        }
+      }
+    }
+    return `<details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
+      <p>${esc(t("profile_samples_note"))}</p>
+      ${profile.ac_valid_since ? `<p>${esc(t("profile_valid_since"))}: ${esc(dateTimeFormat(this._hass, { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(profile.ac_valid_since)))}</p>` : ""}
+      <table><thead><tr><th>${esc(t("profile_daytype"))}</th><th>${esc(t("profile_hour"))}</th><th>AC</th><th>DC</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+      <p>${esc(t("profile_exclusions_note"))}</p>
+      ${exclusions.length ? `<table><tbody>${exclusions.join("")}</tbody></table>` : `<p>${esc(t("profile_no_exclusions"))}</p>`}
+      </details>`;
   }
   // ------------------------------------------------------------------
   // Hover crosshair + keyboard exploration (same pattern as the SOC chart)
@@ -2229,7 +2304,8 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       )} ${Math.round(v)} W</span>`
     ).join("");
     const when = esc(`${fmt.format(p.time)}`);
-    readout.innerHTML = chips ? `${when} \xB7 ${chips}` : when;
+    const sources = `AC: ${t(p.acLearned ? "profile_learned" : "profile_static")} \xB7 DC: ${t(p.dcLearned ? "profile_learned" : "profile_static")}`;
+    readout.innerHTML = `${when} \xB7 ${chips} \xB7 ${esc(sources)}`;
   }
   _clearSlot() {
     this._shownSlot = null;

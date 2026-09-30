@@ -445,3 +445,24 @@ async def test_configuration_history_prunes_without_configuration_change(hass):
         learner.data["configuration_epochs"][0]["start"]
         == (now - timedelta(days=150)).isoformat()
     )
+
+
+@pytest.mark.parametrize(
+    "exclusions",
+    [
+        [],
+        {"2026-09-28": []},
+        {"2026-09-28": {"invalid": {}}},
+        {"2026-09-28": {"ac": {"24": ["measurement_missing"]}}},
+        {"2026-09-28": {"ac": {"8": "measurement_missing"}}},
+    ],
+)
+async def test_malformed_exclusion_diagnostics_do_not_break_startup(hass, exclusions):
+    """Untrusted persisted diagnostics are rejected like malformed profiles."""
+    from unittest.mock import AsyncMock, patch
+
+    learner = ProfileLearner(hass, _entry(hass))
+    stored = {**learner.data, "diagnostics": {"excluded_hours": exclusions}}
+    with patch.object(learner._store, "async_load", new=AsyncMock(return_value=stored)):
+        await learner.async_load()
+    assert "excluded_hours" not in learner.diagnostics()

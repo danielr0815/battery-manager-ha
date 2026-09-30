@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-09-29
+
+### Added
+- Verbrauchskarte zeigt gültige Vergleichstage und Mindestanzahl je Tagtyp
+  und Stunde sowie beobachtete Ausschlussgründe der letzten sieben Tage.
+  Die AC-Gültigkeitsgrenze und die Herkunft je AC-/DC-Anteil sind sichtbar.
+- Nächtliches Lernen prüft Lücken der letzten sieben Tage erneut mit der
+  historischen Konfiguration. Akzeptierte Werte bleiben unverändert;
+  fehlende oder nicht eindeutig zuordenbare Messungen bleiben ausgeschlossen.
+
+### Fixed
+- Fallback-Abdunklung betrifft nur den jeweiligen AC-/DC-Anteil, nicht mehr
+  den ganzen Balken. Geplante Lasten werden nicht als Fallback dargestellt.
+
 ## [0.50.0] - 2026-09-28
 
 ### Added

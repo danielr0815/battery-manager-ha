@@ -358,3 +358,76 @@ test("power supplies can be enabled in card config and remain readable on a narr
       .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
   ).toBe(true);
 });
+
+test("consumption distinguishes mixed sources and explains excluded hours", async ({
+  page,
+}) => {
+  const attrs = structuredClone(attributes);
+  attrs.consumption_forecast[0].src = "S/L";
+  attrs.consumption_forecast[0].loads_w = 40;
+  attrs.consumption_forecast[1].src = "L/S";
+  attrs.consumption_profile = {
+    samples: { ac: { weekday: [4] }, dc: { weekday: [60] } },
+    minimum_samples: { weekday: 10 },
+    ac_valid_since: "2026-08-30T00:00:00+02:00",
+    excluded_hours: { "2026-09-28": { ac: { 6: ["support_unresolved"] } } },
+  };
+  await page.evaluate((attrs) => window.mount("consumption", attrs), attrs);
+  await expect(page.locator('[data-layer="ac"]').first()).toHaveAttribute(
+    "opacity",
+    "0.35",
+  );
+  await expect(page.locator('[data-layer="dc24"]').first()).toHaveAttribute(
+    "opacity",
+    "0.88",
+  );
+  await expect(page.locator('[data-layer="dc48"]').first()).toHaveAttribute(
+    "opacity",
+    "0.88",
+  );
+  await expect(page.locator('[data-layer="loads"]').first()).toHaveAttribute(
+    "opacity",
+    "0.88",
+  );
+  await expect(page.locator('[data-layer="ac"]').nth(1)).toHaveAttribute(
+    "opacity",
+    "0.88",
+  );
+  await expect(page.locator('[data-layer="dc24"]').nth(1)).toHaveAttribute(
+    "opacity",
+    "0.35",
+  );
+  await page.locator("svg#chart").press("Home");
+  await expect(page.locator("#readout")).toContainText(
+    "AC: fallback · DC: learned",
+  );
+  await page.locator("#consumption-learning summary").click();
+  await expect(page.locator("#consumption-learning")).toContainText("4 / 10");
+  await expect(page.locator("#consumption-learning")).toContainText(
+    "2026-09-28 6:00",
+  );
+  await expect(page.locator("#consumption-learning")).toContainText(
+    "24 V supply or switch history unresolved",
+  );
+  await page.locator("#consumption-learning summary").focus();
+  await page.evaluate(() => {
+    const card = window.card;
+    card.hass = {
+      ...card.hass,
+      ...{
+        language: "en",
+        config: { time_zone: "Europe/Berlin" },
+        states: {
+          "sensor.plan": {
+            attributes: structuredClone(card._lastState.attributes),
+          },
+        },
+      },
+    };
+  });
+  await expect(page.locator("#consumption-learning")).toHaveAttribute(
+    "open",
+    "",
+  );
+  await expect(page.locator("#consumption-learning summary")).toBeFocused();
+});

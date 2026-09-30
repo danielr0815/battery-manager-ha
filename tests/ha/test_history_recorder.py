@@ -333,6 +333,9 @@ async def test_fetch_days_balance_cleaning_and_completeness(hass, _min_samples_2
     expected_last[22] = None  # negative balance dropped
     expected_last[23] = None  # out-counter row missing -> hour incomplete
     _assert_series(daily[last]["ac"], expected_last)
+    reasons = learner.diagnostics()["excluded_hours"][last]["ac"]
+    assert reasons["22"] == ["negative_balance"]
+    assert reasons["23"] == ["measurement_missing"]
 
     assert learner.data["diagnostics"]["negative_residuals"] == 4
     assert learner.data["diagnostics"]["missing_statistics"] == []
@@ -807,10 +810,10 @@ async def test_cascade_learning_preserves_historical_attribution(
     assert hass.config_entries.async_add_subentry(learner.entry, cascade)
     await _run_pinned(learner)
     assert learner.data["daily_hours"] == previous
-    # Stable configuration and cached data require no recorder fetch at all.
-    with patch.object(learner, "_fetch_days", side_effect=AssertionError("refetch")):
-        await _run_pinned(learner)
-    assert learner.data["daily_hours"] == previous
+    # The partial epoch boundary remains unknown even after a gap retry.
+    assert learner.diagnostics()["excluded_hours"][DAYS[-1]]["ac"]["10"] == [
+        "historical_context_missing"
+    ]
 
 
 async def test_explicit_repair_only_changes_confirmed_ac_days(hass, _min_samples_2):
@@ -905,3 +908,63 @@ async def test_failed_second_epoch_retries_whole_missing_day(hass, _min_samples_
         learner.data["daily_hours"][DAYS[-1]]["ac"]
         == [80.0] * 10 + [None] + [120.0] * 13
     )
+
+
+async def test_recent_gap_retry_recovers_late_statistics_without_rewriting_samples(
+    hass,
+):
+    """Late recorder values repair holes, never rewrite accepted history."""
+    learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    values = _all_hours(80.0)
+    del values[(DAYS[-1], 8)]
+    await _import(hass, _power_meta("sensor.house"), _power_rows(values))
+    await _run_pinned(learner)
+    assert learner.data["daily_hours"][DAYS[-1]]["ac"][8] is None
+    assert learner.diagnostics()["excluded_hours"][DAYS[-1]]["ac"]["8"] == [
+        "measurement_missing"
+    ]
+    # The DB now contains the missing observation and a changed old observation.
+    await _import(
+        hass,
+        _power_meta("sensor.house"),
+        _power_rows(
+            {
+                (DAYS[-1], 8): 90.0,
+                (DAYS[-1], 9): 999.0,
+            }
+        ),
+    )
+    await _run_pinned(learner)
+    assert learner.data["daily_hours"][DAYS[-1]]["ac"][8:10] == [90.0, 80.0]
+    assert "8" not in learner.diagnostics()["excluded_hours"][DAYS[-1]]["ac"]
+    assert learner.diagnostics()["minimum_samples"]["weekday"] == 10
+    # Once complete, the day no longer needs a history fetch.
+    with (
+        patch.object(learner, "_fetch_days", side_effect=AssertionError("refetch")),
+        patch.object(dt_util, "now", return_value=PINNED_NOW),
+    ):
+        await learner._run_learning()
+
+
+async def test_gap_retry_is_bounded_to_seven_local_days(hass):
+    """A late sample seven days old is recoverable; eight days old is retained unknown."""
+    learner = _learner(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    values = _all_hours(80.0)
+    for day in DAYS[:2]:
+        del values[(day, 8)]
+    await _import(hass, _power_meta("sensor.house"), _power_rows(values))
+    await _run_pinned(learner)
+    await _import(
+        hass,
+        _power_meta("sensor.house"),
+        _power_rows({(day, 8): 90.0 for day in DAYS[:2]}),
+    )
+    # Keep both dates in the window, but only the second within the retry horizon.
+    hass.config_entries.async_update_entry(
+        learner.entry, options={CONF_LEARNING_WINDOW_DAYS: 8}
+    )
+    with patch.object(dt_util, "now", return_value=PINNED_NOW + timedelta(days=4)):
+        await learner._run_learning()
+    assert learner.data["daily_hours"][DAYS[0]]["ac"][8] is None
+    assert learner.data["daily_hours"][DAYS[1]]["ac"][8] == 90.0
+    assert DAYS[0] not in learner.diagnostics()["excluded_hours"]

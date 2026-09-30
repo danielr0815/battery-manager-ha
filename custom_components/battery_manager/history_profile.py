@@ -126,6 +126,11 @@ HourMap = dict[tuple[str, int], float]
 _CLEANING_RULES_VERSION = 6
 
 
+# Retry recent gaps while recorder switch history is still likely present.
+# Accepted measurements remain immutable across retries.
+_GAP_RETRY_DAYS = 7
+
+
 def _default_data() -> dict[str, Any]:
     return {
         "version": LEARNED_STORE_VERSION,
@@ -298,6 +303,22 @@ def _valid_learned_data(data: Any) -> bool:
             ):
                 return False
     diagnostics = data.get("diagnostics", defaults["diagnostics"])
+    exclusions = diagnostics.get("excluded_hours", {})
+    if not isinstance(exclusions, dict):
+        return False
+    for day, paths in exclusions.items():
+        if not isinstance(day, str) or not isinstance(paths, dict):
+            return False
+        for path, hours in paths.items():
+            if path not in _PATHS or not isinstance(hours, dict):
+                return False
+            for hour, reasons in hours.items():
+                if (
+                    hour not in {str(h) for h in range(24)}
+                    or not isinstance(reasons, list)
+                    or not all(isinstance(reason, str) for reason in reasons)
+                ):
+                    return False
     return (
         isinstance(diagnostics.get("negative_residuals", 0), (int, float))
         and isinstance(diagnostics.get("coverage", {}), dict)
@@ -525,6 +546,8 @@ class ProfileLearner:
             e["start"] for e in self.data["configuration_epochs"]
         ]
         diag["samples"] = self.data.get("samples")
+        diag["minimum_samples"] = dict(_MIN_SAMPLES)
+        diag["gap_retry_days"] = _GAP_RETRY_DAYS
         # The learned bins themselves (W per day type and hour): visible in
         # the developer tools and usable by dashboard cards/templates.
         diag["profiles"] = self.data.get("profiles")
@@ -677,7 +700,13 @@ class ProfileLearner:
                 day
                 for day in wanted_days
                 if sources[path]["active"]
-                and (daily_hours.get(day) or {}).get(path) is None
+                and (
+                    (daily_hours.get(day) or {}).get(path) is None
+                    or (
+                        day >= (today - timedelta(days=_GAP_RETRY_DAYS)).isoformat()
+                        and None in daily_hours[day][path]
+                    )
+                )
             ]
             for path in _PATHS
         }
@@ -708,6 +737,31 @@ class ProfileLearner:
             for day, value in self.data["day_log"].items()
             if day in set(wanted_days)
         }
+
+        # Bounded additive diagnostics: legacy gaps have no invented reasons.
+        reasons = self.data["diagnostics"].get("excluded_hours", {})
+        self.data["diagnostics"]["excluded_hours"] = {
+            day: value
+            for day, value in reasons.items()
+            if day >= (today - timedelta(days=_GAP_RETRY_DAYS)).isoformat()
+            and day in wanted_days
+        }
+
+        for day, values in self.data["daily_hours"].items():
+            if day < (today - timedelta(days=_GAP_RETRY_DAYS)).isoformat():
+                continue
+            day_reasons = self.data["diagnostics"]["excluded_hours"].setdefault(day, {})
+            for path in _PATHS:
+                if not sources[path]["active"]:
+                    continue
+                reasons_by_hour = day_reasons.setdefault(path, {})
+                for hour, value in enumerate(values.get(path) or [None] * 24):
+                    if value is None:
+                        reasons_by_hour.setdefault(
+                            str(hour), ["historical_context_missing"]
+                        )
+                    else:
+                        reasons_by_hour.pop(str(hour), None)
 
         day_types = {
             day: entry.get("daytype", DAY_TYPE_WEEKDAY)
@@ -1331,16 +1385,19 @@ class ProfileLearner:
             )
             # A required cleaning source that went unavailable after its first
             # row is not evidence of an inactive device. Drop every affected hour.
-            support_excluded |= {
+            unknown_hours = {
                 hour
                 for entity, values in unknown_fractions.items()
                 if entity not in (vacation_entity, workday_entity)
                 for hour in range(24)
                 if values.get((day, hour), 0.0) > 0
             }
+            support_excluded |= unknown_hours
             appliance_excluded = _excluded_hours(
                 day, status_appliances, fractions, coverage_start, tz
             )
+            reasons = self.data["diagnostics"].setdefault("excluded_hours", {})
+            day_reasons = reasons.setdefault(day, {})
             for path in _PATHS:
                 if day not in missing[path]:
                     continue
@@ -1373,8 +1430,34 @@ class ProfileLearner:
                 series = day_value[path]
                 if series is None:
                     series = day_value[path] = [None] * 24
+                path_reasons = day_reasons.setdefault(path, {})
                 for hour in valid_hours:
+                    if series[hour] is not None:
+                        continue
                     series[hour] = cleaned[hour]
+                    codes = []
+                    if load_series[hour] is None:
+                        complete = all(
+                            hour_maps.get(entity, {}).get((day, hour)) is not None
+                            for entity in sources[path]["all"]
+                        )
+                        codes.append(
+                            "negative_balance" if complete else "measurement_missing"
+                        )
+                    if hour in unknown_hours:
+                        codes.append("state_unavailable")
+                    if hour in support_excluded - unknown_hours:
+                        codes.append("support_unresolved")
+                    if path == "ac" and hour in appliance_excluded:
+                        codes.append("appliance_unresolved")
+                    if psu48_draw is not None and psu48_draw[hour] is None:
+                        codes.append("psu48_unresolved")
+                    if any(values[hour] is None for values in subtract) and not codes:
+                        codes.append("subtraction_missing")
+                    if codes:
+                        path_reasons[str(hour)] = codes
+                    else:
+                        path_reasons.pop(str(hour), None)
 
         self.data["diagnostics"]["negative_residuals"] = (
             int(self.data["diagnostics"].get("negative_residuals", 0)) + negatives

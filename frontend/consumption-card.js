@@ -192,7 +192,9 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       body = this._message(t("no_consumption"));
     } else {
       header = this._config.title ?? t("chart_label_consumption");
-      body = this._renderChart(stateObj, t);
+      body =
+        this._renderChart(stateObj, t) +
+        this._renderLearning(stateObj.attributes.consumption_profile, t);
     }
 
     replaceCardHTML(
@@ -225,6 +227,8 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
         dc24: num(p.dc24_w) ?? 0,
         loads: num(p.loads_w) ?? 0,
         learned: typeof p.src === "string" && p.src === "L/L",
+        acLearned: typeof p.src === "string" && p.src.split("/")[0] === "L",
+        dcLearned: typeof p.src === "string" && p.src.split("/")[1] === "L",
       }))
       .filter((p) => Number.isFinite(p.time));
     points.sort((a, b) => a.time - b.time);
@@ -324,20 +328,23 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       }
     }
 
-    // Stacked bars; slots on the static fallback profile render dimmed.
+    // Only the affected consumption path dims; planned loads stay visible.
     const barMeta = [];
     points.forEach((p, i) => {
       const x0 = x(p.time);
       const bw = Math.max(x(p.time + durs[i] * 3600000) - x0 - 1, 1);
       barMeta.push({ cx: x0 + bw / 2 });
-      const opacity = p.learned ? 0.88 : 0.35;
-      svg.push(`<g opacity="${opacity}">`);
+      svg.push(`<g>`);
       let cum = 0;
       for (const layer of layers) {
         const v = p[layer.key];
         if (v > 0.05) {
+          const learned =
+            layer.key === "ac"
+              ? p.acLearned
+              : layer.key === "loads" || p.dcLearned;
           svg.push(
-            `<rect x="${x0.toFixed(1)}" y="${y(cum + v).toFixed(1)}"
+            `<rect data-layer="${layer.key}" opacity="${learned ? 0.88 : 0.35}" x="${x0.toFixed(1)}" y="${y(cum + v).toFixed(1)}"
               width="${bw.toFixed(1)}" height="${(y(cum) - y(cum + v)).toFixed(
                 1,
               )}" fill="${layer.color}"/>`,
@@ -470,6 +477,44 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       )} ${esc(t("kbd_hint"))}</div>
       <div class="legend">${legend}</div>
     `;
+  }
+
+  _renderLearning(profile, t) {
+    if (!profile?.samples) return "";
+    const rows = [];
+    for (const daytype of ["weekday", "weekend", "absence"]) {
+      const minimum = profile.minimum_samples?.[daytype];
+      for (let hour = 0; hour < 24; hour++) {
+        const cells = ["ac", "dc"].map((path) => {
+          const count = profile.samples?.[path]?.[daytype]?.[hour];
+          return count == null
+            ? "—"
+            : `${count}${minimum == null ? "" : ` / ${minimum}`}`;
+        });
+        rows.push(
+          `<tr><td>${esc(t(`profile_${daytype}`))}</td><td>${hour}:00</td><td>${esc(cells[0])}</td><td>${esc(cells[1])}</td></tr>`,
+        );
+      }
+    }
+    const exclusions = [];
+    for (const [day, paths] of Object.entries(profile.excluded_hours || {})
+      .sort()
+      .reverse()) {
+      for (const [path, hours] of Object.entries(paths)) {
+        for (const [hour, reasons] of Object.entries(hours)) {
+          exclusions.push(
+            `<tr><td>${esc(day)} ${esc(hour)}:00</td><td>${esc(path.toUpperCase())}</td><td>${esc(reasons.map((reason) => t(`profile_reason_${reason}`)).join(", "))}</td></tr>`,
+          );
+        }
+      }
+    }
+    return `<details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
+      <p>${esc(t("profile_samples_note"))}</p>
+      ${profile.ac_valid_since ? `<p>${esc(t("profile_valid_since"))}: ${esc(dateTimeFormat(this._hass, { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(profile.ac_valid_since)))}</p>` : ""}
+      <table><thead><tr><th>${esc(t("profile_daytype"))}</th><th>${esc(t("profile_hour"))}</th><th>AC</th><th>DC</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+      <p>${esc(t("profile_exclusions_note"))}</p>
+      ${exclusions.length ? `<table><tbody>${exclusions.join("")}</tbody></table>` : `<p>${esc(t("profile_no_exclusions"))}</p>`}
+      </details>`;
   }
 
   // ------------------------------------------------------------------
@@ -616,7 +661,8 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       )
       .join("");
     const when = esc(`${fmt.format(p.time)}`);
-    readout.innerHTML = chips ? `${when} · ${chips}` : when;
+    const sources = `AC: ${t(p.acLearned ? "profile_learned" : "profile_static")} · DC: ${t(p.dcLearned ? "profile_learned" : "profile_static")}`;
+    readout.innerHTML = `${when} · ${chips} · ${esc(sources)}`;
   }
 
   _clearSlot() {

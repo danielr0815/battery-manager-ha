@@ -250,7 +250,35 @@ export const STRINGS = {
     cascade_root_today_tomorrow: "Root today/tomorrow",
     cascade_used_today: "used today",
     cascade_discharge_target: "discharge limit",
-    static_hint: "dimmed bars = static fallback profile",
+    static_hint: "dimmed segments = static fallback profile",
+    profile_valid_since: "AC history valid from",
+    profile_reason_historical_context_missing:
+      "Historical configuration or exclusion reason unavailable",
+    profile_reason_state_unavailable:
+      "Required switch or device state unavailable",
+    profile_learned: "learned",
+    profile_static: "fallback",
+    profile_details: "Learning data and excluded hours",
+    profile_samples_note:
+      "Valid comparison days per hour / required minimum. Weekdays, weekends and absence are learned separately.",
+    profile_daytype: "Day type",
+    profile_hour: "Hour",
+    profile_weekday: "Weekday",
+    profile_weekend: "Weekend",
+    profile_absence: "Absence",
+    profile_exclusions_note:
+      "Observed exclusions from the last seven days. Recent gaps are rechecked using their historical configuration; accepted values remain unchanged. Older gaps may have no recorded reason.",
+    profile_no_exclusions:
+      "No recorded exclusions. This does not prove complete history.",
+    profile_reason_measurement_missing: "Measurement missing",
+    profile_reason_negative_balance: "Negative meter balance",
+    profile_reason_support_unresolved:
+      "24 V supply or switch history unresolved",
+    profile_reason_appliance_unresolved:
+      "Appliance consumption cannot be separated",
+    profile_reason_psu48_unresolved: "48 V supply energy cannot be determined",
+    profile_reason_subtraction_missing: "Correction measurement missing",
+
     no_consumption:
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
@@ -512,7 +540,36 @@ export const STRINGS = {
     cascade_root_today_tomorrow: "Eingang heute/morgen",
     cascade_used_today: "heute genutzt",
     cascade_discharge_target: "Entladegrenze",
-    static_hint: "abgedunkelte Balken = statisches Fallback-Profil",
+    static_hint: "abgedunkelte Anteile = statisches Fallback-Profil",
+    profile_valid_since: "AC-Historie gültig ab",
+    profile_reason_historical_context_missing:
+      "Historische Konfiguration oder Ausschlussgrund fehlt",
+    profile_reason_state_unavailable:
+      "Benötigter Schalter- oder Gerätezustand nicht verfügbar",
+    profile_learned: "gelernt",
+    profile_static: "Fallback",
+    profile_details: "Lerndaten und ausgeschlossene Stunden",
+    profile_samples_note:
+      "Gültige Vergleichstage je Stunde / erforderliche Mindestanzahl. Werktage, Wochenenden und Abwesenheit werden getrennt gelernt.",
+    profile_daytype: "Tagtyp",
+    profile_hour: "Stunde",
+    profile_weekday: "Werktag",
+    profile_weekend: "Wochenende",
+    profile_absence: "Abwesenheit",
+    profile_exclusions_note:
+      "Beobachtete Ausschlüsse der letzten sieben Tage. Aktuelle Lücken werden mit der damaligen Konfiguration nachgeprüft; akzeptierte Werte bleiben erhalten. Für ältere Lücken kann der Grund fehlen.",
+    profile_no_exclusions:
+      "Keine Ausschlussgründe aufgezeichnet. Das bestätigt keine lückenlose Historie.",
+    profile_reason_measurement_missing: "Messwert fehlt",
+    profile_reason_negative_balance: "Negative Zählerbilanz",
+    profile_reason_support_unresolved:
+      "24-V-Versorgung oder Schalterhistorie nicht eindeutig",
+    profile_reason_appliance_unresolved: "Geräteverbrauch nicht abgrenzbar",
+    profile_reason_psu48_unresolved:
+      "Energie des 48-V-Netzteils nicht bestimmbar",
+    profile_reason_subtraction_missing:
+      "Messwert zur Verbrauchsbereinigung fehlt",
+
     no_consumption:
       "Keine Verbrauchsprognose im Sensor — benötigt Battery Manager v0.25.5+.",
   },
