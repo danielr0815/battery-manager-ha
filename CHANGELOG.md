@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-01
+
+### Changed
+- Der Inverter-Entladeaktor erhält ausschließlich 0 W (gesperrt) oder die
+  konfigurierte Maximalleistung (freigegeben, auf der Referenzanlage 2300 W).
+  Die Reserveplanung budgetiert vollständige Fünf-Minuten-Abschnitte mit
+  prognostizierter Restlast und Standby-Verlusten. Kleine Restbudgets bleiben
+  ungenutzt, statt den Inverter lange mit geringer Leistung zu betreiben;
+  dadurch kann etwas mehr Netzbezug bzw. späterer PV-Export entstehen.
+- Die schnelle AC-Regelung gibt nur frei, wenn das Restbudget die volle
+  Maximalleistung über das 35-Sekunden-Sicherheitsfenster trägt. Bei kleinerem
+  Budget wird sofort gesperrt, auch während der Ausschaltverzögerung.
+  Bereits kommandierte Planfreigaben werden ebenfalls alle fünf Sekunden gegen
+  ihr Headroom-Budget und SOC-Messunsicherheit geprüft; fehlende Schutzmesswerte
+  oder ein abgelaufener Plan sperren sie. AC-Leistungsmesser bleiben optional.
+  Vertrag und Energiebilanz: `docs/F-BINARY-INVERTER.md`.
+
 ## [0.51.0] - 2026-09-29
 
 ### Added

@@ -324,14 +324,21 @@ async def test_live_update_builds_coordinated_plan_and_publishes_diagnostics(has
 
 
 @pytest.mark.parametrize("watts", [500, 1700, 2300, 3100])
+@pytest.mark.parametrize("planned", [None, 0, 30, 700, 2300])
 async def test_inverter_limit_uses_configured_power_and_never_writes_feedback(
-    rig, hass, watts
+    rig, hass, watts, planned
 ):
     c, calls, _, _ = rig
     c.raw_config["inverter_max_power_w"] = watts
+    c._reserve_inverter_limit_w = planned
     hass.states.async_set(LIMIT, "0")
     hass.states.async_set(BLOCK, "on")
     await execute(c, inverter=True)
+    if planned == 0:
+        assert calls == []
+        assert float(hass.states.get(LIMIT).state) == 0
+        assert not c._inverter_recommendation
+        return
     assert calls == [(LIMIT, float(watts))]
     assert c._inverter_recommendation
     calls.clear()

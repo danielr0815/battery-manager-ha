@@ -225,10 +225,10 @@ async def test_fast_path_waits_for_source_owner_and_rechecks(live, hass):
 async def test_plan_permission_survives_missing_optional_live_meter(live, hass):
     c, calls, *_ = live
     await c.live_ac.run()
-    c._reserve_inverter_limit_w = 700
+    c._reserve_inverter_limit_w = 2300
     hass.states.async_set("sensor.house", "unavailable")
     await c.live_ac.run()
-    assert float(hass.states.get(LIMIT).state) == 700
+    assert float(hass.states.get(LIMIT).state) == 2300
     assert c.data["inverter_recommendation"]
 
 
@@ -281,6 +281,7 @@ async def test_real_reserve_plan_keeps_forecast_but_releases_measured_load(live,
     result = plan(config, inputs)
     assert not result.inverter_on
     assert result.trajectory.flows[1].inverter_output_wh > 0
+    c.raw_config["inverter_max_power_w"] = 1000
     c.live_ac.set_plan(config, inputs, result)
     await c.live_ac.run()
     assert float(hass.states.get(LIMIT).state) == 1000
@@ -367,3 +368,153 @@ async def test_direct_ac_sources_are_individually_fresh(live, hass, freezer):
     await c.live_ac.run()
     assert float(hass.states.get(LIMIT).state) == 0
     assert c.live_ac.diagnostics["reason"] == "measurement_unavailable"
+
+
+async def test_small_remaining_budget_switches_off_instead_of_throttling(live, hass):
+    c, calls, *_ = live
+    await c.live_ac.run()
+    config = c.live_ac.envelope.config
+    floor = 50 + max(
+        config.control.soc_buffer_percent, config.control.hysteresis_percent
+    )
+    # Ten remaining Wh cannot sustain full permission during the 35-s window.
+    hass.states.async_set(
+        "sensor.test_soc", str(floor + 10 / config.battery.capacity_wh * 100)
+    )
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 2300), (LIMIT, 0)]
+    assert c.live_ac.diagnostics["reason"] == "reserve_budget"
+    assert not c.data["inverter_recommendation"]
+
+
+@pytest.mark.parametrize("fault", ["budget", "expired", "stale_soc", "grid", "source"])
+async def test_planned_full_permission_is_guarded_without_optional_load_meters(
+    live, hass, freezer, fault
+):
+    from dataclasses import replace
+
+    c, calls, *_ = live
+    c._reserve_inverter_limit_w = 2300
+    c.live_ac.envelope = replace(
+        c.live_ac.envelope, floor_percent=90, planned_floor_percent=50
+    )
+    hass.states.async_set("sensor.house", "unavailable")
+    assert await c._confirm_inverter_limit(False, {})
+    assert calls == [(LIMIT, 2300)]
+    assert c.live_ac.limit_w == 0  # Only the forecast permission is active.
+    c.live_ac.start()
+    if fault == "budget":
+        config = c.live_ac.envelope.config
+        floor = 50 + config.control.hysteresis_percent
+        hass.states.async_set(
+            "sensor.test_soc", str(floor + 10 / config.battery.capacity_wh * 100)
+        )
+    elif fault == "expired":
+        c.live_ac.envelope = replace(c.live_ac.envelope, expires=dt_util.utcnow())
+    elif fault == "stale_soc":
+        freezer.tick(timedelta(seconds=31))
+    elif fault == "grid":
+        hass.states.async_set("binary_sensor.grid", "off")
+    else:
+        hass.states.async_set(PSU48, "on")
+    freezer.tick(timedelta(seconds=5))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done(wait_background_tasks=True)
+    assert calls == [(LIMIT, 2300), (LIMIT, 0)]
+    assert not c.data["inverter_recommendation"]
+    assert c.live_ac.diagnostics["planned_limit_w"] == 0
+    c.live_ac.stop()
+
+
+async def test_delayed_planned_release_rechecks_its_budget(live, hass):
+    from dataclasses import replace
+
+    c, calls, *_ = live
+    c._reserve_inverter_limit_w = 2300
+    c.live_ac.envelope = replace(
+        c.live_ac.envelope, floor_percent=90, planned_floor_percent=50
+    )
+    original = c._set_number_value
+
+    async def consume_budget(entity, value):
+        confirmed = await original(entity, value)
+        if value:
+            hass.states.async_set("sensor.test_soc", "50")
+        return confirmed
+
+    c._set_number_value = consume_budget
+    assert not await c._confirm_inverter_limit(False, {})
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 2300), (LIMIT, 0)]
+    assert not c.data["inverter_recommendation"]
+
+
+async def test_guard_does_not_take_ownership_of_legacy_inverter(live, hass):
+    c, calls, *_ = live
+    c.raw_config["reserve_mode"] = "off"
+    c._reserve_inverter_limit_w = None
+    assert await c._confirm_inverter_limit(False, {})
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 2300)]
+    assert float(hass.states.get(LIMIT).state) == 2300
+
+
+async def test_timer_cannot_start_planned_permission_before_source_owner(live):
+    from dataclasses import replace
+
+    c, calls, *_ = live
+    c._reserve_inverter_limit_w = 2300
+    c.live_ac.envelope = replace(
+        c.live_ac.envelope, floor_percent=90, planned_floor_percent=50
+    )
+    await c.live_ac.run()
+    assert c.live_ac.diagnostics["planned_limit_w"] == 2300
+    assert calls == []
+
+
+async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
+    live, hass
+):
+    from dataclasses import replace
+
+    from custom_components.battery_manager.core import plan
+    from custom_components.battery_manager.core.model import HourSlot, PlanInputs
+
+    c, calls, *_ = live
+    config = c.build_system_config()
+    config = replace(
+        config,
+        battery=replace(
+            config.battery, capacity_wh=1000, eta_charge=1, eta_discharge=1
+        ),
+        inverter=replace(config.inverter, max_power_w=1000, eta=1, standby_power_w=0),
+        charger=replace(config.charger, max_power_w=2000, eta=1, standby_power_w=0),
+        control=replace(config.control, hysteresis_percent=0),
+        reserve=replace(config.reserve, upper_pv_factor=1),
+        support=replace(config.support, native48_base_w=0),
+    )
+    now = dt_util.now()
+    inputs = PlanInputs(
+        now,
+        80,
+        (
+            HourSlot(0, now, 1, now.hour, 0, 600, 0),
+            HourSlot(1, now + timedelta(hours=1), 1, (now.hour + 1) % 24, 900, 0, 0),
+        ),
+    )
+    result = plan(config, inputs)
+    assert result.inverter_on
+    c.raw_config["inverter_max_power_w"] = 1000
+    c._reserve_inverter_limit_w = result.trajectory.flows[0].inverter_limit_w
+    hass.states.async_set("sensor.house", "unavailable")
+    c.live_ac.set_plan(config, inputs, result)
+    assert c.live_ac.limit_w == 0
+    assert c.live_ac.planned_limit() == 1000
+    assert await c._confirm_inverter_limit(False, {})
+    assert calls == [(LIMIT, 1000)]
+    # Spending the forecast headroom revokes the plan itself, not just live AC.
+    hass.states.async_set(
+        "sensor.test_soc", str(c.live_ac.envelope.planned_floor_percent)
+    )
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 1000), (LIMIT, 0)]

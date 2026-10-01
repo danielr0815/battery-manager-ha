@@ -43,15 +43,15 @@ def live_ac_decision(
     spend more than this energy during one measurement freshness window plus
     the next check, even when the SOC sensor has not reported again yet.
     """
-    limit = int(
-        min(
-            max_power_w,
-            max(0.0, available_wh)
-            * efficiency
-            * 3600
-            / (LIVE_AC_SAMPLE_MAX_AGE_S + LIVE_AC_INTERVAL_S),
-        )
+    # F-BINARY-INVERTER: never stretch a small budget through throttling.
+    # A full-power load may appear immediately after the last measurement.
+    safe_power_w = (
+        max(0.0, available_wh)
+        * efficiency
+        * 3600
+        / (LIVE_AC_SAMPLE_MAX_AGE_S + LIVE_AC_INTERVAL_S)
     )
+    limit = int(max_power_w) if safe_power_w >= max_power_w else 0
     if blocked_reason or demand_w is None or limit < LIVE_AC_ON_W:
         return LiveACDecision(
             LiveACState(),

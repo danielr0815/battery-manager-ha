@@ -118,11 +118,11 @@ async def test_high_soc_restored_grid_holding_returns_to_confirmed_native_source
     assert not result["support_dc24"] and not result["support_dc48"]
     assert calls.index((PSU48, False)) < calls.index((DCDC, True))
     assert calls.index((DCDC, True)) < calls.index((PSU24, False))
-    release = next(
-        i for i, (entity, value) in enumerate(calls) if entity == LIMIT and value > 0
-    )
-    assert calls.index((PSU24, False)) < release
-    assert float(hass.states.get(LIMIT).state) > 0
+    # The small immediate preparation budget cannot fund full permission
+    # plus SOC uncertainty. Restore DC without falsely publishing AC enabled.
+    assert not any(entity == LIMIT and value > 0 for entity, value in calls)
+    assert float(hass.states.get(LIMIT).state) == 0
+    assert not c._inverter_recommendation
     assert hass.states.get(DCDC).state == "on"
     # Confirmation is observed on the next serialized planning/protection pass.
     c._reserve_reconcile_legacy_hold(80)

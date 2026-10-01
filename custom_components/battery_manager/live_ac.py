@@ -39,6 +39,7 @@ class LiveACEnvelope:
     expires: datetime
     floor_percent: float
     support_required: bool
+    planned_floor_percent: float | None = None
 
 
 class LiveACRuntime:
@@ -99,6 +100,8 @@ class LiveACRuntime:
                 ),
                 decision.live_ac_floor_percent,
                 result.support_dc24_now or result.support_dc48_now,
+                inputs.start_soc_percent
+                - config.battery.soc_percent(decision.headroom_wh),
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -206,11 +209,59 @@ class LiveACRuntime:
             if self.state.low_since
             else None,
         }
+        self.diagnostics["planned_limit_w"] = self.planned_limit()
         return self.limit_w
+
+    def planned_limit(self) -> int:
+        """Recheck a full-power forecast permission without requiring AC meters.
+
+        F-BINARY-INVERTER: a load jump must not spend the DC reserve while the
+        slower planner is computing. The headroom floor already reserves the
+        first step's DC draw; SOC hysteresis additionally covers measurement
+        granularity, and the same 35-second full-power window covers freshness.
+        """
+        c, envelope = self.owner, self.envelope
+        if not c._reserve_inverter_limit_w or envelope is None:
+            return 0
+        soc = c._read_float(c.raw_config[CONF_SOC_ENTITY])
+        blocked = self.diagnostics["reason"]
+        if (
+            blocked
+            in (
+                "inactive",
+                "plan_expired",
+                "soc_unavailable",
+                "grid_unavailable",
+                "dc_supply",
+            )
+            or soc is None
+        ):
+            return 0
+        config = envelope.config
+        floor = (
+            max(
+                envelope.planned_floor_percent
+                if envelope.planned_floor_percent is not None
+                else envelope.floor_percent,
+                config.control.inverter_min_soc_percent,
+                config.control.support_dc24_activate_soc,
+                config.control.support_dc48_activate_soc,
+            )
+            + config.control.hysteresis_percent
+        )
+        available = config.battery.energy_wh(max(0.0, soc - floor))
+        return live_ac_decision(
+            LiveACState(),
+            dt_util.utcnow(),
+            config.inverter.max_power_w,
+            available,
+            config.inverter.max_power_w,
+            config.battery.eta_discharge * config.inverter.eta,
+        ).limit_w
 
     def note_command(self, target_w: float) -> None:
         """A plan executor can also issue the extra permission before our tick."""
-        if target_w > (self.owner._reserve_inverter_limit_w or 0) and self.limit_w:
+        if target_w > 0 and self.owner._reserve_inverter_limit_w is not None:
             self._owns_limit = True
 
     async def run(self) -> None:
@@ -220,13 +271,15 @@ class LiveACRuntime:
         # Same ownership lock as planned source transfers; never race a PSU ON.
         async with c._switch_lock:
             live = self.refresh()
+            planned = self.planned_limit()
+            # Planned starts still belong to the source owner and its dwell.
+            # This timer only maintains/revokes an already commanded plan.
             if not live and not self._owns_limit:
                 if c.data and c.data.get("live_ac") != self.diagnostics:
                     c.data["live_ac"] = dict(self.diagnostics)
                     c.async_update_listeners()
                 return
             self._owns_limit = True
-            planned = c._reserve_inverter_limit_w or 0
             protected = self.diagnostics["reason"] in (
                 "inactive",
                 "soc_unavailable",
@@ -245,11 +298,13 @@ class LiveACRuntime:
                 "grid_unavailable",
                 "dc_supply",
             )
-            if target and (protection_changed or (not still_live and not planned)):
+            if target and (
+                protection_changed or (not still_live and not self.planned_limit())
+            ):
                 confirmed = await c._confirm_inverter_limit(True, diag)
                 target = 0
             c._inverter_recommendation = bool(target and confirmed)
-            self._owns_limit = bool(live or not confirmed)
+            self._owns_limit = bool(target or not confirmed)
             self.diagnostics["confirmed"] = confirmed
             if c.data:
                 c.data["inverter_recommendation"] = c._inverter_recommendation

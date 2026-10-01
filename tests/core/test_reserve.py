@@ -74,9 +74,11 @@ def test_early_evening_ac_opportunity_used_when_morning_has_no_load():
 
 def test_only_dc_remainder_is_allocated_to_ac():
     r = simulate(config(), inputs(95, [(0, 500, 100), (0, 500, 100), (500, 0, 0)]), 20)
-    assert sum(f.inverter_output_wh for f in r.flows) == pytest.approx(300)
+    # Seven complete five-minute ON steps fit; an eighth would spend DC reserve.
+    served = 7 * 500 / 12
+    assert sum(f.inverter_output_wh for f in r.flows) == pytest.approx(served)
     assert sum(f.psu24_delivered_wh for f in r.flows) == 0
-    assert r.total_export_wh == pytest.approx(0, abs=1e-6)
+    assert r.total_export_wh == pytest.approx(300 - served)
 
 
 def test_lower_pv_does_not_create_grid_recharge_after_preparation():
@@ -152,7 +154,8 @@ def test_p90_and_physical_peak_replace_uncalibrated_scalar():
     )
     plain = simulate(c, i, 20)
     band = simulate(c, bands, 20)
-    assert plain.flows[0].inverter_output_wh == pytest.approx(480)
+    # 480 Wh only permits eleven whole 500-W steps; p90 permits all twelve.
+    assert plain.flows[0].inverter_output_wh == pytest.approx(11 * 500 / 12)
     assert band.flows[0].inverter_output_wh == pytest.approx(500)
 
 
@@ -187,9 +190,10 @@ def test_recording_before_reserve_extension_remains_replayable():
 def test_latest_preparation_time_excludes_involuntary_native_discharge():
     c = config()
     r = simulate(c, inputs(95, [(0, 500, 0), (200, 0, 0)]), 20)
-    assert r.flows[0].reserve_preparation_start == NOW + timedelta(minutes=35)
+    assert r.flows[0].reserve_preparation_start == NOW + timedelta(minutes=40)
     assert not r.flows[0].inverter_start
-    assert r.flows[0].inverter_output_wh == pytest.approx(200)
+    # Do not stretch the remaining 33.3 Wh through a partial-power ON step.
+    assert r.flows[0].inverter_output_wh == pytest.approx(4 * 500 / 12)
     dark = simulate(c, inputs(80, [(0, 100, 60)]), 20)
     assert dark.flows[0].battery_discharge_wh > 0
     assert dark.flows[0].reserve_preparation_start is None
@@ -295,7 +299,8 @@ def test_new_pv_forecast_releases_economic_support_without_waiting_for_recovery(
     released = plan(c, sunny)
     assert not released.support_dc24_now and not released.support_dc48_now
     assert released.trajectory.flows[0].inverter_output_wh > 0
-    assert released.trajectory.total_export_wh == pytest.approx(0, abs=1e-6)
+    # Binary steps may leave less than one full load quantum of headroom unused.
+    assert released.trajectory.total_export_wh == pytest.approx(500 / 15)
 
 
 def test_dc_only_preparation_waits_until_needed_and_captures_future_pv():

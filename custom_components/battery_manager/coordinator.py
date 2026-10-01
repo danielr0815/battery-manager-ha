@@ -6051,7 +6051,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _effective_inverter_limit_w(self) -> int | float:
         if self._reserve_inverter_limit_w is None:
             return float(self.raw_config["inverter_max_power_w"])
-        return max(self._reserve_inverter_limit_w, self.live_ac.refresh())
+        live = self.live_ac.refresh()
+        planned = (
+            self.live_ac.planned_limit()
+            if self.raw_config.get(CONF_RESERVE_MODE) == "active"
+            else self._reserve_inverter_limit_w
+        )
+        requested = max(planned, live)
+        # F-BINARY-INVERTER: the actuator is an enable/disable permission.
+        # Both planners budget full permission; never publish intermediate watts.
+        return float(self.raw_config["inverter_max_power_w"]) if requested > 0 else 0
 
     def _inverter_limit_confirmed(self, blocked: bool) -> bool:
         """The watt limit is the actuator; Victron's switch is read-only proof."""
@@ -6062,7 +6071,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return (
             value is not None
             and abs(value - target) < 0.1
-            and (not feedback or self._entity_tristate(feedback) is blocked)
+            and (not feedback or self._entity_tristate(feedback) is (target == 0))
         )
 
     async def _confirm_inverter_limit(self, blocked: bool, diag: dict) -> bool:

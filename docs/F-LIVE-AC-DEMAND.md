@@ -31,9 +31,11 @@ bei der normalen Lastpriorität wird dabei kein zukünftiges AC-Fenster bevorzug
 Noch nicht eingetroffene PV des aktuellen Schritts ist keine gespeicherte Energie.
 
 Der Laufzeitpfad zieht außerdem den größeren Wert aus SOC-Puffer und SOC-Hysterese
-ab. Sein Leistungslimit kann höchstens die verbleibenden Wh innerhalb von
-35 Sekunden verbrauchen (30 Sekunden Messgültigkeit plus fünf Sekunden Prüfung),
-unter Beachtung von Entlade- und Inverterwirkungsgrad sowie Maximalleistung.
+ab. Ab 0.52.0 wird ausschließlich die konfigurierte Maximalleistung freigegeben,
+wenn die verbleibenden Wh diese Leistung für 35 Sekunden tragen können
+(30 Sekunden Messgültigkeit plus fünf Sekunden Prüfung), unter Beachtung von
+Entlade- und Inverterwirkungsgrad. Andernfalls wird gesperrt; es gibt kein
+Teilleistungslimit. Siehe [Binäre Inverterfreigabe](F-BINARY-INVERTER.md).
 Eine neue SOC-Meldung verändert das Budget sofort bei der nächsten Prüfung.
 Ein neues Planergebnis ersetzt die Grenze, nicht die laufende Ausschaltfrist.
 Die eigentlichen Forecast-Flüsse und Golden-Szenarien bleiben unverändert.
@@ -84,7 +86,10 @@ Alle verwendeten Leistungswerte brauchen W/kW und dürfen höchstens 30 Sekunden
 seit `last_reported` alt sein. Konstante Template-Ergebnisse können diese
 Frischebedingung verletzen, auch wenn ihre Rohsensoren weiter melden. Deshalb
 werden auf dieser Anlage die direkt meldenden Victron-Sensoren bevorzugt.
-Fehlende Messwerte beenden nur den Zusatzpfad, nicht die normale Planung.
+Fehlende AC-Leistungsmesswerte beenden nur den Zusatzpfad, nicht die normale
+Planfreigabe. Ab 0.52.0 benötigen auch geplante Freigaben ein frisches Budget,
+SOC und Netzsignal; ihr voller Leistungsdurchsatz wird unabhängig von den
+optionalen AC-Leistungsmessern alle fünf Sekunden abgesichert.
 
 ### Zuordnung aus der Power Flow Card Plus dieser Anlage
 

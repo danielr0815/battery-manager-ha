@@ -58,7 +58,9 @@ def test_earlier_ac_cannot_force_later_dc_grid_support():
     assert not result.flows[1].support_dc24
     assert result.flows[1].psu24_delivered_wh == 0
     assert result.flows[1].unserved_dc_wh == 0
-    assert result.total_export_wh == pytest.approx(50, abs=1e-4)
+    # A second 50-Wh ON step would consume the DC protection margin.
+    assert result.flows[0].inverter_output_wh == pytest.approx(50)
+    assert result.total_export_wh == pytest.approx(100, abs=1e-4)
 
 
 def test_dc_alone_creates_space_so_no_ac_is_required():
@@ -160,3 +162,29 @@ def test_high_load_after_the_pv_peak_cannot_replace_required_night_discharge():
     assert result.flows[0].inverter_output_wh == pytest.approx(100)
     assert result.flows[2].inverter_output_wh == 0
     assert result.total_export_wh == pytest.approx(100)
+
+
+@pytest.mark.parametrize("standby", [0, 15])
+def test_binary_preparation_uses_full_permission_and_budgets_standby(standby):
+    c = plant()
+    c = replace(c, inverter=replace(c.inverter, standby_power_w=standby))
+    # 175 Wh of headroom: three full 5-minute steps fit, four do not.
+    result = simulate(c, series([(0, 600, 0), (325, 0, 0)]), 20)
+    first = result.flows[0]
+    assert all(f.inverter_limit_w in (0, 1000) for f in result.flows)
+    on_hours = sum(
+        (interval.end - interval.start).total_seconds() / 3600
+        for interval in first.switching_schedule
+        if interval.inverter_on
+    )
+    assert on_hours == pytest.approx(0.25)
+    assert first.inverter_output_wh == pytest.approx((600 + standby) * on_hours)
+    assert first.soc_end_percent >= 62.5
+    assert result.total_export_wh == pytest.approx(175 - first.inverter_output_wh)
+
+
+def test_tiny_budget_does_not_run_inverter_at_partial_power():
+    result = simulate(plant(), series([(0, 600, 0), (175, 0, 0)]), 20)
+    assert result.flows[0].inverter_output_wh == 0
+    assert not any(i.inverter_on for i in result.flows[0].switching_schedule)
+    assert result.total_export_wh == pytest.approx(25)

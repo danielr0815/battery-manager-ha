@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.50.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.52.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -186,3 +186,20 @@ manuelle oder geplante DC-Versorgung, unbekannte Quellen und erschöpftes Budget
 Planner weiterarbeiten. Keine wiederhergestellte Freigabe nach Neustart; neue
 Messungen und ein neuer Plan sind nötig. Details und Tests:
 [Gemessener AC-Bedarf](F-LIVE-AC-DEMAND.md).
+
+
+## Binäre Inverterfreigabe (0.52.0)
+
+`maxdischargepower` erhält nur 0 W oder `inverter_max_power_w`. Die
+Reserveplanung budgetiert vollständige Fünf-Minuten-ON-Schritte anhand der
+prognostizierten Last samt Standby; kleine Restbudgets bleiben ungenutzt.
+Der Live-Pfad verlangt Energie für volle Leistung während seines
+35-Sekunden-Sicherheitsfensters, sonst sperrt er sofort. Bereits kommandierte
+Planfreigaben werden ebenfalls alle fünf Sekunden anhand des Headrooms,
+SOC-Hysterese und desselben Sicherheitsfensters überwacht. Frischer SOC,
+bestätigte Quellen und frischer verfügbarer Netzstatus sind dafür erforderlich;
+optionale AC-Leistungsmesser bleiben für die Planfreigabe entbehrlich. Ein
+abgelaufener Plan berechtigt nicht zur weiteren Freigabe. Volle Freigabe
+bedeutet weiterhin bedarfsgerechte ESS-Abgabe, keine erzwungene Einspeisung.
+Energiebilanzen, mögliche zusätzliche Import-/Export-Restmengen und Tests:
+[Binäre Inverterfreigabe](F-BINARY-INVERTER.md).

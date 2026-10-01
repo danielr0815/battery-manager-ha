@@ -113,13 +113,14 @@ def test_forecast_control_needs_no_shadow_or_additional_sensor_setup():
     assert _validate_support_entities(c) is None
 
 
-async def test_bounded_inverter_limit_is_written_and_confirmed(rig, hass):
+async def test_partial_feedback_does_not_confirm_full_inverter_permission(rig, hass):
     c, calls, _, _ = rig
-    c._reserve_inverter_limit_w = 125
+    c._reserve_inverter_limit_w = 2300
+    hass.states.async_set(LIMIT, "125")
+    assert not c._inverter_limit_confirmed(False)
     await execute(c, inverter=True)
-    assert (LIMIT, 125) in calls
+    assert calls == [(LIMIT, 2300)]
     assert c._inverter_limit_confirmed(False)
-    assert not any(entity == LIMIT and value == 2300 for entity, value in calls)
 
 
 async def test_grid_loss_restores_dc_before_waiting_for_dead_inverter(rig, hass):
@@ -296,19 +297,17 @@ async def test_existing_coordinated_installation_defaults_active_without_history
     assert c._reserve_runtime.observed_seconds == 0
 
 
-async def test_missing_grid_evidence_blocks_psus_but_not_forecast_preparation(
-    rig, hass
-):
+async def test_missing_grid_evidence_cannot_release_unbudgeted_full_power(rig, hass):
     c, calls, *_ = rig
     c.raw_config[CONF_RESERVE_MODE] = "active"
     c.raw_config[CONF_SOC_ENTITY] = "sensor.test_soc"
     hass.states.async_set("sensor.test_soc", "80")
-    c._reserve_inverter_limit_w = 125
+    c._reserve_inverter_limit_w = 2300
     await execute(c, dc24=True, dc48=True, inverter=True)
-    assert (LIMIT, 125) in calls
+    assert (LIMIT, 0) in calls
     assert not any(entity in (PSU24, PSU48) and value for entity, value in calls)
     assert hass.states.get(DCDC).state == "on"
-    assert c._inverter_recommendation
+    assert not c._inverter_recommendation
 
 
 async def test_unverified_rail_cannot_be_transferred_by_active_policy(rig, hass):

@@ -311,12 +311,21 @@ def _simulate_reserve(
             if useful_ac and not (dc24 or dc48)
             else 0.0
         )
-        limit = min(
-            config.inverter.max_power_w,
-            ac_budget * battery.eta_discharge * config.inverter.eta / slot.duration,
+        # F-BINARY-INVERTER: budget complete ON steps at the forecast load,
+        # including standby, rather than holding the inverter at a tiny limit.
+        # ESS still follows demand when its maximum power is permitted.
+        required_ac = min(
+            config.inverter.max_power_w * slot.duration,
+            max(0.0, slot.ac_wh + extra - pv)
+            + config.inverter.standby_power_w * slot.duration,
         )
-        if limit <= ENERGY_EPSILON_WH:
-            limit = 0.0
+        available_ac = ac_budget * battery.eta_discharge * config.inverter.eta
+        limit = (
+            config.inverter.max_power_w
+            if ac_budget > ENERGY_EPSILON_WH
+            and available_ac + ENERGY_EPSILON_WH >= required_ac
+            else 0.0
+        )
         if not limit and (dc24, dc48) == (
             protected.support_dc24,
             protected.support_dc48,

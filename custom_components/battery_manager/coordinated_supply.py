@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
@@ -37,7 +37,7 @@ async def execute_coordinated_support(
             psu24 = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
             psu48 = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
             dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
-            diag = {
+            diag: dict[str, Any] = {
                 "mode": "coordinated",
                 "reason": "settled",
                 "desired": dict(desired),
@@ -122,9 +122,8 @@ async def execute_coordinated_support(
                         await self._confirm_inverter_limit(True, diag)
                         return
                     self._support_state[key] = False
-                # Unknown grid supply rules out PSU credit, not useful
-                # forecast-driven battery preparation. Known grid loss
-                # still follows the existing island/fallback protection.
+                # A full-power reserve permission also needs fresh protection
+                # evidence. The final actuator guard can revoke an old proposal.
                 soc = self._get_soc(dt_util.now())
                 blocked = (
                     self._reserve_grid_available() is False
@@ -133,7 +132,11 @@ async def execute_coordinated_support(
                     or soc <= config.control.inverter_min_soc_percent
                 )
                 confirmed_limit = await self._confirm_inverter_limit(blocked, diag)
-                self._inverter_recommendation = not blocked and confirmed_limit
+                self._inverter_recommendation = bool(
+                    not blocked
+                    and confirmed_limit
+                    and diag.get("discharge_limit_target_w", 0) > 0
+                )
                 diag["reason"] = "grid_supply_unavailable"
                 self._save_persistent_state()
                 return
@@ -218,7 +221,9 @@ async def execute_coordinated_support(
                         return
                 if not await self._confirm_inverter_limit(False, diag):
                     return
-                self._inverter_recommendation = True
+                self._inverter_recommendation = bool(
+                    diag.get("discharge_limit_target_w", 0) > 0
+                )
     finally:
         self._save_persistent_state()
         if self.data:

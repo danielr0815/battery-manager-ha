@@ -70,8 +70,13 @@ def test_protection_immediately_overrides_hold(energy, demand, blocked, reason):
 
 def test_limit_preserves_energy_until_stale_measurement_is_detected():
     limited = decide(energy=10)
-    assert limited.limit_w == 925
-    assert limited.limit_w / 0.9 * 35 / 3600 <= 10
+    assert limited.limit_w == 0
+    assert limited.reason == "reserve_budget"
+    required_wh = 2300 / 0.9 * 35 / 3600
+    assert decide(energy=required_wh - 0.001).limit_w == 0
+    released = decide(energy=required_wh + 0.001)
+    assert released.limit_w == 2300
+    assert released.limit_w / 0.9 * 35 / 3600 <= required_wh + 0.001
     assert LIVE_AC_SAMPLE_MAX_AGE_S == 30
     assert LIVE_AC_INTERVAL_S == 5
     assert LIVE_AC_PLAN_MAX_AGE_S == 300
