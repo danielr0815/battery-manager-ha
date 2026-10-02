@@ -22,6 +22,7 @@ from .const import (
 )
 from .core.live_ac import (
     LIVE_AC_INTERVAL_S,
+    LIVE_AC_MARKET_START_RATIO,
     LIVE_AC_PLAN_MAX_AGE_S,
     LIVE_AC_SAMPLE_MAX_AGE_S,
     LiveACState,
@@ -40,6 +41,8 @@ class LiveACEnvelope:
     floor_percent: float
     support_required: bool
     planned_floor_percent: float | None = None
+    override_demand_w: float | None = None
+    override_floor_percent: float = 100.0
 
 
 class LiveACRuntime:
@@ -97,11 +100,23 @@ class LiveACRuntime:
                     + timedelta(seconds=LIVE_AC_PLAN_MAX_AGE_S),
                     dt_util.as_utc(inputs.slots[0].start)
                     + timedelta(hours=inputs.slots[0].duration),
+                    min(
+                        (
+                            dt_util.as_utc(at)
+                            for price in inputs.market_prices
+                            for at in (price.start, price.end)
+                            if at.timestamp() > inputs.now.timestamp()
+                        ),
+                        default=dt_util.as_utc(inputs.now)
+                        + timedelta(seconds=LIVE_AC_PLAN_MAX_AGE_S),
+                    ),
                 ),
                 decision.live_ac_floor_percent,
                 result.support_dc24_now or result.support_dc48_now,
                 inputs.start_soc_percent
                 - config.battery.soc_percent(decision.headroom_wh),
+                decision.live_ac_override_demand_w,
+                decision.live_ac_override_floor_percent,
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -178,8 +193,18 @@ class LiveACRuntime:
             ):
                 reason = "dc_supply"
             else:
+                demand = self.measured_demand()
+                reserve_floor = envelope.floor_percent
+                if (
+                    envelope.override_demand_w is not None
+                    and demand is not None
+                    and min(demand, config.inverter.max_power_w)
+                    >= envelope.override_demand_w
+                    * (1.0 if self.state.active else LIVE_AC_MARKET_START_RATIO)
+                ):
+                    reserve_floor = envelope.override_floor_percent
                 floor = max(
-                    envelope.floor_percent,
+                    reserve_floor,
                     config.control.inverter_min_soc_percent,
                     config.control.support_dc24_activate_soc,
                     config.control.support_dc48_activate_soc,
@@ -187,7 +212,6 @@ class LiveACRuntime:
                     config.control.soc_buffer_percent, config.control.hysteresis_percent
                 )
                 available_wh = config.battery.energy_wh(max(0.0, soc - floor))
-                demand = self.measured_demand()
         decision = live_ac_decision(
             self.state,
             now,
@@ -205,6 +229,9 @@ class LiveACRuntime:
             "limit_w": self.limit_w,
             "residual_demand_w": demand,
             "available_wh": round(available_wh, 1),
+            "market_override_demand_w": envelope.override_demand_w
+            if envelope
+            else None,
             "low_since": self.state.low_since.isoformat()
             if self.state.low_since
             else None,

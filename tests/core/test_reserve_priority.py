@@ -152,7 +152,9 @@ def test_live_afternoon_preservation_cannot_purchase_later_ac_discharge(scale):
         assert by_time["2026-09-29T21:00:00+02:00"].inverter_output_wh == 0
         assert by_time["2026-09-29T18:00:00+02:00"].inverter_output_wh > 268.4
         assert result.total_import_wh < 1466.9
-        assert result.total_export_wh <= 8.257
+        # The single horizon preserves DC for the full forecast instead of
+        # spending it before a midnight reset; binary steps leave < one step.
+        assert result.total_export_wh <= config.inverter.max_power_w / 12
 
 
 def test_high_load_after_the_pv_peak_cannot_replace_required_night_discharge():

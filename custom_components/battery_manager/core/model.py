@@ -802,6 +802,25 @@ class HourSlot:
 
 
 @dataclass(frozen=True)
+class MarketPrice:
+    """Published spot interval, EUR/MWh; never a household tariff."""
+
+    start: datetime
+    end: datetime
+    eur_per_mwh: float
+
+    def __post_init__(self) -> None:
+        _require(
+            self.start.tzinfo is not None and self.end.tzinfo is not None,
+            "Market prices require timezone-aware intervals",
+        )
+        _require(
+            self.end.timestamp() > self.start.timestamp(), "Invalid price interval"
+        )
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
 class PlanInputs:
     """Everything a planning run needs, assembled by series.build_slots()."""
 
@@ -814,12 +833,20 @@ class PlanInputs:
     # Historical observation reference only. Retained for old recordings;
     # neither AC preparation nor protection may depend on this ledger.
     reserve_hold_soc_percent: float | None = None
+    market_prices: tuple[MarketPrice, ...] = ()
 
     def __post_init__(self) -> None:
         _require(0 <= self.start_soc_percent <= 100, "Start SOC must be in [0, 100]")
         for previous, current in zip(self.slots, self.slots[1:], strict=False):
             _require(
                 current.start > previous.start, "Slot starts must be strictly ordered"
+            )
+        for previous_price, current_price in zip(
+            self.market_prices, self.market_prices[1:], strict=False
+        ):
+            _require(
+                current_price.start.timestamp() >= previous_price.end.timestamp(),
+                "Market price intervals must not overlap",
             )
         _finite_fields(self)
 
@@ -880,6 +907,7 @@ ReserveDecisionReason = Literal[
     "pv_headroom_preparation",
     "dc_support_protection",
     "dc_reserve_holding",
+    "dc_priority",
     "manual_support",
     "no_ac_demand",
 ]
@@ -900,6 +928,10 @@ class ReserveDecision:
     reason: ReserveDecisionReason
     # Current stored energy reserved for DC and future solar preparation.
     live_ac_floor_percent: float = 100.0
+    # A better measured opportunity may consume only already planned AC energy
+    # before the next net PV recharge. None means there is no such opportunity.
+    live_ac_override_demand_w: float | None = None
+    live_ac_override_floor_percent: float = 100.0
 
 
 @dataclass(frozen=True)

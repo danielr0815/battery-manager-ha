@@ -29,8 +29,9 @@ def preparation_envelope(
     priorities: list[float],
     protection_floor: float,
     energy: float,
+    market_weights: list[float | None] | None = None,
 ) -> PreparationEnvelope:
-    """Bounded passes over one local today/tomorrow window, no solver dependency.
+    """Bounded passes over the available forecast, no solver dependency.
 
     Each demand level gets one backwards pass. A current slot only counts equal
     or better future AC opportunities; equal loads therefore keep the existing
@@ -74,19 +75,29 @@ def preparation_envelope(
             dc_ceiling[index + 1], spill[index], ac=False
         )
     selected = [0.0] * n
-    first_occurrence: dict[float, int] = {}
-    for index, priority in enumerate(priorities):
-        first_occurrence.setdefault(priority, index)
-    for priority, first in first_occurrence.items():
+    weights = market_weights if market_weights is not None else [None] * n
+    keys = list(zip(priorities, weights, strict=True))
+    first_occurrence: dict[tuple[float, float | None], int] = {}
+    for index, key in enumerate(keys):
+        first_occurrence.setdefault(key, index)
+    for (priority, weight), first in first_occurrence.items():
         check_cancelled()
         ceiling = budgets[0].maximum
         # Earlier positions never query this demand level. Avoid repeating
         # irrelevant prefixes for every hourly load-allocation candidate.
         for index in range(n - 1, first - 1, -1):
-            if priorities[index] == priority:
+            if keys[index] == (priority, weight):
                 selected[index] = ceiling
+            other_weight = weights[index]
+            # Missing prices are not cheap prices. A comparison involving an
+            # uncovered interval uses the original useful-load ordering.
+            better = (
+                priorities[index] * other_weight >= priority * weight
+                if weight is not None and other_weight is not None
+                else priorities[index] >= priority
+            )
             ceiling = effective[index].incoming_ceiling(
-                ceiling, spill[index], ac=priorities[index] >= priority
+                ceiling, spill[index], ac=better
             )
     return PreparationEnvelope(
         tuple(selected), tuple(dc_ceiling[1:]), tuple(minimum[1:]), sum(spill)

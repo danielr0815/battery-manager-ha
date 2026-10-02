@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0] - 2026-10-02
+
+### Added
+- Optional EPEX market-peak preference within the existing AC energy budget,
+  with automatic wholesale-source selection, validated price intervals and
+  forecast-card diagnostics. Significant price peaks can outweigh modest load
+  differences even with a fixed household tariff.
+- Live demand can pre-empt a later market window only when the measured useful
+  opportunity is materially better, using already planned AC energy while
+  preserving DC obligations, binary permission and freshness guards.
+
+### Changed
+- Reserve planning uses the entire available forecast in one horizon, removing
+  the simulated midnight reset and considering earlier AC/DC opportunities for
+  third-day PV deadlines. Prices never increase economic PSU holding or permit
+  grid charging. Missing prices retain load-based priority.
+- Full-trajectory DC comparison retains more energy or defers AC preparation
+  when it would require additional later DC grid supply; price boundaries
+  expire live permissions and trigger replanning.
+
 ## [Unreleased]
 
 ## [0.52.0] - 2026-10-01

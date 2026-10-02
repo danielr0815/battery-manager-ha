@@ -73,7 +73,7 @@ def test_dc_below_ac_floor_requires_the_earlier_ac_opportunity():
     assert sum(flow.unserved_dc_wh for flow in result.flows) == pytest.approx(0)
 
 
-def test_day_after_tomorrow_is_informational_until_the_next_local_day():
+def test_third_day_deadline_can_use_the_preceding_evening():
     inputs = series(80, [(0, 200, 0), (0, 200, 0), (900, 0, 0)])
     inputs = replace(
         inputs,
@@ -84,8 +84,8 @@ def test_day_after_tomorrow_is_informational_until_the_next_local_day():
         ),
     )
     result = simulate(plant(), inputs, 20)
-    assert result.flows[0].inverter_output_wh == pytest.approx(0)
-    # The informational Monday projection rolls its own today/tomorrow window.
+    assert result.flows[0].inverter_output_wh == pytest.approx(200)
+    # The same PV deadline is visible before midnight, using both opportunities.
     assert result.flows[1].inverter_output_wh == pytest.approx(200)
 
 
@@ -165,8 +165,8 @@ def test_no_sun_preserves_dc_energy_instead_of_spending_the_remaining_soc():
     assert result.flows[1].psu24_delivered_wh == pytest.approx(650)
 
 
-@pytest.mark.parametrize("month, day, expected_hours", [(3, 28, 35), (10, 24, 37)])
-def test_binding_calendar_days_follow_each_slots_dst_offset(month, day, expected_hours):
+@pytest.mark.parametrize("month, day", [(3, 28), (10, 24)])
+def test_full_horizon_preserves_elapsed_hours_across_dst(month, day):
     from datetime import UTC, timezone
     from zoneinfo import ZoneInfo
 
@@ -185,10 +185,12 @@ def test_binding_calendar_days_follow_each_slots_dst_offset(month, day, expected
         )
     result = simulate(plant(), PlanInputs(start, 80, tuple(slots)), 20)
     decision = result.reserve_decision
-    assert decision.preparation_horizon_end == tomorrow_end
+    assert decision.preparation_horizon_end.astimezone(UTC) == start.astimezone(
+        UTC
+    ) + timedelta(hours=60)
     assert (
         decision.preparation_horizon_end.astimezone(UTC) - start.astimezone(UTC)
-    ).total_seconds() == expected_hours * 3600
+    ).total_seconds() == 60 * 3600
     todays_hours = sum(slot.start.date() == start.date() for slot in slots)
     assert all(flow.inverter_output_wh == 0 for flow in result.flows[:todays_hours])
 

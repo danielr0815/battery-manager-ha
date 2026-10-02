@@ -256,6 +256,7 @@ from .load_actuation import (
     reconcile_feedback,
 )
 from .localization import message
+from .market import price_entity, read_prices
 from .operation_recorder import OperationRecorder
 from .plan_output import daily_surplus_breakdown
 from .planning import PLANNING_SOC_TOLERANCE_PERCENT, PlanningRunner
@@ -1128,6 +1129,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             cfg[CONF_PV_FORECAST_TOMORROW],
             cfg[CONF_PV_FORECAST_DAY_AFTER],
         ]
+        market_entity = price_entity(self.hass, cfg)
+        if market_entity:
+            entities.append(market_entity)
         # Support switches are tracked so a manual toggle (F-N2) is picked
         # up by the debounced refresh instead of the next 5-min poll — and
         # a dead 24 V rail (PSU manually off, DC/DC still off) is healed
@@ -4166,6 +4170,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for cascade in config.cascades
             ),
         )
+        market_prices, market_diag = read_prices(self.hass, self.raw_config, now)
+        inputs = replace(inputs, market_prices=market_prices)
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
         # soon as any learned quantiles exist. Only soc_buffer_percent is
         # overridden here; the grid-support escalation reads its own absolute
@@ -4272,6 +4278,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._reserve_diag["dc24_transfer_verified"] = bool(
                 self.raw_config.get(CONF_RESERVE_TRANSFER_VERIFIED)
             )
+            market_diag["avoided_grid_import_wh"] = sum(
+                max(
+                    0.0,
+                    flow.inverter_output_wh
+                    - reserve_config.inverter.standby_power_w
+                    * sum(
+                        (interval.end.timestamp() - interval.start.timestamp()) / 3600
+                        for interval in flow.switching_schedule
+                        if interval.inverter_on
+                    ),
+                )
+                for flow in candidate.trajectory.flows
+            )
+            self._reserve_diag["market"] = market_diag
             self._reserve_diag["requested_mode"] = reserve_mode
             self._reserve_diag["grid_available"] = self._reserve_grid_available()
             self._reserve_diag["solar_credit_verified"] = solar_only
@@ -7606,6 +7626,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._actuation_shutdown:
             return
         boundaries = {slot.start for slot in inputs.slots if slot.start > inputs.now}
+        boundaries.update(
+            dt_util.as_utc(at)
+            for price in inputs.market_prices
+            for at in (price.start, price.end)
+            if at.timestamp() > inputs.now.timestamp()
+        )
         if self._reserve_inverter_limit_w is not None:
             boundaries.add(inputs.now + timedelta(minutes=5))
         if self.live_ac.envelope is not None and self.live_ac.sources_configured():

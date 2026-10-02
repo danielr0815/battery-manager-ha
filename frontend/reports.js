@@ -112,6 +112,47 @@ export function reserveReport(hass, reserve) {
       `${fmt(reserve.psu48_delivered_wh)} Wh`,
     ],
   ];
+  const market = reserve.market;
+  if (market) {
+    rows.push([
+      t("report_market"),
+      t(
+        !market.enabled
+          ? "report_market_off"
+          : market.status === "available"
+            ? "report_market_available"
+            : "report_market_fallback",
+      ),
+    ]);
+    if (market.status === "available") {
+      rows.push([
+        t("report_market_avoided_import"),
+        `${fmt(market.avoided_grid_import_wh)} Wh`,
+      ]);
+      const windows = Array.isArray(market.preferred_intervals)
+        ? market.preferred_intervals
+        : [];
+      const ranges = [];
+      for (const window of windows) {
+        if (
+          !window ||
+          !Number.isFinite(Date.parse(window.start)) ||
+          !Number.isFinite(Date.parse(window.end))
+        )
+          continue;
+        const previous = ranges.at(-1);
+        if (previous && Date.parse(previous.end) === Date.parse(window.start))
+          previous.end = window.end;
+        else ranges.push({ start: window.start, end: window.end });
+      }
+      rows.push([
+        t("report_market_windows"),
+        ranges
+          .map((window) => `${time(window.start)} – ${time(window.end)}`)
+          .join("; ") || "—",
+      ]);
+    }
+  }
   const reason = reserve.decision_reason;
   const reasonKey = `reserve_decision_${reason}`;
   const translatedReason =

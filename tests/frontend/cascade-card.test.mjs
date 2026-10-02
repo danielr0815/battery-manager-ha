@@ -1439,7 +1439,7 @@ test("reserve report explains the physical headroom policy without inventing a h
         upper_pv_factor: 1.2,
       },
     );
-    assert.match(html, /heute und morgen/);
+    assert.match(html, /gesamten verfügbaren Prognosehorizont/);
     assert.match(html, /zusätzlichen Freiraum im Speicher/);
     assert.match(html, /Aktuell erlaubte Inverterleistung/);
     assert.match(html, /125 W/);
@@ -1617,4 +1617,57 @@ test("reserve report identifies the actual 24 V transfer block", () => {
     );
     assert.doesNotMatch(cleared, /data-reserve-transfer/);
   }
+});
+
+test("market report separates preferred windows from mandatory operation and personal savings", () => {
+  const render = vm.runInContext("reserveReport", context);
+  const hass = { language: "de", config: { time_zone: "Europe/Berlin" } };
+  const html = render(hass, {
+    mode: "active",
+    market: {
+      enabled: true,
+      status: "available",
+      avoided_grid_import_wh: 125,
+      preferred_intervals: [
+        { start: "2026-10-02T17:00:00Z", end: "2026-10-02T18:00:00Z" },
+      ],
+    },
+  });
+  assert.match(html, /EPEX verfügbar/);
+  assert.match(html, /keine Pflichtlaufzeit/);
+  assert.match(html, /19:00/);
+  assert.match(html, /20:00/);
+  assert.match(html, /125 Wh/);
+  assert.doesNotMatch(html, /Ersparnis|€|EUR/);
+  const fallback = render(hass, {
+    mode: "active",
+    market: { enabled: true, status: "invalid" },
+  });
+  assert.match(fallback, /Keine nutzbare EPEX-Zeitreihe/);
+  const disabled = render(hass, { mode: "active", market: { enabled: false } });
+  assert.match(disabled, /Deaktiviert/);
+});
+
+test("market report joins adjacent quarter-hours without mutating telemetry", () => {
+  const render = vm.runInContext("reserveReport", context);
+  const intervals = [
+    { start: "2026-10-02T17:00:00Z", end: "2026-10-02T17:15:00Z" },
+    { start: "2026-10-02T17:15:00Z", end: "2026-10-02T17:30:00Z" },
+    null,
+  ];
+  const html = render(
+    { language: "en", config: { time_zone: "UTC" } },
+    {
+      mode: "active",
+      market: {
+        enabled: true,
+        status: "available",
+        preferred_intervals: intervals,
+      },
+    },
+  );
+  assert.match(html, /17:00/);
+  assert.match(html, /17:30/);
+  assert.doesNotMatch(html, /17:15/);
+  assert.equal(intervals[0].end, "2026-10-02T17:15:00Z");
 });

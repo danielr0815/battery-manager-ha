@@ -518,3 +518,104 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
     )
     await c.live_ac.run()
     assert calls == [(LIMIT, 1000), (LIMIT, 0)]
+
+
+async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_load(
+    live, hass
+):
+    from dataclasses import replace
+
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        MarketPrice,
+        PlanInputs,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+
+    c, calls, *_ = live
+    config = c.live_ac.envelope.config
+    config = replace(
+        config,
+        battery=replace(
+            config.battery, capacity_wh=1000, eta_charge=1, eta_discharge=1
+        ),
+        inverter=replace(config.inverter, max_power_w=2300, eta=1, standby_power_w=0),
+        charger=replace(config.charger, max_power_w=2000, eta=1, standby_power_w=0),
+        control=replace(config.control, hysteresis_percent=0),
+        reserve=replace(config.reserve, upper_pv_factor=1),
+        support=replace(config.support, native48_base_w=0),
+    )
+    now = dt_util.now()
+    inputs = PlanInputs(
+        now,
+        80,
+        tuple(
+            HourSlot(i, now + timedelta(hours=i), 1, (now.hour + i) % 24, pv, ac, 0)
+            for i, (pv, ac) in enumerate([(0, 600), (0, 500), (300, 0)])
+        ),
+        market_prices=tuple(
+            MarketPrice(now + timedelta(hours=i), now + timedelta(hours=i + 1), p)
+            for i, p in enumerate([100, 300, 100])
+        ),
+    )
+    result = plan(config, inputs)
+    assert not result.inverter_on
+    assert result.trajectory.flows[1].inverter_output_wh > 0
+    c.live_ac.set_plan(config, inputs, result)
+    await c.live_ac.run()
+    assert not calls
+    assert c.live_ac.limit_w == 0
+    assert c.live_ac.diagnostics["available_wh"] == 0
+
+    # 1500 W is only equal to the future 500 W × 3 opportunity; 2000 W is
+    # materially better and may consume the already scheduled allocation.
+    hass.states.async_set("sensor.house", "2500", {"unit_of_measurement": "W"})
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 2300)]
+    assert c.live_ac.limit_w == 2300
+    assert c.live_ac.envelope.override_floor_percent >= 67.5
+    # The market budget overrides the ordinary ten-minute hold immediately.
+    hass.states.async_set("sensor.house", "1200", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.import", "700", {"unit_of_measurement": "W"})
+    await c.live_ac.run()
+    assert calls[-1] == (LIMIT, 0)
+    assert c.live_ac.limit_w == 0
+
+
+async def test_price_boundary_expires_permission_and_schedules_replanning(
+    live, hass, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        MarketPrice,
+        PlanInputs,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+
+    c, *_ = live
+    now = dt_util.now()
+    boundary = now + timedelta(seconds=30)
+    config = c.live_ac.envelope.config
+    inputs = PlanInputs(
+        now,
+        80,
+        (HourSlot(0, now, 1, now.hour, 0, 100, 0),),
+        market_prices=(
+            MarketPrice(now, boundary, 100),
+            MarketPrice(boundary, now + timedelta(minutes=15), 300),
+        ),
+    )
+    c.live_ac.set_plan(config, inputs, plan(config, inputs))
+    assert c.live_ac.envelope.expires == dt_util.as_utc(boundary)
+    timer = Mock(return_value=Mock())
+    monkeypatch.setattr(
+        "custom_components.battery_manager.coordinator.async_track_point_in_time", timer
+    )
+    BatteryManagerCoordinator._arm_plan_boundary(
+        c, inputs, SimpleNamespace(load_plans=(), cascade_plans=())
+    )
+    assert timer.call_args.args[2] == dt_util.as_utc(boundary)

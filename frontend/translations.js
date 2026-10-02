@@ -593,10 +593,21 @@ export function localize(hass, key) {
 }
 
 Object.assign(STRINGS.en, {
+  reserve_decision_dc_priority:
+    "Keep energy for DC: AC preparation would require additional later grid support.",
+  report_market: "Market peak preference",
+  report_market_available:
+    "EPEX available · prefer expensive hours within the AC budget",
+  report_market_fallback:
+    "No usable EPEX series · useful load determines priority",
+  report_market_off: "Disabled",
+  report_market_windows: "Preferred market windows (no mandatory runtime)",
+  report_market_avoided_import:
+    "Forecast grid import avoided by inverter (after standby)",
   report_actual_soc: "Actual SOC",
   report_preparation_horizon_end: "Prepare for PV until",
   report_preparation_today_tomorrow:
-    "PV preparation considers today and tomorrow in the Home Assistant time zone.",
+    "PV preparation considers the full available forecast horizon in the Home Assistant time zone.",
   report_reserve_energy_policy:
     "Retain surplus energy; discharge only as needed to make room for forecast PV. The inverter lower limit is a technical AC discharge limit, not a reserve or discharge target.",
   report_unavoidable_export: "Unavoidable forecast export",
@@ -664,10 +675,21 @@ Object.assign(STRINGS.en, {
   report_a_recording_error_occurred: "A recording error occurred",
 });
 Object.assign(STRINGS.de, {
+  reserve_decision_dc_priority:
+    "Energie für DC erhalten: AC-Vorbereitung würde spätere zusätzliche Netzteilversorgung erfordern.",
+  report_market: "Marktspitzen bevorzugen",
+  report_market_available:
+    "EPEX verfügbar · teure Stunden innerhalb des AC-Budgets bevorzugen",
+  report_market_fallback:
+    "Keine nutzbare EPEX-Zeitreihe · AC-Last bestimmt die Priorität",
+  report_market_off: "Deaktiviert",
+  report_market_windows: "Bevorzugte Marktfenster (keine Pflichtlaufzeit)",
+  report_market_avoided_import:
+    "Prognostizierter vermiedener Netzbezug durch Inverter (nach Standby)",
   report_actual_soc: "Ist-SOC",
   report_preparation_horizon_end: "PV-Vorbereitung bis",
   report_preparation_today_tomorrow:
-    "Die PV-Vorbereitung berücksichtigt heute und morgen in der Home-Assistant-Zeitzone.",
+    "Die PV-Vorbereitung berücksichtigt den gesamten verfügbaren Prognosehorizont in der Home-Assistant-Zeitzone.",
   report_reserve_energy_policy:
     "Übrige Energie erhalten; nur so weit entladen, wie für die erwartete PV-Energie nötig. Die Inverter-Untergrenze ist eine technische AC-Entladegrenze, kein Reserve- oder Entladeziel.",
   report_unavoidable_export: "Unvermeidbare prognostizierte Einspeisung",

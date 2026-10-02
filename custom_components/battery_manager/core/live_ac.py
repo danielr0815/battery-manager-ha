@@ -13,6 +13,9 @@ LIVE_AC_PLAN_MAX_AGE_S = 300
 # Ask for a successor before budget expiry; normal planning may take seconds.
 LIVE_AC_REPLAN_LEAD_S = 60
 LIVE_AC_INTERVAL_S = 5
+# A market override starts only 10% above the future opportunity's useful
+# demand-equivalent; once running it holds only while still at least as good.
+LIVE_AC_MARKET_START_RATIO = 1.1
 
 
 @dataclass(frozen=True)

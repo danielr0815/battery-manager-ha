@@ -1,4 +1,4 @@
-"""SOC preservation with DC-first preparation for today and tomorrow.
+"""SOC preservation with DC-first preparation across the available forecast.
 
 Only energy beyond the nominal DC obligation can prepare upper-PV headroom.
 Necessary AC uses higher useful house demand first, and later times on ties.
@@ -11,8 +11,9 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
+from .market import slot_weights
 from .model import (
     HourFlows,
     HourSlot,
@@ -25,7 +26,7 @@ from .model import (
 from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
 from .reserve_schedule import preparation_envelope
 from .simulate import step_hour
-from .simulation_steps import split_slot, switching_schedule
+from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
 from .support import support_state
 
 # A planning call probes many nearby load schedules. The cache expires with that
@@ -148,7 +149,89 @@ def _simulate_reserve(
     pv_scale: float | Sequence[float],
     feedin: tuple[float, ...] | None,
 ) -> Trajectory:
-    """Execute real source protection and bounded, rolling reserve preparation."""
+    """AC timing may cost efficiency, but cannot purchase later DC support.
+
+    An upper-PV preparation can be physically safe yet buy back DC energy
+    under the nominal forecast. Compare the entire candidate against the same
+    sources/loads with no AC discharge. If it buys additional DC supply, keep
+    that DC-only plan until a new forecast makes AC affordable. This bounded
+    fallback deliberately favours DC over speculative upper-PV headroom.
+    """
+    candidate = _simulate_reserve_policy(config, inputs, extra_ac, pv_scale, feedin)
+    dc_import = sum(
+        f.psu24_delivered_wh / config.support.psu24_eta
+        + f.psu48_delivered_wh / config.support.psu48_eta
+        for f in candidate.flows
+    )
+    unserved = sum(f.unserved_dc_wh for f in candidate.flows)
+    if dc_import + unserved > ENERGY_EPSILON_WH and any(
+        f.inverter_output_wh > ENERGY_EPSILON_WH for f in candidate.flows
+    ):
+        reference = _simulate_reserve_policy(
+            config, inputs, extra_ac, pv_scale, feedin, allow_ac=False
+        )
+        reference_dc = sum(
+            f.psu24_delivered_wh / config.support.psu24_eta
+            + f.psu48_delivered_wh / config.support.psu48_eta
+            for f in reference.flows
+        )
+        # Complete ON/OFF quanta can move one source-transfer boundary. Do
+        # not discard useful AC (and export the same PV) over that rounding
+        # effect. Additional sustained DC support remains disallowed.
+        transfer_quantum = (
+            max(slot.dc_wh / slot.duration for slot in inputs.slots)
+            * SUPPORT_STEP_HOURS
+            / min(config.support.psu24_eta, config.support.psu48_eta)
+        )
+        if (
+            dc_import > reference_dc + transfer_quantum + ENERGY_EPSILON_WH
+            or unserved
+            > sum(f.unserved_dc_wh for f in reference.flows) + ENERGY_EPSILON_WH
+        ):
+            # Keep useful AC where a small additional retained-energy margin
+            # cures the later DC shortfall. At most one retry, never an
+            # unbounded solver or a blanket loss of all valuable AC windows.
+            retained = max(0.0, dc_import - reference_dc) + unserved
+            reduced = _simulate_reserve_policy(
+                config,
+                inputs,
+                extra_ac,
+                pv_scale,
+                feedin,
+                ac_margin_wh=retained + ENERGY_EPSILON_WH,
+            )
+            reduced_dc = sum(
+                f.psu24_delivered_wh / config.support.psu24_eta
+                + f.psu48_delivered_wh / config.support.psu48_eta
+                for f in reduced.flows
+            )
+            if (
+                reduced_dc <= reference_dc + transfer_quantum + ENERGY_EPSILON_WH
+                and sum(f.unserved_dc_wh for f in reduced.flows)
+                <= sum(f.unserved_dc_wh for f in reference.flows) + ENERGY_EPSILON_WH
+            ):
+                return reduced
+            assert reference.reserve_decision is not None
+            return replace(
+                reference,
+                reserve_decision=replace(
+                    reference.reserve_decision, reason="dc_priority"
+                ),
+            )
+    return candidate
+
+
+def _simulate_reserve_policy(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+    *,
+    allow_ac: bool = True,
+    ac_margin_wh: float = 0.0,
+) -> Trajectory:
+    """Execute source protection and the shared forecast preparation envelope."""
     steps = _steps(config, inputs, extra_ac)
     budgets = [
         _budget(
@@ -197,30 +280,33 @@ def _simulate_reserve(
     variants: dict[tuple[int, bool, bool], SystemConfig] = (
         cache.variants if cache is not None else {}
     )
-    current_day: date | None = None
-    window_start = 0
+    weights = slot_weights(tuple(step[1] for step in steps), inputs.market_prices)
+    market_active = allow_ac and any(
+        weight is not None and weight > 1 for weight in weights
+    )
+    # One horizon prevents a simulated midnight from introducing a PV deadline
+    # after the preceding evening's better AC opportunities have been discarded.
+    envelope = (
+        preparation_envelope(
+            budgets,
+            nominal_budgets,
+            priorities,
+            protection_floor,
+            battery.energy_wh(soc),
+            weights,
+        )
+        if steps
+        else None
+    )
     decision: ReserveDecision | None = None
+    future_ac_wh = 0.0
+    future_demand_w = 0.0
+    before_recharge = True
     for j, (i, slot, extra, _) in enumerate(steps):
-        energy = battery.energy_wh(soc)
-        if slot.start.date() != current_day:
-            current_day = slot.start.date()
-            exclusive_day = current_day + timedelta(days=2)
-            window_start = j
-            end = j
-            while end < len(steps) and steps[end][1].start.date() < exclusive_day:
-                end += 1
-            envelope = preparation_envelope(
-                budgets[j:end],
-                nominal_budgets[j:end],
-                priorities[j:end],
-                protection_floor,
-                energy,
-            )
-            unavoidable_export = envelope.unavoidable_export_wh
-            horizon_end = _slot_end(steps[end - 1][1])
-        following_ceiling = envelope.ac_ceiling[j - window_start]
-        following_dc_ceiling = envelope.dc_ceiling[j - window_start]
-        following_minimum = envelope.dc_minimum[j - window_start]
+        assert envelope is not None
+        following_ceiling = envelope.ac_ceiling[j]
+        following_dc_ceiling = envelope.dc_ceiling[j]
+        following_minimum = envelope.dc_minimum[j]
         scale = pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i]
         voltage_credit = (
             abs(soc - inputs.start_soc_percent) <= config.control.hysteresis_percent
@@ -306,7 +392,11 @@ def _simulate_reserve(
             max(
                 0.0,
                 battery.energy_wh(natural.soc_end_percent)
-                - max(following_ceiling, following_minimum, budgets[j].inverter_floor),
+                - max(
+                    following_ceiling + ac_margin_wh,
+                    following_minimum,
+                    budgets[j].inverter_floor,
+                ),
             )
             if useful_ac and not (dc24 or dc48)
             else 0.0
@@ -322,7 +412,8 @@ def _simulate_reserve(
         available_ac = ac_budget * battery.eta_discharge * config.inverter.eta
         limit = (
             config.inverter.max_power_w
-            if ac_budget > ENERGY_EPSILON_WH
+            if allow_ac
+            and ac_budget > ENERGY_EPSILON_WH
             and available_ac + ENERGY_EPSILON_WH >= required_ac
             else 0.0
         )
@@ -356,6 +447,30 @@ def _simulate_reserve(
             flow = step_hour(
                 effective, soc, slot, 100, extra, dc24, dc48, scale, export
             )
+        # Measured loads can replace an actual scheduled AC allocation, not
+        # energy that will only arrive with the next solar recharge. Export
+        # preparation and DC obligations remain bounded by the same envelope.
+        before_recharge = (
+            before_recharge
+            and natural.battery_charge_wh
+            <= natural.battery_discharge_wh + ENERGY_EPSILON_WH
+        )
+        if (
+            market_active
+            and j > 0
+            and before_recharge
+            and flow.inverter_output_wh > ENERGY_EPSILON_WH
+        ):
+            future_ac_wh += flow.inverter_output_wh / (
+                battery.eta_discharge * config.inverter.eta
+            )
+            current_weight, future_weight = weights[0], weights[j]
+            required_demand = (
+                priorities[j] * future_weight / current_weight
+                if current_weight is not None and future_weight is not None
+                else priorities[j]
+            )
+            future_demand_w = max(future_demand_w, required_demand)
         if decision is None:
             reason: ReserveDecisionReason = "no_preparation_needed"
             if (dc24 and source.dc24_forced_on) or (dc48 and source.dc48_forced_on):
@@ -369,20 +484,23 @@ def _simulate_reserve(
             elif not useful_ac:
                 reason = "no_ac_demand"
             decision = ReserveDecision(
-                preparation_horizon_end=horizon_end,
+                preparation_horizon_end=_slot_end(steps[-1][1]),
                 inverter_limit_w=limit,
                 headroom_wh=max(
                     0.0,
                     battery.energy_wh(natural.soc_end_percent)
                     - max(
-                        following_ceiling, following_minimum, budgets[j].inverter_floor
+                        following_ceiling + ac_margin_wh,
+                        following_minimum,
+                        budgets[j].inverter_floor,
                     ),
                 ),
-                unavoidable_export_wh=unavoidable_export,
+                unavoidable_export_wh=envelope.unavoidable_export_wh,
                 reason=reason,
                 live_ac_floor_percent=battery.soc_percent(
                     max(
-                        following_dc_ceiling,
+                        (following_ceiling if market_active else following_dc_ceiling)
+                        + ac_margin_wh,
                         following_minimum,
                         budgets[j].inverter_floor,
                     )
@@ -412,6 +530,23 @@ def _simulate_reserve(
         )
         buckets[i].append(flow)
         soc = flow.soc_end_percent
+    if decision is not None and future_ac_wh > ENERGY_EPSILON_WH:
+        assert envelope is not None
+        decision = replace(
+            decision,
+            live_ac_override_demand_w=future_demand_w,
+            live_ac_override_floor_percent=battery.soc_percent(
+                max(
+                    battery.energy_wh(inputs.start_soc_percent) - future_ac_wh,
+                    max(
+                        envelope.dc_ceiling[0],
+                        envelope.dc_minimum[0],
+                        budgets[0].inverter_floor,
+                    )
+                    + nominal_budgets[0].dc,
+                )
+            ),
+        )
     flows: list[HourFlows] = []
     energy_fields = [
         field.name for field in fields(HourFlows) if field.name.endswith("_wh")
@@ -443,6 +578,8 @@ def _simulate_reserve(
                 gate_open=any(part.gate_open for part in parts),
             )
         )
+    if not allow_ac and decision is not None:
+        decision = replace(decision, headroom_wh=0.0, live_ac_floor_percent=100.0)
     if decision is None:
         decision = ReserveDecision(inputs.now, 0.0, 0.0, 0.0, "no_preparation_needed")
     return Trajectory(

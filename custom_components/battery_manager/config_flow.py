@@ -157,6 +157,7 @@ from .const import (
     SUBENTRY_TYPE_LOAD,
 )
 from .coordinator import ordered_load_subentries
+from .market import CONF_MARKET_ENABLED, CONF_MARKET_ENTITY
 
 # Collapsible section groups for the options flow (visual grouping only;
 # their fields are nested under the section key in the submitted data and
@@ -570,6 +571,13 @@ def _predrain_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     no default: cleared/empty = derive the window end from the forecast shape.
     """
     return {
+        vol.Required(
+            CONF_MARKET_ENABLED, default=current.get(CONF_MARKET_ENABLED, True)
+        ): selector.BooleanSelector(),
+        vol.Optional(
+            CONF_MARKET_ENTITY,
+            description={"suggested_value": current.get(CONF_MARKET_ENTITY)},
+        ): _entity("sensor"),
         vol.Required(
             CONF_RESERVE_MODE, default=_d(current, CONF_RESERVE_MODE)
         ): selector.SelectSelector(
@@ -1074,6 +1082,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     # realized sensors are dropped from the registry).
                     CONF_EXPORT_METER_ENTITY,
                     CONF_RESERVE_GRID_ENTITY,
+                    CONF_MARKET_ENTITY,
                     # Cleared = unset the site override so the window end derives
                     # from the forecast again (F-PREDRAIN F4).
                     CONF_PV_WINDOW_END_HOUR,

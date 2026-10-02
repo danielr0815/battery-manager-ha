@@ -173,7 +173,9 @@
               "reserve_mode": "Ganzjährige Reserve",
               "reserve_upper_pv_factor": "Oberes PV-Szenario ohne Prognoseband",
               "reserve_grid_available_entity": "Netzverfügbarkeit",
-              "reserve_transfer_verified": "24-V-Rückfall bei Netz- und HA-Ausfall geprüft"
+              "reserve_transfer_verified": "24-V-Rückfall bei Netz- und HA-Ausfall geprüft",
+              "market_price_enabled": "Marktspitzen bevorzugen (EPEX)",
+              "market_price_entity": "Spotpreis-Zeitreihe (optional)"
             },
             "data_description": {
               "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -185,10 +187,12 @@
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
               "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
               "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten.",
-              "reserve_mode": "Aktiv erhält zuerst Energie für den erwarteten DC-Verbrauch. Nur zusätzlich nötige AC-Entladung schafft PV-Freiraum bis Ende morgen, bevorzugt bei hoher AC-Restlast und bei gleicher Last möglichst spät. Nachtbetrieb bleibt möglich, wenn frühere oder stärkere Lastfenster nicht ausreichen. Bestehende Schutzschwellen bleiben wirksam; es gibt keine neue feste Nachtreserve und keine Lernwartezeit. Voreinstellung bei koordinierter Steuerung. Schatten berechnet nur zum Vergleich; Aus verwendet die bisherige Planung.",
+              "reserve_mode": "Aktiv erhält zuerst Energie für den erwarteten DC-Verbrauch. Nur zusätzlich nötige AC-Entladung schafft PV-Freiraum im gesamten verfügbaren Prognosehorizont, bevorzugt bei hoher AC-Restlast und bei gleicher Last möglichst spät. Nachtbetrieb bleibt möglich, wenn frühere oder stärkere Lastfenster nicht ausreichen. Bestehende Schutzschwellen bleiben wirksam; es gibt keine neue feste Nachtreserve und keine Lernwartezeit. Voreinstellung bei koordinierter Steuerung. Schatten berechnet nur zum Vergleich; Aus verwendet die bisherige Planung.",
               "reserve_upper_pv_factor": "Unkalibrierter Ersatzfaktor bei fehlendem P90; 1,20 entspricht 20 % Aufschlag. Keine Einspeisefreiheitsgarantie.",
               "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
-              "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort."
+              "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort.",
+              "market_price_enabled": "Bevorzugt bis zu vier teure Tagesstunden innerhalb des verfügbaren AC-Energiebudgets. DC-Versorgung und Schutz bleiben vorrangig. Auch bei Festpreis sinnvoll; keine Berechnung persönlicher Spotpreis-Ersparnisse.",
+              "market_price_entity": "Leer: eindeutigen EPEX-Großhandelssensor automatisch verwenden. Benötigt vollständige Preisintervalle; fehlende oder ungültige Daten verwenden die Lastpriorität."
             }
           },
           "support_paths": {
@@ -661,7 +665,9 @@
               "reserve_mode": "Ganzjährige Reserve",
               "reserve_upper_pv_factor": "Oberes PV-Szenario ohne Prognoseband",
               "reserve_grid_available_entity": "Netzverfügbarkeit",
-              "reserve_transfer_verified": "24-V-Rückfall bei Netz- und HA-Ausfall geprüft"
+              "reserve_transfer_verified": "24-V-Rückfall bei Netz- und HA-Ausfall geprüft",
+              "market_price_enabled": "Marktspitzen bevorzugen (EPEX)",
+              "market_price_entity": "Spotpreis-Zeitreihe (optional)"
             },
             "data_description": {
               "soc_buffer_percent": "Sicherheitsreserve über dem Batterie-Minimum: Die Planung hält diesen Puffer für Prognosefehler frei (Empfehlung: 5 %).",
@@ -673,10 +679,12 @@
               "upper_pv_reserve": "Optimismus des Chancentests für den oberen Puffer: Vorentladungen im PV-Fenster werden gegen eine mit diesem Faktor hochskalierte PV-Prognose gerechtfertigt. 1,0 = aus (Empfehlung: 1,2).",
               "strong_pv_cutoff_w": "Durchschnittsleistung, ab der eine Stunde als starke PV gilt (innerhalb des Aufnahmefensters). Nach der letzten solchen Stunde steht die Sonne 'hinter dem Haus' und die obere Reserve darf genutzt werden (Empfehlung: 200 W).",
               "pv_window_end_hour": "Optionale Standort-Übersteuerung: begrenzt das Ende des PV-Fensters auf die letzte Stunde vor dieser Ortszeit (z. B. ab Nachmittag verschattetes Dach). Leer = rein aus der Prognose ableiten.",
-              "reserve_mode": "Aktiv erhält zuerst Energie für den erwarteten DC-Verbrauch. Nur zusätzlich nötige AC-Entladung schafft PV-Freiraum bis Ende morgen, bevorzugt bei hoher AC-Restlast und bei gleicher Last möglichst spät. Nachtbetrieb bleibt möglich, wenn frühere oder stärkere Lastfenster nicht ausreichen. Bestehende Schutzschwellen bleiben wirksam; es gibt keine neue feste Nachtreserve und keine Lernwartezeit. Voreinstellung bei koordinierter Steuerung. Schatten berechnet nur zum Vergleich; Aus verwendet die bisherige Planung.",
+              "reserve_mode": "Aktiv erhält zuerst Energie für den erwarteten DC-Verbrauch. Nur zusätzlich nötige AC-Entladung schafft PV-Freiraum im gesamten verfügbaren Prognosehorizont, bevorzugt bei hoher AC-Restlast und bei gleicher Last möglichst spät. Nachtbetrieb bleibt möglich, wenn frühere oder stärkere Lastfenster nicht ausreichen. Bestehende Schutzschwellen bleiben wirksam; es gibt keine neue feste Nachtreserve und keine Lernwartezeit. Voreinstellung bei koordinierter Steuerung. Schatten berechnet nur zum Vergleich; Aus verwendet die bisherige Planung.",
               "reserve_upper_pv_factor": "Unkalibrierter Ersatzfaktor bei fehlendem P90; 1,20 entspricht 20 % Aufschlag. Keine Einspeisefreiheitsgarantie.",
               "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
-              "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort."
+              "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort.",
+              "market_price_enabled": "Bevorzugt bis zu vier teure Tagesstunden innerhalb des verfügbaren AC-Energiebudgets. DC-Versorgung und Schutz bleiben vorrangig. Auch bei Festpreis sinnvoll; keine Berechnung persönlicher Spotpreis-Ersparnisse.",
+              "market_price_entity": "Leer: eindeutigen EPEX-Großhandelssensor automatisch verwenden. Benötigt vollständige Preisintervalle; fehlende oder ungültige Daten verwenden die Lastpriorität."
             }
           },
           "consumption_profile": {

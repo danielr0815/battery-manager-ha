@@ -98,7 +98,7 @@ async def test_high_soc_preserves_dc_energy_without_requiring_solar_meter_setup(
     assert diagnostics["solar_credit_verified"] is evidence
     assert dt_util.parse_datetime(
         diagnostics["preparation_horizon_end"]
-    ) == dt_util.parse_datetime("2026-09-29T00:00:00+02:00")
+    ) == dt_util.parse_datetime("2026-09-30T00:00:00+02:00")
 
 
 async def test_high_soc_restored_grid_holding_returns_to_confirmed_native_source(

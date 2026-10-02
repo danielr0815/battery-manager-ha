@@ -457,3 +457,12 @@ Wichtigste Anker dieses Dokuments:
    Bit-Identitäts-Anspruch und die beiden Regenerationswege.
 5. `tests/ha/test_load_switching.py` (Block „Hermetic executor test") — das
    Listener-Kappen-Muster für Executor-Tests.
+
+
+### Nachtrag 0.53.0: Marktpriorität
+
+Die EPEX-Anbindung und die Live-Abwägung unerwarteter Lasten sind in
+[F-MARKET-AC-PRIORITY](../F-MARKET-AC-PRIORITY.md) spezifiziert. Die
+Reserveplanung verwendet den verfügbaren Gesamt-Horizont, ohne täglichen
+Fensterneustart. Marktpreise gehören zum unveränderlichen Replay-Eingang;
+Zeitintervalle werden einschließlich DST und Viertelstunden geprüft.

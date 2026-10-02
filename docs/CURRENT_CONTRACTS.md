@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.52.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.53.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -203,3 +203,20 @@ abgelaufener Plan berechtigt nicht zur weiteren Freigabe. Volle Freigabe
 bedeutet weiterhin bedarfsgerechte ESS-Abgabe, keine erzwungene Einspeisung.
 Energiebilanzen, mögliche zusätzliche Import-/Export-Restmengen und Tests:
 [Binäre Inverterfreigabe](F-BINARY-INVERTER.md).
+
+
+## Marktorientierte AC-Priorität und gemeinsamer Horizont (0.53.0)
+
+Die Reserveplanung betrachtet jetzt den gesamten verfügbaren Prognosehorizont;
+frühere Heute/Morgen-Bindungen in diesem Dokument sind ersetzt. Optionale EPEX-
+Intervalle bevorzugen bis zu vier teure Tagesstunden innerhalb des bestehenden
+AC-Budgets. Fehlende Preise verwenden Lastpriorität. Ein Vergleich mit derselben
+Prognose ohne AC-Abgabe begrenzt zusätzliche spätere DC-Netzversorgung; nötigenfalls
+wird AC-Energie zurückgehalten oder die Freigabe verworfen. DC-Vorrang, physische
+Simulation, binäre Freigabe und Quellenbesitz bleiben verbindlich.
+
+Der Live-Pfad schützt spätere Marktfenster, darf aber bereits geplante AC-Energie
+vorziehen, wenn eine unerwartete aktuelle Last unter Preisgewichtung deutlich
+besser ist. Das Budget reicht nur bis zur nächsten Netto-PV-Ladung und bleibt
+oberhalb der DC-/Schutzgrenze. Verhalten, Gewichtung, Datenformate, Diagnose und
+Nachweise: [Marktorientierter Inverterbetrieb](F-MARKET-AC-PRIORITY.md).

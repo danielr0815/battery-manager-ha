@@ -2435,3 +2435,32 @@ async def test_live_ac_power_sources_are_saved_and_explicitly_clearable(hass):
     )
     assert result["type"] == "create_entry"
     assert all(entry.options[key] is None for key in LIVE_AC_POWER_KEYS)
+
+
+async def test_market_options_keep_toggle_and_clear_explicit_source(hass):
+    from custom_components.battery_manager.market import (
+        CONF_MARKET_ENABLED,
+        CONF_MARKET_ENTITY,
+    )
+
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_MARKET_ENTITY: "sensor.old_spot"}
+    )
+    await hass.async_block_till_done()
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(form["data_schema"].schema)
+    changed = False
+    for section in payload.values():
+        section.pop(CONF_MARKET_ENTITY, None)
+        if CONF_MARKET_ENABLED in section:
+            section[CONF_MARKET_ENABLED] = False
+            changed = True
+    assert changed
+    result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
+    assert result["type"] == "create_entry"
+    assert entry.options[CONF_MARKET_ENTITY] is None
+    assert entry.options[CONF_MARKET_ENABLED] is False
+    await hass.async_block_till_done()
+    assert entry.runtime_data.raw_config[CONF_MARKET_ENTITY] is None
+    assert entry.runtime_data.raw_config[CONF_MARKET_ENABLED] is False

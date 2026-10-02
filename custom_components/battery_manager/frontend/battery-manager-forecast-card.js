@@ -641,9 +641,16 @@ function localize(hass, key) {
   return (STRINGS[lang] || STRINGS.en)[key] || STRINGS.en[key] || key;
 }
 Object.assign(STRINGS.en, {
+  reserve_decision_dc_priority: "Keep energy for DC: AC preparation would require additional later grid support.",
+  report_market: "Market peak preference",
+  report_market_available: "EPEX available \xB7 prefer expensive hours within the AC budget",
+  report_market_fallback: "No usable EPEX series \xB7 useful load determines priority",
+  report_market_off: "Disabled",
+  report_market_windows: "Preferred market windows (no mandatory runtime)",
+  report_market_avoided_import: "Forecast grid import avoided by inverter (after standby)",
   report_actual_soc: "Actual SOC",
   report_preparation_horizon_end: "Prepare for PV until",
-  report_preparation_today_tomorrow: "PV preparation considers today and tomorrow in the Home Assistant time zone.",
+  report_preparation_today_tomorrow: "PV preparation considers the full available forecast horizon in the Home Assistant time zone.",
   report_reserve_energy_policy: "Retain surplus energy; discharge only as needed to make room for forecast PV. The inverter lower limit is a technical AC discharge limit, not a reserve or discharge target.",
   report_unavoidable_export: "Unavoidable forecast export",
   report_reserve_decision: "Current decision",
@@ -694,9 +701,16 @@ Object.assign(STRINGS.en, {
   report_a_recording_error_occurred: "A recording error occurred"
 });
 Object.assign(STRINGS.de, {
+  reserve_decision_dc_priority: "Energie f\xFCr DC erhalten: AC-Vorbereitung w\xFCrde sp\xE4tere zus\xE4tzliche Netzteilversorgung erfordern.",
+  report_market: "Marktspitzen bevorzugen",
+  report_market_available: "EPEX verf\xFCgbar \xB7 teure Stunden innerhalb des AC-Budgets bevorzugen",
+  report_market_fallback: "Keine nutzbare EPEX-Zeitreihe \xB7 AC-Last bestimmt die Priorit\xE4t",
+  report_market_off: "Deaktiviert",
+  report_market_windows: "Bevorzugte Marktfenster (keine Pflichtlaufzeit)",
+  report_market_avoided_import: "Prognostizierter vermiedener Netzbezug durch Inverter (nach Standby)",
   report_actual_soc: "Ist-SOC",
   report_preparation_horizon_end: "PV-Vorbereitung bis",
-  report_preparation_today_tomorrow: "Die PV-Vorbereitung ber\xFCcksichtigt heute und morgen in der Home-Assistant-Zeitzone.",
+  report_preparation_today_tomorrow: "Die PV-Vorbereitung ber\xFCcksichtigt den gesamten verf\xFCgbaren Prognosehorizont in der Home-Assistant-Zeitzone.",
   report_reserve_energy_policy: "\xDCbrige Energie erhalten; nur so weit entladen, wie f\xFCr die erwartete PV-Energie n\xF6tig. Die Inverter-Untergrenze ist eine technische AC-Entladegrenze, kein Reserve- oder Entladeziel.",
   report_unavoidable_export: "Unvermeidbare prognostizierte Einspeisung",
   report_reserve_decision: "Aktuelle Entscheidung",
@@ -934,6 +948,35 @@ function reserveReport(hass, reserve) {
       `${fmt(reserve.psu48_delivered_wh)} Wh`
     ]
   ];
+  const market = reserve.market;
+  if (market) {
+    rows.push([
+      t("report_market"),
+      t(
+        !market.enabled ? "report_market_off" : market.status === "available" ? "report_market_available" : "report_market_fallback"
+      )
+    ]);
+    if (market.status === "available") {
+      rows.push([
+        t("report_market_avoided_import"),
+        `${fmt(market.avoided_grid_import_wh)} Wh`
+      ]);
+      const windows = Array.isArray(market.preferred_intervals) ? market.preferred_intervals : [];
+      const ranges = [];
+      for (const window2 of windows) {
+        if (!window2 || !Number.isFinite(Date.parse(window2.start)) || !Number.isFinite(Date.parse(window2.end)))
+          continue;
+        const previous = ranges.at(-1);
+        if (previous && Date.parse(previous.end) === Date.parse(window2.start))
+          previous.end = window2.end;
+        else ranges.push({ start: window2.start, end: window2.end });
+      }
+      rows.push([
+        t("report_market_windows"),
+        ranges.map((window2) => `${time(window2.start)} \u2013 ${time(window2.end)}`).join("; ") || "\u2014"
+      ]);
+    }
+  }
   const reason = reserve.decision_reason;
   const reasonKey = `reserve_decision_${reason}`;
   const translatedReason = typeof reason === "string" && reason ? t(reasonKey) : reasonKey;

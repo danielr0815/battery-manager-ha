@@ -81,7 +81,7 @@ def test_september_today_and_tomorrow_need_no_ac_preparation(
 
 
 @pytest.mark.parametrize("third_day_sun", ["recorded", "peak"])
-def test_september_day_three_sun_cannot_trigger_current_day_preparation(
+def test_september_day_three_is_considered_without_a_midnight_reset(
     september_forecast, third_day_sun
 ):
     config, recorded = september_forecast
@@ -112,12 +112,13 @@ def test_september_day_three_sun_cannot_trigger_current_day_preparation(
 
     short = simulate(config, bounded, config.control.inverter_min_soc_percent)
     full = simulate(config, sunny_third_day, config.control.inverter_min_soc_percent)
-    # Tomorrow the rolling policy may prepare for day three. Today's entire
-    # action sequence must remain independent of that unbound future forecast.
-    today_count = sum(
-        slot.start.date() == recorded.now.date() for slot in recorded.slots
+    # A distant deadline can now use earlier AC opportunities, but nominal
+    # DC coverage and battery limits still apply to the complete horizon.
+    assert (
+        full.reserve_decision.preparation_horizon_end
+        > short.reserve_decision.preparation_horizon_end
     )
-    assert full.flows[0].inverter_limit_w == pytest.approx(0, abs=1e-6)
-    assert full.flows[:today_count] == short.flows[:today_count]
-    assert all(flow.inverter_limit_w == 0 for flow in full.flows[:today_count])
-    assert full.reserve_decision == short.reserve_decision
+    assert full.min_soc_percent >= config.battery.soc_min_percent
+    assert full.max_soc_percent <= config.battery.soc_max_percent + 1e-6
+    assert sum(f.unserved_dc_wh for f in full.flows) == pytest.approx(0)
+    assert any(f.inverter_output_wh > 0 for f in full.flows)

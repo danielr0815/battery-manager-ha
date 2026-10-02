@@ -180,7 +180,7 @@ test("active reserve labels the technical inverter floor without displaying a le
   await expect(page.locator("#readout")).not.toContainText("T*");
   const report = page.locator('[data-view-key="reserve-policy"]');
   await report.locator("summary").click();
-  await expect(report).toContainText("today and tomorrow");
+  await expect(report).toContainText("full available forecast horizon");
   await expect(report).toContainText("600 Wh");
   await expect(report).toContainText("250 Wh");
   await expect(report).toContainText("125 W");
@@ -191,7 +191,7 @@ test("active reserve labels the technical inverter floor without displaying a le
   await expect(page.locator('[data-marker="inverter-floor-label"]')).toHaveText(
     "Inverter-Untergrenze 20 %",
   );
-  await expect(report).toContainText("heute und morgen");
+  await expect(report).toContainText("gesamten verfügbaren Prognosehorizont");
   await expect(report).toContainText("28.09.2026, 00:00");
   await expect(report).toContainText("kein Reserve- oder Entladeziel");
   await expect(report).not.toContainText("Halteziel");
