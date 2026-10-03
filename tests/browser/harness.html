@@ -39,7 +39,15 @@
       card.hass = {
         language: "en",
         config: { time_zone: "Europe/Berlin" },
-        states: { "sensor.plan": { attributes } },
+        states: {
+          "sensor.plan": {
+            entity_id: "sensor.plan",
+            state: "50",
+            last_updated: "2026-09-26T08:00:00Z",
+            last_reported: "2026-09-26T08:00:00Z",
+            attributes,
+          },
+        },
       };
       document.querySelector("#host").append(card);
       window.card = card;

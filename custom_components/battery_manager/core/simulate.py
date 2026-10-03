@@ -8,9 +8,17 @@ the battery. Emergency support paths (D-A9) can shift DC loads to the grid.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, timedelta
 from math import isfinite
 
-from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
+from .model import (
+    DCDeficitInterval,
+    HourFlows,
+    HourSlot,
+    PlanInputs,
+    SystemConfig,
+    Trajectory,
+)
 from .planning_control import check_cancelled
 from .reserve_energy import (
     FLOW_EPSILON_WH,
@@ -312,6 +320,19 @@ def step_hour(
         dcdc_input_wh=dcdc_input_wh,
         dcdc_loss_wh=dcdc_loss_wh,
         unserved_dc_wh=unserved_dc_wh,
+        dc_deficit_intervals=(
+            DCDeficitInterval(
+                slot.start,
+                (
+                    slot.start.astimezone(UTC) + timedelta(hours=slot.duration)
+                ).astimezone(slot.start.tzinfo)
+                if slot.start.tzinfo
+                else slot.start + timedelta(hours=slot.duration),
+                unserved_dc_wh,
+            ),
+        )
+        if unserved_dc_wh > 0
+        else (),
         gate_open=gate_open,
         feedin_wh=feedin_eff,
     )

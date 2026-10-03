@@ -18,6 +18,7 @@ from .allocation import (
     allocate_loads as allocate_loads,
 )
 from .cascade import augment_cascade_plans
+from .dc_service import first_dc_service_regression, preserves_dc_service
 from .model import (
     STORAGE_ACTION_MINUTES,
     STORAGE_TARGET_TOLERANCE_PERCENT,
@@ -626,6 +627,12 @@ def plan_feedin(
                 dc48_schedule=dc48_schedule,
                 feedin_wh=tuple(booked),
             )
+            if not manual_today and not preserves_dc_service(
+                candidate, baseline=alloc_traj, accepted=trial
+            ):
+                booked[i] = 0.0
+                reasons[i] = "dc_service"
+                continue
             if not manual_today and not _continuous_loads_cover_to_max(
                 config, inputs, load_plans, candidate, i
             ):
@@ -655,8 +662,24 @@ def plan_feedin(
             dc24_schedule=dc24_schedule,
             dc48_schedule=dc48_schedule,
             pv_scale=stress_vec,
+            # Manual setpoints are external intent, not removable automatic
+            # preparation. The stress comparison only governs optional export.
+            feedin_wh=tuple(
+                b
+                if manual_w is not None and inputs.slots[j].start.date() == today
+                else 0.0
+                for j, b in enumerate(booked)
+            ),
         )
         for _ in range(sum(b > _EPS for b in booked) + 1):
+            automatic = [
+                j
+                for j, energy in enumerate(booked)
+                if energy > _EPS
+                and not (manual_w is not None and inputs.slots[j].start.date() == today)
+            ]
+            if not automatic:
+                break  # External manual intent has no removable booking.
             stressed = simulate(
                 config,
                 inputs,
@@ -667,6 +690,7 @@ def plan_feedin(
                 feedin_wh=tuple(booked),
                 pv_scale=stress_vec,
             )
+            dc_bad = first_dc_service_regression(base_stress, stressed)
             bad = next(
                 (
                     j
@@ -676,6 +700,7 @@ def plan_feedin(
                         floors[j],
                         base_stress.flows[j].soc_end_percent,
                     )
+                    or j == dc_bad
                 ),
                 None,
             )
@@ -683,11 +708,19 @@ def plan_feedin(
                 break
             # Only feed-in at slots <= `bad` can deepen slot `bad`; hand back
             # the latest of them (requirement 3: latest-first).
-            latest = max((j for j in range(bad + 1) if booked[j] > _EPS), default=None)
-            if latest is None:  # pragma: no cover - unreachable: a violation
-                break  # worse than the no-feed-in base implies a booking <= bad
+            latest = max(
+                (j for j in automatic if j <= bad),
+                # The coordinated reserve can anticipate a later export and
+                # change earlier support. Hand back an automatic booking even
+                # then, rather than cancelling external manual intent.
+                default=automatic[-1],
+            )
             booked[latest] = 0.0
-            reasons[latest] = "stress_reserve"
+            reasons[latest] = (
+                "dc_service"
+                if not preserves_dc_service(stressed, baseline=base_stress)
+                else "stress_reserve"
+            )
 
     by_day: dict[str, float] = {}
     for i, wh in enumerate(booked):
@@ -752,7 +785,8 @@ def appliance_windows(
         )
         import_ok = traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
         soc_ok = not _degrades_min_soc(traj, planned_trajectory, buffer_floor)
-        allowed = horizon_ok and import_ok and soc_ok
+        dc_ok = preserves_dc_service(traj, baseline=planned_trajectory)
+        allowed = horizon_ok and import_ok and soc_ok and dc_ok
         windows[appliance.appliance_id] = allowed
         if advisories is not None:
             reasons: list[ApplianceAdvisoryReason] = []
@@ -762,6 +796,8 @@ def appliance_windows(
                 reasons.append("extra_grid_import")
             if not soc_ok:
                 reasons.append("soc_condition")
+            if not dc_ok:
+                reasons.append("dc_service")
             advisories[appliance.appliance_id] = ApplianceAdvisory(
                 allowed, tuple(reasons)
             )

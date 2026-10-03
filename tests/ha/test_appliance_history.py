@@ -338,3 +338,36 @@ def test_out_of_range_program_duration_retains_existing_device_energy_contract()
     assert result["profiles"] == []
     assert result["history"][0]["warnings"] == ["invalid_duration"]
     assert result["history"][0]["accepted"]
+
+
+def test_legacy_power_freshness_migration_removes_only_attributable_samples():
+    learner = ApplianceLearning()
+    learner.observe("washer", NOW, True, 600, None, complete_start=True, program="eco")
+    learner.observe(
+        "washer", NOW + timedelta(minutes=5), False, 0, None, complete_start=False
+    )
+    cycle(learner, wh=100, start=NOW + timedelta(hours=1))
+    payload = learner.metadata_payload()
+    payload["version"] = 1
+    restored = ApplianceLearning()
+    restored.restore(deepcopy(learner.samples))
+    restored.restore_programs(
+        {
+            key: {
+                program: [list(pair) for pair in pairs]
+                for program, pairs in programs.items()
+            }
+            for key, programs in learner.program_samples.items()
+        }
+    )
+    restored.restore_metadata(payload)
+    assert restored.samples["washer"] == [100]
+    assert restored.snapshot("washer")["profiles"][0]["energy_wh"] == 100
+    history = restored.snapshot("washer")["history"]
+    assert not history[0]["accepted"]
+    assert history[0]["reasons"] == ["legacy_power_freshness_unknown"]
+    assert history[1]["accepted"]
+    # Missing historical collections also recover without reintroducing samples.
+    empty = ApplianceLearning()
+    empty.restore_metadata(payload)
+    assert empty.samples == {}

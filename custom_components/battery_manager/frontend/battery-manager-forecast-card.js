@@ -69,6 +69,25 @@ function dateTimeFormat(hass, options) {
     ...options
   });
 }
+function selectionTime(hass, time, times) {
+  const wall = dateTimeFormat(hass, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  const label = wall.format(time);
+  const ambiguous = times.some(
+    (other) => other !== time && wall.format(other) === label
+  );
+  return dateTimeFormat(hass, {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...ambiguous ? { timeZoneName: "shortOffset" } : {}
+  }).format(time);
+}
 function localHour(hass, time) {
   return Number(
     new Intl.DateTimeFormat("en-GB", {
@@ -153,6 +172,76 @@ var cascade_card_style_0 = "<style>\n      :host{display:block;min-width:0}*{box
 // frontend/translations.js
 var STRINGS = {
   en: {
+    dc_service: "additional DC supply deficit",
+    forecast_stale: "Forecast entity is unavailable. The last known plan is shown; current execution cannot be confirmed.",
+    forecast_unavailable: "Forecast entity is unavailable. No last known plan is available.",
+    selection_removed: "The selected time is no longer in this forecast.",
+    report_inverter_limit_planned: "Inverter permission in the plan",
+    report_inverter_control: "Inverter command and device feedback",
+    report_inverter_last_known: "Last known inverter command and feedback",
+    report_inverter_requested: "Requested inverter limit",
+    report_inverter_observed: "Reported device limit",
+    report_permission_not_power: "Permission is an upper limit, not measured inverter power. A command is confirmed only by device feedback.",
+    report_plan_captured: "Plan inputs captured",
+    report_plan_activated: "Plan activated",
+    report_command_time: "Command time",
+    report_feedback_time: "Device publication time",
+    report_confirmation: "Device confirmation",
+    report_confirmed: "Confirmed",
+    report_live_reason: "Current permission reason",
+    report_history_empty: "No recorded daily reports are available yet.",
+    report_sources: "Sources and data quality",
+    report_source: "Source role and entity",
+    report_open_entity: "Open entity details",
+    report_source_status: "Status",
+    report_source_value: "Value",
+    report_source_reported: "Publication and coverage",
+    report_source_coverage: "Coverage",
+    report_source_fallback: "Fallback",
+    report_market_source: "Market data source",
+    source_status_not_configured: "Not configured",
+    source_status_not_found: "Entity not found",
+    source_status_unknown: "Unknown measurement",
+    source_status_unavailable: "Unavailable",
+    source_status_invalid: "Invalid value or unit",
+    source_status_stale: "Stale publication",
+    source_status_expired: "Coverage expired",
+    source_status_available: "Available",
+    source_status_partial: "Partial coverage",
+    source_status_cached: "Cached data",
+    source_status_ambiguous: "Several sources; select one",
+    source_role_pv: "PV power",
+    source_role_ac: "House consumption",
+    source_role_grid_import: "Grid import",
+    source_role_grid_export: "Grid export",
+    source_role_live_ac_grid: "Live AC grid power",
+    source_role_live_ac_input: "Live AC input power",
+    source_role_live_ac_output: "Live AC output power",
+    source_role_market: "Market prices",
+    profile_window_occupancy: "Learning window occupancy",
+    profile_measurement_coverage: "Measurement coverage in the eligible period",
+    profile_eligible_hours: "Eligible hours",
+    profile_mature_bins: "Mature hourly bins",
+    profile_learned_duration: "Learned share of forecast duration",
+    card_tentative_wake: "Tentative plan: wake-up and valid SOC telemetry are required before execution.",
+    live_ac_reason_measured_ac_demand: "Measured AC demand within the available reserve budget",
+    live_ac_reason_soc_unavailable: "SOC telemetry unavailable or stale",
+    live_ac_reason_grid_unavailable: "Grid supply unavailable",
+    live_ac_reason_dc_supply: "DC supply has priority",
+    live_ac_reason_measurement_unavailable: "Live AC measurements unavailable or stale",
+    live_ac_reason_reserve_budget: "Reserve budget protected",
+    live_ac_reason_inactive: "Control inactive",
+    live_ac_reason_low_demand: "AC demand below the release threshold",
+    live_ac_reason_no_ac_demand: "No measured AC demand requiring additional permission",
+    live_ac_reason_off_delay: "Permission held during the low-demand delay",
+    live_ac_reason_soc_protection: "SOC protection",
+    live_ac_reason_awaiting_confirmation: "Waiting for device confirmation",
+    live_ac_reason_inverter_limit_unconfirmed: "Inverter limit not confirmed",
+    live_ac_reason_settled: "Requested source state confirmed",
+    live_ac_reason_waiting_for_lock: "Waiting for source control",
+    live_ac_reason_minimum_switch_interval: "Waiting for the minimum switching interval",
+    live_ac_reason_command_failed: "Device command failed",
+    live_ac_reason_grid_supply_unavailable: "Grid supply unavailable",
     inverter_lane: "Inverter",
     psu24_lane: "24 V power supply",
     psu48_lane: "48 V power supply",
@@ -393,6 +482,76 @@ var STRINGS = {
     no_consumption: "No consumption forecast on this sensor \u2014 needs Battery Manager v0.25.5+."
   },
   de: {
+    dc_service: "zus\xE4tzliches DC-Versorgungsdefizit",
+    forecast_stale: "Prognose-Entity ist nicht verf\xFCgbar. Der letzte bekannte Plan wird angezeigt; die aktuelle Ausf\xFChrung ist unbest\xE4tigt.",
+    forecast_unavailable: "Prognose-Entity ist nicht verf\xFCgbar. Es liegt noch kein letzter bekannter Plan vor.",
+    selection_removed: "Die gew\xE4hlte Zeit ist nicht mehr in dieser Prognose enthalten.",
+    report_inverter_limit_planned: "Inverterfreigabe im Plan",
+    report_inverter_control: "Inverterkommando und Ger\xE4ter\xFCckmeldung",
+    report_inverter_last_known: "Letztes bekanntes Inverterkommando und R\xFCckmeldung",
+    report_inverter_requested: "Angefragtes Inverterlimit",
+    report_inverter_observed: "Gemeldetes Ger\xE4telimit",
+    report_permission_not_power: "Die Freigabe ist eine Obergrenze, keine gemessene Inverterleistung. Erst die Ger\xE4ter\xFCckmeldung best\xE4tigt ein Kommando.",
+    report_plan_captured: "Planeingaben aufgenommen",
+    report_plan_activated: "Plan aktiviert",
+    report_command_time: "Kommandozeit",
+    report_feedback_time: "Ger\xE4tepublikation",
+    report_confirmation: "Ger\xE4tebest\xE4tigung",
+    report_confirmed: "Best\xE4tigt",
+    report_live_reason: "Grund der aktuellen Freigabe",
+    report_history_empty: "Es sind noch keine aufgezeichneten Tagesberichte verf\xFCgbar.",
+    report_sources: "Quellen und Datenqualit\xE4t",
+    report_source: "Quellenrolle und Entity",
+    report_open_entity: "Entity-Details \xF6ffnen",
+    report_source_status: "Status",
+    report_source_value: "Wert",
+    report_source_reported: "Publikation und Abdeckung",
+    report_source_coverage: "Abdeckung",
+    report_source_fallback: "Fallback",
+    report_market_source: "Marktdatenquelle",
+    source_status_not_configured: "Nicht konfiguriert",
+    source_status_not_found: "Entity nicht gefunden",
+    source_status_unknown: "Messwert unbekannt",
+    source_status_unavailable: "Nicht verf\xFCgbar",
+    source_status_invalid: "Ung\xFCltiger Wert oder Einheit",
+    source_status_stale: "Veraltete Publikation",
+    source_status_expired: "Abdeckung abgelaufen",
+    source_status_available: "Verf\xFCgbar",
+    source_status_partial: "Teilweise Abdeckung",
+    source_status_cached: "Daten aus dem Cache",
+    source_status_ambiguous: "Mehrere Quellen; Auswahl erforderlich",
+    source_role_pv: "PV-Leistung",
+    source_role_ac: "Hausverbrauch",
+    source_role_grid_import: "Netzbezug",
+    source_role_grid_export: "Einspeisung",
+    source_role_live_ac_grid: "Live-AC-Netzleistung",
+    source_role_live_ac_input: "Live-AC-Eingangsleistung",
+    source_role_live_ac_output: "Live-AC-Ausgangsleistung",
+    source_role_market: "Marktpreise",
+    profile_window_occupancy: "Belegung des Lernfensters",
+    profile_measurement_coverage: "Messabdeckung im g\xFCltigen Zeitraum",
+    profile_eligible_hours: "G\xFCltige Zeitraumstunden",
+    profile_mature_bins: "Reife Stunden-Bins",
+    profile_learned_duration: "Gelernter Anteil der Prognosedauer",
+    card_tentative_wake: "Vorl\xE4ufiger Plan: Aufwecken und g\xFCltige SOC-Telemetrie sind vor der Ausf\xFChrung erforderlich.",
+    live_ac_reason_measured_ac_demand: "Gemessener AC-Bedarf innerhalb des verf\xFCgbaren Reservebudgets",
+    live_ac_reason_soc_unavailable: "SOC-Telemetrie fehlt oder ist veraltet",
+    live_ac_reason_grid_unavailable: "Netzversorgung nicht verf\xFCgbar",
+    live_ac_reason_dc_supply: "DC-Versorgung hat Vorrang",
+    live_ac_reason_measurement_unavailable: "Live-AC-Messung fehlt oder ist veraltet",
+    live_ac_reason_reserve_budget: "Reservebudget wird gesch\xFCtzt",
+    live_ac_reason_inactive: "Steuerung inaktiv",
+    live_ac_reason_low_demand: "AC-Bedarf unter der Freigabeschwelle",
+    live_ac_reason_no_ac_demand: "Kein gemessener AC-Bedarf f\xFCr eine zus\xE4tzliche Freigabe",
+    live_ac_reason_off_delay: "Freigabe bleibt w\xE4hrend der Abschaltverz\xF6gerung bestehen",
+    live_ac_reason_soc_protection: "SOC-Schutz",
+    live_ac_reason_awaiting_confirmation: "Warte auf Ger\xE4tebest\xE4tigung",
+    live_ac_reason_inverter_limit_unconfirmed: "Inverterlimit unbest\xE4tigt",
+    live_ac_reason_settled: "Gew\xFCnschter Quellenzustand best\xE4tigt",
+    live_ac_reason_waiting_for_lock: "Warte auf Quellensteuerung",
+    live_ac_reason_minimum_switch_interval: "Warte auf Mindestschaltabstand",
+    live_ac_reason_command_failed: "Ger\xE4tekommando fehlgeschlagen",
+    live_ac_reason_grid_supply_unavailable: "Netzversorgung nicht verf\xFCgbar",
     inverter_lane: "Inverter",
     psu24_lane: "24-V-Netzteil",
     psu48_lane: "48-V-Netzteil",
@@ -848,8 +1007,116 @@ function replaceCardHTML(card, html) {
     if (host) host[0].scrollTop += delta;
   }
 }
+function restoreChartSelection(card) {
+  if (card._selectedTime == null) return;
+  const index = card._chartMeta?.points.findIndex((p) => p.time === card._selectedTime) ?? -1;
+  if (index >= 0) card._showSlot(index);
+  else {
+    card._selectedTime = null;
+    const readout = card.shadowRoot.getElementById("readout");
+    if (readout)
+      readout.textContent = localize(card._hass, "selection_removed");
+  }
+}
+function bindEntityButtons(card) {
+  for (const button of card.shadowRoot.querySelectorAll("[data-entity-id]")) {
+    button.addEventListener(
+      "click",
+      () => card.dispatchEvent(
+        new CustomEvent("hass-more-info", {
+          detail: { entityId: button.dataset.entityId },
+          bubbles: true,
+          composed: true
+        })
+      )
+    );
+  }
+}
 
 // frontend/reports.js
+var reportTime = (hass, value) => {
+  const at = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? new Intl.DateTimeFormat(hass?.language || "en", {
+    timeZone: hass?.config?.time_zone || "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short"
+  }).format(at) : "\u2014";
+};
+var reportNumber = (hass, value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", {
+  maximumFractionDigits: 1
+}).format(value) : "\u2014";
+function stateNotice(hass, state) {
+  if (!state || !["unknown", "unavailable"].includes(state.state)) return "";
+  const hasPlan = [
+    "forecast",
+    "consumption_forecast",
+    "loads",
+    "cascades"
+  ].some(
+    (key) => Array.isArray(state.attributes?.[key]) && state.attributes[key].length > 0
+  );
+  return `<p class="warning" role="status" data-state-warning="${esc(state.state)}" style="padding:12px;color:var(--warning-color,#b26a00)">${esc(localize(hass, hasPlan ? "forecast_stale" : "forecast_unavailable"))}</p>`;
+}
+function inverterControlReport(hass, attributes, state) {
+  const a = attributes || {};
+  if (!a.inverter_control && !a.live_ac && !["active", "shadow"].includes(a.reserve?.mode))
+    return "";
+  const t = (key) => localize(hass, key);
+  const control = a.inverter_control || {}, live = a.live_ac || {}, plan = a.plan_metadata || {};
+  const stale = ["unknown", "unavailable"].includes(state);
+  const rows = [
+    [
+      t("report_inverter_limit_planned"),
+      `${reportNumber(hass, a.reserve?.inverter_limit_w)} W`
+    ],
+    [t("report_plan_captured"), reportTime(hass, plan.captured_at)],
+    [t("report_plan_activated"), reportTime(hass, plan.activated_at)],
+    [
+      t("report_inverter_requested"),
+      `${reportNumber(hass, control.requested_limit_w)} W`
+    ],
+    [t("report_command_time"), reportTime(hass, control.requested_at)],
+    [
+      t("report_inverter_observed"),
+      `${reportNumber(hass, control.observed_limit_w)} W`
+    ],
+    [t("report_feedback_time"), reportTime(hass, control.observed_at)],
+    [
+      t("report_confirmation"),
+      t(
+        control.confirmed === true ? "report_confirmed" : control.confirmed === false ? "confirmation_pending" : "report_reserve_decision_unknown"
+      )
+    ]
+  ];
+  const reason = control.reason || live.reason;
+  if (reason) {
+    const key = `live_ac_reason_${reason}`, translated = t(key);
+    rows.push([
+      t("report_live_reason"),
+      translated === key ? t("report_reserve_decision_unknown") : translated
+    ]);
+  }
+  return `<details data-view-key="inverter-control" style="padding:12px"><summary>${esc(t(stale ? "report_inverter_last_known" : "report_inverter_control"))}</summary><p>${esc(t("report_permission_not_power"))}</p><dl>${rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl></details>`;
+}
+function sourceHealthReport(hass, health) {
+  if (!Array.isArray(health) || !health.length) return "";
+  const t = (key) => localize(hass, key);
+  const rows = health.filter((row) => row && typeof row === "object").slice(0, 100).map((row) => {
+    const roleKey = `source_role_${row.role}`, role = t(roleKey);
+    const statusKey = `source_status_${row.status}`, status = t(statusKey);
+    const value = row.value == null ? "\u2014" : `${typeof row.value === "number" ? reportNumber(hass, row.value) : row.value}${row.unit ? ` ${row.unit}` : ""}`;
+    const coverage = row.coverage_start || row.coverage_end ? `<br>${esc(t("report_source_coverage"))}: ${esc(reportTime(hass, row.coverage_start))} \u2013 ${esc(reportTime(hass, row.coverage_end))}` : "";
+    const fallback = row.fallback ? `<br>${esc(t("report_source_fallback"))}: ${esc(row.fallback)}` : "";
+    const entity = typeof row.entity_id === "string" && row.entity_id.length ? `<button type="button" data-entity-id="${esc(row.entity_id)}" data-focus-key="source-${esc(row.role)}-${esc(row.entity_id)}" title="${esc(t("report_open_entity"))}">${esc(row.entity_id)}</button>` : esc(t("source_status_not_configured"));
+    return `<tr><th scope="row">${esc(role === roleKey ? row.role : role)}<br>${entity}</th><td>${esc(status === statusKey ? t("report_reserve_decision_unknown") : status)}${fallback}</td><td>${esc(value)}</td><td>${esc(reportTime(hass, row.reported_at))}${coverage}${row.boundary ? `<br>${esc(row.boundary)}` : ""}</td></tr>`;
+  }).join("");
+  return `<details data-view-key="source-health" style="padding:12px"><summary>${esc(t("report_sources"))}</summary><div data-scroll-key="source-health-table" style="overflow-x:auto"><table><thead><tr>${["report_source", "report_source_status", "report_source_value", "report_source_reported"].map((key) => `<th scope="col">${esc(t(key))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
 function executionLines(hass, execution) {
   if (!execution || typeof execution !== "object") return [];
   const lines = [];
@@ -926,7 +1193,7 @@ function reserveReport(hass, reserve) {
       `${fmt(reserve.unavoidable_export_wh)} Wh`
     ],
     [t("report_preparation_from"), time(reserve.preparation_start)],
-    [t("report_inverter_limit_now"), `${fmt(reserve.inverter_limit_w)} W`],
+    [t("report_inverter_limit_planned"), `${fmt(reserve.inverter_limit_w)} W`],
     [
       t("report_expected_minimum_soc"),
       `${fmt(reserve.expected_min_soc_percent)} %`
@@ -956,6 +1223,20 @@ function reserveReport(hass, reserve) {
         !market.enabled ? "report_market_off" : market.status === "available" ? "report_market_available" : "report_market_fallback"
       )
     ]);
+    if (market.entity_id)
+      rows.push([t("report_market_source"), market.entity_id]);
+    if (market.coverage_start || market.coverage_end)
+      rows.push([
+        t("report_source_coverage"),
+        `${time(market.coverage_start)} \u2013 ${time(market.coverage_end)}`
+      ]);
+    if (market.enabled && market.status !== "available") {
+      const key = `source_status_${market.status}`;
+      rows.push([
+        t("report_source_status"),
+        t(key) === key ? t("report_reserve_decision_unknown") : t(key)
+      ]);
+    }
     if (market.status === "available") {
       rows.push([
         t("report_market_avoided_import"),
@@ -992,7 +1273,7 @@ function reserveReport(hass, reserve) {
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} \xB7 ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 function operationReport(hass, report) {
-  if (!report || !Array.isArray(report.days) || !report.days.length) return "";
+  if (!report || !Array.isArray(report.days) && !report.last_error) return "";
   const text = (key) => localize(hass, key);
   const fmt = (value, digits = 2) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass.language || "en", {
     maximumFractionDigits: digits
@@ -1003,7 +1284,7 @@ function operationReport(hass, report) {
     grid_import: text("report_grid_import"),
     grid_export: text("report_grid_export")
   };
-  const days = report.days.filter((day) => day && typeof day === "object").slice(-30).sort((a, b) => String(b.day).localeCompare(String(a.day)));
+  const days = (Array.isArray(report.days) ? report.days : []).filter((day) => day && typeof day === "object").slice(-30).sort((a, b) => String(b.day).localeCompare(String(a.day)));
   const content = days.map((day) => {
     const metrics = day.metrics || {};
     const keys = [
@@ -1012,7 +1293,8 @@ function operationReport(hass, report) {
     const rows = keys.map((key) => {
       const m = metrics[key];
       const name = labels[key] || (key.startsWith("cascade_input:") ? `${report.load_names?.[key.slice(14)] || key.slice(14)} \xB7 ${text("report_ac_input_including_pass_through")}` : report.load_names?.[key.slice(5)] || key);
-      return `<tr><th scope="row">${esc(name)}</th><td>${fmt(m?.planned_wh == null ? null : m.planned_wh / 1e3)}</td><td>${fmt(m?.actual_wh == null ? null : m.actual_wh / 1e3)}</td><td>${fmt(m?.error_wh == null ? null : m.error_wh / 1e3)}</td><td>${fmt(m?.coverage_hours)} h</td></tr>`;
+      const missing = m?.coverage_hours === 0;
+      return `<tr><th scope="row">${esc(name)}</th><td>${fmt(missing || m?.planned_wh == null ? null : m.planned_wh / 1e3)}</td><td>${fmt(missing || m?.actual_wh == null ? null : m.actual_wh / 1e3)}</td><td>${fmt(missing || m?.error_wh == null ? null : m.error_wh / 1e3)}</td><td>${fmt(m?.coverage_hours)} h</td></tr>`;
     }).join("");
     const loads = Object.entries(day.loads || {}).map(
       ([id, l]) => `<li>${esc(report.load_names?.[id] || id)}: ${text("report_actor_time_actual_planned")} ${fmt(l.actual_run_hours)} / ${fmt(l.planned_run_hours)} h \xB7 ${text("report_runtime_power_component")} ${fmt(l.execution_error_wh)} / ${fmt(l.power_error_wh)} Wh \xB7 ${text("report_coverage_actor_time_energy")} ${fmt(l.runtime_coverage_hours)} / ${fmt(l.coverage_hours)} h</li>`
@@ -1027,7 +1309,7 @@ function operationReport(hass, report) {
   return `<details data-view-key="operation-report" style="padding:12px"><summary>${text("report_daily_comparison_plan_and_operation")}</summary>
     <p>${text("report_planned_and_actual_values_cover_the_same_measured_intervals_only_means_m")}</p>
     ${report.dropped_events ? `<p>${text("report_older_detailed_events_were_removed_by_the_retention_limit_daily_reports_")}</p>` : ""}
-    ${report.last_error ? `<p>${text("report_a_recording_error_occurred")}</p>` : ""}${content}</details>`;
+    ${report.last_error ? `<p role="status" data-history-error>${text("report_a_recording_error_occurred")}</p>` : ""}${days.length ? content : `<p>${esc(text("report_history_empty"))}</p>`}</details>`;
 }
 
 // frontend/forecast-card.js
@@ -1082,15 +1364,16 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       show_power_supplies: false,
       ...config
     };
+    this._selectedTime = null;
     this._lastState = void 0;
     this._showPowerSupplies = this._config.show_power_supplies === true;
     this._render();
   }
   set hass(hass) {
-    const languageChanged = hass.language !== this._hass?.language;
+    const presentationChanged = hass.language !== this._hass?.language || hass.config?.time_zone !== this._hass?.config?.time_zone;
     this._hass = hass;
     const stateObj = this._config?.entity ? hass.states[this._config.entity] : void 0;
-    if (stateObj !== this._lastState || languageChanged) {
+    if (stateObj !== this._lastState || presentationChanged) {
       this._lastState = stateObj;
       this._render();
     }
@@ -1165,6 +1448,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     this._laneCount = 0;
     this._kbIndex = null;
     this._shownSlot = null;
+    this._chartMeta = null;
     const hass = this._hass;
     const t = (key) => localize(hass, key);
     let body;
@@ -1189,12 +1473,15 @@ var BatteryManagerForecastCard = class extends HTMLElement {
           <div class="title">${esc(header ?? "")}</div>
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
-        ${body}
+        ${stateNotice(hass, stateObj)}${body}
+        ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
         ${reserveReport(this._hass, stateObj?.attributes?.reserve)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `
     );
     this._attachChartHandlers();
+    bindEntityButtons(this);
+    restoreChartSelection(this);
   }
   _statsLine(stateObj, t) {
     if (!stateObj || !isForecastEntity(stateObj)) {
@@ -1601,7 +1888,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       )} (${t("root")} ${root} kWh)</span>`;
     }).join("");
     return `
-      <svg id="chart" role="img" tabindex="0" aria-label="${esc(summary)}"
+      <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
@@ -1626,8 +1913,17 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       return;
     }
     target.addEventListener("pointermove", (ev) => this._onPointerMove(ev));
+    target.addEventListener("pointerdown", (ev) => {
+      this._touchSelected = ev.pointerType === "touch";
+      this._cancelPendingFrame();
+      this._onHover(ev);
+    });
     target.addEventListener("pointerleave", () => {
       this._cancelPendingFrame();
+      if (!this._touchSelected) this._clearSlot();
+    });
+    target.addEventListener("pointercancel", () => {
+      this._touchSelected = false;
       this._clearSlot();
     });
     const svg = this.shadowRoot.getElementById("chart");
@@ -1720,6 +2016,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     if (!nearest) {
       return;
     }
+    this._selectedTime = nearest.time;
     const cx = meta.x(nearest.time);
     marker.innerHTML = `
       <line x1="${cx}" y1="${meta.margin.top}" x2="${cx}"
@@ -1744,7 +2041,11 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     );
     const floorText = meta.inverterFloor === void 0 ? "" : ` \xB7 ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
     const when = esc(
-      `${fmt.format(nearest.time)}${nearest.soc == null ? "" : ` \xB7 ${nearest.soc} %`}${floorText}`
+      `${selectionTime(
+        this._hass,
+        nearest.time,
+        meta.points.map((p) => p.time)
+      )}${nearest.soc == null ? "" : ` \xB7 ${nearest.soc} %`}${floorText}`
     );
     const chips = activeLanes.map((lane) => {
       const block = covering(lane);
@@ -1780,6 +2081,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     readout.innerHTML = chips ? `${when} \xB7 ${chips}` : when;
   }
   _clearSlot() {
+    this._selectedTime = null;
+    this._kbIndex = null;
     this._shownSlot = null;
     const marker = this.shadowRoot?.getElementById("hover-marker");
     const readout = this.shadowRoot?.getElementById("readout");
@@ -1874,14 +2177,15 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       );
     }
     this._config = { hours: 48, ...config };
+    this._selectedTime = null;
     this._lastState = void 0;
     this._render();
   }
   set hass(hass) {
-    const languageChanged = hass.language !== this._hass?.language;
+    const presentationChanged = hass.language !== this._hass?.language || hass.config?.time_zone !== this._hass?.config?.time_zone;
     this._hass = hass;
     const stateObj = this._config?.entity ? hass.states[this._config.entity] : void 0;
-    if (stateObj !== this._lastState || languageChanged) {
+    if (stateObj !== this._lastState || presentationChanged) {
       this._lastState = stateObj;
       this._render();
     }
@@ -1949,6 +2253,7 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     }
     this._kbIndex = null;
     this._shownSlot = null;
+    this._chartMeta = null;
     this._statsText = "";
     const hass = this._hass;
     const t = (key) => localize(hass, key);
@@ -1974,11 +2279,13 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
           <div class="title">${esc(header ?? "")}</div>
           <div class="stats">${this._statsText || ""}</div>
         </div>
-        ${body}
+        ${stateNotice(hass, stateObj)}${body}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
       </ha-card>
     `
     );
     this._attachChartHandlers();
+    bindEntityButtons(this);
+    restoreChartSelection(this);
   }
   _renderChart(stateObj, t) {
     const a = stateObj.attributes;
@@ -2177,7 +2484,7 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       maxP.time
     )}).`;
     return `
-      <svg id="chart" role="img" tabindex="0" aria-label="${esc(summary)}"
+      <svg id="chart" role="img" tabindex="0" data-focus-key="consumption-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
@@ -2189,7 +2496,7 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     `;
   }
   _renderLearning(profile, t) {
-    if (!profile?.samples) return "";
+    if (!profile || !profile.samples && !profile.coverage_detail) return "";
     const rows = [];
     for (const daytype of ["weekday", "weekend", "absence"]) {
       const minimum = profile.minimum_samples?.[daytype];
@@ -2215,6 +2522,12 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     }
     return `<details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
       <p>${esc(t("profile_samples_note"))}</p>
+      ${Object.entries(profile.coverage_detail || {}).map(([path, detail]) => {
+      const percentage = (value) => typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)} %` : "\u2014";
+      const hours = (value) => typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} h` : "\u2014";
+      return `<p data-coverage-path="${esc(path)}">${esc(path.toUpperCase())} \xB7 ${esc(t("profile_window_occupancy"))}: ${percentage(detail.window_occupancy)} \xB7 ${esc(t("profile_measurement_coverage"))}: ${percentage(detail.measurement_coverage)} \xB7 ${esc(t("profile_eligible_hours"))}: ${hours(detail.valid_hours)} / ${hours(detail.eligible_hours)} \xB7 ${esc(t("profile_mature_bins"))}: ${esc(detail.mature_bins ?? "\u2014")} / ${esc(detail.total_bins ?? "\u2014")}</p>`;
+    }).join("")}
+      ${typeof profile.learned_duration_fraction === "number" && Number.isFinite(profile.learned_duration_fraction) ? `<p>${esc(t("profile_learned_duration"))}: ${Math.round(profile.learned_duration_fraction * 100)} %</p>` : ""}
       ${profile.ac_valid_since ? `<p>${esc(t("profile_valid_since"))}: ${esc(dateTimeFormat(this._hass, { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(profile.ac_valid_since)))}</p>` : ""}
       <table><thead><tr><th>${esc(t("profile_daytype"))}</th><th>${esc(t("profile_hour"))}</th><th>AC</th><th>DC</th></tr></thead><tbody>${rows.join("")}</tbody></table>
       <p>${esc(t("profile_exclusions_note"))}</p>
@@ -2230,8 +2543,17 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       return;
     }
     target.addEventListener("pointermove", (ev) => this._onPointerMove(ev));
+    target.addEventListener("pointerdown", (ev) => {
+      this._touchSelected = ev.pointerType === "touch";
+      this._cancelPendingFrame();
+      this._onHover(ev);
+    });
     target.addEventListener("pointerleave", () => {
       this._cancelPendingFrame();
+      if (!this._touchSelected) this._clearSlot();
+    });
+    target.addEventListener("pointercancel", () => {
+      this._touchSelected = false;
       this._clearSlot();
     });
     const svg = this.shadowRoot.getElementById("chart");
@@ -2299,13 +2621,15 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     }
     const px = (ev.clientX - rect.left) / rect.width * svg.viewBox.baseVal.width;
     const time = meta.t0 + (px - meta.margin.left) / (svg.viewBox.baseVal.width - meta.margin.left - 10) * (meta.t1 - meta.t0);
-    let nearest = 0;
-    for (let i = 1; i < meta.points.length; i++) {
-      if (Math.abs(meta.points[i].time - time) < Math.abs(meta.points[nearest].time - time)) {
-        nearest = i;
-      }
+    const index = meta.points.findIndex((p) => p.time <= time && time < p.end);
+    if (index >= 0) this._showSlot(index);
+    else {
+      this._clearSlot();
+      this.shadowRoot.getElementById("readout").textContent = localize(
+        this._hass,
+        "card_no_forecast_value_at_this_time"
+      );
     }
-    this._showSlot(nearest);
   }
   _showSlot(index) {
     const meta = this._chartMeta;
@@ -2323,17 +2647,13 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     if (!p) {
       return;
     }
+    this._selectedTime = p.time;
     const cx = meta.barMeta[index].cx;
     marker.innerHTML = `
       <line x1="${cx}" y1="${meta.margin.top}" x2="${cx}"
         y2="${meta.margin.top + meta.plotH}"
         stroke="var(--secondary-text-color)" stroke-width="1"
         stroke-dasharray="3 3"/>`;
-    const fmt = dateTimeFormat(this._hass, {
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
     const t = (key) => localize(this._hass, key);
     const chips = [
       [t("level_ac"), AC_COLOR, p.ac],
@@ -2346,11 +2666,19 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
         name
       )} ${Math.round(v)} W</span>`
     ).join("");
-    const when = esc(`${fmt.format(p.time)}`);
+    const when = esc(
+      selectionTime(
+        this._hass,
+        p.time,
+        meta.points.map((point) => point.time)
+      )
+    );
     const sources = `AC: ${t(p.acLearned ? "profile_learned" : "profile_static")} \xB7 DC: ${t(p.dcLearned ? "profile_learned" : "profile_static")}`;
     readout.innerHTML = `${when} \xB7 ${chips} \xB7 ${esc(sources)}`;
   }
   _clearSlot() {
+    this._selectedTime = null;
+    this._kbIndex = null;
     this._shownSlot = null;
     const marker = this.shadowRoot?.getElementById("hover-marker");
     const readout = this.shadowRoot?.getElementById("readout");
@@ -2429,10 +2757,10 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
     this._render();
   }
   set hass(value) {
-    const languageChanged = value.language !== this._hass?.language;
+    const presentationChanged = value.language !== this._hass?.language || value.config?.time_zone !== this._hass?.config?.time_zone;
     this._hass = value;
     const state = value.states[this._entityId()];
-    if (state !== this._lastState || languageChanged) {
+    if (state !== this._lastState || presentationChanged) {
       this._lastState = state;
       this._render();
     }
@@ -2717,6 +3045,7 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
     return a.value + (b.value - a.value) * (time - a.time) / (b.time - a.time);
   }
   _series(cascade, kind, id, period, mode) {
+    const focusKey = `chart-${cascade.cascade_id || cascade.terminal_load_id}-${kind}-${id || "root"}-${mode || "power"}`;
     const [from, until] = this._horizon(cascade, period);
     if (until < from)
       return {
@@ -2736,6 +3065,7 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
       return {
         from,
         until,
+        focusKey,
         points: points2.sort((a, b) => a.time - b.time),
         unit: "%",
         label: localize(this._hass, "card_state_of_charge"),
@@ -2781,6 +3111,7 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
     return {
       from,
       until,
+      focusKey,
       points,
       blocks,
       kind,
@@ -2845,7 +3176,7 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
     }
     ticks.push(t1);
     const target = series.target == null ? "" : `<line x1="${left}" x2="${width - right}" y1="${y(series.target)}" y2="${y(series.target)}" class="soc-target"/>`;
-    return `<div class="plot"><svg id="chart-${index}" viewBox="0 0 ${width} ${height}" tabindex="0" role="img" aria-label="${esc(`${owner}: ${series.label} \xB7 ${series.historyEntity ? localize(this._hass, "card_enter_open_history") : ""}${localize(this._hass, "card_forecast_arrow_keys_to_select_time")}`)}">
+    return `<div class="plot"><svg id="chart-${index}" data-focus-key="${esc(`${series.focusKey}-${compact ? "overview" : "detail"}`)}" viewBox="0 0 ${width} ${height}" tabindex="0" role="img" aria-label="${esc(`${owner}: ${series.label} \xB7 ${series.historyEntity ? localize(this._hass, "card_enter_open_history") : ""}${localize(this._hass, "card_forecast_arrow_keys_to_select_time")}`)}">
       <text x="2" y="${top + 4}" class="axis">${this._number(maximum, series.unit === "kWh" ? 1 : 0)}</text><text x="6" y="${bottom}" class="axis">0</text>
       <line x1="${left}" x2="${width - right}" y1="${bottom}" y2="${bottom}" class="grid"/>${target}
       <polyline points="${points.map((p) => `${x(p.time)},${y(p.value)}`).join(" ")}" fill="none" stroke="${color}" class="forecast-line"/>
@@ -2901,7 +3232,8 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
     return this._views.get(key);
   }
   _button(label, index, action, extra = "", selected = false) {
-    return `<button type="button" data-cascade="${index}" data-action="${action}" ${extra} aria-pressed="${selected}">${esc(label)}</button>`;
+    const identity = this._cascades()[index]?.cascade_id || index;
+    return `<button type="button" data-focus-key="${esc(`control-${identity}-${action}-${extra}`)}" data-cascade="${index}" data-action="${action}" ${extra} aria-pressed="${selected}">${esc(label)}</button>`;
   }
   _groups(blocks) {
     const describe = (b) => {
@@ -3271,7 +3603,10 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
           return;
         event.preventDefault();
-        const current = chart.kbIndex ?? 0;
+        const current = this._cursorTime == null ? 0 : Math.max(
+          0,
+          times.findLastIndex((time) => time <= this._cursorTime)
+        );
         chart.kbIndex = event.key === "Home" ? 0 : event.key === "End" ? times.length - 1 : event.key === "ArrowLeft" ? Math.max(0, current - 1) : Math.min(times.length - 1, current + 1);
         this._showTime(times[chart.kbIndex]);
       });
@@ -3329,9 +3664,10 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
     const body = !entityId ? esc(localize(this._hass, "no_entity")) : !state ? esc(`${localize(this._hass, "not_found")} ${entityId}`) : cascades.length ? cascades.map((c, i) => this._renderCascade(c, i)).join("") : esc(this._emptyText());
     replaceCardHTML(
       this,
-      `<ha-card header="${esc(this._config.title || this._cardTitle())}">${cascade_card_style_0}<div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`
+      `<ha-card header="${esc(this._config.title || this._cardTitle())}">${cascade_card_style_0}<div class="wrap">${stateNotice(this._hass, state)}${body}${sourceHealthReport(this._hass, state?.attributes?.source_health)}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`
     );
     this._bindCharts();
+    bindEntityButtons(this);
     if (typeof requestAnimationFrame === "function")
       requestAnimationFrame(() => this._sizeAxes());
   }
@@ -3424,6 +3760,7 @@ var BatteryManagerLoadsCard = class extends BatteryManagerCascadeCard {
       ${load.available === false ? `<p class="fault">${esc(localize(this._hass, "card_unavailable"))}</p>` : ""}
       ${load.power_warning ? `<p class="fault">${esc(localize(this._hass, "card_power_draw_differs_from_expectation"))}</p>` : ""}
       ${load.soc_stale ? `<p class="fault">${esc(localize(this._hass, "card_stale_telemetry_blocks_execution"))}</p>` : ""}
+      ${load.target_soc_percent != null && num(load.soc_percent) === void 0 ? `<p class="muted" data-tentative-plan>${esc(localize(this._hass, "card_tentative_wake"))}</p>` : ""}
       <div class="metrics">${metrics.map(([label, value]) => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
       ${load.target_soc_percent != null ? `<p class="muted">${esc(localize(this._hass, "card_state_of_charge_at_plan_start_charge_target"))}: ${this._number(num(load.soc_percent), 1)} % / ${this._number(num(load.target_soc_percent), 1)} %</p>` : ""}
       <p class="muted">${esc(localize(this._hass, "card_robust_power_estimate_while_running"))}: ${this._number(num(load.observed_power_w), 0)} W \xB7 ${esc(localize(this._hass, "card_last_learned_power"))}: ${this._number(num(load.learned_power_w), 0)} W</p>
@@ -3473,6 +3810,8 @@ if (!customElements.get(LOADS_CARD_TYPE)) {
 // frontend/appliances-translations.js
 var TEXT = {
   en: {
+    dc_service: "Starting would reduce DC supply",
+    not_configured: "Not configured",
     title: "Appliances",
     description: "Observed appliance cycles, planning estimates and learned profiles",
     entry: "Battery Manager installation",
@@ -3560,6 +3899,8 @@ var TEXT = {
     power_sensor: "Power sensor"
   },
   de: {
+    dc_service: "Der Start w\xFCrde die DC-Versorgung verschlechtern",
+    not_configured: "Nicht konfiguriert",
     title: "Haushaltsger\xE4te",
     description: "Beobachtete Ger\xE4tel\xE4ufe, Planungswerte und gelernte Profile",
     entry: "Battery-Manager-Installation",
@@ -3766,6 +4107,7 @@ var BatteryManagerAppliancesCard = class extends HTMLElement {
     );
     if (signal !== this._signal) {
       this._signal = signal;
+      this._generation++;
       this._refresh();
     }
     if (presentationChanged) this._render();
@@ -3870,7 +4212,13 @@ var BatteryManagerAppliancesCard = class extends HTMLElement {
     const rows = list(appliance.sources);
     if (!rows.length)
       return `<p class="muted">${esc(this._t("no_sources"))}</p>`;
-    return `<div class="table-scroll" data-scroll-key="sources-${esc(appliance.id)}"><table><thead><tr>${["source", "available", "last_reported"].map((key) => `<th scope="col">${esc(this._t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(this._t(row.kind || "unknown"))}<br><button class="entity" data-entity-id="${esc(row.entity_id)}" data-focus-key="entity-${esc(appliance.id)}-${esc(row.kind)}" title="${esc(this._t("open_entity"))}">${esc(row.entity_id)}</button></td><td>${esc(this._t(row.available ? "available" : "unavailable"))}<br>${esc(row.state ?? "\u2014")}</td><td>${esc(this._time(row.last_reported))}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="table-scroll" data-scroll-key="sources-${esc(appliance.id)}"><table><thead><tr>${["source", "available", "last_reported"].map((key) => `<th scope="col">${esc(this._t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => {
+      const configured = typeof row.entity_id === "string" && row.entity_id.length > 0;
+      const entity = configured ? `<button class="entity" data-entity-id="${esc(row.entity_id)}" data-focus-key="entity-${esc(appliance.id)}-${esc(row.kind)}" title="${esc(this._t("open_entity"))}">${esc(row.entity_id)}</button>` : esc(this._t("not_configured"));
+      const status = !configured ? this._t("not_configured") : row.status ? localize(this._hass, `source_status_${row.status}`) : this._t(row.available ? "available" : "unavailable");
+      const value = row.value != null ? `${typeof row.value === "number" ? this._number(row.value, row.unit || "") : row.value}` : row.state ?? "\u2014";
+      return `<tr><td>${esc(this._t(row.kind || "unknown"))}<br>${entity}</td><td>${esc(status)}<br>${esc(value)}</td><td>${esc(this._time(row.reported_at ?? row.last_reported))}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
   }
   _appliance(appliance) {
     const observation = appliance.observation || {};

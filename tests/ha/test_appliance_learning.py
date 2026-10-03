@@ -80,6 +80,98 @@ def test_meter_normalization(kind, value, unit, expected):
     assert measurement(None, kind) is None
 
 
+def test_power_publication_expiry_does_not_apply_to_cumulative_counter():
+    power = State(
+        "sensor.meter", "600", {"unit_of_measurement": "W"}, last_reported=NOW
+    )
+    energy = State(
+        "sensor.total", "1.2", {"unit_of_measurement": "kWh"}, last_reported=NOW
+    )
+    assert measurement(power, "power", now=NOW + timedelta(seconds=600)) == 600
+    assert measurement(power, "power", now=NOW + timedelta(seconds=601)) is None
+    assert measurement(power, "power", now=NOW - timedelta(seconds=1)) is None
+    assert measurement(None, "power", now=NOW) is None
+    assert measurement(energy, "energy", now=NOW + timedelta(hours=2)) == 1200
+
+
+@pytest.mark.parametrize("publish", [False, True])
+def test_local_minute_ticks_cannot_renew_power_publication(publish):
+    learner = ApplianceLearning()
+    power = State(
+        "sensor.meter", "600", {"unit_of_measurement": "W"}, last_reported=NOW
+    )
+    for minute in range(121):
+        now = NOW + timedelta(minutes=minute)
+        if publish:
+            power = State(
+                "sensor.meter", "600", {"unit_of_measurement": "W"}, last_reported=now
+            )
+        value = measurement(power, "power", now=now)
+        learner.observe(
+            "washer",
+            now,
+            minute < 120,
+            value,
+            None,
+            complete_start=True,
+            power_reason="power_publication_gap" if value is None else None,
+        )
+    view = learner.snapshot("washer")
+    assert view["history"][-1]["accepted"] is publish
+    if publish:
+        assert learner.energy("washer", 999) == pytest.approx(1200)
+    else:
+        assert view["history"][-1]["energy_wh"] is None
+        assert "power_publication_gap" in view["history"][-1]["warnings"]
+        assert learner.energy("washer", 999) == 999
+
+
+@pytest.mark.parametrize("counter", [False, True])
+def test_power_source_change_can_only_fall_back_to_same_valid_counter(counter):
+    learner = ApplianceLearning()
+    for minute in range(0, 31, 5):
+        learner.observe(
+            "washer",
+            NOW + timedelta(minutes=minute),
+            minute < 30,
+            600,
+            1000 + minute * 10 if counter else None,
+            complete_start=True,
+            power_source="sensor.a" if minute < 15 else "sensor.b",
+            energy_source="sensor.total",
+        )
+    view = learner.snapshot("washer")["history"][-1]
+    assert view["accepted"] is counter
+    assert "power_source_changed" in view["warnings"]
+    if counter:
+        assert view["energy_wh"] == 300
+        assert view["measurement_source"] == "energy_counter"
+
+
+def test_energy_source_change_falls_back_to_continuous_normalized_power():
+    learner = ApplianceLearning()
+    for minute in range(0, 31, 5):
+        state = State(
+            "sensor.power",
+            ".6" if minute >= 15 else "600",
+            {"unit_of_measurement": "kW" if minute >= 15 else "W"},
+        )
+        learner.observe(
+            "washer",
+            NOW + timedelta(minutes=minute),
+            minute < 30,
+            measurement(state, "power"),
+            1000 + minute * 10,
+            complete_start=True,
+            power_source="sensor.power",
+            energy_source="sensor.a" if minute < 15 else "sensor.b",
+        )
+    history = learner.snapshot("washer")["history"][-1]
+    assert history["energy_wh"] == 300
+    assert history["measurement_source"] == "integrated_power"
+    assert "energy_source_changed" in history["warnings"]
+
+
 @pytest.mark.parametrize("use_energy", [True, False])
 def test_complete_cycle_learns_meter_or_integrated_power(use_energy):
     learner = ApplianceLearning()

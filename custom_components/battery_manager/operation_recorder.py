@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from copy import deepcopy
 from datetime import timedelta
@@ -10,9 +11,12 @@ from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
+from .archive_storage import ArchiveStorage
 from .const import (
     CONF_DCDC_SWITCH,
     CONF_FEEDIN_SETPOINT_ENTITY,
+    CONF_INVERTER_BLOCK_SWITCH,
+    CONF_INVERTER_LIMIT_ENTITY,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_OUTPUT_SWITCH,
@@ -39,6 +43,9 @@ class OperationRecorder:
         self._cancel = None
         self._saved_at = None
         self.last_error = None
+        self._decisions: dict[str, tuple] = {}
+        self.storage = ArchiveStorage(coordinator.hass, coordinator.entry.entry_id)
+        self.legacy_backup = None
 
     def _safe(self, action, *args):
         try:
@@ -51,6 +58,40 @@ class OperationRecorder:
     def restore(self, data):
         if data is not None:
             self._safe(self.history.restore, data)
+
+    async def async_restore(self, data) -> None:
+        """Validate an isolated journal in the worker, then adopt atomically."""
+        try:
+            stored = await self.storage.async_load()
+        except Exception as err:
+            self.storage.last_error = type(err).__name__
+            stored = None
+        if stored is not None:
+            data = stored
+        elif data is not None:
+            # The old runtime Store remains authoritative until the first
+            # atomic archive manifest commits, including a migration backup.
+            self.legacy_backup = data
+            self.storage.legacy_backup = data
+        if data is None:
+            return
+        timezone = self.history.timezone
+
+        def restore():
+            history = OperationArchive(timezone)
+            history.restore(data)
+            return history
+
+        try:
+            restored = await self.coordinator.hass.async_add_executor_job(restore)
+        except Exception as err:
+            self.last_error = type(err).__name__
+            _LOGGER.warning("Operating history unavailable: %s", err)
+            return
+        if not self.coordinator._actuation_shutdown:
+            self.history = restored
+            if stored is not None and self.storage.last_error is None:
+                await self.storage.async_mark_restored()
 
     def _sources(self):
         c = self.coordinator
@@ -96,6 +137,8 @@ class OperationRecorder:
                 CONF_SUPPORT_DC48_SWITCH,
                 CONF_DCDC_SWITCH,
                 CONF_FEEDIN_SETPOINT_ENTITY,
+                CONF_INVERTER_LIMIT_ENTITY,
+                CONF_INVERTER_BLOCK_SWITCH,
             )
         )
         ids.discard(None)
@@ -139,6 +182,34 @@ class OperationRecorder:
         number = self._safe(self.history.event, dt_util.utcnow(), kind, data)
         self._schedule_save()
         return number
+
+    def decision(self, source: str, diagnostic: dict) -> None:
+        """Record changes, retaining the budget without every five-second tick."""
+        keys = ("reason", "limit_w", "planned_limit_w")
+        signature = tuple(diagnostic.get(key) for key in keys)
+        if self._decisions.get(source) == signature:
+            return
+        self._decisions[source] = signature
+        self.event(
+            "controller_decision",
+            {
+                "source": source,
+                **diagnostic,
+                "plan_metadata": dict(self.coordinator._plan_metadata),
+            },
+        )
+
+    def command_context(self) -> dict:
+        c = self.coordinator
+        return {
+            "plan_metadata": dict(c._plan_metadata),
+            "floor_guard_active": bool(c._floor_guard_active),
+            "live_ac": {
+                key: value
+                for key, value in c.live_ac.diagnostics.items()
+                if key != "curve"
+            },
+        }
 
     def sample(self):
         c = self.coordinator
@@ -227,8 +298,10 @@ class OperationRecorder:
             "schema_version": 1,
             "days": deepcopy(self.history.reports()),
             "dropped_events": self.history.dropped_events,
-            "last_error": self.last_error,
+            "last_error": self.last_error or self.storage.last_error,
+            "archive_generation": self.storage.generation,
             "sources": self._sources(),
+            "retention": self.history.retention(),
             "load_names": {
                 lid: entry.title
                 for lid, entry in self.coordinator.entry.subentries.items()
@@ -238,3 +311,35 @@ class OperationRecorder:
 
     def export(self):
         return self.history.export()
+
+    def apply_storage_retention(self, manifest: dict) -> None:
+        """Retire only the persisted prefix, preserving newly observed rows."""
+        histories = dict(self.history._past)
+        histories[self.history.segment_id] = self.history
+        self.legacy_backup = None
+        for segment in manifest["segments"]:
+            history = histories.get(segment["segment_id"])
+            if history is None:
+                continue
+            cutoff = min(
+                (chunk["first"] for chunk in segment["chunks"]),
+                default=segment["sequence"] + 1,
+            )
+            while history.events and history.events[0]["sequence"] < cutoff:
+                row = history.events.pop(0)
+                history._bytes -= len(json.dumps(row, separators=(",", ":"))) + 1
+                history.dropped += 1
+                history._plan_refs[row["plan_id"]] -= 1
+                history._release_plan(row["plan_id"])
+
+    def schedule_storage(self) -> None:
+        self.storage.schedule(self.history.snapshot(), self.apply_storage_retention)
+
+    async def async_flush(self) -> None:
+        await self.storage.async_flush(
+            self.history.snapshot(), self.apply_storage_retention
+        )
+
+    async def async_export(self) -> dict:
+        snapshot = self.history.snapshot()
+        return await self.coordinator.hass.async_add_executor_job(deepcopy, snapshot)

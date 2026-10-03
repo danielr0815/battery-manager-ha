@@ -1,6 +1,8 @@
 import { uiLanguage } from "./translations.js";
 const TEXT = {
   en: {
+    dc_service: "Starting would reduce DC supply",
+    not_configured: "Not configured",
     title: "Appliances",
     description:
       "Observed appliance cycles, planning estimates and learned profiles",
@@ -90,6 +92,8 @@ const TEXT = {
     power_sensor: "Power sensor",
   },
   de: {
+    dc_service: "Der Start würde die DC-Versorgung verschlechtern",
+    not_configured: "Nicht konfiguriert",
     title: "Haushaltsgeräte",
     description: "Beobachtete Geräteläufe, Planungswerte und gelernte Profile",
     entry: "Battery-Manager-Installation",

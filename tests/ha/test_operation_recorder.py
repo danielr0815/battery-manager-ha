@@ -14,6 +14,40 @@ from custom_components.battery_manager.coordinator import BatteryManagerCoordina
 from custom_components.battery_manager.operation_recorder import OperationRecorder
 
 
+async def test_storage_retention_updates_memory_without_losing_runtime(
+    coordinator, monkeypatch
+):
+    from custom_components.battery_manager import archive_storage
+
+    rec = coordinator.operation_recorder
+    at = datetime(2026, 10, 2, tzinfo=UTC)
+    rec.history.event(at, "test", {})
+    rec.history.event(at + timedelta(minutes=1), "test", {})
+    rec.history.event(at + timedelta(hours=1), "test", {})
+    coordinator._load_plug_owned["b1"] = True
+    monkeypatch.setattr(archive_storage, "EVENT_BUDGET", 1)
+    await rec.async_flush()
+    assert len(rec.history.events) == 1
+    assert rec.history.events[0]["sequence"] == 3
+    assert rec.summary()["retention"]["event_count"] == 1
+    assert coordinator._load_plug_owned["b1"]
+    rec.apply_storage_retention(
+        {"segments": [{"segment_id": "retired", "chunks": [], "sequence": 3}]}
+    )
+
+
+async def test_disk_load_failure_retains_legacy_until_commit(coordinator):
+    from unittest.mock import AsyncMock
+
+    rec = coordinator.operation_recorder
+    data = rec.export()
+    rec.storage.async_load = AsyncMock(side_effect=OSError)
+    await rec.async_restore(data)
+    assert rec.storage.last_error == "OSError"
+    assert rec.legacy_backup == data
+    assert rec.export() == data
+
+
 @pytest.fixture
 def coordinator(hass, request):
     entry = MockConfigEntry(
@@ -119,7 +153,9 @@ async def test_corrupt_archive_is_isolated_and_persistent_payload_roundtrips(
     rec.event("test", {"value": 1})
     payload = coordinator._persistent_payload()
     restored = OperationRecorder(coordinator)
-    restored.restore(payload["operation_history"])
+    assert "operation_history" not in payload
+    assert payload["operation_archive"]["schema_version"] == 3
+    restored.restore(rec.export())
     assert restored.export() == rec.export()
     rec.restore(None)
     assert rec.export()["segments"][-1]["sequence"] > 0

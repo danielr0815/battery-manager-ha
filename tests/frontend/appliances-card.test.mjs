@@ -145,6 +145,65 @@ test("configuration and disconnect invalidate pending responses, reconnect refet
   assert.ok(c.shadowRoot.innerHTML.includes("No appliances configured"));
 });
 
+test("an A to B to A publication never accepts the first A response", async () => {
+  const resolvers = [];
+  const c = card(() => new Promise((resolve) => resolvers.push(resolve)));
+  await flush();
+  c.hass = { ...c._hass, states: state(2) };
+  c.hass = { ...c._hass, states: state(1) };
+  resolvers[0]({
+    ...clone(applianceFixture),
+    appliances: [{ id: "washer", name: "Old A instance" }],
+  });
+  await flush();
+  assert.equal(resolvers.length, 2);
+  assert.ok(!c.shadowRoot.innerHTML.includes("Old A instance"));
+  const fresh = clone(applianceFixture);
+  fresh.appliances[0].name = "New A instance";
+  resolvers[1](fresh);
+  await flush();
+  assert.ok(c.shadowRoot.innerHTML.includes("New A instance"));
+});
+
+test("unconfigured optional sources are neutral text and cannot open a null entity", async () => {
+  const payload = clone(applianceFixture);
+  payload.appliances[0].sources.push({
+    kind: "remaining_time",
+    entity_id: null,
+    available: false,
+    state: null,
+    last_reported: null,
+  });
+  const c = card(async () => payload);
+  await flush();
+  assert.ok(c.shadowRoot.innerHTML.includes("Not configured"));
+  assert.ok(!c.shadowRoot.innerHTML.includes('data-entity-id="null"'));
+  assert.ok(
+    c.shadowRoot.innerHTML.includes('data-entity-id="sensor.washer_power"'),
+  );
+});
+
+test("configured source health retains its entity and distinguishes a frozen value from availability", async () => {
+  const payload = clone(applianceFixture);
+  payload.appliances[0].sources[0] = {
+    kind: "power",
+    entity_id: "sensor.washer_power",
+    state: "0.5",
+    value: 500,
+    unit: "W",
+    available: true,
+    status: "stale",
+    reported_at: "2026-09-05T08:00:00Z",
+  };
+  const c = card(async () => payload);
+  await flush();
+  assert.ok(c.shadowRoot.innerHTML.includes("Stale publication"));
+  assert.ok(c.shadowRoot.innerHTML.includes("500 W"));
+  assert.ok(
+    c.shadowRoot.innerHTML.includes('data-entity-id="sensor.washer_power"'),
+  );
+});
+
 test("fetch failures preserve last data with an explicit warning and retry recovers", async () => {
   let failed = false;
   const c = card(async () => {

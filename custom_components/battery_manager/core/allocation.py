@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import date
 
 from .allocation_candidates import AllocationCandidate, AllocationContext
+from .dc_service import preserves_dc_service
 from .model import (
     STORAGE_TARGET_TOLERANCE_WH,
     LoadPlan,
@@ -332,6 +333,9 @@ def allocate_loads(
         if not import_ok(traj):  # Z2''
             reject("additional_import")
             return None
+        if not preserves_dc_service(traj, baseline=base_trajectory, accepted=current):
+            reject("dc_service")
+            return None
         if not slots_serviceable(traj, covered):  # R2 planner-G4
             reject("slot_not_serviceable")
             return None
@@ -589,7 +593,8 @@ def allocate_loads(
             # min over [i, hi]; the cache is invalidated whenever an acceptance changes
             # `extra`. Keyed by (i, hi) because the window end depends on the candidate
             # duration's spill past recovery (FIX-7), and each (i, hi) is rebuilt lazily.
-            stress_base: dict[tuple[int, int], float] = {}
+            stress_base: dict[tuple[int, int], Trajectory] = {}
+            stress_reference: dict[tuple[int, int], Trajectory] = {}
             last_export = max(
                 (j for j, f in enumerate(current.flows) if f.grid_export_wh > _EPS),
                 default=-1,
@@ -781,9 +786,29 @@ def allocate_loads(
                                     dc48_schedule=dc48_schedule,
                                     pv_scale=scale_vec,
                                 )
-                                stress_base[key] = _windowed_min_soc(base_stress, i, hi)
+                                stress_base[key] = base_stress
+                            if key not in stress_reference:
+                                stress_reference[key] = simulate(
+                                    config,
+                                    inputs,
+                                    threshold,
+                                    dc24_schedule=dc24_schedule,
+                                    dc48_schedule=dc48_schedule,
+                                    pv_scale=scale_vec,
+                                )
+                            if not preserves_dc_service(
+                                trial_stress,
+                                baseline=stress_reference[key],
+                                accepted=stress_base[key],
+                            ):
+                                # A safety veto explains this candidate more
+                                # precisely than an earlier cheap soft-gate miss.
+                                rejected[load.load_id][i] = "dc_service"
+                                continue
                             if _z4_reject(
-                                trial_wmin, stress_floor_by_slot[i], stress_base[key]
+                                trial_wmin,
+                                stress_floor_by_slot[i],
+                                _windowed_min_soc(stress_base[key], i, hi),
                             ):
                                 continue
                         _accept_candidate(
@@ -1327,6 +1352,11 @@ def _allocate_recovery_after_continuous_loads(
                 )
                 if trial.total_import_wh > current.total_import_wh + _EPS:
                     rejected.setdefault(i, "additional_import")
+                    continue
+                if not preserves_dc_service(
+                    trial, baseline=trajectory, accepted=current
+                ):
+                    rejected.setdefault(i, "dc_service")
                     continue
                 if _degrades_min_soc(trial, current, protected_floor):
                     rejected.setdefault(i, "soc_reserve")

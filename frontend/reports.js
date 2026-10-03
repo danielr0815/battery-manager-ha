@@ -1,6 +1,128 @@
 import { localize } from "./translations.js";
 import { esc } from "./shared.js";
 
+const reportTime = (hass, value) => {
+  const at = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(at)
+    ? new Intl.DateTimeFormat(hass?.language || "en", {
+        timeZone: hass?.config?.time_zone || "UTC",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short",
+      }).format(at)
+    : "—";
+};
+const reportNumber = (hass, value) =>
+  typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat(hass?.language || "en", {
+        maximumFractionDigits: 1,
+      }).format(value)
+    : "—";
+
+export function stateNotice(hass, state) {
+  if (!state || !["unknown", "unavailable"].includes(state.state)) return "";
+  const hasPlan = [
+    "forecast",
+    "consumption_forecast",
+    "loads",
+    "cascades",
+  ].some(
+    (key) =>
+      Array.isArray(state.attributes?.[key]) &&
+      state.attributes[key].length > 0,
+  );
+  return `<p class="warning" role="status" data-state-warning="${esc(state.state)}" style="padding:12px;color:var(--warning-color,#b26a00)">${esc(localize(hass, hasPlan ? "forecast_stale" : "forecast_unavailable"))}</p>`;
+}
+
+export function inverterControlReport(hass, attributes, state) {
+  const a = attributes || {};
+  if (
+    !a.inverter_control &&
+    !a.live_ac &&
+    !["active", "shadow"].includes(a.reserve?.mode)
+  )
+    return "";
+  const t = (key) => localize(hass, key);
+  const control = a.inverter_control || {},
+    live = a.live_ac || {},
+    plan = a.plan_metadata || {};
+  const stale = ["unknown", "unavailable"].includes(state);
+  const rows = [
+    [
+      t("report_inverter_limit_planned"),
+      `${reportNumber(hass, a.reserve?.inverter_limit_w)} W`,
+    ],
+    [t("report_plan_captured"), reportTime(hass, plan.captured_at)],
+    [t("report_plan_activated"), reportTime(hass, plan.activated_at)],
+    [
+      t("report_inverter_requested"),
+      `${reportNumber(hass, control.requested_limit_w)} W`,
+    ],
+    [t("report_command_time"), reportTime(hass, control.requested_at)],
+    [
+      t("report_inverter_observed"),
+      `${reportNumber(hass, control.observed_limit_w)} W`,
+    ],
+    [t("report_feedback_time"), reportTime(hass, control.observed_at)],
+    [
+      t("report_confirmation"),
+      t(
+        control.confirmed === true
+          ? "report_confirmed"
+          : control.confirmed === false
+            ? "confirmation_pending"
+            : "report_reserve_decision_unknown",
+      ),
+    ],
+  ];
+  const reason = control.reason || live.reason;
+  if (reason) {
+    const key = `live_ac_reason_${reason}`,
+      translated = t(key);
+    rows.push([
+      t("report_live_reason"),
+      translated === key ? t("report_reserve_decision_unknown") : translated,
+    ]);
+  }
+  return `<details data-view-key="inverter-control" style="padding:12px"><summary>${esc(t(stale ? "report_inverter_last_known" : "report_inverter_control"))}</summary><p>${esc(t("report_permission_not_power"))}</p><dl>${rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl></details>`;
+}
+
+export function sourceHealthReport(hass, health) {
+  if (!Array.isArray(health) || !health.length) return "";
+  const t = (key) => localize(hass, key);
+  const rows = health
+    .filter((row) => row && typeof row === "object")
+    .slice(0, 100)
+    .map((row) => {
+      const roleKey = `source_role_${row.role}`,
+        role = t(roleKey);
+      const statusKey = `source_status_${row.status}`,
+        status = t(statusKey);
+      const value =
+        row.value == null
+          ? "—"
+          : `${typeof row.value === "number" ? reportNumber(hass, row.value) : row.value}${row.unit ? ` ${row.unit}` : ""}`;
+      const coverage =
+        row.coverage_start || row.coverage_end
+          ? `<br>${esc(t("report_source_coverage"))}: ${esc(reportTime(hass, row.coverage_start))} – ${esc(reportTime(hass, row.coverage_end))}`
+          : "";
+      const fallback = row.fallback
+        ? `<br>${esc(t("report_source_fallback"))}: ${esc(row.fallback)}`
+        : "";
+      const entity =
+        typeof row.entity_id === "string" && row.entity_id.length
+          ? `<button type="button" data-entity-id="${esc(row.entity_id)}" data-focus-key="source-${esc(row.role)}-${esc(row.entity_id)}" title="${esc(t("report_open_entity"))}">${esc(row.entity_id)}</button>`
+          : esc(t("source_status_not_configured"));
+      return `<tr><th scope="row">${esc(role === roleKey ? row.role : role)}<br>${entity}</th><td>${esc(status === statusKey ? t("report_reserve_decision_unknown") : status)}${fallback}</td><td>${esc(value)}</td><td>${esc(reportTime(hass, row.reported_at))}${coverage}${row.boundary ? `<br>${esc(row.boundary)}` : ""}</td></tr>`;
+    })
+    .join("");
+  return `<details data-view-key="source-health" style="padding:12px"><summary>${esc(t("report_sources"))}</summary><div data-scroll-key="source-health-table" style="overflow-x:auto"><table><thead><tr>${["report_source", "report_source_status", "report_source_value", "report_source_reported"].map((key) => `<th scope="col">${esc(t(key))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
 export function executionLines(hass, execution) {
   if (!execution || typeof execution !== "object") return [];
   const lines = [];
@@ -90,7 +212,7 @@ export function reserveReport(hass, reserve) {
       `${fmt(reserve.unavoidable_export_wh)} Wh`,
     ],
     [t("report_preparation_from"), time(reserve.preparation_start)],
-    [t("report_inverter_limit_now"), `${fmt(reserve.inverter_limit_w)} W`],
+    [t("report_inverter_limit_planned"), `${fmt(reserve.inverter_limit_w)} W`],
     [
       t("report_expected_minimum_soc"),
       `${fmt(reserve.expected_min_soc_percent)} %`,
@@ -124,6 +246,20 @@ export function reserveReport(hass, reserve) {
             : "report_market_fallback",
       ),
     ]);
+    if (market.entity_id)
+      rows.push([t("report_market_source"), market.entity_id]);
+    if (market.coverage_start || market.coverage_end)
+      rows.push([
+        t("report_source_coverage"),
+        `${time(market.coverage_start)} – ${time(market.coverage_end)}`,
+      ]);
+    if (market.enabled && market.status !== "available") {
+      const key = `source_status_${market.status}`;
+      rows.push([
+        t("report_source_status"),
+        t(key) === key ? t("report_reserve_decision_unknown") : t(key),
+      ]);
+    }
     if (market.status === "available") {
       rows.push([
         t("report_market_avoided_import"),
@@ -173,7 +309,7 @@ export function reserveReport(hass, reserve) {
 }
 
 export function operationReport(hass, report) {
-  if (!report || !Array.isArray(report.days) || !report.days.length) return "";
+  if (!report || (!Array.isArray(report.days) && !report.last_error)) return "";
   const text = (key) => localize(hass, key);
   const fmt = (value, digits = 2) =>
     typeof value === "number" && Number.isFinite(value)
@@ -187,7 +323,7 @@ export function operationReport(hass, report) {
     grid_import: text("report_grid_import"),
     grid_export: text("report_grid_export"),
   };
-  const days = report.days
+  const days = (Array.isArray(report.days) ? report.days : [])
     .filter((day) => day && typeof day === "object")
     .slice(-30)
     .sort((a, b) => String(b.day).localeCompare(String(a.day)));
@@ -205,7 +341,8 @@ export function operationReport(hass, report) {
             (key.startsWith("cascade_input:")
               ? `${report.load_names?.[key.slice(14)] || key.slice(14)} · ${text("report_ac_input_including_pass_through")}`
               : report.load_names?.[key.slice(5)] || key);
-          return `<tr><th scope="row">${esc(name)}</th><td>${fmt(m?.planned_wh == null ? null : m.planned_wh / 1000)}</td><td>${fmt(m?.actual_wh == null ? null : m.actual_wh / 1000)}</td><td>${fmt(m?.error_wh == null ? null : m.error_wh / 1000)}</td><td>${fmt(m?.coverage_hours)} h</td></tr>`;
+          const missing = m?.coverage_hours === 0;
+          return `<tr><th scope="row">${esc(name)}</th><td>${fmt(missing || m?.planned_wh == null ? null : m.planned_wh / 1000)}</td><td>${fmt(missing || m?.actual_wh == null ? null : m.actual_wh / 1000)}</td><td>${fmt(missing || m?.error_wh == null ? null : m.error_wh / 1000)}</td><td>${fmt(m?.coverage_hours)} h</td></tr>`;
         })
         .join("");
       const loads = Object.entries(day.loads || {})
@@ -228,5 +365,5 @@ export function operationReport(hass, report) {
   return `<details data-view-key="operation-report" style="padding:12px"><summary>${text("report_daily_comparison_plan_and_operation")}</summary>
     <p>${text("report_planned_and_actual_values_cover_the_same_measured_intervals_only_means_m")}</p>
     ${report.dropped_events ? `<p>${text("report_older_detailed_events_were_removed_by_the_retention_limit_daily_reports_")}</p>` : ""}
-    ${report.last_error ? `<p>${text("report_a_recording_error_occurred")}</p>` : ""}${content}</details>`;
+    ${report.last_error ? `<p role="status" data-history-error>${text("report_a_recording_error_occurred")}</p>` : ""}${days.length ? content : `<p>${esc(text("report_history_empty"))}</p>`}</details>`;
 }

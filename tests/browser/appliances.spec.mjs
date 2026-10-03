@@ -143,6 +143,28 @@ test("appliances: source keyboard action opens HA more-info and retains focus on
   await expect(source).toBeFocused();
 });
 
+test("appliances: optional unconfigured sources are neutral and have no null entity action", async ({
+  page,
+}) => {
+  const payload = structuredClone(applianceFixture);
+  payload.appliances[0].sources.push({
+    kind: "total_time",
+    entity_id: null,
+    state: null,
+    available: false,
+    status: "not_configured",
+  });
+  await mount(page, payload);
+  await page.locator('[data-view-key="sources-washer"] summary').click();
+  await expect(page.locator('[data-view-key="sources-washer"]')).toContainText(
+    "Not configured",
+  );
+  await expect(page.locator('[data-entity-id="null"]')).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "sensor.washer_power" }),
+  ).toBeVisible();
+});
+
 test("appliances editor discovers entries/devices and emits usable filters and title", async ({
   page,
 }) => {

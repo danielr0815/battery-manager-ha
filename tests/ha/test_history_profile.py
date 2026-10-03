@@ -25,6 +25,69 @@ from custom_components.battery_manager.history_profile import (
     _rows_to_hour_map,
 )
 
+
+@pytest.mark.parametrize("day,missing_duration", [("2026-03-29", 0), ("2026-10-25", 2)])
+async def test_legacy_dst_migration_excludes_only_ambiguous_bin(
+    hass, day, missing_duration
+):
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    learner = ProfileLearner(hass, _entry(hass))
+    learner.data["daily_hours"] = {day: {"ac": [100.0] * 24}}
+    learner.data["profiles"]["ac"] = {
+        "weekend": {"p50": [100.0] * 24, "p80": [100.0] * 24}
+    }
+    learner.data["samples"]["ac"] = {"weekend": [4] * 24}
+    learner._migrate_hour_durations(False)
+    assert learner.data["daily_durations"][day]["ac"][2] == missing_duration
+    assert learner.data["daily_hours"][day]["ac"][2] is None
+    assert learner.data["profiles"]["ac"]["weekend"]["p50"][2] is None
+    assert learner.data["samples"]["ac"]["weekend"][2] == 0
+    assert learner.data["daily_hours"][day]["ac"][3] == 100
+    assert learner.data["diagnostics"]["excluded_hours"][day]["ac"]["2"] == [
+        "legacy_duration_unknown"
+    ]
+    learner._migrate_hour_durations(True)
+
+
+async def test_folded_measurements_require_both_real_hours_and_ignore_duplicates(hass):
+    from datetime import UTC, datetime
+
+    from custom_components.battery_manager.history_profile import _day_series
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    early = {"start": datetime(2026, 10, 25, 0, tzinfo=UTC), "mean": 80}
+    late = {"start": datetime(2026, 10, 25, 1, tzinfo=UTC), "mean": 120}
+    first = _rows_to_hour_map([early, early], {"has_sum": False})
+    assert _day_series(first, "2026-10-25")[2] is None
+    complete = _rows_to_hour_map([early, late, early], {"has_sum": False})
+    assert complete[("2026-10-25", 2)] == 200
+    assert complete.durations[("2026-10-25", 2)] == 2
+    assert _day_series(complete, "2026-10-25")[2] == 200
+
+
+async def test_coverage_denominators_distinguish_source_epoch_and_exclusions(
+    hass, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    await hass.config.async_set_time_zone("UTC")
+    learner = ProfileLearner(hass, _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.ac"}))
+    monkeypatch.setattr(dt_util, "now", lambda: datetime(2026, 9, 2, tzinfo=UTC))
+    learner._capture_configuration(learner._raw_config())
+    learner.data["configuration_epochs"][0]["start"] = "2026-09-02T00:00:00+00:00"
+    learner.data["diagnostics"]["excluded_hours"] = {
+        "2026-09-02": {"ac": {"4": ["state_unavailable"], "5": ["measurement_missing"]}}
+    }
+    values = {"2026-09-02": [100.0] * 4 + [None] * 20}
+    detail = learner._coverage_detail("ac", ["2026-09-01", "2026-09-02"], values, 4, {})
+    assert detail["window_hours"] == 48
+    assert detail["eligible_hours"] == 24
+    assert detail["window_occupancy"] == 0.083
+    assert detail["measurement_coverage"] == 0.167
+    assert detail["excluded_hours"] == 1
+    assert detail["missing_hours"] == 19
+
+
 ENTRY_DATA = {
     CONF_SOC_ENTITY: "sensor.test_soc",
     CONF_PV_FORECAST_TODAY: "sensor.pv_today",

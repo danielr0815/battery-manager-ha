@@ -15,8 +15,14 @@ import {
   DOCS_URL,
   isForecastEntity,
 } from "./shared.js";
-import { executionLines, operationReport, feedinDecisions } from "./reports.js";
-import { replaceCardHTML } from "./dom.js";
+import {
+  executionLines,
+  operationReport,
+  feedinDecisions,
+  stateNotice,
+  sourceHealthReport,
+} from "./reports.js";
+import { replaceCardHTML, bindEntityButtons } from "./dom.js";
 
 export class BatteryManagerCascadeCard extends HTMLElement {
   constructor() {
@@ -67,10 +73,12 @@ export class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   set hass(value) {
-    const languageChanged = value.language !== this._hass?.language;
+    const presentationChanged =
+      value.language !== this._hass?.language ||
+      value.config?.time_zone !== this._hass?.config?.time_zone;
     this._hass = value;
     const state = value.states[this._entityId()];
-    if (state !== this._lastState || languageChanged) {
+    if (state !== this._lastState || presentationChanged) {
       this._lastState = state;
       this._render();
     }
@@ -461,6 +469,7 @@ export class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   _series(cascade, kind, id, period, mode) {
+    const focusKey = `chart-${cascade.cascade_id || cascade.terminal_load_id}-${kind}-${id || "root"}-${mode || "power"}`;
     const [from, until] = this._horizon(cascade, period);
     if (until < from)
       return {
@@ -484,6 +493,7 @@ export class BatteryManagerCascadeCard extends HTMLElement {
       return {
         from,
         until,
+        focusKey,
         points: points.sort((a, b) => a.time - b.time),
         unit: "%",
         label: localize(this._hass, "card_state_of_charge"),
@@ -530,6 +540,7 @@ export class BatteryManagerCascadeCard extends HTMLElement {
     return {
       from,
       until,
+      focusKey,
       points,
       blocks,
       kind,
@@ -634,7 +645,7 @@ export class BatteryManagerCascadeCard extends HTMLElement {
       series.target == null
         ? ""
         : `<line x1="${left}" x2="${width - right}" y1="${y(series.target)}" y2="${y(series.target)}" class="soc-target"/>`;
-    return `<div class="plot"><svg id="chart-${index}" viewBox="0 0 ${width} ${height}" tabindex="0" role="img" aria-label="${esc(`${owner}: ${series.label} · ${series.historyEntity ? localize(this._hass, "card_enter_open_history") : ""}${localize(this._hass, "card_forecast_arrow_keys_to_select_time")}`)}">
+    return `<div class="plot"><svg id="chart-${index}" data-focus-key="${esc(`${series.focusKey}-${compact ? "overview" : "detail"}`)}" viewBox="0 0 ${width} ${height}" tabindex="0" role="img" aria-label="${esc(`${owner}: ${series.label} · ${series.historyEntity ? localize(this._hass, "card_enter_open_history") : ""}${localize(this._hass, "card_forecast_arrow_keys_to_select_time")}`)}">
       <text x="2" y="${top + 4}" class="axis">${this._number(maximum, series.unit === "kWh" ? 1 : 0)}</text><text x="6" y="${bottom}" class="axis">0</text>
       <line x1="${left}" x2="${width - right}" y1="${bottom}" y2="${bottom}" class="grid"/>${target}
       <polyline points="${points.map((p) => `${x(p.time)},${y(p.value)}`).join(" ")}" fill="none" stroke="${color}" class="forecast-line"/>
@@ -703,7 +714,8 @@ export class BatteryManagerCascadeCard extends HTMLElement {
   }
 
   _button(label, index, action, extra = "", selected = false) {
-    return `<button type="button" data-cascade="${index}" data-action="${action}" ${extra} aria-pressed="${selected}">${esc(label)}</button>`;
+    const identity = this._cascades()[index]?.cascade_id || index;
+    return `<button type="button" data-focus-key="${esc(`control-${identity}-${action}-${extra}`)}" data-cascade="${index}" data-action="${action}" ${extra} aria-pressed="${selected}">${esc(label)}</button>`;
   }
 
   _groups(blocks) {
@@ -1199,7 +1211,13 @@ export class BatteryManagerCascadeCard extends HTMLElement {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
           return;
         event.preventDefault();
-        const current = chart.kbIndex ?? 0;
+        const current =
+          this._cursorTime == null
+            ? 0
+            : Math.max(
+                0,
+                times.findLastIndex((time) => time <= this._cursorTime),
+              );
         chart.kbIndex =
           event.key === "Home"
             ? 0
@@ -1275,9 +1293,10 @@ export class BatteryManagerCascadeCard extends HTMLElement {
           : esc(this._emptyText());
     replaceCardHTML(
       this,
-      `<ha-card header="${esc(this._config.title || this._cardTitle())}">${cascade_card_style_0}<div class="wrap">${body}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`,
+      `<ha-card header="${esc(this._config.title || this._cardTitle())}">${cascade_card_style_0}<div class="wrap">${stateNotice(this._hass, state)}${body}${sourceHealthReport(this._hass, state?.attributes?.source_health)}${operationReport(this._hass, state?.attributes?.operation_report)}${feedinDecisions(this._hass, state?.attributes?.feedin_decisions)}</div></ha-card>`,
     );
     this._bindCharts();
+    bindEntityButtons(this);
     if (typeof requestAnimationFrame === "function")
       requestAnimationFrame(() => this._sizeAxes());
   }

@@ -140,7 +140,17 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         # total + last counter readings (decision 8; rationale in
         # async_load_persistent_state).
         "reserve": self._reserve_runtime.export(),
-        "operation_history": self.operation_recorder.export(),
+        # The bounded diagnostic journal has its own single-writer chunks.
+        # Ownership/stop obligations must not serialize megabytes of history.
+        "operation_archive": {
+            "schema_version": 3,
+            "generation": self.operation_recorder.storage.generation,
+        },
+        **(
+            {"operation_history": self.operation_recorder.legacy_backup}
+            if self.operation_recorder.legacy_backup is not None
+            else {}
+        ),
         "realized": {
             "date": self._realized["date"],
             "lost_wh": self._realized["lost_wh"],

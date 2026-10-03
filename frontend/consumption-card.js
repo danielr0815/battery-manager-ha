@@ -1,4 +1,4 @@
-import { dateTimeFormat, nextHour } from "./time.js";
+import { dateTimeFormat, nextHour, selectionTime } from "./time.js";
 import {
   consumption_card_style_0,
   consumption_card_style_1,
@@ -14,7 +14,12 @@ import {
   PLANNED_LAYER_COLOR,
   DOCS_URL,
 } from "./shared.js";
-import { replaceCardHTML } from "./dom.js";
+import {
+  replaceCardHTML,
+  restoreChartSelection,
+  bindEntityButtons,
+} from "./dom.js";
+import { stateNotice, sourceHealthReport } from "./reports.js";
 
 export function isConsumptionEntity(stateObj) {
   const cf = stateObj?.attributes?.consumption_forecast;
@@ -86,17 +91,20 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       );
     }
     this._config = { hours: 48, ...config };
+    this._selectedTime = null;
     this._lastState = undefined;
     this._render();
   }
 
   set hass(hass) {
-    const languageChanged = hass.language !== this._hass?.language;
+    const presentationChanged =
+      hass.language !== this._hass?.language ||
+      hass.config?.time_zone !== this._hass?.config?.time_zone;
     this._hass = hass;
     const stateObj = this._config?.entity
       ? hass.states[this._config.entity]
       : undefined;
-    if (stateObj !== this._lastState || languageChanged) {
+    if (stateObj !== this._lastState || presentationChanged) {
       this._lastState = stateObj;
       this._render();
     }
@@ -174,6 +182,7 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
     }
     this._kbIndex = null;
     this._shownSlot = null;
+    this._chartMeta = null;
     this._statsText = "";
     const hass = this._hass;
     const t = (key) => localize(hass, key);
@@ -206,11 +215,13 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
           <div class="title">${esc(header ?? "")}</div>
           <div class="stats">${this._statsText || ""}</div>
         </div>
-        ${body}
+        ${stateNotice(hass, stateObj)}${body}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
       </ha-card>
     `,
     );
     this._attachChartHandlers();
+    bindEntityButtons(this);
+    restoreChartSelection(this);
   }
 
   _renderChart(stateObj, t) {
@@ -467,7 +478,7 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       )}).`;
 
     return `
-      <svg id="chart" role="img" tabindex="0" aria-label="${esc(summary)}"
+      <svg id="chart" role="img" tabindex="0" data-focus-key="consumption-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
@@ -480,7 +491,7 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
   }
 
   _renderLearning(profile, t) {
-    if (!profile?.samples) return "";
+    if (!profile || (!profile.samples && !profile.coverage_detail)) return "";
     const rows = [];
     for (const daytype of ["weekday", "weekend", "absence"]) {
       const minimum = profile.minimum_samples?.[daytype];
@@ -510,6 +521,20 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
     }
     return `<details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
       <p>${esc(t("profile_samples_note"))}</p>
+      ${Object.entries(profile.coverage_detail || {})
+        .map(([path, detail]) => {
+          const percentage = (value) =>
+            typeof value === "number" && Number.isFinite(value)
+              ? `${Math.round(value * 100)} %`
+              : "—";
+          const hours = (value) =>
+            typeof value === "number" && Number.isFinite(value)
+              ? `${value.toFixed(1)} h`
+              : "—";
+          return `<p data-coverage-path="${esc(path)}">${esc(path.toUpperCase())} · ${esc(t("profile_window_occupancy"))}: ${percentage(detail.window_occupancy)} · ${esc(t("profile_measurement_coverage"))}: ${percentage(detail.measurement_coverage)} · ${esc(t("profile_eligible_hours"))}: ${hours(detail.valid_hours)} / ${hours(detail.eligible_hours)} · ${esc(t("profile_mature_bins"))}: ${esc(detail.mature_bins ?? "—")} / ${esc(detail.total_bins ?? "—")}</p>`;
+        })
+        .join("")}
+      ${typeof profile.learned_duration_fraction === "number" && Number.isFinite(profile.learned_duration_fraction) ? `<p>${esc(t("profile_learned_duration"))}: ${Math.round(profile.learned_duration_fraction * 100)} %</p>` : ""}
       ${profile.ac_valid_since ? `<p>${esc(t("profile_valid_since"))}: ${esc(dateTimeFormat(this._hass, { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(profile.ac_valid_since)))}</p>` : ""}
       <table><thead><tr><th>${esc(t("profile_daytype"))}</th><th>${esc(t("profile_hour"))}</th><th>AC</th><th>DC</th></tr></thead><tbody>${rows.join("")}</tbody></table>
       <p>${esc(t("profile_exclusions_note"))}</p>
@@ -527,8 +552,17 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       return;
     }
     target.addEventListener("pointermove", (ev) => this._onPointerMove(ev));
+    target.addEventListener("pointerdown", (ev) => {
+      this._touchSelected = ev.pointerType === "touch";
+      this._cancelPendingFrame();
+      this._onHover(ev);
+    });
     target.addEventListener("pointerleave", () => {
       this._cancelPendingFrame();
+      if (!this._touchSelected) this._clearSlot();
+    });
+    target.addEventListener("pointercancel", () => {
+      this._touchSelected = false;
       this._clearSlot();
     });
     const svg = this.shadowRoot.getElementById("chart");
@@ -605,16 +639,16 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       ((px - meta.margin.left) /
         (svg.viewBox.baseVal.width - meta.margin.left - 10)) *
         (meta.t1 - meta.t0);
-    let nearest = 0;
-    for (let i = 1; i < meta.points.length; i++) {
-      if (
-        Math.abs(meta.points[i].time - time) <
-        Math.abs(meta.points[nearest].time - time)
-      ) {
-        nearest = i;
-      }
+    // Bars represent intervals, not samples nearest to their start boundary.
+    const index = meta.points.findIndex((p) => p.time <= time && time < p.end);
+    if (index >= 0) this._showSlot(index);
+    else {
+      this._clearSlot();
+      this.shadowRoot.getElementById("readout").textContent = localize(
+        this._hass,
+        "card_no_forecast_value_at_this_time",
+      );
     }
-    this._showSlot(nearest);
   }
 
   _showSlot(index) {
@@ -633,17 +667,13 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
     if (!p) {
       return;
     }
+    this._selectedTime = p.time;
     const cx = meta.barMeta[index].cx;
     marker.innerHTML = `
       <line x1="${cx}" y1="${meta.margin.top}" x2="${cx}"
         y2="${meta.margin.top + meta.plotH}"
         stroke="var(--secondary-text-color)" stroke-width="1"
         stroke-dasharray="3 3"/>`;
-    const fmt = dateTimeFormat(this._hass, {
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
     const t = (key) => localize(this._hass, key);
     const chips = [
       [t("level_ac"), AC_COLOR, p.ac],
@@ -660,12 +690,20 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
           )} ${Math.round(v)} W</span>`,
       )
       .join("");
-    const when = esc(`${fmt.format(p.time)}`);
+    const when = esc(
+      selectionTime(
+        this._hass,
+        p.time,
+        meta.points.map((point) => point.time),
+      ),
+    );
     const sources = `AC: ${t(p.acLearned ? "profile_learned" : "profile_static")} · DC: ${t(p.dcLearned ? "profile_learned" : "profile_static")}`;
     readout.innerHTML = `${when} · ${chips} · ${esc(sources)}`;
   }
 
   _clearSlot() {
+    this._selectedTime = null;
+    this._kbIndex = null;
     this._shownSlot = null;
     const marker = this.shadowRoot?.getElementById("hover-marker");
     const readout = this.shadowRoot?.getElementById("readout");

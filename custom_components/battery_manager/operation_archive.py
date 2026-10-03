@@ -33,6 +33,28 @@ class OperationArchive(OperationHistory):
         segments.append({**super().export(), "segment_id": self.segment_id})
         return {"schema_version": ARCHIVE_SCHEMA, "segments": segments}
 
+    def snapshot(self) -> dict:
+        """Stable rows for a worker without copying each full plan or event."""
+        return {
+            "schema_version": ARCHIVE_SCHEMA,
+            "segments": [
+                {**history.snapshot(), "segment_id": identity}
+                for identity, history in self._past
+            ]
+            + [{**super().snapshot(), "segment_id": self.segment_id}],
+        }
+
+    def retention(self) -> dict:
+        histories = [history for _, history in self._past] + [self]
+        first = [history.events[0]["at"] for history in histories if history.events]
+        last = [history.events[-1]["at"] for history in histories if history.events]
+        key = datetime.fromisoformat
+        return {
+            "earliest_at": min(first, key=key) if first else None,
+            "latest_at": max(last, key=key) if last else None,
+            "event_count": sum(len(history.events) for history in histories),
+        }
+
     def restore(self, data: dict) -> None:
         if not isinstance(data, dict) or data.get("schema_version") not in (
             1,
@@ -65,7 +87,19 @@ class OperationArchive(OperationHistory):
         # structural validation. Matching zones continue the latest segment.
         if restored[-1][1].timezone == self.timezone:
             identity, current = restored.pop()
-            super().restore(current.export())
+            # The isolated history was already fully validated. Re-validating
+            # its exported copy doubled the expensive journal startup work.
+            for name in (
+                "events",
+                "plans",
+                "daily",
+                "sequence",
+                "dropped",
+                "_bytes",
+                "_plan_refs",
+            ):
+                setattr(self, name, getattr(current, name))
+            self._previous = self._record = self._plan_id = self._decoded = None
             self.segment_id = identity
         else:
             super().restore(OperationHistory(self.timezone).export())

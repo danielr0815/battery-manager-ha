@@ -1,0 +1,8 @@
+{
+  "events": 6938,
+  "plan_references_per_chunk": 2242,
+  "encoded_chunk_bytes": 4447485,
+  "largest_chunk_bytes": 268605,
+  "roundtrip_seconds": 48.52,
+  "exact_events_and_plan_hashes": true
+}

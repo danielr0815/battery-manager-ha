@@ -17,8 +17,11 @@ from .core.accounting import expected_interval as expected_interval
 from .core.replay import recording, replay
 
 SCHEMA = 1
-MAX_EVENTS = 50_000
-MAX_BYTES = 32 * 1024 * 1024
+MAX_EVENTS = 100_000
+# Individual in-memory replay blobs repeat forecasts; disk chunks use exact
+# deltas and a separate 64-MiB transaction bound. Keep RAM explicitly bounded
+# while allowing the measured seven-day recording rate (~254 MB legacy JSON).
+MAX_BYTES = 256 * 1024 * 1024
 RETENTION_DAYS = 7
 REPORT_DAYS = 30
 MAX_SAMPLE_S = 300
@@ -292,6 +295,18 @@ class OperationHistory:
             }
         )
 
+    def snapshot(self) -> dict:
+        """Copy ownership boundaries; event rows and plan blobs never mutate."""
+        return {
+            "schema_version": SCHEMA,
+            "timezone": self.timezone,
+            "events": list(self.events),
+            "plans": dict(self.plans),
+            "daily": deepcopy(self.daily),
+            "sequence": self.sequence,
+            "dropped_events": self.dropped,
+        }
+
     def restore(self, data):
         if not isinstance(data, dict) or data.get("schema_version") != SCHEMA:
             raise ValueError("Unsupported operation history schema")
@@ -401,7 +416,12 @@ def replay_history(data: dict, *, check_plans: bool = True) -> dict:
     records = {key: unpack_plan(blob) for key, blob in data["plans"].items()}
     if check_plans:
         exact = {key: replay(record)[1] for key, record in records.items()}
+    previous_sequence = None
     for row in data["events"]:
+        if previous_sequence is not None and row["sequence"] != previous_sequence + 1:
+            # A recovered missing chunk must never integrate its unseen gap.
+            history._previous = None
+        previous_sequence = row["sequence"]
         at = datetime.fromisoformat(row["at"])
         if row["kind"] == "plan":
             history._record = records[row["plan_id"]]

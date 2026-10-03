@@ -115,13 +115,40 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
             trajectory=replace(
                 compared.trajectory,
                 flows=tuple(
-                    flow
-                    if "switching_schedule" in recorded["fields"]
-                    else replace(flow, switching_schedule=())
+                    replace(
+                        flow,
+                        switching_schedule=flow.switching_schedule
+                        if "switching_schedule" in recorded["fields"]
+                        else (),
+                        dc_deficit_intervals=flow.dc_deficit_intervals
+                        if "dc_deficit_intervals" in recorded["fields"]
+                        else None,
+                    )
                     for flow, recorded in zip(
                         compared.trajectory.flows, recorded_flows, strict=True
                     )
                 ),
             ),
         )
+    if (
+        isinstance(expected, PlanResult)
+        and compared.trajectory.reserve_decision is not None
+    ):
+        recorded_decision = record["result"]["fields"]["trajectory"]["fields"].get(
+            "reserve_decision"
+        )
+        if (
+            isinstance(recorded_decision, dict)
+            and "market_ranking_reason" not in recorded_decision["fields"]
+        ):
+            compared = replace(
+                compared,
+                trajectory=replace(
+                    compared.trajectory,
+                    reserve_decision=replace(
+                        compared.trajectory.reserve_decision,
+                        market_ranking_reason="load_priority_no_prices",
+                    ),
+                ),
+            )
     return result, encode(compared) == encode(expected)

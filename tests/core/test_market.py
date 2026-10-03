@@ -190,3 +190,47 @@ def test_october_forecast_uses_dc_first_without_buying_back_early_ac():
     )[1]
     sunny = simulate(config, inputs, 20, pv_scale=upper)
     assert sum(f.inverter_output_wh for f in sunny.flows) > 0
+
+
+def test_missing_useful_opportunity_uses_one_transitive_horizon_order():
+    """An unused unknown 550 W slot formerly suppressed the priced 500 W peak."""
+    inputs = priced(
+        [(0, 500, 0), (0, 600, 0), (0, 550, 0), (350, 0, 0)], [300, 100, None, 100]
+    )
+    result = simulate(plant(), inputs, 20)
+    plain = simulate(plant(), replace(inputs, market_prices=()), 20)
+    assert [f.inverter_output_wh for f in result.flows] == pytest.approx([0, 200, 0, 0])
+    assert result.flows == plain.flows
+    assert result.reserve_decision.market_ranking_reason == "load_priority_incomplete"
+    assert result.reserve_decision.live_ac_override_demand_w is None
+    assert (
+        result.reserve_decision.live_ac_floor_percent
+        == plain.reserve_decision.live_ac_floor_percent
+    )
+
+
+def test_missing_price_for_non_opportunity_preserves_known_market_peak():
+    for values in (
+        [(0, 500, 0), (0, 600, 0), (0, 0, 0), (350, 0, 0)],
+        [(0, 500, 0), (0, 600, 0), (100, 100, 0), (350, 0, 0)],
+    ):
+        result = simulate(plant(), priced(values, [300, 100, None, 100]), 20)
+        assert result.flows[0].inverter_output_wh == pytest.approx(500 / 3)
+        assert result.flows[1].inverter_output_wh == 0
+        assert result.reserve_decision.market_ranking_reason == "weighted"
+
+
+def test_flat_and_absent_price_diagnostics_remain_distinct():
+    values = [(0, 600, 0), (300, 0, 0)]
+    assert (
+        simulate(
+            plant(), priced(values, [100, 100]), 20
+        ).reserve_decision.market_ranking_reason
+        == "load_priority_flat"
+    )
+    assert (
+        simulate(
+            plant(), priced(values, [None, None]), 20
+        ).reserve_decision.market_ranking_reason
+        == "load_priority_no_prices"
+    )

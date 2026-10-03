@@ -826,6 +826,7 @@ async def test_explicit_repair_only_changes_confirmed_ac_days(hass, _min_samples
     # Emulate erroneous old cleaning and independently learned DC history.
     for day in DAYS:
         learner.data["daily_hours"][day] = {"ac": [0.0] * 24, "dc": [51.0] * 24}
+        learner.data["daily_durations"].setdefault(day, {})["dc"] = [1.0] * 24
     learner.data["profiles"]["dc"] = {"weekday": {"p50": [51.0] * 24}}
     learner.data["samples"]["dc"] = {"weekday": [4] * 24}
     learner.data["ac_valid_since"] = PINNED_NOW.isoformat()

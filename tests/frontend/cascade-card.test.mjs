@@ -1441,7 +1441,7 @@ test("reserve report explains the physical headroom policy without inventing a h
     );
     assert.match(html, /gesamten verfügbaren Prognosehorizont/);
     assert.match(html, /zusätzlichen Freiraum im Speicher/);
-    assert.match(html, /Aktuell erlaubte Inverterleistung/);
+    assert.match(html, /Inverterfreigabe im Plan/);
     assert.match(html, /125 W/);
     assert.match(html, /Unvermeidbare prognostizierte Einspeisung/);
     assert.match(html, /250 Wh/);

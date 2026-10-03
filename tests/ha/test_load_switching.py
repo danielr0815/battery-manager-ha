@@ -2411,12 +2411,19 @@ async def test_runtime_counter_persists_across_restart(hass):
     assert "load_run_since" not in captured  # cursor deliberately NOT persisted
 
     await coordinator._store.async_save(captured)
-    coordinator._load_runtime_seconds.clear()
-    coordinator._load_run_since.clear()
-    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
-    await coordinator.async_load_persistent_state()
-    assert abs(coordinator.load_runtime_minutes(sub_id) - 8.0) < 0.01
-    assert sub_id not in coordinator._load_run_since  # cursor NOT restored
+    # A restart creates a new coordinator. The old instance can receive fresh
+    # power events while the archive worker is awaited; that is observation,
+    # not restoration of a persisted cursor.
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    restored = BatteryManagerCoordinator(hass, coordinator.entry)
+    restored._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    try:
+        await restored.async_load_persistent_state()
+        assert abs(restored.load_runtime_minutes(sub_id) - 8.0) < 0.01
+        assert sub_id not in restored._load_run_since
+    finally:
+        restored.cleanup()
 
 
 async def test_runtime_counter_uses_charging_state_without_power_sensor(hass):

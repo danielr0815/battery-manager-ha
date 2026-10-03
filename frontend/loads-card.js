@@ -94,6 +94,7 @@ export class BatteryManagerLoadsCard extends BatteryManagerCascadeCard {
       ${load.available === false ? `<p class="fault">${esc(localize(this._hass, "card_unavailable"))}</p>` : ""}
       ${load.power_warning ? `<p class="fault">${esc(localize(this._hass, "card_power_draw_differs_from_expectation"))}</p>` : ""}
       ${load.soc_stale ? `<p class="fault">${esc(localize(this._hass, "card_stale_telemetry_blocks_execution"))}</p>` : ""}
+      ${load.target_soc_percent != null && num(load.soc_percent) === undefined ? `<p class="muted" data-tentative-plan>${esc(localize(this._hass, "card_tentative_wake"))}</p>` : ""}
       <div class="metrics">${metrics.map(([label, value]) => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
       ${load.target_soc_percent != null ? `<p class="muted">${esc(localize(this._hass, "card_state_of_charge_at_plan_start_charge_target"))}: ${this._number(num(load.soc_percent), 1)} % / ${this._number(num(load.target_soc_percent), 1)} %</p>` : ""}
       <p class="muted">${esc(localize(this._hass, "card_robust_power_estimate_while_running"))}: ${this._number(num(load.observed_power_w), 0)} W · ${esc(localize(this._hass, "card_last_learned_power"))}: ${this._number(num(load.learned_power_w), 0)} W</p>

@@ -14,18 +14,20 @@ from typing import Literal, NamedTuple, TypedDict, TypeGuard, cast
 
 from homeassistant.util import dt as dt_util
 
+from .source_health import (
+    POWER_SOURCE_MAX_AGE_S,
+    normalized_measurement,
+    publication_age_s,
+)
 
-def measurement(state, kind: str) -> float | None:
+
+def measurement(state, kind: str, *, now: datetime | None = None) -> float | None:
     """Normalize an explicitly configured meter to W or Wh."""
-    if state is None:
-        return None
-    units = {"power": {"W": 1, "kW": 1000}, "energy": {"Wh": 1, "kWh": 1000}}
-    factor = units[kind].get(state.attributes.get("unit_of_measurement"))
-    try:
-        value = float(state.state)
-    except TypeError, ValueError:
-        return None
-    return value * factor if factor and math.isfinite(value) and value >= 0 else None
+    if kind == "power" and now is not None:
+        age = publication_age_s(state, now)
+        if age is None or not 0 <= age <= POWER_SOURCE_MAX_AGE_S:
+            return None
+    return normalized_measurement(state, kind)
 
 
 def duration_hours(state, now: datetime, *, remaining: bool = False) -> float | None:
@@ -77,12 +79,12 @@ MAX_CYCLE_ENERGY_WH = 10_000
 MAX_CYCLE_DURATION_H = 24
 MAX_CYCLE_SAMPLES = 20
 MAX_PROGRAMS = 32
-MAX_MEASUREMENT_GAP_S = 600
+MAX_MEASUREMENT_GAP_S = POWER_SOURCE_MAX_AGE_S
 # Observation history has the same bounded retention as the learning window.
 MAX_CYCLE_HISTORY = 20
 # Bounded diagnostic vocabulary; persisted corruption cannot grow one entry.
 MAX_CYCLE_NOTES = 16
-LEARNING_METADATA_VERSION = 1
+LEARNING_METADATA_VERSION = 2
 
 MeasurementSource = Literal["energy_counter", "integrated_power"]
 LearningState = Literal["no_data", "measuring", "learned", "invalid"]
@@ -154,6 +156,8 @@ class ActiveCycle(TypedDict):
     valid: bool
     reasons: list[str]
     warnings: list[str]
+    power_source: str | None
+    energy_source: str | None
 
 
 class ApplianceLearning:
@@ -244,6 +248,9 @@ class ApplianceLearning:
         valid: bool = True,
         program: str | None = None,
         invalid_reason: str | None = None,
+        power_source: str | None = None,
+        energy_source: str | None = None,
+        power_reason: str | None = None,
     ) -> None:
         """Integrate held power; prefer a continuous, non-resetting energy counter.
 
@@ -283,6 +290,8 @@ class ApplianceLearning:
                     "reasons": ([] if complete_start else ["missing_start"])
                     + ([] if valid else [invalid_reason or "detection_unknown"]),
                     "warnings": [],
+                    "power_source": power_source,
+                    "energy_source": energy_source,
                 }
             return
         seconds = (now - cycle["at"]).total_seconds()
@@ -296,11 +305,21 @@ class ApplianceLearning:
             )
         if power is None:
             cycle["power_ok"] = False
+            if power_reason is not None and power_reason not in cycle["warnings"]:
+                cycle["warnings"].append(power_reason)
+        if power_source != cycle["power_source"]:
+            cycle["power_ok"] = False
+            if "power_source_changed" not in cycle["warnings"]:
+                cycle["warnings"].append("power_source_changed")
         if cycle["power_ok"]:
             assert cycle["power"] is not None
             cycle["wh"] += cycle["power"] * max(0, seconds) / 3600
         if energy is None:
             cycle["energy_ok"] = False
+        elif energy_source != cycle["energy_source"]:
+            cycle["energy_ok"] = False
+            if "energy_source_changed" not in cycle["warnings"]:
+                cycle["warnings"].append("energy_source_changed")
         elif cycle["energy"] is not None and energy < cycle["energy"]:
             cycle["energy_ok"] = False
             if "counter_reset" not in cycle["warnings"]:
@@ -480,7 +499,7 @@ class ApplianceLearning:
         if (
             not isinstance(data, dict)
             or type(data.get("version")) is not int
-            or data.get("version") != LEARNING_METADATA_VERSION
+            or data.get("version") not in (1, LEARNING_METADATA_VERSION)
         ):
             return
         history = data.get("history")
@@ -493,6 +512,31 @@ class ApplianceLearning:
                     for item in items[-MAX_CYCLE_HISTORY:]
                     if (clean := _clean_history(item)) is not None
                 ]
+        if data["version"] == 1:
+            # Old integrated-power records contain no publication evidence.
+            # Exclude only attributable samples; unknown legacy formats retain
+            # their documented unknown provenance, and counter samples survive.
+            for key, items in self._history.items():
+                for item in items:
+                    if (
+                        not item["accepted"]
+                        or item["measurement_source"] != "integrated_power"
+                    ):
+                        continue
+                    energy = item["energy_wh"]
+                    assert energy is not None
+                    values = self.samples.get(key, [])
+                    if energy in values:
+                        values.remove(energy)
+                    program = item["program"]
+                    samples = self.program_samples.get(key, {}).get(program or "", [])
+                    pair = ProgramSample(energy, item["duration_h"])
+                    if pair in samples:
+                        samples.remove(pair)
+                    if not samples:
+                        self.program_samples.get(key, {}).pop(program or "", None)
+                    item["complete"] = item["accepted"] = False
+                    item["reasons"].append("legacy_power_freshness_unknown")
         last = data.get("last_learned_at")
         if isinstance(last, dict):
             self._last_learned = {

@@ -4,6 +4,24 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolated_operation_archive(monkeypatch, tmp_path):
+    """Archive files belong to one test, including across repeated pytest runs.
+
+    HA's mocked JSON Store does not intercept our separate chunk files. Use a
+    real temporary directory to exercise fsync/rename without sharing the
+    test helper's installation directory between coordinators and workers.
+    """
+    import hashlib
+
+    monkeypatch.setattr(
+        "custom_components.battery_manager.archive_storage.archive_directory",
+        lambda _hass, entry_id: (
+            tmp_path / hashlib.sha256(entry_id.encode()).hexdigest()
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Enable loading custom integrations in all HA tests."""
     yield

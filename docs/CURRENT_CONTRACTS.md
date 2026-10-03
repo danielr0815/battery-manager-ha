@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.53.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.54.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -220,3 +220,38 @@ vorziehen, wenn eine unerwartete aktuelle Last unter Preisgewichtung deutlich
 besser ist. Das Budget reicht nur bis zur nächsten Netto-PV-Ladung und bleibt
 oberhalb der DC-/Schutzgrenze. Verhalten, Gewichtung, Datenformate, Diagnose und
 Nachweise: [Marktorientierter Inverterbetrieb](F-MARKET-AC-PRIORITY.md).
+
+## Ergänzungen aus dem Oktoberreview (0.54.0)
+
+Automatische Mehrlast, Geräteberatung, Kaskaden-Recovery und Einspeisung dürfen
+keinen zusätzlichen DC-Ausfall erzeugen. Der Vergleich verwendet physische
+Zeitintervalle gegen Ausgangs- und zuletzt akzeptierten Plan. Bereits vorhandene
+Defizite bleiben sichtbar; frühere Verbesserungen kompensieren keine späteren
+Ausfälle. Der Import-Slack gewährt keine DC-Ausfalltoleranz. Nominaler Pass 3
+behält seinen bestehenden Unsicherheitsvertrag.
+
+G4 zählt auch tatsächlich eingeschaltete Ladepfade, deren neue Buchung verworfen
+wurde. Bekannte Leistung wird in W normalisiert; bei fehlender Messung gilt für
+einen gehaltenen Ladepfad die gelernte beziehungsweise konfigurierte Leistung.
+Bei fehlender Inverterfreigabe und unzureichender PV überschreibt der Schutz die
+Restmindestlaufzeit. Kaskaden und explizite Kalibrierung behalten ihren Besitz.
+
+Power-Lernen nutzt echte HA-Publikationen mit höchstens 600 Sekunden Alter.
+Gleiche neu publizierte Werte bleiben frisch. Zähler, Programme und Zustände
+bekommen kein pauschales Power-Ablaufdatum. Quellenwechsel entwerten den
+betroffenen Messkanal; ein anderer valider Kanal bleibt verwendbar. Ohne
+verwertbare Messung wird kein Energieprofil gelernt.
+
+Historische Wh werden durch die tatsächlich beobachteten Stunden geteilt.
+Der wiederholte Herbstbin benötigt beide Stunden; der Frühlingsbin bleibt
+unbekannt. Alte Herbstwerte ohne Dauerbeleg werden gezielt neu gelernt.
+Fensterbelegung, Messabdeckung seit Quellenbindung, Ausschlüsse, Binreife und
+zeitgewichteter gelernter Prognoseanteil haben getrennte Nenner. Ein unbekanntes
+Quantilband wird diagnostisch von gemessener Streuung null unterschieden; die
+bestehende Pufferpolitik bleibt erhalten.
+
+Fehlt ein Preis für eine relevante AC-Gelegenheit, verwendet der gesamte
+Vergleichshorizont einschließlich Live-Vorziehen Lastpriorität. Automatische
+EPEX-Erkennung verlangt eine valide Intervallserie; explizite Quellenbindung
+hat Vorrang. Diagnose und Bedienung: [Dashboard](F-DASHBOARD-DIAGNOSTICS.md).
+Archivformat und Forschung: [Oktoberumsetzung](F-OCTOBER-OPTIMIZATIONS.md).

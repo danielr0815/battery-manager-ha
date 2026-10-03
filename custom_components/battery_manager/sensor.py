@@ -541,6 +541,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "load_decisions",
             "feedin_decisions",
             "operation_report",
+            "source_health",
+            "plan_metadata",
+            "inverter_control",
         }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -643,6 +646,9 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "coordinated_support": data.get("coordinated_support") or {},
             "reserve": data.get("reserve") or {},
             "live_ac": data.get("live_ac") or {},
+            "plan_metadata": data.get("plan_metadata") or {},
+            "inverter_control": self.coordinator.inverter_control_snapshot(),
+            "source_health": data.get("source_health") or [],
             # F-PREDRAIN observability (docs/F-PREDRAIN.md §3.5): per-day PV
             # source, the import the allocation added over base (bounded by the
             # 50 Wh artifact slack since F-STRICT-SURPLUS R1, not a trade), the

@@ -1,5 +1,5 @@
 import { switchingLanes, switchingDetails } from "./switching.js";
-import { dateTimeFormat, nextHour, localHour } from "./time.js";
+import { dateTimeFormat, nextHour, localHour, selectionTime } from "./time.js";
 import { forecast_card_style_0, forecast_card_style_1 } from "./styles.js";
 import { localize } from "./translations.js";
 import {
@@ -16,12 +16,19 @@ import {
   DOCS_URL,
   CARD_VERSION,
 } from "./shared.js";
-import { replaceCardHTML } from "./dom.js";
+import {
+  replaceCardHTML,
+  restoreChartSelection,
+  bindEntityButtons,
+} from "./dom.js";
 import {
   reserveReport,
   operationReport,
   feedinDecisions,
   executionLines,
+  inverterControlReport,
+  sourceHealthReport,
+  stateNotice,
 } from "./reports.js";
 
 export class BatteryManagerForecastCard extends HTMLElement {
@@ -86,18 +93,21 @@ export class BatteryManagerForecastCard extends HTMLElement {
       show_power_supplies: false,
       ...config,
     };
+    this._selectedTime = null;
     this._lastState = undefined;
     this._showPowerSupplies = this._config.show_power_supplies === true;
     this._render();
   }
 
   set hass(hass) {
-    const languageChanged = hass.language !== this._hass?.language;
+    const presentationChanged =
+      hass.language !== this._hass?.language ||
+      hass.config?.time_zone !== this._hass?.config?.time_zone;
     this._hass = hass;
     const stateObj = this._config?.entity
       ? hass.states[this._config.entity]
       : undefined;
-    if (stateObj !== this._lastState || languageChanged) {
+    if (stateObj !== this._lastState || presentationChanged) {
       this._lastState = stateObj;
       this._render();
     }
@@ -189,6 +199,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
     this._laneCount = 0;
     this._kbIndex = null;
     this._shownSlot = null;
+    this._chartMeta = null;
     const hass = this._hass;
     const t = (key) => localize(hass, key);
 
@@ -222,12 +233,15 @@ export class BatteryManagerForecastCard extends HTMLElement {
           <div class="title">${esc(header ?? "")}</div>
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
-        ${body}
+        ${stateNotice(hass, stateObj)}${body}
+        ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
         ${reserveReport(this._hass, stateObj?.attributes?.reserve)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `,
     );
     this._attachChartHandlers();
+    bindEntityButtons(this);
+    restoreChartSelection(this);
   }
 
   _statsLine(stateObj, t) {
@@ -828,7 +842,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
       .join("");
 
     return `
-      <svg id="chart" role="img" tabindex="0" aria-label="${esc(summary)}"
+      <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
@@ -861,8 +875,17 @@ export class BatteryManagerForecastCard extends HTMLElement {
       return;
     }
     target.addEventListener("pointermove", (ev) => this._onPointerMove(ev));
+    target.addEventListener("pointerdown", (ev) => {
+      this._touchSelected = ev.pointerType === "touch";
+      this._cancelPendingFrame();
+      this._onHover(ev);
+    });
     target.addEventListener("pointerleave", () => {
       this._cancelPendingFrame();
+      if (!this._touchSelected) this._clearSlot();
+    });
+    target.addEventListener("pointercancel", () => {
+      this._touchSelected = false;
       this._clearSlot();
     });
     // The SVG itself is focusable (tabindex), so keyboard users get the
@@ -977,6 +1000,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
     if (!nearest) {
       return;
     }
+    this._selectedTime = nearest.time;
     const cx = meta.x(nearest.time);
     marker.innerHTML = `
       <line x1="${cx}" y1="${meta.margin.top}" x2="${cx}"
@@ -1017,7 +1041,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
         ? ""
         : ` · ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
     const when = esc(
-      `${fmt.format(nearest.time)}${nearest.soc == null ? "" : ` · ${nearest.soc} %`}${floorText}`,
+      `${selectionTime(
+        this._hass,
+        nearest.time,
+        meta.points.map((p) => p.time),
+      )}${nearest.soc == null ? "" : ` · ${nearest.soc} %`}${floorText}`,
     );
     const chips = activeLanes
       .map((lane) => {
@@ -1065,6 +1093,8 @@ export class BatteryManagerForecastCard extends HTMLElement {
   }
 
   _clearSlot() {
+    this._selectedTime = null;
+    this._kbIndex = null;
     this._shownSlot = null;
     const marker = this.shadowRoot?.getElementById("hover-marker");
     const readout = this.shadowRoot?.getElementById("readout");

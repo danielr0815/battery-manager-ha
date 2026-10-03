@@ -2,6 +2,7 @@ import { esc, num, DOCS_URL } from "./shared.js";
 import { dateTimeFormat } from "./time.js";
 import { replaceCardHTML } from "./dom.js";
 import { applianceText } from "./appliances-translations.js";
+import { localize } from "./translations.js";
 
 export const APPLIANCES_CARD_TYPE = "battery-manager-appliances-card";
 const EDITOR_TYPE = `${APPLIANCES_CARD_TYPE}-editor`;
@@ -86,6 +87,9 @@ export class BatteryManagerAppliancesCard extends HTMLElement {
     );
     if (signal !== this._signal) {
       this._signal = signal;
+      // A backend reload can repeat an old revision signal (A → B → A).
+      // Invalidate by publication identity, rather than numerical revision.
+      this._generation++;
       this._refresh();
     }
     if (presentationChanged) this._render();
@@ -220,7 +224,25 @@ export class BatteryManagerAppliancesCard extends HTMLElement {
     const rows = list(appliance.sources);
     if (!rows.length)
       return `<p class="muted">${esc(this._t("no_sources"))}</p>`;
-    return `<div class="table-scroll" data-scroll-key="sources-${esc(appliance.id)}"><table><thead><tr>${["source", "available", "last_reported"].map((key) => `<th scope="col">${esc(this._t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(this._t(row.kind || "unknown"))}<br><button class="entity" data-entity-id="${esc(row.entity_id)}" data-focus-key="entity-${esc(appliance.id)}-${esc(row.kind)}" title="${esc(this._t("open_entity"))}">${esc(row.entity_id)}</button></td><td>${esc(this._t(row.available ? "available" : "unavailable"))}<br>${esc(row.state ?? "—")}</td><td>${esc(this._time(row.last_reported))}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="table-scroll" data-scroll-key="sources-${esc(appliance.id)}"><table><thead><tr>${["source", "available", "last_reported"].map((key) => `<th scope="col">${esc(this._t(key))}</th>`).join("")}</tr></thead><tbody>${rows
+      .map((row) => {
+        const configured =
+          typeof row.entity_id === "string" && row.entity_id.length > 0;
+        const entity = configured
+          ? `<button class="entity" data-entity-id="${esc(row.entity_id)}" data-focus-key="entity-${esc(appliance.id)}-${esc(row.kind)}" title="${esc(this._t("open_entity"))}">${esc(row.entity_id)}</button>`
+          : esc(this._t("not_configured"));
+        const status = !configured
+          ? this._t("not_configured")
+          : row.status
+            ? localize(this._hass, `source_status_${row.status}`)
+            : this._t(row.available ? "available" : "unavailable");
+        const value =
+          row.value != null
+            ? `${typeof row.value === "number" ? this._number(row.value, row.unit || "") : row.value}`
+            : (row.state ?? "—");
+        return `<tr><td>${esc(this._t(row.kind || "unknown"))}<br>${entity}</td><td>${esc(status)}<br>${esc(value)}</td><td>${esc(this._time(row.reported_at ?? row.last_reported))}</td></tr>`;
+      })
+      .join("")}</tbody></table></div>`;
   }
   _appliance(appliance) {
     const observation = appliance.observation || {};

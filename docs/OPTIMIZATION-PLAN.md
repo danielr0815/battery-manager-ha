@@ -1,5 +1,11 @@
 # Battery Manager: zehn weitere Optimierungen
 
+**Aktuelle Fortführung:** Der
+[vertiefte Plan vom 02.10.2026](OPTIMIZATION-PLAN-2026-10.md) konkretisiert
+die offenen Arbeiten nach dem Review von Code, Tests und Live-Historie unter
+0.53.0. Die folgenden Abschnitte bleiben als Umsetzungsnachweis des
+Septemberplans erhalten; neue Vorschläge sind dort nicht als umgesetzt markiert.
+
 Stand: 2026-09-08, Arbeitsstand 0.41.1. Umsetzung vom Nutzer beauftragt. Fortschritt und noch fehlende
 Abnahmen werden unten dokumentiert. Die Schalterkorrektur
 ist bereits umgesetzt und zählt nicht zu diesen zehn weiteren Punkten.

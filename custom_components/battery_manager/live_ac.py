@@ -236,7 +236,9 @@ class LiveACRuntime:
             if self.state.low_since
             else None,
         }
+        self.diagnostics["decided_at"] = now.isoformat()
         self.diagnostics["planned_limit_w"] = self.planned_limit()
+        self.owner.operation_recorder.decision("live_ac", self.diagnostics)
         return self.limit_w
 
     def planned_limit(self) -> int:
@@ -333,7 +335,10 @@ class LiveACRuntime:
             c._inverter_recommendation = bool(target and confirmed)
             self._owns_limit = bool(target or not confirmed)
             self.diagnostics["confirmed"] = confirmed
+            self.diagnostics["requested_limit_w"] = target
+            self.diagnostics["command_reason"] = diag.get("reason")
             if c.data:
                 c.data["inverter_recommendation"] = c._inverter_recommendation
                 c.data["live_ac"] = dict(self.diagnostics)
+                c.data["inverter_control"] = c.inverter_control_snapshot()
                 c.async_update_listeners()

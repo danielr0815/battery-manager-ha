@@ -25,6 +25,11 @@
 5. Laufzeitdetails, Ausführungsgründe, Mindestpause, Bestätigungsbedarf,
    abgelehnte Startkandidaten und Warnungen erklären die Planung. Die gemeinsamen
    Betriebs- und Einspeiseberichte bleiben als Anlagenkontext sichtbar.
+6. Bei Speicherlasten mit unbekanntem SOC wird die Buchung ausdrücklich als
+   vorläufig erklärt: Aufwecken und gültige Telemetrie sind vor der Ausführung
+   erforderlich. Zeitraumknöpfe und Diagrammfokus bleiben bei HA-Updates an
+   der Lastidentität. Weitere gemeinsame Verträge stehen in
+   [Dashboard-Diagnostik](F-DASHBOARD-DIAGNOSTICS.md).
 
 ## Prüfung
 

@@ -127,7 +127,6 @@ async def async_get_config_entry_diagnostics(
         for cid, state in getattr(coordinator, "_cascade_state", {}).items()
     }
     if recorder := getattr(coordinator, "operation_recorder", None):
-        diagnostics["operation_history"] = recorder.export()
         diagnostics["operation_report"] = recorder.summary()
     diagnostics["integration_version"] = coordinator.integration_version
     diagnostics["core_config"] = _core_config(coordinator)
@@ -135,4 +134,7 @@ async def async_get_config_entry_diagnostics(
     diagnostics["planning"] = coordinator._planning.snapshot()
     diagnostics["appliances"] = coordinator.appliances.payload()
     diagnostics["last_plan_metrics"] = _last_plan_metrics(coordinator)
+    # Capture synchronous context before the owned archive copy yields.
+    if recorder:
+        diagnostics["operation_history"] = await recorder.async_export()
     return diagnostics

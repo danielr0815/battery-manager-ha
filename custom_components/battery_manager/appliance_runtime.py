@@ -12,9 +12,15 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, TypedDict
 
-from homeassistant.core import Event, EventStateChangedData, callback
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    EventStateReportedData,
+    callback,
+)
 from homeassistant.helpers.event import (
     async_track_state_change_event,
+    async_track_state_report_event,
     async_track_time_interval,
 )
 from homeassistant.util import dt as dt_util
@@ -33,6 +39,7 @@ from .const import (
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     SUBENTRY_TYPE_APPLIANCE,
 )
+from .source_health import source_health
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -183,6 +190,17 @@ class ApplianceRuntime:
             self._unsub.append(
                 async_track_state_change_event(c.hass, entities, self._changed)
             )
+        meters = {
+            entity
+            for sub in c.entry.subentries.values()
+            if sub.subentry_type == SUBENTRY_TYPE_APPLIANCE
+            for key in (CONF_APPLIANCE_POWER_ENTITY, CONF_APPLIANCE_ENERGY_ENTITY)
+            if (entity := sub.data.get(key))
+        }
+        if meters:
+            self._unsub.append(
+                async_track_state_report_event(c.hass, meters, self._reported)
+            )
         if any(
             sub.subentry_type == SUBENTRY_TYPE_APPLIANCE
             for sub in c.entry.subentries.values()
@@ -194,6 +212,10 @@ class ApplianceRuntime:
 
     @callback
     def _changed(self, event: Event[EventStateChangedData]) -> None:
+        self.update(dt_util.utcnow())
+
+    @callback
+    def _reported(self, event: Event[EventStateReportedData]) -> None:
         self.update(dt_util.utcnow())
 
     @callback
@@ -385,7 +407,9 @@ class ApplianceRuntime:
             else None
         )
         observation: Observation = {
-            "power_w": measurement(state(CONF_APPLIANCE_POWER_ENTITY), "power"),
+            "power_w": measurement(
+                state(CONF_APPLIANCE_POWER_ENTITY), "power", now=now
+            ),
             "remaining_minutes": remaining * 60 if remaining is not None else None,
             "remaining_source": remaining_source,
             "expected_end": expected_end,
@@ -410,6 +434,14 @@ class ApplianceRuntime:
                     else None,
                 }
             )
+        health = source_health(
+            c.hass,
+            {kind: data.get(conf) for kind, conf in SOURCE_KEYS.items()},
+            now,
+            kinds={"power": "power", "energy": "energy"},
+        )
+        for source, quality in zip(sources, health, strict=True):
+            source.update(quality)
         return {
             "id": key,
             "name": sub.title,

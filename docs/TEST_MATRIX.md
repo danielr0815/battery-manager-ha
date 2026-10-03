@@ -30,7 +30,7 @@ Branch-Coverage als Bericht ohne neues Prozentziel.
 | Kern ohne HA + Windows | Kein HA-Import und keine Testhelfer nötig | CI `core-only` |
 | Release-Tag + Versionsstand | Tag, Manifest und Projektversion konsistent; gleicher SHA für Gates | `scripts/check_release.py`, Releaseworkflow |
 
-| Reserve + Prognose übermorgen | Heutige AC-Freigabe nur aus heute/morgen; lokale DST-Tage | `core/test_reserve.py`, `core/test_reserve_live_regression.py` |
+| Reserve + Prognose übermorgen | Gemeinsamer vollständiger Horizont; frühere Heute/Morgen-Bindung ersetzt, lokale DST-Tage | `core/test_reserve.py`, `core/test_reserve_live_regression.py` |
 | Reserve + unvermeidbarer Export + AC-/DC-Floor | Späte nötige Entladung, keine unerreichbare Null-Export-Schuld | `core/test_reserve_reachability.py`, `core/test_reserve_energy.py` |
 | Reserve + Ledger 0 + SOC 6 % | Schutz bleibt aktiv; Herkunft ist ausschließlich Diagnose | `ha/test_reserve_policy.py`, `ha/test_reserve_runtime.py` |
 | Upgrade + alte PSU-Haltung + fehlende Bestätigung | Physischer Zustand bleibt erhalten, geordnete Rückkehr wird erneut abgeglichen | `ha/test_reserve_policy.py` |
@@ -60,3 +60,20 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | AC-Entnahme + späterer DC-Bedarf + unsichere PV | Kein optionaler AC-Verbrauch zulasten der prognostizierten DC-Versorgung; obere PV ist kein DC-Versorgungsnachweis | `core/test_reserve_priority.py` |
 | Netzteilhaltung + spätere AC-Abgabe im Liveplan | Kein Nachmittags-Netzbezug zur Finanzierung späterer AC-Entladung | Anonymisierte Fixture `reserve_load_priority.json`, `core/test_reserve_priority.py` |
 | Hohe Last nach PV-Peak + niedrige Last davor | Rechtzeitiger Speicherraum bleibt möglich; keine starre Nachtsperre | `core/test_reserve_priority.py` |
+
+## Oktoberreview 0.54.0
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Zusatzlast + gleicher Floor-SOC + Nullimport + DC-Ausfall | Zeitliches DC-Veto gegen Ausgangs- und akzeptierten Plan | `core/test_dc_service.py` |
+| Recovery/Kaskade + späteres Defizit + Stress + manueller Export | Automatische Buchung zurücknehmen, externe Vorgabe erhalten | `core/test_dc_service.py` |
+| Abgelehnte Fortsetzung + physisch ON + Restmindestlaufzeit | G4 zählt gehaltene Leistung und überschreibt Dwell | `ha/test_october_regressions.py` |
+| Archivrestore + Ereignisloop + Unload | Worker hält Loop frei, keine späte Übernahme | `ha/test_october_regressions.py` |
+| Exakte Plan-Deltas + Typen/Nullvorzeichen + Checkpoint | Unveränderte Planhashes und Ereignisse | `ha/test_archive_storage.py` |
+| Chunk-/Manifestbeschädigung + Kapazität + Abbruch | Gültige andere Evidenz und Runtimepflichten erhalten | `ha/test_archive_storage.py`, `ha/test_operation_recorder.py` |
+| Power-Publikation + Quellenwechsel + alter Lernstand | Kein Lernen aus eingefrorener Leistung; Gegenkanal und Zähler bleiben nutzbar | `ha/test_appliance_learning.py`, `ha/test_appliance_history.py` |
+| Zwei Herbststunden + fehlender Fold + Quellenepoch | Wh durch reale Dauer teilen; fehlend bleibt unbekannt; Nenner trennen | `core/test_load_profile.py`, `ha/test_history_profile.py` |
+| Unbrauchbare EPEX-Entität + relevante Preislücke | Eindeutige valide Serie; kohärente Lastpriorität | `ha/test_market_adapter.py`, `core/test_market.py` |
+| Folgetage + reale gemeldete SOC + Reserve/Live/PSUs + DST | Unabhängige Bilanz, kein Reset der Endenergie, DC-Vorrang | `ha/test_reserve_closed_loop.py` |
+| Alternativer Rückhalt + pessimistische PV + Endenergie | Begrenzte Offline-Varianten, keine Live-Freigabe | `core/test_reserve_comparison.py` |
+| Plan/Live/Rückmeldung + fehlende Daten + Touch/Fokus/ABA | Getrennte wahrheitsgemäße Anzeigen und erhaltener Bedienzustand | `frontend/reports.test.mjs`, `browser/review-regressions.spec.mjs` |

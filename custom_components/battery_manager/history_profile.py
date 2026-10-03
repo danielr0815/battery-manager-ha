@@ -99,7 +99,7 @@ from .core import (
     on_fractions,
     profile_value,
 )
-from .core.load_profile import Bins
+from .core.load_profile import Bins, local_hour_durations
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,8 +111,14 @@ _MIN_SAMPLES = {
     DAY_TYPE_ABSENCE: LEARNING_MIN_SAMPLES_ABSENCE,
 }
 
-# {(date_iso, hour): wh} per entity
-HourMap = dict[tuple[str, int], float]
+
+class HourMap(dict[tuple[str, int], float]):
+    """Hourly energy plus its observed real duration; duplicate rows add no time."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.durations: dict[tuple[str, int], float] = {}
+
 
 # Part of the cleaning fingerprint: bump when the D-C2 cleaning SEMANTICS
 # change, so cached days computed under the old rules are refetched.
@@ -123,7 +129,7 @@ HourMap = dict[tuple[str, int], float]
 #     clamp regime in between (Rev. 4, docs/DC_TOPOLOGY.md §9).
 # v5: cascade pass-through is removed only at its root input (2026-09-09).
 # v6: retain historical attribution; changes open a new configuration epoch.
-_CLEANING_RULES_VERSION = 6
+_CLEANING_RULES_VERSION = 7
 
 
 # Retry recent gaps while recorder switch history is still likely present.
@@ -147,6 +153,8 @@ def _default_data() -> dict[str, Any]:
         "vacation_mode_active": False,
         "day_log": {},  # date -> {"daytype": ..., "vacation": bool}
         "daily_hours": {},  # date -> {"ac": [24 x Wh|None]|None, "dc": ...}
+        "daily_durations": {},  # date -> path -> 24 real-hour durations
+        "hour_duration_version": 1,
         "profiles": {"ac": None, "dc": None},
         "samples": {"ac": None, "dc": None},
         # Daily watchdog entries (D-C9): [{day, bias_w, mae_w, hours}]
@@ -280,6 +288,16 @@ def _valid_learned_data(data: Any) -> bool:
             or not all(series(values) for values in counts.values())
         ):
             return False
+    for day, paths in data.get("daily_durations", {}).items():
+        if day not in data.get("daily_hours", {}) or not isinstance(paths, dict):
+            return False
+        if any(
+            path not in _PATHS
+            or not series(values)
+            or any(v is None or v > 2 for v in values)
+            for path, values in paths.items()
+        ):
+            return False
     for day, entry in data.get("day_log", {}).items():
         try:
             date.fromisoformat(day)
@@ -405,6 +423,7 @@ class ProfileLearner:
             merged = _default_data()
             merged.update(stored)
             self.data = merged
+            self._migrate_hour_durations(stored.get("hour_duration_version") == 1)
         elif stored:
             # Was silently dropped before; surface it — an unexpected inner
             # version means the data came from a different schema.
@@ -422,6 +441,35 @@ class ProfileLearner:
             # Capture the committed state so it cannot persist partial work.
             snapshot = deepcopy(self.data)
             self._store.async_delay_save(lambda: snapshot, 10)
+
+    def _migrate_hour_durations(self, already_current: bool) -> None:
+        """Never reinterpret old folded Wh as W without their observation basis."""
+        zone = dt_util.get_default_time_zone()
+        for day, paths in self.data["daily_hours"].items():
+            durations = local_hour_durations(date.fromisoformat(day), zone)
+            stored = self.data["daily_durations"].setdefault(day, {})
+            for path, values in paths.items():
+                if path not in _PATHS or values is None or path in stored:
+                    continue
+                stored[path] = durations.copy()
+                for hour, duration in enumerate(durations):
+                    if duration == 1 or (already_current and duration > 0):
+                        continue
+                    if values[hour] is not None:
+                        values[hour] = None
+                        self.data["diagnostics"].setdefault(
+                            "excluded_hours", {}
+                        ).setdefault(day, {}).setdefault(path, {})[str(hour)] = [
+                            "legacy_duration_unknown"
+                        ]
+                        for quantiles in (
+                            self.data["profiles"].get(path) or {}
+                        ).values():
+                            for bins in quantiles.values():
+                                bins[hour] = None
+                        for counts in (self.data["samples"].get(path) or {}).values():
+                            counts[hour] = 0
+        self.data["hour_duration_version"] = 1
 
     def async_schedule(self) -> None:
         """Register the nightly run; catch up when stale or reconfigured.
@@ -569,6 +617,8 @@ class ProfileLearner:
             "validation": self.data.get("validation"),
             "day_log": self.data.get("day_log"),
             "ac_valid_since": self.data.get("ac_valid_since"),
+            "daily_durations": self.data.get("daily_durations"),
+            "hour_duration_version": self.data.get("hour_duration_version"),
             "configuration_epochs": self.data.get("configuration_epochs"),
         }
 
@@ -706,6 +756,14 @@ class ProfileLearner:
                         day >= (today - timedelta(days=_GAP_RETRY_DAYS)).isoformat()
                         and None in daily_hours[day][path]
                     )
+                    or any(
+                        "legacy_duration_unknown" in reasons
+                        for reasons in self.data["diagnostics"]
+                        .get("excluded_hours", {})
+                        .get(day, {})
+                        .get(path, {})
+                        .values()
+                    )
                 )
             ]
             for path in _PATHS
@@ -716,6 +774,7 @@ class ProfileLearner:
         self.data["diagnostics"]["negative_residuals"] = 0
         if all_missing:
             cached_hours = deepcopy(self.data["daily_hours"])
+            cached_durations = deepcopy(self.data["daily_durations"])
             cached_tags = deepcopy(self.data["day_log"])
             try:
                 await self._fetch_configuration_epochs(all_missing, missing)
@@ -723,6 +782,7 @@ class ProfileLearner:
                 # A later epoch may fail after an earlier one wrote its slice.
                 # Retry the complete missing day, never freeze a partial result.
                 self.data["daily_hours"] = cached_hours
+                self.data["daily_durations"] = cached_durations
                 self.data["day_log"] = cached_tags
                 raise
 
@@ -730,6 +790,11 @@ class ProfileLearner:
         self.data["daily_hours"] = {
             day: value
             for day, value in self.data["daily_hours"].items()
+            if day in set(wanted_days)
+        }
+        self.data["daily_durations"] = {
+            day: value
+            for day, value in self.data["daily_durations"].items()
             if day in set(wanted_days)
         }
         self.data["day_log"] = {
@@ -784,6 +849,9 @@ class ProfileLearner:
                 self.data["profiles"][path] = None
                 self.data["samples"][path] = None
                 coverage[path] = 0.0
+                self.data["diagnostics"].setdefault("coverage_detail", {})[path] = (
+                    self._coverage_detail(path, wanted_days, {}, 0.0, {})
+                )
                 continue
             per_day = {
                 day: value[path]
@@ -809,18 +877,36 @@ class ProfileLearner:
                 LEARNING_RATE_LIMIT,
                 _CLAMPS[path],
                 weights=weights,
+                durations={
+                    day: values.get(
+                        path,
+                        local_hour_durations(
+                            date.fromisoformat(day), dt_util.get_default_time_zone()
+                        ),
+                    )
+                    for day, values in self.data["daily_durations"].items()
+                },
             )
             self.data["profiles"][path] = bins
             self.data["samples"][path] = samples
             valid_hours = sum(
-                1
-                for series in per_day.values()
-                for value in series
+                self.data["daily_durations"]
+                .get(day, {})
+                .get(
+                    path,
+                    local_hour_durations(
+                        date.fromisoformat(day), dt_util.get_default_time_zone()
+                    ),
+                )[hour]
+                for day, series in per_day.items()
+                for hour, value in enumerate(series)
                 if value is not None
             )
-            coverage[path] = (
-                round(valid_hours / (len(wanted_days) * 24), 3) if wanted_days else 0.0
+            detail = self._coverage_detail(
+                path, wanted_days, per_day, valid_hours, samples
             )
+            coverage[path] = detail["window_occupancy"]
+            self.data["diagnostics"].setdefault("coverage_detail", {})[path] = detail
 
         await self._update_future_daytypes(cfg, today)
         self.data["diagnostics"]["coverage"] = coverage
@@ -843,6 +929,106 @@ class ProfileLearner:
             coverage.get("ac", 0.0) * 100,
             coverage.get("dc", 0.0) * 100,
         )
+
+    def _coverage_detail(
+        self,
+        path: str,
+        days: list[str],
+        actuals: dict[str, list],
+        valid_hours: float,
+        samples: dict,
+    ) -> dict[str, Any]:
+        """Separate the configured window from known source epochs and bin maturity."""
+        zone = dt_util.get_default_time_zone()
+        window_hours = sum(
+            sum(local_hour_durations(date.fromisoformat(day), zone)) for day in days
+        )
+        epochs = self.data["configuration_epochs"]
+        periods = []
+        if self._sources()[path]["active"]:
+            for index, epoch in enumerate(epochs):
+                if epoch["sources"][path]["active"]:
+                    periods.append(
+                        (
+                            dt_util.as_utc(_stored_datetime(epoch["start"])),
+                            dt_util.as_utc(_stored_datetime(epochs[index + 1]["start"]))
+                            if index + 1 < len(epochs)
+                            else None,
+                        )
+                    )
+            observed = [
+                dt_util.as_utc(self._hour_start(day, hour))
+                for day, values in actuals.items()
+                for hour, value in enumerate(values)
+                if value is not None
+            ]
+            # Preserved legacy measurements prove an earlier observation period;
+            # an upgrade's first configuration epoch must not hide those samples.
+            if observed and (
+                not epochs
+                or min(observed) < dt_util.as_utc(_stored_datetime(epochs[0]["start"]))
+            ):
+                periods.append(
+                    (
+                        min(observed),
+                        dt_util.as_utc(_stored_datetime(epochs[0]["start"]))
+                        if epochs
+                        else None,
+                    )
+                )
+        boundary = (
+            _stored_datetime(self.data["ac_valid_since"])
+            if path == "ac" and self.data.get("ac_valid_since")
+            else None
+        )
+        eligible = excluded = 0.0
+        reasons = self.data["diagnostics"].get("excluded_hours", {})
+        for day in days:
+            for hour, duration in enumerate(
+                local_hour_durations(date.fromisoformat(day), zone)
+            ):
+                begin = dt_util.as_utc(self._hour_start(day, hour))
+                end = begin + timedelta(hours=duration)
+                value = (actuals.get(day) or [None] * 24)[hour]
+                covered = value is not None or any(
+                    begin >= start and (stop is None or end <= stop)
+                    for start, stop in periods
+                )
+                if (
+                    not duration
+                    or not covered
+                    or (boundary is not None and begin < dt_util.as_utc(boundary))
+                ):
+                    continue
+                eligible += duration
+                codes = reasons.get(day, {}).get(path, {}).get(str(hour), [])
+                if value is None and any(
+                    code not in {"measurement_missing", "historical_context_missing"}
+                    for code in codes
+                ):
+                    excluded += duration
+        maturity = {
+            daytype: sum(
+                count >= _MIN_SAMPLES[daytype] for count in samples.get(daytype, [])
+            )
+            for daytype in _MIN_SAMPLES
+        }
+        return {
+            "window_occupancy": round(valid_hours / window_hours, 3)
+            if window_hours
+            else 0.0,
+            "measurement_coverage": round(valid_hours / eligible, 3)
+            if eligible
+            else 0.0,
+            "valid_hours": valid_hours,
+            "eligible_hours": eligible,
+            "window_hours": window_hours,
+            "excluded_hours": excluded,
+            "missing_hours": max(0.0, eligible - valid_hours - excluded),
+            "mature_bins": sum(maturity.values()),
+            "total_bins": 24 * len(_MIN_SAMPLES),
+            "mature_bins_by_daytype": maturity,
+        }
 
     def _validate_yesterday(
         self, today: date, day_types: dict[str, str], cfg: dict[str, Any]
@@ -874,12 +1060,23 @@ class ProfileLearner:
                 variable_start_hour=variable_start,
                 variable_end_hour=variable_end,
             )
-            pairs: list[tuple[float, float]] = []
-            learned_hours = 0
-            static_fallback_hours = 0
+            pairs: list[tuple[float, float, float]] = []
+            learned_hours = 0.0
+            static_fallback_hours = 0.0
+            durations = (
+                self.data["daily_durations"]
+                .get(yesterday, {})
+                .get(
+                    path,
+                    local_hour_durations(
+                        date.fromisoformat(yesterday), dt_util.get_default_time_zone()
+                    ),
+                )
+            )
             for hour in range(min(24, len(series))):
                 actual = series[hour]
-                if actual is None:
+                duration = durations[hour]
+                if actual is None or duration <= 0:
                     continue
                 forecast = profile_value(bins, dt_key, hour, "p50") if bins else None
                 if forecast is None:
@@ -892,14 +1089,15 @@ class ProfileLearner:
                         if dt_key == DAY_TYPE_ABSENCE
                         else static_profile.power_w(hour)
                     )
-                    static_fallback_hours += 1
+                    static_fallback_hours += duration
                 else:
-                    learned_hours += 1
-                pairs.append((float(forecast), float(actual)))
+                    learned_hours += duration
+                pairs.append((float(forecast), float(actual), duration))
             if not pairs:
                 continue
-            bias = sum(p - a for p, a in pairs) / len(pairs)
-            mae = sum(abs(p - a) for p, a in pairs) / len(pairs)
+            hours = sum(duration for _, _, duration in pairs)
+            bias = sum(p * duration - a for p, a, duration in pairs) / hours
+            mae = sum(abs(p * duration - a) for p, a, duration in pairs) / hours
             history_list = self.data["validation"].setdefault(path, [])
             if not any(entry["day"] == yesterday for entry in history_list):
                 history_list.append(
@@ -907,13 +1105,19 @@ class ProfileLearner:
                         "day": yesterday,
                         "bias_w": round(bias, 1),
                         "mae_w": round(mae, 1),
-                        "hours": len(pairs),
+                        "hours": hours,
                         "learned_hours": learned_hours,
                         "static_fallback_hours": static_fallback_hours,
                     }
                 )
                 del history_list[:-VALIDATION_HISTORY_DAYS]
-            alert = alert or self._bias_alert(path, series)
+            alert = alert or self._bias_alert(
+                path,
+                [
+                    value / duration if value is not None and duration > 0 else None
+                    for value, duration in zip(series, durations, strict=True)
+                ],
+            )
         issue_id = f"learning_bias_{self.entry.entry_id}"
         if alert:
             ir.async_create_issue(
@@ -1359,9 +1563,11 @@ class ProfileLearner:
 
         negatives = 0
         for day in days:
+            durations = local_hour_durations(date.fromisoformat(day), tz)
             day_value = self.data["daily_hours"].setdefault(
                 day, {"ac": None, "dc": None}
             )
+            day_durations = self.data["daily_durations"].setdefault(day, {})
             start = dt_util.as_utc(_stored_datetime(epoch["start"]))
             end = cfg["_epoch_end"]
             valid_hours = {
@@ -1370,7 +1576,8 @@ class ProfileLearner:
                 if dt_util.as_utc(self._hour_start(day, hour)) >= start
                 and (
                     end is None
-                    or dt_util.as_utc(self._hour_start(day, hour) + timedelta(hours=1))
+                    or dt_util.as_utc(self._hour_start(day, hour))
+                    + timedelta(hours=durations[hour])
                     <= dt_util.as_utc(end)
                 )
             }
@@ -1425,11 +1632,13 @@ class ProfileLearner:
                     excluded | (set(range(24)) - valid_hours),
                     _CLAMPS[path],
                     LEARNING_NEGATIVE_RESIDUAL_WH,
+                    durations=durations,
                 )
                 negatives += day_negatives
                 series = day_value[path]
                 if series is None:
                     series = day_value[path] = [None] * 24
+                day_durations[path] = durations.copy()
                 path_reasons = day_reasons.setdefault(path, {})
                 for hour in valid_hours:
                     if series[hour] is not None:
@@ -1438,7 +1647,8 @@ class ProfileLearner:
                     codes = []
                     if load_series[hour] is None:
                         complete = all(
-                            hour_maps.get(entity, {}).get((day, hour)) is not None
+                            hour_maps.get(entity, HourMap()).get((day, hour))
+                            is not None
                             for entity in sources[path]["all"]
                         )
                         codes.append(
@@ -1570,12 +1780,14 @@ class ProfileLearner:
         hour_maps: dict[str, HourMap],
     ) -> list[float | None]:
         if source["direct"]:
-            return _day_series(hour_maps.get(source["direct"], {}), day)
+            return _day_series(hour_maps.get(source["direct"], HourMap()), day)
         inflows = [
-            _day_series(hour_maps.get(entity, {}), day) for entity in source["in"]
+            _day_series(hour_maps.get(entity, HourMap()), day)
+            for entity in source["in"]
         ]
         outflows = [
-            _day_series(hour_maps.get(entity, {}), day) for entity in source["out"]
+            _day_series(hour_maps.get(entity, HourMap()), day)
+            for entity in source["out"]
         ]
         return balance_day(inflows, outflows)
 
@@ -1837,21 +2049,22 @@ def _rows_to_hour_map(
 
     Energy counters (has_sum) use the hourly `change` (kWh -> Wh); power
     sensors use the hourly `mean` (W over one hour = Wh numerically).
-    Each row is one Wh contribution for its real clock hour (energy: hourly
-    `change`; power: hourly `mean`, W over one hour = Wh). On the autumn DST
-    fall-back day two distinct UTC hours map to the same LOCAL hour, which the
-    planner models as a single slot: both real hours' energy must be SUMMED so
-    the folded local hour is not undercounted (power was previously averaged,
-    halving that one hour). Normal days have exactly one row per local hour, so
-    summing is identical to averaging there (review #14).
+    Both folds contribute energy and real observation duration. Bins later
+    divide Wh by that duration to forecast W for each real planner interval.
     """
     use_change = bool(meta and meta.get("has_sum"))
-    sums: dict[tuple[str, int], float] = {}
+    sums = HourMap()
+    seen: set[float] = set()
     for row in rows:
         raw = row.get("change") if use_change else row.get("mean")
         if raw is None:
             continue
-        wh = float(raw) * 1000.0 if use_change else float(raw)
+        try:
+            wh = float(raw) * 1000.0 if use_change else float(raw)
+        except TypeError, ValueError:
+            continue
+        if not math.isfinite(wh):
+            continue
         start = row.get("start")
         if not isinstance(start, (datetime, int, float)):
             continue
@@ -1861,8 +2074,13 @@ def _rows_to_hour_map(
             else start
         )
         key = (local.date().isoformat(), local.hour)
+        stamp = local.timestamp()
+        if stamp in seen:
+            continue
+        seen.add(stamp)
         sums[key] = sums.get(key, 0.0) + wh
-    return dict(sums)
+        sums.durations[key] = sums.durations.get(key, 0.0) + 1.0
+    return sums
 
 
 def _rows_to_minmax_map(
@@ -1898,7 +2116,16 @@ def _rows_to_minmax_map(
 
 
 def _day_series(hour_map: HourMap, day: str) -> list[float | None]:
-    return [hour_map.get((day, hour)) for hour in range(24)]
+    durations = local_hour_durations(
+        date.fromisoformat(day), dt_util.get_default_time_zone()
+    )
+    return [
+        hour_map.get((day, hour))
+        if not isinstance(hour_map, HourMap)
+        or hour_map.durations.get((day, hour), 0.0) == duration
+        else None
+        for hour, duration in enumerate(durations)
+    ]
 
 
 def _day_series_zero_filled(hour_map: HourMap, day: str) -> list[float]:

@@ -9,7 +9,7 @@ import math
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from typing import Any
 
@@ -165,11 +165,13 @@ from .const import (
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
     LATCH_HOLD_OVERPOWER_FACTOR,
+    LIVE_AC_POWER_KEYS,
     LOAD_RUNTIME_MIN_W,
     LOAD_RUNTIME_TICK_MAX_S,
     LOAD_SOC_CACHE_MAX_AGE_HOURS,
     MAX_HISTORICAL_FORECAST_AGE_HOURS,
     MAX_HISTORICAL_SOC_AGE_HOURS,
+    OPERATION_POWER_SOURCES,
     POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S,
     POWER_CALIBRATION_JUMP_FRACTION,
     POWER_CALIBRATION_MAX_TOTAL_S,
@@ -266,6 +268,7 @@ from .reserve_runtime import (
     reserve_diagnostics,
 )
 from .runtime_persistence import persistent_payload
+from .source_health import source_health
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -797,6 +800,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # genuine SOC dropout after a good cycle (which zeroes _successful_updates)
         # cannot re-enter the startup grace even if it happens inside the window.
         self.operation_recorder = OperationRecorder(self)
+        self._plan_metadata: dict[str, str] = {}
+        self._inverter_control: dict[str, Any] = {}
         self._last_planner_recording: (
             tuple[SystemConfig, PlanInputs, PlanResult] | None
         ) = None
@@ -828,8 +833,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             data = None
         self._reserve_runtime.restore(data.get("reserve") if data else None)
-        self.operation_recorder.restore(data.get("operation_history") if data else None)
-        self.operation_recorder.start()
         if data:
             # Cache entries are keyed by subentry AND carry the source entity
             # id so a reconfigured load never reuses another device's SOC.
@@ -1104,10 +1107,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     restored_at,
                 )
 
+        # Confirmed ownership and obligations are ready before the large
+        # diagnostic archive is restored away from HA's event loop.
+        await self.operation_recorder.async_restore(
+            data.get("operation_history") if data else None
+        )
+        self.operation_recorder.start()
+
     def _persistent_payload(self) -> dict[str, Any]:
         return persistent_payload(self)
 
     def _save_persistent_state(self) -> None:
+        self.operation_recorder.schedule_storage()
         self._store.async_delay_save(self._persistent_payload, 10)
 
     async def async_flush_persistent_state(self) -> None:
@@ -1115,7 +1126,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         delayed save. Called on unload so a config-entry reload (which does not
         fire EVENT_HOMEASSISTANT_FINAL_WRITE) cannot beat the 10 s delayed write
         and read back a stale support-mode / caused-off record (review round 3)."""
+        await self.operation_recorder.async_flush()
         await self._store.async_save(self._persistent_payload())
+        if self._actuation_shutdown:
+            self.operation_recorder.storage.stop_scheduling()
 
     # ------------------------------------------------------------------
     # Configuration assembly
@@ -1545,6 +1559,61 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except ValueError, TypeError:
             return None
         return value if math.isfinite(value) else None
+
+    def source_health_snapshot(
+        self, now: datetime, market: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Expose configured measuring roles with their own freshness boundary."""
+        power_roles = {
+            **{key: key.removesuffix("_power_entity") for key in LIVE_AC_POWER_KEYS},
+            **OPERATION_POWER_SOURCES,
+        }
+        bindings = {role: self.raw_config.get(key) for key, role in power_roles.items()}
+        bindings["house_soc"] = self.raw_config.get(CONF_SOC_ENTITY)
+        bindings["battery_voltage"] = self.raw_config.get(CONF_BATTERY_VOLTAGE_ENTITY)
+        bindings["inverter_limit"] = self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+        bindings["inverter_block"] = self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+        rows = source_health(
+            self.hass,
+            bindings,
+            now,
+            kinds={role: "power" for role in power_roles.values()},
+            max_ages_s={
+                role: 30 if key in LIVE_AC_POWER_KEYS else 300
+                for key, role in power_roles.items()
+            },
+            fallbacks={
+                role: "planned_limit"
+                if key in LIVE_AC_POWER_KEYS
+                else "no_measured_energy"
+                for key, role in power_roles.items()
+            },
+            boundaries={role: role for role in power_roles.values()},
+        )
+        for key, subentry in self.entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
+                continue
+            rows.extend(
+                source_health(
+                    self.hass,
+                    {
+                        f"{key}_power": subentry.data.get(CONF_APPLIANCE_POWER_ENTITY),
+                        f"{key}_energy": subentry.data.get(
+                            CONF_APPLIANCE_ENERGY_ENTITY
+                        ),
+                    },
+                    now,
+                    kinds={f"{key}_power": "power", f"{key}_energy": "energy"},
+                    fallbacks={f"{key}_power": "cycle_energy_or_configured_model"},
+                    boundaries={
+                        f"{key}_power": "appliance_input",
+                        f"{key}_energy": "appliance_input",
+                    },
+                )
+            )
+        if market and market.get("source"):
+            rows.append(dict(market["source"]))
+        return rows
 
     def _read_power_w(self, entity_id: str) -> float | None:
         """Normalize power telemetry at the boundary; missing units mean W.
@@ -3063,12 +3132,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         re-anchor."""
         power_entity = data.get(CONF_LOAD_POWER_ENTITY)
         if power_entity:
-            st = self.hass.states.get(power_entity)
-            if st is not None and st.state not in ("unknown", "unavailable"):
-                try:
-                    return float(st.state) > LOAD_RUNTIME_MIN_W
-                except ValueError, TypeError:
-                    pass
+            power = self._read_power_w(power_entity)
+            if power is not None:
+                return power > LOAD_RUNTIME_MIN_W
         if load_id in self._load_charging_active:
             return bool(self._load_charging_active[load_id])
         # G4: the plan-based fallback (recommendation-only loads without a
@@ -3738,12 +3804,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 subentry_id,
                 now,
                 running,
-                measurement(sensor(CONF_APPLIANCE_POWER_ENTITY), "power"),
+                measurement(sensor(CONF_APPLIANCE_POWER_ENTITY), "power", now=now),
                 measurement(sensor(CONF_APPLIANCE_ENERGY_ENTITY), "energy"),
                 complete_start=subentry_id in self._appliance_observed_idle,
                 program=program_name(sensor(CONF_APPLIANCE_PROGRAM_ENTITY)),
                 valid=detection_valid and (running or self._appliance_finished(state)),
                 invalid_reason="aborted" if detection_valid else "detection_unknown",
+                power_source=data.get(CONF_APPLIANCE_POWER_ENTITY),
+                energy_source=data.get(CONF_APPLIANCE_ENERGY_ENTITY),
+                power_reason=(
+                    "power_publication_gap"
+                    if sensor(CONF_APPLIANCE_POWER_ENTITY) is not None
+                    and measurement(
+                        sensor(CONF_APPLIANCE_POWER_ENTITY), "power", now=now
+                    )
+                    is None
+                    else None
+                ),
             )
             if running:
                 self._appliance_observed_idle.discard(subentry_id)
@@ -3828,6 +3905,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "vacation_mode": vacation,
             **self.learner.diagnostics(),
         }
+        coverage = diag.get("coverage_detail")
+        # Planning diagnostics belong to this snapshot, not the learner's
+        # committed historical data shared with an in-flight learning worker.
+        diag["coverage_detail"] = {
+            path: dict(coverage[path])
+            if isinstance(coverage, dict) and isinstance(coverage.get(path), dict)
+            else {}
+            for path in ("ac", "dc")
+        }
         series: dict[str, list[float | None]] = {"ac": [], "dc": []}
         # P80−P50 per slot in W: the uncertainty band feeding the dynamic
         # SOC buffer (D-C8); 0 where no quantiles exist for the slot.
@@ -3835,7 +3921,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         static_profiles = {"ac": config.ac_profile, "dc": config.dc_profile}
         delta_sum = {"ac": 0.0, "dc": 0.0}
         delta_count = {"ac": 0, "dc": 0}
-        for start in slot_starts(now, num_days):
+        starts = slot_starts(now, num_days)
+        learned_hours = {"ac": 0.0, "dc": 0.0}
+        quantile_hours = {"ac": 0.0, "dc": 0.0}
+        durations = [
+            min(
+                1.0,
+                (
+                    start.replace(minute=0, second=0, microsecond=0)
+                    + timedelta(hours=1)
+                    - start
+                ).total_seconds()
+                / 3600,
+            )
+            for start in starts
+        ]
+        for start, duration in zip(starts, durations, strict=True):
             local = start
             dt_key = (
                 DAY_TYPE_ABSENCE
@@ -3845,12 +3946,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             for path in ("ac", "dc"):
                 value = profile_value(profiles.get(path), dt_key, local.hour, "p50")
                 p80 = profile_value(profiles.get(path), dt_key, local.hour, "p80")
+                if value is not None and p80 is not None:
+                    quantile_hours[path] += duration
                 band[path].append(
                     max(0.0, p80 - value)
                     if value is not None and p80 is not None
                     else 0.0
                 )
                 if value is not None:
+                    learned_hours[path] += duration
                     # Diagnostic: learned vs. static for the same hour (D-C6)
                     delta_sum[path] += value - static_profiles[path].power_w(local.hour)
                     delta_count[path] += 1
@@ -3877,6 +3981,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if delta_count[path]
                 else None
             )
+            detail = dict(diag.get("coverage_detail", {}).get(path, {}))
+            detail["learned_duration_fraction"] = (
+                round(learned_hours[path] / sum(durations), 3) if durations else 0.0
+            )
+            detail["uncertainty_known_hours"] = quantile_hours[path]
+            detail["uncertainty_unknown_hours"] = sum(durations) - quantile_hours[path]
+            detail["uncertainty_policy"] = "measured_band_only"
+            diag.setdefault("coverage_detail", {})[path] = detail
             overrides.append(tuple(values) if filled else None)
         quantiles_active = any(delta_count[path] for path in ("ac", "dc"))
         return overrides[0], overrides[1], band, quantiles_active, diag
@@ -3901,7 +4013,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         uncertainty_wh = 0.0
         window_hours = 0.0
         hour_indexes = {
-            at.replace(minute=0, second=0, microsecond=0): i
+            at.astimezone(UTC).replace(minute=0, second=0, microsecond=0): i
             for i, at in enumerate(source_starts or ())
         }
         for i, slot in enumerate(slots):
@@ -3909,7 +4021,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 break
             window_hours += slot.duration
             i = hour_indexes.get(
-                slot.start.replace(minute=0, second=0, microsecond=0), i
+                slot.start.astimezone(UTC).replace(minute=0, second=0, microsecond=0), i
             )
             ac_band = band["ac"][i] if i < len(band["ac"]) else 0.0
             dc_band = band["dc"][i] if i < len(band["dc"]) else 0.0
@@ -4328,8 +4440,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._reserve_preparing = False
             self._reserve_inverter_limit_w = None
             result = await self._async_plan("standard", config, inputs)
-        self.live_ac.set_plan(config, inputs, result)
+        self._plan_metadata = {
+            "captured_at": inputs.now.isoformat(),
+            "activated_at": dt_util.utcnow().isoformat(),
+        }
         self.operation_recorder.plan(config, inputs, result)
+        self.live_ac.set_plan(config, inputs, result)
         if self._reserve_diag.get("mode") in ("shadow", "active"):
             self.operation_recorder.reserve(self._reserve_diag)
         self._arm_plan_boundary(inputs, result)
@@ -4394,11 +4510,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if slot0 is not None and slot0.duration > 0.0
             else 0.0
         )
-        running_load_power_w = sum(
-            self._load_learned_power_w.get(lp.load_id) or load.nominal_power_w
-            for lp, load in zip(result.load_plans, config.loads, strict=True)
-            if lp.active_now
-        )
+        running_load_power_w = self._guard_running_load_power(result, config, now)
         floor_guard = self._update_floor_guard(
             soc, config, pv_power_w, running_load_power_w, now
         )
@@ -4734,6 +4846,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "valid": True,
             "last_update": now,
+            "plan_metadata": dict(self._plan_metadata),
+            "inverter_control": self.inverter_control_snapshot(),
+            "source_health": self.source_health_snapshot(now, market_diag),
             "input_soc_percent": soc,
             "input_forecasts_kwh": forecasts,
             "soc_threshold_percent": threshold,
@@ -5917,7 +6032,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         request = (
             recorder.event(
                 "command_requested",
-                {"entity_id": entity_id, "service": service, "owner": actor_owner},
+                {
+                    "entity_id": entity_id,
+                    "service": service,
+                    "owner": actor_owner,
+                    **recorder.command_context(),
+                },
             )
             if recorder
             else None
@@ -5959,7 +6079,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         request = (
             recorder.event(
                 "command_requested",
-                {"entity_id": entity_id, "service": "set_value", "value": value},
+                {
+                    "entity_id": entity_id,
+                    "service": "set_value",
+                    "value": value,
+                    **recorder.command_context(),
+                },
             )
             if recorder
             else None
@@ -6098,6 +6223,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity = self.raw_config[CONF_INVERTER_LIMIT_ENTITY]
         target = 0.0 if blocked else float(self._effective_inverter_limit_w())
         diag["discharge_limit_target_w"] = target
+        if self._inverter_control.get("requested_limit_w") != target:
+            self._inverter_control = {
+                "requested_limit_w": target,
+                "requested_at": dt_util.utcnow().isoformat(),
+                "confirmed": False,
+            }
         self.live_ac.note_command(target)
         # Do not hammer an already accepted number while waiting for the
         # separate Victron feedback. Its state event resumes confirmation.
@@ -6106,11 +6237,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             value is None or abs(value - target) >= 0.1
         ) and not await self._set_number_value(entity, target):
             diag["reason"] = "inverter_limit_command_failed"
+            self._inverter_control["confirmed"] = False
             return False
         if not self._inverter_limit_confirmed(blocked):
             diag["reason"] = "inverter_limit_unconfirmed"
+            self._inverter_control["confirmed"] = False
             return False
+        self._inverter_control["confirmed"] = True
         return True
+
+    def inverter_control_snapshot(self) -> dict[str, Any]:
+        """Requested permission and actual publication are distinct evidence."""
+        entity = self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+        state = self.hass.states.get(entity) if entity else None
+        observed = self._read_float(entity) if entity else None
+        snapshot = {
+            **self._inverter_control,
+            "observed_limit_w": observed,
+            "observed_at": state.last_reported.isoformat() if state else None,
+        }
+        target = snapshot.get("requested_limit_w")
+        feedback = self.raw_config.get(CONF_INVERTER_BLOCK_SWITCH)
+        snapshot["confirmed"] = bool(
+            target is not None
+            and observed is not None
+            and abs(observed - target) < 0.1
+            and (not feedback or self._entity_tristate(feedback) is (target == 0))
+        )
+        return snapshot
 
     def _reserve_reconcile_legacy_hold(self, soc: float | None) -> None:
         """Retire old economic PSU requests without inventing confirmations.
@@ -6481,6 +6635,49 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         min_off = int(data.get(CONF_LOAD_MIN_OFF_MIN, min_runtime))
         if now >= deadline + timedelta(minutes=min_off):
             _anchor(min_runtime)
+
+    def _guard_running_load_power(
+        self, result: PlanResult, config: SystemConfig, now: datetime
+    ) -> float:
+        """Count actual held loads even when a new allocation rejects them.
+
+        A rejected minimum-runtime continuation must not disappear from G4
+        while the executor still holds the physical charging path ON. Planned
+        starts retain their existing conservative power budget. Cascade-owned
+        paths keep their own supply accounting and explicit calibration retains
+        operator ownership.
+        """
+        managed = self.cascade_manager.managed_load_ids()
+        total = 0.0
+        for load_plan, load in zip(result.load_plans, config.loads, strict=True):
+            entry = self.entry.subentries.get(load_plan.load_id)
+            data = entry.data if entry else {}
+            physical = False
+            if load_plan.load_id not in managed and (
+                load_plan.load_id != self._load_power_calibration_id
+            ):
+                if data.get(CONF_LOAD_CONTROL_SWITCH):
+                    current = self._charging_is_active(data)
+                    physical = (
+                        self._load_charging_active.get(load_plan.load_id, False)
+                        if current is None
+                        else current
+                    )
+                elif data.get(CONF_LOAD_POWER_ENTITY):
+                    physical = self._load_is_running(load_plan.load_id, data, now)
+            if load_plan.active_now or physical:
+                measured = (
+                    self._read_power_w(data[CONF_LOAD_POWER_ENTITY])
+                    if physical and data.get(CONF_LOAD_POWER_ENTITY)
+                    else None
+                )
+                total += (
+                    max(0.0, measured)
+                    if measured is not None and measured > LOAD_RUNTIME_MIN_W
+                    else self._load_learned_power_w.get(load_plan.load_id)
+                    or load.nominal_power_w
+                )
+        return total
 
     def _update_floor_guard(
         self,
@@ -7781,6 +7978,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._plan_boundary_cancel = None
         self.appliances.stop()
         self.operation_recorder.stop()
+        self.operation_recorder.storage.stop_scheduling()
         self.live_ac.stop()
         self.cascade_manager.cleanup()
         self.learner.async_unschedule()

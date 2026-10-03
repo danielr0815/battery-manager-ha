@@ -1,3 +1,5 @@
+import { localize } from "./translations.js";
+
 // Replacing the shadow tree must not reset the user's reading state on each
 // HA publication. Restore before layout/paint, including nested scroll hosts.
 export function replaceCardHTML(card, html) {
@@ -96,5 +98,33 @@ export function replaceCardHTML(card, html) {
       ([node]) => node.scrollHeight > node.clientHeight,
     );
     if (host) host[0].scrollTop += delta;
+  }
+}
+
+export function restoreChartSelection(card) {
+  if (card._selectedTime == null) return;
+  const index =
+    card._chartMeta?.points.findIndex((p) => p.time === card._selectedTime) ??
+    -1;
+  if (index >= 0) card._showSlot(index);
+  else {
+    card._selectedTime = null;
+    const readout = card.shadowRoot.getElementById("readout");
+    if (readout)
+      readout.textContent = localize(card._hass, "selection_removed");
+  }
+}
+
+export function bindEntityButtons(card) {
+  for (const button of card.shadowRoot.querySelectorAll("[data-entity-id]")) {
+    button.addEventListener("click", () =>
+      card.dispatchEvent(
+        new CustomEvent("hass-more-info", {
+          detail: { entityId: button.dataset.entityId },
+          bubbles: true,
+          composed: true,
+        }),
+      ),
+    );
   }
 }

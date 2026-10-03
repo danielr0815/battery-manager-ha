@@ -23,6 +23,24 @@ class PreparationEnvelope:
     unavoidable_export_wh: float
 
 
+def coherent_market_weights(
+    priorities: list[float], market_weights: list[float | None]
+) -> list[float | None]:
+    """Incomplete useful-opportunity coverage uses one load ordering for the horizon.
+
+    Pairwise missing-price fallback is cyclic (500 W*3 > 600 W > unknown
+    550 W > 500 W). A single fallback preserves transitivity and lets the live
+    controller use exactly the planner's ordering. Empty/PV-covered intervals
+    cannot compete for AC energy and therefore do not require price coverage.
+    """
+    if any(
+        priority > 0 and weight is None
+        for priority, weight in zip(priorities, market_weights, strict=True)
+    ):
+        return [None] * len(priorities)
+    return market_weights
+
+
 def preparation_envelope(
     budgets: list[BatteryStep],
     nominal: list[BatteryStep],
@@ -75,7 +93,11 @@ def preparation_envelope(
             dc_ceiling[index + 1], spill[index], ac=False
         )
     selected = [0.0] * n
-    weights = market_weights if market_weights is not None else [None] * n
+    weights = (
+        coherent_market_weights(priorities, market_weights)
+        if market_weights is not None
+        else [None] * n
+    )
     keys = list(zip(priorities, weights, strict=True))
     first_occurrence: dict[tuple[float, float | None], int] = {}
     for index, key in enumerate(keys):
@@ -89,8 +111,7 @@ def preparation_envelope(
             if keys[index] == (priority, weight):
                 selected[index] = ceiling
             other_weight = weights[index]
-            # Missing prices are not cheap prices. A comparison involving an
-            # uncovered interval uses the original useful-load ordering.
+            # One consistent fallback applies to all useful opportunities.
             better = (
                 priorities[index] * other_weight >= priority * weight
                 if weight is not None and other_weight is not None

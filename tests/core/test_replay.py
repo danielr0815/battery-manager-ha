@@ -95,3 +95,50 @@ def test_reserve_recording_checks_decision_and_preserves_legacy_energy_compariso
     assert replay(record) == (result, True)
     trajectory["total_import_wh"] += 1
     assert not replay(record)[1]
+
+
+def test_temporal_deficit_evidence_roundtrips_and_legacy_absence_stays_unknown():
+    from core.model import BatteryParams, SupportParams
+
+    now = datetime(2026, 10, 2, 12, tzinfo=UTC)
+    config = SystemConfig(
+        battery=BatteryParams(1000),
+        support=SupportParams(
+            configured=True,
+            coordinated=True,
+            dc24_available=False,
+            dc48_available=False,
+        ),
+    )
+    inputs = PlanInputs(now, 5, (HourSlot(0, now, 1, 12, 0, 0, 100),))
+    result = plan(config, inputs)
+    record = json.loads(json.dumps(recording(config, inputs, result)))
+    assert replay(record) == (result, True)
+    flow = record["result"]["fields"]["trajectory"]["fields"]["flows"]["tuple"][0][
+        "fields"
+    ]
+    assert len(flow["dc_deficit_intervals"]["tuple"]) == 12
+    flow["dc_deficit_intervals"]["tuple"][0]["fields"]["unserved_dc_wh"] += 1
+    assert not replay(record)[1]
+    flow.pop("dc_deficit_intervals")
+    assert decode(record["result"]).trajectory.flows[0].dc_deficit_intervals is None
+    assert replay(record) == (result, True)
+    flow["unserved_dc_wh"] += 1
+    assert not replay(record)[1]
+
+
+def test_market_ranking_reason_is_checked_when_present_but_optional_in_old_records():
+    from test_market import plant, priced
+
+    config = plant()
+    inputs = priced([(0, 600, 0), (0, 500, 0), (300, 0, 0)], [100, 300, 100])
+    result = plan(config, inputs)
+    record = recording(config, inputs, result)
+    decision = record["result"]["fields"]["trajectory"]["fields"]["reserve_decision"][
+        "fields"
+    ]
+    assert decision["market_ranking_reason"] == "weighted"
+    decision["market_ranking_reason"] = "load_priority_incomplete"
+    assert not replay(record)[1]
+    decision.pop("market_ranking_reason")
+    assert replay(record) == (result, True)

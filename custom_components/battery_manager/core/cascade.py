@@ -16,6 +16,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Literal
 
+from .dc_service import preserves_dc_service
 from .model import (
     STORAGE_ACTION_MINUTES,
     STORAGE_TARGET_TOLERANCE_WH,
@@ -900,6 +901,10 @@ def _replan_candidate(
             return None
     # Aux-created charge headroom must not buy extra storage at the expense
     # of an already accepted direct terminal interval elsewhere in the day.
+    if not preserves_dc_service(
+        trial_result.trajectory, baseline=base_result.trajectory
+    ):
+        return None
     original_terminal = _plan_by_id(base_result)[cascade.terminal_load_id]
     updated_terminal = trial_plans[cascade.terminal_load_id]
     if any(

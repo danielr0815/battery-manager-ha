@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0] - 2026-10-03
+
+### Added
+- Temporal DC-service protection for surplus loads, appliance advice, cascade
+  recovery and feed-in, including stressed scenarios.
+- A separate lossless diagnostic archive with atomic manifests, exact plan
+  deltas, checkpoints, isolated chunk recovery and observable retention.
+  Runtime actor obligations remain in the small HA Store; validation uses workers.
+- Diagnostics distinguish captured plans, live decisions, requested inverter
+  limits and actual device publications. Meter roles expose publication age,
+  normalized units and fallback; learning reports physical coverage and unknown
+  uncertainty separately.
+- Bounded offline reserve comparisons include DC supply and terminal energy.
+  Independent closed-loop tests cover successive days and both DST transitions.
+
+### Fixed
+- G4 counts physically held loads when their planned continuation is rejected,
+  allowing protection to override remaining minimum runtime.
+- Appliance power learning rejects stale publications, normalizes units and
+  invalidates changed sources. Legacy power samples without freshness evidence
+  are excluded without removing valid counter samples.
+- Repeated DST hours use their real duration. Incomplete or ambiguous legacy
+  folded hours are excluded instead of doubling learned power.
+- EPEX discovery ignores entities without usable price series. Incomplete
+  relevant price coverage uses coherent load priority for the whole horizon.
+- Dashboard availability, unknown storage SOC, touch and keyboard interaction,
+  focus/scroll preservation, source links, stale data and response ordering.
+
+### Changed
+- Reserve simulations reuse identical slot/SOC evaluations without changing
+  policy. Alternative margins and model calibrations remain offline research.
+- Archive limits are seven days, 100,000 events and 64 MiB on disk, with 48 MiB
+  for committed chunks; actual retained coverage remains visible.
+
 ## [0.53.0] - 2026-10-02
 
 ### Added

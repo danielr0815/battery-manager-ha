@@ -126,6 +126,11 @@ def simulate_support(
                 switching_schedule=switching_schedule(
                     (small for small, _ in split_slot(slot)), parts
                 ),
+                dc_deficit_intervals=tuple(
+                    interval
+                    for part in parts
+                    for interval in part.dc_deficit_intervals or ()
+                ),
                 support_dc24=any(p.support_dc24 for p in parts),
                 support_dc48=any(p.support_dc48 for p in parts),
                 support_dc24_start=first.support_dc24,

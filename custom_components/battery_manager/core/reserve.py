@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 
+from .dc_service import preserves_dc_service
 from .market import slot_weights
 from .model import (
     HourFlows,
@@ -24,7 +25,7 @@ from .model import (
     Trajectory,
 )
 from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
-from .reserve_schedule import preparation_envelope
+from .reserve_schedule import coherent_market_weights, preparation_envelope
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
 from .support import support_state
@@ -185,8 +186,7 @@ def _simulate_reserve(
         )
         if (
             dc_import > reference_dc + transfer_quantum + ENERGY_EPSILON_WH
-            or unserved
-            > sum(f.unserved_dc_wh for f in reference.flows) + ENERGY_EPSILON_WH
+            or not preserves_dc_service(candidate, baseline=reference)
         ):
             # Keep useful AC where a small additional retained-energy margin
             # cures the later DC shortfall. At most one retry, never an
@@ -207,8 +207,7 @@ def _simulate_reserve(
             )
             if (
                 reduced_dc <= reference_dc + transfer_quantum + ENERGY_EPSILON_WH
-                and sum(f.unserved_dc_wh for f in reduced.flows)
-                <= sum(f.unserved_dc_wh for f in reference.flows) + ENERGY_EPSILON_WH
+                and preserves_dc_service(reduced, baseline=reference)
             ):
                 return reduced
             assert reference.reserve_decision is not None
@@ -280,7 +279,21 @@ def _simulate_reserve_policy(
     variants: dict[tuple[int, bool, bool], SystemConfig] = (
         cache.variants if cache is not None else {}
     )
-    weights = slot_weights(tuple(step[1] for step in steps), inputs.market_prices)
+    raw_weights = slot_weights(tuple(step[1] for step in steps), inputs.market_prices)
+    weights = coherent_market_weights(priorities, raw_weights)
+    ranking_reason = (
+        "load_priority_no_prices"
+        if not any(
+            w is not None for p, w in zip(priorities, raw_weights, strict=True) if p > 0
+        )
+        else "load_priority_incomplete"
+        if any(
+            p > 0 and w is None for p, w in zip(priorities, raw_weights, strict=True)
+        )
+        else "weighted"
+        if any(w is not None and w > 1 for w in weights)
+        else "load_priority_flat"
+    )
     market_active = allow_ac and any(
         weight is not None and weight > 1 for weight in weights
     )
@@ -362,17 +375,23 @@ def _simulate_reserve_policy(
         # for forecast headroom. Protection thresholds are a last resort, not
         # an economic discharge target. Never credit unknown PSU output.
         holding = False
+        held: HourFlows | None = None
         if natural.battery_discharge_wh > natural.battery_charge_wh + ENERGY_EPSILON_WH:
-            held = step_hour(
-                effective,
-                soc,
-                slot,
-                100,
-                extra,
-                source.dc24_available,
-                source.dc48_available,
-                scale,
-                export,
+            held = (
+                protected
+                if (source.dc24_available, source.dc48_available)
+                == (protected.support_dc24, protected.support_dc48)
+                else step_hour(
+                    effective,
+                    soc,
+                    slot,
+                    100,
+                    extra,
+                    source.dc24_available,
+                    source.dc48_available,
+                    scale,
+                    export,
+                )
             )
             if (
                 battery.energy_wh(held.soc_end_percent)
@@ -422,6 +441,14 @@ def _simulate_reserve_policy(
             protected.support_dc48,
         ):
             flow = protected
+        elif (
+            not limit
+            and held is not None
+            and (dc24, dc48) == (held.support_dc24, held.support_dc48)
+        ):
+            # Identical immutable source/energy probe already computed for
+            # economic holding. Reuse physics, never a different SOC or limit.
+            flow = held
         else:
             flow = step_hour(
                 effective,
@@ -444,8 +471,13 @@ def _simulate_reserve_policy(
         if (next24, next48) != (dc24, dc48):
             dc24, dc48 = next24, next48
             limit = 0.0
-            flow = step_hour(
-                effective, soc, slot, 100, extra, dc24, dc48, scale, export
+            flow = (
+                held
+                if held is not None
+                and (dc24, dc48) == (held.support_dc24, held.support_dc48)
+                else step_hour(
+                    effective, soc, slot, 100, extra, dc24, dc48, scale, export
+                )
             )
         # Measured loads can replace an actual scheduled AC allocation, not
         # energy that will only arrive with the next solar recharge. Export
@@ -496,6 +528,7 @@ def _simulate_reserve_policy(
                     ),
                 ),
                 unavoidable_export_wh=envelope.unavoidable_export_wh,
+                market_ranking_reason=ranking_reason,
                 reason=reason,
                 live_ac_floor_percent=battery.soc_percent(
                     max(
@@ -571,6 +604,11 @@ def _simulate_reserve_policy(
                 soc_end_percent=parts[-1].soc_end_percent,
                 switching_schedule=switching_schedule(
                     (small for small, _ in split_slot(slot)), parts
+                ),
+                dc_deficit_intervals=tuple(
+                    interval
+                    for part in parts
+                    for interval in part.dc_deficit_intervals or ()
                 ),
                 inverter_on=all(part.inverter_on for part in parts),
                 support_dc24=any(part.support_dc24 for part in parts),

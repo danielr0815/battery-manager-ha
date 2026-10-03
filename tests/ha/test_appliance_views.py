@@ -30,6 +30,26 @@ from custom_components.battery_manager.core.model import ApplianceAdvisory, Hour
 NOW = datetime(2026, 9, 27, 12, tzinfo=UTC)
 
 
+async def test_advisor_binary_sensor_uses_published_reasons_and_legacy_fallback(
+    appliance, hass, freezer
+):
+    from custom_components.battery_manager.binary_sensor import (
+        ApplianceStartWindowSensor,
+    )
+
+    c, key = appliance
+    sensor = ApplianceStartWindowSensor(c, key, "Washer")
+    c.data = {"appliance_windows": {key: True}}
+    assert sensor.is_on
+    assert sensor.extra_state_attributes == {}
+    _observe(hass, freezer, c, 0, "off", energy=0)
+    snapshot = c.appliances.entity_snapshot(key)
+    assert sensor.is_on == snapshot["recommendation"]["allowed"]
+    assert sensor.extra_state_attributes == {
+        "reasons": snapshot["recommendation"]["reasons"]
+    }
+
+
 @pytest.fixture
 def appliance(hass, freezer):
     freezer.move_to(NOW)

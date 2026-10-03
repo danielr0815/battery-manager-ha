@@ -30,8 +30,9 @@ Implementiert für 0.40.0, 2026-09-08. Cluster aus Optimierungsplan 8/9/10.
    Schaltanforderungen, tatsächliche Zustandswechsel und fehlgeschlagene Services.
    PV-/Verbrauchsabweichungen sind Beobachtungen, keine behauptete Root Cause.
 6. Archiv und Berichte bleiben lokal. Ereignisse und komprimierte Planstände
-   werden höchstens sieben Tage, 50.000 Ereignisse und 32 MiB aufbewahrt; das
-   zuerst erreichte Limit gilt. Tagesberichte bleiben höchstens 30 Tage.
+   werden höchstens sieben Tage und 100.000 Ereignisse aufbewahrt. Ab 0.54.0
+   liegen exakte Delta-Chunks getrennt vom Runtime-Store: 64 MiB Gesamtbudget,
+   davon 48 MiB für aufbewahrte Chunks. Das zuerst erreichte Limit gilt. Tagesberichte bleiben höchstens 30 Tage.
    Verdrängte Daten und Messlücken werden ausdrücklich ausgewiesen. Persistenz
    erfolgt verzögert und beim Entladen. Fehler der Diagnose dürfen die Steuerung
    nicht aussetzen. Kein automatischer Upload und keine Toleranzänderung.
@@ -67,3 +68,6 @@ Gemessene PV und Hauslast ändern den simulierten Haus-SOC und damit den nächst
 Planner-Aufruf. Netzbezug/-export und Endlastenergie werden unabhängig aus den
 bestätigten Gerätezuständen bilanziert. Das ist ein Integrationsnachweis der
 Rückkopplung, keine Kalibrierung realer Geräteverluste.
+
+Details zur atomaren Veröffentlichung, Migration und tatsächlichen
+Aufbewahrungsdauer: [Oktoberumsetzung](F-OCTOBER-OPTIMIZATIONS.md).

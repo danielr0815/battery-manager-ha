@@ -5,6 +5,26 @@ export function dateTimeFormat(hass, options) {
     ...options,
   });
 }
+/** Add an offset only where two real instants share the same local hour. */
+export function selectionTime(hass, time, times) {
+  const wall = dateTimeFormat(hass, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const label = wall.format(time);
+  const ambiguous = times.some(
+    (other) => other !== time && wall.format(other) === label,
+  );
+  return dateTimeFormat(hass, {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(ambiguous ? { timeZoneName: "shortOffset" } : {}),
+  }).format(time);
+}
 export function localHour(hass, time) {
   return Number(
     new Intl.DateTimeFormat("en-GB", {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from math import isfinite
 from types import MappingProxyType
 from typing import Literal
@@ -274,7 +274,7 @@ class Appliance:
 
 
 type ApplianceAdvisoryReason = Literal[
-    "forecast_horizon_short", "extra_grid_import", "soc_condition"
+    "forecast_horizon_short", "extra_grid_import", "soc_condition", "dc_service"
 ]
 
 
@@ -863,6 +863,26 @@ class SwitchingInterval:
 
 
 @dataclass(frozen=True)
+class DCDeficitInterval:
+    """Unserved DC on one physical simulation interval, never measured usage."""
+
+    start: datetime
+    end: datetime
+    unserved_dc_wh: float
+
+    def __post_init__(self) -> None:
+        _require(
+            (self.start.tzinfo is None) == (self.end.tzinfo is None),
+            "DC deficit timestamps must share timezone awareness",
+        )
+        start = self.start.astimezone(UTC) if self.start.tzinfo else self.start
+        end = self.end.astimezone(UTC) if self.end.tzinfo else self.end
+        _require(end > start, "DC deficit interval must have positive duration")
+        _require(self.unserved_dc_wh >= 0, "unserved_dc_wh must be nonnegative")
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
 class HourFlows:
     """Energy flows of one simulated slot."""
 
@@ -900,6 +920,9 @@ class HourFlows:
     inverter_limit_w: float = 0.0
     # Retain sub-hour decisions before hourly energy aggregation loses edges.
     switching_schedule: tuple[SwitchingInterval, ...] = ()
+    # None = legacy evidence unavailable; () = physically deficit-free.
+    # Sparse intervals retain the five-minute placement lost by hourly sums.
+    dc_deficit_intervals: tuple[DCDeficitInterval, ...] | None = None
 
 
 ReserveDecisionReason = Literal[
@@ -932,6 +955,7 @@ class ReserveDecision:
     # before the next net PV recharge. None means there is no such opportunity.
     live_ac_override_demand_w: float | None = None
     live_ac_override_floor_percent: float = 100.0
+    market_ranking_reason: str = "load_priority_no_prices"
 
 
 @dataclass(frozen=True)

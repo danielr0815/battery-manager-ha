@@ -11,6 +11,7 @@ from core.load_profile import (
     balance_day,
     clean_day,
     day_type,
+    local_hour_durations,
     on_fractions,
     profile_value,
     weighted_quantile,
@@ -275,24 +276,86 @@ def _berlin():
         pytest.skip("IANA timezone database not available")
 
 
-def test_on_fractions_dst_days_use_wall_clock_hours():
-    """DST days are binned on wall-clock hours (spec D-C3: treated as
-    normal samples; +-1 h blur in the two transition nights accepted).
-
-    Python's same-tzinfo datetime arithmetic is wall-clock arithmetic, so
-    both the 23-h spring day and the 25-h fall day yield 24 wall hours,
-    each capped at fraction 1.0.
-    """
+def test_on_fractions_dst_days_use_real_elapsed_hours():
+    """Switch cleaning accounts for the missing/repeated physical hour."""
     tz = _berlin()
     for day, month, dom in (("2026-03-29", 3, 29), ("2026-10-25", 10, 25)):
         start = datetime(2026, month, dom, 0, 0, tzinfo=tz)
         end = start + timedelta(days=1)
         fr = on_fractions([(start, True)], start, end)
         hours = {h for (d, h), v in fr.items() if d == day and v > 0}
-        assert hours == set(range(24))
-        assert all(v <= 1.0 for v in fr.values())
+        assert hours == (set(range(24)) - {2} if month == 3 else set(range(24)))
+        assert fr.get((day, 2), 0) == (0 if month == 3 else 2)
         day_total = sum(v for (d, _), v in fr.items() if d == day)
-        assert abs(day_total - 24.0) < 1e-6
+        assert day_total == (23 if month == 3 else 25)
+
+
+def test_switch_interval_across_fold_keeps_one_hundred_minutes():
+    tz = _berlin()
+    start = datetime(2026, 10, 25, 0, tzinfo=tz)
+    end = start + timedelta(days=1)
+    on = datetime(2026, 10, 25, 2, 10, tzinfo=tz, fold=0)
+    off = datetime(2026, 10, 25, 2, 50, tzinfo=tz, fold=1)
+    assert on_fractions([(on, True), (off, False)], start, end) == {
+        ("2026-10-25", 2): pytest.approx(100 / 60)
+    }
+
+
+@pytest.mark.parametrize(
+    "day,hours",
+    [(date(2026, 3, 29), 23), (date(2026, 3, 30), 24), (date(2026, 10, 25), 25)],
+)
+def test_energy_duration_bins_forecast_constant_power(day, hours):
+    durations = local_hour_durations(day, _berlin())
+    energy = [100 * duration if duration else None for duration in durations]
+    bins, samples = aggregate_bins(
+        {day.isoformat(): energy},
+        {day.isoformat(): DAY_TYPE_WEEKDAY},
+        {DAY_TYPE_WEEKDAY: 1},
+        None,
+        1,
+        4000,
+        durations={day.isoformat(): durations},
+    )
+    values = bins[DAY_TYPE_WEEKDAY]["p50"]
+    assert (
+        sum(
+            (value or 0) * duration
+            for value, duration in zip(values, durations, strict=True)
+        )
+        == hours * 100
+    )
+    assert all(value == 100 for value in values if value is not None)
+    assert sum(samples[DAY_TYPE_WEEKDAY]) == (23 if hours == 23 else 24)
+
+
+def test_duration_normalization_precedes_regular_damping_and_clamp():
+    days = {
+        "2026-10-25": [200] * 24,
+        "2026-10-26": [150] * 24,
+        "2026-10-27": [200] * 24,
+    }
+    durations = {"2026-10-25": [2] * 24}
+    previous = {DAY_TYPE_WEEKDAY: {"p50": [100] * 24, "p80": [100] * 24}}
+    bins, _ = aggregate_bins(
+        days, {}, MIN_SAMPLES, previous, 0.25, 4000, durations=durations
+    )
+    assert bins[DAY_TYPE_WEEKDAY]["p50"] == [125] * 24
+    assert (
+        clean_day([10_000] * 24, [], set(), 4000, 30, durations=[2] * 24)[0]
+        == [8000] * 24
+    )
+    bins, samples = aggregate_bins(
+        {"2026-03-29": [100] * 24},
+        {},
+        {DAY_TYPE_WEEKDAY: 1},
+        None,
+        1,
+        4000,
+        durations={"2026-03-29": [0] * 24},
+    )
+    assert bins[DAY_TYPE_WEEKDAY]["p50"] == [None] * 24
+    assert samples[DAY_TYPE_WEEKDAY] == [0] * 24
 
 
 # ----------------------------------------------------------------------

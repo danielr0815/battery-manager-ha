@@ -398,6 +398,9 @@ async def async_remove_entry(
 ) -> None:
     """Clean up the per-entry storage (SOC cache, learned profiles)."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    from .archive_storage import ArchiveStorage
+
+    await ArchiveStorage(hass, entry.entry_id).async_remove()
     await Store(
         hass,
         LEARNED_STORE_MAJOR,

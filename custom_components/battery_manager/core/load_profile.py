@@ -11,7 +11,7 @@ persists results; this module only does the math.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from statistics import median
 
 DAY_TYPE_WEEKDAY = "weekday"
@@ -19,8 +19,8 @@ DAY_TYPE_WEEKEND = "weekend"
 DAY_TYPE_ABSENCE = "absence"
 DAY_TYPES = (DAY_TYPE_WEEKDAY, DAY_TYPE_WEEKEND, DAY_TYPE_ABSENCE)
 
-# A "day series" is a list of 24 hourly energy values in Wh (numerically
-# equal to the mean W of that hour); None = no data for that hour.
+# A day series stores energy in Wh. An accompanying duration is essential on
+# DST days: the folded local hour contains two real hours, the skipped hour none.
 type DaySeries = list[float | None]
 
 # Profiles contain day type -> quantile -> hourly Wh; sample counts are separate.
@@ -87,6 +87,7 @@ def clean_day(
     exclude_hours: set[int],
     clamp_wh: float,
     negative_threshold_wh: float,
+    durations: list[float] | None = None,
 ) -> tuple[DaySeries, int]:
     """Remove self-controlled consumption from one day (D-C2).
 
@@ -115,7 +116,8 @@ def clean_day(
         residual = value - sum(subtractions)
         if residual < -abs(negative_threshold_wh):
             negatives += 1
-        cleaned.append(min(max(residual, 0.0), clamp_wh))
+        duration = durations[hour] if durations is not None else 1.0
+        cleaned.append(min(max(residual, 0.0), clamp_wh * duration))
     return cleaned, negatives
 
 
@@ -148,6 +150,7 @@ def aggregate_bins(
     rate_limit: float,
     clamp_w: float,
     weights: dict[str, float] | None = None,
+    durations: dict[str, list[float]] | None = None,
 ) -> tuple[Bins, Samples]:
     """Weighted P50/P80 per (day type, local hour) over the window (D-C3/D-C7).
 
@@ -172,6 +175,10 @@ def aggregate_bins(
         for hour in range(24):
             value = series[hour] if hour < len(series) else None
             if value is not None:
+                duration = (durations or {}).get(day, [1.0] * 24)[hour]
+                if duration <= 0:
+                    continue
+                value /= duration
                 collected[dt_key][hour].append((min(max(value, 0.0), clamp_w), weight))
 
     bins: Bins = {dt: {q: [None] * 24 for q in QUANTILE_KEYS} for dt in DAY_TYPES}
@@ -225,7 +232,7 @@ def on_fractions(
     start: datetime,
     end: datetime,
 ) -> dict[tuple[str, int], float]:
-    """Per (local ISO date, hour) fraction of time a boolean signal was on.
+    """Real ON hours per (local ISO date, wall hour), including both folds.
 
     `changes` are (local timestamp, is_on) pairs sorted ascending; entries
     at or before `start` establish the initial state (default: off).
@@ -233,21 +240,22 @@ def on_fractions(
     appliance exclusion, vacation day tagging).
     """
     fractions: dict[tuple[str, int], float] = {}
-    if start >= end:
+    utc_start, utc_end = _absolute(start), _absolute(end)
+    if utc_start >= utc_end:
         return fractions
 
     state = False
     idx = 0
-    while idx < len(changes) and changes[idx][0] <= start:
+    while idx < len(changes) and _absolute(changes[idx][0]) <= utc_start:
         state = changes[idx][1]
         idx += 1
 
-    cursor = start
-    while cursor < end:
-        next_change = changes[idx][0] if idx < len(changes) else end
-        segment_end = min(next_change, end)
+    cursor = utc_start
+    while cursor < utc_end:
+        next_change = _absolute(changes[idx][0]) if idx < len(changes) else utc_end
+        segment_end = min(next_change, utc_end)
         if state and segment_end > cursor:
-            _add_on_time(fractions, cursor, segment_end)
+            _add_on_time(fractions, cursor, segment_end, start.tzinfo)
         if idx < len(changes) and segment_end == next_change:
             state = changes[idx][1]
             idx += 1
@@ -256,17 +264,42 @@ def on_fractions(
 
 
 def _add_on_time(
-    fractions: dict[tuple[str, int], float], t0: datetime, t1: datetime
+    fractions: dict[tuple[str, int], float],
+    t0: datetime,
+    t1: datetime,
+    zone: tzinfo | None,
 ) -> None:
     cursor = t0
     while cursor < t1:
-        hour_end = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(
-            hours=1
+        local = (
+            cursor.astimezone(zone) if zone is not None else cursor.replace(tzinfo=None)
         )
+        hour_end = _next_hour(cursor, local)
         segment_end = min(hour_end, t1)
-        key = (cursor.date().isoformat(), cursor.hour)
-        fractions[key] = min(
-            1.0,
-            fractions.get(key, 0.0) + (segment_end - cursor).total_seconds() / 3600.0,
+        key = (local.date().isoformat(), local.hour)
+        fractions[key] = (
+            fractions.get(key, 0.0) + (segment_end - cursor).total_seconds() / 3600.0
         )
         cursor = segment_end
+
+
+def _absolute(value: datetime) -> datetime:
+    return (
+        value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    )
+
+
+def _next_hour(absolute: datetime, local: datetime) -> datetime:
+    # Elapsed time until the next wall-hour boundary remains correct across a
+    # fold/gap and for zones with a non-integral UTC offset.
+    wall = local.replace(tzinfo=None)
+    next_wall = wall.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return absolute + (next_wall - wall)
+
+
+def local_hour_durations(day: date, zone: tzinfo) -> list[float]:
+    """Real hours represented by each local bin (23/24/25-hour days)."""
+    start = datetime.combine(day, time.min, zone)
+    end = datetime.combine(day + timedelta(days=1), time.min, zone)
+    hours = on_fractions([(start, True)], start, end)
+    return [hours.get((day.isoformat(), hour), 0.0) for hour in range(24)]
