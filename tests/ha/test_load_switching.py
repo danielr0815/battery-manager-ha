@@ -2535,17 +2535,23 @@ async def test_runtime_counter_restart_does_not_credit_downtime(hass):
     coordinator._store.async_delay_save = lambda f, _d: captured.update(f())
     coordinator._save_persistent_state()
     await coordinator._store.async_save(captured)
-    coordinator._load_runtime_seconds.clear()
-    coordinator._load_run_since.clear()
-    coordinator._store = Store(hass, coordinator._store.version, coordinator._store.key)
-    await coordinator.async_load_persistent_state()
-    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01
-    assert sub_id not in coordinator._load_run_since  # cursor not restored
+    # A real restart has a fresh coordinator without the old instance's power
+    # subscriptions. Those can legitimately re-arm its cursor during worker IO.
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
 
-    # HA was down 8 min and the load is OFF now: the first tick must not add it.
-    hass.states.async_set(POWER_FEEDBACK, "1")  # < 5 W -> stopped
-    coordinator._update_load_runtime(t0 + timedelta(minutes=13))
-    assert abs(coordinator.load_runtime_minutes(sub_id) - 5.0) < 0.01  # no phantom
+    restored = BatteryManagerCoordinator(hass, coordinator.entry)
+    restored._store = Store(hass, coordinator._store.version, coordinator._store.key)
+    try:
+        await restored.async_load_persistent_state()
+        assert abs(restored.load_runtime_minutes(sub_id) - 5.0) < 0.01
+        assert sub_id not in restored._load_run_since  # cursor not restored
+
+        # HA was down 8 min and the load is OFF now: the first tick must not add it.
+        hass.states.async_set(POWER_FEEDBACK, "1")  # < 5 W -> stopped
+        restored._update_load_runtime(t0 + timedelta(minutes=13))
+        assert abs(restored.load_runtime_minutes(sub_id) - 5.0) < 0.01  # no phantom
+    finally:
+        restored.cleanup()
 
 
 async def test_load_control_switch_state_survives_restart(hass):
