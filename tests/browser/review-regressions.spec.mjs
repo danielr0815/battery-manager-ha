@@ -38,6 +38,20 @@ async function refresh(page, attrs) {
   }, attrs);
 }
 async function pointAt(page, time) {
+  // ResizeObserver can replace the chart before HA publishes its shadow slot.
+  // Wait for the current measured width and visible target before using raw
+  // coordinates; an old element handle can detach during a resize.
+  await page.waitForFunction(() => {
+    const card = window.card;
+    const target = card.shadowRoot.getElementById("hover-target");
+    const rect = target?.getBoundingClientRect();
+    return (
+      card._width > 0 &&
+      Math.abs(card._width - card.getBoundingClientRect().width) <= 4 &&
+      rect?.width > 0 &&
+      rect?.height > 0
+    );
+  });
   const point = await page.evaluate((time) => {
     const card = window.card,
       meta = card._chartMeta;
