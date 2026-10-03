@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 const attributes = {
   soc_threshold_percent: 20,
+  plan_metadata: { captured_at: "2026-09-26T08:00:00Z" },
   forecast: [
     { t: "2026-09-26T10:00:00+02:00", soc: 40 },
     { t: "2026-09-26T11:00:00+02:00", soc: 60 },
@@ -94,12 +95,72 @@ for (const kind of ["forecast", "consumption"]) {
       window.card.hass = {
         ...old,
         states: {
-          "sensor.plan": { ...old.states["sensor.plan"], state: "unavailable" },
+          "sensor.plan": {
+            ...old.states["sensor.plan"],
+            state: "unavailable",
+            // HA's unavailable publication drops custom attributes entirely.
+            attributes: { friendly_name: "Plan", unit_of_measurement: "%" },
+          },
         },
       };
     });
     await expect(page.locator("#chart")).toBeVisible();
     await expect(page.getByRole("status")).toContainText("last known plan");
+    await expect(page.getByRole("status")).toContainText("Last plan captured");
+    await page.evaluate(
+      (attrs) => {
+        const old = window.card._hass;
+        window.card.hass = {
+          ...old,
+          states: { "sensor.plan": { state: "50", attributes: attrs } },
+        };
+      },
+      {
+        ...attributes,
+        forecast: attributes.forecast.map((p) => ({ ...p, soc: 80 })),
+        consumption_forecast: attributes.consumption_forecast.map((p) => ({
+          ...p,
+          ac_w: 800,
+        })),
+      },
+    );
+    await expect(page.locator("[data-state-warning]")).toHaveCount(0);
+    await page.locator("#chart").focus();
+    await page.locator("#chart").press("Home");
+    await expect(page.locator("#readout")).toContainText(
+      kind === "forecast" ? "80 %" : "800 W",
+    );
+  });
+  test(`${kind}: no cached plan is fabricated on startup or an entity change`, async ({
+    page,
+  }) => {
+    await mount(page, kind);
+    await page.evaluate(() => {
+      const old = window.card._hass;
+      window.card.hass = {
+        ...old,
+        states: {
+          ...old.states,
+          "sensor.other": { state: "unavailable", attributes: {} },
+        },
+      };
+      window.card.setConfig({ entity: "sensor.other" });
+    });
+    await expect(page.locator("#chart")).toHaveCount(0);
+    await expect(page.getByRole("status")).toContainText("No last known plan");
+    await page.reload();
+    await page.waitForFunction(() => window.ready);
+    await mount(page, kind, {});
+    await page.evaluate(() => {
+      window.card.hass = {
+        ...window.card._hass,
+        states: {
+          "sensor.plan": { state: "unavailable", attributes: {} },
+        },
+      };
+    });
+    await expect(page.locator("#chart")).toHaveCount(0);
+    await expect(page.getByRole("status")).toContainText("No last known plan");
   });
   test(`${kind}: HA timezone updates even if the sensor object is unchanged`, async ({
     page,
@@ -274,3 +335,37 @@ test("empty history errors and source quality remain accessible without chart da
     "0 W",
   );
 });
+
+for (const kind of ["cascade", "loads"]) {
+  test(`${kind}: stripped HA publications preserve the received schedule`, async ({
+    page,
+  }) => {
+    const attrs = {
+      ...attributes,
+      loads: [load("retained-load")],
+      cascades: [
+        {
+          ...load("retained-cascade"),
+          cascade_id: "retained-cascade",
+          members: [],
+        },
+      ],
+    };
+    await mount(page, kind, attrs);
+    await expect(page.locator(".cascade")).toBeVisible();
+    await page.evaluate(() => {
+      window.card.hass = {
+        ...window.card._hass,
+        states: {
+          "sensor.plan": {
+            state: "unavailable",
+            attributes: { friendly_name: "Plan" },
+          },
+        },
+      };
+    });
+    await expect(page.locator(".cascade")).toBeVisible();
+    await expect(page.getByRole("status")).toContainText("last known plan");
+    await expect(page.getByRole("status")).toContainText("Last plan captured");
+  });
+}

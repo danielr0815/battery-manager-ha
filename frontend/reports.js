@@ -35,7 +35,12 @@ export function stateNotice(hass, state) {
       Array.isArray(state.attributes?.[key]) &&
       state.attributes[key].length > 0,
   );
-  return `<p class="warning" role="status" data-state-warning="${esc(state.state)}" style="padding:12px;color:var(--warning-color,#b26a00)">${esc(localize(hass, hasPlan ? "forecast_stale" : "forecast_unavailable"))}</p>`;
+  const captured = state.attributes?.plan_metadata?.captured_at;
+  const time =
+    hasPlan && captured
+      ? ` ${localize(hass, "forecast_last_plan")}: ${reportTime(hass, captured)}`
+      : "";
+  return `<p class="warning" role="status" data-state-warning="${esc(state.state)}" style="padding:12px;color:var(--warning-color,#b26a00)">${esc(localize(hass, hasPlan ? "forecast_stale" : "forecast_unavailable") + time)}</p>`;
 }
 
 export function inverterControlReport(hass, attributes, state) {

@@ -3,6 +3,7 @@
 export const STRINGS = {
   en: {
     dc_service: "additional DC supply deficit",
+    forecast_last_plan: "Last plan captured",
     forecast_stale:
       "Forecast entity is unavailable. The last known plan is shown; current execution cannot be confirmed.",
     forecast_unavailable:
@@ -287,7 +288,7 @@ export const STRINGS = {
     no_entity:
       "No entity configured. Pick the Battery Manager SOC forecast sensor.",
     not_found: "Entity not found:",
-    no_data: "Waiting for the first planning run …",
+    no_data: "Waiting for a valid plan …",
     min_reserve: "reserve",
     render_error: "The forecast chart could not be rendered:",
     chart_label: "SOC forecast",
@@ -362,6 +363,7 @@ export const STRINGS = {
   },
   de: {
     dc_service: "zusätzliches DC-Versorgungsdefizit",
+    forecast_last_plan: "Letzter Plan erfasst",
     forecast_stale:
       "Prognose-Entity ist nicht verfügbar. Der letzte bekannte Plan wird angezeigt; die aktuelle Ausführung ist unbestätigt.",
     forecast_unavailable:
@@ -658,7 +660,7 @@ export const STRINGS = {
     no_entity:
       "Keine Entität konfiguriert. Wähle den SOC-Prognose-Sensor des Battery Managers.",
     not_found: "Entität nicht gefunden:",
-    no_data: "Warte auf den ersten Planungslauf …",
+    no_data: "Warte auf eine gültige Planung …",
     min_reserve: "Reserve",
     render_error: "Das Prognosediagramm konnte nicht dargestellt werden:",
     chart_label: "SOC-Prognose",

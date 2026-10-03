@@ -59,6 +59,12 @@ def slot_weights(
     UTC comparisons distinguish the repeated autumn hour and real durations.
     """
     weights = peak_weights(prices)
+    # Every candidate visits the same intervals. UTC conversion depends only
+    # on the publication, not the slot or overlap; preserve summation order.
+    intervals = tuple(
+        (price.start.astimezone(UTC), price.end.astimezone(UTC), weight)
+        for price, weight in zip(prices, weights, strict=True)
+    )
     result: list[float | None] = []
     for slot in slots:
         if slot.start.tzinfo is None:
@@ -67,13 +73,10 @@ def slot_weights(
         start = slot.start.astimezone(UTC)
         end = start + timedelta(hours=slot.duration)
         covered = total = 0.0
-        for price, weight in zip(prices, weights, strict=True):
+        for price_start, price_end, weight in intervals:
             seconds = max(
                 0.0,
-                (
-                    min(end, price.end.astimezone(UTC))
-                    - max(start, price.start.astimezone(UTC))
-                ).total_seconds(),
+                (min(end, price_end) - max(start, price_start)).total_seconds(),
             )
             covered += seconds
             total += seconds * weight

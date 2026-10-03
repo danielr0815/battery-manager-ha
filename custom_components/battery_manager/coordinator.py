@@ -4848,7 +4848,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "last_update": now,
             "plan_metadata": dict(self._plan_metadata),
             "inverter_control": self.inverter_control_snapshot(),
-            "source_health": self.source_health_snapshot(now, market_diag),
+            # Publications can arrive during CPU work. Their age is measured
+            # at publication of the result, not at the older plan-input time.
+            "source_health": self.source_health_snapshot(dt_util.utcnow(), market_diag),
             "input_soc_percent": soc,
             "input_forecasts_kwh": forecasts,
             "soc_threshold_percent": threshold,

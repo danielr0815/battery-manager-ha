@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from dataclasses import replace
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
 from .model import HourFlows, HourSlot, SwitchingInterval
@@ -52,39 +52,52 @@ def switching_schedule(
     simulation has only slot resolution. UTC arithmetic preserves DST folds.
     """
     result: list[SwitchingInterval] = []
+    pending: tuple[datetime, datetime, bool, bool, bool] | None = None
     for slot, flow in zip(slots, flows, strict=True):
-        start = slot.start
-        end = (
-            (start.astimezone(UTC) + timedelta(hours=slot.duration)).astimezone(
-                start.tzinfo
+        intervals: Iterable[tuple[datetime, datetime, bool, bool, bool]]
+        if flow.switching_schedule:
+            intervals = (
+                (
+                    interval.start,
+                    interval.end,
+                    interval.inverter_on,
+                    interval.support_dc24,
+                    interval.support_dc48,
+                )
+                for interval in flow.switching_schedule
             )
-            if start.tzinfo is not None
-            else start + timedelta(hours=slot.duration)
-        )
-        intervals = flow.switching_schedule or (
-            SwitchingInterval(
-                start, end, flow.inverter_on, flow.support_dc24, flow.support_dc48
-            ),
-        )
+        else:
+            start = slot.start
+            end = (
+                (start.astimezone(UTC) + timedelta(hours=slot.duration)).astimezone(
+                    start.tzinfo
+                )
+                if start.tzinfo is not None
+                else start + timedelta(hours=slot.duration)
+            )
+            intervals = (
+                (start, end, flow.inverter_on, flow.support_dc24, flow.support_dc48),
+            )
         for interval in intervals:
-            previous = result[-1] if result else None
             if (
-                previous is not None
-                and (
-                    previous.end.astimezone(UTC)
-                    if previous.end.tzinfo
-                    else previous.end
-                )
-                == (
-                    interval.start.astimezone(UTC)
-                    if interval.start.tzinfo
-                    else interval.start
-                )
-                and previous.inverter_on == interval.inverter_on
-                and previous.support_dc24 == interval.support_dc24
-                and previous.support_dc48 == interval.support_dc48
+                pending is not None
+                and (pending[1].astimezone(UTC) if pending[1].tzinfo else pending[1])
+                == (interval[0].astimezone(UTC) if interval[0].tzinfo else interval[0])
+                and pending[2:] == interval[2:]
             ):
-                result[-1] = replace(previous, end=interval.end)
+                pending = (
+                    pending[0],
+                    interval[1],
+                    interval[2],
+                    interval[3],
+                    interval[4],
+                )
             else:
-                result.append(interval)
+                if pending is not None:
+                    result.append(SwitchingInterval(*pending))
+                pending = interval
+    # Construct only completed runs. Replacing a frozen interval for every
+    # equal five-minute step created millions of discarded objects in probes.
+    if pending is not None:
+        result.append(SwitchingInterval(*pending))
     return tuple(result)

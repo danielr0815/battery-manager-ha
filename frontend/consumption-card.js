@@ -1,3 +1,4 @@
+import { PlanDisplay } from "./plan-state.js";
 import { dateTimeFormat, nextHour, selectionTime } from "./time.js";
 import {
   consumption_card_style_0,
@@ -49,6 +50,7 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
     this._config = undefined;
     this._hass = undefined;
     this._lastState = undefined;
+    this._planDisplay = new PlanDisplay();
     this._width = 0;
     this._chartMeta = null;
     this._kbIndex = null;
@@ -189,9 +191,11 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
 
     let body;
     let header = this._config.title;
-    const stateObj = this._config.entity
-      ? hass?.states?.[this._config.entity]
-      : undefined;
+    const stateObj = this._planDisplay.read(
+      this._config.entity,
+      this._config.entity ? hass?.states?.[this._config.entity] : undefined,
+      isConsumptionEntity,
+    );
 
     if (!this._config.entity) {
       body = this._message(t("no_entity"));

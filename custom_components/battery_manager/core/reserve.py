@@ -7,6 +7,7 @@ Automatic support follows the same DC envelope, never an AC reference curve.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -24,8 +25,13 @@ from .model import (
     SystemConfig,
     Trajectory,
 )
+from .planning_control import check_cancelled
 from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
-from .reserve_schedule import coherent_market_weights, preparation_envelope
+from .reserve_schedule import (
+    PreparationEnvelope,
+    coherent_market_weights,
+    preparation_envelope,
+)
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
 from .support import support_state
@@ -34,6 +40,9 @@ from .support import support_state
 # call and cannot leak a source, forecast or cancellation context into the next.
 MAX_CACHED_RESERVE_PROBES = 128
 MAX_CACHED_BATTERY_STEPS = 8192
+# Larger caches barely improved the measured hit rate. Retain only a few
+# repeated physical passes, including the immutable config/slot identities.
+MAX_CACHED_RESERVE_FLOWS = 4096
 
 
 @dataclass
@@ -44,6 +53,18 @@ class _ReserveCache:
     ] = field(default_factory=dict)
     variants: dict[tuple[int, bool, bool], SystemConfig] = field(default_factory=dict)
     trajectories: dict[tuple[object, ...], Trajectory] = field(default_factory=dict)
+    expanded: dict[int, tuple[tuple[int, HourSlot, float], ...]] = field(
+        default_factory=dict
+    )
+    market_weights: dict[tuple[int, int], tuple[float | None, ...]] = field(
+        default_factory=dict
+    )
+    envelopes: dict[tuple[object, ...], PreparationEnvelope] = field(
+        default_factory=dict
+    )
+    flows: OrderedDict[tuple[object, ...], tuple[SystemConfig, HourSlot, HourFlows]] = (
+        field(default_factory=OrderedDict)
+    )
 
 
 _reserve_cache: ContextVar[_ReserveCache | None] = ContextVar(
@@ -83,6 +104,74 @@ def _budget(
     return entry[1]
 
 
+def _step_hour(
+    config: SystemConfig,
+    soc_percent: float,
+    slot: HourSlot,
+    threshold_percent: float,
+    extra_ac_wh: float = 0.0,
+    dc24_from_grid: bool = False,
+    dc48_support: bool = False,
+    pv_scale: float = 1.0,
+    feedin_wh: float = 0.0,
+    *,
+    inverter_limit_w: float | None = None,
+) -> HourFlows:
+    """Cache exact physics, before candidate-specific reserve annotations."""
+    check_cancelled()
+    cache = _reserve_cache.get()
+    key = (
+        id(config),
+        id(slot),
+        soc_percent,
+        threshold_percent,
+        extra_ac_wh,
+        dc24_from_grid,
+        dc48_support,
+        pv_scale,
+        feedin_wh,
+        inverter_limit_w,
+    )
+    if cache is not None and (entry := cache.flows.get(key)) is not None:
+        cache.flows.move_to_end(key)
+        return entry[2]
+    result = step_hour(
+        config,
+        soc_percent,
+        slot,
+        threshold_percent,
+        extra_ac_wh,
+        dc24_from_grid,
+        dc48_support,
+        pv_scale,
+        feedin_wh,
+        inverter_limit_w=inverter_limit_w,
+    )
+    if cache is not None:
+        if len(cache.flows) >= MAX_CACHED_RESERVE_FLOWS:
+            cache.flows.popitem(last=False)
+        # The bounded entry owns the identities, preventing id reuse after
+        # another candidate releases a temporary configuration or slot.
+        cache.flows[key] = (config, slot, result)
+    return result
+
+
+def _probe_key(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+) -> tuple[object, ...]:
+    return (
+        id(config),
+        id(inputs),
+        extra_ac,
+        pv_scale if isinstance(pv_scale, (int, float)) else tuple(pv_scale),
+        feedin,
+    )
+
+
 def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | None):
     from .uncertainty import effective_uncertainty
 
@@ -98,11 +187,40 @@ def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | 
 def _expanded_slots(
     slots: tuple[HourSlot, ...],
 ) -> tuple[tuple[int, HourSlot, float], ...]:
-    return tuple(
+    cache = _reserve_cache.get()
+    if cache is not None and id(slots) in cache.expanded:
+        return cache.expanded[id(slots)]
+    result = tuple(
         (i, small, ratio)
         for i, slot in enumerate(slots)
         for small, ratio in split_slot(slot)
     )
+    if cache is not None:
+        cache.references[id(slots)] = slots
+        if len(cache.expanded) >= MAX_CACHED_RESERVE_PROBES:
+            del cache.expanded[next(iter(cache.expanded))]
+        cache.expanded[id(slots)] = result
+    return result
+
+
+def _market_weights(
+    inputs: PlanInputs, steps: list[tuple[int, HourSlot, float, float]]
+) -> list[float | None]:
+    """Load proposals change extra energy, never these slot/price boundaries."""
+    cache = _reserve_cache.get()
+    key = id(inputs.slots), id(inputs.market_prices)
+    if cache is None:
+        return slot_weights(tuple(step[1] for step in steps), inputs.market_prices)
+    if key not in cache.market_weights:
+        cache.references[id(inputs.slots)] = inputs.slots
+        cache.references[id(inputs.market_prices)] = inputs.market_prices
+        if len(cache.market_weights) >= MAX_CACHED_RESERVE_PROBES:
+            del cache.market_weights[next(iter(cache.market_weights))]
+        cache.market_weights[key] = tuple(
+            slot_weights(tuple(step[1] for step in steps), inputs.market_prices)
+        )
+    # Priority fallbacks belong to the candidate, so expose no mutable cache.
+    return list(cache.market_weights[key])
 
 
 def _slot_end(slot: HourSlot) -> datetime:
@@ -127,13 +245,7 @@ def simulate_reserve(
         return _simulate_reserve(config, inputs, extra_ac, pv_scale, feedin)
     cache.references[id(config)] = config
     cache.references[id(inputs)] = inputs
-    key = (
-        id(config),
-        id(inputs),
-        extra_ac,
-        pv_scale if isinstance(pv_scale, (int, float)) else tuple(pv_scale),
-        feedin,
-    )
+    key = _probe_key(config, inputs, extra_ac, pv_scale, feedin)
     result = cache.trajectories.get(key)
     if result is None:
         result = _simulate_reserve(config, inputs, extra_ac, pv_scale, feedin)
@@ -279,7 +391,7 @@ def _simulate_reserve_policy(
     variants: dict[tuple[int, bool, bool], SystemConfig] = (
         cache.variants if cache is not None else {}
     )
-    raw_weights = slot_weights(tuple(step[1] for step in steps), inputs.market_prices)
+    raw_weights = _market_weights(inputs, steps)
     weights = coherent_market_weights(priorities, raw_weights)
     ranking_reason = (
         "load_priority_no_prices"
@@ -299,18 +411,29 @@ def _simulate_reserve_policy(
     )
     # One horizon prevents a simulated midnight from introducing a PV deadline
     # after the preceding evening's better AC opportunities have been discarded.
-    envelope = (
-        preparation_envelope(
-            budgets,
-            nominal_budgets,
-            priorities,
-            protection_floor,
-            battery.energy_wh(soc),
-            weights,
-        )
-        if steps
-        else None
-    )
+    envelope: PreparationEnvelope | None = None
+    if steps:
+        check_cancelled()
+        envelope_key = _probe_key(config, inputs, extra_ac, pv_scale, feedin)
+        if cache is not None:
+            cache.references[id(config)] = config
+            cache.references[id(inputs)] = inputs
+            envelope = cache.envelopes.get(envelope_key)
+        if envelope is None:
+            envelope = preparation_envelope(
+                budgets,
+                nominal_budgets,
+                priorities,
+                protection_floor,
+                battery.energy_wh(soc),
+                weights,
+            )
+            if cache is not None:
+                if len(cache.envelopes) >= MAX_CACHED_RESERVE_PROBES:
+                    del cache.envelopes[next(iter(cache.envelopes))]
+                # AC-off references and retained-energy retries have the same
+                # envelope. Their permission and margin remain forward inputs.
+                cache.envelopes[envelope_key] = envelope
     decision: ReserveDecision | None = None
     future_ac_wh = 0.0
     future_demand_w = 0.0
@@ -348,7 +471,7 @@ def _simulate_reserve_policy(
         export = (
             (feedin[i] if feedin else 0.0) * slot.duration / inputs.slots[i].duration
         )
-        natural = step_hour(
+        natural = _step_hour(
             effective, soc, slot, 100, extra, pv_scale=scale, feedin_wh=export
         )
         pv_recovery = natural.battery_charge_wh >= natural.battery_discharge_wh and (
@@ -359,7 +482,7 @@ def _simulate_reserve_policy(
         )
         dc24, dc48 = protect24, protect48
         protected = (
-            step_hour(effective, soc, slot, 100, extra, dc24, dc48, scale, export)
+            _step_hour(effective, soc, slot, 100, extra, dc24, dc48, scale, export)
             if dc24 or dc48
             else natural
         )
@@ -381,7 +504,7 @@ def _simulate_reserve_policy(
                 protected
                 if (source.dc24_available, source.dc48_available)
                 == (protected.support_dc24, protected.support_dc48)
-                else step_hour(
+                else _step_hour(
                     effective,
                     soc,
                     slot,
@@ -450,7 +573,7 @@ def _simulate_reserve_policy(
             # economic holding. Reuse physics, never a different SOC or limit.
             flow = held
         else:
-            flow = step_hour(
+            flow = _step_hour(
                 effective,
                 soc,
                 slot,
@@ -475,7 +598,7 @@ def _simulate_reserve_policy(
                 held
                 if held is not None
                 and (dc24, dc48) == (held.support_dc24, held.support_dc48)
-                else step_hour(
+                else _step_hour(
                     effective, soc, slot, 100, extra, dc24, dc48, scale, export
                 )
             )

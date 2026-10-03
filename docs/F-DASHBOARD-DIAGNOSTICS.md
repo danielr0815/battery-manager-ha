@@ -31,6 +31,15 @@ Prognosekarten vorhandene Daten als letzten bekannten Plan. Ohne Daten steht
 ein eigener Unverfügbarkeitshinweis. Die Inverterdetails heißen dann
 „Letztes bekanntes Inverterkommando und Rückmeldung“.
 
+Ab 0.54.1 behalten Prognose-, Verbrauchs-, Kaskaden- und Lastkarten ihren
+zuletzt empfangenen Plan auch dann, wenn HA die Attribute bei Unverfügbarkeit
+vollständig entfernt. Der Hinweis nennt zusätzlich die Aufnahmezeit. Das ist
+ein Cache je Karteninstanz und Entität im Arbeitsspeicher. Entitätswechsel,
+Entfernen der Entität und verfügbare leere Daten verwerfen ihn. Ein neues
+Browserfenster ohne empfangenen Plan zeigt weiterhin keine erfundene Historie.
+Ein frischer verfügbarer Plan ersetzt die alte Darstellung und entfernt den
+Warnhinweis. Der Cache verändert weder HA-Zustand noch Steuerfreigaben.
+
 ## Quellen und Lernen
 
 `source_health` ist eine Liste von Quellenrollen mit `entity_id`, `status`,

@@ -21,7 +21,7 @@ export class BatteryManagerLoadsCard extends BatteryManagerCascadeCard {
   }
 
   _cascades() {
-    const attrs = this._hass?.states?.[this._entityId()]?.attributes || {};
+    const attrs = this._displayState()?.attributes || {};
     const managed = new Set(
       (Array.isArray(attrs.cascades) ? attrs.cascades : []).flatMap((c) =>
         c

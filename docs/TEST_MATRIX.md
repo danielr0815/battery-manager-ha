@@ -77,3 +77,15 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | Folgetage + reale gemeldete SOC + Reserve/Live/PSUs + DST | Unabhängige Bilanz, kein Reset der Endenergie, DC-Vorrang | `ha/test_reserve_closed_loop.py` |
 | Alternativer Rückhalt + pessimistische PV + Endenergie | Begrenzte Offline-Varianten, keine Live-Freigabe | `core/test_reserve_comparison.py` |
 | Plan/Live/Rückmeldung + fehlende Daten + Touch/Fokus/ABA | Getrennte wahrheitsgemäße Anzeigen und erhaltener Bedienzustand | `frontend/reports.test.mjs`, `browser/review-regressions.spec.mjs` |
+
+
+## Planlatenz und Attributverlust 0.54.1
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Verfügbare Planung → HA entfernt Attribute bei `unavailable` → frischer Plan | Vier Karten erhalten alte Darstellung mit Warnung/Zeit; frische Daten ersetzen sie | `frontend/plan-state.test.mjs`, `browser/review-regressions.spec.mjs` |
+| Browserstart ohne Plan + Entitätswechsel + leere verfügbare Publikation | Keine erfundene oder entitätsfremde Historie | Dieselben Suites |
+| Verschiedene Lastkandidaten + identische Preise + neue Preise + DST-Fold + Eviction | Unveränderte Ergebnisse, begrenzte Wiederverwendung nur im selben Planner-Aufruf | `core/test_reserve_cache.py`, Markt-/Golden-Suites |
+| AC-Off-Referenz + Rückhalt-Retry + geänderte Physik-/Planeingaben + Abbruch + Cache-Verdrängung | Identische Hülle wiederverwenden, jede Betriebsgröße im Physik-Schlüssel, vollständige Gleichheit mit ungecachten Ergebnissen, kein Ergebnis nach Abbruch | `core/test_reserve_cache.py` |
+| Gleiche angrenzende Schaltzustände + Zustandswechsel + Zeitlücken + DST | Nur fertige Intervalle konstruieren; Zustände und Zeitgrenzen bleiben exakt erhalten | `core/test_switching_schedule.py` |
+| Neue Messpublikation während langer Berechnung | Diagnosealter ab Ergebnisveröffentlichung; Aufnahmezeit bleibt erhalten | `ha/test_planning.py::test_publications_during_calculation_use_current_diagnostic_age` |

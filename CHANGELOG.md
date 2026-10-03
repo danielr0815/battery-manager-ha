@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.1] - 2026-10-03
+
+### Fixed
+- Forecast, consumption, cascade and load cards retain the last received plan
+  when Home Assistant removes attributes from unavailable entities. The view
+  marks it stale, shows its capture time and clears it on an entity change.
+- Source publication ages use the result-publication time, avoiding negative
+  ages and false stale flags for readings received during a long planning run.
+
+### Changed
+- Reserve candidate simulations reuse the same expanded slot grid and market
+  interval weights within one bounded planning scope. UTC interval conversion
+  happens once per market evaluation; arithmetic, rankings and protection remain
+  unchanged.
+- AC-off references and retained-energy retries reuse their identical preparation
+  envelope. A bounded cache retains exact physical steps with all operating
+  inputs; cancellation remains active on every step. Switching intervals are
+  constructed only for completed runs instead of every intermediate merge.
+
 ## [0.54.0] - 2026-10-03
 
 ### Added

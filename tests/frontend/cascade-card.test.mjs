@@ -326,8 +326,8 @@ test("all cards react to a UI language change without a sensor update", () => {
   for (const [type, de, en] of [
     [
       "battery-manager-forecast-card",
-      "Warte auf den ersten Planungslauf",
-      "Waiting for the first planning run",
+      "Warte auf eine gültige Planung",
+      "Waiting for a valid plan",
     ],
     [
       "battery-manager-consumption-card",

@@ -331,3 +331,38 @@ async def test_plan_freshness_tolerates_noise_but_never_threshold_crossings(
             with pytest.raises(UpdateFailed, match="inputs changed"):
                 c._ensure_planning_inputs(inputs)
     await c.async_cancel_actuation_tasks()
+
+
+async def test_publications_during_calculation_use_current_diagnostic_age(
+    hass, freezer
+):
+    from datetime import UTC, timedelta
+
+    now = datetime(2026, 10, 3, 9, tzinfo=UTC)
+    freezer.move_to(now)
+    _set_input_states(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2)
+    entry.add_to_hass(hass)
+    c = BatteryManagerCoordinator(hass, entry)
+    c.raw_config["operation_pv_power_entity"] = "sensor.fresh_power"
+    original = c._async_plan
+
+    async def publish_during_work(*args):
+        result = await original(*args)
+        freezer.move_to(now + timedelta(seconds=90))
+        hass.states.async_set("sensor.fresh_power", "500", {"unit_of_measurement": "W"})
+        return result
+
+    c._async_plan = publish_during_work
+    try:
+        data = await c._async_update_data()
+        pv = next(row for row in data["source_health"] if row["role"] == "pv")
+        assert pv["status"] == "available"
+        assert pv["publication_age_s"] == 0
+        assert datetime.fromisoformat(data["plan_metadata"]["captured_at"]) == now
+        assert datetime.fromisoformat(
+            data["plan_metadata"]["activated_at"]
+        ) == now + timedelta(seconds=90)
+    finally:
+        await c.async_cancel_actuation_tasks()
+        c.cleanup()

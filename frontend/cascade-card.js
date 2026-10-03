@@ -1,3 +1,4 @@
+import { PlanDisplay } from "./plan-state.js";
 import { cascade_card_style_0 } from "./styles.js";
 import { localize, STRINGS } from "./translations.js";
 import {
@@ -31,6 +32,7 @@ export class BatteryManagerCascadeCard extends HTMLElement {
     this._config = undefined;
     this._hass = undefined;
     this._lastState = undefined;
+    this._planDisplay = new PlanDisplay();
     this._width = 0;
     this._charts = [];
     this._resizeObserver = new ResizeObserver(() => {
@@ -130,11 +132,26 @@ export class BatteryManagerCascadeCard extends HTMLElement {
     // Compatibility for cards created before v0.29.0: those picker entries
     // carried only `type`. Auto-discovery makes them useful immediately while
     // the editor now persists an explicit entity for new cards.
-    return findForecastEntity(this._hass, Object.keys(this._hass.states));
+    return (
+      findForecastEntity(this._hass, Object.keys(this._hass.states)) ||
+      this._planDisplay.entityId ||
+      ""
+    );
+  }
+
+  _displayState() {
+    const entityId = this._entityId();
+    return this._planDisplay.read(
+      entityId,
+      this._hass?.states?.[entityId],
+      (state) =>
+        Array.isArray(state.attributes?.cascades) ||
+        Array.isArray(state.attributes?.loads),
+    );
   }
 
   _cascades() {
-    const state = this._hass?.states?.[this._entityId()];
+    const state = this._displayState();
     const cascades = state?.attributes?.cascades;
     return Array.isArray(cascades)
       ? cascades.filter((c) => c && typeof c === "object").slice(0, 20)
@@ -1282,7 +1299,7 @@ export class BatteryManagerCascadeCard extends HTMLElement {
     this._charts = [];
     this._tracks = [];
     const entityId = this._entityId();
-    const state = this._hass.states?.[entityId];
+    const state = this._displayState();
     const cascades = this._cascades();
     const body = !entityId
       ? esc(localize(this._hass, "no_entity"))

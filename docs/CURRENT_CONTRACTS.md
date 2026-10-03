@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.54.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.54.1**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -255,3 +255,40 @@ Vergleichshorizont einschließlich Live-Vorziehen Lastpriorität. Automatische
 EPEX-Erkennung verlangt eine valide Intervallserie; explizite Quellenbindung
 hat Vorrang. Diagnose und Bedienung: [Dashboard](F-DASHBOARD-DIAGNOSTICS.md).
 Archivformat und Forschung: [Oktoberumsetzung](F-OCTOBER-OPTIMIZATIONS.md).
+
+
+## Plananzeige und Berechnung ab 0.54.1
+
+Bei `unknown` oder `unavailable` entfernt HA die benutzerdefinierten
+Sensorattribute. Bereits geöffnete Prognose-, Verbrauchs-, Kaskaden- und
+Lastkarten behalten den zuletzt empfangenen Plan deshalb lokal im Arbeitsspeicher.
+Sie zeigen ihn als veraltet mit Aufnahmezeit an. Ein frischer Plan ersetzt ihn;
+ein Entitätswechsel, eine entfernte Entität oder eine verfügbare leere Publikation
+verwirft ihn. Ein neuer Browseraufruf ohne empfangenen Plan erfindet keine Historie.
+Der Cache ist ausschließlich Darstellung und erteilt keine Aktorfreigabe.
+
+Zeitliche Slotgrenzen, SOC-Toleranzen und unabhängige Schutzprüfungen gelten
+weiter. Eine verworfene Berechnung kann den Sensor weiter auf `unavailable`
+setzen; die erhaltene Darstellung hebt dessen Zustand nicht auf. Quellenalter
+werden gegen die tatsächliche Ergebnisveröffentlichung gemessen, während
+`plan_metadata.captured_at` weiterhin die Aufnahme der Planeingaben bezeichnet.
+
+Innerhalb eines Planner-Aufrufs werden die unveränderten Fünf-Minuten-Slots und
+Preisgewichte für Lastkandidaten wiederverwendet. Die Cache-Schlüssel halten die
+unveränderlichen Originalobjekte fest; neue Slots, neue Preisintervalle und die
+beiden Herbststunden bleiben getrennt. Die kohärente Preisabdeckung wird je
+Kandidat anhand seiner relevanten Lasten geprüft. Summationsreihenfolge,
+Optimierungsziele und DC-Schutz bleiben unverändert. Die Caches enden mit dem
+Planner-Aufruf; Zeitmessungen sind Beobachtungen, kein Hardware-unabhängiges Gate.
+
+AC-Off-Referenz und Rückhalt-Retry eines Lastvorschlags verwenden dieselbe
+Vorbereitungshülle; AC-Freigabe und Rückhalt-Marge werden weiterhin getrennt in
+der Vorwärtssimulation angewendet. Bis zu 128 Hüllen und 4.096 unveränderliche
+Physikschritte werden je Planner-Aufruf gehalten. Physik-Schlüssel umfassen
+Konfiguration, Slotidentität, SOC, Schwelle, Zusatzlast, beide Netzteilzustände,
+PV-Skalierung, Feed-in und Inverterlimit. Ein Eintrag hält seine Identitäten
+fest, bis er verdrängt wird. Reserve-Diagnosefelder werden je Kandidat ergänzt;
+sie stammen nicht aus einem anderen Kandidaten. Jeder Physikschritt prüft den
+Abbruch vor dem Cachezugriff. Gleiche angrenzende Schaltzustände werden erst als
+fertige Intervalle materialisiert; Zeitlücken und reale DST-Grenzen bleiben
+erhalten.

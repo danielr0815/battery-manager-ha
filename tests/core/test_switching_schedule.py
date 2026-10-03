@@ -12,6 +12,7 @@ from core.model import (
     PlanInputs,
     ReserveParams,
     SupportParams,
+    SwitchingInterval,
     SystemConfig,
 )
 from core.optimize import plan
@@ -133,6 +134,34 @@ def test_legacy_hourly_plan_keeps_gaps_instead_of_filling_unknown_time():
     assert len(schedule) == 2
     assert schedule[0].end == now + timedelta(minutes=30)
     assert schedule[1].start == now + timedelta(hours=1)
+
+
+def test_interval_objects_created_only_for_finished_runs(monkeypatch):
+    import core.simulation_steps as steps
+
+    now = datetime(2026, 9, 28, tzinfo=UTC)
+    slots = tuple(
+        HourSlot(i, now + timedelta(minutes=5 * i), 1 / 12, 0, 0, 0, 0)
+        for i in range(12)
+    )
+    flows = tuple(
+        simulate(SystemConfig(), PlanInputs(slot.start, 50, (slot,)), 20).flows[0]
+        for slot in slots
+    )
+    expected = (SwitchingInterval(now, now + timedelta(hours=1), True, False, False),)
+    made = []
+
+    def counted(*args):
+        value = SwitchingInterval(*args)
+        made.append(value)
+        return value
+
+    monkeypatch.setattr(steps, "SwitchingInterval", counted)
+    assert switching_schedule(slots, flows) == expected
+    assert made == list(expected)
+    assert switching_schedule((), ()) == ()
+    with pytest.raises(ValueError, match="shorter"):
+        switching_schedule(slots, flows[:-1])
 
 
 def test_replay_checks_new_edges_but_reads_records_without_timing():
