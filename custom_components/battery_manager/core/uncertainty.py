@@ -1,9 +1,15 @@
 """Forecast uncertainty shared by planning and reserve simulation."""
 
-from .model import PlanInputs
+from .model import PlanInputs, SystemConfig
 
 # Below 25 Wh forecast ratios are dominated by rounding/cold-start noise.
 QUANTILE_RATIO_MIN_WH = 25.0
+
+# Operator 2026-10-05: retain some headroom insurance, without optimising for
+# the entire P90 horizon. Use one quarter of the spread, bounded to 5% of
+# battery capacity across the whole horizon, never per slot or per day.
+RESERVE_PV_SPREAD_SHARE = 0.25
+RESERVE_PV_BUFFER_CAP_PERCENT = 5.0
 
 
 def quantile_band_slots(slots) -> list[bool]:
@@ -57,3 +63,34 @@ def effective_uncertainty(
             stress.append(alpha)
             optimism.append(beta)
     return stress, optimism, band
+
+
+def reserve_preparation_scales(config: SystemConfig, inputs: PlanInputs) -> list[float]:
+    """Expected PV plus bounded, spread-dependent storage-space insurance.
+
+    The upper series still describes uncertainty, not an expected sunny day.
+    Physical peak clipping happens before measuring the spread. The single
+    horizon cap is stored Wh, converted once to PV-side Wh; DC and consumption
+    uncertainty retain independent priority in the reserve planner.
+    """
+    _, upper, _ = effective_uncertainty(
+        inputs, config.control.predrain_pv_confidence, config.reserve.upper_pv_factor
+    )
+    extras = [
+        RESERVE_PV_SPREAD_SHARE
+        * max(
+            0.0,
+            min(slot.pv_wh * scale, config.pv.peak_power_w * slot.duration)
+            - min(slot.pv_wh, config.pv.peak_power_w * slot.duration),
+        )
+        for slot, scale in zip(inputs.slots, upper, strict=True)
+    ]
+    requested = sum(extras)
+    capacity = config.battery.energy_wh(RESERVE_PV_BUFFER_CAP_PERCENT) / (
+        config.battery.eta_charge * config.charger.eta
+    )
+    fraction = min(1.0, capacity / requested) if requested > 0 else 0.0
+    return [
+        1.0 + extra * fraction / slot.pv_wh if slot.pv_wh > 0 else 1.0
+        for slot, extra in zip(inputs.slots, extras, strict=True)
+    ]

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0] - 2026-10-05
+
+### Changed
+- Active reserve prepares storage space from the expected PV forecast with
+  bounded uncertainty: one quarter of the upper spread, capped at 5% of battery
+  capacity across the complete horizon. Full P90 and fallback scenarios remain
+  available for explicit offline comparisons. Natural DC demand and later useful
+  AC opportunities retain priority over unnecessary early discharge.
+- Optional AC now also retains the configured or learned consumption uncertainty
+  above the future DC obligation. Physical PSU activation thresholds, market
+  ranking, binary inverter permission and the independent live guards remain.
+- Reserve diagnostics and German/English explanations distinguish the expected
+  preparation forecast, consumption buffer and diagnostic upper PV scenario.
+
 ## [0.54.2] - 2026-10-05
 
 ### Fixed

@@ -1,8 +1,8 @@
 """DC-first preparation with high useful AC demand preferred over low-load hours.
 
-The lower bound reserves nominal DC energy before admitting optional AC. The
-upper bound makes room for the upper PV forecast. They serve different purposes:
-optimistic sunshine may require headroom, but cannot guarantee future DC supply.
+The lower bound reserves DC energy before admitting optional AC. The upper
+bound makes room for expected PV plus bounded uncertainty. Explicit offline
+scenarios may use different PV, but do not set the normal plan's budget.
 """
 
 from collections.abc import Sequence

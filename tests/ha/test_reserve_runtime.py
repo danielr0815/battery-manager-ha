@@ -415,6 +415,10 @@ def test_diagnostics_use_typed_decision_and_keep_history_out_of_physical_values(
     assert diagnostics["inverter_limit_w"] == 125.3
     assert diagnostics["historical_reference_soc_percent"] == 0
     assert diagnostics["reference_semantics"] == "historical_observation_only"
+    assert diagnostics["preparation_pv_basis"] == "expected_with_bounded_uncertainty"
+    assert diagnostics["upper_pv_role"] == "bounded_uncertainty_and_diagnostics"
+    assert diagnostics["pv_uncertainty_budget_wh"] == 0
+    assert diagnostics["consumption_buffer_wh"] == 250
     assert runtime.hold_soc == 0
     historical = reserve_diagnostics(
         config, inputs, baseline, baseline, ReserveRuntime(), "shadow"

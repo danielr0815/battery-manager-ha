@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 from .core.model import PlanInputs, PlanResult, SystemConfig
+from .core.uncertainty import reserve_preparation_scales
 
 # Gaps must not invent a solar gain or hide involuntary loss. Observation time
 # is diagnostic only, never a prerequisite for forecast-driven actuation.
@@ -148,6 +149,23 @@ def reserve_diagnostics(
         "shadow_ready": True,  # Compatible field: no observation prerequisite.
         "shadow_required_hours": 0,
         "control_basis": "forecast",
+        "preparation_pv_basis": "expected_with_bounded_uncertainty",
+        "pv_uncertainty_budget_wh": round(
+            sum(
+                slot.pv_wh * (scale - 1)
+                for slot, scale in zip(
+                    inputs.slots,
+                    reserve_preparation_scales(config, inputs),
+                    strict=True,
+                )
+            )
+            * b.eta_charge
+            * config.charger.eta,
+            1,
+        ),
+        "consumption_buffer_wh": round(
+            b.energy_wh(config.control.soc_buffer_percent), 1
+        ),
         "shadow_observed_hours": round(runtime.observed_seconds / 3600, 2),
         "hold_soc_percent": round(hold, 2),
         "historical_reference_soc_percent": round(runtime.hold_soc, 2)
@@ -192,7 +210,8 @@ def reserve_diagnostics(
             and flows[0].battery_discharge_wh > flows[0].battery_charge_wh + 1e-6
         ),
         "upper_pv_factor": config.reserve.upper_pv_factor,
-        "uncertainty": "p90_or_uncalibrated_scalar",
+        "uncertainty": "bounded_pv_and_consumption_buffer",
+        "upper_pv_role": "bounded_uncertainty_and_diagnostics",
         "grid_recharge": False,
         "emergency_feed_in": "requires_proven_total_benefit",
         "curve": [

@@ -940,8 +940,9 @@ ReserveDecisionReason = Literal[
 class ReserveDecision:
     """Current physical reserve decision shared by replay and HA diagnostics.
 
-    Headroom and unavoidable export describe the upper PV scenario within
-    the binding horizon, rather than a fixed SOC target or a solar guarantee.
+    Headroom and unavoidable export describe the simulated PV scenario within
+    the binding horizon: expected PV plus bounded uncertainty for live planning,
+    explicit lower/upper scenarios for offline comparisons. No fixed SOC target.
     """
 
     preparation_horizon_end: datetime

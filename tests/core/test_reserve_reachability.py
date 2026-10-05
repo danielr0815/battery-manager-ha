@@ -63,8 +63,11 @@ def test_unavoidable_export_does_not_spend_reserve_before_last_ac_window():
 
 
 def test_dc_below_ac_floor_requires_the_earlier_ac_opportunity():
+    config = plant()
+    # Reachability down to the physical floor requires explicit zero buffer.
+    config = replace(config, control=replace(config.control, soc_buffer_percent=0))
     result = simulate(
-        plant(), series(40, [(0, 200, 0), (0, 200, 150), (900, 0, 0)], 1 / 12), 20
+        config, series(40, [(0, 200, 0), (0, 200, 150), (900, 0, 0)], 1 / 12), 20
     )
     assert result.flows[0].inverter_output_wh == pytest.approx(200)
     assert result.flows[1].inverter_output_wh == pytest.approx(0)
@@ -146,7 +149,9 @@ def test_source_protection_also_wins_when_custom_ac_floor_is_below_support():
     config = plant()
     config = replace(
         config,
-        control=replace(config.control, inverter_min_soc_percent=5),
+        control=replace(
+            config.control, inverter_min_soc_percent=5, soc_buffer_percent=0
+        ),
         support=replace(config.support, dc48_available=True),
     )
     result = simulate(config, series(6, [(0, 10, 0), (1000, 0, 0)], 1 / 12), 5)

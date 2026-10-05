@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.54.2**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.55.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -307,3 +307,42 @@ bleiben verbindlich. Die aufgezeichnete Diagnose unterscheidet vollständige
 Marktgewichtung (`weighted`), gemischte Gewichtung (`weighted_partial`), teilweise
 vorhandene neutrale Preise (`load_priority_partial`), flache Preise und fehlende
 Preise. Vertrag und Nachweise: [Marktpriorität](F-MARKET-AC-PRIORITY.md).
+
+## Erwartete PV und Verbrauchsrückhalt ab 0.55.0
+
+Betreiberauftrag vom 05.10.2026: Vorhandene Batterieenergie nur so weit entnehmen,
+wie die normale PV-Prognose Speicherraum verlangt. Diese Regel ersetzt die
+frühere Verwendung der vollständigen oberen PV-Prognose als verbindlichen
+Vorbereitungspfad in der aktiven Reserve. Ein begrenzter Unsicherheitszuschlag
+bleibt erhalten: 25 % der physisch begrenzten oberen Abweichung, insgesamt
+höchstens 5 % der Batteriekapazität in gespeicherten Wh über den gesamten
+Horizont. Ein schmales Band ergibt weniger Zuschlag. Fehlende Bänder verwenden
+ein Viertel der Abweichung des konfigurierten oberen Ersatzfaktors; bei 1,20
+sind das 5 % mehr PV, weiterhin unter derselben Energieobergrenze.
+Explizite Offline-Vergleiche simulieren vollständige untere/obere Szenarien mit
+deren eigener Physik; ihre Ergebnisse erteilen keine Aktorfreigabe. Die
+Unsicherheitsprüfungen außerhalb der Reserveplanung bleiben erhalten.
+
+Optionales AC hält zusätzlich zum zukünftigen nominalen DC-Bedarf den
+konfigurierten beziehungsweise gelernten Verbrauchspuffer in gespeicherten Wh
+zurück. Das ist eine Grenze für optionale Entladung, kein festes Nacht-SOC-Ziel:
+Natürlicher DC-Verbrauch, physische Schutzschwellen und vorhandene Netzteile
+bleiben unabhängig. Der Puffer verschiebt keine PSU-Schwelle und fordert keine
+Netzladung. Ist die Ausgangsenergie bereits knapp, darf DC sie weiter nutzen;
+optionales AC erhält dadurch kein Budget. Die planmäßige Schnellüberwachung
+erhält den Rückhalt über das begrenzte Headroom-Budget; der zusätzliche
+Messwertpfad behält seine bestehende Puffer- und Frischeprüfung.
+
+Speicherraum entsteht zuerst durch DC-Bedarf und verfügbare spätere AC-Fenster.
+Innerhalb der tatsächlich nötigen AC-Menge gelten die bisherigen Preisgewichte,
+Lastprioritäten, PV-Deadlines und binären Schritte. Ein später aktualisierter
+normaler Forecast darf neue Vorbereitung begründen. Begrenzter Restexport bei
+stärkerer tatsächlicher Sonne oder vollständigen Schaltquanten ist gegenüber
+unbegründeter vorsorglicher Entladung zulässig; P90 ist keine Null-Export-Pflicht.
+
+Diagnose: `preparation_pv_basis: expected_with_bounded_uncertainty`,
+`pv_uncertainty_budget_wh`, `consumption_buffer_wh` und
+`upper_pv_role: bounded_uncertainty_and_diagnostics`. `headroom_wh` und
+`unavoidable_export_wh` gehören zum Vorbereitungspfad des tatsächlich
+simulierten Forecasts mit begrenztem Zuschlag. Nachweise und Golden-Prüfung:
+[Marktpriorität](F-MARKET-AC-PRIORITY.md#erwartete-pv-statt-verbindlicher-p90-vorbereitung-0550).

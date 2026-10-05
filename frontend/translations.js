@@ -808,7 +808,7 @@ Object.assign(STRINGS.en, {
   report_the_available_psus_cannot_fully_hold_soc_at_present:
     "The available PSUs cannot fully hold SOC at present.",
   report_forecast_bands_otherwise_uncalibrated_pv_factor:
-    "Forecast bands, otherwise uncalibrated PV factor",
+    "Headroom follows the expected forecast with bounded uncertainty. Upper-scenario fallback factor",
   report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit:
     "No targeted grid recharge. Feed-in requires proven emergency benefit.",
   report_house_consumption: "House consumption",
@@ -890,7 +890,7 @@ Object.assign(STRINGS.de, {
   report_the_available_psus_cannot_fully_hold_soc_at_present:
     "Die vorhandenen Netzteile können den SOC derzeit nicht vollständig halten.",
   report_forecast_bands_otherwise_uncalibrated_pv_factor:
-    "Prognosebänder, sonst unkalibrierter PV-Faktor",
+    "Speicherplatz folgt der normalen Prognose mit begrenzter Unsicherheit. Ersatzfaktor des oberen Szenarios",
   report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit:
     "Keine gezielte Netzladung. Einspeisung nur bei nachgewiesenem Notfallnutzen.",
   report_house_consumption: "Wohnungsverbrauch",

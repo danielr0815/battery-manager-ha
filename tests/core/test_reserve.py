@@ -84,9 +84,11 @@ def test_only_dc_remainder_is_allocated_to_ac():
 def test_lower_pv_does_not_create_grid_recharge_after_preparation():
     c = config()
     r = simulate(c, inputs(95, [(0, 500, 100), (700, 0, 0)]), 20, pv_scale=0.1)
-    assert r.flows[0].inverter_output_wh > 0
+    # The lower scenario needs no headroom; do not prepare for the old upper
+    # scenario while executing weaker sunshine.
+    assert r.flows[0].inverter_output_wh == 0
     assert r.flows[-1].battery_charge_wh == pytest.approx(70)
-    assert r.end_soc_percent < 50
+    assert r.end_soc_percent > 90
 
 
 def test_inverter_floor_and_charge_power_limit_remain_physical():
@@ -145,7 +147,7 @@ def test_emergency_export_cannot_merely_shift_the_same_export_earlier():
     assert schedule == (0, 0)
 
 
-def test_p90_and_physical_peak_replace_uncalibrated_scalar():
+def test_p90_and_scalar_add_only_bounded_uncertainty_to_expected_budget():
     c = config()
     c = replace(c, reserve=ReserveParams(True, 1.2), pv=replace(c.pv, peak_power_w=500))
     i = inputs(95, [(0, 500, 0), (400, 0, 0)])
@@ -154,9 +156,17 @@ def test_p90_and_physical_peak_replace_uncalibrated_scalar():
     )
     plain = simulate(c, i, 20)
     band = simulate(c, bands, 20)
-    # 480 Wh only permits eleven whole 500-W steps; p90 permits all twelve.
-    assert plain.flows[0].inverter_output_wh == pytest.approx(11 * 500 / 12)
-    assert band.flows[0].inverter_output_wh == pytest.approx(500)
+    # Expected 400 Wh plus a small uncertainty margin: ten full steps fit.
+    # Full P90 or the old +20% horizon would permit eleven/twelve steps.
+    assert plain.flows[0].inverter_output_wh == pytest.approx(10 * 500 / 12)
+    assert band.flows[0].inverter_output_wh == plain.flows[0].inverter_output_wh
+    assert band.reserve_decision.headroom_wh <= 450  # 400 + 5% capacity cap
+    stronger = replace(
+        bands, slots=(bands.slots[0], replace(bands.slots[1], pv_wh=900))
+    )
+    updated = simulate(c, stronger, 20)
+    # A revised expected forecast releases more AC, capped by physical PV peak.
+    assert updated.flows[0].inverter_output_wh == pytest.approx(500)
 
 
 def test_partial_slot_keeps_power_and_energy_units_distinct():

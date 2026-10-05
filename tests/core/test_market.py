@@ -170,17 +170,19 @@ def test_october_forecast_uses_dc_first_without_buying_back_early_ac():
     config, inputs = decode(record["config"]), decode(record["inputs"])
     nominal = simulate(config, inputs, 20)
     assert sum(f.inverter_output_wh for f in nominal.flows) == 0
-    assert not nominal.flows[0].support_dc24_start
+    # Expected PV needs less DC preparation too; holding preserves the rail
+    # energy which the former upper-PV policy unnecessarily spent on Friday.
+    assert nominal.flows[0].support_dc24_start
     saturday = [
         f
         for s, f in zip(inputs.slots, nominal.flows, strict=True)
         if s.start.date().isoformat() == "2026-10-03"
     ]
-    assert sum(f.psu24_delivered_wh + f.psu48_delivered_wh for f in saturday) == 0
-    assert min(f.soc_end_percent for f in saturday) == pytest.approx(21.04, abs=0.01)
-    assert nominal.max_soc_percent == pytest.approx(85.02, abs=0.01)
-    assert nominal.reserve_decision.live_ac_floor_percent == 100
-    assert nominal.reserve_decision.reason == "dc_priority"
+    assert sum(f.unserved_dc_wh for f in saturday) == 0
+    assert min(f.soc_end_percent for f in saturday) >= 25
+    assert nominal.max_soc_percent < config.battery.soc_max_percent
+    assert nominal.reserve_decision.headroom_wh == 0
+    assert nominal.reserve_decision.reason == "dc_reserve_holding"
     # Actual stronger sunshine can release AC again: the DC comparison uses
     # that scenario's physics, not a permanent ban based on an earlier run.
     upper = effective_uncertainty(

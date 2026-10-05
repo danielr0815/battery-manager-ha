@@ -39,6 +39,7 @@ ein bloßer Funktionsaufruf reicht nicht.
 | `core/test_execution_projection.py`, `ha/test_execution_constraints.py`, `ha/test_predrain_block.py`, `frontend/cascade-card.test.mjs` | `F-EXECUTION-PROJECTION.md`: Restlaufzeit, Ladeziel, stabile Vorlaufgrenze, Gerätebestätigung, Prüffristen und Kartenbegründungen |
 | `core/test_compare_plan_grids.py` | `PLAN-GRID-COMPARISON.md`: Energieerhaltung, Laufzeitsperren, tatsächliche Quellensegmente, begrenzte Offline-Arbeit und Fragmentierungs-Gegenbeispiel |
 | `core/test_model.py` | physikalische Dataclass-Invarianten und unveränderte akzeptierte Werte |
+| `core/test_reserve_expected_forecast.py`, ergänzte `ha/test_live_ac_runtime.py`-Regression | `CURRENT_CONTRACTS`: erwartete PV als Vorbereitungspfad ab 0.55.0, Verbrauchsrückhalt, anonymisierter Oktoberabend und bestätigte Abschaltung ohne optionale AC-Messer |
 | `core/test_series.py`, `test_forecast_hours.py` | `F-PREDRAIN` F1, Forecast-Bucket-/Fallback-Verträge |
 | `core/test_simulate.py` | Energieerhaltung, `DC_TOPOLOGY`, `F-PREDRAIN`, `F-FEEDIN` |
 | `core/test_optimize.py` | nummerierte Regeln der `F-*.md`-Planner-Spezifikationen |

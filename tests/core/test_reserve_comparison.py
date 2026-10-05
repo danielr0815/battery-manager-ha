@@ -22,14 +22,20 @@ def test_fifteen_bounded_variants_report_spent_storage_and_standby_cost():
     assert len(rows) == 15
     assert {r.scenario for r in rows} == {"nominal", "pessimistic", "upper"}
     nominal = rows[0]
-    assert nominal.import_reduction_wh == pytest.approx(25)
-    assert nominal.terminal_stored_reduction_wh == pytest.approx(26.25)
-    assert nominal.terminal_ac_reduction_wh == pytest.approx(26.25)
-    assert nominal.terminal_adjusted_gain_wh == pytest.approx(-1.25)
+    # The nominal 125 Wh fits into the existing 150 Wh headroom. A larger
+    # upper scenario may prepare, but does not spend nominal stored energy.
+    assert nominal.candidate.ac_output_wh == 0
+    assert nominal.import_reduction_wh == 0
+    assert nominal.terminal_stored_reduction_wh == 0
+    assert nominal.terminal_ac_reduction_wh == 0
+    assert nominal.terminal_adjusted_gain_wh == 0
     assert nominal.preserves_dc_priority
     assert nominal.dc_service_regression_wh == 0
     assert rows[5].reference.terminal_stored_wh < nominal.reference.terminal_stored_wh
-    assert rows[10].terminal_adjusted_gain_wh > 0
+    assert rows[10].candidate.ac_output_wh == pytest.approx(26.25)  # includes standby
+    assert rows[10].import_reduction_wh == pytest.approx(25)
+    assert rows[10].terminal_stored_reduction_wh == 0
+    assert rows[10].terminal_adjusted_gain_wh == pytest.approx(25)
     assert rows[4].candidate.ac_output_wh == 0
     assert rows[4].terminal_adjusted_gain_wh == 0
     assert inputs.start_soc_percent == 80

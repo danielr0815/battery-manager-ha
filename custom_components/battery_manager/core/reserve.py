@@ -1,6 +1,7 @@
 """SOC preservation with DC-first preparation across the available forecast.
 
-Only energy beyond the nominal DC obligation can prepare upper-PV headroom.
+Only energy beyond DC obligations and consumption uncertainty prepares headroom
+for expected PV plus a bounded fraction of forecast uncertainty.
 Necessary AC uses higher useful house demand first, and later times on ties.
 Automatic support follows the same DC envelope, never an AC reference curve.
 """
@@ -35,6 +36,7 @@ from .reserve_schedule import (
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
 from .support import support_state
+from .uncertainty import reserve_preparation_scales
 
 # A planning call probes many nearby load schedules. The cache expires with that
 # call and cannot leak a source, forecast or cancellation context into the next.
@@ -172,14 +174,26 @@ def _probe_key(
     )
 
 
-def _steps(config: SystemConfig, inputs: PlanInputs, extra: tuple[float, ...] | None):
-    from .uncertainty import effective_uncertainty
-
-    _, upper, _ = effective_uncertainty(
-        inputs, config.control.predrain_pv_confidence, config.reserve.upper_pv_factor
+def _steps(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float] = 1.0,
+):
+    preparation_scale = (
+        reserve_preparation_scales(config, inputs)
+        if isinstance(pv_scale, (int, float)) and pv_scale == 1.0
+        else pv_scale
     )
     return [
-        (i, small, (extra[i] if extra else 0.0) * ratio, upper[i])
+        (
+            i,
+            small,
+            (extra[i] if extra else 0.0) * ratio,
+            preparation_scale
+            if isinstance(preparation_scale, (int, float))
+            else preparation_scale[i],
+        )
         for i, small, ratio in _expanded_slots(inputs.slots)
     ]
 
@@ -264,11 +278,11 @@ def _simulate_reserve(
 ) -> Trajectory:
     """AC timing may cost efficiency, but cannot purchase later DC support.
 
-    An upper-PV preparation can be physically safe yet buy back DC energy
-    under the nominal forecast. Compare the entire candidate against the same
-    sources/loads with no AC discharge. If it buys additional DC supply, keep
+    Preparation can be physically safe yet buy back DC energy later.
+    Compare the entire candidate against the same sources/loads with no AC
+    discharge. If it buys additional DC supply, keep
     that DC-only plan until a new forecast makes AC affordable. This bounded
-    fallback deliberately favours DC over speculative upper-PV headroom.
+    fallback deliberately favours DC over optional AC headroom.
     """
     candidate = _simulate_reserve_policy(config, inputs, extra_ac, pv_scale, feedin)
     dc_import = sum(
@@ -343,16 +357,20 @@ def _simulate_reserve_policy(
     ac_margin_wh: float = 0.0,
 ) -> Trajectory:
     """Execute source protection and the shared forecast preparation envelope."""
-    steps = _steps(config, inputs, extra_ac)
+    steps = _steps(config, inputs, extra_ac, pv_scale)
+    # Operator 2026-10-05: retain stored energy unless the expected forecast
+    # needs space, with only bounded insurance from the upper spread. Never
+    # require the complete P90 or legacy +20% horizon. Explicit offline scenarios
+    # still use their own physics for both preparation and execution.
     budgets = [
         _budget(
             config,
             slot,
             extra,
-            upper,
+            scale,
             (feedin[i] if feedin else 0.0) * slot.duration / inputs.slots[i].duration,
         )
-        for i, slot, extra, upper in steps
+        for i, slot, extra, scale in steps
     ]
     nominal_budgets = [
         _budget(
@@ -374,6 +392,10 @@ def _simulate_reserve_policy(
         for budget, (_, slot, _, _) in zip(nominal_budgets, steps, strict=True)
     ]
     battery, support = config.battery, config.support
+    # The learned planning buffer protects forecast error in addition to the
+    # nominal DC obligation. It limits optional AC, without moving physical
+    # PSU activation thresholds or forcing a fixed night SOC / grid recharge.
+    dc_uncertainty_wh = battery.energy_wh(config.control.soc_buffer_percent)
     protection_floor = battery.energy_wh(
         max(
             battery.soc_min_percent,
@@ -537,7 +559,7 @@ def _simulate_reserve_policy(
                 battery.energy_wh(natural.soc_end_percent)
                 - max(
                     following_ceiling + ac_margin_wh,
-                    following_minimum,
+                    following_minimum + dc_uncertainty_wh,
                     budgets[j].inverter_floor,
                 ),
             )
@@ -643,7 +665,7 @@ def _simulate_reserve_policy(
                     battery.energy_wh(natural.soc_end_percent)
                     - max(
                         following_ceiling + ac_margin_wh,
-                        following_minimum,
+                        following_minimum + dc_uncertainty_wh,
                         budgets[j].inverter_floor,
                     ),
                 ),

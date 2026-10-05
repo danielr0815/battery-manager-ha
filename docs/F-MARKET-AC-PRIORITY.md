@@ -1,5 +1,8 @@
 # Marktorientierter Inverterbetrieb (0.53.0)
 
+> Ab 0.55.0 ersetzt der Abschnitt [Erwartete PV](#erwartete-pv-statt-verbindlicher-p90-vorbereitung-0550)
+> die nachfolgende historische Verwendung der oberen PV als Vorbereitungspfad.
+
 Betreiberauftrag vom 02.10.2026: Bei Festpreis sollen deutliche EPEX-Spitzen
 gegenüber einem geringfügig höheren AC-Verbrauch Vorrang bekommen. Das Ziel
 ist die zeitliche Verlagerung des Netzbezugs nach Marktsignalen; es ist keine
@@ -156,3 +159,52 @@ Der Import sinkt von 2,851124 auf 2,848221 kWh, der Export bleibt null; minimale
 SOC steigt von 40,301 auf 40,5361 %. Die einmalige Budgetkorrektur bewahrt nützliche
 AC-Fenster und reduziert den anschließenden DC-Netzbezug. Kein Golden-Szenario
 importiert mehr Energie. Die übrigen 15 Szenarien bleiben unverändert.
+
+## Erwartete PV statt verbindlicher P90-Vorbereitung (0.55.0)
+
+Betreiberauftrag vom 05.10.2026: Nur so viel wie nötig entladen ist ein
+verbindliches Ziel. Die normalen Reservebudgets verwenden deshalb dieselbe
+erwartete PV-Serie wie die physische Vorwärtssimulation, ergänzt um eine kleine
+Unsicherheitsreserve. Der Folgeauftrag desselben Tages verlangt ausdrücklich
+einen von der Prognoseunsicherheit abhängigen Zuschlag. Dazu wird ein Viertel
+der oberen Abweichung verwendet, nach physischer Peak-Begrenzung. Der gesamte
+Zuschlag ist auf 5 % der Batteriekapazität begrenzt, in gespeicherten Wh und
+einmal über den gesamten Horizont. Bei 5 kWh sind das höchstens 250 Wh;
+schmale Bänder ergeben weniger. Ohne Band liefert der obere Ersatzfaktor die
+Abweichung, ebenfalls nur zu einem Viertel und unter derselben Obergrenze.
+Diese Werte sind eine begrenzte Planungspolitik, keine behauptete statistische
+Kalibrierung. Vollständige untere/obere Werte bleiben für explizite
+Offline-Szenarien verfügbar. Der gemeinsame Prognosehorizont und die
+intervallweisen Preisgewichte bleiben erhalten.
+
+Die AC-Energiegrenze ist der größere Wert aus Vorbereitungshülle,
+zukünftiger DC-Mindestenergie plus Verbrauchspuffer und physischer
+Inverteruntergrenze. Der Puffer liegt in gespeicherten Wh vor, bevor vollständige
+ON-Schritte geprüft werden. Er bewegt keine Schutzschwelle und fordert keine
+gezielte Netzladung. Der Headroom der aktuellen Planfreigabe enthält diesen
+Rückhalt bereits; SOC-Hysterese und das volle 35-Sekunden-Fenster bleiben beim
+schnellen Überwachen zusätzlich verbindlich. Der separate zusätzliche Live-Pfad
+behält seine bestehende, konservative Pufferprüfung.
+
+Der anonymisierte Fall vom 05.10., 18:42 MESZ hält die normale Prognose, die
+P10/P90-Serie, den aktuellen Teilslot, die Anlagenphysik und die bekannten
+Marktintervalle fest. Ohne optionale Geräte ergibt der alte Plan rund 10,08 %
+minimalen SOC und 507 Wh AC am ersten Abend. Die neue Planung gibt am ersten
+Abend 0 W frei, behält `weighted_partial` und erreicht mindestens 21,09 %.
+Spätere nötige Vorbereitung bleibt aktiv; der nominale Export bleibt null.
+Der Unsicherheitszuschlag ist hier auf 250 Wh begrenzt. Der Gesamtimport steigt
+gegenüber dem alten Plan um rund 589 Wh, während am Horizontende rund 0,71 kWh mehr
+gespeichert bleiben. Dieser Unterschied dokumentiert die beabsichtigte
+Energieerhaltung; der Vergleich ist keine gemessene oder tarifliche Ersparnis.
+
+`tests/core/test_reserve_expected_forecast.py` beweist den aufgenommenen Fall,
+kleine bandabhängige Zuschläge, physische Peak-Begrenzung, die gemeinsame
+Energieobergrenze einschließlich Wirkungsgraden und Rückhalt der
+Verbrauchsunsicherheit. Ohne Überlauf trotz kleinem Zuschlag wird kein AC-Budget
+erzeugt. Die aktualisierten Reserve- und Marktregressionen
+prüfen weiterhin reale PV-Deadlines, stärkere erwartete Sonne, DC-Vorrang,
+vollständige ON-Schritte und explizite obere Szenarien. Der HA-Test
+`test_expected_forecast_withdraws_permission_despite_high_p90_and_missing_meters`
+prüft die Abschaltung einer bestätigten Freigabe nach normalem Forecastwechsel.
+
+Alle 16 Topologie-Goldens wurden neu erzeugt und bleiben unverändert.

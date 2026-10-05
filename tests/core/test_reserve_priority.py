@@ -53,7 +53,10 @@ def test_only_required_ac_uses_highest_load_then_latest_window(demands, expected
 
 
 def test_earlier_ac_cannot_force_later_dc_grid_support():
-    result = simulate(plant(), series([(0, 600, 0), (0, 0, 600), (900, 0, 0)]), 20)
+    config = plant()
+    # Isolate the nominal DC floor; uncertainty retention has its own test.
+    config = replace(config, control=replace(config.control, soc_buffer_percent=0))
+    result = simulate(config, series([(0, 600, 0), (0, 0, 600), (900, 0, 0)]), 20)
     assert result.flows[0].inverter_output_wh <= 100
     assert not result.flows[1].support_dc24
     assert result.flows[1].psu24_delivered_wh == 0

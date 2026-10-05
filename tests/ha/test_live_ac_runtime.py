@@ -624,3 +624,58 @@ async def test_price_boundary_expires_permission_and_schedules_replanning(
         c, inputs, SimpleNamespace(load_plans=(), cascade_plans=())
     )
     assert timer.call_args.args[2] == dt_util.as_utc(boundary)
+
+
+async def test_expected_forecast_withdraws_permission_despite_high_p90_and_missing_meters(
+    live, hass
+):
+    """A revised expected forecast revokes confirmed ON without a hold delay."""
+    from dataclasses import replace
+
+    from custom_components.battery_manager.core.model import HourSlot, PlanInputs
+    from custom_components.battery_manager.core.optimize import plan
+
+    c, calls, *_ = live
+    config = c.build_system_config()
+    config = replace(
+        config,
+        battery=replace(
+            config.battery, capacity_wh=1000, eta_charge=1, eta_discharge=1
+        ),
+        inverter=replace(config.inverter, max_power_w=1000, eta=1, standby_power_w=0),
+        charger=replace(config.charger, max_power_w=2000, eta=1, standby_power_w=0),
+        support=replace(config.support, native48_base_w=0),
+    )
+    now = dt_util.now()
+    inputs = PlanInputs(
+        now,
+        80,
+        (
+            HourSlot(0, now, 1, now.hour, 0, 600, 0),
+            HourSlot(1, now + timedelta(hours=1), 1, (now.hour + 1) % 24, 900, 0, 0),
+        ),
+    )
+    before = plan(config, inputs)
+    assert before.inverter_on
+    c.raw_config["inverter_max_power_w"] = 1000
+    c._reserve_inverter_limit_w = before.trajectory.flows[0].inverter_limit_w
+    hass.states.async_set("sensor.house", "unavailable")
+    c.live_ac.set_plan(config, inputs, before)
+    assert await c._confirm_inverter_limit(False, {})
+    assert calls == [(LIMIT, 1000)]
+
+    revised = replace(
+        inputs,
+        slots=(
+            inputs.slots[0],
+            replace(inputs.slots[1], pv_wh=100, pv_p10_wh=50, pv_p90_wh=900),
+        ),
+    )
+    after = plan(config, revised)
+    assert not after.inverter_on
+    c._reserve_inverter_limit_w = after.trajectory.flows[0].inverter_limit_w
+    c.live_ac.set_plan(config, revised, after)
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 1000), (LIMIT, 0)]
+    assert c.live_ac.diagnostics["reason"] == "measurement_unavailable"
+    assert c.live_ac.planned_limit() == 0
