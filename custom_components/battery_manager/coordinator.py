@@ -31,7 +31,7 @@ from .appliance_learning import (
     measurement,
     program_name,
 )
-from .appliance_runtime import ApplianceRuntime
+from .appliance_runtime import ApplianceRuntime, PlanningSignature
 from .cascade_manager import CascadeManager
 from .const import (
     ACTOR_CONFIRM_TIMEOUT_S,
@@ -726,6 +726,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # block on startup (F-REALIZED-SURPLUS); the tick cursor re-arms at
         # boot so the downtime gap is never credited (see _feedin_tick).
         self._feedin_delivered: tuple[date, float, datetime] | None = None
+        self._planned_feedin_delivered_wh = 0.0
         # Throttle anchor of the upward trim (one raise per 60 s, requirement
         # 10). In-memory — a restart merely delays the next raise.
         self._feedin_last_upward_at: datetime | None = None
@@ -808,6 +809,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._first_success_done = False
 
         self._debounce_task: asyncio.Task | None = None
+        self._fast_update_task: asyncio.Task | None = None
+        self._fast_trim_pending = False
+        self._planned_appliance_signature: dict[str, PlanningSignature] = {}
         self._listeners_setup: bool = False
         self._unsub_state_listener: Callable[[], None] | None = None
         self._setup_entity_listeners()
@@ -1135,14 +1139,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Configuration assembly
     # ------------------------------------------------------------------
 
-    def _tracked_entities(self) -> list[str]:
+    def _tracked_entities(self, *, planning_only: bool = False) -> list[str]:
         cfg = self.raw_config
         entities = [
-            cfg[CONF_SOC_ENTITY],
             cfg[CONF_PV_FORECAST_TODAY],
             cfg[CONF_PV_FORECAST_TOMORROW],
             cfg[CONF_PV_FORECAST_DAY_AFTER],
         ]
+        if not planning_only:
+            # Normal battery evolution is covered by the five-minute plan.
+            # SOC events still run protection and check threshold crossings.
+            entities.append(cfg[CONF_SOC_ENTITY])
         market_entity = price_entity(self.hass, cfg)
         if market_entity:
             entities.append(market_entity)
@@ -1168,19 +1175,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # irrelevant (docs/DC_TOPOLOGY.md §6, fallback-only variant).
         # F-FEEDIN (requirements 9/10): the battery-power sensor drives the
         # event-driven trim — every Victron update (typ. every few seconds)
-        # fires the trim path via the debounced refresh instead of waiting for
+        # fires the cheap debounced trim instead of waiting for
         # the 5-min planning cycle. The setpoint entity itself is tracked so an
         # external override is judged promptly (F-N2 pattern). Unlike the
         # voltage analog above this is deliberate: the trim MUST react in
         # seconds so a sudden unmeasured consumer cannot drain the battery.
         if cfg.get(CONF_FEEDIN_ENABLED):
             for key in (CONF_FEEDIN_SETPOINT_ENTITY, CONF_FEEDIN_BATTERY_POWER_ENTITY):
-                if cfg.get(key):
+                if cfg.get(key) and not planning_only:
                     entities.append(cfg[key])
         # F-REALIZED-SURPLUS: the export meter wakes the coordinator so the
         # realized deltas are booked promptly instead of only at the 5-min
         # planning cycle (same event-driven pattern as the feed-in trim).
-        if cfg.get(CONF_EXPORT_METER_ENTITY):
+        if cfg.get(CONF_EXPORT_METER_ENTITY) and not planning_only:
             entities.append(cfg[CONF_EXPORT_METER_ENTITY])
         cascade_member_ids = {
             load_id
@@ -1221,6 +1228,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
                     CONF_APPLIANCE_REMAINING_TIME_ENTITY,
                 ):
+                    if planning_only and key in (
+                        CONF_APPLIANCE_POWER_ENTITY,
+                        CONF_APPLIANCE_ENERGY_ENTITY,
+                    ):
+                        continue
+                    if (
+                        planning_only
+                        and key == CONF_APPLIANCE_DETECTION_ENTITY
+                        and data.get(key) == data.get(CONF_APPLIANCE_POWER_ENTITY)
+                    ):
+                        # Power-derived cycle edges are checked by the observer;
+                        # a standby watt fluctuation is not a new appliance run.
+                        continue
                     if data.get(key):
                         entities.append(data[key])
         return entities
@@ -4058,7 +4078,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ensure_planning_inputs(inputs)
         return result
 
-    def _ensure_planning_inputs(self, inputs: PlanInputs) -> None:
+    def _ensure_planning_inputs(
+        self, inputs: PlanInputs, *, check_soc_drift: bool = True
+    ) -> None:
+        """Reject unsafe inputs; SOC drift invalidates unfinished calculations.
+
+        A published plan is refreshed periodically. Its telemetry checks keep
+        source thresholds and slot expiry, without treating normal SOC evolution
+        since capture as a reason to repeat the complete economic search.
+        """
         if self._actuation_shutdown:
             raise asyncio.CancelledError
         now = dt_util.now()
@@ -4067,8 +4095,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         current_soc = self._get_soc(now)
         initial_soc = inputs.start_soc_percent
-        control = self.build_system_config().control
-        thresholds = (
+        config = self.build_system_config()
+        control = config.control
+        thresholds: tuple[float, ...] = (
             control.inverter_min_soc_percent,
             control.inverter_min_soc_percent + control.hysteresis_percent,
             control.support_dc24_activate_soc,
@@ -4076,11 +4105,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             control.support_dc48_activate_soc,
             control.support_dc48_recovery_soc,
         )
+        if not check_soc_drift and self.raw_config.get(CONF_FEEDIN_ENABLED):
+            thresholds += (config.feedin.min_soc_percent,)
         changed = current_soc is None or (
             current_soc != initial_soc
             and (
-                abs(current_soc - initial_soc)
-                > min(PLANNING_SOC_TOLERANCE_PERCENT, control.hysteresis_percent)
+                (
+                    check_soc_drift
+                    and abs(current_soc - initial_soc)
+                    > min(PLANNING_SOC_TOLERANCE_PERCENT, control.hysteresis_percent)
+                )
                 or any(
                     min(initial_soc, current_soc)
                     <= threshold
@@ -4167,6 +4201,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = dt_util.now()
         if self._startup_at is None:
             self._startup_at = now  # V8: anchor the SOC startup grace window
+        feedin_delivered_at_capture = (
+            self._feedin_tick(now) if self._feedin_entities() is not None else 0.0
+        )
         # Runtime counter: accumulate real active minutes every cycle (and on the
         # power-sensor state events that trigger a refresh), before any early-out
         # so it tracks continuously (v0.7.18).
@@ -4837,8 +4874,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # per-day forecast, so the `realized` block below can mix Ist +
         # Restprognose. Runs every successful cycle; None without an export
         # meter (the key then stays absent — backend-compat).
-        realized = self._update_realized_surplus(now, daily_surplus)
+        # Telemetry may already have booked newer meter readings while the
+        # CPU worker ran. Account live readings at publication, not capture.
+        realized = self._update_realized_surplus(dt_util.now(), daily_surplus)
         self._last_planner_recording = (config, inputs, result)
+        self._planned_feedin_delivered_wh = feedin_delivered_at_capture
+        self._planned_appliance_signature = appliance_signature
         self.appliances.plan_updated(
             result, inputs, floor_guard, config, appliance_signature
         )
@@ -7383,6 +7424,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         applied_w = self._feedin_last_written_w or 0.0
         today = now.date()
         state = self._feedin_delivered
+        if state is not None and now <= state[2]:
+            # CPU planning can finish with a capture from before a live tick,
+            # including before midnight. Never reset or rewind that integral.
+            return state[1]
         if state is None or state[0] != today:
             self._feedin_delivered = (today, 0.0, now)
             return 0.0
@@ -7556,7 +7601,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         keep running (same argument as the load force-off).
 
         On top of the plan value the EVENT-DRIVEN trim runs: this pass fires
-        on every tracked battery-power update (debounced refresh), not just on
+        on every tracked battery-power update (debounced fast update), not just on
         the 5-min poll. Battery-power convention: positive = charging
         (requirement 1).
         """
@@ -7792,7 +7837,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
-        if self._planning.phase is not None and (
+        soc_event = (
+            event is not None
+            and event.data["entity_id"] == self.raw_config[CONF_SOC_ENTITY]
+        )
+        if (self._planning.phase is not None or soc_event) and (
             self._planning_protection_task is None
             or self._planning_protection_task.done()
         ):
@@ -7801,6 +7850,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._async_planning_protection(),
                 name="battery_manager_planning_protection",
             )
+        # Small power fluctuations drove two complete searches every ~28 s
+        # (live CPU audit 2026-10-05). Keep trim/observation independent of
+        # economic planning, including while a planner worker is running.
+        if event is not None and event.data["entity_id"] not in self._tracked_entities(
+            planning_only=True
+        ):
+            self._fast_trim_pending |= event.data["entity_id"] == self.raw_config.get(
+                CONF_FEEDIN_BATTERY_POWER_ENTITY
+            )
+            if self._fast_update_task is None or self._fast_update_task.done():
+                self._fast_update_task = self.entry.async_create_background_task(
+                    self.hass,
+                    self._debounced_fast_update(),
+                    name="battery_manager_fast_update",
+                )
+            return
+        self._schedule_replan()
+
+    def _schedule_replan(self) -> None:
         if self._debounce_task is not None and not self._debounce_task.done():
             # A window is already armed: absorb this event instead of
             # cancelling and restarting the sleep. Restarting starves the
@@ -7812,6 +7880,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # the latency at DEBOUNCE_SECONDS.
             return
         self._debounce_task = self.hass.async_create_task(self._debounced_update())
+
+    async def _debounced_fast_update(self) -> None:
+        from .fast_updates import async_fast_update
+
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+        trim = self._fast_trim_pending
+        self._fast_trim_pending = False
+        await async_fast_update(self, trim=trim)
 
     async def _debounced_update(self) -> None:
         await asyncio.sleep(DEBOUNCE_SECONDS)
@@ -7953,6 +8029,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._initial_refresh_task,
             self._update_task,
             self._planning_protection_task,
+            self._fast_update_task,
             self._switch_task,
             self._dc48_ctrl_task,
             self._load_switch_task,
@@ -7991,6 +8068,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._debounce_task:
             self._debounce_task.cancel()
             self._debounce_task = None
+        if self._fast_update_task:
+            self._fast_update_task.cancel()
+            self._fast_update_task = None
 
     def get_last_hourly_details(self) -> list[dict[str, Any]]:
         if self.data and self.data.get("hourly_details"):

@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.55.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.55.1**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -20,6 +20,34 @@ Betriebsarchiv in Schema 1 als einzelnes Segment übernommen. Schema 2 enthält
 bisherigen Journalfelder sowie `segment_id` und seine eigene `timezone`.
 Ein Downgrade kann das neue Archivformat nicht lesen; dafür das vorherige Backup
 verwenden. Planneraufzeichnungen behalten ihr bisheriges JSON-Format.
+
+## Telemetrie und wirtschaftliche Neuplanung ab 0.55.1
+
+Batterie-SOC, Batterieleistung, Einspeisezähler und Leistungs-/Energiemessungen beratener
+Haushaltsgeräte aktualisieren Schutz, Ist-Zähler und Gerätebeobachtung über
+einen eigenen entprellten Pfad. Nur eine neue Batterieleistungsmeldung löst
+zusätzlich den Einspeisetrim aus. Kleine Standby-Schwankungen und Bestätigungen
+eigener Setpoint-Kommandos berechnen keinen neuen Mehrtagesplan.
+
+Ein tatsächlicher Gerätezyklus oder manuell übernommener Einspeise-Setpoint
+fordert eine Vollplanung an. PV-Prognosen, Preise, Versorgungszustände und
+die Eingaben schaltbarer Lasten bleiben Planungsauslöser. Die regelmäßige
+Fünf-Minuten-Aktualisierung und exakte Plangrenzen bleiben erhalten.
+
+Normale SOC-Änderungen und die Abweichung von einer veröffentlichten
+SOC-Prognose lösen keine zusätzliche Vollplanung aus. SOC-Ereignisse prüfen
+den Schutz ohne auf den Telemetrie-Debounce zu warten. Überschrittene
+Versorgungs- und Einspeise-SOC-Schwellen, unbekannter SOC und abgelaufene Slots
+fordern weiterhin eine Neuplanung an. Die bestehende SOC-Driftprüfung während
+und nach einer noch laufenden Berechnung bleibt unverändert: Ein während der
+CPU-Arbeit überholter Entwurf darf keine neue Freigabe auslösen.
+
+Der schnelle Pfad nutzt nur einen erfolgreichen, gültigen Plan im aktuellen
+Slot, prüft SOC und Schutzschwellen und zieht seit dessen Eingangsaufnahme
+eingespeiste Energie vom verbleibenden Tagesbudget ab. Ungültige Eingaben
+rechtfertigen keine automatische Einspeisung. Die bestehende manuelle
+Aktorhoheit und Quellen-Cache-Regeln gelten weiter. Schutz und Einspeisetrim
+laufen auch während der CPU-Planung; Telemetrie verschiebt keine Planzeitstempel.
 
 ## Lasten pausieren und schalten
 

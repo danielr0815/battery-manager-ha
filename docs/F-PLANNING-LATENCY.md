@@ -26,13 +26,40 @@ Läufen 13,00 / 12,86 / 12,89 Sekunden (Median 12,89 Sekunden). Der Netzbezug
 betrug weiterhin 879,92 Wh. Historische Messungen waren Einzelmessungen;
 CPU-Auslastung und Cachezustand können die absoluten Laufzeiten beeinflussen.
 
+## CPU-Untersuchung vom 05.10.2026 und Telemetriepfad ab 0.55.1
+
+Die Live-Stichprobe unter 0.55.0 zeigte neue Vergleichs-/Reservezyklen etwa alle
+28 Sekunden bei 17–19 Sekunden Gesamtlaufzeit. Die Batterieleistung wechselte
+im Median alle vier Sekunden zwischen wenigen Watt; auch Standby-Meldungen
+der Spülmaschine lösten Vollplanungen aus. Home Assistant belegte im Mittel
+22,38 % der drei VM-Kerne, entsprechend ungefähr zwei Dritteln eines Kerns.
+Diese Messung beschreibt den Ausgangszustand; die CPU nach Installation der
+Korrektur muss separat gemessen werden.
+
+Batterieleistung, Einspeisezähler und Leistungs-/Energiemeldungen beratener
+Geräte erhalten einen separaten, Entry-gebundenen Telemetriepfad. Er aktualisiert
+Schutz, Ist-Zähler und Gerätebeobachtung und führt bei Batterieleistungsmeldungen
+den Einspeisetrim aus. Ein gültiger Plan im aktuellen Slot ist Voraussetzung;
+gelieferte Energie seit Aufnahme reduziert sein verbleibendes Einspeisebudget.
+Eigene Setpoint-Bestätigungen trimmen nicht erneut. Geänderte Gerätezyklen oder
+manuelle Einspeisevorgaben fordern eine Vollplanung an. PV, Preise,
+Versorgungszustände, schaltbare Lasten, Polling und Plangrenzen behalten ihre
+Planungsauslöser. Entladen bricht auch den Telemetriepfad ab.
+
+Normale Hausbatterie-SOC-Änderungen werden im Telemetriepfad geprüft und lösen
+keine zusätzliche Suche aus. Der regelmäßige Takt bleibt fünf Minuten; es gibt
+keinen zusätzlichen Trigger für eine Soll-/Ist-SOC-Abweichung. SOC-Ereignisse
+stoßen eine unabhängige Schutzprüfung sofort an. Versorgungs- und Einspeise-
+SOC-Schwellen sowie ungültige Eingaben fordern weiterhin eine Neuplanung an.
+Die strengere SOC-Driftprüfung für noch laufende Berechnungen bleibt bestehen.
+
 ## Verbindliche Regeln
 
 1. Das Laden der Persistenz und die Einrichtung der Entities bleiben geordnet.
    Die erste wirtschaftliche Planung läuft anschließend als Entry-gebundene
    Hintergrundaufgabe. Prognose-Entities bleiben bis zu einem gültigen Ergebnis
    unverfügbar. Ein geladener Entry bedeutet nicht, dass bereits ein Plan vorliegt.
-2. Pro Coordinator läuft höchstens eine Aktualisierung gleichzeitig. Die
+2. Pro Coordinator läuft höchstens eine wirtschaftliche Planung gleichzeitig. Die
    Vergleichs-, Reserve- und gegebenenfalls Last-Schattenplanung bleiben seriell.
 3. Die Eingangsvalidierung bleibt vollständig erhalten. Reservekonfigurationen
    werden je benötigter Betriebsvariante wiederverwendet; das zeitabhängige
@@ -90,6 +117,10 @@ Es gibt kein von der Rechnergeschwindigkeit abhängiges CI-Zeitlimit.
 - `tests/ha/test_planning.py`: blockierter erster Plan bei fertig geladenem Entry,
   unverfügbare Prognosen bis zum Ergebnis, Entladen, Workerabbruch, kontrollierte
   Schutzkadenz, SOC-Abfall, Quellenfreigabe, überlappende Refreshes und alte Slots.
+- `tests/ha/test_fast_updates.py`: keine Vollplanung bei kleinen Leistungsmeldungen,
+  echter Gerätestart als Planungsauslöser, unabhängiger Trim bei blockiertem
+  Worker, ungültige Eingaben, manuelle Hoheit, verbleibendes Einspeisebudget und
+  monotone Ist-Zähler einschließlich Mitternacht.
 - Bestehende Kern-, Golden-, Quellenumschalt- und Lastabschaltungstests bleiben
   verbindlich. Testhilfen warten bei Bedarf ausdrücklich auf die erste
   Hintergrundplanung; Lifecycle-Tests beobachten den noch wartenden Zustand.

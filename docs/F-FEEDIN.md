@@ -155,12 +155,18 @@ feed-in.
     actuation.
 - **R10 (Ereignisgesteuerter Trim, beide Richtungen).** The battery-power
   entity is a tracked input: every state update (Victron: typically every few
-  seconds) fires the trim path via the debounced refresh, without waiting for
+  seconds) fires a separate debounced telemetry path, without a multi-day
+  economic search and without waiting for
   the 5-minute planning cycle. This only works because the debounce ABSORBS
   events while a window is armed instead of cancelling and restarting its
   sleep — a restart-on-every-event debounce is starved outright by an input
   that updates faster than `DEBOUNCE_SECONDS`, and the trim then never ran
-  between the polls at all (review 2026-08-03). The trim engages **only while the plan slot
+  between the polls at all (review 2026-08-03). Since 0.55.1, the fast path
+  retains protection and checks the held plan's validity, SOC and slot expiry.
+  Its export budget deducts only delivery since that plan's input capture.
+  Own setpoint confirmations update observation without trimming the same
+  battery reading again. Manual ownership and real appliance-cycle changes
+  request full planning; standby telemetry does not. The trim engages **only while the plan slot
   books > 0 W** — a plan value of 0 is re-anchored to 0 directly (R11), never
   trimmed. Deadband `FEEDIN_TRIM_DEADBAND_W = 50` W around zero.
   - **Downward, immediate and unthrottled:** battery discharging

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.1] - 2026-10-06
+
+### Fixed
+- Battery-power updates, export-meter readings and appliance standby telemetry
+  no longer repeat the multi-day economic search. A separate debounced path
+  retains live protection, feed-in trim and accounting, including during a
+  running planner. Material planning inputs and actual appliance cycle changes
+  still trigger full planning; periodic and plan-boundary refreshes remain.
+- Normal house-battery SOC changes use live protection without restarting the
+  economic search. Five-minute planning, source and feed-in threshold crossings
+  and slot boundaries remain; SOC drift still invalidates unfinished calculations.
+- Fast feed-in updates deduct delivery since plan capture from the remaining
+  export budget. Own setpoint confirmations cannot apply the same trim twice,
+  and completed plans cannot rewind export accounting across midnight.
+
 ## [0.55.0] - 2026-10-05
 
 ### Changed

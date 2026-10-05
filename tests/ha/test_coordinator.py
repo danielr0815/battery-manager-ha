@@ -105,14 +105,12 @@ async def test_setup_creates_coordinator_with_active_listeners(hass):
 
 
 async def test_entity_change_schedules_debounced_update(hass):
-    """A SOC state change must schedule a debounced refresh task."""
+    """A changed PV forecast still schedules a debounced economic refresh."""
     entry = await _setup_entry(hass)
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     assert coordinator._debounce_task is None
-    hass.states.async_set(
-        "sensor.test_soc", "60", {"unit_of_measurement": "%", "device_class": "battery"}
-    )
+    hass.states.async_set("sensor.pv_today", "11.0", {"unit_of_measurement": "kWh"})
     await hass.async_block_till_done(wait_background_tasks=False)
 
     assert coordinator._debounce_task is not None
