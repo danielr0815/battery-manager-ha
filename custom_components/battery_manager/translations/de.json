@@ -192,7 +192,7 @@
               "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
               "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort.",
               "market_price_enabled": "Bevorzugt bis zu vier teure Tagesstunden innerhalb des verfügbaren AC-Energiebudgets. DC-Versorgung und Schutz bleiben vorrangig. Auch bei Festpreis sinnvoll; keine Berechnung persönlicher Spotpreis-Ersparnisse.",
-              "market_price_entity": "Leer: eindeutigen EPEX-Großhandelssensor automatisch verwenden. Benötigt vollständige Preisintervalle; fehlende oder ungültige Daten verwenden die Lastpriorität."
+              "market_price_entity": "Leer: eindeutigen EPEX-Großhandelssensor automatisch verwenden. Vorhandene Preisintervalle bleiben wirksam; nur Zeiträume ohne verwertbare Preise verwenden die Lastpriorität."
             }
           },
           "support_paths": {
@@ -684,7 +684,7 @@
               "reserve_grid_available_entity": "Frisches on/off-Signal oder Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Fehlende oder alte Werte gelten nicht als verfügbare Netzversorgung.",
               "reserve_transfer_verified": "Vor Übernahme der 24-V-Last durch das Netzteil muss der DC/DC bei Netzausfall auch ohne HA zurückfallen können. Ohne Bestätigung bleibt der DC/DC aktiv; die Reserveplanung startet trotzdem sofort.",
               "market_price_enabled": "Bevorzugt bis zu vier teure Tagesstunden innerhalb des verfügbaren AC-Energiebudgets. DC-Versorgung und Schutz bleiben vorrangig. Auch bei Festpreis sinnvoll; keine Berechnung persönlicher Spotpreis-Ersparnisse.",
-              "market_price_entity": "Leer: eindeutigen EPEX-Großhandelssensor automatisch verwenden. Benötigt vollständige Preisintervalle; fehlende oder ungültige Daten verwenden die Lastpriorität."
+              "market_price_entity": "Leer: eindeutigen EPEX-Großhandelssensor automatisch verwenden. Vorhandene Preisintervalle bleiben wirksam; nur Zeiträume ohne verwertbare Preise verwenden die Lastpriorität."
             }
           },
           "consumption_profile": {

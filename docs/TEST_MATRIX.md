@@ -73,7 +73,7 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | Chunk-/Manifestbeschädigung + Kapazität + Abbruch | Gültige andere Evidenz und Runtimepflichten erhalten | `ha/test_archive_storage.py`, `ha/test_operation_recorder.py` |
 | Power-Publikation + Quellenwechsel + alter Lernstand | Kein Lernen aus eingefrorener Leistung; Gegenkanal und Zähler bleiben nutzbar | `ha/test_appliance_learning.py`, `ha/test_appliance_history.py` |
 | Zwei Herbststunden + fehlender Fold + Quellenepoch | Wh durch reale Dauer teilen; fehlend bleibt unbekannt; Nenner trennen | `core/test_load_profile.py`, `ha/test_history_profile.py` |
-| Unbrauchbare EPEX-Entität + relevante Preislücke | Eindeutige valide Serie; kohärente Lastpriorität | `ha/test_market_adapter.py`, `core/test_market.py` |
+| Unbrauchbare EPEX-Entität + relevante Preislücke | Eindeutige valide Serie; bekannte Preise bleiben wirksam, nur Lücken erhalten neutrales Gewicht; Planner und Live-Pfad vergleichen dieselben Werte | `ha/test_market_adapter.py`, `core/test_market.py`, `ha/test_live_ac_runtime.py` |
 | Folgetage + reale gemeldete SOC + Reserve/Live/PSUs + DST | Unabhängige Bilanz, kein Reset der Endenergie, DC-Vorrang | `ha/test_reserve_closed_loop.py` |
 | Alternativer Rückhalt + pessimistische PV + Endenergie | Begrenzte Offline-Varianten, keine Live-Freigabe | `core/test_reserve_comparison.py` |
 | Plan/Live/Rückmeldung + fehlende Daten + Touch/Fokus/ABA | Getrennte wahrheitsgemäße Anzeigen und erhaltener Bedienzustand | `frontend/reports.test.mjs`, `browser/review-regressions.spec.mjs` |

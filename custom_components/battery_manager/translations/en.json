@@ -192,7 +192,7 @@
               "reserve_grid_available_entity": "Fresh on/off signal or Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Missing or stale values do not prove grid supply.",
               "reserve_transfer_verified": "Before handing 24 V loads to the PSU, the DC/DC must restore the rail on grid loss even without HA. Without confirmation the DC/DC stays active; reserve planning still starts immediately.",
               "market_price_enabled": "Prefer up to four expensive daily hours within the available AC energy budget. DC supply and protection remain first. Also suitable for fixed tariffs; no personal spot-price savings are calculated.",
-              "market_price_entity": "Empty: automatically use an unambiguous EPEX wholesale sensor. Requires price intervals; missing or invalid data use load priority."
+              "market_price_entity": "Empty: automatically use an unambiguous EPEX wholesale sensor. Available price intervals remain effective; only periods without usable prices use load priority."
             }
           },
           "support_paths": {
@@ -684,7 +684,7 @@
               "reserve_grid_available_entity": "Fresh on/off signal or Victron Active Input: AC_INPUT_1/2, DISCONNECTED/NOT_CONNECTED. Missing or stale values do not prove grid supply.",
               "reserve_transfer_verified": "Before handing 24 V loads to the PSU, the DC/DC must restore the rail on grid loss even without HA. Without confirmation the DC/DC stays active; reserve planning still starts immediately.",
               "market_price_enabled": "Prefer up to four expensive daily hours within the available AC energy budget. DC supply and protection remain first. Also suitable for fixed tariffs; no personal spot-price savings are calculated.",
-              "market_price_entity": "Empty: automatically use an unambiguous EPEX wholesale sensor. Requires price intervals; missing or invalid data use load priority."
+              "market_price_entity": "Empty: automatically use an unambiguous EPEX wholesale sensor. Available price intervals remain effective; only periods without usable prices use load priority."
             }
           },
           "consumption_profile": {

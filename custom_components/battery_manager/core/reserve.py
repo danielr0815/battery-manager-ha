@@ -29,7 +29,7 @@ from .planning_control import check_cancelled
 from .reserve_energy import ENERGY_EPSILON_WH, BatteryStep, dc_loads
 from .reserve_schedule import (
     PreparationEnvelope,
-    coherent_market_weights,
+    effective_market_weights,
     preparation_envelope,
 )
 from .simulate import step_hour
@@ -392,22 +392,23 @@ def _simulate_reserve_policy(
         cache.variants if cache is not None else {}
     )
     raw_weights = _market_weights(inputs, steps)
-    weights = coherent_market_weights(priorities, raw_weights)
+    weights = effective_market_weights(raw_weights)
+    partial_prices = any(
+        p > 0 and w is None for p, w in zip(priorities, raw_weights, strict=True)
+    )
+    market_active = allow_ac and any(weight > 1 for weight in weights)
     ranking_reason = (
         "load_priority_no_prices"
         if not any(
             w is not None for p, w in zip(priorities, raw_weights, strict=True) if p > 0
         )
-        else "load_priority_incomplete"
-        if any(
-            p > 0 and w is None for p, w in zip(priorities, raw_weights, strict=True)
-        )
+        else "weighted_partial"
+        if partial_prices and any(weight > 1 for weight in weights)
         else "weighted"
-        if any(w is not None and w > 1 for w in weights)
+        if any(weight > 1 for weight in weights)
+        else "load_priority_partial"
+        if partial_prices
         else "load_priority_flat"
-    )
-    market_active = allow_ac and any(
-        weight is not None and weight > 1 for weight in weights
     )
     # One horizon prevents a simulated midnight from introducing a PV deadline
     # after the preceding evening's better AC opportunities have been discarded.
@@ -620,11 +621,7 @@ def _simulate_reserve_policy(
                 battery.eta_discharge * config.inverter.eta
             )
             current_weight, future_weight = weights[0], weights[j]
-            required_demand = (
-                priorities[j] * future_weight / current_weight
-                if current_weight is not None and future_weight is not None
-                else priorities[j]
-            )
+            required_demand = priorities[j] * future_weight / current_weight
             future_demand_w = max(future_demand_w, required_demand)
         if decision is None:
             reason: ReserveDecisionReason = "no_preparation_needed"

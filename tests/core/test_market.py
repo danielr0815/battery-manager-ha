@@ -39,10 +39,8 @@ def test_peak_beats_100w_more_load_and_live_controller_keeps_that_energy():
     assert result.min_soc_percent >= 20
 
 
-@pytest.mark.parametrize(
-    "prices", [[100, 100, 100], [100, 101, 100], [None, 300, 100], [100, None, 100]]
-)
-def test_flat_small_or_missing_price_difference_retains_load_priority(prices):
+@pytest.mark.parametrize("prices", [[100, 100, 100], [100, 101, 100], [100, None, 100]])
+def test_flat_small_or_missing_peak_price_retains_load_priority(prices):
     result = simulate(
         plant(), priced([(0, 600, 0), (0, 500, 0), (300, 0, 0)], prices), 20
     )
@@ -128,7 +126,7 @@ def test_dst_fold_and_partial_price_coverage():
     weights = slot_weights(slots, prices)
     assert weights[0] == 1
     assert weights[1] == 3
-    assert slot_weights((replace(slots[0], duration=1.5),), prices[:1]) == [None]
+    assert slot_weights((replace(slots[0], duration=1.5),), prices[:1]) == [1]
     assert slot_weights(inputs.slots, prices) == [None] * 3
 
 
@@ -192,21 +190,76 @@ def test_october_forecast_uses_dc_first_without_buying_back_early_ac():
     assert sum(f.inverter_output_wh for f in sunny.flows) > 0
 
 
-def test_missing_useful_opportunity_uses_one_transitive_horizon_order():
-    """An unused unknown 550 W slot formerly suppressed the priced 500 W peak."""
+def test_missing_useful_opportunity_preserves_known_peak_with_transitive_scores():
+    """Known 500 W × 3 outranks 600 W × 1 and unknown 550 W × 1."""
     inputs = priced(
         [(0, 500, 0), (0, 600, 0), (0, 550, 0), (350, 0, 0)], [300, 100, None, 100]
     )
     result = simulate(plant(), inputs, 20)
     plain = simulate(plant(), replace(inputs, market_prices=()), 20)
-    assert [f.inverter_output_wh for f in result.flows] == pytest.approx([0, 200, 0, 0])
-    assert result.flows == plain.flows
-    assert result.reserve_decision.market_ranking_reason == "load_priority_incomplete"
-    assert result.reserve_decision.live_ac_override_demand_w is None
-    assert (
-        result.reserve_decision.live_ac_floor_percent
-        == plain.reserve_decision.live_ac_floor_percent
+    assert [f.inverter_output_wh for f in result.flows] == pytest.approx(
+        [500 / 3, 0, 0, 0]
     )
+    assert result.flows != plain.flows
+    assert result.reserve_decision.market_ranking_reason == "weighted_partial"
+    assert result.reserve_decision.live_ac_override_demand_w == pytest.approx(500)
+    assert result.min_soc_percent >= 20
+
+
+@pytest.mark.parametrize("current_price", [None, 100])
+def test_known_later_peak_protects_live_budget_even_without_current_price(
+    current_price,
+):
+    inputs = priced(
+        [(0, 600, 0), (0, 500, 0), (0, 550, 0), (350, 0, 0)],
+        [current_price, 300, None, 100],
+    )
+    result = simulate(plant(), inputs, 20)
+    assert result.flows[0].inverter_output_wh == 0
+    assert result.flows[1].inverter_output_wh == pytest.approx(500 / 3)
+    assert result.flows[2].inverter_output_wh == 0
+    assert result.reserve_decision.market_ranking_reason == "weighted_partial"
+    assert result.reserve_decision.live_ac_floor_percent >= inputs.start_soc_percent
+    assert result.reserve_decision.live_ac_override_demand_w == pytest.approx(1500)
+
+
+def test_unpriced_larger_load_can_still_outrank_a_known_peak():
+    result = simulate(
+        plant(),
+        priced([(0, 100, 0), (0, 600, 0), (300, 0, 0)], [300, None, 100]),
+        20,
+    )
+    assert result.flows[0].inverter_output_wh == 0
+    assert result.flows[1].inverter_output_wh == pytest.approx(150)
+    assert result.reserve_decision.live_ac_override_demand_w == pytest.approx(200)
+
+
+def test_next_day_without_prices_does_not_erase_today_peak():
+    inputs = priced(
+        [(0, 500, 0), (0, 600, 0)] + [(0, 0, 0)] * 22 + [(0, 550, 0), (350, 0, 0)],
+        [300, 100] + [100] * 22 + [None, None],
+    )
+    result = simulate(plant(), inputs, 20)
+    assert inputs.slots[24].start.date() != inputs.now.date()
+    assert result.flows[0].inverter_output_wh == pytest.approx(500 / 3)
+    assert result.flows[1].inverter_output_wh == 0
+    assert result.flows[24].inverter_output_wh == 0
+    assert result.reserve_decision.market_ranking_reason == "weighted_partial"
+
+
+def test_partially_priced_step_retains_bonus_only_for_covered_seconds():
+    inputs = priced([(0, 500, 0), (0, 600, 0)], [300, 100])
+    prices = (
+        replace(inputs.market_prices[0], end=START + timedelta(minutes=2)),
+        inputs.market_prices[1],
+    )
+    assert slot_weights((replace(inputs.slots[0], duration=5 / 60),), prices) == (
+        pytest.approx([1.8])
+    )
+    # An entirely unpriced interval remains unknown for diagnostics.
+    assert slot_weights(
+        (replace(inputs.slots[0], start=START + timedelta(minutes=5)),), ()
+    ) == [None]
 
 
 def test_missing_price_for_non_opportunity_preserves_known_market_peak():
@@ -233,4 +286,12 @@ def test_flat_and_absent_price_diagnostics_remain_distinct():
             plant(), priced(values, [None, None]), 20
         ).reserve_decision.market_ranking_reason
         == "load_priority_no_prices"
+    )
+    assert (
+        simulate(
+            plant(),
+            priced([(0, 600, 0), (0, 500, 0), (300, 0, 0)], [100, None, 100]),
+            20,
+        ).reserve_decision.market_ranking_reason
+        == "load_priority_partial"
     )

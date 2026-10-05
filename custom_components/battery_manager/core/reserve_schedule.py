@@ -5,6 +5,7 @@ upper bound makes room for the upper PV forecast. They serve different purposes:
 optimistic sunshine may require headroom, but cannot guarantee future DC supply.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 from .planning_control import check_cancelled
@@ -23,22 +24,14 @@ class PreparationEnvelope:
     unavoidable_export_wh: float
 
 
-def coherent_market_weights(
-    priorities: list[float], market_weights: list[float | None]
-) -> list[float | None]:
-    """Incomplete useful-opportunity coverage uses one load ordering for the horizon.
+def effective_market_weights(market_weights: Sequence[float | None]) -> list[float]:
+    """Operator 2026-10-04: retain each known signal, neutralise only its gaps.
 
-    Pairwise missing-price fallback is cyclic (500 W*3 > 600 W > unknown
-    550 W > 500 W). A single fallback preserves transitivity and lets the live
-    controller use exactly the planner's ordering. Empty/PV-covered intervals
-    cannot compete for AC energy and therefore do not require price coverage.
+    Every opportunity uses demand × its own weight, with 1 for missing prices.
+    A single score per opportunity preserves transitivity (known 500 W × 3 >
+    known 600 W × 1 > unknown 550 W × 1) and the live controller's ordering.
     """
-    if any(
-        priority > 0 and weight is None
-        for priority, weight in zip(priorities, market_weights, strict=True)
-    ):
-        return [None] * len(priorities)
-    return market_weights
+    return [weight if weight is not None else 1.0 for weight in market_weights]
 
 
 def preparation_envelope(
@@ -47,7 +40,7 @@ def preparation_envelope(
     priorities: list[float],
     protection_floor: float,
     energy: float,
-    market_weights: list[float | None] | None = None,
+    market_weights: Sequence[float | None] | None = None,
 ) -> PreparationEnvelope:
     """Bounded passes over the available forecast, no solver dependency.
 
@@ -94,12 +87,12 @@ def preparation_envelope(
         )
     selected = [0.0] * n
     weights = (
-        coherent_market_weights(priorities, market_weights)
+        effective_market_weights(market_weights)
         if market_weights is not None
-        else [None] * n
+        else [1.0] * n
     )
     keys = list(zip(priorities, weights, strict=True))
-    first_occurrence: dict[tuple[float, float | None], int] = {}
+    first_occurrence: dict[tuple[float, float], int] = {}
     for index, key in enumerate(keys):
         first_occurrence.setdefault(key, index)
     for (priority, weight), first in first_occurrence.items():
@@ -111,12 +104,8 @@ def preparation_envelope(
             if keys[index] == (priority, weight):
                 selected[index] = ceiling
             other_weight = weights[index]
-            # One consistent fallback applies to all useful opportunities.
-            better = (
-                priorities[index] * other_weight >= priority * weight
-                if weight is not None and other_weight is not None
-                else priorities[index] >= priority
-            )
+            # Compare each signal with the same neutral weight for missing data.
+            better = priorities[index] * other_weight >= priority * weight
             ceiling = effective[index].incoming_ceiling(
                 ceiling, spill[index], ac=better
             )

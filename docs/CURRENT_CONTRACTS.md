@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.54.1**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.54.2**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -250,8 +250,8 @@ zeitgewichteter gelernter Prognoseanteil haben getrennte Nenner. Ein unbekanntes
 Quantilband wird diagnostisch von gemessener Streuung null unterschieden; die
 bestehende Pufferpolitik bleibt erhalten.
 
-Fehlt ein Preis für eine relevante AC-Gelegenheit, verwendet der gesamte
-Vergleichshorizont einschließlich Live-Vorziehen Lastpriorität. Automatische
+Die damalige horizonweite Lastpriorität bei relevanten Preislücken ist ab
+0.54.2 durch den unten beschriebenen intervallweisen Rückfall ersetzt. Automatische
 EPEX-Erkennung verlangt eine valide Intervallserie; explizite Quellenbindung
 hat Vorrang. Diagnose und Bedienung: [Dashboard](F-DASHBOARD-DIAGNOSTICS.md).
 Archivformat und Forschung: [Oktoberumsetzung](F-OCTOBER-OPTIMIZATIONS.md).
@@ -276,8 +276,8 @@ werden gegen die tatsächliche Ergebnisveröffentlichung gemessen, während
 Innerhalb eines Planner-Aufrufs werden die unveränderten Fünf-Minuten-Slots und
 Preisgewichte für Lastkandidaten wiederverwendet. Die Cache-Schlüssel halten die
 unveränderlichen Originalobjekte fest; neue Slots, neue Preisintervalle und die
-beiden Herbststunden bleiben getrennt. Die kohärente Preisabdeckung wird je
-Kandidat anhand seiner relevanten Lasten geprüft. Summationsreihenfolge,
+beiden Herbststunden bleiben getrennt. Die Preisbewertung wird je
+Kandidat anhand seiner relevanten Lasten bestimmt. Summationsreihenfolge,
 Optimierungsziele und DC-Schutz bleiben unverändert. Die Caches enden mit dem
 Planner-Aufruf; Zeitmessungen sind Beobachtungen, kein Hardware-unabhängiges Gate.
 
@@ -292,3 +292,18 @@ sie stammen nicht aus einem anderen Kandidaten. Jeder Physikschritt prüft den
 Abbruch vor dem Cachezugriff. Gleiche angrenzende Schaltzustände werden erst als
 fertige Intervalle materialisiert; Zeitlücken und reale DST-Grenzen bleiben
 erhalten.
+
+## Intervallweiser Preisrückfall ab 0.54.2
+
+Vorhandene Marktpreise behalten ihre Gewichtung, auch wenn für andere relevante
+AC-Gelegenheiten Preise fehlen. Nur unbedeckte Intervalle erhalten das neutrale
+Gewicht eins und folgen damit der Lastpriorität. Der Vergleich verwendet immer
+`nutzbare Restleistung × eigenes Gewicht`, einschließlich Live-Vorziehen; es gibt
+keinen paarweisen Wechsel der Vergleichsregel. Teilweise bedeckte Schritte
+mitteln die bekannten Gewichte und das neutrale Gewicht anhand der Zeitdauer.
+Ein fehlender Preis am dritten Prognosetag entfernt keine heutigen Marktboni.
+DC-Vorrang, vorhandenes Energiebudget, PV-Deadlines, Schutz und binäre Freigabe
+bleiben verbindlich. Die aufgezeichnete Diagnose unterscheidet vollständige
+Marktgewichtung (`weighted`), gemischte Gewichtung (`weighted_partial`), teilweise
+vorhandene neutrale Preise (`load_priority_partial`), flache Preise und fehlende
+Preise. Vertrag und Nachweise: [Marktpriorität](F-MARKET-AC-PRIORITY.md).

@@ -53,8 +53,9 @@ def peak_weights(prices: tuple[MarketPrice, ...]) -> tuple[float, ...]:
 def slot_weights(
     slots: tuple[HourSlot, ...], prices: tuple[MarketPrice, ...]
 ) -> list[float | None]:
-    """Duration-weighted signals; an uncovered second makes the step unknown.
+    """Duration-weighted signals with neutral preference for uncovered seconds.
 
+    An entirely uncovered step stays unknown; a gap cannot erase a known peak.
     Naive legacy replay slots have no reliable market timezone: stay neutral.
     UTC comparisons distinguish the repeated autumn hour and real durations.
     """
@@ -80,7 +81,12 @@ def slot_weights(
             )
             covered += seconds
             total += seconds * weight
+        seconds = slot.duration * 3600
         result.append(
-            total / covered if covered >= slot.duration * 3600 - 1e-6 else None
+            total / covered
+            if covered >= seconds - 1e-6
+            else (total + seconds - covered) / seconds
+            if covered > 0
+            else None
         )
     return result

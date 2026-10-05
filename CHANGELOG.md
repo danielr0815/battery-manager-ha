@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.2] - 2026-10-05
+
+### Fixed
+- Known EPEX prices retain their market preference when other forecast hours
+  lack prices. Only uncovered intervals use neutral load priority, including
+  uncovered portions of a simulation step. Planner and live AC comparisons use
+  the same demand multiplied by each interval's own weight, preserving a
+  consistent ordering and all DC, reserve and full-power budget protections.
+
 ## [0.54.1] - 2026-10-03
 
 ### Fixed

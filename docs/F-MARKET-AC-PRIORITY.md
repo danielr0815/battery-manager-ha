@@ -50,9 +50,17 @@ Durch Standby und unterschiedliche vollständige ON-Schritte kann etwas mehr
 Netzbezug oder Restexport entstehen; dies ist der ausdrücklich gewünschte
 Kompromiss zwischen Marktzeitpunkt und reiner Effizienz.
 
-Fehlende Preise sind unbekannt, niemals null. Sobald einer der verglichenen
-Zeitabschnitte nicht vollständig preisgedeckt ist, gilt für diesen Vergleich
-die AC-Lastpriorität. Negative Preise bleiben gültig und rechtfertigen weder
+Fehlende Preise sind unbekannt, niemals null. Ab 0.54.2 gilt der Betreiberauftrag
+vom 04.10.2026: Vorhandene Preise bleiben für ihre Zeiträume wirksam; nur
+unbedeckte Zeiträume verwenden die AC-Lastpriorität. Jeder Zeitraum besitzt einen
+einheitlichen Vergleichswert `nutzbare Restleistung × eigenes Preisgewicht`.
+Bei fehlenden Preisen beträgt das Gewicht eins. Damit bleibt die Reihenfolge
+auch bei gemischter Abdeckung transitiv: 500 W mit Gewicht drei schlagen
+600 W mit Gewicht eins, und diese wiederum unbepreiste 550 W. Fehlende Preise
+am dritten Prognosetag löschen keine heutigen oder morgigen Preissignale.
+Ein teilweise bedeckter Simulationsschritt mittelt bekannte Gewichte und das
+neutrale Gewicht der unbedeckten Sekunden anhand ihrer realen Dauer.
+Negative Preise bleiben gültig und rechtfertigen weder
 zusätzliche Verbraucher noch Netzladung. Eine flache Preisreihe aktiviert keinen
 besonderen Live-Vorbehalt. Vier Stunden sind bevorzugte Fenster, keine Pflichtlaufzeit.
 
@@ -67,8 +75,9 @@ Eine unerwartet große Last kann dennoch vorziehen:
 1. Der Core betrachtet tatsächlich geplante AC-Abgabe vor der nächsten positiven
    Netto-PV-Ladung. Noch nicht erzeugte Energie gehört nicht zu diesem Budget.
 2. Er veröffentlicht eine konservative Lastschwelle: die beste dieser späteren
-   Gelegenheiten, umgerechnet mit dem aktuellen Preisgewicht. Bei fehlendem Preis
-   wird wiederum nur die nutzbare Leistung verglichen.
+   Gelegenheiten, umgerechnet mit dem aktuellen Preisgewicht. Jedes fehlende
+   Preisgewicht wird einzeln durch eins ersetzt; bekannte Gewichte bleiben
+   auch bei einer unbepreisten aktuellen oder zukünftigen Gelegenheit wirksam.
 3. Ein Start verlangt mindestens 10 % mehr nutzbare aktuelle Leistung. Die
    nutzbare Leistung bleibt auf die Inverterleistung begrenzt. Ein bereits
    gestarteter Betrieb bleibt nur zulässig, solange er mindestens gleichwertig ist.
@@ -117,6 +126,8 @@ keine gemessene Ersparnis und keine Differenz zu einer preisfreien Planung.
 
 `tests/core/test_market.py` prüft Preis gegen 100 W Lastdifferenz, flache/kleine
 Spreads, fehlende und negative Preise, DC-Vorrang, PV-Deadline, Standby und DST.
+Die Regressionen für 0.54.2 prüfen einen unbepreisten Folgetag, die transitive
+Reihenfolge bei gemischten Preisen und teilweise bedeckte Fünf-Minuten-Schritte.
 `tests/ha/test_market.py` prüft Einheiten, Fehlerfälle, Autowahl, Konfiguration und
 den unveränderten Snapshot bis zur Veröffentlichung. Ein echter Core-Plan in
 `tests/ha/test_live_ac_runtime.py` belegt geschützte Marktreserve, frühe Freigabe

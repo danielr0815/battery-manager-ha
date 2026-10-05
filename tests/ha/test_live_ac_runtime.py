@@ -520,8 +520,9 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
     assert calls == [(LIMIT, 1000), (LIMIT, 0)]
 
 
+@pytest.mark.parametrize("current_price", [100, None])
 async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_load(
-    live, hass
+    live, hass, current_price
 ):
     from dataclasses import replace
 
@@ -551,16 +552,20 @@ async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_loa
         80,
         tuple(
             HourSlot(i, now + timedelta(hours=i), 1, (now.hour + i) % 24, pv, ac, 0)
-            for i, (pv, ac) in enumerate([(0, 600), (0, 500), (300, 0)])
+            for i, (pv, ac) in enumerate([(0, 600), (0, 500), (300, 0), (0, 550)])
         ),
         market_prices=tuple(
             MarketPrice(now + timedelta(hours=i), now + timedelta(hours=i + 1), p)
-            for i, p in enumerate([100, 300, 100])
+            for i, p in enumerate([current_price, 300, 100, None])
+            if p is not None
         ),
     )
     result = plan(config, inputs)
     assert not result.inverter_on
     assert result.trajectory.flows[1].inverter_output_wh > 0
+    assert (
+        result.trajectory.reserve_decision.market_ranking_reason == "weighted_partial"
+    )
     c.live_ac.set_plan(config, inputs, result)
     await c.live_ac.run()
     assert not calls
