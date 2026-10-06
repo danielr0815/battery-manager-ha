@@ -41,6 +41,9 @@ def preparation_envelope(
     protection_floor: float,
     energy: float,
     market_weights: Sequence[float | None] | None = None,
+    *,
+    soft_maximum: float | None = None,
+    dc_uncertainty_wh: float = 0.0,
 ) -> PreparationEnvelope:
     """Bounded passes over the available forecast, no solver dependency.
 
@@ -49,6 +52,8 @@ def preparation_envelope(
     latest-use rule. Priorities are W, independent of partial slot lengths.
     """
     n = len(budgets)
+    starting_energy = energy
+    original_protection_floor = protection_floor
     # With no DC demand there is no future DC obligation. With no available
     # PSU, retain the physical battery floor exactly (no protective epsilon).
     if (
@@ -77,7 +82,7 @@ def preparation_envelope(
     for budget in effective:
         energy, exported = budget.project(energy)
         spill.append(exported)
-    dc_ceiling = [budgets[0].maximum] * (n + 1)
+    dc_ceiling = [budgets[-1].maximum] * (n + 1)
     for index in range(n - 1, -1, -1):
         # The max-AC reference is not a DC target. Clamping to that reference
         # bought DC grid energy in the afternoon just to discharge it via AC
@@ -97,7 +102,7 @@ def preparation_envelope(
         first_occurrence.setdefault(key, index)
     for (priority, weight), first in first_occurrence.items():
         check_cancelled()
-        ceiling = budgets[0].maximum
+        ceiling = budgets[-1].maximum
         # Earlier positions never query this demand level. Avoid repeating
         # irrelevant prefixes for every hourly load-allocation candidate.
         for index in range(n - 1, first - 1, -1):
@@ -109,6 +114,48 @@ def preparation_envelope(
             ceiling = effective[index].incoming_ceiling(
                 ceiling, spill[index], ac=better
             )
-    return PreparationEnvelope(
+    envelope = PreparationEnvelope(
         tuple(selected), tuple(dc_ceiling[1:]), tuple(minimum[1:]), sum(spill)
+    )
+    if soft_maximum is None:
+        return envelope
+    # The normal-PV target is a second envelope, not another subtraction from
+    # the upper-PV envelope. Taking the tighter ceiling preserves the larger
+    # of the two buffers without adding them. Only net solar charging imposes
+    # a soft peak; a sunless horizon must not create optional AC discharge.
+    soft_budgets = []
+    for index, budget in enumerate(nominal):
+        intake = min(max(0.0, budget.balance - budget.feedin), budget.charger_limit)
+        charge = max(0.0, intake - budget.charger_standby) * budget.charge_eta
+        maximum = (
+            min(
+                budget.maximum,
+                max(soft_maximum, minimum[index + 1] + dc_uncertainty_wh),
+            )
+            if charge > budget.dc + ENERGY_EPSILON_WH
+            else budget.maximum
+        )
+        soft_budgets.append(replace(budget, maximum=maximum))
+    if all(
+        soft.maximum == normal.maximum
+        for soft, normal in zip(soft_budgets, nominal, strict=True)
+    ):
+        return envelope
+    soft = preparation_envelope(
+        soft_budgets,
+        nominal,
+        priorities,
+        original_protection_floor,
+        starting_energy,
+        market_weights,
+    )
+    return PreparationEnvelope(
+        tuple(
+            min(a, b) for a, b in zip(envelope.ac_ceiling, soft.ac_ceiling, strict=True)
+        ),
+        tuple(
+            min(a, b) for a, b in zip(envelope.dc_ceiling, soft.dc_ceiling, strict=True)
+        ),
+        envelope.dc_minimum,
+        envelope.unavoidable_export_wh,
     )

@@ -160,6 +160,56 @@ SOC steigt von 40,301 auf 40,5361 %. Die einmalige Budgetkorrektur bewahrt nütz
 AC-Fenster und reduziert den anschließenden DC-Netzbezug. Kein Golden-Szenario
 importiert mehr Energie. Die übrigen 15 Szenarien bleiben unverändert.
 
+## Prognoseabhängiger Tagespuffer statt fester Horizontgrenze (0.55.2)
+
+Betreiberauftrag vom 06.10.2026: Der Zuschlag soll von der jeweiligen
+Tagesprognose abhängen, nicht von einer pauschalen 250-Wh-Grenze. Die Grenze
+von 5 % Batteriekapazität über den gesamten Horizont entfällt. Unverändert
+bleiben 25 % der physisch begrenzten oberen Abweichung, die skalare Rückfallregel
+für fehlende Bänder und der Vorrang von DC-Bedarf und Verbrauchsrückhalt.
+Ein zusätzlich angehängter Prognosetag verkleinert damit nicht mehr den Puffer
+eines vorhandenen Tages. `pv_uncertainty_budget_wh_by_day` nennt den Zuschlag
+je Datum in gespeicherten Wh; `pv_uncertainty_budget_wh` bleibt dessen Summe.
+
+Im Offline-Replay des Plans vom 06.10., 07:54 MESZ entspricht die bisherige
+Planung exakt der aufgenommenen Gerätesimulation. Ihr Zuschlag verteilt sich
+mit rund 97/120/33 Wh auf heute/morgen/übermorgen. Ohne die pauschale Grenze
+werden daraus rund 383/472/130 Wh entsprechend den jeweiligen Prognosebändern.
+Das morgige nominale Maximum sinkt von 92,82 auf 86,30 % bei einer physischen
+Ladeobergrenze von 95 %. Rund 335 Wh zusätzliche AC-Abgabe im Horizont
+reduzieren den simulierten Gesamtimport um rund 307 Wh; DC-Netzversorgung und
+nominaler Export bleiben gleich. Das ist ein Offline-Vergleich, keine gemessene
+Ersparnis und keine Garantie für den tatsächlichen Solarertrag.
+
+Der zusätzliche Betreiberauftrag verlangt 85 % als weiches SOC-Ziel, also
+15 Prozentpunkte bis 100 %, bei unveränderter physischer Grenze von 95 %.
+Eine zweite, nominale Vorbereitungshülle gibt dieses Ziel nur an netto
+ladenden PV-Schritten vor. Der nominale DC-Mindestbedarf plus Verbrauchspuffer
+darf es erhöhen. Die Grenze wird mit der bisherigen Unsicherheitshülle über
+das Minimum kombiniert; die Puffer werden nicht addiert. Wo eine geeignete
+AC-Möglichkeit fehlt, gilt die physische Simulation, kein erzwungener Export.
+
+Beim selben aufgenommenen Fall ergibt die vollständige Politik für morgen
+85,06 % statt 92,82 %. Gesamtimport sinkt um rund 503 Wh; DC-Netzversorgung
+sinkt um rund 145 Wh. Nominaler Export bleibt null. Im einmaligen Rückhalt-Retry
+wird nach einer AC-Abgabe genau das zusätzliche wirtschaftliche DC-Halten
+vermieden, das sonst die DC-Kostenprüfung verletzt hätte. Physischer Schutz
+und der abschließende DC-Vergleich bleiben aktiv. Ein verbleibender echter
+Quellenengpass erhält höchstens eine weitere Rückhaltkorrektur vor AC.
+Alle 16 Topologie-Goldens bleiben trotz aktivem 85-%-Ziel unverändert;
+insbesondere bleibt nützliche Winter-Vorbereitung erhalten, ohne zusätzliche
+Importe oder Exporte. Eine vollständige
+AC-Freigabe kann das weiche Ziel geringfügig überschreiten; es ist keine
+Regelung der Batterie-Ladeschlussspannung.
+
+`tests/core/test_reserve_soft_ceiling.py` beweist die Kombination ohne doppelte
+Puffer, stärkeres Prognoseband, tatsächlichen DC-Rückhalt mit gelockerter
+Zielgrenze, fehlende AC-Möglichkeit, sonnenlosen Horizont und den anonymisierten
+Morgenfall. Die Topologie-Goldens verwenden das aktive 85-%-Ziel wie die HA-Schicht.
+
+Die folgenden Zahlen und Grenzen dokumentieren die historische Änderung
+0.55.0; seit 0.55.2 gilt der prognoseabhängige Zuschlag ohne Kapazitätsgrenze.
+
 ## Erwartete PV statt verbindlicher P90-Vorbereitung (0.55.0)
 
 Betreiberauftrag vom 05.10.2026: Nur so viel wie nötig entladen ist ein

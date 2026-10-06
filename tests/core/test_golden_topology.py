@@ -78,7 +78,7 @@ def _run(config, now, soc, fc, states=()):
 
 def _scenarios():
     reserve = SystemConfig(
-        reserve=ReserveParams(enabled=True),
+        reserve=ReserveParams(enabled=True, soft_soc_ceiling_percent=85),
         support=SupportParams(
             configured=True,
             coordinated=True,

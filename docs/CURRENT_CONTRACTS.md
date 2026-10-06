@@ -336,17 +336,20 @@ Marktgewichtung (`weighted`), gemischte Gewichtung (`weighted_partial`), teilwei
 vorhandene neutrale Preise (`load_priority_partial`), flache Preise und fehlende
 Preise. Vertrag und Nachweise: [Marktpriorität](F-MARKET-AC-PRIORITY.md).
 
-## Erwartete PV und Verbrauchsrückhalt ab 0.55.0
+## Erwartete PV und Verbrauchsrückhalt ab 0.55.2
 
 Betreiberauftrag vom 05.10.2026: Vorhandene Batterieenergie nur so weit entnehmen,
 wie die normale PV-Prognose Speicherraum verlangt. Diese Regel ersetzt die
 frühere Verwendung der vollständigen oberen PV-Prognose als verbindlichen
 Vorbereitungspfad in der aktiven Reserve. Ein begrenzter Unsicherheitszuschlag
-bleibt erhalten: 25 % der physisch begrenzten oberen Abweichung, insgesamt
-höchstens 5 % der Batteriekapazität in gespeicherten Wh über den gesamten
-Horizont. Ein schmales Band ergibt weniger Zuschlag. Fehlende Bänder verwenden
+bleibt erhalten: 25 % der physisch begrenzten oberen Abweichung. Seit 0.55.2
+gibt es keine pauschale Kapazitäts- oder Horizontgrenze für diesen Zuschlag;
+jeder Prognosetag behält die aus seinem eigenen Band abgeleitete Reserve.
+Ein schmales Band ergibt weniger Zuschlag. Fehlende Bänder verwenden
 ein Viertel der Abweichung des konfigurierten oberen Ersatzfaktors; bei 1,20
-sind das 5 % mehr PV, weiterhin unter derselben Energieobergrenze.
+sind das 5 % mehr PV. Diese Planungspolitik behauptet keine statistisch
+kalibrierte Ausfallwahrscheinlichkeit. DC-Vorrang und Verbrauchsrückhalt
+begrenzen weiterhin die tatsächlich erlaubte optionale Entladung.
 Explizite Offline-Vergleiche simulieren vollständige untere/obere Szenarien mit
 deren eigener Physik; ihre Ergebnisse erteilen keine Aktorfreigabe. Die
 Unsicherheitsprüfungen außerhalb der Reserveplanung bleiben erhalten.
@@ -361,6 +364,25 @@ optionales AC erhält dadurch kein Budget. Die planmäßige Schnellüberwachung
 erhält den Rückhalt über das begrenzte Headroom-Budget; der zusätzliche
 Messwertpfad behält seine bestehende Puffer- und Frischeprüfung.
 
+Seit 0.55.2 ergänzt die aktive HA-Reserve ein weiches Ziel von 85 % SOC am
+nominalen Solarhöhepunkt. Eine zweite Hülle mit normaler PV wird mit der
+Unsicherheitshülle über die jeweils kleinere Energieobergrenze kombiniert;
+die beiden Puffer werden nicht addiert. Nominaler DC-Mindestbedarf plus
+Verbrauchsrückhalt kann das Ziel bis zur physischen Ladeobergrenze lockern.
+Ohne netto ladende PV entsteht durch das Ziel keine optionale AC-Entladung.
+Eine unerreichbare Zielkurve verändert keine physische Lade- oder Exportgrenze.
+
+Die begrenzte DC-Kostenkorrektur begrenzt bei diesem Ziel nach einer
+AC-Abgabe das optionale DC-Halten: Statt zusätzlichen Netzbezug zum bloßen
+Erhalt freigegebener Energie zu kaufen, wird derselbe Betrag durch natürlichen
+DC-Verbrauch eingespart. Danach gilt wieder normales Halten. Physischer
+Quellenschutz, Rückhalt vor AC und der abschließende Vergleich von DC-Kosten
+und zeitlicher DC-Versorgung bleiben verbindlich. Falls Halten keinen echten
+Quellen- oder Schutzengpass löst, wird zusätzlich einmalig die verbleibende
+DC-Differenz vor AC zurückgehalten. Es gibt höchstens eine Halte- und eine
+AC-Budgetkorrektur; scheitert der Vergleich,
+gilt weiterhin die sichere DC-Referenz.
+
 Speicherraum entsteht zuerst durch DC-Bedarf und verfügbare spätere AC-Fenster.
 Innerhalb der tatsächlich nötigen AC-Menge gelten die bisherigen Preisgewichte,
 Lastprioritäten, PV-Deadlines und binären Schritte. Ein später aktualisierter
@@ -368,8 +390,10 @@ normaler Forecast darf neue Vorbereitung begründen. Begrenzter Restexport bei
 stärkerer tatsächlicher Sonne oder vollständigen Schaltquanten ist gegenüber
 unbegründeter vorsorglicher Entladung zulässig; P90 ist keine Null-Export-Pflicht.
 
-Diagnose: `preparation_pv_basis: expected_with_bounded_uncertainty`,
-`pv_uncertainty_budget_wh`, `consumption_buffer_wh` und
+Diagnose: `soft_soc_ceiling_percent: 85`,
+`preparation_pv_basis: expected_with_bounded_uncertainty`,
+`pv_uncertainty_budget_wh`, `pv_uncertainty_budget_wh_by_day`,
+`consumption_buffer_wh` und
 `upper_pv_role: bounded_uncertainty_and_diagnostics`. `headroom_wh` und
 `unavoidable_export_wh` gehören zum Vorbereitungspfad des tatsächlich
 simulierten Forecasts mit begrenztem Zuschlag. Nachweise und Golden-Prüfung:

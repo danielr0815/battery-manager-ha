@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.2] - 2026-10-06
+
+### Fixed
+- Solar headroom insurance follows each forecast day's own uncertainty instead
+  of sharing a fixed 5%-capacity allowance across the multi-day horizon.
+  Preparation still uses only one quarter of the physically bounded upper
+  forecast spread; DC obligations and consumption uncertainty retain priority.
+- Reserve diagnostics expose the stored-energy uncertainty allowance for each
+  forecast day, alongside its horizon total.
+
+### Added
+- Active reserve targets a soft 85% nominal solar peak. Forecast uncertainty and
+  the normal-PV target share the tighter preparation ceiling, avoiding double
+  counting. Future DC needs and consumption uncertainty can relax the target;
+  sunless horizons and unavailable discharge opportunities retain physical rules.
+- A bounded DC-cost retry avoids buying DC supply merely to preserve energy
+  already released for solar headroom. Source protection and the final DC-cost
+  and service guards remain authoritative.
+
 ## [0.55.1] - 2026-10-06
 
 ### Fixed

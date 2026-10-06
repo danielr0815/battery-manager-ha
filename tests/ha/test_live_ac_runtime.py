@@ -521,8 +521,9 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
 
 
 @pytest.mark.parametrize("current_price", [100, None])
+@pytest.mark.parametrize("soft_target, minimum_floor", [(None, 67.5), (85, 55)])
 async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_load(
-    live, hass, current_price
+    live, hass, current_price, soft_target, minimum_floor
 ):
     from dataclasses import replace
 
@@ -543,7 +544,9 @@ async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_loa
         inverter=replace(config.inverter, max_power_w=2300, eta=1, standby_power_w=0),
         charger=replace(config.charger, max_power_w=2000, eta=1, standby_power_w=0),
         control=replace(config.control, hysteresis_percent=0),
-        reserve=replace(config.reserve, upper_pv_factor=1),
+        reserve=replace(
+            config.reserve, upper_pv_factor=1, soft_soc_ceiling_percent=soft_target
+        ),
         support=replace(config.support, native48_base_w=0),
     )
     now = dt_util.now()
@@ -578,7 +581,9 @@ async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_loa
     await c.live_ac.run()
     assert calls == [(LIMIT, 2300)]
     assert c.live_ac.limit_w == 2300
-    assert c.live_ac.envelope.override_floor_percent >= 67.5
+    # The soft peak needs 250 Wh rather than the former 125 Wh allocation.
+    # A better measured opportunity may spend only that scheduled amount.
+    assert c.live_ac.envelope.override_floor_percent >= minimum_floor
     # The market budget overrides the ordinary ten-minute hold immediately.
     hass.states.async_set("sensor.house", "1200", {"unit_of_measurement": "W"})
     hass.states.async_set("sensor.import", "700", {"unit_of_measurement": "W"})

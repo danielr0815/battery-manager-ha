@@ -314,9 +314,11 @@ def _simulate_reserve(
             dc_import > reference_dc + transfer_quantum + ENERGY_EPSILON_WH
             or not preserves_dc_service(candidate, baseline=reference)
         ):
-            # Keep useful AC where a small additional retained-energy margin
-            # cures the later DC shortfall. At most one retry, never an
-            # unbounded solver or a blanket loss of all valuable AC windows.
+            # Keep useful AC with at most one retry. The soft solar target
+            # must not purchase DC merely to hold energy already released for
+            # headroom: limit economic holding after AC instead. Nominal DC
+            # obligations, consumption uncertainty and physical protection
+            # remain independent and the same final DC-cost guard still applies.
             retained = max(0.0, dc_import - reference_dc) + unserved
             reduced = _simulate_reserve_policy(
                 config,
@@ -324,13 +326,46 @@ def _simulate_reserve(
                 extra_ac,
                 pv_scale,
                 feedin,
-                ac_margin_wh=retained + ENERGY_EPSILON_WH,
+                ac_margin_wh=(
+                    retained + ENERGY_EPSILON_WH
+                    if config.reserve.soft_soc_ceiling_percent is None
+                    else 0.0
+                ),
+                dc_hold_margin_wh=(
+                    retained + ENERGY_EPSILON_WH
+                    if config.reserve.soft_soc_ceiling_percent is not None
+                    else 0.0
+                ),
             )
             reduced_dc = sum(
                 f.psu24_delivered_wh / config.support.psu24_eta
                 + f.psu48_delivered_wh / config.support.psu48_eta
                 for f in reduced.flows
             )
+            if config.reserve.soft_soc_ceiling_percent is not None and (
+                reduced_dc > reference_dc + transfer_quantum + ENERGY_EPSILON_WH
+                or not preserves_dc_service(reduced, baseline=reference)
+            ):
+                # Economic holding cannot cure an actual source/protection
+                # boundary. Retain the residual DC shortfall before AC, as in
+                # the existing policy. At most one correction of each kind.
+                residual = max(0.0, reduced_dc - reference_dc) + sum(
+                    f.unserved_dc_wh for f in reduced.flows
+                )
+                reduced = _simulate_reserve_policy(
+                    config,
+                    inputs,
+                    extra_ac,
+                    pv_scale,
+                    feedin,
+                    ac_margin_wh=residual + ENERGY_EPSILON_WH,
+                    dc_hold_margin_wh=retained + ENERGY_EPSILON_WH,
+                )
+                reduced_dc = sum(
+                    f.psu24_delivered_wh / config.support.psu24_eta
+                    + f.psu48_delivered_wh / config.support.psu48_eta
+                    for f in reduced.flows
+                )
             if (
                 reduced_dc <= reference_dc + transfer_quantum + ENERGY_EPSILON_WH
                 and preserves_dc_service(reduced, baseline=reference)
@@ -355,6 +390,7 @@ def _simulate_reserve_policy(
     *,
     allow_ac: bool = True,
     ac_margin_wh: float = 0.0,
+    dc_hold_margin_wh: float = 0.0,
 ) -> Trajectory:
     """Execute source protection and the shared forecast preparation envelope."""
     steps = _steps(config, inputs, extra_ac, pv_scale)
@@ -450,6 +486,12 @@ def _simulate_reserve_policy(
                 protection_floor,
                 battery.energy_wh(soc),
                 weights,
+                soft_maximum=(
+                    battery.energy_wh(config.reserve.soft_soc_ceiling_percent)
+                    if config.reserve.soft_soc_ceiling_percent is not None
+                    else None
+                ),
+                dc_uncertainty_wh=dc_uncertainty_wh,
             )
             if cache is not None:
                 if len(cache.envelopes) >= MAX_CACHED_RESERVE_PROBES:
@@ -461,6 +503,7 @@ def _simulate_reserve_policy(
     future_ac_wh = 0.0
     future_demand_w = 0.0
     before_recharge = True
+    used_ac = False
     for j, (i, slot, extra, _) in enumerate(steps):
         assert envelope is not None
         following_ceiling = envelope.ac_ceiling[j]
@@ -546,9 +589,27 @@ def _simulate_reserve_policy(
                 # Never buy rail energy that displaces usable PV in this step.
                 and held.grid_export_wh <= natural.grid_export_wh + ENERGY_EPSILON_WH
             ):
-                holding = True
-                dc24 = dc24 or source.dc24_available
-                dc48 = dc48 or source.dc48_available
+                # Repay the measured extra DC purchase by foregoing optional
+                # holding, never by weakening source protection. Once repaid,
+                # normal energy preservation resumes. A complete source step
+                # can overshoot by one transfer quantum, which the final
+                # DC-cost comparison already accounts for.
+                saving = (
+                    held.psu24_delivered_wh / source.psu24_eta
+                    + held.psu48_delivered_wh / source.psu48_eta
+                    - protected.psu24_delivered_wh / source.psu24_eta
+                    - protected.psu48_delivered_wh / source.psu48_eta
+                )
+                if (
+                    used_ac
+                    and dc_hold_margin_wh > ENERGY_EPSILON_WH
+                    and saving > ENERGY_EPSILON_WH
+                ):
+                    dc_hold_margin_wh = max(0.0, dc_hold_margin_wh - saving)
+                else:
+                    holding = True
+                    dc24 = dc24 or source.dc24_available
+                    dc48 = dc48 or source.dc48_available
         pv = slot.pv_wh * scale
         if scale > 1:
             pv = min(pv, config.pv.peak_power_w * slot.duration)
@@ -682,6 +743,7 @@ def _simulate_reserve_policy(
                     + nominal_budgets[j].dc
                 ),
             )
+        used_ac |= flow.inverter_output_wh > ENERGY_EPSILON_WH
         flow = replace(
             flow,
             reserve_preparation_start=slot.start

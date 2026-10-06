@@ -1,0 +1,1491 @@
+{
+  "config": {
+    "type": "SystemConfig",
+    "fields": {
+      "battery": {
+        "type": "BatteryParams",
+        "fields": {
+          "capacity_wh": 5000,
+          "soc_min_percent": 5,
+          "soc_max_percent": 95,
+          "eta_charge": 0.97,
+          "eta_discharge": 0.97
+        }
+      },
+      "charger": {
+        "type": "ConverterParams",
+        "fields": {
+          "max_power_w": 2300,
+          "eta": 0.92,
+          "standby_power_w": 10
+        }
+      },
+      "inverter": {
+        "type": "ConverterParams",
+        "fields": {
+          "max_power_w": 2300,
+          "eta": 0.95,
+          "standby_power_w": 15
+        }
+      },
+      "pv": {
+        "type": "PVParams",
+        "fields": {
+          "peak_power_w": 3200,
+          "morning_start_hour": 7,
+          "morning_end_hour": 13,
+          "afternoon_end_hour": 18,
+          "morning_ratio": 0.8
+        }
+      },
+      "ac_profile": {
+        "type": "LoadProfile",
+        "fields": {
+          "base_w": 50,
+          "variable_w": 75,
+          "variable_start_hour": 6,
+          "variable_end_hour": 20
+        }
+      },
+      "dc_profile": {
+        "type": "LoadProfile",
+        "fields": {
+          "base_w": 50,
+          "variable_w": 25,
+          "variable_start_hour": 6,
+          "variable_end_hour": 22
+        }
+      },
+      "control": {
+        "type": "ControlParams",
+        "fields": {
+          "inverter_min_soc_percent": 20,
+          "soc_buffer_percent": 3,
+          "support_dc24_activate_soc": 10,
+          "support_dc24_recovery_soc": 12,
+          "support_dc48_activate_soc": 7,
+          "support_dc48_recovery_soc": 10,
+          "hysteresis_percent": 1,
+          "threshold_inertia_percent": 2,
+          "export_tiebreak": 0.05,
+          "min_switch_interval_s": 60,
+          "import_trade_ratio": 0,
+          "predrain_pv_confidence": 0.8,
+          "upper_pv_reserve": 1.05,
+          "strong_pv_cutoff_w": 200,
+          "pv_window_end_hour": null
+        }
+      },
+      "support": {
+        "type": "SupportParams",
+        "fields": {
+          "configured": true,
+          "coordinated": true,
+          "dc24_available": true,
+          "dc48_available": true,
+          "dc24_active": false,
+          "dc48_active": false,
+          "psu48_bus_voltage_v": 48.26,
+          "dc48_power_w": 60,
+          "dc24_forced_on": false,
+          "dc48_forced_on": false,
+          "native48_base_w": 35,
+          "dc24_share": 1,
+          "dcdc_eta": 0.93,
+          "dcdc_max_power_w": 486,
+          "dcdc_output_voltage_v": 24.3,
+          "psu24_eta": 0.89,
+          "psu24_max_power_w": 601.25,
+          "psu24_output_voltage_v": 24.05,
+          "psu48_eta": 0.89,
+          "psu48_max_power_w": 56.994,
+          "psu48_output_voltage_v": 49.56,
+          "gate_soc_percent": 40
+        }
+      },
+      "feedin": {
+        "type": "FeedInParams",
+        "fields": {
+          "enabled": true,
+          "max_w": 2000,
+          "min_soc_percent": 30,
+          "deadline_hour": 10,
+          "manual_w": null,
+          "automatic_enabled": false
+        }
+      },
+      "loads": {
+        "tuple": []
+      },
+      "appliances": {
+        "tuple": []
+      },
+      "cascades": {
+        "tuple": []
+      },
+      "reserve": {
+        "type": "ReserveParams",
+        "fields": {
+          "enabled": true,
+          "upper_pv_factor": 1.2,
+          "soft_soc_ceiling_percent": 85
+        }
+      }
+    }
+  },
+  "inputs": {
+    "type": "PlanInputs",
+    "fields": {
+      "now": {
+        "datetime": "2026-10-06T07:54:15.464943+02:00"
+      },
+      "start_soc_percent": 21,
+      "slots": {
+        "tuple": [
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 0,
+              "start": {
+                "datetime": "2026-10-06T07:54:15.464943+02:00"
+              },
+              "duration": 0.0957041825,
+              "hour_of_day": 7,
+              "pv_wh": 1.691092904775,
+              "ac_wh": 11.9630228125,
+              "dc_wh": 7.57020083575,
+              "pv_p10_wh": 1.691092904775,
+              "pv_p90_wh": 1.691092904775
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 1,
+              "start": {
+                "datetime": "2026-10-06T08:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 8,
+              "pv_wh": 114.22999999999999,
+              "ac_wh": 125,
+              "dc_wh": 75.4,
+              "pv_p10_wh": 114.22999999999999,
+              "pv_p90_wh": 114.22999999999999
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 2,
+              "start": {
+                "datetime": "2026-10-06T09:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 9,
+              "pv_wh": 703.05,
+              "ac_wh": 125,
+              "dc_wh": 75.1,
+              "pv_p10_wh": 703.05,
+              "pv_p90_wh": 703.05
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 3,
+              "start": {
+                "datetime": "2026-10-06T10:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 10,
+              "pv_wh": 779.44,
+              "ac_wh": 169.1,
+              "dc_wh": 73.2,
+              "pv_p10_wh": 471.17,
+              "pv_p90_wh": 1237.95
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 4,
+              "start": {
+                "datetime": "2026-10-06T11:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 11,
+              "pv_wh": 913.73,
+              "ac_wh": 184.3,
+              "dc_wh": 73.2,
+              "pv_p10_wh": 802.1599999999999,
+              "pv_p90_wh": 1199.82
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 5,
+              "start": {
+                "datetime": "2026-10-06T12:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 12,
+              "pv_wh": 1278.56,
+              "ac_wh": 225.2,
+              "dc_wh": 74.7,
+              "pv_p10_wh": 1122.44,
+              "pv_p90_wh": 1678.87
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 6,
+              "start": {
+                "datetime": "2026-10-06T13:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 13,
+              "pv_wh": 971.1000000000001,
+              "ac_wh": 519.1,
+              "dc_wh": 73.3,
+              "pv_p10_wh": 852.52,
+              "pv_p90_wh": 1275.16
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 7,
+              "start": {
+                "datetime": "2026-10-06T14:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 14,
+              "pv_wh": 206.61,
+              "ac_wh": 218.5,
+              "dc_wh": 74.4,
+              "pv_p10_wh": 181.38,
+              "pv_p90_wh": 271.28999999999996
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 8,
+              "start": {
+                "datetime": "2026-10-06T15:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 15,
+              "pv_wh": 102.72999999999999,
+              "ac_wh": 179.1,
+              "dc_wh": 71.3,
+              "pv_p10_wh": 73.85,
+              "pv_p90_wh": 118.16
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 9,
+              "start": {
+                "datetime": "2026-10-06T16:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 16,
+              "pv_wh": 84.81,
+              "ac_wh": 168.4,
+              "dc_wh": 70.7,
+              "pv_p10_wh": 60.96,
+              "pv_p90_wh": 97.53999999999999
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 10,
+              "start": {
+                "datetime": "2026-10-06T17:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 17,
+              "pv_wh": 59.55,
+              "ac_wh": 129.2,
+              "dc_wh": 69.6,
+              "pv_p10_wh": 42.8,
+              "pv_p90_wh": 68.49
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 11,
+              "start": {
+                "datetime": "2026-10-06T18:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 18,
+              "pv_wh": 18.53,
+              "ac_wh": 259.1,
+              "dc_wh": 69.5,
+              "pv_p10_wh": 15.620000000000001,
+              "pv_p90_wh": 20.08
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 12,
+              "start": {
+                "datetime": "2026-10-06T19:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 19,
+              "pv_wh": 0,
+              "ac_wh": 128.2,
+              "dc_wh": 77.6,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 13,
+              "start": {
+                "datetime": "2026-10-06T20:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 20,
+              "pv_wh": 0,
+              "ac_wh": 169.1,
+              "dc_wh": 76.1,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 14,
+              "start": {
+                "datetime": "2026-10-06T21:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 21,
+              "pv_wh": 0,
+              "ac_wh": 109.1,
+              "dc_wh": 81.9,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 15,
+              "start": {
+                "datetime": "2026-10-06T22:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 22,
+              "pv_wh": 0,
+              "ac_wh": 99.2,
+              "dc_wh": 72.4,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 16,
+              "start": {
+                "datetime": "2026-10-06T23:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 23,
+              "pv_wh": 0,
+              "ac_wh": 79.1,
+              "dc_wh": 64.1,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 17,
+              "start": {
+                "datetime": "2026-10-07T00:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 0,
+              "pv_wh": 0,
+              "ac_wh": 99.1,
+              "dc_wh": 60.4,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 18,
+              "start": {
+                "datetime": "2026-10-07T01:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 1,
+              "pv_wh": 0,
+              "ac_wh": 79.1,
+              "dc_wh": 59.8,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 19,
+              "start": {
+                "datetime": "2026-10-07T02:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 2,
+              "pv_wh": 0,
+              "ac_wh": 79.1,
+              "dc_wh": 59.7,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 20,
+              "start": {
+                "datetime": "2026-10-07T03:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 3,
+              "pv_wh": 0,
+              "ac_wh": 50,
+              "dc_wh": 59.3,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 21,
+              "start": {
+                "datetime": "2026-10-07T04:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 4,
+              "pv_wh": 0,
+              "ac_wh": 79.3,
+              "dc_wh": 61.3,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 22,
+              "start": {
+                "datetime": "2026-10-07T05:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 5,
+              "pv_wh": 0,
+              "ac_wh": 50,
+              "dc_wh": 59.6,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 23,
+              "start": {
+                "datetime": "2026-10-07T06:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 6,
+              "pv_wh": 0,
+              "ac_wh": 125,
+              "dc_wh": 70.9,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 24,
+              "start": {
+                "datetime": "2026-10-07T07:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 7,
+              "pv_wh": 25.86,
+              "ac_wh": 125,
+              "dc_wh": 79.1,
+              "pv_p10_wh": 25.86,
+              "pv_p90_wh": 25.86
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 25,
+              "start": {
+                "datetime": "2026-10-07T08:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 8,
+              "pv_wh": 66.96000000000001,
+              "ac_wh": 125,
+              "dc_wh": 75.4,
+              "pv_p10_wh": 40.47,
+              "pv_p90_wh": 106.33000000000001
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 26,
+              "start": {
+                "datetime": "2026-10-07T09:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 9,
+              "pv_wh": 894.8100000000001,
+              "ac_wh": 125,
+              "dc_wh": 75.1,
+              "pv_p10_wh": 540.9,
+              "pv_p90_wh": 1421.16
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 27,
+              "start": {
+                "datetime": "2026-10-07T10:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 10,
+              "pv_wh": 778.53,
+              "ac_wh": 169.1,
+              "dc_wh": 73.2,
+              "pv_p10_wh": 470.61,
+              "pv_p90_wh": 1236.51
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 28,
+              "start": {
+                "datetime": "2026-10-07T11:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 11,
+              "pv_wh": 883.9200000000001,
+              "ac_wh": 184.3,
+              "dc_wh": 73.2,
+              "pv_p10_wh": 775.98,
+              "pv_p90_wh": 1160.68
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 29,
+              "start": {
+                "datetime": "2026-10-07T12:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 12,
+              "pv_wh": 1248.25,
+              "ac_wh": 225.2,
+              "dc_wh": 74.7,
+              "pv_p10_wh": 1095.84,
+              "pv_p90_wh": 1639.08
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 30,
+              "start": {
+                "datetime": "2026-10-07T13:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 13,
+              "pv_wh": 960.8600000000001,
+              "ac_wh": 519.1,
+              "dc_wh": 73.3,
+              "pv_p10_wh": 843.53,
+              "pv_p90_wh": 1261.7
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 31,
+              "start": {
+                "datetime": "2026-10-07T14:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 14,
+              "pv_wh": 214.04,
+              "ac_wh": 218.5,
+              "dc_wh": 74.4,
+              "pv_p10_wh": 187.91,
+              "pv_p90_wh": 281.04999999999995
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 32,
+              "start": {
+                "datetime": "2026-10-07T15:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 15,
+              "pv_wh": 136.18,
+              "ac_wh": 179.1,
+              "dc_wh": 71.3,
+              "pv_p10_wh": 97.89,
+              "pv_p90_wh": 156.62
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 33,
+              "start": {
+                "datetime": "2026-10-07T16:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 16,
+              "pv_wh": 105.81,
+              "ac_wh": 168.4,
+              "dc_wh": 70.7,
+              "pv_p10_wh": 76.04,
+              "pv_p90_wh": 121.69
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 34,
+              "start": {
+                "datetime": "2026-10-07T17:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 17,
+              "pv_wh": 69.67999999999999,
+              "ac_wh": 129.2,
+              "dc_wh": 69.6,
+              "pv_p10_wh": 50.08,
+              "pv_p90_wh": 80.13
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 35,
+              "start": {
+                "datetime": "2026-10-07T18:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 18,
+              "pv_wh": 11.75,
+              "ac_wh": 259.1,
+              "dc_wh": 69.5,
+              "pv_p10_wh": 9.52,
+              "pv_p90_wh": 12.940000000000001
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 36,
+              "start": {
+                "datetime": "2026-10-07T19:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 19,
+              "pv_wh": 0,
+              "ac_wh": 128.2,
+              "dc_wh": 77.6,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 37,
+              "start": {
+                "datetime": "2026-10-07T20:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 20,
+              "pv_wh": 0,
+              "ac_wh": 169.1,
+              "dc_wh": 76.1,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 38,
+              "start": {
+                "datetime": "2026-10-07T21:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 21,
+              "pv_wh": 0,
+              "ac_wh": 109.1,
+              "dc_wh": 81.9,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 39,
+              "start": {
+                "datetime": "2026-10-07T22:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 22,
+              "pv_wh": 0,
+              "ac_wh": 99.2,
+              "dc_wh": 72.4,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 40,
+              "start": {
+                "datetime": "2026-10-07T23:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 23,
+              "pv_wh": 0,
+              "ac_wh": 79.1,
+              "dc_wh": 64.1,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 41,
+              "start": {
+                "datetime": "2026-10-08T00:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 0,
+              "pv_wh": 0.04,
+              "ac_wh": 99.1,
+              "dc_wh": 60.4,
+              "pv_p10_wh": 0.03,
+              "pv_p90_wh": 0.04
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 42,
+              "start": {
+                "datetime": "2026-10-08T01:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 1,
+              "pv_wh": 0,
+              "ac_wh": 79.1,
+              "dc_wh": 59.8,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 43,
+              "start": {
+                "datetime": "2026-10-08T02:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 2,
+              "pv_wh": 0.06,
+              "ac_wh": 79.1,
+              "dc_wh": 59.7,
+              "pv_p10_wh": 0.06,
+              "pv_p90_wh": 0.06
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 44,
+              "start": {
+                "datetime": "2026-10-08T03:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 3,
+              "pv_wh": 0,
+              "ac_wh": 50,
+              "dc_wh": 59.3,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 45,
+              "start": {
+                "datetime": "2026-10-08T04:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 4,
+              "pv_wh": 0,
+              "ac_wh": 79.3,
+              "dc_wh": 61.3,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 46,
+              "start": {
+                "datetime": "2026-10-08T05:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 5,
+              "pv_wh": 0,
+              "ac_wh": 50,
+              "dc_wh": 59.6,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 47,
+              "start": {
+                "datetime": "2026-10-08T06:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 6,
+              "pv_wh": 0,
+              "ac_wh": 125,
+              "dc_wh": 70.9,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 48,
+              "start": {
+                "datetime": "2026-10-08T07:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 7,
+              "pv_wh": 24.16,
+              "ac_wh": 125,
+              "dc_wh": 79.1,
+              "pv_p10_wh": 24.16,
+              "pv_p90_wh": 24.16
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 49,
+              "start": {
+                "datetime": "2026-10-08T08:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 8,
+              "pv_wh": 74.95,
+              "ac_wh": 125,
+              "dc_wh": 75.4,
+              "pv_p10_wh": 45.31,
+              "pv_p90_wh": 119.03999999999999
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 50,
+              "start": {
+                "datetime": "2026-10-08T09:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 9,
+              "pv_wh": 512.6500000000001,
+              "ac_wh": 125,
+              "dc_wh": 75.1,
+              "pv_p10_wh": 354.29,
+              "pv_p90_wh": 748.15
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 51,
+              "start": {
+                "datetime": "2026-10-08T10:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 10,
+              "pv_wh": 295.65999999999997,
+              "ac_wh": 169.1,
+              "dc_wh": 73.2,
+              "pv_p10_wh": 295.65999999999997,
+              "pv_p90_wh": 295.65999999999997
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 52,
+              "start": {
+                "datetime": "2026-10-08T11:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 11,
+              "pv_wh": 273.85,
+              "ac_wh": 184.3,
+              "dc_wh": 73.2,
+              "pv_p10_wh": 273.85,
+              "pv_p90_wh": 273.85
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 53,
+              "start": {
+                "datetime": "2026-10-08T12:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 12,
+              "pv_wh": 336.36,
+              "ac_wh": 225.2,
+              "dc_wh": 74.7,
+              "pv_p10_wh": 336.36,
+              "pv_p90_wh": 336.36
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 54,
+              "start": {
+                "datetime": "2026-10-08T13:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 13,
+              "pv_wh": 259.27,
+              "ac_wh": 519.1,
+              "dc_wh": 73.3,
+              "pv_p10_wh": 259.27,
+              "pv_p90_wh": 259.27
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 55,
+              "start": {
+                "datetime": "2026-10-08T14:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 14,
+              "pv_wh": 107.41000000000001,
+              "ac_wh": 218.5,
+              "dc_wh": 74.4,
+              "pv_p10_wh": 107.41000000000001,
+              "pv_p90_wh": 107.41000000000001
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 56,
+              "start": {
+                "datetime": "2026-10-08T15:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 15,
+              "pv_wh": 105.86000000000001,
+              "ac_wh": 179.1,
+              "dc_wh": 71.3,
+              "pv_p10_wh": 105.86000000000001,
+              "pv_p90_wh": 105.86000000000001
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 57,
+              "start": {
+                "datetime": "2026-10-08T16:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 16,
+              "pv_wh": 80.2,
+              "ac_wh": 168.4,
+              "dc_wh": 70.7,
+              "pv_p10_wh": 80.2,
+              "pv_p90_wh": 80.2
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 58,
+              "start": {
+                "datetime": "2026-10-08T17:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 17,
+              "pv_wh": 21.830000000000002,
+              "ac_wh": 129.2,
+              "dc_wh": 69.6,
+              "pv_p10_wh": 21.830000000000002,
+              "pv_p90_wh": 21.830000000000002
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 59,
+              "start": {
+                "datetime": "2026-10-08T18:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 18,
+              "pv_wh": 4.8100000000000005,
+              "ac_wh": 259.1,
+              "dc_wh": 69.5,
+              "pv_p10_wh": 4.8100000000000005,
+              "pv_p90_wh": 4.8100000000000005
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 60,
+              "start": {
+                "datetime": "2026-10-08T19:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 19,
+              "pv_wh": 0,
+              "ac_wh": 128.2,
+              "dc_wh": 77.6,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 61,
+              "start": {
+                "datetime": "2026-10-08T20:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 20,
+              "pv_wh": 0,
+              "ac_wh": 169.1,
+              "dc_wh": 76.1,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 62,
+              "start": {
+                "datetime": "2026-10-08T21:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 21,
+              "pv_wh": 0,
+              "ac_wh": 109.1,
+              "dc_wh": 81.9,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 63,
+              "start": {
+                "datetime": "2026-10-08T22:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 22,
+              "pv_wh": 0,
+              "ac_wh": 99.2,
+              "dc_wh": 72.4,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          },
+          {
+            "type": "HourSlot",
+            "fields": {
+              "index": 64,
+              "start": {
+                "datetime": "2026-10-08T23:00:00+02:00"
+              },
+              "duration": 1,
+              "hour_of_day": 23,
+              "pv_wh": 0,
+              "ac_wh": 79.1,
+              "dc_wh": 64.1,
+              "pv_p10_wh": 0,
+              "pv_p90_wh": 0
+            }
+          }
+        ]
+      },
+      "load_states": {
+        "tuple": []
+      },
+      "appliance_runs": {
+        "tuple": []
+      },
+      "cascade_runtime_states": {
+        "tuple": []
+      },
+      "reserve_hold_soc_percent": 0,
+      "market_prices": {
+        "tuple": [
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T00:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T01:00:00+02:00"
+              },
+              "eur_per_mwh": 151.76
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T01:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T02:00:00+02:00"
+              },
+              "eur_per_mwh": 149.89
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T02:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T03:00:00+02:00"
+              },
+              "eur_per_mwh": 151.88
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T03:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T04:00:00+02:00"
+              },
+              "eur_per_mwh": 151.54
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T04:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T05:00:00+02:00"
+              },
+              "eur_per_mwh": 153.2
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T05:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T06:00:00+02:00"
+              },
+              "eur_per_mwh": 166.94
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T06:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T07:00:00+02:00"
+              },
+              "eur_per_mwh": 207.39
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T07:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T08:00:00+02:00"
+              },
+              "eur_per_mwh": 241.01
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T08:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T09:00:00+02:00"
+              },
+              "eur_per_mwh": 249.8
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T09:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T10:00:00+02:00"
+              },
+              "eur_per_mwh": 210.35
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T10:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T11:00:00+02:00"
+              },
+              "eur_per_mwh": 171.87
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T11:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T12:00:00+02:00"
+              },
+              "eur_per_mwh": 142.07
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T12:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T13:00:00+02:00"
+              },
+              "eur_per_mwh": 132.49
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T13:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T14:00:00+02:00"
+              },
+              "eur_per_mwh": 127.02
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T14:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T15:00:00+02:00"
+              },
+              "eur_per_mwh": 136.67
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T15:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T16:00:00+02:00"
+              },
+              "eur_per_mwh": 154.55
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T16:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T17:00:00+02:00"
+              },
+              "eur_per_mwh": 190
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T17:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T18:00:00+02:00"
+              },
+              "eur_per_mwh": 250.01
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T18:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T19:00:00+02:00"
+              },
+              "eur_per_mwh": 339.65
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T19:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T20:00:00+02:00"
+              },
+              "eur_per_mwh": 382.32
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T20:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T21:00:00+02:00"
+              },
+              "eur_per_mwh": 296.18
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T21:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T22:00:00+02:00"
+              },
+              "eur_per_mwh": 248.98
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T22:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-06T23:00:00+02:00"
+              },
+              "eur_per_mwh": 225.66
+            }
+          },
+          {
+            "type": "MarketPrice",
+            "fields": {
+              "start": {
+                "datetime": "2026-10-06T23:00:00+02:00"
+              },
+              "end": {
+                "datetime": "2026-10-07T00:00:00+02:00"
+              },
+              "eur_per_mwh": 209.6
+            }
+          }
+        ]
+      }
+    }
+  }
+}

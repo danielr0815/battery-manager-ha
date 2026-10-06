@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -48,21 +49,39 @@ def test_small_uncertainty_reserve_grows_with_forecast_spread(spread):
     assert inputs.slots[0].pv_wh * (scales[0] - 1) == pytest.approx(spread / 4)
 
 
-def test_uncertainty_cap_is_stored_energy_once_across_the_entire_horizon():
+def test_each_days_insurance_follows_its_spread_instead_of_a_capacity_cap():
     config = plant()
     config = replace(
         config,
         battery=replace(config.battery, eta_charge=0.9),
         charger=replace(config.charger, eta=0.8),
     )
-    inputs = series([(500, 0, 0)] * 48)
+    inputs = series([(500, 0, 0)] * 3)
     inputs = replace(
         inputs,
-        slots=tuple(replace(s, pv_p10_wh=250, pv_p90_wh=1000) for s in inputs.slots),
+        slots=tuple(
+            replace(
+                s,
+                start=inputs.now + timedelta(days=i),
+                pv_p10_wh=250,
+                pv_p90_wh=upper,
+            )
+            for i, (s, upper) in enumerate(
+                zip(inputs.slots, (520, 1000, 600), strict=True)
+            )
+        ),
     )
     scales = reserve_preparation_scales(config, inputs)
-    extra_wh = sum(s.pv_wh * (f - 1) for s, f in zip(inputs.slots, scales, strict=True))
-    assert extra_wh * 0.9 * 0.8 == pytest.approx(50)  # 5% of 1000 Wh, not per day
+    stored_wh = [
+        s.pv_wh * (f - 1) * 0.9 * 0.8 for s, f in zip(inputs.slots, scales, strict=True)
+    ]
+    assert stored_wh == pytest.approx([3.6, 90, 18])
+    # A broad band can need more than the former 5%-capacity ceiling. Adding
+    # another day must not take insurance away from an existing forecast day.
+    short = replace(inputs, slots=inputs.slots[:2])
+    assert reserve_preparation_scales(config, short) == pytest.approx(scales[:2])
+    smaller_battery = replace(config, battery=replace(config.battery, capacity_wh=500))
+    assert reserve_preparation_scales(smaller_battery, inputs) == scales
 
 
 def test_unknown_band_gets_only_small_fallback_and_peak_clipping_remains_physical():

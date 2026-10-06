@@ -1408,6 +1408,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reserve=ReserveParams(
                 enabled=reserve_active,
                 upper_pv_factor=float(cfg.get(CONF_RESERVE_UPPER_FACTOR, 1.2)),
+                # Operator 2026-10-06: leave roughly 15 SOC points available
+                # when future DC needs do not require the full battery.
+                soft_soc_ceiling_percent=85.0,
             ),
             battery=BatteryParams(
                 capacity_wh=float(cfg["battery_capacity_wh"]),

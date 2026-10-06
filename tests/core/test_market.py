@@ -170,19 +170,22 @@ def test_october_forecast_uses_dc_first_without_buying_back_early_ac():
     config, inputs = decode(record["config"]), decode(record["inputs"])
     nominal = simulate(config, inputs, 20)
     assert sum(f.inverter_output_wh for f in nominal.flows) == 0
-    # Expected PV needs less DC preparation too; holding preserves the rail
-    # energy which the former upper-PV policy unnecessarily spent on Friday.
-    assert nominal.flows[0].support_dc24_start
+    # The uncapped quarter-spread needs some natural DC preparation again,
+    # while the full upper-PV scenario must not release early optional AC.
+    assert not nominal.flows[0].support_dc24_start
     saturday = [
         f
         for s, f in zip(inputs.slots, nominal.flows, strict=True)
         if s.start.date().isoformat() == "2026-10-03"
     ]
     assert sum(f.unserved_dc_wh for f in saturday) == 0
-    assert min(f.soc_end_percent for f in saturday) >= 25
+    assert (
+        min(f.soc_end_percent for f in saturday)
+        >= config.control.inverter_min_soc_percent
+    )
     assert nominal.max_soc_percent < config.battery.soc_max_percent
     assert nominal.reserve_decision.headroom_wh == 0
-    assert nominal.reserve_decision.reason == "dc_reserve_holding"
+    assert nominal.reserve_decision.reason == "no_preparation_needed"
     # Actual stronger sunshine can release AC again: the DC comparison uses
     # that scenario's physics, not a permanent ban based on an earlier run.
     upper = effective_uncertainty(

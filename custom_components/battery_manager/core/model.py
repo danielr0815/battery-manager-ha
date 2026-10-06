@@ -682,9 +682,15 @@ class ReserveParams:
 
     enabled: bool = False
     upper_pv_factor: float = 1.2
+    soft_soc_ceiling_percent: float | None = None
 
     def __post_init__(self) -> None:
         _require(1 <= self.upper_pv_factor <= 1.5, "Invalid reserve upper PV factor")
+        _require(
+            self.soft_soc_ceiling_percent is None
+            or 0 <= self.soft_soc_ceiling_percent <= 100,
+            "Invalid reserve soft SOC ceiling",
+        )
         _finite_fields(self)
 
 

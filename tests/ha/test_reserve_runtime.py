@@ -123,6 +123,14 @@ async def test_partial_feedback_does_not_confirm_full_inverter_permission(rig, h
     assert c._inverter_limit_confirmed(False)
 
 
+async def test_active_reserve_builds_the_operator_soft_85_target(rig):
+    c, *_ = rig
+    c.raw_config[CONF_RESERVE_MODE] = "active"
+    config = c.build_system_config()
+    assert config.reserve.enabled
+    assert config.reserve.soft_soc_ceiling_percent == 85
+
+
 async def test_grid_loss_restores_dc_before_waiting_for_dead_inverter(rig, hass):
     c, calls, dead, _ = rig
     c.raw_config[CONF_SOC_ENTITY] = "sensor.test_soc"
@@ -418,6 +426,8 @@ def test_diagnostics_use_typed_decision_and_keep_history_out_of_physical_values(
     assert diagnostics["preparation_pv_basis"] == "expected_with_bounded_uncertainty"
     assert diagnostics["upper_pv_role"] == "bounded_uncertainty_and_diagnostics"
     assert diagnostics["pv_uncertainty_budget_wh"] == 0
+    assert diagnostics["soft_soc_ceiling_percent"] is None
+    assert diagnostics["pv_uncertainty_budget_wh_by_day"] == {"2026-09-26": 0}
     assert diagnostics["consumption_buffer_wh"] == 250
     assert runtime.hold_soc == 0
     historical = reserve_diagnostics(
@@ -429,3 +439,50 @@ def test_diagnostics_use_typed_decision_and_keep_history_out_of_physical_values(
     assert historical["unavoidable_export_wh"] == 0
     assert historical["inverter_limit_w"] == 0
     assert historical["historical_reference_soc_percent"] is None
+
+
+def test_pv_insurance_diagnostics_distinguish_each_days_forecast_spread():
+    from dataclasses import replace
+
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        PlanInputs,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+    from custom_components.battery_manager.reserve_runtime import reserve_diagnostics
+
+    config = SystemConfig()
+    config = replace(
+        config,
+        battery=replace(config.battery, eta_charge=0.9),
+        charger=replace(config.charger, eta=0.8),
+    )
+    inputs = PlanInputs(
+        START,
+        80,
+        tuple(
+            HourSlot(
+                i,
+                START + timedelta(days=i),
+                1,
+                0,
+                1000,
+                0,
+                0,
+                pv_p10_wh=500,
+                pv_p90_wh=upper,
+            )
+            for i, upper in enumerate((1200, 2000, 1400))
+        ),
+    )
+    result = plan(config, inputs)
+    diagnostics = reserve_diagnostics(
+        config, inputs, result, result, ReserveRuntime(), "active"
+    )
+    assert diagnostics["pv_uncertainty_budget_wh_by_day"] == {
+        "2026-09-26": 36,
+        "2026-09-27": 180,
+        "2026-09-28": 72,
+    }
+    assert diagnostics["pv_uncertainty_budget_wh"] == 288

@@ -144,25 +144,25 @@ def reserve_diagnostics(
         None,
     )
     minimum = result.trajectory.min_soc_percent
+    pv_buffers_by_day: dict[str, float] = {}
+    for slot, scale in zip(
+        inputs.slots, reserve_preparation_scales(config, inputs), strict=True
+    ):
+        day = slot.start.date().isoformat()
+        pv_buffers_by_day[day] = pv_buffers_by_day.get(day, 0.0) + (
+            slot.pv_wh * (scale - 1) * b.eta_charge * config.charger.eta
+        )
     return {
         "mode": mode,
         "shadow_ready": True,  # Compatible field: no observation prerequisite.
         "shadow_required_hours": 0,
         "control_basis": "forecast",
         "preparation_pv_basis": "expected_with_bounded_uncertainty",
-        "pv_uncertainty_budget_wh": round(
-            sum(
-                slot.pv_wh * (scale - 1)
-                for slot, scale in zip(
-                    inputs.slots,
-                    reserve_preparation_scales(config, inputs),
-                    strict=True,
-                )
-            )
-            * b.eta_charge
-            * config.charger.eta,
-            1,
-        ),
+        "soft_soc_ceiling_percent": config.reserve.soft_soc_ceiling_percent,
+        "pv_uncertainty_budget_wh": round(sum(pv_buffers_by_day.values()), 1),
+        "pv_uncertainty_budget_wh_by_day": {
+            day: round(wh, 1) for day, wh in pv_buffers_by_day.items()
+        },
         "consumption_buffer_wh": round(
             b.energy_wh(config.control.soc_buffer_percent), 1
         ),
