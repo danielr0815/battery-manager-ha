@@ -2464,3 +2464,35 @@ async def test_market_options_keep_toggle_and_clear_explicit_source(hass):
     await hass.async_block_till_done()
     assert entry.runtime_data.raw_config[CONF_MARKET_ENTITY] is None
     assert entry.runtime_data.raw_config[CONF_MARKET_ENABLED] is False
+
+
+async def test_main_options_cannot_take_over_existing_load_actor(hass):
+    from types import MappingProxyType
+
+    from homeassistant.config_entries import ConfigSubentry
+
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_CONTROL_SWITCH,
+        CONF_SUPPORT_DC48_SWITCH,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title="Load",
+            unique_id=None,
+            data=MappingProxyType({CONF_LOAD_CONTROL_SWITCH: "switch.shared"}),
+        ),
+    )
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(result["data_schema"].schema)
+    payload["support_paths"][CONF_SUPPORT_DC48_SWITCH] = "switch.shared"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["errors"]["base"] == "actor_in_use"
+    assert entry.options.get(CONF_SUPPORT_DC48_SWITCH) is None

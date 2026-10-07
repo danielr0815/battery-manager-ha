@@ -42,7 +42,7 @@ belongs in the HA layer.
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
-| `reserve.py`, `reserve_schedule.py`, `reserve_energy.py` | DC-first reserve: rolling today/tomorrow preparation, nominal DC energy obligation, high-load AC priority, upper-PV export budgets and physical inverse transitions shared with simulation. See `F-RESERVE-LOAD-PRIORITY.md`. |
+| `reserve.py`, `reserve_schedule.py`, `reserve_energy.py`, `reserve_sources.py` | DC-first reserve: full available forecast preparation, nominal DC energy obligation, high-load AC priority, upper-PV export budgets and physical inverse transitions shared with simulation. See `F-RESERVE-LOAD-PRIORITY.md`. |
 | `optimize.py` | Planner orchestration: threshold search, feed-in, appliance advisor and support escalation. |
 | `allocation.py`, `allocation_candidates.py` | Ordered allocation passes, shared feasibility gate, typed candidate context/results and recovery. |
 | `planning_rules.py`, `uncertainty.py`, `policy.py` | Shared pure gates, forecast bands and domain constants; reserve has no reverse optimizer import. |
@@ -54,6 +54,9 @@ belongs in the HA layer.
 The HA orchestration delegates load commands to `load_actuation.py`, house supply
 transitions to `coordinated_supply.py`, storage serialization to
 `runtime_persistence.py`, and daily output projection to `plan_output.py`.
+`load_safety.py` reads fresh net import at each load-start boundary and uses
+the existing fast timer for stop-only protection and completion of owned input
+stops. It allocates no energy and never takes over a cascade or supply actor.
 `operation_archive.py` wraps timezone-specific journals in schema 2.
 `runtime.py` defines typed entry data; `CascadeExecutionSnapshot` is the public
 read-only link between cascade execution and constraint diagnostics.
@@ -261,3 +264,24 @@ bestehenden Erholungsschwellen ab, ohne bestätigte physische Zustände vorzeiti
 umzuschreiben. Die alte Policy-Version bleibt bis zur abgeschlossenen Übergabe
 bzw. Übernahme durch gültigen Schutz erhalten. Die koordinierte Aktorsteuerung
 prüft aktuellen SOC unter ihrem Lock und erneut vor AC-Freigabe.
+
+### 0.56.0 source and accounting boundaries
+
+`actor_ownership.py` resolves physical actor claims across ordinary loads,
+cascades, feed-in and house supply. Config flows validate proposed claims before
+writing; coordinator command boundaries recheck current ownership. Legacy
+collisions block affected optional loads and create repair diagnostics; supply
+protection retains its actors.
+
+`coordinated_supply.py` owns confirmed transitions. Its typed `SupplyRequest`
+binds queued intent to a planner revision and expiry. `may_remove` rechecks live
+permission immediately before source removal, including the 24-V overlap;
+restoration runs under the same lock. `live_ac.py` publishes a new revision for
+each envelope and uses a fixed one-hour DC fallback buffer.
+
+`simulate.py` settles actual PSU intake against PV on the shared AC connection.
+`reserve_sources.grid_dc` centralizes actual grid attribution with a legacy
+fallback. `reserve.simulate_reserve_variant` applies the same bounded DC
+postprocessing to offline AC hypotheses; comparison does not bypass production
+DC-budget or protection checks. The marginal allocator uses a bounded heap and
+reprices only the changed step. Full physical replay remains the acceptance gate.

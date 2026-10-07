@@ -18,6 +18,12 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 
+from .actor_ownership import (
+    LOAD_ACTOR_KEYS,
+    SUPPLY_ACTOR_KEYS,
+    actor_claims,
+    actor_conflicts,
+)
 from .const import (
     ACTOR_CONFIRM_TIMEOUT_S,
     ACTOR_MODES,
@@ -755,7 +761,7 @@ def _validate_support_entities(data: dict[str, Any]) -> str | None:
     A shared entity would make the make-before-break sequence switch the
     rail's only supply off (review finding, docs/ALGORITHM.md D-A9).
     """
-    chosen = [data.get(key) for key in _SUPPORT_SWITCH_KEYS if data.get(key)]
+    chosen = [data.get(key) for key in SUPPLY_ACTOR_KEYS if data.get(key)]
     if len(chosen) != len(set(chosen)):
         return "support_entities_not_distinct"
     if data.get(CONF_RESERVE_MODE, "off") != "off" and not data.get(
@@ -1066,6 +1072,20 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 or _validate_support_hysteresis(data)
                 or _validate_feedin(data)
             )
+            proposed = {**self.config_entry.data, **self.config_entry.options, **data}
+            for key in (*SUPPLY_ACTOR_KEYS, CONF_FEEDIN_SETPOINT_ENTITY):
+                proposed[key] = data.get(key)
+            conflicts = actor_conflicts(
+                actor_claims(proposed, self.config_entry.subentries)
+            )
+            if error is None and any(
+                entity in conflicts
+                for entity in (
+                    *(proposed.get(key) for key in SUPPLY_ACTOR_KEYS),
+                    proposed.get(CONF_FEEDIN_SETPOINT_ENTITY),
+                )
+            ):
+                error = "actor_in_use"
             if error is None:
                 # Cleared selector fields are absent from the input. Store an
                 # explicit None/[] so the options override the value still
@@ -1516,6 +1536,31 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                         else self._basic_schema(data),
                         errors={"base": error},
                     )
+        entry = self._get_entry()
+        edited_id = (
+            self._get_reconfigure_subentry().subentry_id
+            if self._is_reconfigure
+            else "<new-load>"
+        )
+        proposed_subs = {
+            **entry.subentries,
+            edited_id: SimpleNamespace(subentry_type=SUBENTRY_TYPE_LOAD, data=data),
+        }
+        config = {**getattr(entry, "data", {}), **getattr(entry, "options", {})}
+        conflicts = actor_conflicts(actor_claims(config, proposed_subs))
+        if any(data.get(key) in conflicts for key in LOAD_ACTOR_KEYS):
+            storage = bool(self._basic.get(CONF_LOAD_ENERGY_LIMITED))
+            return self.async_show_form(
+                step_id="storage"
+                if storage
+                else "reconfigure"
+                if self._is_reconfigure
+                else "user",
+                data_schema=self._storage_schema(data)
+                if storage
+                else self._basic_schema(data),
+                errors={"base": "actor_in_use"},
+            )
         title = data.pop(CONF_LOAD_NAME)
         data[CONF_LOAD_PRIORITY] = self._renumber_siblings(
             int(data[CONF_LOAD_PRIORITY])
@@ -1920,6 +1965,16 @@ class CascadeSubentryFlow(ConfigSubentryFlow):
             actors.append(leaf_actor)
         if len(actors) != len(set(actors)) or used_actors.intersection(actors):
             return "cascade_actor_in_use"
+        proposed_subs = {
+            **entry.subentries,
+            edited_id or "<new-cascade>": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_CASCADE, data=data
+            ),
+        }
+        config = {**getattr(entry, "data", {}), **getattr(entry, "options", {})}
+        conflicts = actor_conflicts(actor_claims(config, proposed_subs))
+        if any(actor in conflicts for actor in actors):
+            return "actor_in_use"
         return None
 
     async def async_step_user(

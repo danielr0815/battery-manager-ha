@@ -399,6 +399,8 @@ def insert_appliance_run(
     Used by the appliance advisor ("could a full run start right now without
     causing grid import?", docs/ALGORITHM.md D-A5).
     """
+    if energy_wh == 0 or duration_h == 0:
+        return inputs
     run = ApplianceRun(
         appliance_id="_hypothetical",
         remaining_energy_wh=energy_wh,

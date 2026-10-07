@@ -131,3 +131,48 @@ test("repeated DST readouts disclose distinct offsets while ordinary hours stay 
   assert.match(selectionTime(hass, times[1], times), /GMT\+1/);
   assert.doesNotMatch(selectionTime(hass, times[0], [times[0]]), /GMT/);
 });
+
+test("DC reserve reports PV and peak decisions with finite discharge budgets", () => {
+  for (const [reason, text] of [
+    ["dc_pv_supply", /PV surplus supplies the DC consumers/],
+    ["dc_market_supply", /Already permitted DC battery energy/],
+    ["dc_reserve_holding", /no battery discharge budget/],
+  ]) {
+    const html = reserveReport(hass, {
+      mode: "active",
+      decision_reason: reason,
+      dc_budget_wh: 120,
+      dc_shifted_wh: 40,
+    });
+    assert.match(html, text);
+    assert.match(html, /Available DC discharge budget/);
+    assert.match(html, /120 Wh/);
+    assert.match(html, /40 Wh/);
+    const german = reserveReport(
+      { ...hass, language: "de" },
+      {
+        mode: "active",
+        decision_reason: reason,
+        dc_budget_wh: 120,
+        dc_shifted_wh: 40,
+      },
+    );
+    assert.match(german, /DC-Entnahmebudget/);
+    assert.doesNotMatch(german, /Kein Entscheidungsgrund verfügbar/);
+  }
+});
+
+test("measured PV source requests distinguish confirmed and pending transitions", () => {
+  for (const [reason, text] of [
+    ["settled", /PV supply confirmed/],
+    ["pv_permission_expired", /PV source transition pending/],
+  ]) {
+    const html = reserveReport(
+      hass,
+      { mode: "active", decision_reason: "dc_reserve_holding" },
+      { pv_priority: true, reason },
+    );
+    assert.match(html, text);
+    assert.match(html, /no battery discharge budget/);
+  }
+});

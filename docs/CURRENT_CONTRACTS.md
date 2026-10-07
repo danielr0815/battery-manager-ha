@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.55.1**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.56.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -141,10 +141,10 @@ aktuelle Vertrag steht in [APPLIANCE_VISIBILITY](APPLIANCE_VISIBILITY.md).
 ## Reservebetrieb ab 0.47.1
 
 Aktive Reserve erhält vorhandene Batterieenergie auch für DC: Verfügbare Netzteile
-übernehmen, wenn diese Entnahme keinen benötigten PV-Speicherraum schafft. Der
-bindende Horizont bleibt heute und morgen in HA-Ortszeit. Natürlicher DC-Verbrauch
+übernehmen, wenn diese Entnahme keinen benötigten PV-Speicherraum schafft. Seit 0.53.0 gilt der
+vollständige verfügbare Prognosehorizont. Natürlicher DC-Verbrauch
 schafft nötigen Platz vor zusätzlicher AC-Entladung; diese erfolgt möglichst spät.
-Übermorgen löst keine heutige Vorbereitung aus. Netzteilbetrieb darf keine
+Alle enthaltenen Tage können Vorbereitung begründen. Netzteilbetrieb darf keine
 nutzbare PV verdrängen, unbekannte 48-V-Leistung wird nicht als gesichert gerechnet.
 Es gibt kein festes Nachtziel und keine gezielte Netzladung.
 
@@ -398,3 +398,60 @@ Diagnose: `soft_soc_ceiling_percent: 85`,
 `unavoidable_export_wh` gehören zum Vorbereitungspfad des tatsächlich
 simulierten Forecasts mit begrenztem Zuschlag. Nachweise und Golden-Prüfung:
 [Marktpriorität](F-MARKET-AC-PRIORITY.md#erwartete-pv-statt-verbindlicher-p90-vorbereitung-0550).
+
+## PV-Vorrang und DC-Marktverschiebung ab 0.56.0
+
+Automatische Quellenhaltung nutzt PV vorrangig, soweit diese DC physisch deckt.
+Teilüberschuss vergrößert kein Entnahmebudget. Bereits freigegebene native DC-
+Entnahme wird mit vorhandenen Preisgewichten zwischen PV-Ladungen verschoben;
+physische Nachsimulation verhindert zusätzliche Entladung, DC-Ausfälle,
+Import-/Exportzuwachs und verdrängte AC-Abgabe. Manuelle Quellen, Schutz und
+Bestätigungen bleiben vorrangig. Der bestehende Live-Takt kann vollständig
+PV-gedeckte automatische Haltung aufheben und stellt bei Verlust der frischen
+Freigabe den gültigen Plan wieder her. Vertrag: [DC/PV/Markt](F-DC-PV-MARKET.md).
+
+## Quellenbesitz und korrigierte AC-Bilanz ab 0.56.0
+
+PV, Hauslast, Zusatzlasten und beide Netzteile teilen den saldierenden Anschluss.
+Nach Hauslast und gebuchten Zusatzlasten deckt PV die tatsächliche AC-Aufnahme
+beider Netzteile, danach den Charger und Export. `HourFlows.psu_grid_import_wh`
+erfasst nur den verbleibenden Netzteil-Netzbezug; fehlt das optionale Feld in
+alten Aufzeichnungen, bleibt deren bisherige Netzteilrechnung lesbar.
+Marktbewertung und Reservevergleich verwenden dieselbe Zuordnung.
+
+Normale Planung, Lastkandidaten, Offline-Vergleich und Replay durchlaufen dieselbe
+DC-Nachbearbeitung. Dominierte Quellen werden verworfen; weitere Entnahme braucht
+positiven marginalen Nutzen. Hohe Preise erweitern weder DC-Budget noch AC-Freigabe.
+Ohne frische DC-Leistung gilt Prognose-Watt plus Verbrauchspuffer-Wh / eine feste
+Stunde, unabhängig von Slotrest und Stundengrenze. Startreserve bleibt 10 %.
+
+Quellenaufträge tragen Planrevision und Ablaufzeit. Nach Refresh/Sperre werden
+aktuelle Ziele erfasst; jede verzögerte Bestätigung und die 24-V-Überlappung können
+Entnahmefreigaben widerrufen. Der Quellenbesitzer stellt notwendige Versorgung
+wieder her; Batterieschutz wartet nicht auf wirtschaftliche Mindestschaltfristen.
+Eine gemeinsame Aktorzuordnung prüft Lasten, Kaskaden und Versorgung in Config
+Flow und unmittelbar vor Befehlen. Bestehende Konflikte erzeugen eine Reparatur:
+Zusatzlasten bleiben gesperrt, reine Lastaktoren werden geordnet abgeschaltet,
+Versorgungsaktoren bleiben ausschließlich beim Quellenbesitzer. Gültige Teile
+bleiben nutzbar. Numerische Kern-Eingaben müssen endlich und physisch zulässig
+sein; Geräteprogramme brauchen positive Dauer, beendete Restläufe dürfen null sein.
+
+## Gemessener Netzbezug und offene Lastabschaltungen ab 0.56.0
+
+Automatische Zusatzlasten starten nicht und werden ohne Mindestlaufzeit-Warten
+gestoppt, wenn der konfigurierte Netzleistungssensor frischen Bezug über 50 W
+meldet. Die Messrauschtoleranz ist kein Entnahme- oder Importbudget. Brutto-PV und
+eine Inverterempfehlung widerlegen den saldierten Ist-Bezug nicht. Fehlende oder
+über 30 Sekunden alte Messungen ersetzen keine Freigabe; die bisherigen
+Plan-/SOC-/Stale-Regeln gelten weiter. Der vorhandene Fünfsekundentakt prüft
+Lastabschaltungen ohne CPU-Neuplanung, Starts prüfen nach jeder Bestätigung erneut.
+`load_grid_guard` diagnostiziert Zustand und gemessene Watt; Empfehlungen werden
+bis zur nächsten freigebenden Planung unterdrückt. Kalibrierung, Quellen und
+Kaskaden behalten ihren bestehenden Besitzer.
+
+Ein ausgeschalteter Lade-Helfer bestätigt nicht die physische Umsetzung seiner
+externen Automation. Ein noch eingeschalteter eigener Eingang wird nach
+fehlgeschlagener Abschaltung weiterverfolgt, auch wenn der Helfer bereits aus ist.
+Aktorretries bleiben auf 60 Sekunden begrenzt; Fremdeingänge für Passthrough
+behalten ihre Besitzregel. Unterstützte Ladezielgrenzen der externen Geräte müssen
+in der Automation eingehalten werden. Details: [Laststeuerung](LOAD_CONTROL.md).

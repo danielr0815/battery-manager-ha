@@ -13,6 +13,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_DC_LOAD_ENTITY,
     CONF_DCDC_SWITCH,
     CONF_RESERVE_MODE,
     CONF_SOC_ENTITY,
@@ -28,7 +29,9 @@ from .core.live_ac import (
     LiveACState,
     live_ac_decision,
 )
+from .core.live_dc import pv_covers_dc
 from .core.model import PlanInputs, PlanResult, SystemConfig
+from .load_safety import stop_unsafe_loads
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -43,6 +46,12 @@ class LiveACEnvelope:
     planned_floor_percent: float | None = None
     override_demand_w: float | None = None
     override_floor_percent: float = 100.0
+    dc_forecast_w: float | None = None
+    dc_sources: tuple[bool, bool] = (False, False)
+
+
+# Keep an energy buffer independent of a partial calendar-hour slot.
+DC_FALLBACK_BUFFER_HOURS = 1.0
 
 
 class LiveACRuntime:
@@ -54,6 +63,7 @@ class LiveACRuntime:
 
     def __init__(self, coordinator: BatteryManagerCoordinator) -> None:
         self.owner = coordinator
+        self.plan_revision = 0
         self.envelope: LiveACEnvelope | None = None
         self.state = LiveACState()
         self.limit_w = 0
@@ -62,6 +72,8 @@ class LiveACRuntime:
         self._cancel: Callable[[], None] | None = None
         # Retain command responsibility until a revoked limit confirms OFF.
         self._owns_limit = False
+        self.pv_active = False
+        self._pv_restore_pending = False
 
     def start(self) -> None:
         if self._cancel is None:
@@ -86,11 +98,15 @@ class LiveACRuntime:
             self.task.cancel()
         self.state = LiveACState()
         self.limit_w = 0
+        self.plan_revision += 1
         self.envelope = None
+        self.pv_active = False
+        self._pv_restore_pending = False
 
     def set_plan(
         self, config: SystemConfig, inputs: PlanInputs, result: PlanResult
     ) -> None:
+        self.plan_revision += 1
         decision = result.trajectory.reserve_decision
         self.envelope = (
             LiveACEnvelope(
@@ -117,6 +133,10 @@ class LiveACRuntime:
                 - config.battery.soc_percent(decision.headroom_wh),
                 decision.live_ac_override_demand_w,
                 decision.live_ac_override_floor_percent,
+                inputs.slots[0].dc_wh / inputs.slots[0].duration
+                + config.battery.energy_wh(config.control.soc_buffer_percent)
+                / DC_FALLBACK_BUFFER_HOURS,
+                (result.support_dc24_now, result.support_dc48_now),
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -150,6 +170,113 @@ class LiveACRuntime:
         if house is None or pv is None:
             return None
         return max(0.0, house - max(0.0, pv), imported or 0.0)
+
+    def pv_source_permission(self, config: SystemConfig) -> bool:
+        """Fresh signed meters may release only economic PSU holding."""
+        c, envelope = self.owner, self.envelope
+        now = dt_util.utcnow()
+        if envelope is None or not config.reserve.enabled:
+            self.pv_active = False
+            return False
+        soc = c._get_soc(dt_util.now())
+        measured_soc = c._read_float(c.raw_config[CONF_SOC_ENTITY])
+        soc_state = c.hass.states.get(c.raw_config[CONF_SOC_ENTITY])
+        if (
+            envelope is None
+            or now >= envelope.expires
+            or c.raw_config.get(CONF_RESERVE_MODE) != "active"
+            or not config.reserve.enabled
+            or soc is None
+            or measured_soc is None
+            or not 0 <= measured_soc <= 100
+            or soc_state is None
+            or not 0
+            <= (now - soc_state.last_reported).total_seconds()
+            <= LIVE_AC_SAMPLE_MAX_AGE_S
+            or c._reserve_grid_available() is not True
+            or any(c._support_manual.values())
+            or soc
+            <= max(
+                config.control.support_dc24_recovery_soc,
+                config.control.support_dc48_recovery_soc,
+            )
+        ):
+            self.pv_active = False
+            return False
+        # A positive solar measurement also prevents an unrelated negative meter
+        # balance from masquerading as PV. PSU draw is never added to surplus.
+        pv = c._reserve_power(c.raw_config.get("operation_pv_power_entity"))
+        surplus = None
+        if pv is not None and pv > 0:
+            if any(c.raw_config.get(key) for key in LIVE_AC_POWER_KEYS):
+                values = [
+                    c._reserve_power(c.raw_config.get(key))
+                    for key in LIVE_AC_POWER_KEYS
+                ]
+                if all(value is not None for value in values):
+                    grid, ac_input, ac_output = values
+                    assert (
+                        grid is not None
+                        and ac_input is not None
+                        and ac_output is not None
+                    )
+                    surplus = -(grid + ac_output - ac_input)
+            else:
+                house = c._reserve_power(
+                    c.raw_config.get("operation_house_power_entity")
+                )
+                if house is not None:
+                    surplus = pv - house
+        dc = c._reserve_power(c.raw_config.get(CONF_DC_LOAD_ENTITY))
+        if dc is None:
+            dc = envelope.dc_forecast_w
+        self.pv_active = pv_covers_dc(config, soc, now, surplus, dc, self.pv_active)
+        return self.pv_active
+
+    async def _reconcile_pv_sources(self) -> None:
+        c, envelope = self.owner, self.envelope
+        if envelope is None or envelope.dc_forecast_w is None:
+            return
+        previous = self.pv_active
+        permission = self.pv_source_permission(envelope.config)
+        actual_support = any(
+            c.raw_config.get(key) and c._entity_tristate(c.raw_config[key]) is not False
+            for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
+        )
+        self._pv_restore_pending |= previous and not permission
+        if not ((permission and actual_support) or self._pv_restore_pending):
+            return
+        valid_plan = dt_util.utcnow() < envelope.expires
+        desired = dict(
+            zip(
+                ("dc24", "dc48"),
+                envelope.dc_sources if valid_plan else (False, False),
+                strict=True,
+            )
+        )
+        if not valid_plan:
+            await c.async_request_refresh()
+            # The refreshed planner owns its own actuator task. Never send the
+            # expired snapshot after waiting for a new plan to be published.
+            envelope = self.envelope
+            if envelope is None:
+                return
+            desired = dict(
+                zip(
+                    ("dc24", "dc48"),
+                    envelope.dc_sources
+                    if dt_util.utcnow() < envelope.expires
+                    else (False, False),
+                    strict=True,
+                )
+            )
+        # The existing source owner acquires its own lock and rechecks PV after
+        # every delayed transition. This timer never switches a PSU directly.
+        await c._execute_coordinated_support(
+            desired, False, envelope.config, dt_util.now()
+        )
+        if c._coordinated_support_diag.get("reason") == "settled":
+            self._pv_restore_pending = False
 
     def refresh(self) -> int:
         c, envelope = self.owner, self.envelope
@@ -297,6 +424,8 @@ class LiveACRuntime:
         c = self.owner
         if c._actuation_shutdown:
             return
+        await stop_unsafe_loads(c)
+        await self._reconcile_pv_sources()
         # Same ownership lock as planned source transfers; never race a PSU ON.
         async with c._switch_lock:
             live = self.refresh()

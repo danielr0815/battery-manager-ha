@@ -289,7 +289,8 @@
       "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum.",
       "reserve_requires_coordinated_support": "Reserve benötigt das numerische Inverter-Entladelimit.",
       "reserve_requires_grid_signal": "Aktive Reserve benötigt ein Signal für Netzverfügbarkeit.",
-      "reserve_requires_verified_transfer": "Vor Aktivierung den autonomen 24-V-Rückfall prüfen und bestätigen."
+      "reserve_requires_verified_transfer": "Vor Aktivierung den autonomen 24-V-Rückfall prüfen und bestätigen.",
+      "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet."
     },
     "abort": {
       "already_configured": "Dieses System ist bereits konfiguriert.",
@@ -314,7 +315,8 @@
         "cascade_nonroot_input_forbidden": "Nur der erste Speicher darf einen Eingangsschalter besitzen.",
         "cascade_soc_order": "Es muss Sicherheitsuntergrenze < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
         "cascade_handover_timeout": "Der Zeitlimit für Quellenwechsel muss mindestens 60 Sekunden betragen.",
-        "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein."
+        "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein.",
+        "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet."
       },
       "initiate_flow": {
         "user": "Überschusslast hinzufügen",
@@ -452,7 +454,8 @@
         "cascade_nonroot_input_forbidden": "Nur der erste Speicher darf einen Eingangsschalter besitzen.",
         "cascade_soc_order": "Es muss Sicherheitsuntergrenze < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
         "cascade_handover_timeout": "Der Zeitlimit für Quellenwechsel muss mindestens 60 Sekunden betragen.",
-        "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein."
+        "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein.",
+        "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet."
       },
       "initiate_flow": {
         "user": "Speicher-Kaskade hinzufügen",
@@ -483,7 +486,8 @@
     "appliance": {
       "entry_type": "Haushaltsgerät",
       "error": {
-        "name_required": "Bitte gib einen Namen für das Gerät ein."
+        "name_required": "Bitte gib einen Namen für das Gerät ein.",
+        "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet."
       },
       "initiate_flow": {
         "user": "Haushaltsgerät hinzufügen",
@@ -581,7 +585,8 @@
       "coordinated_invalid_reserve_order": "Erforderlich: Batterie-Minimum < 48-V-Aktivierung <= 24-V-Aktivierung < Inverter-Minimum.",
       "reserve_requires_coordinated_support": "Reserve benötigt das numerische Inverter-Entladelimit.",
       "reserve_requires_grid_signal": "Aktive Reserve benötigt ein Signal für Netzverfügbarkeit.",
-      "reserve_requires_verified_transfer": "Vor Aktivierung den autonomen 24-V-Rückfall prüfen und bestätigen."
+      "reserve_requires_verified_transfer": "Vor Aktivierung den autonomen 24-V-Rückfall prüfen und bestätigen.",
+      "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet."
     },
     "step": {
       "init": {
@@ -1171,6 +1176,10 @@
     "cascade_fault_terminal_test_recovery_failed": {
       "title": "Speicher-Kaskade sicher gestoppt",
       "description": "Unterbrochener Endlasttest konnte nicht wiederhergestellt werden. Bitte Schalter und Messwerte prüfen und anschließend die Störung zurücksetzen. Diagnosedetails: {reason}"
+    },
+    "actor_conflict": {
+      "title": "Mehrfach verwendete Aktoren",
+      "description": "Die Aktoren {actors} haben mehrere Besitzer. Betroffene Zusatzlasten bleiben gesperrt; Versorgungsschalter gehören ausschließlich zur Quellensteuerung. Entferne die doppelte Zuordnung in den Integrationsoptionen oder Last-/Kaskadeneinstellungen."
     }
   },
   "services": {

@@ -181,7 +181,7 @@ export function feedinDecisions(hass, decisions) {
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
-export function reserveReport(hass, reserve) {
+export function reserveReport(hass, reserve, support) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
   const fmt = (value) =>
@@ -230,6 +230,8 @@ export function reserveReport(hass, reserve) {
       t("report_remaining_battery_discharge"),
       `${fmt(reserve.remaining_discharge_wh)} Wh`,
     ],
+    [t("report_dc_budget"), `${fmt(reserve.dc_budget_wh)} Wh`],
+    [t("report_dc_shifted"), `${fmt(reserve.dc_shifted_wh)} Wh`],
     [
       t("report_incidental_psu_charging"),
       `${fmt(reserve.incidental_grid_charge_wh)} Wh`,
@@ -239,6 +241,16 @@ export function reserveReport(hass, reserve) {
       `${fmt(reserve.psu48_delivered_wh)} Wh`,
     ],
   ];
+  if (support?.pv_priority) {
+    rows.push([
+      t("report_live_dc_source"),
+      t(
+        support.reason === "settled"
+          ? "report_live_dc_pv_confirmed"
+          : "report_live_dc_pv_pending",
+      ),
+    ]);
+  }
   const market = reserve.market;
   if (market) {
     rows.push([

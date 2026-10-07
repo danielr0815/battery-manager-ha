@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .const import SUPPORT_MODE_AUTO, SUPPORT_MODE_MANUAL
+from .load_safety import stop_unsafe_loads
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -19,6 +20,7 @@ async def async_fast_update(c: BatteryManagerCoordinator, *, trim: bool = True) 
     if c._actuation_shutdown or c.hass.is_stopping:
         return
     await c._async_planning_protection()
+    await stop_unsafe_loads(c)
     now = dt_util.now()
     c._update_load_runtime(now)
     if c._feedin_entities() is not None:

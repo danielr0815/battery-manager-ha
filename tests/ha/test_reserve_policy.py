@@ -282,7 +282,7 @@ async def test_soc_drop_during_psu_confirmation_prevents_final_ac_release(
     hass.states.async_set(PSU48, "on")
     original_switch = c._switch_entity.side_effect
 
-    async def switch_with_fresh_soc(entity, on):
+    async def switch_with_fresh_soc(entity, on, **kwargs):
         confirmed = await original_switch(entity, on)
         if entity == PSU48 and not on:
             hass.states.async_set("sensor.test_soc", "15")

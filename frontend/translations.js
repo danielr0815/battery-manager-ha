@@ -785,7 +785,7 @@ Object.assign(STRINGS.en, {
   reserve_decision_dc_support_protection:
     "DC supply protection determines the current source switching and AC discharge limit.",
   reserve_decision_dc_reserve_holding:
-    "DC power supplies preserve battery energy that is not needed for forecast PV headroom.",
+    "DC power supplies preserve SOC because no battery discharge budget is available now.",
   reserve_decision_manual_support:
     "Manual PSU support blocks AC battery discharge.",
   reserve_decision_no_ac_demand:
@@ -796,6 +796,17 @@ Object.assign(STRINGS.en, {
   report_additional_grid_import_for_reserve:
     "Additional grid import for reserve",
   report_remaining_battery_discharge: "Remaining battery discharge",
+  report_live_dc_source: "Measured DC source transition",
+  report_live_dc_pv_confirmed:
+    "PV supply confirmed; automatic power supplies are off.",
+  report_live_dc_pv_pending:
+    "PV source transition pending; device confirmation or renewed permission is required.",
+  report_dc_budget: "Available DC discharge budget (forecast horizon)",
+  report_dc_shifted: "DC battery energy shifted to market peaks",
+  reserve_decision_dc_pv_supply:
+    "PV surplus supplies the DC consumers; automatic power supplies remain off.",
+  reserve_decision_dc_market_supply:
+    "Already permitted DC battery energy supplies consumers during a market peak.",
   report_incidental_psu_charging: "Incidental PSU charging",
   report_expected_48_v_support: "Expected 48 V support",
   report_inverter_limit_now: "Currently permitted inverter power",
@@ -867,7 +878,7 @@ Object.assign(STRINGS.de, {
   reserve_decision_dc_support_protection:
     "Der Schutz der DC-Versorgung bestimmt die aktuelle Quellenumschaltung und AC-Entladegrenze.",
   reserve_decision_dc_reserve_holding:
-    "Die DC-Netzteile erhalten Batterieenergie, deren Entnahme für den erwarteten PV-Speicherbedarf nicht nötig ist.",
+    "Die DC-Netzteile erhalten den SOC, weil aktuell kein Batterie-Entnahmebudget verfügbar ist.",
   reserve_decision_manual_support:
     "Manuell angeforderte Netzteilstützung sperrt die AC-Batterieentladung.",
   reserve_decision_no_ac_demand:
@@ -878,6 +889,17 @@ Object.assign(STRINGS.de, {
   report_additional_grid_import_for_reserve:
     "Zusätzlicher Netzbezug für Reserve",
   report_remaining_battery_discharge: "Verbleibende Batterieentladung",
+  report_live_dc_source: "Gemessene DC-Quellenumschaltung",
+  report_live_dc_pv_confirmed:
+    "PV-Versorgung bestätigt; automatische Netzteile sind aus.",
+  report_live_dc_pv_pending:
+    "PV-Quellenumschaltung ausstehend; Gerätebestätigung oder erneute Freigabe erforderlich.",
+  report_dc_budget: "Verfügbares DC-Entnahmebudget (Prognosehorizont)",
+  report_dc_shifted: "In Marktspitzen verschobene DC-Batterieenergie",
+  reserve_decision_dc_pv_supply:
+    "PV-Überschuss versorgt die DC-Verbraucher; automatische Netzteile bleiben aus.",
+  reserve_decision_dc_market_supply:
+    "Bereits freigegebene DC-Batterieenergie versorgt die Verbraucher während einer Marktspitze.",
   report_incidental_psu_charging: "Technisch bedingte Netzteilladung",
   report_expected_48_v_support: "Erwartete 48-V-Stützung",
   report_inverter_limit_now: "Aktuell erlaubte Inverterleistung",

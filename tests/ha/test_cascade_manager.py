@@ -554,6 +554,7 @@ def test_disabled_cascade_cannot_reserve_energy_in_operational_plan() -> None:
     """Automation OFF is planner OFF, not a global commissioning preview."""
     now = datetime(2026, 9, 2, 22, 30)
     coordinator = _LiveIncidentCoordinator(now)
+    coordinator.raw_config = {}
     manager = CascadeManager(coordinator)
     config, inputs, _preview = _live_incident_plan(manager, now)
 
@@ -1156,6 +1157,7 @@ async def test_withdrawn_root_wake_holds_any_confirmed_upstream_prefix() -> None
     """The same safe boundary applies while an arbitrary member wakes."""
     now = datetime(2026, 9, 4, 7, 0, 6)
     coordinator = _LiveIncidentCoordinator(now)
+    coordinator.raw_config = {}
     manager = CascadeManager(coordinator)
     state = manager._state("chain")
     state["enabled"] = True
@@ -1841,6 +1843,7 @@ async def test_live_root_rejects_generic_off_at_entity_boundary(
     """
     now = datetime(2026, 9, 1, 22, 29, 44)
     coordinator = _LiveIncidentCoordinator(now)
+    coordinator.raw_config = {}
     manager = CascadeManager(coordinator)
     coordinator.cascade_manager = manager
     coordinator._switch_lock = asyncio.Lock()
@@ -1859,17 +1862,17 @@ async def test_live_root_rejects_generic_off_at_entity_boundary(
     coordinator.async_update_listeners = lambda: None
     coordinator._cancel_off_timer = lambda _load_id: None
 
-    async def switch_entity(entity_id: str, turn_on: bool) -> bool:
+    async def switch_entity(entity_id: str, turn_on: bool, **kwargs) -> bool:
         return await BatteryManagerCoordinator._switch_entity(
-            coordinator, entity_id, turn_on
+            coordinator, entity_id, turn_on, **kwargs
         )
 
     coordinator._switch_entity = switch_entity
     coordinator._load_actor_requests = {}
 
-    async def switch_load_entity(entity_id: str, turn_on: bool) -> bool:
+    async def switch_load_entity(entity_id: str, turn_on: bool, **kwargs) -> bool:
         return await BatteryManagerCoordinator._switch_load_entity(
-            coordinator, entity_id, turn_on
+            coordinator, entity_id, turn_on, **kwargs
         )
 
     coordinator._switch_load_entity = switch_load_entity
@@ -3459,6 +3462,7 @@ async def test_terminal_tool_action_wakes_every_live_cascade_member(
     """The real Bad topology reaches B2 before its recommendation-only leaf."""
     now = datetime(2026, 9, 4, 12)
     coordinator = _LiveIncidentCoordinator(now)
+    coordinator.raw_config = {}
     manager = CascadeManager(coordinator)
     seen: list[str] = []
 
@@ -3489,6 +3493,7 @@ async def test_terminal_tool_retries_output_after_cached_wake_evidence(
     """A publishing Fossibot may need another command before AC output responds."""
     now = datetime(2026, 9, 4, 12)
     coordinator = _LiveIncidentCoordinator(now)
+    coordinator.raw_config = {}
     manager = CascadeManager(coordinator)
     real_actor = manager._actor
     b2_attempts = 0

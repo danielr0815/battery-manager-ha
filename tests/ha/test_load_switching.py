@@ -3353,7 +3353,7 @@ async def test_manual_power_calibration_waits_for_delayed_actor_confirmation(
         coordinator_module, "POWER_CALIBRATION_ACTOR_CONFIRM_TIMEOUT_S", 1.0
     )
 
-    async def delayed_switch(entity_id: str, turn_on: bool) -> bool:
+    async def delayed_switch(entity_id: str, turn_on: bool, **kwargs) -> bool:
         calls.append(("turn_on" if turn_on else "turn_off", entity_id))
         if turn_on:
             asyncio.get_running_loop().call_later(

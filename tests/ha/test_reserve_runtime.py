@@ -486,3 +486,38 @@ def test_pv_insurance_diagnostics_distinguish_each_days_forecast_spread():
         "2026-09-28": 72,
     }
     assert diagnostics["pv_uncertainty_budget_wh"] == 288
+
+
+def test_diagnostics_use_actual_psu_grid_attribution_under_solar():
+    from dataclasses import replace
+    from datetime import datetime
+
+    from custom_components.battery_manager.core import plan
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        PlanInputs,
+        ReserveParams,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.reserve_runtime import (
+        ReserveRuntime,
+        reserve_diagnostics,
+    )
+
+    config = SystemConfig()
+    config = replace(
+        config,
+        reserve=ReserveParams(True, 1),
+        support=replace(
+            config.support, configured=True, coordinated=True, dc24_forced_on=True
+        ),
+        charger=replace(config.charger, eta=1, standby_power_w=0),
+    )
+    now = datetime(2026, 10, 7, 12)
+    inputs = PlanInputs(now, 80, (HourSlot(0, now, 1, 12, 200, 100, 60),))
+    result = plan(config, inputs)
+    diagnostics = reserve_diagnostics(
+        config, inputs, result, result, ReserveRuntime(), "active"
+    )
+    assert diagnostics["psu_grid_import_wh"] == 0
+    assert result.trajectory.flows[0].psu24_delivered_wh > 0

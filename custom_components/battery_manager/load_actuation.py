@@ -134,6 +134,9 @@ async def execute_load_switching(
     actions: Sequence[LoadAction | tuple[Any, ...]],
     now: datetime | None = None,
 ) -> None:
+    # Local import avoids a cycle: load_safety builds typed LoadAction requests.
+    from .load_safety import start_blocked
+
     reconcile_feedback(self)
     if now is None:
         now = dt_util.now()
@@ -172,11 +175,7 @@ async def execute_load_switching(
         enable = data.get(CONF_LOAD_CHARGE_ENABLE)
         subentry = self.entry.subentries.get(subentry_id)
         label = subentry.title if subentry else subentry_id
-        if (
-            activate
-            and not bypass_guards
-            and (self._floor_guard_active or self._stale_shed_active)
-        ):
+        if activate and not bypass_guards and start_blocked(self):
             # G4 floor guard / D-A8 stale shed, in-flight race: the
             # guard may have tripped AFTER this ON was queued (a
             # debounced SOC refresh returns early while this task is
@@ -185,25 +184,30 @@ async def execute_load_switching(
             # exactly the unsupervised start both guards exist to
             # prevent.
             _LOGGER.info(
-                "Floor guard or stale shed active: dropping queued switch-ON for %s",
+                "Load safety guard active: dropping queued switch-ON for %s",
                 label,
             )
             continue
         if activate:
-            if enable and not await self._switch_load_entity(enable, True):
+            if enable and not await self._switch_load_entity(
+                enable, True, actor_owner="load:" + subentry_id
+            ):
                 continue
             if not self.load_bm_enabled(subentry_id) or (
-                not bypass_guards
-                and (self._floor_guard_active or self._stale_shed_active)
+                not bypass_guards and start_blocked(self)
             ):
                 if enable:
-                    await self._switch_load_entity(enable, False)
+                    await self._switch_load_entity(
+                        enable, False, actor_owner="load:" + subentry_id
+                    )
                 continue
             # The queue snapshot may predate an external input switch. Only a
             # command issued while the input is not ON can acquire ownership.
             plug_was_on = self._entity_is_on(plug)
             if not plug_was_on:
-                if not await self._switch_load_entity(plug, True):
+                if not await self._switch_load_entity(
+                    plug, True, actor_owner="load:" + subentry_id
+                ):
                     # Rollback (7-day live audit 2026-08-04): the gate
                     # confirmed ON but the plug did not (BLE-RPC
                     # failure) — without this OFF the gate stays
@@ -217,7 +221,9 @@ async def execute_load_switching(
                     # above runs BEFORE the enable ON, so it never
                     # needs this rollback.
                     if enable:
-                        if await self._switch_load_entity(enable, False):
+                        if await self._switch_load_entity(
+                            enable, False, actor_owner="load:" + subentry_id
+                        ):
                             _LOGGER.warning(
                                 "Load %s: plug ON failed after the"
                                 " charge-enable gate confirmed ON —"
@@ -242,8 +248,7 @@ async def execute_load_switching(
             # Ownership is recorded above so the compensating OFF obeys
             # the configured input policy, including auto-owned plugs.
             if not self.load_bm_enabled(subentry_id) or (
-                not bypass_guards
-                and (self._floor_guard_active or self._stale_shed_active)
+                not bypass_guards and start_blocked(self)
             ):
                 await self._execute_load_switching(
                     [
@@ -302,7 +307,9 @@ async def execute_load_switching(
                     label,
                 )
                 continue
-            if enable and not await self._switch_load_entity(enable, False):
+            if enable and not await self._switch_load_entity(
+                enable, False, actor_owner="load:" + subentry_id
+            ):
                 # Charge-enable did not confirm off: charging is not
                 # actually stopped — keep state and retry next cycle.
                 continue
@@ -314,7 +321,9 @@ async def execute_load_switching(
                 # Without a charge-enable gate, stopping charging is
                 # only possible by switching the input off.
                 turn_plug_off = True
-            if turn_plug_off and not await self._switch_load_entity(plug, False):
+            if turn_plug_off and not await self._switch_load_entity(
+                plug, False, actor_owner="load:" + subentry_id
+            ):
                 # Turn-off failed: keep ownership so the plug is never
                 # recorded as not-ours while physically ON. Without a
                 # charge-enable gate charging is still active, so the

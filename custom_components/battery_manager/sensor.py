@@ -536,6 +536,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "appliances",
             "consumption_profile",
             "live_ac",
+            "load_grid_guard",
             "consumption_forecast",
             "cascades",
             "load_decisions",

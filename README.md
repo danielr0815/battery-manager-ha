@@ -36,11 +36,15 @@ Grid ──────────────┤
 
 Every ~5 minutes (and on input changes, debounced) the planner runs:
 
-1. **Battery policy** — active reserve mode keeps DC consumers on the battery
-   until protection is needed. AC discharge creates only the extra space required
-   by PV **today and tomorrow**, as late as the available AC load permits. There
-   is no additional fixed night reserve, and later forecast days cannot trigger
-   today's preparation. With reserve mode off, **threshold search** applies: for every candidate SOC threshold the full horizon
+1. **Battery policy** — active reserve mode preserves DC battery energy through
+   available power supplies when discharge creates no needed solar headroom.
+   PV covers house loads and actual PSU intake at the same grid connection;
+   sufficient PV releases automatic support even at full SOC. The entire
+   available forecast horizon determines preparation. Existing DC discharge
+   can move into expensive periods between solar recharges, without increasing
+   its budget or AC permissions. Manual requests and protection take priority.
+   With reserve mode off, **threshold search** applies: for every candidate SOC
+   threshold the full horizon
    is simulated with the *actual* policy `inverter on ⇔ SOC > threshold`; the
    candidate with the lowest cost (grid import − terminal battery value +
    small export penalty) wins. "Make room before a sunny day, hold reserve
@@ -337,10 +341,27 @@ and the [review implementation record](docs/REVIEW_0.46.0.md).
 The new appliance sensors/card expose observations and learned profiles even
 before the first valid plan. See [appliance visibility](docs/APPLIANCE_VISIBILITY.md).
 
-Active reserve mode now prioritizes battery-powered DC consumption and limits
-extra AC preparation to today and tomorrow in the HA timezone. Protection
+The original 0.47.0 reserve policy prioritized battery-powered DC consumption
+and limited preparation to today and tomorrow. Since 0.53.0, the entire
+available forecast horizon applies; 0.56.0 adds PV priority and budget-neutral
+DC market placement. Protection
 thresholds remain unchanged. Historical holding values no longer override PSU
 protection or authorize discharge. Old automatic high-SOC PSU holding requests
 are reconciled through the existing confirmed source-transfer sequence.
 The forecast card explains the actual reserve decision instead of presenting
 T* as a target. See [reserve behavior and migration](docs/F-RESERVE-DC-FIRST.md).
+
+## PV priority and DC market supply in 0.56.0
+
+Automatic DC supply follows usable PV first and places already permitted battery
+energy in market peaks. High prices create no extra discharge budget. Source
+transitions recheck the current plan, fresh measurements and protection before
+removing the old source. Duplicate actor assignments raise a Home Assistant
+repair issue and block affected optional loads. See the
+[DC feature contract](docs/F-DC-PV-MARKET.md) and
+[release verification](docs/RELEASE_CANDIDATE_0.56.0.md).
+
+Diagnostics and planner recordings contain entity names, SOC, power, learned
+consumption, load runtimes and household activity patterns. Review these files
+before sharing them publicly; automatic secret redaction does not anonymize
+household behaviour. Deployment and live acceptance follow separately via HACS.

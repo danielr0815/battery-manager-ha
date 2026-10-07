@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from typing import Any
 
 from .dc_service import preserves_dc_service
 from .market import slot_weights
@@ -32,6 +34,18 @@ from .reserve_schedule import (
     PreparationEnvelope,
     effective_market_weights,
     preparation_envelope,
+)
+from .reserve_sources import (
+    SourceState,
+    SourceStep,
+    grid_dc,
+    least_grid_source,
+    market_sources,
+    net_draw,
+    source_choices,
+    source_state,
+    source_windows,
+    valid_shift,
 )
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
@@ -276,6 +290,128 @@ def _simulate_reserve(
     pv_scale: float | Sequence[float],
     feedin: tuple[float, ...] | None,
 ) -> Trajectory:
+    traces: dict[int, tuple[SourceStep, ...]] = {}
+    reference = _simulate_reserve_reference(
+        config, inputs, extra_ac, pv_scale, feedin, traces=traces
+    )
+    return _apply_dc_market(
+        config, inputs, extra_ac, pv_scale, feedin, reference, traces
+    )
+
+
+def simulate_reserve_variant(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+    *,
+    allow_ac: bool = True,
+    ac_margin_wh: float = 0.0,
+) -> Trajectory:
+    """Offline AC hypotheses retain exactly the production DC postprocessing."""
+    traces: dict[int, tuple[SourceStep, ...]] = {}
+    reference = _simulate_reserve_policy(
+        config,
+        inputs,
+        extra_ac,
+        pv_scale,
+        feedin,
+        allow_ac=allow_ac,
+        ac_margin_wh=ac_margin_wh,
+        traces=traces,
+    )
+    return _apply_dc_market(
+        config,
+        inputs,
+        extra_ac,
+        pv_scale,
+        feedin,
+        reference,
+        traces,
+        allow_ac=allow_ac,
+        ac_margin_wh=ac_margin_wh,
+    )
+
+
+def _apply_dc_market(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+    reference: Trajectory,
+    traces: dict[int, tuple[SourceStep, ...]],
+    *,
+    allow_ac: bool = True,
+    ac_margin_wh: float = 0.0,
+) -> Trajectory:
+    """One budget contract for planner candidates, comparisons and replay."""
+    steps = traces[id(reference.flows)]
+    weights = effective_market_weights(
+        _market_weights(inputs, _steps(config, inputs, extra_ac, pv_scale))
+    )
+    states = market_sources(config, steps, weights)
+    result = reference
+    accepted_states = [source_state(s.flow) for s in steps]
+    for window in source_windows(steps):
+        proposed = list(accepted_states)
+        for index in window:
+            proposed[index] = states[index]
+        if proposed == accepted_states:
+            continue
+        trial = _simulate_reserve_policy(
+            config,
+            inputs,
+            extra_ac,
+            pv_scale,
+            feedin,
+            allow_ac=allow_ac,
+            ac_margin_wh=ac_margin_wh,
+            fixed_sources=tuple(proposed),
+            fixed_limits=tuple(s.flow.inverter_limit_w for s in steps),
+            traces=traces,
+        )
+        if valid_shift(config, steps, traces[id(trial.flows)], weights):
+            result = trial
+            accepted_states = proposed
+    decision = reference.reserve_decision
+    assert decision is not None
+    accepted = traces[id(result.flows)]
+    shifted = sum(
+        max(0.0, net_draw(b.flow) - net_draw(a.flow))
+        for a, b in zip(steps, accepted, strict=True)
+    )
+    reason = decision.reason
+    if (
+        shifted > ENERGY_EPSILON_WH
+        and accepted
+        and net_draw(accepted[0].flow) > net_draw(steps[0].flow) + ENERGY_EPSILON_WH
+    ):
+        reason = "dc_market_supply"
+    # DC placement cannot loosen the live AC permission from the reference.
+    return replace(
+        result,
+        reserve_decision=replace(
+            decision,
+            reason=reason,
+            dc_budget_wh=sum(
+                net_draw(s.flow) for s in steps if not s.flow.inverter_limit_w
+            ),
+            dc_shifted_wh=shifted,
+        ),
+    )
+
+
+def _simulate_reserve_reference(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+    *,
+    traces: dict[int, tuple[SourceStep, ...]],
+) -> Trajectory:
     """AC timing may cost efficiency, but cannot purchase later DC support.
 
     Preparation can be physically safe yet buy back DC energy later.
@@ -284,24 +420,18 @@ def _simulate_reserve(
     that DC-only plan until a new forecast makes AC affordable. This bounded
     fallback deliberately favours DC over optional AC headroom.
     """
-    candidate = _simulate_reserve_policy(config, inputs, extra_ac, pv_scale, feedin)
-    dc_import = sum(
-        f.psu24_delivered_wh / config.support.psu24_eta
-        + f.psu48_delivered_wh / config.support.psu48_eta
-        for f in candidate.flows
+    candidate = _simulate_reserve_policy(
+        config, inputs, extra_ac, pv_scale, feedin, traces=traces
     )
+    dc_import = sum(grid_dc(config, f) for f in candidate.flows)
     unserved = sum(f.unserved_dc_wh for f in candidate.flows)
     if dc_import + unserved > ENERGY_EPSILON_WH and any(
         f.inverter_output_wh > ENERGY_EPSILON_WH for f in candidate.flows
     ):
         reference = _simulate_reserve_policy(
-            config, inputs, extra_ac, pv_scale, feedin, allow_ac=False
+            config, inputs, extra_ac, pv_scale, feedin, allow_ac=False, traces=traces
         )
-        reference_dc = sum(
-            f.psu24_delivered_wh / config.support.psu24_eta
-            + f.psu48_delivered_wh / config.support.psu48_eta
-            for f in reference.flows
-        )
+        reference_dc = sum(grid_dc(config, f) for f in reference.flows)
         # Complete ON/OFF quanta can move one source-transfer boundary. Do
         # not discard useful AC (and export the same PV) over that rounding
         # effect. Additional sustained DC support remains disallowed.
@@ -326,6 +456,7 @@ def _simulate_reserve(
                 extra_ac,
                 pv_scale,
                 feedin,
+                traces=traces,
                 ac_margin_wh=(
                     retained + ENERGY_EPSILON_WH
                     if config.reserve.soft_soc_ceiling_percent is None
@@ -337,11 +468,7 @@ def _simulate_reserve(
                     else 0.0
                 ),
             )
-            reduced_dc = sum(
-                f.psu24_delivered_wh / config.support.psu24_eta
-                + f.psu48_delivered_wh / config.support.psu48_eta
-                for f in reduced.flows
-            )
+            reduced_dc = sum(grid_dc(config, f) for f in reduced.flows)
             if config.reserve.soft_soc_ceiling_percent is not None and (
                 reduced_dc > reference_dc + transfer_quantum + ENERGY_EPSILON_WH
                 or not preserves_dc_service(reduced, baseline=reference)
@@ -358,14 +485,11 @@ def _simulate_reserve(
                     extra_ac,
                     pv_scale,
                     feedin,
+                    traces=traces,
                     ac_margin_wh=residual + ENERGY_EPSILON_WH,
                     dc_hold_margin_wh=retained + ENERGY_EPSILON_WH,
                 )
-                reduced_dc = sum(
-                    f.psu24_delivered_wh / config.support.psu24_eta
-                    + f.psu48_delivered_wh / config.support.psu48_eta
-                    for f in reduced.flows
-                )
+                reduced_dc = sum(grid_dc(config, f) for f in reduced.flows)
             if (
                 reduced_dc <= reference_dc + transfer_quantum + ENERGY_EPSILON_WH
                 and preserves_dc_service(reduced, baseline=reference)
@@ -391,6 +515,9 @@ def _simulate_reserve_policy(
     allow_ac: bool = True,
     ac_margin_wh: float = 0.0,
     dc_hold_margin_wh: float = 0.0,
+    fixed_sources: tuple[SourceState, ...] | None = None,
+    fixed_limits: tuple[float, ...] | None = None,
+    traces: dict[int, tuple[SourceStep, ...]] | None = None,
 ) -> Trajectory:
     """Execute source protection and the shared forecast preparation envelope."""
     steps = _steps(config, inputs, extra_ac, pv_scale)
@@ -504,6 +631,8 @@ def _simulate_reserve_policy(
     future_demand_w = 0.0
     before_recharge = True
     used_ac = False
+    source_steps: list[SourceStep] = []
+    previous_sources = (support.dc24_active, support.dc48_active)
     for j, (i, slot, extra, _) in enumerate(steps):
         assert envelope is not None
         following_ceiling = envelope.ac_ceiling[j]
@@ -594,12 +723,7 @@ def _simulate_reserve_policy(
                 # normal energy preservation resumes. A complete source step
                 # can overshoot by one transfer quantum, which the final
                 # DC-cost comparison already accounts for.
-                saving = (
-                    held.psu24_delivered_wh / source.psu24_eta
-                    + held.psu48_delivered_wh / source.psu48_eta
-                    - protected.psu24_delivered_wh / source.psu24_eta
-                    - protected.psu48_delivered_wh / source.psu48_eta
-                )
+                saving = grid_dc(effective, held) - grid_dc(effective, protected)
                 if (
                     used_ac
                     and dc_hold_margin_wh > ENERGY_EPSILON_WH
@@ -610,6 +734,37 @@ def _simulate_reserve_policy(
                     holding = True
                     dc24 = dc24 or source.dc24_available
                     dc48 = dc48 or source.dc48_available
+        required_sources = (
+            protect24 or source.dc24_forced_on,
+            protect48 or source.dc48_forced_on,
+        )
+        choices = source_choices(
+            effective,
+            required_sources,
+            partial(
+                _step_hour,
+                effective,
+                soc,
+                slot,
+                100,
+                extra,
+                pv_scale=scale,
+                feedin_wh=export,
+            ),
+        )
+        if fixed_sources is not None:
+            dc24 = fixed_sources[j][0] or required_sources[0]
+            dc48 = fixed_sources[j][1] or required_sources[1]
+        elif slot.pv_wh * scale > slot.ac_wh + extra + ENERGY_EPSILON_WH:
+            source_baseline = _step_hour(
+                effective, soc, slot, 100, extra, dc24, dc48, scale, export
+            )
+            best_source = least_grid_source(
+                source_baseline,
+                choices,
+                (False, False) if pv_recovery else previous_sources,
+            )
+            dc24, dc48 = source_state(best_source)
         pv = slot.pv_wh * scale
         if scale > 1:
             pv = min(pv, config.pv.peak_power_w * slot.duration)
@@ -643,6 +798,8 @@ def _simulate_reserve_policy(
             and available_ac + ENERGY_EPSILON_WH >= required_ac
             else 0.0
         )
+        if fixed_limits is not None:
+            limit = fixed_limits[j] if not (dc24 or dc48) else 0.0
         if not limit and (dc24, dc48) == (
             protected.support_dc24,
             protected.support_dc48,
@@ -714,6 +871,8 @@ def _simulate_reserve_policy(
                 reason = "dc_support_protection"
             elif holding and (dc24 or dc48):
                 reason = "dc_reserve_holding"
+            elif pv_recovery and not (dc24 or dc48) and slot.dc_wh > ENERGY_EPSILON_WH:
+                reason = "dc_pv_supply"
             elif limit:
                 reason = "pv_headroom_preparation"
             elif not useful_ac:
@@ -765,6 +924,15 @@ def _simulate_reserve_policy(
             if flow.inverter_on
             else "reserve",
         )
+        source_steps.append(
+            SourceStep(
+                slot,
+                flow,
+                choices or (flow,),
+                battery.soc_percent(following_minimum + dc_uncertainty_wh),
+            )
+        )
+        previous_sources = (dc24, dc48)
         buckets[i].append(flow)
         soc = flow.soc_end_percent
     if decision is not None and future_ac_wh > ENERGY_EPSILON_WH:
@@ -790,13 +958,14 @@ def _simulate_reserve_policy(
     ]
     for slot, parts in zip(inputs.slots, buckets, strict=True):
         first = parts[0]
+        energies: dict[str, Any] = {
+            name: sum(float(getattr(part, name) or 0.0) for part in parts)
+            for name in energy_fields
+        }
         flows.append(
             replace(
                 first,
-                **{
-                    name: sum(getattr(part, name) for part in parts)
-                    for name in energy_fields
-                },
+                **energies,
                 reserve_preparation_start=next(
                     (
                         part.reserve_preparation_start
@@ -824,10 +993,13 @@ def _simulate_reserve_policy(
         decision = replace(decision, headroom_wh=0.0, live_ac_floor_percent=100.0)
     if decision is None:
         decision = ReserveDecision(inputs.now, 0.0, 0.0, 0.0, "no_preparation_needed")
-    return Trajectory(
+    result = Trajectory(
         tuple(flows),
         sum(flow.grid_import_wh for flow in flows),
         sum(flow.grid_export_wh for flow in flows),
         soc,
         reserve_decision=decision,
     )
+    if traces is not None:
+        traces[id(result.flows)] = tuple(source_steps)
+    return result

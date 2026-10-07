@@ -115,3 +115,26 @@ führen die neuen Fehlerverträge auf. Branch-Coverage wird zusätzlich berichte
 die bestehenden Zeilengates werden nicht abgeschwächt. Timeouttests steuern die
 Zeit und prüfen die produktive Frist separat. Die lokale Playwright-Suite
 beobachtet echtes DOM/Shadow DOM, Tastatur, Fokus, Scrollen und Frame-Rendering.
+
+## Ergänzung 0.56.0
+
+`core/test_dc_pv_market.py` beweist den Vertrag `F-DC-PV-MARKET`: konkrete
+24-/48-V-Quellenpläne, unveränderte Entnahme-/Import-/Exportbudgets, echte
+Ladegrenzen, fehlende/negative/Viertelstunden-/DST-Preise, Teil-PV und reale
+physikalische Ausgangsflows für adversariale Kandidaten. Separate Fehlerfälle
+belegen jede Sicherheitsgrenze anhand der verworfenen Entscheidung.
+`ha/test_live_dc_pv.py` beobachtet bestätigte Gerätefolgen, Schutz, frische und
+unbekannte Messwerte, Schaltfristen, Fehler und verzögerte PV-Rücknahme.
+Frontend- und Browsertests prüfen übersetzte Plan-/Live-Gründe, Budgets und die
+Unterscheidung von bestätigten und ausstehenden Quellenübergaben.
+
+Die Reviewkorrekturen ergänzen `core/test_review_corrections.py` mit saldierter
+200/100/100-Wh-Bilanz, Wirkungsgraden, gemischtem Quellengegenfall, Vergleichspfad
+und ungültigen Replay-/Modellwerten. Adversariale Policy-Evidenz prüft, dass beide
+begrenzten Korrekturen eine schädliche AC-Freigabe verwerfen. HA-Regressionen
+prüfen jede verzögerte Bestätigung, Überlappung, Planwechsel nach Refresh/Sperre,
+Schutzrückkehr ohne wirtschaftliche Wartezeit und fehlgeschlagene Wiederherstellung.
+`ha/test_actor_ownership.py` plus Config-Flow-Regressionen prüfen Konflikte in
+beiden Änderungsrichtungen und die letzte physische Befehlsgrenze. Eine separate
+Feed-in-Regression synchronisiert auf die eigene Gerätepublikation, auch vor
+Zuweisung einer von HA sofort gestarteten Hintergrundtask.

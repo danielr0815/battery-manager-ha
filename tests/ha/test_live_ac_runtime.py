@@ -199,8 +199,8 @@ async def test_delayed_release_cannot_survive_new_psu_request(live, hass):
     c, calls, *_ = live
     original = c._set_number_value
 
-    async def change_source(entity, value):
-        result = await original(entity, value)
+    async def change_source(entity, value, **kwargs):
+        result = await original(entity, value, **kwargs)
         if value:
             c._support_manual["dc48"] = True
         return result
@@ -436,8 +436,8 @@ async def test_delayed_planned_release_rechecks_its_budget(live, hass):
     )
     original = c._set_number_value
 
-    async def consume_budget(entity, value):
-        confirmed = await original(entity, value)
+    async def consume_budget(entity, value, **kwargs):
+        confirmed = await original(entity, value, **kwargs)
         if value:
             hass.states.async_set("sensor.test_soc", "50")
         return confirmed

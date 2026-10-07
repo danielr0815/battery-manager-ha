@@ -51,6 +51,33 @@ the operator switches via automation.
 
 **Charging active** ⇔ input ON **and** enable ON.
 
+### Measured import and interrupted stops (0.56.0)
+
+The existing five-second timer also protects automatic surplus loads using
+the configured signed `live_ac_grid_power_entity`, or otherwise
+`operation_import_power_entity`. Fresh net import above 50 W blocks starts
+and stops running loads without minimum-runtime dwell. This tolerance handles
+ESS meter noise; it grants no planner energy budget. Samples must be finite,
+in W/kW and at most 30 seconds old. Missing/stale measurements leave the
+existing planner, floor and stale-data guards responsible; forecast PV alone
+does not override a measured import. Starts recheck after gate and input
+confirmation. Calibration and cascade-owned paths retain their own owners.
+Recommendations are suppressed until fresh planning grants a run again.
+
+A logical charging helper is an intent signal, not physical proof that a
+device stopped. If the gate turns OFF but our input OFF fails, retained input
+ownership keeps the cleanup pending. Both normal planning and the fast timer
+retry that stop; the existing 60-second actuator retry limit still applies.
+Foreign passthrough inputs retain their configured ownership policy.
+
+For an `input_boolean` backed by an external automation, verify the complete
+device action and its supported limits. An automation that writes a 20 %
+charging ceiling to a number entity with a 60 % minimum fails with
+`out_of_range`; the helper can already be OFF while the device still charges.
+Correct that automation or use a charging actuator that can actually stop
+charging. A lower charging target within the valid range does not guarantee
+that a partly empty battery stops charging.
+
 - **Charge start (planned hour begins):**
   1. Remember whether the input was already on (→ "foreign ownership",
      passthrough).

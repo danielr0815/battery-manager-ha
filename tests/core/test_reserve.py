@@ -338,11 +338,11 @@ def test_near_full_weak_pv_must_not_be_displaced_by_grid_support():
     c = config()
     c = replace(c, charger=replace(c.charger, eta=0.9, standby_power_w=10))
     r = simulate(c, inputs(95, [(170, 100, 60)] * 4), 20)
-    # PV almost covers DC, so natural SOC drifts down. PSU24 would instead
-    # fill the battery and export PV; a capped end SOC alone misses this.
+    # PSU intake shares the solar connection. Rail support consumes PV first,
+    # avoiding the fictitious simultaneous import/export of isolated accounting.
     assert r.total_export_wh == pytest.approx(0, abs=1e-6)
-    assert not r.flows[0].support_dc24_start
+    assert r.flows[0].psu_grid_import_wh == pytest.approx(0, abs=1e-6)
     # Later small transfers may offset conversion loss, provided all PV still
     # fits. Holding the SOC is the goal; prohibiting those transfers is not.
-    assert r.end_soc_percent >= 94.5
+    assert r.end_soc_percent == pytest.approx(94.2)
     assert all(f.inverter_output_wh == 0 for f in r.flows)

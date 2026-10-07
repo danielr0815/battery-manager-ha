@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0] - 2026-10-07
+
+### Added
+- Native DC battery discharge follows available market peaks within the existing
+  forecast preparation budget. Five-minute source choices are redistributed
+  between solar recharges and replayed through the same physics; additional
+  depletion, DC outages, import/export increases and displaced AC supply reject
+  a proposed shift. Prices do not create discharge or grid-charging budgets.
+- A measured PV check in the existing five-second runtime returns automatic
+  DC supply to the battery/converter when usable PV covers the complete DC
+  demand. Entry requires 10% margin; losses, converter limits, fresh meters,
+  manual requests, protection, source confirmations and switch intervals apply.
+- Reserve reports distinguish PV supply, peak DC supply and preservation without
+  an available discharge budget, and show reference/shifted DC energy in Wh.
+
+### Fixed
+- Automatic surplus loads stop on fresh measured net import above a 50 W
+  meter-noise tolerance, regardless of forecast PV or minimum runtime.
+  Queued starts recheck after each confirmation. An OFF charging helper no
+  longer hides a failed stop of a Battery Manager-owned input; normal planning
+  and the five-second safety timer complete it with bounded retries.
+- Partial PV source selection compares both DC power supplies independently,
+  consuming usable surplus without increasing the existing depletion budget.
+  Fully PV-covered DC demand also releases automatic support at full SOC.
+- PV runtime restoration retries after switch dwell or failed feedback and
+  rechecks permission after delayed transfers. An expired plan requests fresh
+  planning and retains physical protection rather than replaying old holding.
+
+- PV, house load and PSU intake now share one netted AC balance. Actual
+  PSU grid attribution drives market and reserve comparisons; historic records
+  without the optional flow field remain readable.
+- Queued source intent is bound to its plan revision/expiry. Every confirmation
+  and rail overlap rechecks current permission; protective recovery bypasses
+  economic dwell. Configuration and final commands enforce shared actor claims;
+  legacy collisions raise repairs and block affected optional loads.
+- DC fallback uses forecast power plus the existing energy buffer divided by a
+  fixed hour. Dominated source choices and nonbeneficial marginal upgrades no
+  longer spend budget. Offline comparisons use production DC postprocessing.
+- Core model/replay validation rejects nonfinite and physically invalid evidence;
+  finished appliance runs retain zero remaining energy/duration support.
+- Eager Home Assistant setpoint publications no longer classify a feed-in
+  command as a manual override before its background task is assigned.
+- Public operation/security documentation reflects current contracts and release
+  delivery; HACS validation no longer suppresses its brands check.
+
 ## [0.55.2] - 2026-10-06
 
 ### Fixed

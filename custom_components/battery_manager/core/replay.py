@@ -50,10 +50,17 @@ def decode(value: Any) -> Any:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         raise ValueError("Invalid recording scalar")
-    if set(value) == {"type", "fields"} and value["type"] in _TYPES:
-        return _TYPES[value["type"]](
-            **{key: decode(item) for key, item in value["fields"].items()}
-        )
+    if (
+        set(value) == {"type", "fields"}
+        and isinstance(value["type"], str)
+        and value["type"] in _TYPES
+    ):
+        try:
+            return _TYPES[value["type"]](
+                **{key: decode(item) for key, item in value["fields"].items()}
+            )
+        except (TypeError, AttributeError, ValueError) as err:
+            raise ValueError(f"Invalid recording {value['type']}: {err}") from err
     if set(value) == {"datetime"}:
         return datetime.fromisoformat(value["datetime"])
     if set(value) == {"date"}:
@@ -120,6 +127,9 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
                         switching_schedule=flow.switching_schedule
                         if "switching_schedule" in recorded["fields"]
                         else (),
+                        psu_grid_import_wh=flow.psu_grid_import_wh
+                        if "psu_grid_import_wh" in recorded["fields"]
+                        else None,
                         dc_deficit_intervals=flow.dc_deficit_intervals
                         if "dc_deficit_intervals" in recorded["fields"]
                         else None,

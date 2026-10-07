@@ -238,6 +238,20 @@ class SurplusLoadState:
             self.soc_source in ("live", "cache", "missing"),
             f"SurplusLoadState.soc_source is invalid: {self.soc_source!r}",
         )
+        self._validate_runtime_values()
+
+    def _validate_runtime_values(self) -> None:
+        _finite_fields(self)
+        _require(
+            self.soc_percent is None or 0 <= self.soc_percent <= 100,
+            "SurplusLoadState.soc_percent must be in [0, 100] or None",
+        )
+        for name in ("measured_power_w", "learned_power_w", "saturated_power_w"):
+            value = getattr(self, name)
+            _require(
+                value is None or value >= 0,
+                f"SurplusLoadState.{name} must be nonnegative or None",
+            )
 
     def remaining_energy_wh(self, load: SurplusLoad) -> float | None:
         """Energy still absorbable, or None if unlimited."""
@@ -272,6 +286,11 @@ class Appliance:
     run_duration_h: float
     opportunistic_start: bool = False  # expose "may start on surplus" advisor
 
+    def __post_init__(self) -> None:
+        _finite_fields(self)
+        _require(self.run_energy_wh >= 0, "Appliance.run_energy_wh must be nonnegative")
+        _require(self.run_duration_h > 0, "Appliance.run_duration_h must be positive")
+
 
 type ApplianceAdvisoryReason = Literal[
     "forecast_horizon_short", "extra_grid_import", "soc_condition", "dc_service"
@@ -293,6 +312,21 @@ class ApplianceRun:
     appliance_id: str
     remaining_energy_wh: float
     remaining_hours: float
+
+    def __post_init__(self) -> None:
+        _finite_fields(self)
+        _require(
+            self.remaining_energy_wh >= 0,
+            "ApplianceRun.remaining_energy_wh must be nonnegative",
+        )
+        _require(
+            self.remaining_hours >= 0,
+            "ApplianceRun.remaining_hours must be nonnegative",
+        )
+        _require(
+            self.remaining_energy_wh == 0 or self.remaining_hours > 0,
+            "ApplianceRun positive energy requires positive remaining_hours",
+        )
 
 
 @dataclass(frozen=True)
@@ -929,6 +963,9 @@ class HourFlows:
     # None = legacy evidence unavailable; () = physically deficit-free.
     # Sparse intervals retain the five-minute placement lost by hourly sums.
     dc_deficit_intervals: tuple[DCDeficitInterval, ...] | None = None
+    # None preserves the unsaldiert accounting of pre-0.56 recordings.
+    # New simulations book only PSU intake not covered by simultaneous PV.
+    psu_grid_import_wh: float | None = None
 
 
 ReserveDecisionReason = Literal[
@@ -936,6 +973,8 @@ ReserveDecisionReason = Literal[
     "pv_headroom_preparation",
     "dc_support_protection",
     "dc_reserve_holding",
+    "dc_pv_supply",
+    "dc_market_supply",
     "dc_priority",
     "manual_support",
     "no_ac_demand",
@@ -963,6 +1002,8 @@ class ReserveDecision:
     live_ac_override_demand_w: float | None = None
     live_ac_override_floor_percent: float = 100.0
     market_ranking_reason: str = "load_priority_no_prices"
+    dc_budget_wh: float = 0.0
+    dc_shifted_wh: float = 0.0
 
 
 @dataclass(frozen=True)

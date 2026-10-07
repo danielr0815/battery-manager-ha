@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 from .core.model import PlanInputs, PlanResult, SystemConfig
+from .core.reserve_sources import grid_dc
 from .core.uncertainty import reserve_preparation_scales
 
 # Gaps must not invent a solar gain or hide involuntary loss. Observation time
@@ -189,6 +190,8 @@ def reserve_diagnostics(
         "hold_shortfall_wh": round(
             max(0.0, b.energy_wh(hold - inputs.start_soc_percent)), 1
         ),
+        "dc_budget_wh": round(decision.dc_budget_wh, 1) if decision else 0.0,
+        "dc_shifted_wh": round(decision.dc_shifted_wh, 1) if decision else 0.0,
         "remaining_discharge_wh": round(sum(f.battery_discharge_wh for f in flows), 1),
         "extra_grid_import_wh": round(
             max(
@@ -201,6 +204,7 @@ def reserve_diagnostics(
             sum(f.psu48_battery_charge_wh for f in flows), 1
         ),
         "psu48_delivered_wh": round(sum(f.psu48_delivered_wh for f in flows), 1),
+        "psu_grid_import_wh": round(sum(grid_dc(config, f) for f in flows), 1),
         "psu48_power_source": "voltage_estimate"
         if config.support.psu48_bus_voltage_v is not None
         else "unknown",

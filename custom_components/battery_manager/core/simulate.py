@@ -112,6 +112,7 @@ def step_hour(
     # on the rail, bit-for-bit as before.
     native48_wh, rail_wh = dc_loads(config, slot)
     psu24_delivered_wh = 0.0
+    psu24_ac_wh = 0.0
     dcdc_input_wh = 0.0
     dcdc_loss_wh = 0.0
     unserved_dc_wh = 0.0
@@ -124,7 +125,9 @@ def step_hour(
             else rail_wh
         )
         served = min(rail_wh, cap_wh)
-        grid_import += served / support.psu24_eta
+        psu24_ac_wh = served / support.psu24_eta
+        balance -= psu24_ac_wh
+        net_charging = balance > _EPS
         psu24_delivered_wh = served
         unserved_dc_wh = rail_wh - served
         bus_draw24_wh = 0.0
@@ -167,6 +170,7 @@ def step_hour(
         )
     psu48_delivered_wh = 0.0
     psu48_battery_charge_wh = 0.0
+    psu48_ac_wh = 0.0
     if gate_open:
         potential = support.dc48_power_w * slot.duration
         if support.coordinated:
@@ -206,7 +210,15 @@ def step_hour(
         # Reserve-only detail: old recordings keep their neutral added field.
         psu48_battery_charge_wh = absorbed if config.reserve.enabled else 0.0
         psu48_delivered_wh = direct + absorbed / battery.eta_charge
-        grid_import += psu48_delivered_wh / support.psu48_eta
+        psu48_ac_wh = psu48_delivered_wh / support.psu48_eta
+        balance -= psu48_ac_wh
+
+    # PV covers house/committed AC first, then actual PSU intake. Counting
+    # every PSU Wh as grid energy fabricated simultaneous import and export.
+    psu_ac_wh = psu24_ac_wh + psu48_ac_wh
+    psu_grid_import_wh = (
+        max(0.0, psu_ac_wh - max(0.0, pv_wh - ac_total)) if psu_ac_wh else 0.0
+    )
 
     # --- Remaining 48 V bus load drains the battery. Any shortfall (store at
     # floor) is NOT imported here but carried to the AC settlement, so a
@@ -292,7 +304,10 @@ def step_hour(
             available_store = max(0.0, energy - inv_floor_wh)
             available_ac = available_store * battery.eta_discharge * config.inverter.eta
             max_inv_ac = inverter_power_w * slot.duration
-            ac_out = min(deficit, max_inv_ac, available_ac)
+            # Support must not buy an inverter-to-PSU charging loop. Legacy
+            # uncoordinated callers may release AC only for their house demand.
+            house_deficit = max(0.0, ac_total - pv_wh)
+            ac_out = min(deficit, house_deficit, max_inv_ac, available_ac)
             if ac_out > _EPS:
                 drawn = ac_out / (battery.eta_discharge * config.inverter.eta)
                 energy -= drawn
@@ -315,6 +330,7 @@ def step_hour(
         support_dc24=dc24_from_grid and support.configured,
         support_dc48=dc48_support and support.configured,
         psu48_battery_charge_wh=psu48_battery_charge_wh,
+        psu_grid_import_wh=psu_grid_import_wh,
         psu48_delivered_wh=psu48_delivered_wh,
         psu24_delivered_wh=psu24_delivered_wh,
         dcdc_input_wh=dcdc_input_wh,

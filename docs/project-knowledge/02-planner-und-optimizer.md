@@ -808,3 +808,16 @@ in `docs/F-CASCADE-STORAGE.md`. Endlast einschließlich Pass 3 und Lückenschlus
 wird vor Mitgliedsladung allokiert. Neue Speicheraktionen haben Mindestgrößen;
 kleine bestehende Recovery-Abweichungen lösen keine Nachladung aus. Historische
 Aussagen über Recovery vor vollständigem Endlastlauf sind damit ersetzt.
+
+### Nachtrag 0.56.0: PV-Vorrang und budgetneutrale DC-Marktverschiebung
+
+[F-DC-PV-MARKET](../F-DC-PV-MARKET.md) ergänzt den gemeinsamen Reservepfad um
+physische Quellenkombinationen und die zeitliche Verteilung vorhandener DC-
+Entnahmebudgets. Vollständig deckende PV schaltet automatische Netzteile aus;
+Teilüberschuss schafft kein neues Budget. Jeder verschobene Ladeabschnitt wird
+gegen die bisherige Referenz nachsimuliert. Schutz, AC-Freigaben und DC-Versorgung
+bleiben verbindlich. Die korrigierte gemeinsame Anschlussbilanz verändert vier
+von 16 Topologie-Goldens; einzelne Gründe und Laufzeitvergleiche stehen im
+[Releasebericht 0.56.0](../RELEASE_CANDIDATE_0.56.0.md). Hohe Preise schaffen
+kein zusätzliches Budget. Ohne frische DC-Messung gilt Prognose-Watt plus
+Puffer-Wh / eine feste Stunde.

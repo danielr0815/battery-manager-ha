@@ -431,3 +431,27 @@ test("consumption distinguishes mixed sources and explains excluded hours", asyn
   );
   await expect(page.locator("#consumption-learning summary")).toBeFocused();
 });
+
+test("DC source reasons and shifted budget remain visible in both languages", async ({
+  page,
+}) => {
+  await page.evaluate((attrs) => window.mount("forecast", attrs), {
+    ...attributes,
+    reserve: {
+      mode: "active",
+      decision_reason: "dc_market_supply",
+      dc_budget_wh: 120,
+      dc_shifted_wh: 40,
+    },
+  });
+  const report = page.locator('[data-view-key="reserve-policy"]');
+  await report.locator("summary").click();
+  await expect(report).toContainText("Already permitted DC battery energy");
+  await expect(report).toContainText("120 Wh");
+  await expect(report).toContainText("40 Wh");
+  await page.evaluate(() => {
+    window.card.hass = { ...window.card._hass, language: "de" };
+  });
+  await expect(report).toContainText("während einer Marktspitze");
+  await expect(report).toContainText("Verfügbares DC-Entnahmebudget");
+});

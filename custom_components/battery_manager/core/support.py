@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import fields, replace
+from typing import Any
 
 from .model import HourFlows, PlanInputs, SystemConfig, Trajectory
 from .simulate import step_hour
@@ -114,12 +115,14 @@ def simulate_support(
             parts.append(flow)
             soc = flow.soc_end_percent
         first = parts[0]
+        energies: dict[str, Any] = {
+            name: sum(float(getattr(p, name) or 0.0) for p in parts)
+            for name in energy_fields
+        }
         flows.append(
             replace(
                 first,
-                **{
-                    name: sum(getattr(p, name) for p in parts) for name in energy_fields
-                },
+                **energies,
                 soc_end_percent=soc,
                 inverter_on=all(p.inverter_on for p in parts),
                 inverter_start=first.inverter_on,

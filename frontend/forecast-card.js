@@ -239,7 +239,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
         </div>
         ${stateNotice(hass, stateObj)}${body}
         ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
-        ${reserveReport(this._hass, stateObj?.attributes?.reserve)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
+        ${reserveReport(this._hass, stateObj?.attributes?.reserve, stateObj?.attributes?.coordinated_support)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `,
     );

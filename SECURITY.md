@@ -7,7 +7,7 @@ promise.
 
 ## Supported versions
 
-Only the latest release (tracked on the `main` branch, installed by HACS) is
+Only the latest published GitHub release (installed by HACS) is
 supported. Please reproduce any report against the current version before filing.
 
 ## Reporting a vulnerability
@@ -19,8 +19,9 @@ Please include: affected version, steps to reproduce, and the impact you see.
 
 As a single-maintainer project there is no guaranteed SLA, but reports are taken
 seriously and acknowledged as soon as practical. Once a fix is available it is
-merged to `main` (which HACS tracks) and, if warranted, published as a GitHub
-Security Advisory. Reporters are credited unless they prefer to remain anonymous.
+merged to `main` and delivered in a new GitHub release through HACS. Updating
+the default branch alone does not deliver the correction to release users.
+If warranted, a GitHub Security Advisory accompanies the release. Reporters are credited unless they prefer to remain anonymous.
 
 ## Security-relevant design
 

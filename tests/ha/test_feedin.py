@@ -1163,3 +1163,24 @@ async def test_runtime_switch_updates_forecast_for_all_days_and_resumes(hass):
     # explicitly rather than waiting through its production cooldown.
     await _refresh_at(hass, coordinator, moment)
     assert any(p.get("feedin", 0) > 0 for p in coordinator.data["soc_forecast"])
+
+
+async def test_eager_own_write_cannot_enter_manual_before_task_assignment(hass):
+    calls = []
+    coordinator, entry = await _setup_feedin(hass, calls)
+    coordinator._feedin_adopted = True
+    coordinator._feedin_last_written_w = 500
+    coordinator._feedin_task = None
+    original = coordinator._set_number_value
+
+    async def observed(entity, value, **kwargs):
+        result = await original(entity, value, **kwargs)
+        coordinator._update_feedin_mode(dt_util.now())
+        assert not coordinator.feedin_manual()
+        return result
+
+    coordinator._set_number_value = observed
+    await coordinator._execute_feedin(0, "regression eager confirmation")
+    assert coordinator._feedin_last_written_w == 0
+    assert not coordinator._feedin_write_pending
+    assert not coordinator.feedin_manual()

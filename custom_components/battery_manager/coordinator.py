@@ -25,6 +25,14 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .actor_ownership import (
+    COLLISION_OWNER,
+    SUPPLY_OWNER,
+    actor_claims,
+    actor_conflicts,
+    blocked_load_ids,
+    command_allowed,
+)
 from .appliance_learning import (
     ApplianceLearning,
     duration_hours,
@@ -257,6 +265,7 @@ from .load_actuation import (
     execute_load_switching,
     reconcile_feedback,
 )
+from .load_safety import LOAD_GRID_IMPORT_TOLERANCE_W, grid_import_w, start_blocked
 from .localization import message
 from .market import price_entity, read_prices
 from .operation_recorder import OperationRecorder
@@ -714,6 +723,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # adoption pass re-establishes the baseline instead of judging).
         self._feedin_switch_on = True
         self._feedin_manual_until: date | None = None
+        self._feedin_write_pending = False
         self._feedin_last_written_w: float | None = None
         self._feedin_last_write_at: datetime | None = None
         # One-shot startup adoption flag: the first judgement pass adopts the
@@ -2806,7 +2816,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ]
             )
 
-    async def _switch_load_entity(self, entity_id: str, desired: bool) -> bool:
+    async def _switch_load_entity(
+        self, entity_id: str, desired: bool, *, actor_owner: str | None = None
+    ) -> bool:
         """Confirm physical feedback and limit retries, including service failures."""
         state = self.hass.states.get(entity_id)
         if state is not None and state.state == ("on" if desired else "off"):
@@ -2822,7 +2834,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         request = ActorRequest(desired, now)
         self._load_actor_requests[entity_id] = request
         self._save_persistent_state()
-        if not await self._switch_entity(entity_id, desired):
+        if not await self._switch_entity(entity_id, desired, actor_owner=actor_owner):
             request.state = "service_failed"
             return False
         if not await confirm_state(self.hass, entity_id, desired):
@@ -3476,7 +3488,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # schedule. Remove its members and terminal from the effective plan so
         # the house-SOC trajectory, feed-in and competing load allocations do
         # not reserve energy for actors that are deliberately not owned.
-        cascade_blocked = self.cascade_manager.planning_blocked_load_ids()
+        cascade_blocked = (
+            self.cascade_manager.planning_blocked_load_ids()
+            | blocked_load_ids(
+                actor_claims(self.raw_config, self.entry.subentries),
+                self.entry.subentries,
+            )
+        )
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
@@ -4187,9 +4205,58 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             finally:
                 self._update_task = None
 
+    async def _reconcile_actor_ownership(self) -> None:
+        claims = actor_claims(self.raw_config, self.entry.subentries)
+        conflicts = actor_conflicts(claims)
+        issue = f"actor_conflict_{self.entry.entry_id}"
+        if conflicts:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="actor_conflict",
+                translation_placeholders={"actors": ", ".join(sorted(conflicts))},
+            )
+            async with self._switch_lock:
+                # Gates/output first, inputs last: removing input must not
+                # leave an ambiguous storage charging through another owner.
+                ordered: dict[str, None] = {}
+                for key in (
+                    CONF_LOAD_CHARGE_ENABLE,
+                    CONF_LOAD_OUTPUT_SWITCH,
+                    CONF_LOAD_CONTROL_SWITCH,
+                ):
+                    for sub in self.entry.subentries.values():
+                        actor = sub.data.get(key)
+                        if (
+                            sub.subentry_type == SUBENTRY_TYPE_LOAD
+                            and isinstance(actor, str)
+                            and actor
+                        ):
+                            ordered.setdefault(actor, None)
+                for actor in ordered:
+                    if self._entity_tristate(actor) is False or not command_allowed(
+                        claims, actor, False, COLLISION_OWNER
+                    ):
+                        continue
+                    if (
+                        not await self._switch_entity(
+                            actor, False, actor_owner=COLLISION_OWNER
+                        )
+                        or self._entity_tristate(actor) is not False
+                    ):
+                        # Preserve input until the preceding gate/output
+                        # removal is actually confirmed; retry next cycle.
+                        break
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, issue)
+
     async def _async_update_data_serial(self) -> dict[str, Any]:
         if self._actuation_shutdown or self.hass.is_stopping:
             return self.data or {}
+        await self._reconcile_actor_ownership()
         await self.cascade_manager.async_reconcile_topologies()
         reconcile_feedback(self)
         # Manual pause and restored OFF obligations do not depend on forecasts.
@@ -4831,6 +4898,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # F-N3 two-bus diagnostics (docs/DC_TOPOLOGY.md).
                 "psu48_delivered_wh": flow.psu48_delivered_wh,
                 "psu24_delivered_wh": flow.psu24_delivered_wh,
+                "psu_grid_import_wh": flow.psu_grid_import_wh,
                 "dcdc_input_wh": flow.dcdc_input_wh,
                 "dcdc_loss_wh": flow.dcdc_loss_wh,
                 "unserved_dc_wh": flow.unserved_dc_wh,
@@ -5017,6 +5085,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "migration": dict(self._support_migration),
             },
             "live_ac": dict(self.live_ac.diagnostics),
+            "load_grid_guard": {
+                "active": (imported := grid_import_w(self)) is not None
+                and imported > LOAD_GRID_IMPORT_TOLERANCE_W,
+                "grid_import_w": imported,
+            },
             "consumption_profile": profile_diag,
             "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
@@ -5508,7 +5581,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if (
                     self._entity_tristate(psu_entity) is False
                     and self._entity_tristate(dcdc_entity) is False
-                    and await self._switch_entity(dcdc_entity, True)
+                    and await self._switch_entity(
+                        dcdc_entity, True, actor_owner=SUPPLY_OWNER
+                    )
                 ):
                     _LOGGER.info(
                         "24 V rail: DC/DC converter switched back on"
@@ -5738,7 +5813,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
                 if self._entity_tristate(entity_id) is target:
                     return
-                if await self._switch_entity(entity_id, target):
+                if await self._switch_entity(
+                    entity_id, target, actor_owner=SUPPLY_OWNER
+                ):
                     self._support_state["dc48"] = target
                     # Remember whether the PSU is now off BECAUSE of us, so a
                     # later log_only flip can't reinterpret it as an operator
@@ -5886,6 +5963,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "samples": {k: list(v) for k, v in self._load_tank_samples.items()},
                 "pending_full_min": dict(self._load_tank_full_min),
             },
+            "actor_conflicts": actor_conflicts(
+                actor_claims(self.raw_config, self.entry.subentries)
+            ),
             "support": {
                 "state": dict(self._support_state),
                 "manual": dict(self._support_manual),
@@ -5937,7 +6017,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 actuated = (
                     await self._sequence_dc24(True, psu_entity)
                     if key == "dc24"
-                    else await self._switch_entity(psu_entity, True)
+                    else await self._switch_entity(
+                        psu_entity, True, actor_owner=SUPPLY_OWNER
+                    )
                 )
                 if not actuated:
                     _LOGGER.warning(
@@ -5952,7 +6034,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 actuated = (
                     await self._sequence_dc24(False, psu_entity)
                     if key == "dc24"
-                    else await self._switch_entity(psu_entity, False)
+                    else await self._switch_entity(
+                        psu_entity, False, actor_owner=SUPPLY_OWNER
+                    )
                 )
                 if not actuated:
                     # Restore aborted (e.g. DC/DC unconfirmed): the PSU is
@@ -6054,8 +6138,29 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # call, and require CascadeManager to present the owning cascade ID.
         # This also fail-closes support/calibration/stale detached paths if a
         # future refactor accidentally points them at a cascade actor.
+        claims = actor_claims(self.raw_config, self.entry.subentries)
+        normalized_owner = (
+            "cascade:" + actor_owner
+            if actor_owner is not None
+            and actor_owner in self.entry.subentries
+            and self.entry.subentries[actor_owner].subentry_type
+            == SUBENTRY_TYPE_CASCADE
+            else actor_owner
+        )
+        if not command_allowed(claims, entity_id, turn_on, normalized_owner):
+            _LOGGER.warning(
+                "Blocked actor request for %s (owner=%s)", entity_id, actor_owner
+            )
+            return False
         reserved_by = self.cascade_manager.actor_owner(entity_id)
-        if reserved_by is not None and actor_owner != reserved_by:
+        if (
+            reserved_by is not None
+            and actor_owner not in (reserved_by, COLLISION_OWNER)
+            and not (
+                actor_owner == SUPPLY_OWNER
+                and SUPPLY_OWNER in claims.get(entity_id, ())
+            )
+        ):
             warning_key = (entity_id, actor_owner, turn_on)
             if warning_key not in self._cascade_actor_block_warned:
                 self._cascade_actor_block_warned.add(warning_key)
@@ -6119,8 +6224,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         return True
 
-    async def _set_number_value(self, entity_id: str, value: float) -> bool:
-        """Write a number/input_number setpoint; log and return False on failure."""
+    async def _set_number_value(
+        self, entity_id: str, value: float, *, actor_owner: str | None = None
+    ) -> bool:
+        """Write a setpoint only after rechecking its current owner."""
+        if not command_allowed(
+            actor_claims(self.raw_config, self.entry.subentries),
+            entity_id,
+            value != 0,
+            actor_owner,
+        ):
+            _LOGGER.warning("Rejected conflicting setpoint command for %s", entity_id)
+            return False
         recorder = getattr(self, "operation_recorder", None)
         request = (
             recorder.event(
@@ -6172,7 +6287,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state = self.hass.states.get(entity_id)
         return state is not None and state.state == "on"
 
-    async def _sequence_dc24(self, activate: bool, psu_entity: str) -> bool:
+    async def _sequence_dc24(
+        self,
+        activate: bool,
+        psu_entity: str,
+        *,
+        may_remove: Callable[[], bool] | None = None,
+    ) -> bool:
         """Switch the 24 V rail supply make-before-break (docs/ALGORITHM.md D-A9).
 
         The rail is fed either by the DC/DC converter (from battery) or the
@@ -6186,12 +6307,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not dcdc_entity:
             # No switchable DC/DC configured: plain PSU toggle (parallel feed).
-            return await self._switch_entity(psu_entity, activate)
+            return await self._switch_entity(
+                psu_entity, activate, actor_owner=SUPPLY_OWNER
+            )
 
         first_on, then_off = (
             (psu_entity, dcdc_entity) if activate else (dcdc_entity, psu_entity)
         )
-        if not await self._switch_entity(first_on, True):
+        if not await self._switch_entity(first_on, True, actor_owner=SUPPLY_OWNER):
             return False
         await asyncio.sleep(delay_s)
         if not self._entity_is_on(first_on):
@@ -6207,7 +6330,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # instead of being misread as a manual override (F-N2).
                 self._support_pending_confirm["dc24"] = True
             return False
-        return await self._switch_entity(then_off, False)
+        if may_remove is not None and not may_remove():
+            return False
+        return await self._switch_entity(then_off, False, actor_owner=SUPPLY_OWNER)
 
     def _reserve_power(self, entity) -> float | None:
         state = self.hass.states.get(entity) if entity else None
@@ -6281,7 +6406,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         value = self._read_float(entity)
         if (
             value is None or abs(value - target) >= 0.1
-        ) and not await self._set_number_value(entity, target):
+        ) and not await self._set_number_value(
+            entity, target, actor_owner=SUPPLY_OWNER
+        ):
             diag["reason"] = "inverter_limit_command_failed"
             self._inverter_control["confirmed"] = False
             return False
@@ -6479,7 +6606,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and not self._support_manual["dc48"]
                 and desired["dc48"] != self._support_state["dc48"]
             ):
-                if await self._switch_entity(dc48_entity, desired["dc48"]):
+                if await self._switch_entity(
+                    dc48_entity, desired["dc48"], actor_owner=SUPPLY_OWNER
+                ):
                     # A successful service call is no device confirmation; the
                     # idle re-sync corrects _support_state on the next cycle.
                     self._support_state["dc48"] = desired["dc48"]
@@ -6822,7 +6951,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         forced off entirely while the G4 floor guard is active — the
         operator's own automations follow this flag, and they must stop
         with the executor (a grid-fed run is forbidden either way)."""
-        if self._floor_guard_active:
+        if start_blocked(self):
             return False
         deadline = self._load_run_deadline.get(load_plan.load_id)
         return bool(load_plan.active_now) and (deadline is None or now < deadline)
@@ -7042,7 +7171,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # releases the latch BEFORE this runs — but a latch restored from
         # persistence or set after this cycle's data was read must never see
         # a re-ON without valid data.
-        force_off = floor_guard or self._stale_shed_active
+        imported = grid_import_w(self)
+        grid_guard = imported is not None and imported > LOAD_GRID_IMPORT_TOLERANCE_W
+        force_off = floor_guard or self._stale_shed_active or grid_guard
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
         cascade_managed = self.cascade_manager.managed_load_ids()
         actions: list[LoadAction] = []
@@ -7128,7 +7259,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # G4 / stale-data shed: unsupervised operation is forbidden
                 # — force OFF, block ON.
                 desired = False
-                reason = "G4 floor guard" if floor_guard else "stale-data load shed"
+                reason = (
+                    "G4 floor guard"
+                    if floor_guard
+                    else "stale-data load shed"
+                    if self._stale_shed_active
+                    else "measured grid import"
+                )
             elif hold:
                 desired = True
                 reason = "latch hold"
@@ -7171,6 +7308,25 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 desired = active_now
                 reason = "plan slot" if active_now else "plan off"
             if desired == current:
+                # A helper OFF is not proof that our input stop completed.
+                # Retained ownership makes this cleanup safe for passthrough.
+                plug = data[CONF_LOAD_CONTROL_SWITCH]
+                if (
+                    not desired
+                    and data.get(CONF_LOAD_CHARGE_ENABLE)
+                    and self._load_plug_owned.get(subentry_id, False)
+                    and self._entity_tristate(plug) is True
+                ):
+                    actions.append(
+                        LoadAction(
+                            subentry_id,
+                            dict(data),
+                            False,
+                            True,
+                            reason="unfinished input stop",
+                        )
+                    )
+                    continue
                 if calibration_release:
                     if desired and plan is not None:
                         # The fresh plan keeps the already-running probe load:
@@ -7454,8 +7610,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if self._feedin_entities() is None:
             return
-        if self._feedin_task is not None and not self._feedin_task.done():
-            return  # our own write is in flight: no verdict possible
+        if self._feedin_write_pending or (
+            self._feedin_task is not None and not self._feedin_task.done()
+        ):
+            return  # eager HA task startup can publish before task assignment
         actual = self._feedin_read_power_w()
         if actual is None:
             return  # unavailable/unknown: no verdict
@@ -7548,7 +7706,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._save_persistent_state()
             return
         async with self._switch_lock:
-            if not await self._set_number_value(owned, 0.0):
+            if not await self._set_number_value(owned, 0.0, actor_owner="feedin"):
                 return
             _LOGGER.info(
                 "Feed-in setpoint -> 0 W (%s no longer wired to the feed-in"
@@ -7806,7 +7964,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Sign convention: negative setpoint = export (const.py
             # FEEDIN_SETPOINT_EXPORT_SIGN) — a 500 W feed-in is written as -500.
             value = round(FEEDIN_SETPOINT_EXPORT_SIGN * desired_w, 1)
-            if not await self._set_number_value(entities[0], value):
+            # A service may publish state before async_create_background_task
+            # returns. Task identity alone cannot distinguish that own write.
+            self._feedin_write_pending = True
+            try:
+                written = await self._set_number_value(
+                    entities[0], value, actor_owner="feedin"
+                )
+            finally:
+                self._feedin_write_pending = False
+            if not written:
                 return
             self._feedin_prev_written_w = self._feedin_last_written_w
             self._feedin_last_written_w = desired_w

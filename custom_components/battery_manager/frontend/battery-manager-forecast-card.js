@@ -842,7 +842,7 @@ Object.assign(STRINGS.en, {
   reserve_decision_no_preparation_needed: "No additional AC discharge for PV preparation is needed now.",
   reserve_decision_pv_headroom_preparation: "Forecast PV requires additional battery headroom.",
   reserve_decision_dc_support_protection: "DC supply protection determines the current source switching and AC discharge limit.",
-  reserve_decision_dc_reserve_holding: "DC power supplies preserve battery energy that is not needed for forecast PV headroom.",
+  reserve_decision_dc_reserve_holding: "DC power supplies preserve SOC because no battery discharge budget is available now.",
   reserve_decision_manual_support: "Manual PSU support blocks AC battery discharge.",
   reserve_decision_no_ac_demand: "No usable AC demand for battery discharge is forecast.",
   report_additional_headroom_needed: "Additional headroom needed now",
@@ -850,6 +850,13 @@ Object.assign(STRINGS.en, {
   report_expected_minimum_soc: "Expected minimum SOC",
   report_additional_grid_import_for_reserve: "Additional grid import for reserve",
   report_remaining_battery_discharge: "Remaining battery discharge",
+  report_live_dc_source: "Measured DC source transition",
+  report_live_dc_pv_confirmed: "PV supply confirmed; automatic power supplies are off.",
+  report_live_dc_pv_pending: "PV source transition pending; device confirmation or renewed permission is required.",
+  report_dc_budget: "Available DC discharge budget (forecast horizon)",
+  report_dc_shifted: "DC battery energy shifted to market peaks",
+  reserve_decision_dc_pv_supply: "PV surplus supplies the DC consumers; automatic power supplies remain off.",
+  reserve_decision_dc_market_supply: "Already permitted DC battery energy supplies consumers during a market peak.",
   report_incidental_psu_charging: "Incidental PSU charging",
   report_expected_48_v_support: "Expected 48 V support",
   report_inverter_limit_now: "Currently permitted inverter power",
@@ -902,7 +909,7 @@ Object.assign(STRINGS.de, {
   reserve_decision_no_preparation_needed: "Aktuell ist keine zus\xE4tzliche AC-Entladung zur PV-Vorbereitung n\xF6tig.",
   reserve_decision_pv_headroom_preparation: "Die erwartete PV-Energie ben\xF6tigt zus\xE4tzlichen Freiraum im Speicher.",
   reserve_decision_dc_support_protection: "Der Schutz der DC-Versorgung bestimmt die aktuelle Quellenumschaltung und AC-Entladegrenze.",
-  reserve_decision_dc_reserve_holding: "Die DC-Netzteile erhalten Batterieenergie, deren Entnahme f\xFCr den erwarteten PV-Speicherbedarf nicht n\xF6tig ist.",
+  reserve_decision_dc_reserve_holding: "Die DC-Netzteile erhalten den SOC, weil aktuell kein Batterie-Entnahmebudget verf\xFCgbar ist.",
   reserve_decision_manual_support: "Manuell angeforderte Netzteilst\xFCtzung sperrt die AC-Batterieentladung.",
   reserve_decision_no_ac_demand: "Es ist kein nutzbarer AC-Verbrauch f\xFCr die Batterieentladung prognostiziert.",
   report_additional_headroom_needed: "Jetzt zus\xE4tzlich ben\xF6tigter Freiraum",
@@ -910,6 +917,13 @@ Object.assign(STRINGS.de, {
   report_expected_minimum_soc: "Erwarteter Mindest-SOC",
   report_additional_grid_import_for_reserve: "Zus\xE4tzlicher Netzbezug f\xFCr Reserve",
   report_remaining_battery_discharge: "Verbleibende Batterieentladung",
+  report_live_dc_source: "Gemessene DC-Quellenumschaltung",
+  report_live_dc_pv_confirmed: "PV-Versorgung best\xE4tigt; automatische Netzteile sind aus.",
+  report_live_dc_pv_pending: "PV-Quellenumschaltung ausstehend; Ger\xE4tebest\xE4tigung oder erneute Freigabe erforderlich.",
+  report_dc_budget: "Verf\xFCgbares DC-Entnahmebudget (Prognosehorizont)",
+  report_dc_shifted: "In Marktspitzen verschobene DC-Batterieenergie",
+  reserve_decision_dc_pv_supply: "PV-\xDCberschuss versorgt die DC-Verbraucher; automatische Netzteile bleiben aus.",
+  reserve_decision_dc_market_supply: "Bereits freigegebene DC-Batterieenergie versorgt die Verbraucher w\xE4hrend einer Marktspitze.",
   report_incidental_psu_charging: "Technisch bedingte Netzteilladung",
   report_expected_48_v_support: "Erwartete 48-V-St\xFCtzung",
   report_inverter_limit_now: "Aktuell erlaubte Inverterleistung",
@@ -1187,7 +1201,7 @@ function feedinDecisions(hass, decisions) {
   });
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
-function reserveReport(hass, reserve) {
+function reserveReport(hass, reserve, support) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
   const fmt = (value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", {
@@ -1231,6 +1245,8 @@ function reserveReport(hass, reserve) {
       t("report_remaining_battery_discharge"),
       `${fmt(reserve.remaining_discharge_wh)} Wh`
     ],
+    [t("report_dc_budget"), `${fmt(reserve.dc_budget_wh)} Wh`],
+    [t("report_dc_shifted"), `${fmt(reserve.dc_shifted_wh)} Wh`],
     [
       t("report_incidental_psu_charging"),
       `${fmt(reserve.incidental_grid_charge_wh)} Wh`
@@ -1240,6 +1256,14 @@ function reserveReport(hass, reserve) {
       `${fmt(reserve.psu48_delivered_wh)} Wh`
     ]
   ];
+  if (support?.pv_priority) {
+    rows.push([
+      t("report_live_dc_source"),
+      t(
+        support.reason === "settled" ? "report_live_dc_pv_confirmed" : "report_live_dc_pv_pending"
+      )
+    ]);
+  }
   const market = reserve.market;
   if (market) {
     rows.push([
@@ -1505,7 +1529,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
         </div>
         ${stateNotice(hass, stateObj)}${body}
         ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
-        ${reserveReport(this._hass, stateObj?.attributes?.reserve)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
+        ${reserveReport(this._hass, stateObj?.attributes?.reserve, stateObj?.attributes?.coordinated_support)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `
     );

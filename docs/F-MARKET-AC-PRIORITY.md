@@ -258,3 +258,11 @@ vollständige ON-Schritte und explizite obere Szenarien. Der HA-Test
 prüft die Abschaltung einer bestätigten Freigabe nach normalem Forecastwechsel.
 
 Alle 16 Topologie-Goldens wurden neu erzeugt und bleiben unverändert.
+
+## Erweiterung um native DC-Versorgung (0.56.0)
+
+Die frühere Preisunabhängigkeit der wirtschaftlichen DC-Haltung wird durch
+[F-DC-PV-MARKET](F-DC-PV-MARKET.md) ersetzt: Vorhandene DC-Entnahmebudgets dürfen
+innerhalb ihrer PV-Ladeabschnitte Marktspitzen bevorzugen. Preise schaffen
+weiterhin kein Budget. PV-Vorrang und die physische Quellenwahl gelten unabhängig
+vom Marktschalter; AC-Kostenprüfung, Reserve und Quellenbesitz bleiben verbindlich.

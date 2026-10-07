@@ -289,7 +289,8 @@
       "coordinated_invalid_reserve_order": "Required: battery minimum < 48 V activation <= 24 V activation < inverter minimum.",
       "reserve_requires_coordinated_support": "Reserve requires the numeric inverter discharge limit.",
       "reserve_requires_grid_signal": "Active reserve requires a grid availability signal.",
-      "reserve_requires_verified_transfer": "Verify and confirm autonomous 24 V fallback before activation."
+      "reserve_requires_verified_transfer": "Verify and confirm autonomous 24 V fallback before activation.",
+      "actor_in_use": "This actor is already assigned to a load, cascade or supply path."
     },
     "abort": {
       "already_configured": "This system is already configured.",
@@ -314,7 +315,8 @@
         "cascade_nonroot_input_forbidden": "Only the first storage may have an input switch.",
         "cascade_soc_order": "Safety floor < cascade discharge target <= charge target SOC is required.",
         "cascade_handover_timeout": "Handover timeout must be at least 60 seconds.",
-        "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only."
+        "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only.",
+        "actor_in_use": "This actor is already assigned to a load, cascade or supply path."
       },
       "initiate_flow": {
         "user": "Add surplus load",
@@ -452,7 +454,8 @@
         "cascade_nonroot_input_forbidden": "Only the first storage may have an input switch.",
         "cascade_soc_order": "Safety floor < cascade discharge target <= charge target SOC is required.",
         "cascade_handover_timeout": "Handover timeout must be at least 60 seconds.",
-        "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only."
+        "cascade_actor_in_use": "All actors must be distinct and assigned to one cascade only.",
+        "actor_in_use": "This actor is already assigned to a load, cascade or supply path."
       },
       "initiate_flow": {
         "user": "Add storage cascade",
@@ -483,7 +486,8 @@
     "appliance": {
       "entry_type": "Appliance",
       "error": {
-        "name_required": "Please enter a name for the appliance."
+        "name_required": "Please enter a name for the appliance.",
+        "actor_in_use": "This actor is already assigned to a load, cascade or supply path."
       },
       "initiate_flow": {
         "user": "Add appliance",
@@ -581,7 +585,8 @@
       "coordinated_invalid_reserve_order": "Required: battery minimum < 48 V activation <= 24 V activation < inverter minimum.",
       "reserve_requires_coordinated_support": "Reserve requires the numeric inverter discharge limit.",
       "reserve_requires_grid_signal": "Active reserve requires a grid availability signal.",
-      "reserve_requires_verified_transfer": "Verify and confirm autonomous 24 V fallback before activation."
+      "reserve_requires_verified_transfer": "Verify and confirm autonomous 24 V fallback before activation.",
+      "actor_in_use": "This actor is already assigned to a load, cascade or supply path."
     },
     "step": {
       "init": {
@@ -1171,6 +1176,10 @@
     "cascade_fault_terminal_test_recovery_failed": {
       "title": "Storage cascade stopped safely",
       "description": "Interrupted terminal test could not be recovered. Check switches and telemetry, then reset the fault. Diagnostic details: {reason}"
+    },
+    "actor_conflict": {
+      "title": "Conflicting actor assignments",
+      "description": "Actors {actors} have multiple owners. Affected optional loads cannot start; supply actors remain owned by source control. Remove duplicate assignments in integration options or load/cascade settings."
     }
   },
   "services": {

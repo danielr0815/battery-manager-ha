@@ -17,9 +17,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path)
     args = parser.parse_args()
-    data = json.loads(args.recording.read_text(encoding="utf-8"))
-    data = data.get("data", data)  # HA wraps integration diagnostics.
-    result, matches = replay(data.get("planner_recording", data))
+    try:
+        data = json.loads(args.recording.read_text(encoding="utf-8"))
+        data = data.get("data", data)  # HA wraps integration diagnostics.
+        result, matches = replay(data.get("planner_recording", data))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+        parser.error(f"Invalid planner recording: {err}")
     print(
         json.dumps(
             {

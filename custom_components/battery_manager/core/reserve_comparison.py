@@ -6,8 +6,9 @@ from math import isfinite
 from .dc_service import dc_service_regression_wh
 from .model import PlanInputs, SystemConfig, Trajectory
 from .planning_control import check_cancelled
-from .reserve import _simulate_reserve_policy, reserve_planning_scope
+from .reserve import reserve_planning_scope, simulate_reserve_variant
 from .reserve_energy import ENERGY_EPSILON_WH
+from .reserve_sources import grid_dc
 from .simulation_steps import SUPPORT_STEP_HOURS
 from .uncertainty import effective_uncertainty
 
@@ -48,11 +49,7 @@ def _metrics(config: SystemConfig, trajectory: Trajectory) -> ReserveMetrics:
     return ReserveMetrics(
         trajectory.total_import_wh,
         trajectory.total_export_wh,
-        sum(
-            f.psu24_delivered_wh / config.support.psu24_eta
-            + f.psu48_delivered_wh / config.support.psu48_eta
-            for f in trajectory.flows
-        ),
+        sum(grid_dc(config, f) for f in trajectory.flows),
         sum(f.unserved_dc_wh for f in trajectory.flows),
         sum(f.inverter_output_wh for f in trajectory.flows),
         stored,
@@ -107,13 +104,13 @@ def compare_reserve_alternatives(
     with reserve_planning_scope():
         for name, scale in (("nominal", 1.0), ("pessimistic", lower), ("upper", upper)):
             check_cancelled()
-            reference = _simulate_reserve_policy(
+            reference = simulate_reserve_variant(
                 config, inputs, extra_ac_wh, scale, feedin_wh, allow_ac=False
             )
             reference_metrics = _metrics(config, reference)
             for margin in margins_wh:
                 check_cancelled()
-                candidate = _simulate_reserve_policy(
+                candidate = simulate_reserve_variant(
                     config, inputs, extra_ac_wh, scale, feedin_wh, ac_margin_wh=margin
                 )
                 candidate_metrics = _metrics(config, candidate)

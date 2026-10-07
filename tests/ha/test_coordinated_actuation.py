@@ -49,7 +49,7 @@ async def rig(hass):
     dead = set()
     failures = set()
 
-    async def switch(entity, on):
+    async def switch(entity, on, **kwargs):
         calls.append((entity, on))
         if entity in failures:
             return False
