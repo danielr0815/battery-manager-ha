@@ -84,7 +84,7 @@ jobs:
       # pins a master SHA instead of floating on @master. Bump manually:
       # https://github.com/home-assistant/actions/commits/master
       - name: Hassfest validation
-        uses: "home-assistant/actions/hassfest@e3fb68ebda13d88a0d695082f471ba2c83d025fb"
+        uses: "home-assistant/actions/hassfest@06749dd8c0b54f350bc69c8752456cee498808a3"
 
   lint:
     runs-on: "ubuntu-latest"
