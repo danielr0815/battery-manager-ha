@@ -128,6 +128,17 @@ Die Diagnose enthält laufende Phase und gemessene Phasenlaufzeiten unter
 Teilintervalle reduziert Rechenarbeit ohne Lockerung fachlicher Gates. Details,
 Messwerkzeug und Nachweise: [Planungsdauer](F-PLANNING-LATENCY.md).
 
+Ab 0.56.1 zeichnet `startup_memory` den Speicher während der ersten 120 Sekunden
+der Entry-Einrichtung auf (maximal 96 Messpunkte, Timer alle zwei Sekunden).
+INFO-Marker für Archiv, Verbrauchsprofile, Recorder, Plattformen und Planung
+bleiben im HA-Log. Werte betreffen den gesamten Prozess/Host; sie behaupten keine
+exklusive Integrationszuordnung. Optionales Python-Tracing wird vor Aktivierung
+für genau einen Start verbraucht und ist begrenzt. Fehler der Diagnose dürfen
+keine Steuerung unterbrechen; Stop/Unload drainiert ihre Arbeit. Das mitgelieferte
+externe CLI-Werkzeug überlebt Core-Neustarts, verändert keine HA-Konfiguration
+und überschreibt keine vorhandene Evidenz. Vertrag und Bedienung:
+[Startdiagnose](F-STARTUP-MEMORY-DIAGNOSTICS.md).
+
 ## Haushaltsgeräte ab 0.47.0
 
 Gerätebeobachtung und Profile bleiben ohne wirtschaftlichen Plan verfügbar.

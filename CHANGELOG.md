@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.1] - 2026-10-07
+
+### Added
+- Bounded startup memory diagnostics: process/host counters, UTC/PID evidence
+  and phase markers for archive restoration, learned profiles, Recorder queries,
+  platform setup and planning. Samples run off the event loop for at most
+  120 seconds and are available in INFO logs and the diagnostic download.
+- Optional one-shot Python allocation tracing, consumed before activation and
+  limited to eight allocation summaries. Tracing is off by default; existing
+  external tracers retain ownership. This provides evidence for the observed
+  startup OOM incidents without claiming a root-cause fix.
+- A HACS-bundled read-only Supervisor-CLI memory recorder that runs outside
+  Core, continues through Core outages and preserves existing evidence files.
+
+### Fixed
+- Failed entry setup now cancels owned background work and removes controller
+  timers/listeners before releasing startup diagnostics, so retries do not
+  retain work from an entry that never loaded.
+
 ## [0.56.0] - 2026-10-07
 
 ### Added

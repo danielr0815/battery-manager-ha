@@ -365,3 +365,8 @@ Diagnostics and planner recordings contain entity names, SOC, power, learned
 consumption, load runtimes and household activity patterns. Review these files
 before sharing them publicly; automatic secret redaction does not anonymize
 household behaviour. Deployment and live acceptance follow separately via HACS.
+
+Startup memory diagnosis (0.56.1) records process/host memory and phase markers
+for 120 seconds. Optional one-shot Python tracing and a bundled external
+Supervisor-CLI recorder help investigate OOM failures across Core restarts.
+See [setup, commands and interpretation](docs/F-STARTUP-MEMORY-DIAGNOSTICS.md).

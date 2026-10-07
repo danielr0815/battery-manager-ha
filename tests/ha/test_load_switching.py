@@ -4272,6 +4272,11 @@ async def test_freeze_evidence_clock_excludes_downtime(hass):
     coordinator, sub_id, _data = await _setup(
         hass, calls, with_control_switch=False, energy_limited=True
     )
+    # Drive the restored evidence clock directly: queued sensor replanning
+    # must not mutate it while restore/diagnostic executor jobs yield.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
     coordinator._load_plan_active[sub_id] = True
     hass.states.async_set(POWER_FEEDBACK, "144")
     hass.states.async_set(FOSSI_SOC, "87.5")
@@ -4354,6 +4359,10 @@ async def test_stale_soc_evidence_clock_excludes_downtime(hass):
 
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
+    # Keep this restoration test independent of queued economic replanning.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
     coordinator._load_charging_active[sub_id] = True
     hass.states.async_set(POWER_FEEDBACK, "505")
     hass.states.async_set(FOSSI_SOC, "40")

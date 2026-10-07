@@ -132,6 +132,8 @@ async def async_get_config_entry_diagnostics(
     diagnostics["core_config"] = _core_config(coordinator)
     diagnostics["learned_state"] = coordinator.learned_state_snapshot()
     diagnostics["planning"] = coordinator._planning.snapshot()
+    startup = getattr(coordinator, "startup_diagnostics", None)
+    diagnostics["startup_memory"] = startup.snapshot() if startup else None
     diagnostics["appliances"] = coordinator.appliances.payload()
     diagnostics["last_plan_metrics"] = _last_plan_metrics(coordinator)
     # Capture synchronous context before the owned archive copy yields.

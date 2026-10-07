@@ -159,10 +159,21 @@ async def test_setup_registers_entities_while_initial_plan_waits(hass, unload):
         )
         coordinator = entry.runtime_data
         assert not coordinator.data["valid"]
+        startup_events = {
+            row["event"]
+            for row in coordinator.startup_diagnostics.snapshot()["samples"]
+        }
+        assert {
+            "archive_load:begin",
+            "archive_load:end",
+            "platform_setup:end",
+        } <= startup_events
+        assert coordinator.startup_diagnostics.active
         if unload:
             assert await hass.config_entries.async_unload(entry.entry_id)
             assert stopped.is_set()
             assert coordinator._initial_refresh_task.done()
+            assert not coordinator.startup_diagnostics.active
         else:
             release.set()
             await coordinator._initial_refresh_task
@@ -172,6 +183,23 @@ async def test_setup_registers_entities_while_initial_plan_waits(hass, unload):
                 hass.states.get("sensor.battery_manager_soc_threshold").state
                 != "unavailable"
             )
+
+
+async def test_failed_setup_stops_startup_sampler(hass):
+    """A failed persistent restore cannot leave a tracing timer behind."""
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, version=2)
+    entry.add_to_hass(hass)
+    captured = []
+
+    async def fail(self):
+        captured.append(self.startup_diagnostics)
+        raise ValueError("damaged startup state")
+
+    with patch.object(BatteryManagerCoordinator, "async_load_persistent_state", fail):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert not captured[0].active
+    assert captured[0]._cancel is None
+    assert captured[0].rows[-1]["event"] == "persistent_state_restore:aborted"
 
 
 async def test_protection_stops_ac_and_enables_low_soc_support_without_a_plan(

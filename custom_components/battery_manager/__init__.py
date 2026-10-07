@@ -322,6 +322,24 @@ async def async_setup_entry(
 ) -> bool:
     """Set up Battery Manager from a config entry."""
     coordinator = BatteryManagerCoordinator(hass, entry)
+    try:
+        await coordinator.startup_diagnostics.async_start()
+        return await _async_setup_coordinator(hass, entry, coordinator)
+    except BaseException:
+        try:
+            await coordinator.async_cancel_actuation_tasks()
+        finally:
+            coordinator.cleanup()
+            await coordinator.startup_diagnostics.async_stop()
+        raise
+
+
+async def _async_setup_coordinator(
+    hass: HomeAssistant,
+    entry: BatteryManagerConfigEntry,
+    coordinator: BatteryManagerCoordinator,
+) -> bool:
+    """Restore and expose one entry after its startup sampler is armed."""
     # Device sw_version from the manifest (single source of truth, no drift).
     # Integration.version is an AwesomeVersion — DeviceInfo needs a plain str.
     _mf_version = (await async_get_integration(hass, DOMAIN)).version
@@ -332,6 +350,7 @@ async def async_setup_entry(
 
     async def _on_stop(_event: Event) -> None:
         await coordinator.async_cancel_actuation_tasks()
+        await coordinator.startup_diagnostics.async_stop()
         coordinator.cleanup()
         await coordinator.async_flush_persistent_state()
 
@@ -341,7 +360,8 @@ async def async_setup_entry(
 
     # Restore state before exposing entities. The first economic plan runs
     # after platform setup; CPU work must never block entry initialization.
-    await coordinator.async_load_persistent_state()
+    async with coordinator.startup_diagnostics.phase("persistent_state_restore"):
+        await coordinator.async_load_persistent_state()
     coordinator.appliances.start()
     await coordinator.async_recover_power_calibration()
     await coordinator.cascade_manager.async_recover_terminal_tests()
@@ -352,7 +372,8 @@ async def async_setup_entry(
     # device and every entity attaches to an already-existing device.
     ensure_devices(hass, entry, coordinator.integration_version)
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    async with coordinator.startup_diagnostics.phase("platform_setup"):
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # After the platforms: the learner looks up the vacation switch entity.
     coordinator._initial_refresh_task = entry.async_create_background_task(
         hass, coordinator.async_refresh(), name="battery_manager_initial_plan"
@@ -373,6 +394,7 @@ async def async_unload_entry(
         # Cancel in-flight actuation tasks BEFORE the flush so none can mutate
         # the persisted state after the flush captures the payload (review #7).
         await coordinator.async_cancel_actuation_tasks()
+        await coordinator.startup_diagnostics.async_stop()
         # Flush any pending delayed save before teardown: a config-entry reload
         # does not fire EVENT_HOMEASSISTANT_FINAL_WRITE, so the persisted
         # support-mode / caused-off record would otherwise be lost if the
