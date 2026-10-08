@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.2] - 2026-10-08
+
+### Fixed
+- Operating history is writable only after its archive has been loaded and
+  validated. Early sensor callbacks and shutdown saves can no longer replace
+  the existing journal with an empty startup snapshot. Cancelled or failed
+  restoration keeps the durable archive intact; a genuinely new installation
+  still starts recording normally. Diagnostics expose `persistence_ready`.
+  This fixes the independently reproduced history loss after a failed startup;
+  it does not claim to resolve the separate Home Assistant memory exhaustion.
+
 ## [0.56.1] - 2026-10-07
 
 ### Added

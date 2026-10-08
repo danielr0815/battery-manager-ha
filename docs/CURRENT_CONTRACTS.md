@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.56.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.56.2**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -93,6 +93,14 @@ Leistungen berücksichtigen W/kW wie Livewerte; unbekannte Zustandsintervalle
 notwendiger Bereinigungsquellen liefern keine scheinbar gültigen Nulllasten.
 
 ## Archive, Zeit und Bedienung
+
+Ab 0.56.2 darf das Betriebsarchiv erst nach abgeschlossener Wiederherstellung
+gespeichert werden. Frühe Sensorereignisse und Shutdown-Flushes überschreiben
+keine noch ungeladene Historie. Bei Abbruch oder ungültiger Wiederherstellung
+bleibt das vorhandene Archiv geschützt; eine fehlende Datei beim Erststart
+erlaubt normale Aufzeichnung. `operation_report.persistence_ready` zeigt die
+Schreibfreigabe. Laufzeit- und Schutzsteuerung warten dafür nicht auf das Archiv.
+Details: [Schreibschutz beim Start](F-ARCHIVE-STARTUP.md).
 
 Ein HA-Zeitzonenwechsel beginnt ein neues Archivsegment. Ältere Tagesberichte
 behalten ihre ursprüngliche Zeitzone; Messintervalle überbrücken den Wechsel

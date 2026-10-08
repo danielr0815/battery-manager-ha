@@ -46,6 +46,10 @@ class OperationRecorder:
         self._decisions: dict[str, tuple] = {}
         self.storage = ArchiveStorage(coordinator.hass, coordinator.entry.entry_id)
         self.legacy_backup = None
+        # Sensor callbacks already run while setup awaits disk/executor work.
+        # Publishing their empty startup journal would replace the archive
+        # being loaded (OOM recovery incident, 2026-10-08).
+        self._storage_ready = False
 
     def _safe(self, action, *args):
         try:
@@ -61,6 +65,7 @@ class OperationRecorder:
 
     async def async_restore(self, data) -> None:
         """Validate an isolated journal in the worker, then adopt atomically."""
+        self._storage_ready = False
         try:
             async with self.coordinator.startup_diagnostics.phase("archive_load"):
                 stored = await self.storage.async_load()
@@ -75,6 +80,12 @@ class OperationRecorder:
             self.legacy_backup = data
             self.storage.legacy_backup = data
         if data is None:
+            # Missing storage is a valid first start; an unreadable archive
+            # must remain on disk for recovery rather than become empty.
+            self._storage_ready = (
+                self.storage.last_error is None
+                and not self.coordinator._actuation_shutdown
+            )
             return
         timezone = self.history.timezone
 
@@ -94,6 +105,7 @@ class OperationRecorder:
             self.history = restored
             if stored is not None and self.storage.last_error is None:
                 await self.storage.async_mark_restored()
+            self._storage_ready = not self.coordinator._actuation_shutdown
 
     def _sources(self):
         c = self.coordinator
@@ -302,6 +314,7 @@ class OperationRecorder:
             "dropped_events": self.history.dropped_events,
             "last_error": self.last_error or self.storage.last_error,
             "archive_generation": self.storage.generation,
+            "persistence_ready": self._storage_ready,
             "sources": self._sources(),
             "retention": self.history.retention(),
             "load_names": {
@@ -335,9 +348,13 @@ class OperationRecorder:
                 history._release_plan(row["plan_id"])
 
     def schedule_storage(self) -> None:
+        if not self._storage_ready:
+            return
         self.storage.schedule(self.history.snapshot(), self.apply_storage_retention)
 
     async def async_flush(self) -> None:
+        if not self._storage_ready:
+            return
         await self.storage.async_flush(
             self.history.snapshot(), self.apply_storage_retention
         )

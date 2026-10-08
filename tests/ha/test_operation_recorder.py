@@ -20,6 +20,7 @@ async def test_storage_retention_updates_memory_without_losing_runtime(
     from custom_components.battery_manager import archive_storage
 
     rec = coordinator.operation_recorder
+    await rec.async_restore(None)
     at = datetime(2026, 10, 2, tzinfo=UTC)
     rec.history.event(at, "test", {})
     rec.history.event(at + timedelta(minutes=1), "test", {})
