@@ -4319,6 +4319,11 @@ async def test_stale_soc_guard_survives_reload(hass):
 
     calls: list[tuple[str, str]] = []
     coordinator, sub_id, _data = await _setup(hass, calls)
+    # The simulated restart clears in-memory evidence. A queued sensor replan
+    # could persist that artificial empty state before the restore reads it.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
     coordinator._load_charging_active[sub_id] = True
     hass.states.async_set(POWER_FEEDBACK, "505")
     hass.states.async_set(FOSSI_SOC, "40")
