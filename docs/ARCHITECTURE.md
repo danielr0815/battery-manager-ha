@@ -13,6 +13,10 @@ and turns the plan into switching recommendations (and, for the grid-support
 PSUs, direct switching). Everything runs locally on the ~5-minute Home Assistant
 update cycle.
 
+[Deutscher Architektur- und Betriebsleitfaden (v0.57.0)](BATTERY_MANAGER_GUIDE.md)
+mit Reservepolitik, Quellensteuerung, Messanforderungen und Diagnosewegen.
+Historische Befunde und lokale Aufbewahrung: [Untersuchungsindex](investigations/README.md).
+
 ## The one big idea: a pure core behind a Home Assistant shell
 
 The code is split into two layers, and keeping them separate is the single most

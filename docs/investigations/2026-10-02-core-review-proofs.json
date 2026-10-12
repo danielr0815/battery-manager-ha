@@ -1,0 +1,108 @@
+{
+  "appliance_unserved_dc_gate": {
+    "baseline": {
+      "ac_output_wh": 0.0,
+      "dc_grid_wh": 0.0,
+      "unserved_dc_wh": 0.0,
+      "import_wh": 0.0,
+      "export_wh": 0.0,
+      "min_soc_percent": 5.0,
+      "max_soc_percent": 34.99999999999995,
+      "end_soc_percent": 5.0
+    },
+    "hypothetical_appliance": {
+      "ac_output_wh": 0.0,
+      "dc_grid_wh": 0.0,
+      "unserved_dc_wh": 99.99999999999997,
+      "import_wh": 0.0,
+      "export_wh": 0.0,
+      "min_soc_percent": 5.0,
+      "max_soc_percent": 24.999999999999982,
+      "end_soc_percent": 5.0
+    },
+    "incorrect_advisory_allowed": true
+  },
+  "load_unserved_dc_gate": {
+    "baseline": {
+      "ac_output_wh": 0.0,
+      "dc_grid_wh": 0.0,
+      "unserved_dc_wh": 0.0,
+      "import_wh": 0.0,
+      "export_wh": 899.9999999999999,
+      "min_soc_percent": 5.000000000000043,
+      "max_soc_percent": 90.00000000000004,
+      "end_soc_percent": 5.000000000000043
+    },
+    "accepted_load_plan": {
+      "ac_output_wh": 0.0,
+      "dc_grid_wh": 0.0,
+      "unserved_dc_wh": 100.00000000000013,
+      "import_wh": 0.0,
+      "export_wh": 0.0,
+      "min_soc_percent": 5.0,
+      "max_soc_percent": 80.0,
+      "end_soc_percent": 5.0
+    },
+    "incorrect_load_booking_wh": 1000.0,
+    "why": [
+      "pass 1 @ 10-02 12:00: direct surplus, 60 min x 1000 W, battery share 10%"
+    ]
+  },
+  "live_bounded_retry_opportunity": {
+    "snapshot_local_time": "2026-10-02T17:06:17.239258+02:00",
+    "slot_count": 55,
+    "market_price_intervals": 0,
+    "raw_candidate": {
+      "ac_output_wh": 762.2133333333333,
+      "dc_grid_wh": 349.26966292134824,
+      "unserved_dc_wh": 0.0,
+      "import_wh": 2635.4102466463755,
+      "export_wh": 0.0,
+      "min_soc_percent": 10.377870962261966,
+      "max_soc_percent": 70.46185906240162,
+      "end_soc_percent": 64.38001642157666
+    },
+    "published_dc_only": {
+      "ac_output_wh": 0.0,
+      "dc_grid_wh": 336.067415730337,
+      "unserved_dc_wh": 0.0,
+      "import_wh": 3321.921332788698,
+      "export_wh": 0.0,
+      "min_soc_percent": 26.660250672761986,
+      "max_soc_percent": 86.74423877290145,
+      "end_soc_percent": 80.66239613207644
+    },
+    "candidate_retained_500wh": {
+      "ac_output_wh": 618.9799999999999,
+      "dc_grid_wh": 336.067415730337,
+      "unserved_dc_wh": 0.0,
+      "import_wh": 2747.9413327886978,
+      "export_wh": 0.0,
+      "min_soc_percent": 13.226067276126136,
+      "max_soc_percent": 73.31005537626577,
+      "end_soc_percent": 67.22821273544085
+    },
+    "predicted_import_reduction_wh": 573.98,
+    "end_stored_energy_reduction_wh": 671.7091698317795,
+    "limitations": "Nominal physical counterfactual, no observed savings or global optimum. Terminal stored energy is lower. The unchanged upper-PV assumption motivates AC; DC priorities and activation thresholds are unchanged. Any implementation must preserve scenario gates and golden/test contracts.",
+    "full_replay": {
+      "exact_match": true,
+      "elapsed_seconds": 39.933,
+      "import_wh": 3321.921332788698
+    }
+  },
+  "_historical_context": {
+    "observed_code": "a211549",
+    "observed_version": "0.53.0",
+    "reviewed_for_version": "0.57.0",
+    "review_date": "2026-10-12",
+    "interpretation": "Historical counterexamples/results. Implemented fixes are tracked in OPTIMIZATION-PLAN-2026-10.md and current regression tests.",
+    "source_provenance": {
+      "original_file": "2026-10-02-core-review-proofs.json",
+      "original_bytes": 3060,
+      "original_sha256": "66e1c239c9146dfaa93b04700f198d1e90a80a79f0fbb6d6ba0f490626e42cd0",
+      "archive": "operational-evidence-2026-09-07-to-2026-10-11.tar.gz",
+      "archive_sha256": "3f95ce6fb4ac73f29d7c9ab794d5e8ec7e6adabf59c1e721a5cfdea1fc3d49b6"
+    }
+  }
+}

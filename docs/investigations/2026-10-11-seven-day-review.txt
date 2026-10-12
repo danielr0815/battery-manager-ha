@@ -1,0 +1,97 @@
+Battery Manager: Wochenbefunde und heutige Einordnung
+
+Historisches Fenster: 04.10.2026 21:37:35,695 bis 11.10.2026 21:37:35,695
+Europe/Berlin (MESZ, UTC+02:00), Stand am Ende v0.56.2.
+Einordnung am 12.10.2026 für das veröffentlichte v0.57.0.
+
+DATENLAGE
+
+Recorder-Aktorzustände waren für rund 99,32 % des Fensters auswertbar.
+Die vereinigten Archivkopien enthalten 11.473 Ereignisse und 2.153 Pläne,
+aber nur 130,13 beobachtete Stunden. Rund 37,87 Stunden Archivabdeckung fehlen.
+5.286 abgeschlossene Coordinator-Updates: 5.241 erfolgreich, 45 fehlgeschlagen.
+41 Fehler betreffen während der Berechnung geänderte Eingaben; sie sind
+keine HA-Abstürze. Alle Zahlen beziehen sich auf den historischen Datenstand.
+
+QUELLENWECHSEL
+
+Bekannte Wochenwechsel: 457 bei PSU24, 61 bei PSU48 und 457 bei DC/DC.
+Am 05.10. entfielen 374 der 375 PSU24-Wechsel auf 187 Pulse unter einer Minute.
+Der Median dieser Pulse betrug 34,99 s. Eine historische virtuelle Gegenprobe
+reproduzierte verspätete Bestätigung, falschen internen Quellenzustand und
+Rücknahme wirtschaftlicher DC-Stützung durch den AC-Floor-Schutz.
+Der damalige interne Live-Ablauf ist nicht vollständig erhalten.
+
+Von 457 nachvollziehbaren 24-V-Transfers hatten 454 ungefähr drei Sekunden
+Überlappung; drei Startfälle nur 0,359, 0,955 und 1,466 s. Der Rückfallpfad
+bei unknown/ausgefallenem Netz passte zu diesem Muster. Die Messdaten belegen
+keine Spannungsunterbrechung; kurze elektrische Ereignisse bleiben unaufgelöst.
+
+Auf v0.56.2 bestanden wirtschaftliche Rückwechsel von etwa 83 bis 166 s.
+Eine Gegenprobe mit gleichen Eingaben wechselte an einer Grenze von 67,15 % SOC
+zwischen Netzteilhaltung und Freigabe. Das erklärt einen beobachteten Grenzfall,
+nicht alle Wochenwechsel.
+
+Stand v0.57.0: volle bestätigte 24-V-Überlappung auch im Rückfall, aktorbezogene
+Übernahme später Rückmeldungen, Erhalt gültiger DC-Vorgaben unter AC-Schutz und
+ein Prozentpunkt Startabstand für wirtschaftliche Haltung sind implementiert.
+Die Abnahme realer Übergaben nach Installation ist davon getrennt.
+
+LERNEN UND PROGNOSE
+
+In den sechs vollständig eingeschlossenen Tagen 05.-10.10. waren von 144 h
+nur 45 AC-Stunden (31,3 %) und 47 DC-Stunden (32,6 %) verwertbar. Ursachen:
+86 Stunden support_unresolved, 64 psu48_unresolved und elf state_unavailable;
+Gründe überlappen und dürfen nicht addiert werden. Vier AC-Stunden enthielten
+negative_balance. Der Ausschluss schützt vor falschem Lernen.
+
+Vergleich mit jeweils vor Stundenbeginn veröffentlichten Originalprognosen:
+AC 32 h, mittlerer absoluter Fehler 103,39 W, Bias -65,45 W;
+DC 33 h, mittlerer absoluter Fehler 12,76 W, Bias +10,89 W.
+Bias bedeutet Prognose minus Ist. Selektive Messlücken verhindern einen
+vollständigen Wochenfehler. Historische Live-P80-Bänder fehlen. Die eingefrorene
+Vorwochenreferenz ist eine andere Rechnung und kein Ersatz für diese Bänder.
+
+AC-Wochenendprofile waren noch in 0 von 24 Stunden reif. Eine erfolgreiche
+Lernberechnung bewies keine neue Messabdeckung. Beide Netzteilbilanzen und
+zuverlässige Gerätequellen bleiben praktische Voraussetzungen.
+
+Stand v0.57.0: optionale getrennte AC-Aufnahme/DC-Abgabe beider Netzteile,
+Original-P50/P80 vor Stundenbeginn, Nachbewertung rekonstruierter Stunden und
+sichtbare Messfrische sind implementiert. Tatsächliche Sensorzuordnung und
+künftige Profilreife müssen nach Installation beobachtet werden.
+
+CPU UND VERFÜGBARKEIT
+
+Nach Telemetrieentkopplung sank die Updatehäufigkeit: 2.593 Updates am 05.10.,
+368 am 06.10.; Medianabstände 28,06 bzw. 299,39 s. Unterschiedliche Versionen
+und Eingaben erlauben daraus keinen isolierten A/B-Geschwindigkeitsvergleich.
+Am 11.10. benötigten 311 archivierte Pläne von Eingang bis Publikation median
+84,88 s, p95 161,44 s, maximal 364,27 s. Zwei Ergebnisse waren bei Veröffentlichung
+bereits über 300 s alt. Die Freigabegrenze ist 300 s.
+
+Ergänzende Stichprobe außerhalb des Wochenfensters, 11.10. 21:43:42-21:56:04:
+148 Beobachtungssamples, 146 Intervalle, 732,42 s. Gesamter HA-Core durchschnittlich
+11,08 % der 3-vCPU-VM bzw. 33,09 % eines Kerns; VM-p95 33,79 %.
+Das ist kein Wochenmittel und keine ausschließlich dem Battery Manager
+zugeordnete CPU-Last. Datenabfragen und Randintervalle wurden ausgeschlossen.
+
+Stand v0.57.0: Reservevorbereitung und Quellenproben werden wiederverwendet,
+Planungsvorlauf berücksichtigt die gemessene Dauer. Die 300-s-Freigabe wurde
+nicht verlängert. Ein instrumentierter lokaler Replay hatte 27,5 % weniger
+Prozess-CPU bei gleicher Energiebilanz; ein Nachweis auf installierter HA-Hardware
+steht separat aus. Details: 2026-10-11-improvement-evidence.json.
+
+OFFEN UND NACHWEISE
+
+Die Ursache der HA-Speicherüberläufe bleibt offen. Der Archivverlust beim Start
+wurde separat in v0.56.2 behoben. Die Messkonfiguration, Netzteilbilanzen und
+Gerätequellen erfordern praktische Abnahme; niedrigere Schutzpuffer sind aus
+den selektiven Prognosefehlern nicht begründet.
+
+Tageszahlen: 2026-10-11-seven-day-review-daily.csv.
+Bereinigte Aggregate und Originalprüfsumme: 2026-10-11-seven-day-review-evidence.json.
+Umsetzung und Tests: 2026-10-11-improvements.txt, ../CURRENT_CONTRACTS.md,
+../TEST_MATRIX.md. Originaler Langbericht und Detaildaten bleiben im lokalen
+komprimierten Archiv gemäß README.md; fehlende historische Daten werden nicht
+rekonstruiert oder als vorhanden ausgegeben.

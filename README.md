@@ -255,6 +255,8 @@ Setup, value sources, limitations and migration:
 
 ## Documentation
 
+[**Deutscher Leitfaden: Architektur und Betrieb**](docs/BATTERY_MANAGER_GUIDE.md) (Stand v0.57.0) · [Untersuchungen und Aufbewahrung](docs/investigations/README.md).
+
 | Document | What it covers |
 |---|---|
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | **Start here.** Code map (core vs HA layer), the coordinator update cycle, and the decision-code glossary. |

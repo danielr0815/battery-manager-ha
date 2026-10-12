@@ -1,0 +1,1637 @@
+{
+  "review_date": "2026-10-02",
+  "code_commit": "a211549",
+  "version": "0.53.0",
+  "scope": "Local deeper analysis of the frozen seven-day review capture; no production code or live changes.",
+  "historical_limit": "2219 retained plan snapshots over about 22.18h, not all seven days of decisions.",
+  "source_sha256": {
+    "deep-review-root.json": "675037ef6fb30ce9ff1d4dbdfbb83ce8cf9fedfde7f4f062a103a652a50d96e8",
+    "deep-review-core-scenarios.json": "1986c6dc3332ab1a480bbdc324f0881659b1aac9e541bd76c44f361242833ac9",
+    "deep-review-core-dc-invariants.json": "cd35c120ef9ea51f12e76eb15381d8b1b18bb1e053d4723e7b60403956e4bcc6",
+    "deep-review-core-envelope-cache.json": "04c27abcaf44119c21c547db164239a8428b607657a086f5d820007277d7d8fe",
+    "deep-review-ha-archive-final.json": "78ac89982424479db1c806612b9883ccdcad9da2990041e0c93359057ed8af90",
+    "deep-review-market-cycle.json": "b514aa63c06276f88240921e3d4aa61b8047f7a5b680aac93445ce37716fce2d",
+    "deep-review-ux-results.json": "1d1e6ae72deeb8285ab4cc4ac3ca495843daa756da7b1da598d277e9781e663a",
+    "deep-review-ux-semantic-results.json": "f7f1b4227169196f268c63d2cc040f0ea673c8ce68325562ed66c3bdf6918426",
+    "deep-review-ux-api-results.json": "4ad198be65717a9d1022c50737c037c5cc0b694d176664aa7d40ab2bca6acf10"
+  },
+  "learning_and_dst": {
+    "dst_learning": {
+      "folded_hour_wh": 200.0,
+      "learned_hour2_w": 200.0,
+      "real_hours": 25.0,
+      "plan_slots": 25,
+      "forecast_ac_wh": 2700.0,
+      "constant_100w_truth_wh": 2500.0,
+      "switch_on_wall_hours": 24.0,
+      "partial_switch_real_hours": 1.6666666666666667,
+      "partial_switch_recorded_hours": 0.6666666666666666,
+      "qualification": "Learner transform isolated with min_samples=1; default median/rate limiting can damp one DST observation. No claim this happened live."
+    },
+    "partial_quantile_buffer": {
+      "static_configured_percent": 5.0,
+      "dynamic_with_unknown_ac_and_zero_dc_band": 3.0,
+      "diag": {
+        "soc_buffer_source": "dynamic",
+        "soc_buffer_effective": 3.0,
+        "buffer_uncertainty_wh": 0.0,
+        "buffer_window_hours": 12.0
+      },
+      "qualification": "Current D-C8 explicitly uses zero band for unlearned slots. Design risk, not deviation from current specification."
+    },
+    "live_learning": {
+      "reported_ac_coverage": 0.228,
+      "valid_since": "2026-08-30T00:00:00+02:00",
+      "computed_at": "2026-10-02T03:00:01.828736+02:00",
+      "raw_sample_count": 656,
+      "configured_window_hours": 2880,
+      "eligible_calendar_days_since_valid_since": 33,
+      "coverage_over_calendar_since_valid_since": 0.8282828282828283,
+      "qualification": "Adjusted denominator is a descriptive approximation; source history/configuration epochs may further restrict eligibility. It does not certify all hours usable.",
+      "weekend_sample_min": 3,
+      "weekend_sample_max": 6,
+      "minimum_weekend": 10,
+      "current_horizon_by_day": {
+        "2026-10-02": {
+          "slots": 7,
+          "learned": 7,
+          "static": 0,
+          "hours": 6.8952113172222225,
+          "static_hours": 0
+        },
+        "2026-10-03": {
+          "slots": 24,
+          "learned": 0,
+          "static": 24,
+          "hours": 24,
+          "static_hours": 24
+        },
+        "2026-10-04": {
+          "slots": 24,
+          "learned": 0,
+          "static": 24,
+          "hours": 24,
+          "static_hours": 24
+        }
+      }
+    }
+  },
+  "reserve_scenarios": {
+    "snapshot_local": "2026-10-02T17:06:17.239258+02:00",
+    "total_margin_scenario_variants": 15,
+    "transfer_quantum_wh": 7.677902621722846,
+    "terminal_coefficients": {
+      "ac_recoverable_wh_per_stored_wh": 0.9215,
+      "dc_psu_grid_replaced_wh_per_stored_wh": 1.0898876404494382
+    },
+    "scenario_rows": [
+      {
+        "scenario": "nominal",
+        "ac_margin_wh": 0,
+        "reference": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "candidate": {
+          "import_wh": 2635.4102466463755,
+          "export_wh": 0.0,
+          "dc_grid_wh": 349.26966292134824,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 762.2133333333333,
+          "min_soc": 10.377870962261966,
+          "max_soc": 70.46185906240162,
+          "end_soc": 64.38001642157666,
+          "end_energy_wh": 3219.000821078833
+        },
+        "published_policy": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "import_reduction_wh": 686.5110861423223,
+        "end_energy_spent_wh": 814.1189855249891,
+        "ac_end_energy_credit_wh": 750.2106451612774,
+        "terminal_adjusted_ac_cost_change_wh": 63.69955901895514,
+        "terminal_adjusted_dc_cost_change_wh": 200.78713403659845,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 13.202247191011224,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "nominal",
+        "ac_margin_wh": 13.202248,
+        "reference": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "candidate": {
+          "import_wh": 2635.4102466463755,
+          "export_wh": 0.0,
+          "dc_grid_wh": 349.26966292134824,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 762.2133333333333,
+          "min_soc": 10.377870962261966,
+          "max_soc": 70.46185906240162,
+          "end_soc": 64.38001642157666,
+          "end_energy_wh": 3219.000821078833
+        },
+        "published_policy": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "import_reduction_wh": 686.5110861423223,
+        "end_energy_spent_wh": 814.1189855249891,
+        "ac_end_energy_credit_wh": 750.2106451612774,
+        "terminal_adjusted_ac_cost_change_wh": 63.69955901895514,
+        "terminal_adjusted_dc_cost_change_wh": 200.78713403659845,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 13.202247191011224,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "nominal",
+        "ac_margin_wh": 250,
+        "reference": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "candidate": {
+          "import_wh": 2636.1664264216565,
+          "export_wh": 0.0,
+          "dc_grid_wh": 354.32584269662914,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 766.5133333333332,
+          "min_soc": 10.384312073353614,
+          "max_soc": 70.46830017349323,
+          "end_soc": 64.38645753266825,
+          "end_energy_wh": 3219.3228766334128
+        },
+        "published_policy": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "import_reduction_wh": 685.7549063670413,
+        "end_energy_spent_wh": 813.7969299704091,
+        "ac_end_energy_credit_wh": 749.913870967732,
+        "terminal_adjusted_ac_cost_change_wh": 64.15896460069075,
+        "terminal_adjusted_dc_cost_change_wh": 201.1923094434046,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 18.25842696629212,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "nominal",
+        "ac_margin_wh": 500,
+        "reference": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "candidate": {
+          "import_wh": 2747.9413327886978,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 618.9799999999999,
+          "min_soc": 13.226067276126136,
+          "max_soc": 73.31005537626577,
+          "end_soc": 67.22821273544085,
+          "end_energy_wh": 3361.4106367720424
+        },
+        "published_policy": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "import_reduction_wh": 573.98,
+        "end_energy_spent_wh": 671.7091698317795,
+        "ac_end_energy_credit_wh": 618.9799999999848,
+        "terminal_adjusted_ac_cost_change_wh": 44.999999999984766,
+        "terminal_adjusted_dc_cost_change_wh": 158.10752217620905,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "nominal",
+        "ac_margin_wh": 1000,
+        "reference": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "candidate": {
+          "import_wh": 3068.2063327886976,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 267.465,
+          "min_soc": 20.85525881166595,
+          "max_soc": 80.93924691180551,
+          "end_soc": 74.85740427098052,
+          "end_energy_wh": 3742.870213549026
+        },
+        "published_policy": {
+          "import_wh": 3321.921332788698,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 26.660250672761986,
+          "max_soc": 86.74423877290145,
+          "end_soc": 80.66239613207644,
+          "end_energy_wh": 4033.119806603822
+        },
+        "import_reduction_wh": 253.71500000000015,
+        "end_energy_spent_wh": 290.2495930547957,
+        "ac_end_energy_credit_wh": 267.46499999999423,
+        "terminal_adjusted_ac_cost_change_wh": 13.749999999994088,
+        "terminal_adjusted_dc_cost_change_wh": 62.62444411590076,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "pessimistic",
+        "ac_margin_wh": 0,
+        "reference": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "candidate": {
+          "import_wh": 3128.317483146067,
+          "export_wh": 0.0,
+          "dc_grid_wh": 384.21348314606735,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 461.0537553893555,
+          "min_soc": 10.950821586207377,
+          "max_soc": 59.90943736634699,
+          "end_soc": 53.414592005522096,
+          "end_energy_wh": 2670.729600276105
+        },
+        "published_policy": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "import_reduction_wh": 373.2295182152916,
+        "end_energy_spent_wh": 452.82935432772,
+        "ac_end_energy_credit_wh": 417.282250012994,
+        "terminal_adjusted_ac_cost_change_wh": 44.05273179770239,
+        "terminal_adjusted_dc_cost_change_wh": 120.30359829918979,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 48.14606741573033,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "pessimistic",
+        "ac_margin_wh": 13.202248,
+        "reference": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "candidate": {
+          "import_wh": 3128.317483146067,
+          "export_wh": 0.0,
+          "dc_grid_wh": 384.21348314606735,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 461.0537553893555,
+          "min_soc": 10.950821586207377,
+          "max_soc": 59.90943736634699,
+          "end_soc": 53.414592005522096,
+          "end_energy_wh": 2670.729600276105
+        },
+        "published_policy": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "import_reduction_wh": 373.2295182152916,
+        "end_energy_spent_wh": 452.82935432772,
+        "ac_end_energy_credit_wh": 417.282250012994,
+        "terminal_adjusted_ac_cost_change_wh": 44.05273179770239,
+        "terminal_adjusted_dc_cost_change_wh": 120.30359829918979,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 48.14606741573033,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "pessimistic",
+        "ac_margin_wh": 250,
+        "reference": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "candidate": {
+          "import_wh": 3128.317483146067,
+          "export_wh": 0.0,
+          "dc_grid_wh": 384.21348314606735,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 461.0537553893555,
+          "min_soc": 10.950821586207377,
+          "max_soc": 59.90943736634699,
+          "end_soc": 53.414592005522096,
+          "end_energy_wh": 2670.729600276105
+        },
+        "published_policy": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "import_reduction_wh": 373.2295182152916,
+        "end_energy_spent_wh": 452.82935432772,
+        "ac_end_energy_credit_wh": 417.282250012994,
+        "terminal_adjusted_ac_cost_change_wh": 44.05273179770239,
+        "terminal_adjusted_dc_cost_change_wh": 120.30359829918979,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 48.14606741573033,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "pessimistic",
+        "ac_margin_wh": 500,
+        "reference": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "candidate": {
+          "import_wh": 3126.687146067415,
+          "export_wh": 0.0,
+          "dc_grid_wh": 373.48314606741565,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 450.7037553893555,
+          "min_soc": 10.963727145749674,
+          "max_soc": 59.922342925889296,
+          "end_soc": 53.42749756506442,
+          "end_energy_wh": 2671.374878253221
+        },
+        "published_policy": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "import_reduction_wh": 374.8598552939434,
+        "end_energy_spent_wh": 452.18407635060385,
+        "ac_end_energy_credit_wh": 416.68762635708146,
+        "terminal_adjusted_ac_cost_change_wh": 41.82777106313807,
+        "terminal_adjusted_dc_cost_change_wh": 117.96998072862488,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 37.41573033707863,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": false,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "pessimistic",
+        "ac_margin_wh": 1000,
+        "reference": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "candidate": {
+          "import_wh": 3279.9840013613584,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 234.063,
+          "min_soc": 14.927365265274203,
+          "max_soc": 63.88598104541374,
+          "end_soc": 57.391135684588846,
+          "end_energy_wh": 2869.556784229442
+        },
+        "published_policy": {
+          "import_wh": 3501.5470013613585,
+          "export_wh": 0.0,
+          "dc_grid_wh": 336.067415730337,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 20.00740867276192,
+          "max_soc": 68.9660244529015,
+          "end_soc": 62.471179092076504,
+          "end_energy_wh": 3123.558954603825
+        },
+        "import_reduction_wh": 221.5630000000001,
+        "end_energy_spent_wh": 254.00217037438279,
+        "ac_end_energy_credit_wh": 234.06299999999374,
+        "terminal_adjusted_ac_cost_change_wh": 12.499999999993634,
+        "terminal_adjusted_dc_cost_change_wh": 55.27082613837217,
+        "export_reduction_wh": 0.0,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "upper",
+        "ac_margin_wh": 0,
+        "reference": {
+          "import_wh": 3189.419619272216,
+          "export_wh": 1450.2305408393865,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 34.5265837501059,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "candidate": {
+          "import_wh": 2116.2426192722164,
+          "export_wh": 3.8489299711874505,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1189.427,
+          "min_soc": 10.459235361986224,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "published_policy": {
+          "import_wh": 2116.2426192722164,
+          "export_wh": 3.8489299711874505,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1189.427,
+          "min_soc": 10.459235361986224,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "import_reduction_wh": 1073.1769999999997,
+        "end_energy_spent_wh": 0.0,
+        "ac_end_energy_credit_wh": 0.0,
+        "terminal_adjusted_ac_cost_change_wh": -1073.1769999999997,
+        "terminal_adjusted_dc_cost_change_wh": -1073.1769999999997,
+        "export_reduction_wh": 1446.381610868199,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "upper",
+        "ac_margin_wh": 13.202248,
+        "reference": {
+          "import_wh": 3189.419619272216,
+          "export_wh": 1450.2305408393865,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 34.5265837501059,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "candidate": {
+          "import_wh": 2126.92595260555,
+          "export_wh": 18.360248353643208,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1177.4936666666665,
+          "min_soc": 10.718233372476298,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "published_policy": {
+          "import_wh": 2116.2426192722164,
+          "export_wh": 3.8489299711874505,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1189.427,
+          "min_soc": 10.459235361986224,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "import_reduction_wh": 1062.4936666666663,
+        "end_energy_spent_wh": 0.0,
+        "ac_end_energy_credit_wh": 0.0,
+        "terminal_adjusted_ac_cost_change_wh": -1062.4936666666663,
+        "terminal_adjusted_dc_cost_change_wh": -1062.4936666666663,
+        "export_reduction_wh": 1431.8702924857434,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "upper",
+        "ac_margin_wh": 250,
+        "reference": {
+          "import_wh": 3189.419619272216,
+          "export_wh": 1450.2305408393865,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 34.5265837501059,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "candidate": {
+          "import_wh": 2314.52895260555,
+          "export_wh": 284.49255801480547,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 958.6406666666666,
+          "min_soc": 15.46816283530875,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "published_policy": {
+          "import_wh": 2116.2426192722164,
+          "export_wh": 3.8489299711874505,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1189.427,
+          "min_soc": 10.459235361986224,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "import_reduction_wh": 874.8906666666662,
+        "end_energy_spent_wh": 0.0,
+        "ac_end_energy_credit_wh": 0.0,
+        "terminal_adjusted_ac_cost_change_wh": -874.8906666666662,
+        "terminal_adjusted_dc_cost_change_wh": -874.8906666666662,
+        "export_reduction_wh": 1165.7379828245812,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "upper",
+        "ac_margin_wh": 500,
+        "reference": {
+          "import_wh": 3189.419619272216,
+          "export_wh": 1450.2305408393865,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 34.5265837501059,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "candidate": {
+          "import_wh": 2515.6769526055496,
+          "export_wh": 561.0158633947964,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 731.2426666666665,
+          "min_soc": 20.403550789730904,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "published_policy": {
+          "import_wh": 2116.2426192722164,
+          "export_wh": 3.8489299711874505,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1189.427,
+          "min_soc": 10.459235361986224,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "import_reduction_wh": 673.7426666666665,
+        "end_energy_spent_wh": 0.0,
+        "ac_end_energy_credit_wh": 0.0,
+        "terminal_adjusted_ac_cost_change_wh": -673.7426666666665,
+        "terminal_adjusted_dc_cost_change_wh": -673.7426666666665,
+        "export_reduction_wh": 889.2146774445902,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      },
+      {
+        "scenario": "upper",
+        "ac_margin_wh": 1000,
+        "reference": {
+          "import_wh": 3189.419619272216,
+          "export_wh": 1450.2305408393865,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 0.0,
+          "min_soc": 34.5265837501059,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "candidate": {
+          "import_wh": 2935.5749526055497,
+          "export_wh": 1123.30675144613,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 268.8446666666667,
+          "min_soc": 28.809209903117406,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "published_policy": {
+          "import_wh": 2116.2426192722164,
+          "export_wh": 3.8489299711874505,
+          "dc_grid_wh": 322.3033707865168,
+          "unserved_dc_wh": 0.0,
+          "ac_output_wh": 1189.427,
+          "min_soc": 10.459235361986224,
+          "max_soc": 95.0,
+          "end_soc": 89.44109041148945,
+          "end_energy_wh": 4472.054520574473
+        },
+        "import_reduction_wh": 253.8446666666664,
+        "end_energy_spent_wh": 0.0,
+        "ac_end_energy_credit_wh": 0.0,
+        "terminal_adjusted_ac_cost_change_wh": -253.8446666666664,
+        "terminal_adjusted_dc_cost_change_wh": -253.8446666666664,
+        "export_reduction_wh": 326.9237893932566,
+        "additional_dc_grid_wh": 0.0,
+        "additional_unserved_dc_wh": 0.0,
+        "dc_gate_aggregate_passes": true,
+        "dc_gate_slotwise_passes": true
+      }
+    ],
+    "conditional_24h_continuations": [
+      {
+        "assumption": "dark_next_day",
+        "nominal_tail_pv_wh": 0,
+        "comparison": {
+          "dc_only_reference": {
+            "tail": {
+              "import_wh": 3103.9325842696626,
+              "export_wh": 0.0,
+              "dc_grid_wh": 853.9325842696628,
+              "unserved_dc_wh": 0.0,
+              "ac_output_wh": 0.0,
+              "min_soc": 63.34280850321,
+              "max_soc": 79.94074664754034,
+              "end_soc": 63.34280850321,
+              "end_energy_wh": 3167.1404251605
+            },
+            "combined_import_wh": 6425.853917058361,
+            "combined_export_wh": 0.0,
+            "end_energy_wh": 3167.1404251605
+          },
+          "retained_500_candidate": {
+            "tail": {
+              "import_wh": 3103.9325842696626,
+              "export_wh": 0.0,
+              "dc_grid_wh": 853.9325842696628,
+              "unserved_dc_wh": 0.0,
+              "ac_output_wh": 0.0,
+              "min_soc": 49.908625106574426,
+              "max_soc": 66.50656325090475,
+              "end_soc": 49.908625106574426,
+              "end_energy_wh": 2495.4312553287214
+            },
+            "combined_import_wh": 5851.87391705836,
+            "combined_export_wh": 0.0,
+            "end_energy_wh": 2495.4312553287214
+          }
+        },
+        "combined_import_reduction_wh": 573.9800000000005,
+        "remaining_end_energy_spent_wh": 671.7091698317786,
+        "terminal_adjusted_ac_cost_change_wh": 44.999999999983515
+      },
+      {
+        "assumption": "moderate_next_day",
+        "nominal_tail_pv_wh": 2500,
+        "comparison": {
+          "dc_only_reference": {
+            "tail": {
+              "import_wh": 1574.4382022471907,
+              "export_wh": 0.0,
+              "dc_grid_wh": 449.43820224719093,
+              "unserved_dc_wh": 0.0,
+              "ac_output_wh": 0.0,
+              "min_soc": 75.6108497403237,
+              "max_soc": 84.06930759200303,
+              "end_soc": 78.29611171571412,
+              "end_energy_wh": 3914.805585785706
+            },
+            "combined_import_wh": 4896.359535035888,
+            "combined_export_wh": 0.0,
+            "end_energy_wh": 3914.805585785706
+          },
+          "retained_500_candidate": {
+            "tail": {
+              "import_wh": 1574.4382022471907,
+              "export_wh": 0.0,
+              "dc_grid_wh": 449.43820224719093,
+              "unserved_dc_wh": 0.0,
+              "ac_output_wh": 0.0,
+              "min_soc": 62.17666634368815,
+              "max_soc": 70.63512419536775,
+              "end_soc": 64.86192831907883,
+              "end_energy_wh": 3243.0964159539417
+            },
+            "combined_import_wh": 4322.379535035889,
+            "combined_export_wh": 0.0,
+            "end_energy_wh": 3243.0964159539417
+          }
+        },
+        "combined_import_reduction_wh": 573.9799999999996,
+        "remaining_end_energy_spent_wh": 671.7091698317645,
+        "terminal_adjusted_ac_cost_change_wh": 44.99999999997135
+      },
+      {
+        "assumption": "clipping_next_day",
+        "nominal_tail_pv_wh": 9000,
+        "comparison": {
+          "dc_only_reference": {
+            "tail": {
+              "import_wh": 1428.3707865168537,
+              "export_wh": 5726.083805024358,
+              "dc_grid_wh": 303.3707865168539,
+              "unserved_dc_wh": 0.0,
+              "ac_output_wh": 0.0,
+              "min_soc": 72.72868590039519,
+              "max_soc": 95.0,
+              "end_soc": 89.22680412371119,
+              "end_energy_wh": 4461.3402061855595
+            },
+            "combined_import_wh": 4750.292119305552,
+            "combined_export_wh": 5726.083805024358,
+            "end_energy_wh": 4461.3402061855595
+          },
+          "retained_500_candidate": {
+            "tail": {
+              "import_wh": 1428.3707865168537,
+              "export_wh": 4973.384152590714,
+              "dc_grid_wh": 303.3707865168539,
+              "unserved_dc_wh": 0.0,
+              "ac_output_wh": 0.0,
+              "min_soc": 59.29450250375954,
+              "max_soc": 95.0,
+              "end_soc": 89.22680412371119,
+              "end_energy_wh": 4461.3402061855595
+            },
+            "combined_import_wh": 4176.312119305551,
+            "combined_export_wh": 4973.384152590714,
+            "end_energy_wh": 4461.3402061855595
+          }
+        },
+        "combined_import_reduction_wh": 573.9800000000005,
+        "remaining_end_energy_spent_wh": 0.0,
+        "terminal_adjusted_ac_cost_change_wh": -573.9800000000005
+      }
+    ],
+    "limitations": [
+      "Conditional continuations are synthetic, not available forecast evidence.",
+      "Continuation keeps current trajectories fixed and uses the same DC-only tail policy; it does not solve a globally reoptimized extended horizon.",
+      "AC terminal credit is a valuation, not a promise reserve mode will immediately enable later AC.",
+      "A true upper-PV export reduction matters differently from borrowing end storage to reduce nominal import."
+    ],
+    "work_profile": {
+      "elapsed_seconds": 37.89140473800944,
+      "exact_result_match": true,
+      "counts": {
+        "reserve_requests": 292,
+        "uncached_reserve_probes": 292,
+        "policy_simulations": 870,
+        "envelopes": 870,
+        "incoming_ceiling_evaluations": 8793204,
+        "expanded_step_budgets": 573330,
+        "step_hour_calls": 1182270
+      },
+      "priority_levels": {
+        "min": 22,
+        "max": 23,
+        "mean": 22.386206896551723
+      },
+      "explanation": "incoming_ceiling count is derived exactly from the documented loop lengths, avoiding a wrapper on every innermost operation."
+    }
+  },
+  "dc_invariants": {
+    "prior_appliance": {
+      "baseline": {
+        "ac_output_wh": 0.0,
+        "dc_grid_wh": 0.0,
+        "unserved_dc_wh": 0.0,
+        "import_wh": 0.0,
+        "export_wh": 0.0,
+        "min_soc_percent": 5.0,
+        "max_soc_percent": 34.99999999999995,
+        "end_soc_percent": 5.0
+      },
+      "hypothetical_appliance": {
+        "ac_output_wh": 0.0,
+        "dc_grid_wh": 0.0,
+        "unserved_dc_wh": 99.99999999999997,
+        "import_wh": 0.0,
+        "export_wh": 0.0,
+        "min_soc_percent": 5.0,
+        "max_soc_percent": 24.999999999999982,
+        "end_soc_percent": 5.0
+      },
+      "incorrect_advisory_allowed": true
+    },
+    "prior_load": {
+      "baseline": {
+        "ac_output_wh": 0.0,
+        "dc_grid_wh": 0.0,
+        "unserved_dc_wh": 0.0,
+        "import_wh": 0.0,
+        "export_wh": 899.9999999999999,
+        "min_soc_percent": 5.000000000000043,
+        "max_soc_percent": 90.00000000000004,
+        "end_soc_percent": 5.000000000000043
+      },
+      "accepted_load_plan": {
+        "ac_output_wh": 0.0,
+        "dc_grid_wh": 0.0,
+        "unserved_dc_wh": 100.00000000000013,
+        "import_wh": 0.0,
+        "export_wh": 0.0,
+        "min_soc_percent": 5.0,
+        "max_soc_percent": 80.0,
+        "end_soc_percent": 5.0
+      },
+      "incorrect_load_booking_wh": 1000.0,
+      "why": [
+        "pass 1 @ 10-02 12:00: direct surplus, 60 min x 1000 W, battery share 10%"
+      ]
+    },
+    "automatic_feedin": [
+      {
+        "alpha": 1,
+        "baseline": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 0.0,
+          "import_wh": 0.0,
+          "export_wh": 1099.9999999999998,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "accepted_feedin": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 99.99999999999991,
+          "import_wh": 0.0,
+          "export_wh": 1199.9999999999998,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "feedin_schedule_w": [
+          100.0,
+          0.0,
+          0.0
+        ],
+        "stress_baseline": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 0.0,
+          "import_wh": 0.0,
+          "export_wh": 1099.9999999999998,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "stress_trial": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 99.99999999999991,
+          "import_wh": 0.0,
+          "export_wh": 1199.9999999999998,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "nominal_grid_regression_wh": 99.99999999999991,
+        "stress_grid_regression_wh": 99.99999999999991
+      },
+      {
+        "alpha": 0.8,
+        "baseline": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 0.0,
+          "import_wh": 0.0,
+          "export_wh": 1099.9999999999998,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "accepted_feedin": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 99.99999999999991,
+          "import_wh": 0.0,
+          "export_wh": 1199.9999999999998,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "feedin_schedule_w": [
+          100.0,
+          0.0,
+          0.0
+        ],
+        "stress_baseline": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 19.999999999999762,
+          "import_wh": 0.0,
+          "export_wh": 700.0,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "stress_trial": {
+          "ac_output_wh": 0.0,
+          "dc_grid_wh": 0.0,
+          "unserved_dc_wh": 99.99999999999991,
+          "import_wh": 0.0,
+          "export_wh": 780.0,
+          "min_soc_percent": 5.0,
+          "max_soc_percent": 95.0,
+          "end_soc_percent": 95.0
+        },
+        "nominal_grid_regression_wh": 99.99999999999991,
+        "stress_grid_regression_wh": 80.00000000000016
+      }
+    ],
+    "prototype_comparator_cases": [
+      {
+        "case": "unchanged_existing_deficiency",
+        "baseline": [
+          10,
+          5
+        ],
+        "trial": [
+          10,
+          5
+        ],
+        "accepted": null,
+        "expected_allowed": true,
+        "prototype_allowed": true,
+        "total_deficit_unchanged": true,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "improves_existing_deficiency",
+        "baseline": [
+          10,
+          5
+        ],
+        "trial": [
+          5,
+          0
+        ],
+        "accepted": null,
+        "expected_allowed": true,
+        "prototype_allowed": true,
+        "total_deficit_unchanged": false,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "new_deficiency",
+        "baseline": [
+          0,
+          0
+        ],
+        "trial": [
+          0,
+          1
+        ],
+        "accepted": null,
+        "expected_allowed": false,
+        "prototype_allowed": false,
+        "total_deficit_unchanged": false,
+        "cumulative_prefix_check_passes": false
+      },
+      {
+        "case": "moves_blackout_earlier",
+        "baseline": [
+          0,
+          10
+        ],
+        "trial": [
+          10,
+          0
+        ],
+        "accepted": null,
+        "expected_allowed": false,
+        "prototype_allowed": false,
+        "total_deficit_unchanged": true,
+        "cumulative_prefix_check_passes": false
+      },
+      {
+        "case": "moves_blackout_later",
+        "baseline": [
+          10,
+          0
+        ],
+        "trial": [
+          0,
+          10
+        ],
+        "accepted": null,
+        "expected_allowed": false,
+        "prototype_allowed": false,
+        "total_deficit_unchanged": true,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "preserves_prefix_but_moves_failure",
+        "baseline": [
+          5,
+          5
+        ],
+        "trial": [
+          4,
+          6
+        ],
+        "accepted": null,
+        "expected_allowed": false,
+        "prototype_allowed": false,
+        "total_deficit_unchanged": true,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "keeps_accepted_improvement",
+        "baseline": [
+          10,
+          5
+        ],
+        "trial": [
+          4,
+          0
+        ],
+        "accepted": [
+          5,
+          0
+        ],
+        "expected_allowed": true,
+        "prototype_allowed": true,
+        "total_deficit_unchanged": false,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "spends_accepted_improvement",
+        "baseline": [
+          10,
+          5
+        ],
+        "trial": [
+          6,
+          0
+        ],
+        "accepted": [
+          5,
+          0
+        ],
+        "expected_allowed": false,
+        "prototype_allowed": false,
+        "total_deficit_unchanged": false,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "one_horizon_rounding_tolerance",
+        "baseline": [
+          0,
+          0
+        ],
+        "trial": [
+          2e-07,
+          2e-07
+        ],
+        "accepted": null,
+        "expected_allowed": true,
+        "prototype_allowed": true,
+        "total_deficit_unchanged": false,
+        "cumulative_prefix_check_passes": true
+      },
+      {
+        "case": "no_per_slot_tolerance_ratchet",
+        "baseline": [
+          0,
+          0
+        ],
+        "trial": [
+          7.5e-07,
+          7.5e-07
+        ],
+        "accepted": null,
+        "expected_allowed": false,
+        "prototype_allowed": false,
+        "total_deficit_unchanged": false,
+        "cumulative_prefix_check_passes": false
+      }
+    ],
+    "temporal_resolution_limit": {
+      "hourly_comparison_cannot_detect_shift": true,
+      "five_minute_regression_wh": 10
+    },
+    "design_notes": [
+      "50Wh import slack and 50Wh storage tolerance never authorize unserved DC.",
+      "Compare candidate-specific identical PV vectors, source ownership, input snapshots and aligned physical grids.",
+      "Preserve intentional pass-3 nominal-only policy; do not add blanket full-horizon P10 vetoes.",
+      "Explicit manual feed-in is external intent: describe unsafe forecast or apply established execution protection, never publish a false automatic zero schedule as the actual manual setting.",
+      "A per-slot prototype catches demonstrated defects but cannot claim five-minute temporal protection until atomic deficit evidence is retained."
+    ]
+  },
+  "envelope_cache": {
+    "elapsed_seconds": 39.58799111901317,
+    "exact_result_match": true,
+    "counts": {
+      "requests": 870,
+      "misses": 292,
+      "hits": 578
+    },
+    "max_cache_entries": 128,
+    "limitation": "Local timing is one sample on this machine. Identity-list experiment proves reuse; production should reuse the existing scoped probe key and test cancellation/cache boundaries."
+  },
+  "archive_final": {
+    "hashes_verified": 2219,
+    "sequential_reconstructions_verified": 2218,
+    "checkpoint64_count": 47,
+    "max_hour_plan_bytes": {
+      "16": 281301,
+      "32": 258908,
+      "64": 245004,
+      "128": 236719
+    },
+    "hour64_plan_bytes": {
+      "2026-10-01T16": 13369,
+      "2026-10-01T17": 87742,
+      "2026-10-01T18": 70041,
+      "2026-10-01T19": 136115,
+      "2026-10-01T20": 189498,
+      "2026-10-01T21": 189901,
+      "2026-10-01T22": 223203,
+      "2026-10-01T23": 226950,
+      "2026-10-02T00": 183708,
+      "2026-10-02T01": 187434,
+      "2026-10-02T02": 235103,
+      "2026-10-02T03": 245004,
+      "2026-10-02T04": 164140,
+      "2026-10-02T05": 101675,
+      "2026-10-02T06": 101294,
+      "2026-10-02T07": 125561,
+      "2026-10-02T08": 171111,
+      "2026-10-02T09": 161614,
+      "2026-10-02T10": 205060,
+      "2026-10-02T11": 228237,
+      "2026-10-02T12": 221626,
+      "2026-10-02T13": 243396,
+      "2026-10-02T14": 170678,
+      "2026-10-02T15": 15964
+    },
+    "peak_hour64_plan_plus_events_bytes": 261083,
+    "peak_week64_plan_plus_events_bytes": 43861944,
+    "checkpoint_variants_compressed_bytes": {
+      "16": 4730948,
+      "32": 4166525,
+      "64": 3898424,
+      "128": 3730798
+    },
+    "raw_delta_bytes": {
+      "16": 50250053,
+      "32": 45223584,
+      "64": 42844667,
+      "128": 41361046
+    },
+    "max_hour_plans": 158,
+    "max_hour_events": 474,
+    "max_hour_event_compressed_bytes": 23334,
+    "observed_week_event_count_extrapolated": 52550.027566727935,
+    "pessimistic_week_event_count_168_times_peak": 79632,
+    "week_bytes_extrapolated": {
+      "16": 38672821.0941629,
+      "32": 34397749.861920856,
+      "64": 32367090.45853842,
+      "128": 31097452.101533473
+    },
+    "seconds": 41.27156739399652,
+    "hour_event_compressed_bytes": 374892,
+    "plan_compressed_bytes_at_checkpoint64": 3898424
+  },
+  "market_cycle": {
+    "battery_capacity_wh": 1000,
+    "initial_stored_energy_wh": 800,
+    "battery_ceiling_wh": 950,
+    "future_net_pv_charge_wh": 350,
+    "headroom_ac_budget_wh": 200,
+    "slot_duration_h": 1,
+    "inverter_max_power_w": 1000,
+    "standby_w": 0,
+    "all_conversion_efficiencies": 1,
+    "prices_eur_per_mwh": [
+      300,
+      100,
+      null,
+      100
+    ],
+    "pairwise_cycle": [
+      "A outranks B: 500*3 > 600*1",
+      "B outranks C: missing C price uses 600 > 550",
+      "C outranks A: missing C price uses 550 > 500"
+    ],
+    "cycle_case": {
+      "unknown_c_demand_w": 550,
+      "slot_start_utc": [
+        "2026-10-02T17:00:00+00:00",
+        "2026-10-02T18:00:00+00:00",
+        "2026-10-02T19:00:00+00:00",
+        "2026-10-02T20:00:00+00:00"
+      ],
+      "pv_wh": [
+        0,
+        0,
+        0,
+        350
+      ],
+      "ac_wh": [
+        500,
+        600,
+        550,
+        0
+      ],
+      "dc_wh": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "market_weights": [
+        3.0,
+        1.0,
+        null,
+        1.0
+      ],
+      "inverter_output_wh": [
+        0.0,
+        199.99999999999994,
+        0.0,
+        0.0
+      ],
+      "grid_import_wh": 1449.9999999999998,
+      "grid_export_wh": 0.0,
+      "end_soc_percent": 94.99999999999993
+    },
+    "control_without_unknown_c_demand": {
+      "unknown_c_demand_w": 0,
+      "slot_start_utc": [
+        "2026-10-02T17:00:00+00:00",
+        "2026-10-02T18:00:00+00:00",
+        "2026-10-02T19:00:00+00:00",
+        "2026-10-02T20:00:00+00:00"
+      ],
+      "pv_wh": [
+        0,
+        0,
+        0,
+        350
+      ],
+      "ac_wh": [
+        500,
+        600,
+        0,
+        0
+      ],
+      "dc_wh": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "market_weights": [
+        3.0,
+        1.0,
+        null,
+        1.0
+      ],
+      "inverter_output_wh": [
+        166.66666666666663,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "grid_import_wh": 933.3333333333333,
+      "grid_export_wh": 33.33333333333307,
+      "end_soc_percent": 95.0
+    },
+    "interpretation": "The unknown C window is never used in the cycle case but suppresses the known high-price A window. Reducing only C demand changes allocation to A. This demonstrates a nontransitive comparison contract; it does not prove a global economic optimum. Different load densities also produce different complete-step rounding and residual export."
+  },
+  "ux_interaction": {
+    "at": "2026-10-02T15:38:41.430Z",
+    "root": ".",
+    "evidence": [
+      {
+        "name": "forecast_keyboard_refresh",
+        "value": {
+          "before": {
+            "focus": "chart",
+            "readout": "Fri 11:00 AM · 60 % · Inverter: No switching forecast",
+            "kbIndex": 1
+          },
+          "after": {
+            "focus": null,
+            "readout": " ",
+            "kbIndex": null
+          }
+        }
+      },
+      {
+        "name": "forecast_timezone_without_entity_change",
+        "value": {
+          "zoneBefore": "SOC forecast: now 40 %, minimum 40 % (Fri 10:00 AM), maximum 60 % (Fri 11:00 AM), threshold 20 %.",
+          "zoneAfter": "SOC forecast: now 40 %, minimum 40 % (Fri 10:00 AM), maximum 60 % (Fri 11:00 AM), threshold 20 %."
+        }
+      },
+      {
+        "name": "forecast_unavailable_retained_attrs",
+        "value": {
+          "chartVisible": true,
+          "stats": "T* 20 %",
+          "errorCount": 0
+        }
+      },
+      {
+        "name": "consumption_keyboard_refresh",
+        "value": {
+          "before": {
+            "focus": "chart",
+            "readout": "Fri 11:00 AM · 230 V AC 200 Wtotal 200 W · AC: fallback · DC: fallback",
+            "kbIndex": 1
+          },
+          "after": {
+            "focus": null,
+            "readout": " ",
+            "kbIndex": null
+          }
+        }
+      },
+      {
+        "name": "consumption_timezone_without_entity_change",
+        "value": {
+          "zoneBefore": "Consumption forecast: now 100 W, maximum 200 W (Fri 11:00 AM).",
+          "zoneAfter": "Consumption forecast: now 100 W, maximum 200 W (Fri 11:00 AM)."
+        }
+      },
+      {
+        "name": "consumption_unavailable_retained_attrs",
+        "value": {
+          "chartVisible": true,
+          "stats": "total 0.3/0.0 kWh (kWh · today/tomorrow)",
+          "errorCount": 0
+        }
+      },
+      {
+        "name": "consumption_10_45_wrong_slot",
+        "value": {
+          "expected": "10:00, 100 W",
+          "actual": "Fri 11:00 AM · 230 V AC 200 Wtotal 200 W · AC: fallback · DC: fallback"
+        }
+      },
+      {
+        "name": "forecast_touch_tap",
+        "value": {
+          "readout": " "
+        }
+      },
+      {
+        "name": "consumption_touch_tap",
+        "value": {
+          "readout": " "
+        }
+      },
+      {
+        "name": "loads_period_refresh_loses_focus",
+        "value": {
+          "focusedBefore": true,
+          "focusedAfter": false
+        }
+      },
+      {
+        "name": "unconfigured_appliance_source_clickable_null",
+        "value": {
+          "text": "null",
+          "opened": [
+            "null"
+          ]
+        }
+      }
+    ]
+  },
+  "ux_semantics": {
+    "planVsLive": {
+      "plannerPermission": 0,
+      "livePermission": 2300,
+      "liveConfirmed": true,
+      "displayedCurrentPermission": "0 W",
+      "livePermissionMentioned": false,
+      "marketSourceMentioned": false
+    },
+    "historyErrorWithoutDays": {
+      "reportVisible": false,
+      "errorVisible": false
+    }
+  },
+  "ux_aba_hardening": {
+    "case": "appliance_publication_signal_A_B_A",
+    "stale": {
+      "visible": true,
+      "requestCount": 2,
+      "inFlight": true,
+      "localGeneration": 1
+    },
+    "recovered": {
+      "visible": true,
+      "requestCount": 2
+    },
+    "observed": "An obsolete in-flight payload is visibly published before its successor despite an intervening revision change."
+  },
+  "future_bookings": {
+    "booking_rows": 47,
+    "counts": {
+      "Fossibot F2400-B": 47
+    },
+    "sum_snapshot_booked_wh_not_additive": {
+      "Fossibot F2400-B": 5946.416666666666
+    },
+    "slot0_active_count": 0
+  },
+  "guard": {
+    "soc_percent": 55,
+    "pv_w": 0,
+    "load_w": 400,
+    "minimum_runtime_min": 30,
+    "elapsed_runtime_min": 5,
+    "remaining_dwell_min": 25,
+    "planned_active_now": false,
+    "rejection": "additional_import",
+    "inverter_permission": false,
+    "guard_running_load_w": 0,
+    "floor_guard": false,
+    "actuator_actions": [],
+    "actors_remain_on": true,
+    "pytest_result": "1 passed in 0.98s",
+    "qualification": "Real core, isolated production guard and real executor; aggregation expression copied from coordinator. Not a full update-path test or demonstrated live incident."
+  },
+  "limits": [
+    "Synthetic scenarios do not prove measured real-world savings or incidents.",
+    "Archive week sizes extrapolate about 22.18h of retained events.",
+    "Envelope cache reduces work but measured wall time did not improve.",
+    "ABA probe artificially delays client callWS while current backend handler is synchronous.",
+    "DST transformation isolates one sample; default quantiles and damping can reduce the observed bias."
+  ],
+  "_historical_context": {
+    "observed_code": "a211549",
+    "observed_version": "0.53.0",
+    "reviewed_for_version": "0.57.0",
+    "review_date": "2026-10-12",
+    "interpretation": "Historical counterexamples/results. Implemented fixes are tracked in OPTIMIZATION-PLAN-2026-10.md and current regression tests.",
+    "source_provenance": {
+      "original_file": "2026-10-02-deep-review-proofs.json",
+      "original_bytes": 53995,
+      "original_sha256": "ffbd9a7905590ec0b839cdc175e1a7f79da508a378559028fa18d1f4543918a9",
+      "archive": "operational-evidence-2026-09-07-to-2026-10-11.tar.gz",
+      "archive_sha256": "3f95ce6fb4ac73f29d7c9ab794d5e8ec7e6adabf59c1e721a5cfdea1fc3d49b6"
+    }
+  }
+}

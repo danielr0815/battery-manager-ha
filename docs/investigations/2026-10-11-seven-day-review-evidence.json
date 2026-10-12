@@ -1,0 +1,495 @@
+{
+  "historical": true,
+  "observed_version_at_window_end": "0.56.2",
+  "implementation_reviewed_for_version": "0.57.0",
+  "window": {
+    "start": "2026-10-04T19:37:35.695Z",
+    "end": "2026-10-11T19:37:35.695Z",
+    "timezone": "Europe/Berlin"
+  },
+  "timezone": "Europe/Berlin",
+  "source_provenance": {
+    "original_file": "2026-10-11-seven-day-review-evidence.json",
+    "original_bytes": 950481,
+    "original_sha256": "0c1287a624e659a7df59b4189a85c70335d26ad005ca350072b6f2a90be25de9",
+    "archive": "operational-evidence-2026-09-07-to-2026-10-11.tar.gz",
+    "archive_sha256": "3f95ce6fb4ac73f29d7c9ab794d5e8ec7e6adabf59c1e721a5cfdea1fc3d49b6"
+  },
+  "scope": "Curated historical aggregates; no entity identities or individual household/actor histories.",
+  "coverage": {
+    "recorder_known_actor_fraction": 0.9932,
+    "archive_observed_hours": 130.13,
+    "archive_events": 11473,
+    "archive_plans": 2153,
+    "archive_missing_hours": 37.87
+  },
+  "transfer_summary": {
+    "count": 457,
+    "short_overlaps": [
+      {
+        "at": "2026-10-06T00:28:50.335683+02:00",
+        "overlap_s": 0.358807
+      },
+      {
+        "at": "2026-10-07T20:46:18.448682+02:00",
+        "overlap_s": 0.955126
+      },
+      {
+        "at": "2026-10-08T07:02:25.764266+02:00",
+        "overlap_s": 1.466082
+      }
+    ],
+    "regular_count": 454,
+    "electrical_interruption_proven": false
+  },
+  "learning": {
+    "excluded_totals": {
+      "ac": {
+        "period": "2026-10-05 through 2026-10-10, six complete local days",
+        "total_hours": 144,
+        "excluded_hours": 99,
+        "nonexcluded_hours": 45,
+        "reason_counts_nonexclusive": {
+          "negative_balance": 4,
+          "support_unresolved": 86,
+          "state_unavailable": 11,
+          "psu48_unresolved": 64
+        }
+      },
+      "dc": {
+        "period": "2026-10-05 through 2026-10-10, six complete local days",
+        "total_hours": 144,
+        "excluded_hours": 97,
+        "nonexcluded_hours": 47,
+        "reason_counts_nonexclusive": {
+          "support_unresolved": 86,
+          "state_unavailable": 11,
+          "psu48_unresolved": 64
+        }
+      }
+    },
+    "excluded_daily": {
+      "2026-10-04": {
+        "ac": {
+          "excluded_hours": 10,
+          "nonexcluded_hours": 14,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 10,
+            "psu48_unresolved": 7
+          }
+        },
+        "dc": {
+          "excluded_hours": 10,
+          "nonexcluded_hours": 14,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 10,
+            "psu48_unresolved": 7
+          }
+        }
+      },
+      "2026-10-05": {
+        "ac": {
+          "excluded_hours": 11,
+          "nonexcluded_hours": 13,
+          "reason_counts_nonexclusive": {
+            "negative_balance": 3,
+            "support_unresolved": 8,
+            "state_unavailable": 2,
+            "psu48_unresolved": 1
+          }
+        },
+        "dc": {
+          "excluded_hours": 10,
+          "nonexcluded_hours": 14,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 8,
+            "state_unavailable": 2,
+            "psu48_unresolved": 1
+          }
+        }
+      },
+      "2026-10-06": {
+        "ac": {
+          "excluded_hours": 12,
+          "nonexcluded_hours": 12,
+          "reason_counts_nonexclusive": {
+            "state_unavailable": 2,
+            "psu48_unresolved": 10,
+            "support_unresolved": 10
+          }
+        },
+        "dc": {
+          "excluded_hours": 12,
+          "nonexcluded_hours": 12,
+          "reason_counts_nonexclusive": {
+            "state_unavailable": 2,
+            "psu48_unresolved": 10,
+            "support_unresolved": 10
+          }
+        }
+      },
+      "2026-10-07": {
+        "ac": {
+          "excluded_hours": 19,
+          "nonexcluded_hours": 5,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 17,
+            "psu48_unresolved": 9,
+            "state_unavailable": 2
+          }
+        },
+        "dc": {
+          "excluded_hours": 19,
+          "nonexcluded_hours": 5,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 17,
+            "psu48_unresolved": 9,
+            "state_unavailable": 2
+          }
+        }
+      },
+      "2026-10-08": {
+        "ac": {
+          "excluded_hours": 18,
+          "nonexcluded_hours": 6,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 14,
+            "psu48_unresolved": 10,
+            "state_unavailable": 4
+          }
+        },
+        "dc": {
+          "excluded_hours": 18,
+          "nonexcluded_hours": 6,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 14,
+            "psu48_unresolved": 10,
+            "state_unavailable": 4
+          }
+        }
+      },
+      "2026-10-09": {
+        "ac": {
+          "excluded_hours": 15,
+          "nonexcluded_hours": 9,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 13,
+            "psu48_unresolved": 10,
+            "negative_balance": 1,
+            "state_unavailable": 1
+          }
+        },
+        "dc": {
+          "excluded_hours": 14,
+          "nonexcluded_hours": 10,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 13,
+            "psu48_unresolved": 10,
+            "state_unavailable": 1
+          }
+        }
+      },
+      "2026-10-10": {
+        "ac": {
+          "excluded_hours": 24,
+          "nonexcluded_hours": 0,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 24,
+            "psu48_unresolved": 24
+          }
+        },
+        "dc": {
+          "excluded_hours": 24,
+          "nonexcluded_hours": 0,
+          "reason_counts_nonexclusive": {
+            "support_unresolved": 24,
+            "psu48_unresolved": 24
+          }
+        }
+      }
+    },
+    "forecast_comparison_method": "Only complete measured local hours fully inside requested window; no proportional estimate for first partial hour. Time weighted errors use cleaned actual Wh / physical duration. Forecast error = forecast minus actual. No current trained profile is applied retrospectively.",
+    "original_plan_comparison": {
+      "ac": {
+        "hours": 32,
+        "rows": 32,
+        "actual_energy_wh": 7971.948497722937,
+        "forecast_energy_wh": 5877.7,
+        "mae_w": 103.39075104061456,
+        "bias_w": -65.44526555384178,
+        "p50_evaluated_hours": 0,
+        "p50_at_or_below_fraction": null,
+        "p80_evaluated_hours": 0,
+        "p80_at_or_below_fraction": null
+      },
+      "dc": {
+        "hours": 33,
+        "rows": 33,
+        "actual_energy_wh": 1983.1588508216666,
+        "forecast_energy_wh": 2342.4,
+        "mae_w": 12.76249534530303,
+        "bias_w": 10.886095429646465,
+        "p50_evaluated_hours": 0,
+        "p50_at_or_below_fraction": null,
+        "p80_evaluated_hours": 0,
+        "p80_at_or_below_fraction": null
+      }
+    },
+    "frozen_pre_week_reference": {
+      "qualification": "Counterfactual frozen 2026-10-02 profile evaluated out of sample. This is NOT the changing live forecast or a current-week P80 calibration proof. Available observations are selected by PSU exclusions. P80 only where the PRE-WEEK profile had measured quantiles; fallback uncertainty remains unknown.",
+      "aggregate": {
+        "ac": {
+          "hours": 47,
+          "rows": 47,
+          "actual_energy_wh": 9848.199159696327,
+          "forecast_energy_wh": 8159.3,
+          "mae_w": 108.76493164215107,
+          "bias_w": -35.93402467438995,
+          "p50_evaluated_hours": 41,
+          "p50_at_or_below_fraction": 0.3902439024390244,
+          "p80_evaluated_hours": 41,
+          "p80_at_or_below_fraction": 0.7317073170731707
+        },
+        "dc": {
+          "hours": 49,
+          "rows": 49,
+          "actual_energy_wh": 2907.9002240019445,
+          "forecast_energy_wh": 3468.1,
+          "mae_w": 12.711452731683673,
+          "bias_w": 11.432648489756236,
+          "p50_evaluated_hours": 49,
+          "p50_at_or_below_fraction": 0.8979591836734694,
+          "p80_evaluated_hours": 49,
+          "p80_at_or_below_fraction": 0.9795918367346939
+        }
+      }
+    },
+    "limitations": [
+      "No usable observations on 2026-10-10. Current day 2026-10-11 not learned yet.",
+      "Only 2026-10-09 is present in stored watchdog validation for the requested week; successful later gap recovery does not backfill historical validation.",
+      "Consumption P80 was not stored in archived Core plan input; current learned P80 cannot be retrospectively scored without leakage.",
+      "Cleaned actuals may have been recovered on later learning runs. This is acceptable for measured outcomes, but no later profile is used as a forecast."
+    ]
+  },
+  "planning": {
+    "metric": "input.now to operation_history plan event time; elapsed wall time including all phases/overhead, not CPU time",
+    "by_day": {
+      "2026-10-08": {
+        "first": "2026-10-08T05:03:09.423858+00:00",
+        "last": "2026-10-08T21:59:32.431272+00:00",
+        "e2e_seconds": {
+          "n": 380,
+          "min": 15.640031,
+          "median": 27.124312,
+          "mean": 25.657508263157894,
+          "p95_nearest_rank": 35.309634,
+          "max": 43.215693
+        },
+        "plan_intervals_s": {
+          "n": 379,
+          "min": 28.285085,
+          "median": 60.683515,
+          "mean": 160.90503275461742,
+          "p95_nearest_rank": 301.15245,
+          "max": 2615.068684
+        },
+        "intervals_lt60s": 128,
+        "intervals_lt120s": 224,
+        "e2e_gt60s": 0,
+        "sum_e2e_hours": 2.7082925388888888,
+        "slots": {
+          "n": 380,
+          "min": 49,
+          "median": 52.0,
+          "mean": 54.16315789473684,
+          "p95_nearest_rank": 64,
+          "max": 65
+        }
+      },
+      "2026-10-09": {
+        "first": "2026-10-08T22:00:30.595029+00:00",
+        "last": "2026-10-09T21:59:48.469929+00:00",
+        "e2e_seconds": {
+          "n": 409,
+          "min": 7.223878,
+          "median": 14.730123,
+          "mean": 47.7201003398533,
+          "p95_nearest_rank": 192.427154,
+          "max": 231.8209
+        },
+        "plan_intervals_s": {
+          "n": 408,
+          "min": 17.856918,
+          "median": 297.403639,
+          "mean": 211.6614580882353,
+          "p95_nearest_rank": 302.380276,
+          "max": 751.85744
+        },
+        "intervals_lt60s": 74,
+        "intervals_lt120s": 137,
+        "e2e_gt60s": 109,
+        "sum_e2e_hours": 5.4215336219444445,
+        "slots": {
+          "n": 409,
+          "min": 49,
+          "median": 58,
+          "mean": 59.69437652811736,
+          "p95_nearest_rank": 71,
+          "max": 72
+        }
+      },
+      "2026-10-10": {
+        "first": "2026-10-09T22:00:36.500834+00:00",
+        "last": "2026-10-10T21:55:38.891968+00:00",
+        "e2e_seconds": {
+          "n": 303,
+          "min": 32.682265,
+          "median": 39.908357,
+          "mean": 55.478101313531354,
+          "p95_nearest_rank": 86.24323,
+          "max": 94.666822
+        },
+        "plan_intervals_s": {
+          "n": 302,
+          "min": 63.06826,
+          "median": 299.638962,
+          "mean": 285.107255410596,
+          "p95_nearest_rank": 302.262367,
+          "max": 347.151154
+        },
+        "intervals_lt60s": 0,
+        "intervals_lt120s": 15,
+        "e2e_gt60s": 127,
+        "sum_e2e_hours": 4.669406860555556,
+        "slots": {
+          "n": 303,
+          "min": 49,
+          "median": 60,
+          "mean": 60.54785478547855,
+          "p95_nearest_rank": 71,
+          "max": 72
+        }
+      },
+      "2026-10-11": {
+        "first": "2026-10-10T22:01:59.767345+00:00",
+        "last": "2026-10-11T19:35:33.893823+00:00",
+        "e2e_seconds": {
+          "n": 311,
+          "min": 40.633368,
+          "median": 84.876721,
+          "mean": 96.04057321864951,
+          "p95_nearest_rank": 161.441003,
+          "max": 364.266577
+        },
+        "plan_intervals_s": {
+          "n": 310,
+          "min": 68.756242,
+          "median": 297.998566,
+          "mean": 250.36814992903226,
+          "p95_nearest_rank": 318.789188,
+          "max": 781.609173
+        },
+        "intervals_lt60s": 0,
+        "intervals_lt120s": 56,
+        "e2e_gt60s": 289,
+        "sum_e2e_hours": 8.29683840861111,
+        "slots": {
+          "n": 311,
+          "min": 51,
+          "median": 61,
+          "mean": 61.463022508038584,
+          "p95_nearest_rank": 72,
+          "max": 72
+        }
+      }
+    }
+  },
+  "cpu_observation": {
+    "method": "Sum adjacent counter deltas only when BOTH endpoints have the same phase; observation excludes acquisition/supplemental reads and boundary intervals. VM normalization follows CPU system counters; whole HA Core, not integration-exclusive.",
+    "measurement_outside_week_window": true,
+    "observation": {
+      "samples": 148,
+      "usable_intervals": 146,
+      "first": "2026-10-11T19:43:42.549Z",
+      "last": "2026-10-11T19:56:04.700Z",
+      "included_wall_seconds": 732.422,
+      "cpu_seconds": 242.3868,
+      "vm_cpu_percent_from_counters": 11.083731543255887,
+      "one_core_percent_from_counters": 33.09387211197916,
+      "vm_interval_percent": {
+        "n": 146,
+        "min": 0.721933110367893,
+        "median": 1.1076194231726668,
+        "mean": 11.11629832376469,
+        "p95_nearest_rank": 33.792144772117965,
+        "max": 35.61916098226467
+      },
+      "reported_cpu_percent": {
+        "n": 148,
+        "min": 0.29,
+        "median": 1.125,
+        "mean": 11.201486486486486,
+        "p95_nearest_rank": 33.8,
+        "max": 41.82
+      },
+      "memory_usage_mib": {
+        "n": 148,
+        "min": 983.9296875,
+        "median": 994.51171875,
+        "mean": 996.1082400760135,
+        "p95_nearest_rank": 1020.9375,
+        "max": 1025.01171875
+      }
+    },
+    "integration_exclusive": false
+  },
+  "soc_source_sensitivity": {
+    "recorded_plan_at": "2026-10-10T22:45:26.967618+00:00",
+    "method": "Production simulate with same configuration, full horizon and no extra load/feedin allocation; only initial SOC varies",
+    "results": [
+      {
+        "soc": 67,
+        "dc24": true,
+        "dc48": true,
+        "reason": "dc_reserve_holding",
+        "dc_ceiling_pct": 67.14990212318051,
+        "horizon_import_wh": 5055.04968492779,
+        "horizon_unserved_dc_wh": 0.0
+      },
+      {
+        "soc": 67.5,
+        "dc24": false,
+        "dc48": false,
+        "reason": "no_preparation_needed",
+        "dc_ceiling_pct": 67.14990212318051,
+        "horizon_import_wh": 5035.348937627965,
+        "horizon_unserved_dc_wh": 0.0
+      },
+      {
+        "soc": 68,
+        "dc24": false,
+        "dc48": false,
+        "reason": "no_preparation_needed",
+        "dc_ceiling_pct": 67.14990212318051,
+        "horizon_import_wh": 5014.515604294631,
+        "horizon_unserved_dc_wh": 0.0
+      },
+      {
+        "soc": 68.5,
+        "dc24": false,
+        "dc48": false,
+        "reason": "no_preparation_needed",
+        "dc_ceiling_pct": 67.14990212318051,
+        "horizon_import_wh": 4993.682270961298,
+        "horizon_unserved_dc_wh": 0.0
+      }
+    ]
+  },
+  "status": {
+    "supply_feedback_and_overlap": "Implemented in 0.57.0; live acceptance remains separate.",
+    "economic_start_hysteresis": "Implemented in 0.57.0.",
+    "psu_measurement_and_forecast_validation": "Implemented in 0.57.0; needs actual measurement configuration.",
+    "reserve_cpu_and_planning_lead": "Implemented in 0.57.0; local replay is not post-install HA measurement.",
+    "oom_cause": "Open."
+  }
+}

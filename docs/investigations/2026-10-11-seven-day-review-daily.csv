@@ -1,0 +1,9 @@
+date_europe_berlin,partial_day,psu24_state_changes,psu48_state_changes,dcdc_state_changes,completed_updates,successful_updates,failed_updates,successful_update_median_s,successful_update_p95_s
+2026-10-04,True,0,0,0,375,374,1,12.485,13.462
+2026-10-05,False,375,1,375,2593,2567,26,17.942,45.298
+2026-10-06,False,17,13,17,368,365,3,23.019,47.864
+2026-10-07,False,11,9,11,444,442,2,26.7715,33.877
+2026-10-08,False,17,7,17,471,470,1,28.244,99.053
+2026-10-09,False,5,3,5,415,409,6,14.75,192.452
+2026-10-10,False,0,0,0,303,303,0,39.935,86.27
+2026-10-11,True,32,28,32,317,311,6,84.897,161.475
