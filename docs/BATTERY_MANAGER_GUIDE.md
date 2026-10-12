@@ -1,6 +1,6 @@
 # Battery Manager Architektur und Betrieb
 
-Stand: v0.57.0, 12.10.2026. Battery Manager plant die Nutzung einer Hausbatterie
+Stand: v0.57.1, 12.10.2026. Battery Manager plant die Nutzung einer Hausbatterie
 und steuerbarer Lasten anhand von PV, Verbrauch, SOC und optionalen Marktpreisen.
 Dieser Leitfaden beschreibt das Softwareverhalten. Für die konkrete Installation
 sind passende Messgrenzen, Vorzeichen und bestätigte Gerätezustände erforderlich.

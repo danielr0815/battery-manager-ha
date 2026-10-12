@@ -255,7 +255,7 @@ Setup, value sources, limitations and migration:
 
 ## Documentation
 
-[**Deutscher Leitfaden: Architektur und Betrieb**](docs/BATTERY_MANAGER_GUIDE.md) (Stand v0.57.0) · [Untersuchungen und Aufbewahrung](docs/investigations/README.md).
+[**Deutscher Leitfaden: Architektur und Betrieb**](docs/BATTERY_MANAGER_GUIDE.md) (Stand v0.57.1) · [Untersuchungen und Aufbewahrung](docs/investigations/README.md).
 
 | Document | What it covers |
 |---|---|

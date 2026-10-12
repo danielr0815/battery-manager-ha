@@ -1,6 +1,6 @@
 # Untersuchungen und Aufbewahrung
 
-Stand: 12.10.2026, v0.57.0. Hier bleiben technische Befunde, ausgewählte
+Stand: 12.10.2026, v0.57.1. Hier bleiben technische Befunde, ausgewählte
 Messaggregate und Umsetzungsnachweise erhalten. Historische Fehlerprotokolle
 beschreiben den jeweils genannten Code, nicht automatisch den aktuellen Stand.
 Maßgeblich sind [aktuelle Verträge](../CURRENT_CONTRACTS.md) und deren Tests.
@@ -42,7 +42,7 @@ Der lokale `inventory.json` dokumentiert die Archive und 29 entfernte redundante
 Archify-Dateien. Diese Zwischenstände sind nicht für die finalen Prüfnachweise
 erforderlich. Der historische Diagrammstand beschreibt v0.49.0 und wird nicht
 als aktuelle Anleitung veröffentlicht. Der [deutsche Leitfaden](../BATTERY_MANAGER_GUIDE.md)
-beschreibt stattdessen v0.57.0 ohne Abhängigkeit von den archivierten HTML-Dateien.
+beschreibt stattdessen v0.57.1 ohne Abhängigkeit von den archivierten HTML-Dateien.
 
 Das Betriebsarchiv enthält konkrete Geräte-, Haushalts- und Systemdaten und
 bleibt lokal. Ein frischer Clone enthält diese Archive nicht. Die komprimierte
