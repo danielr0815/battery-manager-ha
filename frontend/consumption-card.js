@@ -495,7 +495,13 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
   }
 
   _renderLearning(profile, t) {
-    if (!profile || (!profile.samples && !profile.coverage_detail)) return "";
+    if (
+      !profile ||
+      (!profile.samples &&
+        !profile.coverage_detail &&
+        !profile.measurement_freshness)
+    )
+      return "";
     const rows = [];
     for (const daytype of ["weekday", "weekend", "absence"]) {
       const minimum = profile.minimum_samples?.[daytype];
@@ -523,8 +529,38 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
         }
       }
     }
-    return `<details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
+    return `${Object.entries(profile.measurement_freshness || {})
+      .filter(
+        ([, detail]) =>
+          detail.configured && (detail.stale || detail.yesterday_empty),
+      )
+      .map(
+        ([path, detail]) =>
+          `<p role="status" data-learning-warning="${esc(path)}"><strong>${esc(path.toUpperCase())}: ${esc(t(detail.stale ? "profile_measurements_stale" : "profile_yesterday_empty"))}</strong></p>`,
+      )
+      .join("")}
+      <details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
       <p>${esc(t("profile_samples_note"))}</p>
+      ${Object.entries(profile.measurement_freshness || {})
+        .filter(([, detail]) => detail.configured)
+        .map(([path, detail]) => {
+          const at = Date.parse(detail.last_usable_at);
+          const last = Number.isFinite(at)
+            ? dateTimeFormat(this._hass, {
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+              }).format(at)
+            : "—";
+          const hours = (value) =>
+            typeof value === "number" && Number.isFinite(value)
+              ? value.toFixed(1)
+              : "—";
+          return `<p data-learning-freshness="${esc(path)}">${esc(path.toUpperCase())} · ${esc(t("profile_last_measurement"))}: ${esc(last)} · ${esc(t("profile_recent_hours"))}: ${hours(detail.recent_valid_hours)} / ${hours(detail.recent_window_hours)} h</p>`;
+        })
+        .join("")}
       ${Object.entries(profile.coverage_detail || {})
         .map(([path, detail]) => {
           const percentage = (value) =>

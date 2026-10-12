@@ -122,6 +122,15 @@ def test_envelope_reused_for_ac_off_and_margin_retries_but_not_changed_inputs(
     expected = [run(variant) for variant in variants]
     assert expected[0].total_import_wh < expected[1].total_import_wh
     calls = 0
+    preparations = 0
+    real_steps = reserve._steps
+
+    def counted_steps(*args, **kwargs):
+        nonlocal preparations
+        preparations += 1
+        return real_steps(*args, **kwargs)
+
+    monkeypatch.setattr(reserve, "_steps", counted_steps)
     real_envelope = reserve.preparation_envelope
 
     def counted(*args, **kwargs):
@@ -136,9 +145,11 @@ def test_envelope_reused_for_ac_off_and_margin_retries_but_not_changed_inputs(
             if index == 2:
                 assert calls == 1
         completed = calls
+        assert preparations == completed
         for index, variant in enumerate(variants):
             assert run(variant) == expected[index]
         assert calls == completed == len(variants) - 2
+        assert preparations == completed
     with reserve.reserve_planning_scope():
         assert run(variants[0]) == expected[0]
     assert calls == completed + 1

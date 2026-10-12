@@ -1,0 +1,106 @@
+Battery Manager: Umsetzung der Wochenbefunde vom 11.10.2026
+Zielversion: 0.57.0 (lokaler Releasekandidat)
+
+Umgesetztes Verhalten
+
+1. Quellenübergabe und Rückmeldungen
+   Der 24-V-Rückfall bei ausgefallenem/unbekanntem Netz verwendet dieselbe
+   Quellenübergabe wie der Normalbetrieb. Nach bestätigtem ON der neuen Quelle
+   beginnt die volle konfigurierte Überlappung. Ohne Bestätigung bleibt die alte
+   Quelle eingeschaltet. Auch eine verspätete erste Bestätigung erhält beim
+   erneuten Abgleich die volle Überlappung. Netzrückkehr während der Überlappung
+   wird vor dem Entfernen einer Quelle geprüft.
+
+   Eigene verspätete Rückmeldungen werden mit dem letzten Aktorauftrag abgeglichen.
+   PSU- und DC/DC-Rückmeldungen aktualisieren den internen Quellenzustand. Eine
+   Rückmeldung wird dem jeweiligen Aktor zugeordnet; ein anderer wartender
+   Auftrag kann eine unerwartete Quellenänderung nicht verdecken. Eigene
+   Bestätigungen benötigen den schnellen Aktualisierungspfad. Unerwartete
+   Quellenänderungen bleiben Auslöser für eine vollständige Planung.
+
+   Bei aktivem AC-SOC-Schutz bleiben DC-Vorgaben eines gültigen Plans erhalten.
+   Unbekannter SOC, fehlendes Netz und abgelaufene Freigaben erhalten allein
+   physischen Schutz. Damit wird die reproduzierte Gegensteuerung bei verspätetem
+   Feedback korrigiert; es wird keine historische Spannungsunterbrechung behauptet.
+
+2. Wirtschaftliche Netzteilhaltung
+   Ein neuer Start der wirtschaftlichen Haltung erhält in aktiver Reserve einen
+   Abstand von einem SOC-Prozentpunkt zur Vorbereitungsgrenze. Eine laufende
+   Haltung nutzt weiterhin die normale Grenze. Schutz, manuelle Vorgaben und
+   PV-Rückkehr behalten Vorrang. Alte Kernaufzeichnungen verwenden den neutralen
+   Standardwert null.
+
+   Replay des beobachteten Grenzfalls vom 11.10., 00:45 MESZ:
+   DC-Grenze 67,1499 %. Bei bislang ausgeschalteten Netzteilen bleiben sie bei
+   SOC 67 und 68 % ausgeschaltet; bei 66 % starten sie. Bereits eingeschaltete
+   Netzteile bleiben bei 67 % eingeschaltet und werden bei 68 % freigegeben.
+   Alle sechs Läufe haben 0 Wh unversorgte DC-Energie. Die Umschaltzustände gelten
+   für den Planbeginn, nicht pauschal für das gesamte erste Stundenintervall.
+
+3. Verbrauchslernen und Nachweisbarkeit
+   Beide Netzteile haben optionale getrennte Sensorzuordnungen für AC-Aufnahme
+   und DC-Abgabe. AC lernt ohne gemessene PSU-Aufnahme; DC erhält die gemessene
+   Abgabe zurück. Fehlende oder negative Messstunden bei ON bleiben unbekannt.
+   Eine Messlücke kann AC oder DC unabhängig ausschließen. Alte Zuordnungen
+   behalten ihre bisherigen Bereinigungsregeln; die neue Konfiguration gilt
+   prospektiv. Es werden keine verlorenen historischen Messwerte erfunden.
+
+   Verwendete Verbrauchsprognosen werden vor Stundenbeginn mit P50, vorhandenem
+   P80, Tagesart, statischem/gelerntem Anteil und Veröffentlichungszeit gespeichert.
+   Recorder-Nachlieferungen werden gegen diese Originalwerte bewertet und
+   aktualisieren den Tag ohne Duplikate. Reale Stundendauer, Herbst-Doppelstunde
+   und Zeitzonenidentität werden berücksichtigt. Fehlendes P80 liefert keine
+   künstliche P80-Abdeckung. Exporte enthalten tatsächliche Stundenwerte,
+   Originalprognosen und tatsächliche Messfrische.
+
+   Die Verbrauchskarte unterscheidet einen erfolgreichen Lernlauf von der letzten
+   verwertbaren Messung. Sie zeigt die Abdeckung der sieben abgeschlossenen
+   Kalendertage und warnt bei leerem Vortag oder mindestens 48 Stunden alten
+   beziehungsweise fehlenden Messungen.
+
+4. Planung und CPU
+   Horizontschritte, physische Budgets, Prioritäten und Vorbereitungshülle werden
+   zwischen Reserveproben geteilt. Quellenalternativen werden bei PV-Auswahl und
+   gewichteten Marktfenstern berechnet. Feste Gegenprüfungen berechnen keine
+   ungenutzten Alternativen. Die Freigabe bleibt fünf Minuten gültig; gemessene
+   Planungsdauer erhöht den Vorlauf der nächsten Planung auch ohne Live-AC-Meter.
+
+   Lokaler Vergleich derselben aufgezeichneten Planung mit 51 Prognoseintervallen:
+                           vorher         nachher
+   CPU-Prozesszeit         54,643 s       39,617 s       -27,50 %
+   Quellenvariantenrunden   366.024        148.128        -59,53 %
+   Physikaufrufe           2.190.292      1.318.708       -39,79 %
+   Netzbezug               4.193,3655 Wh  4.193,3655 Wh
+   Export / DC-Ausfall     0 / 0 Wh       0 / 0 Wh
+
+   Es handelt sich um einen sequenziellen lokalen Replay mit Zählinstrumentierung,
+   deren Aufwand in beiden Zeiten enthalten ist. Andere Prüfungen liefen
+   gleichzeitig; Prozesszeit und Aufrufzahlen sind separat erfasst. Dies ist
+   weder eine Messung der HA-CPU nach Installation noch eine garantierte
+   Beschleunigung aller Planungssituationen. Details und Quellhash stehen in
+   2026-10-11-improvement-evidence.json. Alle 16 regenerierten Golden-Szenarien
+   haben unveränderte Ergebnisse; es gibt keinen Golden-Diff.
+
+Betriebsstatus und Grenzen
+
+Der lokale Playwright-MCP ist verbunden und wurde ausschließlich lesend benutzt.
+Die Geräteverwaltung meldet weiterhin Battery Manager 0.56.2. Es erfolgten keine
+Live-Konfigurationsänderungen, kein Neustart und keine Installation. Passende
+separate Aufnahme-/Abgabemessungen der 24-/48-V-Netzteile wurden nicht bestätigt;
+vorhandene allgemeine Netz- und Busmessungen wurden nicht als Netzteilmessung
+umgedeutet. Release-/HACS-Installation und die Abnahme realer Quellenwechsel
+stehen damit noch aus. Die Ursache der HA-Speicherüberläufe bleibt offen.
+
+Prüfnachweise des endgültigen Stands
+
+- Vollständige Python-Suite: 2.796 bestanden, 0 fehlgeschlagen (293,77 s).
+- Gesamtcoverage: 97.90 %.
+- Alle Kernmodule: 100 %. Alle HA-Module: mindestens 95 %.
+- Coverage-Gate für alle 66 Module bestanden.
+- Ruff Check/Format, mypy (66 Module), Lockfile- und Diffprüfung bestanden.
+- Frontend: Build/Bundle-Abgleich, ESLint, Prettier, 80 Komponententests und
+  41 Browsertests bestanden. Browsertests verwenden den lokalen Test-Harness.
+- 16 Golden-Szenarien regeneriert; keine Snapshotänderung.
+
+Ausführbare Zuordnung: docs/TEST_MATRIX.md, Abschnitt 0.57.0.
+Verhaltensvertrag: docs/CURRENT_CONTRACTS.md, Abschnitt 0.57.0.

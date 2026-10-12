@@ -628,7 +628,10 @@ async def test_price_boundary_expires_permission_and_schedules_replanning(
     BatteryManagerCoordinator._arm_plan_boundary(
         c, inputs, SimpleNamespace(load_plans=(), cascade_plans=())
     )
-    assert timer.call_args.args[2] == dt_util.as_utc(boundary)
+    # With less than the preparation lead remaining, refresh promptly while
+    # retaining the exact price-boundary expiry for existing permission.
+    assert timer.call_args.args[2] == dt_util.as_utc(now) + timedelta(seconds=5)
+    assert c.live_ac.envelope.expires == dt_util.as_utc(boundary)
 
 
 async def test_expected_forecast_withdraws_permission_despite_high_p90_and_missing_meters(

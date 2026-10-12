@@ -371,8 +371,31 @@ test("consumption distinguishes mixed sources and explains excluded hours", asyn
     minimum_samples: { weekday: 10 },
     ac_valid_since: "2026-08-30T00:00:00+02:00",
     excluded_hours: { "2026-09-28": { ac: { 6: ["support_unresolved"] } } },
+    measurement_freshness: {
+      ac: {
+        configured: true,
+        last_usable_at: "2026-10-09T04:00:00Z",
+        stale: true,
+        yesterday_empty: true,
+        recent_valid_hours: 45,
+        recent_window_hours: 168,
+      },
+      dc: {
+        configured: true,
+        last_usable_at: null,
+        stale: false,
+        yesterday_empty: true,
+      },
+    },
   };
   await page.evaluate((attrs) => window.mount("consumption", attrs), attrs);
+  await expect(page.locator('[data-learning-warning="ac"]')).toBeVisible();
+  await expect(page.locator('[data-learning-warning="ac"]')).toContainText(
+    "No recent usable measurements",
+  );
+  await expect(page.locator('[data-learning-warning="dc"]')).toContainText(
+    "No usable measurements yesterday",
+  );
   await expect(page.locator('[data-layer="ac"]').first()).toHaveAttribute(
     "opacity",
     "0.35",
@@ -403,6 +426,15 @@ test("consumption distinguishes mixed sources and explains excluded hours", asyn
   );
   await page.locator("#consumption-learning summary").click();
   await expect(page.locator("#consumption-learning")).toContainText("4 / 10");
+  await expect(page.locator('[data-learning-freshness="ac"]')).toContainText(
+    "06:00",
+  );
+  await expect(page.locator('[data-learning-freshness="ac"]')).toContainText(
+    "45.0 / 168.0 h",
+  );
+  await expect(page.locator('[data-learning-freshness="dc"]')).toContainText(
+    "— / — h",
+  );
   await expect(page.locator("#consumption-learning")).toContainText(
     "2026-09-28 6:00",
   );

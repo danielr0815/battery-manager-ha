@@ -17,6 +17,13 @@ class SourceStep:
     flow: HourFlows
     choices: tuple[HourFlows, ...]
     minimum_soc: float
+    choice_factory: Callable[[], tuple[HourFlows, ...]] | None = None
+
+    def market_choices(self) -> tuple[HourFlows, ...]:
+        """AC-ON steps and unweighted windows need no alternative simulation."""
+        return (
+            self.choice_factory() if self.choice_factory is not None else self.choices
+        )
 
 
 def net_draw(flow: HourFlows) -> float:
@@ -148,7 +155,7 @@ def _allocate_window(
         choices = (
             tuple(
                 f
-                for f in step.choices
+                for f in step.market_choices()
                 if f.psu48_battery_charge_wh
                 <= step.flow.psu48_battery_charge_wh + ENERGY_EPSILON_WH
             )

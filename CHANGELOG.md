@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0] - 2026-10-12
+
+### Added
+- Independent optional AC-intake and DC-output meters for both power supplies.
+  Learning removes measured intake from AC consumption and restores measured
+  delivery to DC consumption. Missing or negative measurements during ON remain
+  unknown; existing unmetered configurations retain their attribution rules.
+- Bounded original hourly consumption forecasts, retained before each hour begins,
+  with P50, available P80 and learned/static source. Recorder backfills can update
+  validation against the original prediction. Exports include actual hourly data,
+  original forecasts and actual measurement freshness; the consumption card warns
+  when recent measurements are absent despite a successful learning run.
+
+### Fixed
+- Grid-loss and unknown-grid 24 V recovery use the same confirmed source overlap
+  as regular transfers. The full configured delay begins after the new source is
+  confirmed; grid return during the overlap rechecks the required supply.
+- Late owned supply feedback reconciles the physical source state through the
+  fast update path. AC floor protection preserves still-valid economic DC intent,
+  preventing opposite commands while a source transfer is being confirmed.
+- New economic DC starts in active reserve require a one-percentage-point stored
+  energy margin below the preparation ceiling. Existing holding, manual requests,
+  low-SOC protection and PV release retain their priorities. Historic core
+  recordings default to zero margin and retain their original behavior.
+- Plan-boundary refresh considers measured planner duration, including systems
+  without live AC meters. The existing five-minute permission expiry is retained.
+
+### Performance
+- Reserve probes reuse immutable horizon preparation and simulate source
+  alternatives only where PV selection or a weighted DC market window needs
+  them. Fixed-source validation does not recompute unused alternatives. Existing
+  planner golden results are unchanged with the neutral core margin default.
+
 ## [0.56.2] - 2026-10-08
 
 ### Fixed

@@ -245,6 +245,10 @@ var STRINGS = {
     profile_eligible_hours: "Eligible hours",
     profile_mature_bins: "Mature hourly bins",
     profile_learned_duration: "Learned share of forecast duration",
+    profile_last_measurement: "Last usable measurement",
+    profile_recent_hours: "Usable hours in the last seven complete days",
+    profile_measurements_stale: "No recent usable measurements. A successful learning run does not mean fresh data.",
+    profile_yesterday_empty: "No usable measurements yesterday.",
     card_tentative_wake: "Tentative plan: wake-up and valid SOC telemetry are required before execution.",
     live_ac_reason_measured_ac_demand: "Measured AC demand within the available reserve budget",
     live_ac_reason_soc_unavailable: "SOC telemetry unavailable or stale",
@@ -556,6 +560,10 @@ var STRINGS = {
     profile_eligible_hours: "G\xFCltige Zeitraumstunden",
     profile_mature_bins: "Reife Stunden-Bins",
     profile_learned_duration: "Gelernter Anteil der Prognosedauer",
+    profile_last_measurement: "Letzte verwertbare Messung",
+    profile_recent_hours: "Nutzbare Stunden der letzten sieben vollst\xE4ndigen Tage",
+    profile_measurements_stale: "Keine aktuellen verwertbaren Messungen. Ein erfolgreicher Lernlauf bedeutet keine frischen Daten.",
+    profile_yesterday_empty: "Gestern keine verwertbaren Messungen.",
     card_tentative_wake: "Vorl\xE4ufiger Plan: Aufwecken und g\xFCltige SOC-Telemetrie sind vor der Ausf\xFChrung erforderlich.",
     live_ac_reason_measured_ac_demand: "Gemessener AC-Bedarf innerhalb des verf\xFCgbaren Reservebudgets",
     live_ac_reason_soc_unavailable: "SOC-Telemetrie fehlt oder ist veraltet",
@@ -2555,7 +2563,8 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
     `;
   }
   _renderLearning(profile, t) {
-    if (!profile || !profile.samples && !profile.coverage_detail) return "";
+    if (!profile || !profile.samples && !profile.coverage_detail && !profile.measurement_freshness)
+      return "";
     const rows = [];
     for (const daytype of ["weekday", "weekend", "absence"]) {
       const minimum = profile.minimum_samples?.[daytype];
@@ -2579,8 +2588,25 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
         }
       }
     }
-    return `<details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
+    return `${Object.entries(profile.measurement_freshness || {}).filter(
+      ([, detail]) => detail.configured && (detail.stale || detail.yesterday_empty)
+    ).map(
+      ([path, detail]) => `<p role="status" data-learning-warning="${esc(path)}"><strong>${esc(path.toUpperCase())}: ${esc(t(detail.stale ? "profile_measurements_stale" : "profile_yesterday_empty"))}</strong></p>`
+    ).join("")}
+      <details id="consumption-learning" data-view-key="consumption-learning"><summary>${esc(t("profile_details"))}</summary>
       <p>${esc(t("profile_samples_note"))}</p>
+      ${Object.entries(profile.measurement_freshness || {}).filter(([, detail]) => detail.configured).map(([path, detail]) => {
+      const at = Date.parse(detail.last_usable_at);
+      const last = Number.isFinite(at) ? dateTimeFormat(this._hass, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(at) : "\u2014";
+      const hours = (value) => typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "\u2014";
+      return `<p data-learning-freshness="${esc(path)}">${esc(path.toUpperCase())} \xB7 ${esc(t("profile_last_measurement"))}: ${esc(last)} \xB7 ${esc(t("profile_recent_hours"))}: ${hours(detail.recent_valid_hours)} / ${hours(detail.recent_window_hours)} h</p>`;
+    }).join("")}
       ${Object.entries(profile.coverage_detail || {}).map(([path, detail]) => {
       const percentage = (value) => typeof value === "number" && Number.isFinite(value) ? `${Math.round(value * 100)} %` : "\u2014";
       const hours = (value) => typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} h` : "\u2014";

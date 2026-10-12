@@ -2496,3 +2496,30 @@ async def test_main_options_cannot_take_over_existing_load_actor(hass):
     )
     assert result["errors"]["base"] == "actor_in_use"
     assert entry.options.get(CONF_SUPPORT_DC48_SWITCH) is None
+
+
+async def test_all_supply_meters_roundtrip_and_clear_entry_data_bindings(hass):
+    from custom_components.battery_manager.config_flow import SECTION_SUPPORT
+    from custom_components.battery_manager.const import SUPPORT_POWER_ENTITY_KEYS
+
+    entry = await _setup_entry(hass)
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    fields = _section_fields(form["data_schema"].schema, SECTION_SUPPORT)
+    assert set(SUPPORT_POWER_ENTITY_KEYS) <= {str(key) for key in fields}
+    bindings = {
+        key: f"sensor.meter_{index}"
+        for index, key in enumerate(SUPPORT_POWER_ENTITY_KEYS)
+    }
+    payload = _no_change_options_payload(form["data_schema"].schema)
+    payload[SECTION_SUPPORT].update(bindings)
+    result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
+    assert result["type"] == "create_entry"
+    assert all(entry.options[key] == value for key, value in bindings.items())
+    await hass.async_block_till_done()
+    # Old entry.data must not resurrect a measurement removed from the UI.
+    hass.config_entries.async_update_entry(entry, data={**entry.data, **bindings})
+    form = await hass.config_entries.options.async_init(entry.entry_id)
+    payload = _no_change_options_payload(form["data_schema"].schema)
+    result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
+    assert result["type"] == "create_entry"
+    assert all(entry.options[key] is None for key in SUPPORT_POWER_ENTITY_KEYS)

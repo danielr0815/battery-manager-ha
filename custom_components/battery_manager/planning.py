@@ -19,6 +19,12 @@ from .core.planning_control import cancellation_scope
 PLANNING_PROTECTION_INTERVAL_S = 5.0
 # One percentage point accommodates sensor resolution; thresholds still invalidate.
 PLANNING_SOC_TOLERANCE_PERCENT = 1.0
+# Leave 25% scheduling slack beyond the preceding complete calculation.
+PLANNING_LEAD_FACTOR = 1.25
+PLANNING_PUBLICATION_MARGIN_S = 5.0
+# Keep at least a minute between input capture and the next scheduled capture.
+PLANNING_MIN_REPLAN_SPACING_S = 60.0
+PLANNING_LATE_RETRY_S = 5.0
 
 
 class PlanningRunner:

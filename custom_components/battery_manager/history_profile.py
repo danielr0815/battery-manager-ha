@@ -59,8 +59,11 @@ from .const import (
     CONF_LOAD_POWER_W,
     CONF_PROFILE_HALF_LIFE_DAYS,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
+    CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY,
     CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY,
+    CONF_SUPPORT_DC48_POWER_ENTITY,
     CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_WORKDAY_ENTITY,
@@ -85,6 +88,7 @@ from .const import (
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
+    SUPPORT_POWER_ENTITY_KEYS,
     VALIDATION_HISTORY_DAYS,
 )
 from .core import (
@@ -137,6 +141,12 @@ _CLEANING_RULES_VERSION = 7
 # Accepted measurements remain immutable across retries.
 _GAP_RETRY_DAYS = 7
 
+# Original forecasts survive recent recorder retries; never invent old bands
+# from today's profile. Seven past days plus at most four future days are kept.
+_FORECAST_HISTORY_DAYS = 7
+_FORECAST_FUTURE_DAYS = 4
+_MEASUREMENT_STALE_HOURS = 48
+
 
 def _default_data() -> dict[str, Any]:
     return {
@@ -160,6 +170,7 @@ def _default_data() -> dict[str, Any]:
         "samples": {"ac": None, "dc": None},
         # Daily watchdog entries (D-C9): [{day, bias_w, mae_w, hours}]
         "validation": {"ac": [], "dc": []},
+        "forecast_hours": {},
         # Planning-side day types for the horizon (workday.check_date cache)
         "future_daytypes": {},
         "diagnostics": {
@@ -321,6 +332,62 @@ def _valid_learned_data(data: Any) -> bool:
                 for key in ("bias_w", "mae_w", "hours")
             ):
                 return False
+    for day, paths in data.get("forecast_hours", {}).items():
+        if not isinstance(day, str):
+            return False
+        try:
+            date.fromisoformat(day)
+        except ValueError:
+            return False
+        if not isinstance(paths, dict):
+            return False
+        for path, hours in paths.items():
+            if path not in _PATHS or not isinstance(hours, dict):
+                return False
+            for hour, row in hours.items():
+                if (
+                    not isinstance(hour, str)
+                    or hour not in {str(h) for h in range(24)}
+                    or not isinstance(row, dict)
+                ):
+                    return False
+                if (
+                    isinstance(row.get("p50_w"), bool)
+                    or not isinstance(row.get("p50_w"), (int, float))
+                    or row["p50_w"] < 0
+                ):
+                    return False
+                p80 = row.get("p80_w")
+                if p80 is not None and (
+                    isinstance(p80, bool)
+                    or not isinstance(p80, (int, float))
+                    or p80 < row["p50_w"]
+                ):
+                    return False
+                if (
+                    row.get("source") not in ("learned", "static", "vacation_base")
+                    or row.get("daytype") not in _MIN_SAMPLES
+                ):
+                    return False
+                for key in ("published_at", "hour_start"):
+                    raw = row.get(key)
+                    if (
+                        not isinstance(raw, str)
+                        or (parsed := dt_util.parse_datetime(raw)) is None
+                        or parsed.tzinfo is None
+                    ):
+                        return False
+                if _stored_datetime(row["published_at"]) >= _stored_datetime(
+                    row["hour_start"]
+                ):
+                    return False
+                raw = row.get("profile_computed_at")
+                if raw is not None and (
+                    not isinstance(raw, str)
+                    or (parsed := dt_util.parse_datetime(raw)) is None
+                    or parsed.tzinfo is None
+                ):
+                    return False
     diagnostics = data.get("diagnostics", defaults["diagnostics"])
     exclusions = diagnostics.get("excluded_hours", {})
     if not isinstance(exclusions, dict):
@@ -606,6 +673,7 @@ class ProfileLearner:
             path: (entries[-1] if entries else None)
             for path, entries in (self.data.get("validation") or {}).items()
         }
+        diag["measurement_freshness"] = self._measurement_freshness()
         return diag
 
     def export_snapshot(self) -> dict[str, Any]:
@@ -622,7 +690,187 @@ class ProfileLearner:
             "daily_durations": self.data.get("daily_durations"),
             "hour_duration_version": self.data.get("hour_duration_version"),
             "configuration_epochs": self.data.get("configuration_epochs"),
+            "daily_hours": self.data.get("daily_hours"),
+            "forecast_hours": self.data.get("forecast_hours"),
+            "measurement_freshness": self._measurement_freshness(),
         }
+
+    def _measurement_freshness(self) -> dict[str, Any]:
+        """A successful computation does not prove recent usable measurements."""
+        now = dt_util.now()
+        days = [
+            (now.date() - timedelta(days=offset)).isoformat()
+            for offset in range(7, 0, -1)
+        ]
+        result = {}
+        for path in _PATHS:
+            usable: list[datetime] = []
+            daily = {}
+            for day, paths in self.data["daily_hours"].items():
+                values = paths.get(path) or [None] * 24
+                durations = (
+                    self.data["daily_durations"]
+                    .get(day, {})
+                    .get(
+                        path,
+                        local_hour_durations(
+                            date.fromisoformat(day), dt_util.get_default_time_zone()
+                        ),
+                    )
+                )
+                valid = 0.0
+                for hour, value in enumerate(values):
+                    start = self._hour_start(day, hour)
+                    if (
+                        value is None
+                        or durations[hour] <= 0
+                        or (
+                            path == "ac"
+                            and self.data.get("ac_valid_since")
+                            and start < _stored_datetime(self.data["ac_valid_since"])
+                        )
+                    ):
+                        continue
+                    end = dt_util.as_utc(start) + timedelta(hours=durations[hour])
+                    if end > dt_util.as_utc(now):
+                        continue
+                    usable.append(end)
+                    valid += durations[hour]
+                daily[day] = valid
+            last = max(usable) if usable else None
+            age = (
+                max(0.0, (dt_util.as_utc(now) - last).total_seconds() / 3600)
+                if last
+                else None
+            )
+            recent = {day: daily.get(day, 0.0) for day in days}
+            configured = self._sources()[path]["active"]
+            result[path] = {
+                "configured": configured,
+                "last_usable_at": last.isoformat() if last else None,
+                "age_hours": round(age, 1) if age is not None else None,
+                "stale": bool(
+                    configured and (age is None or age >= _MEASUREMENT_STALE_HOURS)
+                ),
+                "yesterday_empty": bool(configured and not recent[days[-1]]),
+                "recent_valid_hours": sum(recent.values()),
+                "recent_window_hours": sum(
+                    sum(
+                        local_hour_durations(
+                            date.fromisoformat(day), dt_util.get_default_time_zone()
+                        )
+                    )
+                    for day in days
+                ),
+                "daily_valid_hours": recent,
+            }
+        return result
+
+    def record_forecasts(
+        self,
+        predictions: list[dict[str, Any]],
+        published_at: datetime,
+        profile_computed_at: str | None,
+    ) -> None:
+        """Keep the last actually published prediction BEFORE each full hour."""
+        cutoff = (
+            dt_util.as_local(published_at).date()
+            - timedelta(days=_FORECAST_HISTORY_DAYS)
+        ).isoformat()
+        forecasts = self.data["forecast_hours"]
+        changed = False
+        for prediction in predictions:
+            start = dt_util.parse_datetime(prediction["start"])
+            assert start is not None
+            local = dt_util.as_local(start)
+            hour_start = self._hour_start(local.date().isoformat(), local.hour)
+            if dt_util.as_utc(hour_start) <= dt_util.as_utc(published_at) or (
+                local.date()
+                > dt_util.as_local(published_at).date()
+                + timedelta(days=_FORECAST_FUTURE_DAYS)
+            ):
+                continue
+            paths = forecasts.setdefault(local.date().isoformat(), {})
+            for path in _PATHS:
+                paths.setdefault(path, {})[str(local.hour)] = {
+                    **prediction[path],
+                    "published_at": published_at.isoformat(),
+                    "hour_start": hour_start.isoformat(),
+                    "profile_computed_at": profile_computed_at,
+                    "daytype": prediction["daytype"],
+                }
+                changed = True
+        expired = [day for day in forecasts if day < cutoff]
+        for day in expired:
+            del forecasts[day]
+        if changed or expired:
+            self._save()
+
+    def _recorded_validation(self, day: str, path: str) -> dict[str, Any] | None:
+        """Re-evaluate repaired actual hours against their immutable forecasts."""
+        actuals = self.data["daily_hours"].get(day, {}).get(path) or [None] * 24
+        forecasts = self.data["forecast_hours"].get(day, {}).get(path, {})
+        durations = (
+            self.data["daily_durations"]
+            .get(day, {})
+            .get(
+                path,
+                local_hour_durations(
+                    date.fromisoformat(day), dt_util.get_default_time_zone()
+                ),
+            )
+        )
+        pairs = [
+            (forecasts[str(hour)], float(value), durations[hour])
+            for hour, value in enumerate(actuals)
+            if value is not None
+            and durations[hour] > 0
+            and str(hour) in forecasts
+            and dt_util.as_utc(_stored_datetime(forecasts[str(hour)]["hour_start"]))
+            == dt_util.as_utc(self._hour_start(day, hour))
+        ]
+        if not pairs:
+            return None
+        hours = sum(duration for _, _, duration in pairs)
+        return {
+            "day": day,
+            "bias_w": round(
+                sum(row["p50_w"] * duration - actual for row, actual, duration in pairs)
+                / hours,
+                1,
+            ),
+            "mae_w": round(
+                sum(
+                    abs(row["p50_w"] * duration - actual)
+                    for row, actual, duration in pairs
+                )
+                / hours,
+                1,
+            ),
+            "hours": hours,
+            "learned_hours": sum(
+                duration for row, _, duration in pairs if row["source"] == "learned"
+            ),
+            "static_fallback_hours": sum(
+                duration for row, _, duration in pairs if row["source"] != "learned"
+            ),
+            "p80_hours": sum(
+                duration for row, _, duration in pairs if row["p80_w"] is not None
+            ),
+            "p80_covered_hours": sum(
+                duration
+                for row, actual, duration in pairs
+                if row["p80_w"] is not None and actual <= row["p80_w"] * duration
+            ),
+            "forecast_basis": "published_before_hour",
+        }
+
+    def _store_validation(self, path: str, entry: dict[str, Any]) -> None:
+        history_list = self.data["validation"].setdefault(path, [])
+        history_list[:] = [row for row in history_list if row["day"] != entry["day"]]
+        history_list.append(entry)
+        history_list.sort(key=lambda row: row["day"])
+        del history_list[:-VALIDATION_HISTORY_DAYS]
 
     # ------------------------------------------------------------------
     # Source configuration
@@ -695,6 +943,9 @@ class ProfileLearner:
         worker.data = deepcopy(self.data)
         worker._repairing = True
         await worker._run_learning_working_copy()
+        # Planning can publish while Recorder awaits. Those future forecasts
+        # belong to the runtime owner and must survive the atomic profile swap.
+        worker.data["forecast_hours"] = self.data["forecast_hours"]
         self.data = worker.data
         self._save()
 
@@ -839,6 +1090,12 @@ class ProfileLearner:
         }
         # Watchdog (D-C9) BEFORE the update: yesterday's actuals against the
         # profile that actually forecast them (the previous night's bins).
+        for day in sorted(self.data["forecast_hours"]):
+            if day >= (today - timedelta(days=1)).isoformat():
+                continue
+            for path in _PATHS:
+                if (entry := self._recorded_validation(day, path)) is not None:
+                    self._store_validation(path, entry)
         self._validate_yesterday(today, day_types, cfg)
 
         # Recency weighting (D-C7): the drift/season model.
@@ -1055,6 +1312,30 @@ class ProfileLearner:
             bins = (self.data.get("profiles") or {}).get(path)
             if not series:
                 continue
+            if self.data["forecast_hours"].get(yesterday, {}).get(path):
+                if (entry := self._recorded_validation(yesterday, path)) is not None:
+                    self._store_validation(path, entry)
+                    durations = (
+                        self.data["daily_durations"]
+                        .get(yesterday, {})
+                        .get(
+                            path,
+                            local_hour_durations(
+                                date.fromisoformat(yesterday),
+                                dt_util.get_default_time_zone(),
+                            ),
+                        )
+                    )
+                    alert |= self._bias_alert(
+                        path,
+                        [
+                            value / duration
+                            if value is not None and duration > 0
+                            else None
+                            for value, duration in zip(series, durations, strict=True)
+                        ],
+                    )
+                continue
             base_w = float(cfg.get(f"{path}_base_load_w", 50.0))
             variable_w = float(cfg.get(f"{path}_variable_load_w", 0.0))
             variable_start = int(cfg.get(f"{path}_variable_start_hour", 0))
@@ -1216,7 +1497,7 @@ class ProfileLearner:
                 CONF_SUPPORT_DC48_POWER_W,
                 CONF_INVERTER_LIMIT_ENTITY,
                 CONF_SUPPORT_DC24_SWITCH,
-                CONF_SUPPORT_DC24_POWER_ENTITY,
+                *SUPPORT_POWER_ENTITY_KEYS,
                 CONF_DCDC_SWITCH,
                 # Gate attribution is also pinned to the hour's configuration.
                 CONF_BATTERY_VOLTAGE_ENTITY,
@@ -1433,8 +1714,7 @@ class ProfileLearner:
                 stat_ids.add(load["power_entity"])
         for appliance in appliances:
             stat_ids.add(appliance["detection_entity"])
-        if cfg.get(CONF_SUPPORT_DC24_POWER_ENTITY):
-            stat_ids.add(cfg[CONF_SUPPORT_DC24_POWER_ENTITY])
+        stat_ids.update(cfg[key] for key in SUPPORT_POWER_ENTITY_KEYS if cfg.get(key))
         # Battery voltage is fetched (when configured) as the 48 V gate signal:
         # the PSU self-gates above its output voltage, so its energy is
         # attributed by the hour's LTS min/max voltage (Rev. 4, §9).
@@ -1560,7 +1840,6 @@ class ProfileLearner:
         #     power sensor; without that sensor the hour stays unlearnable.
         # Only unresolvable states (unmeasured PSU feed, dead rail,
         # uncovered switch history) still exclude the hour.
-        p24_map = hour_maps.get(cfg.get(CONF_SUPPORT_DC24_POWER_ENTITY) or "")
         status_appliances = [
             appliance["detection_entity"]
             for appliance in appliances
@@ -1587,15 +1866,20 @@ class ProfileLearner:
                     <= dt_util.as_utc(end)
                 )
             }
-            psu48_draw = self._psu48_series(
+            psu48_legacy = self._psu48_series(
                 day, cfg, fractions, coverage_start, tz, voltage_minmax
             )
-            p24_series = (
-                _day_series_zero_filled(p24_map, day) if p24_map is not None else None
-            )
-            support_excluded = self._unresolvable_support_hours(
-                day, cfg, fractions, coverage_start, tz, p24_series is not None
-            )
+            meters = {
+                key: self._psu_meter_series(
+                    day, cfg, key, switch, hour_maps, fractions, coverage_start, tz
+                )
+                for key, switch in (
+                    (CONF_SUPPORT_DC24_POWER_ENTITY, CONF_SUPPORT_DC24_SWITCH),
+                    (CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY, CONF_SUPPORT_DC24_SWITCH),
+                    (CONF_SUPPORT_DC48_POWER_ENTITY, CONF_SUPPORT_DC48_SWITCH),
+                    (CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY, CONF_SUPPORT_DC48_SWITCH),
+                )
+            }
             # A required cleaning source that went unavailable after its first
             # row is not evidence of an inactive device. Drop every affected hour.
             unknown_hours = {
@@ -1605,7 +1889,6 @@ class ProfileLearner:
                 for hour in range(24)
                 if values.get((day, hour), 0.0) > 0
             }
-            support_excluded |= unknown_hours
             appliance_excluded = _excluded_hours(
                 day, status_appliances, fractions, coverage_start, tz
             )
@@ -1615,6 +1898,25 @@ class ProfileLearner:
                 if day not in missing[path]:
                     continue
                 load_series = self._load_series(day, sources[path], hour_maps)
+                p24_series = (
+                    meters[CONF_SUPPORT_DC24_POWER_ENTITY]
+                    if path == "ac"
+                    else meters[CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY]
+                    if cfg.get(CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY)
+                    else meters[CONF_SUPPORT_DC24_POWER_ENTITY]
+                )
+                psu48_key = (
+                    CONF_SUPPORT_DC48_POWER_ENTITY
+                    if path == "ac"
+                    else CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY
+                )
+                psu48_draw = meters[psu48_key] if cfg.get(psu48_key) else psu48_legacy
+                support_excluded = (
+                    self._unresolvable_support_hours(
+                        day, cfg, fractions, coverage_start, tz, p24_series is not None
+                    )
+                    | unknown_hours
+                )
                 subtract: list[list[float | None]] = []
                 excluded = support_excluded
                 if path == "ac":
@@ -1631,7 +1933,7 @@ class ProfileLearner:
                     if psu48_draw is not None:
                         subtract.append([None if v is None else -v for v in psu48_draw])
                     if p24_series is not None:
-                        subtract.append([-v for v in p24_series])
+                        subtract.append([None if v is None else -v for v in p24_series])
                 cleaned, day_negatives = clean_day(
                     load_series,
                     subtract,
@@ -1678,6 +1980,38 @@ class ProfileLearner:
         self.data["diagnostics"]["negative_residuals"] = (
             int(self.data["diagnostics"].get("negative_residuals", 0)) + negatives
         )
+
+    def _psu_meter_series(
+        self,
+        day: str,
+        cfg: dict[str, Any],
+        key: str,
+        switch_key: str,
+        hour_maps: dict[str, HourMap],
+        fractions: dict[str, dict[tuple[str, int], float]],
+        coverage_start: dict[str, datetime | None],
+        tz: tzinfo,
+    ) -> list[float | None] | None:
+        """Measured intake/output Wh; missing ON measurements remain unknown.
+
+        A confirmed whole-hour OFF proves zero without a meter sample. An
+        accepted service or a partial ON hour cannot provide that evidence.
+        """
+        entity = cfg.get(key)
+        if not entity:
+            return None
+        values = _day_series(hour_maps.get(entity, HourMap()), day)
+        switch = cfg.get(switch_key)
+        for hour, value in enumerate(values):
+            if value is not None and value < 0:
+                values[hour] = None
+            if (
+                switch
+                and _hour_covered(coverage_start.get(switch), day, hour, tz)
+                and fractions.get(switch, {}).get((day, hour), 0.0) <= 0
+            ):
+                values[hour] = 0.0
+        return values
 
     def _psu48_series(
         self,
@@ -1965,7 +2299,7 @@ class ProfileLearner:
         The 24 V PSU power sensor counts too — without its statistics every
         PSU-fed hour is unlearnable (D-C2 step 3).
         """
-        psu24 = self._raw_config().get(CONF_SUPPORT_DC24_POWER_ENTITY)
+        cfg = self._raw_config()
         missing = sorted(
             {
                 entity_id
@@ -1981,7 +2315,11 @@ class ProfileLearner:
                 and load["power_entity"]
                 and load["power_entity"] not in meta_by_id
             }
-            | ({psu24} if psu24 and psu24 not in meta_by_id else set())
+            | {
+                cfg[key]
+                for key in SUPPORT_POWER_ENTITY_KEYS
+                if cfg.get(key) and cfg[key] not in meta_by_id
+            }
         )
         self.data["diagnostics"]["missing_statistics"] = missing
         issue_id = f"learning_no_statistics_{self.entry.entry_id}"

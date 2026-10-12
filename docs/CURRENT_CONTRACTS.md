@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.56.2**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.57.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -91,6 +91,50 @@ oder Abbruch beschädigt den letzten gültigen Stand nicht. Beschädigte,
 rekonstruierbare Lerndaten werden verworfen und neu gelernt. Historische
 Leistungen berücksichtigen W/kW wie Livewerte; unbekannte Zustandsintervalle
 notwendiger Bereinigungsquellen liefern keine scheinbar gültigen Nulllasten.
+
+## Quellen, Messqualität und Rechenaufwand ab 0.57.0
+
+Die 24-V-Übergabe bestätigt zuerst die neue Quelle, wartet danach die gesamte
+konfigurierte Überlappung und entfernt erst anschließend die alte Quelle. Das
+schließt den Rückfall bei ausgefallenem oder unbekanntem Netz ein. Kehrt das Netz
+währenddessen zurück, werden die erforderlichen Quellen erneut geprüft.
+Verspätete Bestätigungen eigener Befehle aktualisieren den tatsächlichen
+Versorgungszustand über den schnellen Pfad. Der AC-SOC-Schutz erhält wirtschaftliche
+DC-Vorgaben eines weiterhin gültigen Plans; abgelaufene Vorgaben werden verworfen.
+
+In aktiver Reserve braucht ein neuer wirtschaftlicher Netzteilstart einen Abstand
+von einem SOC-Prozentpunkt zur DC-Vorbereitungsgrenze. Bereits laufende Haltung
+nutzt die ursprüngliche Grenze. Manuelle Vorgaben, physischer Schutz und die
+PV-Rückkehr behalten Vorrang. Der reine Kern verwendet für alte Aufzeichnungen
+weiterhin den neutralen Standardwert null.
+
+Beide Netzteile können getrennte Messungen für AC-Aufnahme und DC-Abgabe erhalten.
+Gemessene Aufnahme wird aus AC entfernt, gemessene Abgabe zu DC ergänzt. Eine
+Messlücke oder negative Energie während eingeschaltetem Netzteil ist kein
+Nullverbrauch. Nur ein nachweislich vollständig ausgeschaltetes Stundenintervall
+kann ohne Netzteilmessung mit null bewertet werden. Ohne neue Messzuordnung bleibt
+die bisherige Bereinigung erhalten; nicht auflösbare Netzteilstunden bleiben
+ungelernt. Neue Zuordnungen gelten ab ihrer Konfigurationsepoche und erfinden
+keine rückwirkenden Messwerte.
+
+Vor Stundenbeginn werden die tatsächlich verwendeten Verbrauchsprognosen mit P50,
+verfügbarem P80, Tagesart und Quelle gespeichert. Sieben vergangene und bis zu vier
+zukünftige Kalendertage begrenzen den Speicher. Wiederhergestellte Recorderstunden
+werden gegen diese ursprünglichen Prognosen nachbewertet. Eine P80-Abdeckung wird
+nur für tatsächlich vorhandene P80-Prognosen ermittelt. Vor dem Update fehlende
+Originalprognosen lassen sich damit nicht nachträglich rekonstruieren.
+
+Die Diagnose und der Export zeigen den letzten verwertbaren Messzeitpunkt,
+Stundenabdeckung und leere Lerntage je AC/DC-Pfad. Der Zeitpunkt eines erfolgreichen
+Lernlaufs beweist keine frischen Messungen. Die Verbrauchskarte warnt bei leerem
+Vortag oder mindestens 48 Stunden alten beziehungsweise fehlenden Messungen.
+
+Reserveproben teilen die unveränderliche Horizontvorbereitung. Alternative
+Quellen werden für PV-Auswahl und tatsächlich gewichtete Marktfenster berechnet;
+physische Gegenprüfungen behalten ihre ursprünglichen Energieregeln. Die
+Neuplanung beginnt abhängig von der zuletzt gemessenen Planungsdauer früher vor
+dem Ablauf der weiterhin fünf Minuten gültigen Freigabe. Bei dauerhaft längerer
+Berechnung bleibt die Freigabe abgelaufen; diese Änderung verlängert sie nicht.
 
 ## Archive, Zeit und Bedienung
 

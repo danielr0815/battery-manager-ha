@@ -1,0 +1,123 @@
+{
+  "target_version": "0.57.0",
+  "baseline_git_commit": "bc89e10dc0f71961801c83d1af2e5a518a0d4a00",
+  "method": "Sequential local replay of identical original recording with neutral core hysteresis default. Counts instrument core.reserve.source_choices and core.reserve._step_hour. Times include counting overhead; other verification ran concurrently. CPU process time is shown separately from elapsed wall time. This is not a post-deployment HA CPU measurement.",
+  "recording_sha256": "8c3877a59e089968e82e1d4b1b0cd6539d41c4ca3bf90ee49d0b114b1b0289e9",
+  "before": {
+    "wall_seconds": 54.658999104999566,
+    "cpu_seconds": 54.642780705,
+    "slots": 51,
+    "counts": {
+      "source_choices": 366024,
+      "step_hour": 2190292
+    },
+    "grid_import_wh": 4193.365499362827,
+    "grid_export_wh": 0.0,
+    "unserved_dc_wh": 0.0
+  },
+  "after": {
+    "wall_seconds": 39.64503852600046,
+    "cpu_seconds": 39.617152543,
+    "slots": 51,
+    "counts": {
+      "source_choices": 148128,
+      "step_hour": 1318708
+    },
+    "grid_import_wh": 4193.365499362827,
+    "grid_export_wh": 0.0,
+    "unserved_dc_wh": 0.0
+  },
+  "reduction_percent": {
+    "cpu_seconds": 27.5,
+    "source_choices": 59.53,
+    "step_hour": 39.79
+  },
+  "soc_boundary_replay": [
+    {
+      "already_on": false,
+      "soc": 66,
+      "dc24": true,
+      "dc48": true,
+      "ceiling": 67.14990212318051,
+      "import_wh": 5108.80750327985,
+      "unserved_dc_wh": 0.0
+    },
+    {
+      "already_on": false,
+      "soc": 67,
+      "dc24": false,
+      "dc48": false,
+      "ceiling": 67.14990212318051,
+      "import_wh": 5055.04968492779,
+      "unserved_dc_wh": 0.0
+    },
+    {
+      "already_on": false,
+      "soc": 68,
+      "dc24": false,
+      "dc48": false,
+      "ceiling": 67.14990212318051,
+      "import_wh": 5014.515604294631,
+      "unserved_dc_wh": 0.0
+    },
+    {
+      "already_on": true,
+      "soc": 66,
+      "dc24": true,
+      "dc48": true,
+      "ceiling": 67.14990212318051,
+      "import_wh": 5108.80750327985,
+      "unserved_dc_wh": 0.0
+    },
+    {
+      "already_on": true,
+      "soc": 67,
+      "dc24": true,
+      "dc48": true,
+      "ceiling": 67.14990212318051,
+      "import_wh": 5055.04968492779,
+      "unserved_dc_wh": 0.0
+    },
+    {
+      "already_on": true,
+      "soc": 68,
+      "dc24": false,
+      "dc48": false,
+      "ceiling": 67.14990212318051,
+      "import_wh": 5014.515604294631,
+      "unserved_dc_wh": 0.0
+    }
+  ],
+  "golden_regeneration": {
+    "scenarios": 16,
+    "diff": false
+  },
+  "deployment": "Local candidate only; live HA was inspected read-only through local Playwright MCP. No matching independent PSU intake/output meters were confirmed.",
+  "deployment_live_version": "0.56.2",
+  "reviewed_actor_measurement_mapping": "Neither PSU switch has an associated device power sensor in the live entity registry; no independent PSU output measurement was confirmed among available power entities.",
+  "validation": {
+    "validated_at_utc": "2026-10-11T21:12:48.731614+00:00",
+    "full_suite": {
+      "passed": 2796,
+      "failed": 0,
+      "seconds": 293.77
+    },
+    "coverage": {
+      "total_percent": 97.90281680487972,
+      "core_modules_percent": 100,
+      "minimum_ha_module_percent": 95.1417004048583,
+      "module_gate": "66 modules passed; every HA module >=95%, every core module 100%"
+    },
+    "frontend_unit_tests": 80,
+    "frontend_browser_tests": 41,
+    "golden_scenarios": 16,
+    "golden_changes": 0,
+    "ruff_check": "passed",
+    "ruff_format_check": "passed",
+    "mypy": "66 source files passed",
+    "bundle_check": "passed",
+    "frontend_lint_and_format": "passed",
+    "uv_lock_check": "passed",
+    "git_diff_check": "passed"
+  }
+}

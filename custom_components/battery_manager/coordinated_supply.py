@@ -24,6 +24,50 @@ if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
 
 
+def reconcile_supply_feedback(
+    self: BatteryManagerCoordinator, entity_id: str | None = None
+) -> bool:
+    """Adopt our confirmed edges; service completion is never physical proof."""
+    changed = False
+    for entity, request in self._supply_actor_requests.items():
+        if (
+            (entity_id is not None and entity != entity_id)
+            or request.state != "pending"
+            or self._entity_tristate(entity) is not request.desired
+        ):
+            continue
+        request.state = "confirmed"
+        changed = True
+        if entity in (
+            self.raw_config.get(CONF_SUPPORT_DC24_SWITCH),
+            self.raw_config.get(CONF_SUPPORT_DC48_SWITCH),
+        ):
+            self._last_support_switch = dt_util.now()
+    for key, conf_key in (
+        ("dc24", CONF_SUPPORT_DC24_SWITCH),
+        ("dc48", CONF_SUPPORT_DC48_SWITCH),
+    ):
+        psu_entity = self.raw_config.get(conf_key)
+        psu_request = (
+            self._supply_actor_requests.get(psu_entity) if psu_entity else None
+        )
+        if (
+            psu_entity is None
+            or psu_request is None
+            or psu_request.state != "confirmed"
+            or self._entity_tristate(psu_entity) is not psu_request.desired
+        ):
+            continue
+        if (
+            key == "dc24"
+            and (dcdc := self.raw_config.get(CONF_DCDC_SWITCH))
+            and self._entity_tristate(dcdc) is not (not psu_request.desired)
+        ):
+            continue
+        self._support_state[key] = psu_request.desired
+    return changed
+
+
 @dataclass(frozen=True)
 class SupplyRequest:
     """A queued intent is valid only for the planner revision that issued it."""
@@ -43,6 +87,43 @@ def _record_expiry(inputs: PlanInputs) -> datetime:
         if inputs.slots
         else dt_util.as_utc(inputs.now),
     )
+
+
+def protection_targets(
+    self: BatteryManagerCoordinator,
+    config: SystemConfig,
+    soc: float | None,
+    now: datetime,
+) -> dict[str, bool]:
+    """AC protection preserves valid DC intent, including late actor feedback.
+
+    The October rail chatter came from treating an unfinished confirmation as
+    an economic OFF request. Expired plans, unknown SOC and grid loss still
+    receive only physical protection, never an old economic permission.
+    """
+    protected = support_state(
+        config,
+        soc if soc is not None else config.battery.soc_min_percent,
+        config.support.dc24_active,
+        config.support.dc48_active,
+        False,
+    )
+    planned = (False, False)
+    if soc is not None and self._reserve_grid_available() is True:
+        envelope = self.live_ac.envelope
+        if envelope is not None:
+            if dt_util.as_utc(now) < envelope.expires:
+                planned = envelope.dc_sources
+        elif (record := self._last_planner_recording) is not None:
+            _, inputs, result = record
+            if dt_util.as_utc(now) < _record_expiry(inputs):
+                planned = result.support_dc24_now, result.support_dc48_now
+    return {
+        key: safety or economic
+        for key, safety, economic in zip(
+            ("dc24", "dc48"), protected, planned, strict=True
+        )
+    }
 
 
 async def execute_coordinated_support(
@@ -308,10 +389,24 @@ async def execute_coordinated_support(
             if config.reserve.enabled and self._reserve_grid_available() is not True:
                 self._inverter_recommendation = False
                 diag["reason"] = "grid_supply_unavailable"
-                if dcdc and not await confirmed(dcdc, True):
+                rail_restored = (
+                    await self._sequence_dc24(
+                        False,
+                        psu24,
+                        may_remove=lambda: self._reserve_grid_available() is not True,
+                    )
+                    if dcdc and psu24
+                    else await confirmed(dcdc, True)
+                    if dcdc
+                    else True
+                )
+                if not rail_restored:
                     # Preserve the existing rail source, but a failed transfer
                     # cannot leave battery AC discharge enabled during outage.
                     await self._confirm_inverter_limit(True, diag)
+                    if self._reserve_grid_available() is True:
+                        diag["reason"] = "grid_supply_changed"
+                        await restore_required()
                     return
                 for key, entity in (("dc24", psu24), ("dc48", psu48)):
                     if entity and not await confirmed(entity, False):

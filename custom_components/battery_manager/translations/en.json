@@ -210,7 +210,10 @@
               "support_dc48_activate_soc": "48 V support: activate at SOC (%)",
               "support_dc48_recovery_soc": "48 V support: recover at SOC (%)",
               "inverter_block_switch_entity": "Inverter blocked status (optional feedback)",
-              "inverter_discharge_limit_entity": "Inverter discharge limit (number entity, W)"
+              "inverter_discharge_limit_entity": "Inverter discharge limit (number entity, W)",
+              "support_dc24_output_power_entity": "24 V PSU delivered DC power sensor (optional)",
+              "support_dc48_power_entity": "48 V PSU AC intake power sensor (optional)",
+              "support_dc48_output_power_entity": "48 V PSU delivered DC power sensor (optional)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: switch for the voltage- and current-limited 48 V support PSU. Controlled directly by the integration.",
@@ -218,13 +221,16 @@
               "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Switched directly.",
               "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
               "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
-              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
+              "support_dc24_power_entity": "Measures AC intake of the 24 V PSU. Separate DC output measurement improves loss attribution. Without an output sensor the existing approximation is retained. Missing operating-hour samples are excluded.",
               "support_dc24_activate_soc": "Battery SOC at or below which the 24 V grid PSU takes over the DC rail from the DC/DC converter (a last-resort protection level, independent of the planning buffer). Default 10 %.",
               "support_dc24_recovery_soc": "Battery SOC at or above which the 24 V grid support switches back off. Set it a few percent above the activate level: a wider gap latches the support on longer and stops it chattering when the SOC parks on the threshold overnight. Default 11 %. With direct inverter control, return also requires sufficient PV supply.",
               "support_dc48_activate_soc": "Battery SOC at or below which the last-resort 48 V support PSU also engages (deepest protection). Keep it at or below the 24 V activate level. Default 5.5 %.",
               "support_dc48_recovery_soc": "Battery SOC at or above which the 48 V support switches back off. Must be above the 48 V activate level and at or below the 24 V recover level. Default 10 %.",
               "inverter_block_switch_entity": "Read only, never switched. Victron updates this status from the power limit. ON confirms blocked AC discharge; OFF confirms release.",
-              "inverter_discharge_limit_entity": "Enables coordinated direct control. BM writes 0 W to block discharge and the configured maximum inverter power to release it (default 2300 W), then verifies readback. Disable existing discharge-limit and PSU automations at takeover."
+              "inverter_discharge_limit_entity": "Enables coordinated direct control. BM writes 0 W to block discharge and the configured maximum inverter power to release it (default 2300 W), then verifies readback. Disable existing discharge-limit and PSU automations at takeover.",
+              "support_dc24_output_power_entity": "Measures delivered DC power separately from AC intake. Consumption learning adds only the actual DC output; losses stay outside household DC consumption. Missing operating-hour samples exclude that hour.",
+              "support_dc48_power_entity": "Measures actual AC intake. Makes AC hours during 48 V support learnable without assuming delivery from switch state or bus voltage.",
+              "support_dc48_output_power_entity": "Measures actual delivery into the DC bus. Makes DC consumption learnable during regulation and battery charging. This must be PSU output, not net battery power."
             }
           },
           "dc_devices": {
@@ -777,7 +783,10 @@
               "support_dc48_activate_soc": "48 V support: activate at SOC (%)",
               "support_dc48_recovery_soc": "48 V support: recover at SOC (%)",
               "inverter_block_switch_entity": "Inverter blocked status (optional feedback)",
-              "inverter_discharge_limit_entity": "Inverter discharge limit (number entity, W)"
+              "inverter_discharge_limit_entity": "Inverter discharge limit (number entity, W)",
+              "support_dc24_output_power_entity": "24 V PSU delivered DC power sensor (optional)",
+              "support_dc48_power_entity": "48 V PSU AC intake power sensor (optional)",
+              "support_dc48_output_power_entity": "48 V PSU delivered DC power sensor (optional)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: switch for the voltage- and current-limited 48 V support PSU. Controlled directly by the integration.",
@@ -785,13 +794,16 @@
               "support_dc24_switch_entity": "Optional: switch of the 24 V PSU that supplies the DC loads from the grid in an emergency (instead of via the DC/DC converter from the battery). Clear the field to disable.",
               "dcdc_switch_entity": "Optional: switch of the 48 V → 24 V DC/DC converter. Enables make-before-break changeover: new source on first, then old source off — the 24 V rail is never unpowered.",
               "support_switch_delay_s": "Wait time between switching the new 24 V source on and the old one off during changeover.",
-              "support_dc24_power_entity": "Measures the 24 V grid PSU's power draw. Makes the DC→AC load shift during PSU operation exactly correctable for consumption learning — without it, hours with a PSU-fed 24 V rail cannot be learned (relevant when the PSU runs permanently in winter).",
+              "support_dc24_power_entity": "Measures AC intake of the 24 V PSU. Separate DC output measurement improves loss attribution. Without an output sensor the existing approximation is retained. Missing operating-hour samples are excluded.",
               "support_dc24_activate_soc": "Battery SOC at or below which the 24 V grid PSU takes over the DC rail from the DC/DC converter (a last-resort protection level, independent of the planning buffer). Default 10 %.",
               "support_dc24_recovery_soc": "Battery SOC at or above which the 24 V grid support switches back off. Set it a few percent above the activate level: a wider gap latches the support on longer and stops it chattering when the SOC parks on the threshold overnight. Default 11 %. With direct inverter control, return also requires sufficient PV supply.",
               "support_dc48_activate_soc": "Battery SOC at or below which the last-resort 48 V support PSU also engages (deepest protection). Keep it at or below the 24 V activate level. Default 5.5 %.",
               "support_dc48_recovery_soc": "Battery SOC at or above which the 48 V support switches back off. Must be above the 48 V activate level and at or below the 24 V recover level. Default 10 %.",
               "inverter_block_switch_entity": "Read only, never switched. Victron updates this status from the power limit. ON confirms blocked AC discharge; OFF confirms release.",
-              "inverter_discharge_limit_entity": "Enables coordinated direct control. BM writes 0 W to block discharge and the configured maximum inverter power to release it (default 2300 W), then verifies readback. Disable existing discharge-limit and PSU automations at takeover."
+              "inverter_discharge_limit_entity": "Enables coordinated direct control. BM writes 0 W to block discharge and the configured maximum inverter power to release it (default 2300 W), then verifies readback. Disable existing discharge-limit and PSU automations at takeover.",
+              "support_dc24_output_power_entity": "Measures delivered DC power separately from AC intake. Consumption learning adds only the actual DC output; losses stay outside household DC consumption. Missing operating-hour samples exclude that hour.",
+              "support_dc48_power_entity": "Measures actual AC intake. Makes AC hours during 48 V support learnable without assuming delivery from switch state or bus voltage.",
+              "support_dc48_output_power_entity": "Measures actual delivery into the DC bus. Makes DC consumption learnable during regulation and battery charging. This must be PSU output, not net battery power."
             }
           },
           "dc_devices": {

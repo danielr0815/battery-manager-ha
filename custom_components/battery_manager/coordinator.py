@@ -222,7 +222,11 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
     UPPER_PV_RESERVE_DEFAULT,
 )
-from .coordinated_supply import execute_coordinated_support
+from .coordinated_supply import (
+    execute_coordinated_support,
+    protection_targets,
+    reconcile_supply_feedback,
+)
 from .core import (
     DAY_TYPE_ABSENCE,
     Appliance,
@@ -250,8 +254,9 @@ from .core import (
     quantile_band_slots,
     slot_starts,
 )
-from .core.live_ac import LIVE_AC_REPLAN_LEAD_S
+from .core.live_ac import LIVE_AC_PLAN_MAX_AGE_S, LIVE_AC_REPLAN_LEAD_S
 from .core.model import ReserveParams
+from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
 from .execution import execution_attributes, load_execution
@@ -270,7 +275,14 @@ from .localization import message
 from .market import price_entity, read_prices
 from .operation_recorder import OperationRecorder
 from .plan_output import daily_surplus_breakdown
-from .planning import PLANNING_SOC_TOLERANCE_PERCENT, PlanningRunner
+from .planning import (
+    PLANNING_LATE_RETRY_S,
+    PLANNING_LEAD_FACTOR,
+    PLANNING_MIN_REPLAN_SPACING_S,
+    PLANNING_PUBLICATION_MARGIN_S,
+    PLANNING_SOC_TOLERANCE_PERCENT,
+    PlanningRunner,
+)
 from .reserve_runtime import (
     RESERVE_POLICY_VERSION,
     ReserveRuntime,
@@ -504,6 +516,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._support_manual = {"dc24": False, "dc48": False}
         self._support_migration: dict[str, Any] = {}
         self._last_support_switch: datetime | None = None
+        self._supply_actor_requests: dict[str, ActorRequest] = {}
         # Last commanded direction per PSU (for the late-confirmation
         # grace), pending unconfirmed activations, the level-triggered
         # DC/DC restore task, and the one-shot pre-0.6.5 adoption flag.
@@ -1426,6 +1439,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Operator 2026-10-06: leave roughly 15 SOC points available
                 # when future DC needs do not require the full battery.
                 soft_soc_ceiling_percent=85.0,
+                dc_start_margin_percent=DC_SOURCE_START_MARGIN_PERCENT,
             ),
             battery=BatteryParams(
                 capacity_wh=float(cfg["battery_capacity_wh"]),
@@ -3970,6 +3984,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         starts = slot_starts(now, num_days)
         learned_hours = {"ac": 0.0, "dc": 0.0}
         quantile_hours = {"ac": 0.0, "dc": 0.0}
+        predictions: list[dict[str, Any]] = []
         durations = [
             min(
                 1.0,
@@ -3989,9 +4004,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if vacation
                 else self.learner.planning_daytype(local.date())
             )
+            prediction: dict[str, Any] = {"start": start.isoformat(), "daytype": dt_key}
             for path in ("ac", "dc"):
                 value = profile_value(profiles.get(path), dt_key, local.hour, "p50")
                 p80 = profile_value(profiles.get(path), dt_key, local.hour, "p80")
+                learned_value = value
                 if value is not None and p80 is not None:
                     quantile_hours[path] += duration
                 band[path].append(
@@ -4007,6 +4024,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if value is None and vacation:
                     value = float(self.raw_config[f"{path}_base_load_w"])
                 series[path].append(value)
+                prediction[path] = {
+                    "p50_w": value
+                    if value is not None
+                    else static_profiles[path].power_w(local.hour),
+                    "p80_w": max(learned_value, p80)
+                    if learned_value is not None and p80 is not None
+                    else None,
+                    "source": "learned"
+                    if learned_value is not None
+                    else "vacation_base"
+                    if vacation
+                    else "static",
+                }
+            predictions.append(prediction)
 
         overrides: list[tuple[float | None, ...] | None] = []
         for path in ("ac", "dc"):
@@ -4037,6 +4068,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             diag.setdefault("coverage_detail", {})[path] = detail
             overrides.append(tuple(values) if filled else None)
         quantiles_active = any(delta_count[path] for path in ("ac", "dc"))
+        diag["_forecast_predictions"] = predictions
         return overrides[0], overrides[1], band, quantiles_active, diag
 
     def _dynamic_buffer(
@@ -4371,6 +4403,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ac_series, dc_series, band, quantiles_active, profile_diag = (
             self._learned_series(now, config, len(forecasts))
         )
+        forecast_predictions = profile_diag.pop("_forecast_predictions", [])
 
         # Hourly PV forecast (docs/F-PREDRAIN.md F1): None/empty -> two-window.
         # The p10/p90 quantile maps (F-QUANTILE-BANDS R1) ride along; without
@@ -4559,6 +4592,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         self.operation_recorder.plan(config, inputs, result)
         self.live_ac.set_plan(config, inputs, result)
+        self.learner.record_forecasts(
+            forecast_predictions, dt_util.utcnow(), profile_diag.get("computed_at")
+        )
         if self._reserve_diag.get("mode") in ("shadow", "active"):
             self.operation_recorder.reserve(self._reserve_diag)
         self._arm_plan_boundary(inputs, result)
@@ -6185,6 +6221,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return False
         service = "turn_on" if turn_on else "turn_off"
+        supply_request = None
+        if actor_owner == SUPPLY_OWNER and self.raw_config.get(
+            CONF_INVERTER_LIMIT_ENTITY
+        ):
+            supply_request = ActorRequest(turn_on, dt_util.now())
+            self._supply_actor_requests[entity_id] = supply_request
         recorder = getattr(self, "operation_recorder", None)
         request = (
             recorder.event(
@@ -6206,6 +6248,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
+            if supply_request is not None:
+                supply_request.state = "service_failed"
             if recorder:
                 recorder.event(
                     "command_result",
@@ -6218,6 +6262,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return False
         except asyncio.CancelledError:
+            if supply_request is not None:
+                supply_request.state = "service_failed"
             if recorder:
                 recorder.event(
                     "command_cancelled", {"request": request, "entity_id": entity_id}
@@ -6228,6 +6274,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "command_result",
                 {"request": request, "entity_id": entity_id, "success": True},
             )
+        if supply_request is not None:
+            reconcile_supply_feedback(self)
         return True
 
     async def _set_number_value(
@@ -6322,7 +6370,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if not await self._switch_entity(first_on, True, actor_owner=SUPPLY_OWNER):
             return False
-        await asyncio.sleep(delay_s)
         if not self._entity_is_on(first_on):
             _LOGGER.error(
                 "New 24 V supply %s did not report 'on'; aborting switchover,"
@@ -6335,6 +6382,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # yet: remember it so a late 'on' report is adopted as ours
                 # instead of being misread as a manual override (F-N2).
                 self._support_pending_confirm["dc24"] = True
+            return False
+        # Overlap starts with physical ON, not with an accepted service. A late
+        # publication retries through the same owner and receives the full delay.
+        await asyncio.sleep(delay_s)
+        if not self._entity_is_on(first_on):
             return False
         if may_remove is not None and not may_remove():
             return False
@@ -6506,24 +6558,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if self._switch_task is not None and not self._switch_task.done():
             return
-        from .core.support import support_state
-
         config = self.build_system_config()
         # Unknown SOC never justifies releasing the inverter. Preserve DC
         # supply and request both configured sources until measurements return.
-        dc24, dc48 = support_state(
-            config,
-            soc if soc is not None else config.battery.soc_min_percent,
-            config.support.dc24_active,
-            config.support.dc48_active,
-            False,
-        )
+        desired = protection_targets(self, config, soc, now)
         self._inverter_recommendation = False
         self._switch_task = self.entry.async_create_background_task(
             self.hass,
-            self._execute_coordinated_support(
-                {"dc24": dc24, "dc48": dc48}, False, config, now
-            ),
+            self._execute_coordinated_support(desired, False, config, now),
             name="battery_manager_coordinated_protection",
         )
 
@@ -8013,6 +8055,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
+        own_source_feedback = (
+            event is not None
+            and event.data["entity_id"] in self._supply_actor_requests
+            and reconcile_supply_feedback(self, event.data["entity_id"])
+        )
         soc_event = (
             event is not None
             and event.data["entity_id"] == self.raw_config[CONF_SOC_ENTITY]
@@ -8029,8 +8076,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Small power fluctuations drove two complete searches every ~28 s
         # (live CPU audit 2026-10-05). Keep trim/observation independent of
         # economic planning, including while a planner worker is running.
-        if event is not None and event.data["entity_id"] not in self._tracked_entities(
-            planning_only=True
+        if own_source_feedback or (
+            event is not None
+            and event.data["entity_id"]
+            not in self._tracked_entities(planning_only=True)
         ):
             self._fast_trim_pending |= event.data["entity_id"] == self.raw_config.get(
                 CONF_FEEDIN_BATTERY_POWER_ENTITY
@@ -8085,11 +8134,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if self._reserve_inverter_limit_w is not None:
             boundaries.add(inputs.now + timedelta(minutes=5))
-        if self.live_ac.envelope is not None and self.live_ac.sources_configured():
+        if self.live_ac.envelope is not None:
             # Refresh before expiry, rather than dropping a held permission
             # every five minutes while its replacement is still computing.
-            refresh_at = self.live_ac.envelope.expires - timedelta(
-                seconds=LIVE_AC_REPLAN_LEAD_S
+            # PSU-only operation needs the same fresh plan. The measured
+            # previous worker time includes both baseline and reserve phases;
+            # retain scheduling margin without relaxing the 300 s validity.
+            worker_seconds = sum(
+                self._planning.durations.get(phase, 0.0)
+                for phase in ("baseline", "reserve")
+            )
+            lead_seconds = min(
+                LIVE_AC_PLAN_MAX_AGE_S - PLANNING_MIN_REPLAN_SPACING_S,
+                max(
+                    LIVE_AC_REPLAN_LEAD_S,
+                    worker_seconds * PLANNING_LEAD_FACTOR
+                    + PLANNING_PUBLICATION_MARGIN_S,
+                ),
+            )
+            refresh_at = max(
+                self.live_ac.envelope.expires - timedelta(seconds=lead_seconds),
+                dt_util.utcnow() + timedelta(seconds=PLANNING_LATE_RETRY_S),
             )
             if refresh_at > dt_util.as_utc(inputs.now):
                 boundaries.add(refresh_at)

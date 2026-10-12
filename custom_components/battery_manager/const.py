@@ -139,6 +139,17 @@ CONF_SUPPORT_DC24_SWITCH = "support_dc24_switch_entity"
 # profiles (docs/CONSUMPTION_FORECAST.md D-C2 step 3). Without it, hours
 # with a PSU-fed 24 V rail cannot be learned.
 CONF_SUPPORT_DC24_POWER_ENTITY = "support_dc24_power_entity"
+# Input and delivered output are separate measurement boundaries. Optional
+# output meters avoid learning PSU losses as DC household consumption.
+CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY = "support_dc24_output_power_entity"
+CONF_SUPPORT_DC48_POWER_ENTITY = "support_dc48_power_entity"
+CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY = "support_dc48_output_power_entity"
+SUPPORT_POWER_ENTITY_KEYS = (
+    CONF_SUPPORT_DC24_POWER_ENTITY,
+    CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY,
+    CONF_SUPPORT_DC48_POWER_ENTITY,
+    CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY,
+)
 CONF_DCDC_SWITCH = "dcdc_switch_entity"
 CONF_SUPPORT_SWITCH_DELAY_S = "support_switch_delay_s"
 # Escalation thresholds (D-A9): four ABSOLUTE battery-SOC % that drive the

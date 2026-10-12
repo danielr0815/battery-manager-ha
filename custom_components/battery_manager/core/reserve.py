@@ -61,6 +61,17 @@ MAX_CACHED_BATTERY_STEPS = 8192
 MAX_CACHED_RESERVE_FLOWS = 4096
 
 
+@dataclass(frozen=True)
+class _PreparedReserve:
+    steps: tuple[tuple[int, HourSlot, float, float], ...]
+    budgets: tuple[BatteryStep, ...]
+    nominal: tuple[BatteryStep, ...]
+    priorities: tuple[float, ...]
+    raw_weights: tuple[float | None, ...]
+    weights: tuple[float, ...]
+    envelope: PreparationEnvelope | None
+
+
 @dataclass
 class _ReserveCache:
     references: dict[int, object] = field(default_factory=dict)
@@ -75,7 +86,7 @@ class _ReserveCache:
     market_weights: dict[tuple[int, int], tuple[float | None, ...]] = field(
         default_factory=dict
     )
-    envelopes: dict[tuple[object, ...], PreparationEnvelope] = field(
+    preparations: dict[tuple[object, ...], _PreparedReserve] = field(
         default_factory=dict
     )
     flows: OrderedDict[tuple[object, ...], tuple[SystemConfig, HourSlot, HourFlows]] = (
@@ -505,21 +516,23 @@ def _simulate_reserve_reference(
     return candidate
 
 
-def _simulate_reserve_policy(
+def _prepare_reserve(
     config: SystemConfig,
     inputs: PlanInputs,
     extra_ac: tuple[float, ...] | None,
     pv_scale: float | Sequence[float],
     feedin: tuple[float, ...] | None,
-    *,
-    allow_ac: bool = True,
-    ac_margin_wh: float = 0.0,
-    dc_hold_margin_wh: float = 0.0,
-    fixed_sources: tuple[SourceState, ...] | None = None,
-    fixed_limits: tuple[float, ...] | None = None,
-    traces: dict[int, tuple[SourceStep, ...]] | None = None,
-) -> Trajectory:
-    """Execute source protection and the shared forecast preparation envelope."""
+) -> _PreparedReserve:
+    """Share preparation work across AC-off, margin and DC-market retries.
+
+    A cached envelope alone still rebuilt every step, physical budget and
+    priority list. These immutable inputs have the same lifetime and key.
+    """
+    check_cancelled()
+    cache = _reserve_cache.get()
+    key = _probe_key(config, inputs, extra_ac, pv_scale, feedin)
+    if cache is not None and key in cache.preparations:
+        return cache.preparations[key]
     steps = _steps(config, inputs, extra_ac, pv_scale)
     # Operator 2026-10-05: retain stored energy unless the expected forecast
     # needs space, with only bounded insurance from the upper spread. Never
@@ -555,9 +568,6 @@ def _simulate_reserve_policy(
         for budget, (_, slot, _, _) in zip(nominal_budgets, steps, strict=True)
     ]
     battery, support = config.battery, config.support
-    # The learned planning buffer protects forecast error in addition to the
-    # nominal DC obligation. It limits optional AC, without moving physical
-    # PSU activation thresholds or forcing a fixed night SOC / grid recharge.
     dc_uncertainty_wh = battery.energy_wh(config.control.soc_buffer_percent)
     protection_floor = battery.energy_wh(
         max(
@@ -566,6 +576,71 @@ def _simulate_reserve_policy(
             config.control.support_dc48_activate_soc if support.dc48_available else 0,
         )
     )
+    raw_weights = _market_weights(inputs, steps)
+    weights = effective_market_weights(raw_weights)
+    envelope = (
+        preparation_envelope(
+            budgets,
+            nominal_budgets,
+            priorities,
+            protection_floor,
+            battery.energy_wh(inputs.start_soc_percent),
+            weights,
+            soft_maximum=(
+                battery.energy_wh(config.reserve.soft_soc_ceiling_percent)
+                if config.reserve.soft_soc_ceiling_percent is not None
+                else None
+            ),
+            dc_uncertainty_wh=dc_uncertainty_wh,
+        )
+        if steps
+        else None
+    )
+    prepared = _PreparedReserve(
+        tuple(steps),
+        tuple(budgets),
+        tuple(nominal_budgets),
+        tuple(priorities),
+        tuple(raw_weights),
+        tuple(weights),
+        envelope,
+    )
+    if cache is not None:
+        cache.references[id(config)] = config
+        cache.references[id(inputs)] = inputs
+        if len(cache.preparations) >= MAX_CACHED_RESERVE_PROBES:
+            del cache.preparations[next(iter(cache.preparations))]
+        cache.preparations[key] = prepared
+    return prepared
+
+
+def _simulate_reserve_policy(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    pv_scale: float | Sequence[float],
+    feedin: tuple[float, ...] | None,
+    *,
+    allow_ac: bool = True,
+    ac_margin_wh: float = 0.0,
+    dc_hold_margin_wh: float = 0.0,
+    fixed_sources: tuple[SourceState, ...] | None = None,
+    fixed_limits: tuple[float, ...] | None = None,
+    traces: dict[int, tuple[SourceStep, ...]] | None = None,
+) -> Trajectory:
+    """Execute source protection and the shared forecast preparation envelope."""
+    prepared = _prepare_reserve(config, inputs, extra_ac, pv_scale, feedin)
+    steps, budgets, nominal_budgets, priorities = (
+        prepared.steps,
+        prepared.budgets,
+        prepared.nominal,
+        prepared.priorities,
+    )
+    battery, support = config.battery, config.support
+    # The learned planning buffer protects forecast error in addition to the
+    # nominal DC obligation. It limits optional AC, without moving physical
+    # PSU activation thresholds or forcing a fixed night SOC / grid recharge.
+    dc_uncertainty_wh = battery.energy_wh(config.control.soc_buffer_percent)
     soc = inputs.start_soc_percent
     # Economic holding must not become a protection latch on the next plan.
     # Only an active source below its recovery threshold retains that latch.
@@ -576,12 +651,12 @@ def _simulate_reserve_policy(
     variants: dict[tuple[int, bool, bool], SystemConfig] = (
         cache.variants if cache is not None else {}
     )
-    raw_weights = _market_weights(inputs, steps)
-    weights = effective_market_weights(raw_weights)
+    raw_weights, weights = prepared.raw_weights, prepared.weights
     partial_prices = any(
         p > 0 and w is None for p, w in zip(priorities, raw_weights, strict=True)
     )
     market_active = allow_ac and any(weight > 1 for weight in weights)
+    dc_market_active = any(weight > 1 for weight in weights)
     ranking_reason = (
         "load_priority_no_prices"
         if not any(
@@ -597,35 +672,7 @@ def _simulate_reserve_policy(
     )
     # One horizon prevents a simulated midnight from introducing a PV deadline
     # after the preceding evening's better AC opportunities have been discarded.
-    envelope: PreparationEnvelope | None = None
-    if steps:
-        check_cancelled()
-        envelope_key = _probe_key(config, inputs, extra_ac, pv_scale, feedin)
-        if cache is not None:
-            cache.references[id(config)] = config
-            cache.references[id(inputs)] = inputs
-            envelope = cache.envelopes.get(envelope_key)
-        if envelope is None:
-            envelope = preparation_envelope(
-                budgets,
-                nominal_budgets,
-                priorities,
-                protection_floor,
-                battery.energy_wh(soc),
-                weights,
-                soft_maximum=(
-                    battery.energy_wh(config.reserve.soft_soc_ceiling_percent)
-                    if config.reserve.soft_soc_ceiling_percent is not None
-                    else None
-                ),
-                dc_uncertainty_wh=dc_uncertainty_wh,
-            )
-            if cache is not None:
-                if len(cache.envelopes) >= MAX_CACHED_RESERVE_PROBES:
-                    del cache.envelopes[next(iter(cache.envelopes))]
-                # AC-off references and retained-energy retries have the same
-                # envelope. Their permission and margin remain forward inputs.
-                cache.envelopes[envelope_key] = envelope
+    envelope = prepared.envelope
     decision: ReserveDecision | None = None
     future_ac_wh = 0.0
     future_demand_w = 0.0
@@ -731,14 +778,31 @@ def _simulate_reserve_policy(
                 ):
                     dc_hold_margin_wh = max(0.0, dc_hold_margin_wh - saving)
                 else:
-                    holding = True
-                    dc24 = dc24 or source.dc24_available
-                    dc48 = dc48 or source.dc48_available
+                    # A new economic start must clear a stored-energy band.
+                    # Native DC consumption creates this small extra headroom;
+                    # no ON hold may displace PV, and protection remains above.
+                    start_margin = (
+                        battery.energy_wh(config.reserve.dc_start_margin_percent)
+                        if j == 0
+                        else 0.0
+                    )
+                    may_start = (
+                        battery.energy_wh(held.soc_end_percent)
+                        <= following_dc_ceiling - start_margin + ENERGY_EPSILON_WH
+                    )
+                    dc24 = dc24 or (
+                        source.dc24_available and (previous_sources[0] or may_start)
+                    )
+                    dc48 = dc48 or (
+                        source.dc48_available and (previous_sources[1] or may_start)
+                    )
+                    holding = dc24 or dc48
         required_sources = (
             protect24 or source.dc24_forced_on,
             protect48 or source.dc48_forced_on,
         )
-        choices = source_choices(
+        choose_sources = partial(
+            source_choices,
             effective,
             required_sources,
             partial(
@@ -752,10 +816,14 @@ def _simulate_reserve_policy(
                 feedin_wh=export,
             ),
         )
+        pv_surplus = slot.pv_wh * scale > slot.ac_wh + extra + ENERGY_EPSILON_WH
+        # Fixed-source market trials only validate physics; their alternatives
+        # are never allocated again. PV selection is already fixed as well.
+        choices = choose_sources() if pv_surplus and fixed_sources is None else ()
         if fixed_sources is not None:
             dc24 = fixed_sources[j][0] or required_sources[0]
             dc48 = fixed_sources[j][1] or required_sources[1]
-        elif slot.pv_wh * scale > slot.ac_wh + extra + ENERGY_EPSILON_WH:
+        elif pv_surplus:
             source_baseline = _step_hour(
                 effective, soc, slot, 100, extra, dc24, dc48, scale, export
             )
@@ -930,6 +998,9 @@ def _simulate_reserve_policy(
                 flow,
                 choices or (flow,),
                 battery.soc_percent(following_minimum + dc_uncertainty_wh),
+                choose_sources
+                if dc_market_active and not choices and fixed_sources is None
+                else None,
             )
         )
         previous_sources = (dc24, dc48)

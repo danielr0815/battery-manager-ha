@@ -57,6 +57,11 @@ export const STRINGS = {
     profile_eligible_hours: "Eligible hours",
     profile_mature_bins: "Mature hourly bins",
     profile_learned_duration: "Learned share of forecast duration",
+    profile_last_measurement: "Last usable measurement",
+    profile_recent_hours: "Usable hours in the last seven complete days",
+    profile_measurements_stale:
+      "No recent usable measurements. A successful learning run does not mean fresh data.",
+    profile_yesterday_empty: "No usable measurements yesterday.",
     card_tentative_wake:
       "Tentative plan: wake-up and valid SOC telemetry are required before execution.",
     live_ac_reason_measured_ac_demand:
@@ -420,6 +425,12 @@ export const STRINGS = {
     profile_eligible_hours: "Gültige Zeitraumstunden",
     profile_mature_bins: "Reife Stunden-Bins",
     profile_learned_duration: "Gelernter Anteil der Prognosedauer",
+    profile_last_measurement: "Letzte verwertbare Messung",
+    profile_recent_hours:
+      "Nutzbare Stunden der letzten sieben vollständigen Tage",
+    profile_measurements_stale:
+      "Keine aktuellen verwertbaren Messungen. Ein erfolgreicher Lernlauf bedeutet keine frischen Daten.",
+    profile_yesterday_empty: "Gestern keine verwertbaren Messungen.",
     card_tentative_wake:
       "Vorläufiger Plan: Aufwecken und gültige SOC-Telemetrie sind vor der Ausführung erforderlich.",
     live_ac_reason_measured_ac_demand:

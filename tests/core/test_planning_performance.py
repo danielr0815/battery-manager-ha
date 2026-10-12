@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from core.model import HourSlot, PlanInputs, ReserveParams, SupportParams, SystemConfig
@@ -107,3 +107,29 @@ def test_cached_grid_distinguishes_repeated_autumn_hour():
     )  # Why a dataclass-only cache key is insufficient.
     assert split_slot(first)[0][0].start.utcoffset() == timedelta(hours=2)
     assert split_slot(second)[0][0].start.utcoffset() == timedelta(hours=1)
+
+
+def test_flat_market_does_not_simulate_unused_source_alternatives(monkeypatch):
+    import core.reserve as reserve
+
+    now = datetime(2026, 10, 11)
+    config = SystemConfig(
+        reserve=ReserveParams(True),
+        support=SupportParams(
+            configured=True, coordinated=True, psu48_bus_voltage_v=48
+        ),
+    )
+    inputs = PlanInputs(
+        now,
+        80,
+        tuple(
+            HourSlot(i, now + timedelta(hours=i), 1, i, 0, 100, 60) for i in range(12)
+        ),
+    )
+    alternatives = Mock(wraps=reserve.source_choices)
+    monkeypatch.setattr(reserve, "source_choices", alternatives)
+    result = simulate(config, inputs, 20)
+    alternatives.assert_not_called()
+    assert sum(flow.unserved_dc_wh for flow in result.flows) == 0
+    assert all(flow.support_dc24 and flow.support_dc48 for flow in result.flows)
+    assert all(flow.inverter_output_wh == 0 for flow in result.flows)

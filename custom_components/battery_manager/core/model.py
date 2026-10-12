@@ -717,9 +717,13 @@ class ReserveParams:
     enabled: bool = False
     upper_pv_factor: float = 1.2
     soft_soc_ceiling_percent: float | None = None
+    # Neutral for old recordings; HA enables one SOC reporting quantum to
+    # prevent economic source starts at a repeatedly crossed energy boundary.
+    dc_start_margin_percent: float = 0.0
 
     def __post_init__(self) -> None:
         _require(1 <= self.upper_pv_factor <= 1.5, "Invalid reserve upper PV factor")
+        _require(0 <= self.dc_start_margin_percent <= 100, "Invalid DC start margin")
         _require(
             self.soft_soc_ceiling_percent is None
             or 0 <= self.soft_soc_ceiling_percent <= 100,

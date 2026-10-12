@@ -40,13 +40,17 @@ from custom_components.battery_manager.const import (
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_DC_LOAD_ENTITY,
     CONF_DCDC_SWITCH,
+    CONF_INVERTER_LIMIT_ENTITY,
     CONF_LEARNING_WINDOW_DAYS,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_POWER_ENTITY,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
+    CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY,
     CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY,
+    CONF_SUPPORT_DC48_POWER_ENTITY,
     CONF_SUPPORT_DC48_POWER_W,
     CONF_SUPPORT_DC48_SWITCH,
     CONF_WORKDAY_ENTITY,
@@ -488,6 +492,62 @@ async def test_psu48_voltage_gate_end_to_end(hass, _min_samples_2):
     assert profiles["ac"]["weekday"]["p50"][16] is None
     assert profiles["dc"]["weekday"]["p50"][0] == 300.0
     assert profiles["dc"]["weekday"]["p50"][14] == 240.0
+    assert learner.data["diagnostics"]["missing_statistics"] == []
+
+
+async def test_measured_psu_input_and_output_learn_during_coordinated_operation(
+    hass, _min_samples_2
+):
+    """Actual AC intake and DC delivery recover hours without voltage guesses."""
+    learner = _learner(
+        hass,
+        **{
+            CONF_AC_LOAD_ENTITY: "sensor.ac_load",
+            CONF_DC_LOAD_ENTITY: "sensor.dc_load",
+            CONF_SUPPORT_DC24_SWITCH: "switch.psu24",
+            CONF_DCDC_SWITCH: "switch.dcdc",
+            CONF_SUPPORT_DC48_SWITCH: "switch.psu48",
+            CONF_INVERTER_LIMIT_ENTITY: "number.limit",
+            CONF_SUPPORT_DC24_POWER_ENTITY: "sensor.p24_in",
+            CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY: "sensor.p24_out",
+            CONF_SUPPORT_DC48_POWER_ENTITY: "sensor.p48_in",
+            CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY: "sensor.p48_out",
+        },
+    )
+    for entity, watts in (
+        ("ac_load", 500),
+        ("dc_load", 200),
+        ("p24_in", 40),
+        ("p24_out", 32),
+        ("p48_in", 80),
+        ("p48_out", 60),
+    ):
+        values = _all_hours(watts)
+        if entity == "p48_out":
+            for day in DAYS:
+                del values[(day, 16)]
+                values[(day, 18)] = -10
+        if entity == "p24_in":
+            for day in DAYS:
+                del values[(day, 17)]
+        await _import(hass, _power_meta("sensor." + entity), _power_rows(values))
+    with freeze_time("2026-07-01T12:00:00+00:00"):
+        for entity, state in (
+            ("switch.psu24", "on"),
+            ("switch.psu48", "on"),
+            ("switch.dcdc", "off"),
+        ):
+            hass.states.async_set(entity, state)
+        await async_wait_recording_done(hass)
+    await _run_pinned(learner)
+    for day in DAYS:
+        ac = learner.data["daily_hours"][day]["ac"]
+        dc = learner.data["daily_hours"][day]["dc"]
+        assert ac[0] == 380  # 500 - 40 - 80 actual AC intake
+        assert dc[0] == 292  # 200 + 32 + 60 actual DC output, no PSU losses
+        assert ac[16] == 380 and dc[16] is None
+        assert ac[17] is None and dc[17] == 292
+        assert dc[18] is None
     assert learner.data["diagnostics"]["missing_statistics"] == []
 
 

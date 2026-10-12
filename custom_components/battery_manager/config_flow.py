@@ -136,7 +136,6 @@ from .const import (
     CONF_SOC_ENTITY,
     CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
-    CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_ACTIVATE_SOC,
@@ -161,6 +160,7 @@ from .const import (
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
+    SUPPORT_POWER_ENTITY_KEYS,
 )
 from .coordinator import ordered_load_subentries
 from .market import CONF_MARKET_ENABLED, CONF_MARKET_ENTITY
@@ -1010,7 +1010,6 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_SUPPORT_DC48_POWER_W, default=_d(d, CONF_SUPPORT_DC48_POWER_W)
             ): _number(0, 1000, 5, "W"),
             vol.Optional(CONF_SUPPORT_DC24_SWITCH): _entity("switch"),
-            vol.Optional(CONF_SUPPORT_DC24_POWER_ENTITY): _entity("sensor"),
             vol.Optional(CONF_DCDC_SWITCH): _entity("switch"),
             vol.Required(
                 CONF_SUPPORT_SWITCH_DELAY_S, default=_d(d, CONF_SUPPORT_SWITCH_DELAY_S)
@@ -1032,6 +1031,9 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 default=_d(d, CONF_SUPPORT_DC48_RECOVERY_SOC),
             ): _number(0, 100, 0.5, "%"),
         }
+        support.update(
+            {vol.Optional(key): _entity("sensor") for key in SUPPORT_POWER_ENTITY_KEYS}
+        )
         return self.async_show_form(
             step_id="control",
             errors=errors,
@@ -1092,7 +1094,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 # present in entry.data (raw_config merges data + options).
                 for key in (
                     *_SUPPORT_SWITCH_KEYS,
-                    CONF_SUPPORT_DC24_POWER_ENTITY,
+                    *SUPPORT_POWER_ENTITY_KEYS,
                     CONF_BATTERY_VOLTAGE_ENTITY,
                     # F-FEEDIN: cleared = feature unwired (the executor writes
                     # the setpoint 0 once before going idle).
@@ -1172,14 +1174,10 @@ class BatteryManagerOptionsFlow(OptionsFlow):
             support[
                 vol.Optional(key, description={"suggested_value": current.get(key)})
             ] = _entity("number" if key == CONF_INVERTER_LIMIT_ENTITY else "switch")
-        support[
-            vol.Optional(
-                CONF_SUPPORT_DC24_POWER_ENTITY,
-                description={
-                    "suggested_value": current.get(CONF_SUPPORT_DC24_POWER_ENTITY)
-                },
-            )
-        ] = _entity("sensor")
+        for key in SUPPORT_POWER_ENTITY_KEYS:
+            support[
+                vol.Optional(key, description={"suggested_value": current.get(key)})
+            ] = _entity("sensor")
 
         learning = dict(_learning_schema_fields(current))
         learning[

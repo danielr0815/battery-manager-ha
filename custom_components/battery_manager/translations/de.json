@@ -210,7 +210,10 @@
               "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
               "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)",
               "inverter_block_switch_entity": "Inverter-Sperrstatus (optionale Rückmeldung)",
-              "inverter_discharge_limit_entity": "Inverter-Entladelimit (number-Entity, W)"
+              "inverter_discharge_limit_entity": "Inverter-Entladelimit (number-Entity, W)",
+              "support_dc24_output_power_entity": "DC-Ausgangsleistung 24-V-Netzteil (optional)",
+              "support_dc48_power_entity": "AC-Aufnahmeleistung 48-V-Netzteil (optional)",
+              "support_dc48_output_power_entity": "DC-Ausgangsleistung 48-V-Netzteil (optional)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: Schalter des spannungs- und strombegrenzten 48-V-Stütznetzteils. Wird von der Integration direkt geschaltet.",
@@ -218,13 +221,16 @@
               "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Wird direkt geschaltet.",
               "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
               "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
-              "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
+              "support_dc24_power_entity": "Misst die AC-Aufnahme des 24-V-Netzteils. Eine getrennte DC-Ausgangsmessung verbessert die Verlustzuordnung. Ohne Ausgangssensor bleibt die bisherige Näherung erhalten. Fehlende Betriebsstundenwerte werden ausgeschlossen.",
               "support_dc24_activate_soc": "Batterie-SOC, bei dem (oder darunter) das 24-V-Netzteil die DC-Schiene vom DC/DC-Wandler übernimmt (Notfall-Schutzschwelle, unabhängig vom Planungspuffer). Standard 10 %.",
               "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %. Bei direkter Invertersteuerung wird zusätzlich ausreichende PV-Versorgung für die Rückkehr verlangt.",
               "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
               "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %.",
               "inverter_block_switch_entity": "Wird ausschließlich gelesen, niemals geschaltet. Victron setzt diesen Status abhängig vom Leistungslimit. AN bestätigt gesperrte AC-Entladung; AUS bestätigt Freigabe.",
-              "inverter_discharge_limit_entity": "Aktiviert die gemeinsame direkte Steuerung. Der BM setzt 0 W zum Sperren und die konfigurierte maximale Inverterleistung zum Freigeben (Standard 2300 W). Er liest den gesetzten Wert zurück. Bisherige Automationen für das Entladelimit und die Netzteile bei Übernahme deaktivieren."
+              "inverter_discharge_limit_entity": "Aktiviert die gemeinsame direkte Steuerung. Der BM setzt 0 W zum Sperren und die konfigurierte maximale Inverterleistung zum Freigeben (Standard 2300 W). Er liest den gesetzten Wert zurück. Bisherige Automationen für das Entladelimit und die Netzteile bei Übernahme deaktivieren.",
+              "support_dc24_output_power_entity": "Misst die abgegebene DC-Leistung getrennt von der AC-Aufnahme. Beim Verbrauchslernen wird nur die tatsächliche DC-Abgabe hinzugefügt; Netzteilverluste zählen nicht zum DC-Hausverbrauch. Fehlende Betriebsstundenwerte schließen die Stunde aus.",
+              "support_dc48_power_entity": "Misst die tatsächliche AC-Aufnahme. Macht AC-Stunden während der 48-V-Stützung lernbar, ohne die Leistung aus Schaltzustand oder Busspannung zu schätzen.",
+              "support_dc48_output_power_entity": "Misst die tatsächliche Abgabe in den DC-Bus. Macht den DC-Verbrauch auch während Regelung und Batterieladung lernbar. Hier gehört die Netzteilabgabe hin, nicht die saldierte Batterieleistung."
             }
           },
           "dc_devices": {
@@ -777,7 +783,10 @@
               "support_dc48_activate_soc": "48-V-Stützung: Aktivieren bei SOC (%)",
               "support_dc48_recovery_soc": "48-V-Stützung: Zurücknehmen bei SOC (%)",
               "inverter_block_switch_entity": "Inverter-Sperrstatus (optionale Rückmeldung)",
-              "inverter_discharge_limit_entity": "Inverter-Entladelimit (number-Entity, W)"
+              "inverter_discharge_limit_entity": "Inverter-Entladelimit (number-Entity, W)",
+              "support_dc24_output_power_entity": "DC-Ausgangsleistung 24-V-Netzteil (optional)",
+              "support_dc48_power_entity": "AC-Aufnahmeleistung 48-V-Netzteil (optional)",
+              "support_dc48_output_power_entity": "DC-Ausgangsleistung 48-V-Netzteil (optional)"
             },
             "data_description": {
               "support_dc48_switch_entity": "Optional: Schalter des spannungs- und strombegrenzten 48-V-Stütznetzteils. Wird von der Integration direkt geschaltet.",
@@ -785,13 +794,16 @@
               "support_dc24_switch_entity": "Optional: Schalter des 24-V-Netzteils, das im Notfall die DC-Verbraucher aus dem Netz versorgt (statt über den DC/DC-Wandler aus der Batterie). Feld leeren = Funktion deaktivieren.",
               "dcdc_switch_entity": "Optional: Schalter des 48-V→24-V-DC/DC-Wandlers. Ermöglicht die unterbrechungsfreie Umschaltung: erst neue Quelle ein, dann alte aus — die 24-V-Schiene ist nie ohne Versorgung.",
               "support_switch_delay_s": "Wartezeit zwischen dem Einschalten der neuen und dem Abschalten der alten 24-V-Quelle beim Umschalten.",
-              "support_dc24_power_entity": "Misst die Aufnahmeleistung des 24-V-Netzteils. Macht die Lastverschiebung DC→AC im Netzteilbetrieb für das Verbrauchslernen exakt korrigierbar — ohne diesen Sensor können Stunden mit netzteilversorgter 24-V-Schiene nicht gelernt werden (relevant, wenn das Netzteil im Winter dauerhaft läuft).",
+              "support_dc24_power_entity": "Misst die AC-Aufnahme des 24-V-Netzteils. Eine getrennte DC-Ausgangsmessung verbessert die Verlustzuordnung. Ohne Ausgangssensor bleibt die bisherige Näherung erhalten. Fehlende Betriebsstundenwerte werden ausgeschlossen.",
               "support_dc24_activate_soc": "Batterie-SOC, bei dem (oder darunter) das 24-V-Netzteil die DC-Schiene vom DC/DC-Wandler übernimmt (Notfall-Schutzschwelle, unabhängig vom Planungspuffer). Standard 10 %.",
               "support_dc24_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 24-V-Netzstützung wieder abschaltet. Ein paar Prozent über die Aktivierungsschwelle setzen: ein größerer Abstand hält die Stützung länger an und verhindert Flattern, wenn der SOC nachts auf der Schwelle parkt. Standard 11 %. Bei direkter Invertersteuerung wird zusätzlich ausreichende PV-Versorgung für die Rückkehr verlangt.",
               "support_dc48_activate_soc": "Batterie-SOC, bei dem (oder darunter) zusätzlich das 48-V-Notfall-Netzteil einschaltet (tiefste Schutzstufe). Bei oder unter der 24-V-Aktivierungsschwelle halten. Standard 5,5 %.",
               "support_dc48_recovery_soc": "Batterie-SOC, bei dem (oder darüber) die 48-V-Stützung wieder abschaltet. Muss über der 48-V-Aktivierungsschwelle und bei oder unter der 24-V-Rücknahmeschwelle liegen. Standard 10 %.",
               "inverter_block_switch_entity": "Wird ausschließlich gelesen, niemals geschaltet. Victron setzt diesen Status abhängig vom Leistungslimit. AN bestätigt gesperrte AC-Entladung; AUS bestätigt Freigabe.",
-              "inverter_discharge_limit_entity": "Aktiviert die gemeinsame direkte Steuerung. Der BM setzt 0 W zum Sperren und die konfigurierte maximale Inverterleistung zum Freigeben (Standard 2300 W). Er liest den gesetzten Wert zurück. Bisherige Automationen für das Entladelimit und die Netzteile bei Übernahme deaktivieren."
+              "inverter_discharge_limit_entity": "Aktiviert die gemeinsame direkte Steuerung. Der BM setzt 0 W zum Sperren und die konfigurierte maximale Inverterleistung zum Freigeben (Standard 2300 W). Er liest den gesetzten Wert zurück. Bisherige Automationen für das Entladelimit und die Netzteile bei Übernahme deaktivieren.",
+              "support_dc24_output_power_entity": "Misst die abgegebene DC-Leistung getrennt von der AC-Aufnahme. Beim Verbrauchslernen wird nur die tatsächliche DC-Abgabe hinzugefügt; Netzteilverluste zählen nicht zum DC-Hausverbrauch. Fehlende Betriebsstundenwerte schließen die Stunde aus.",
+              "support_dc48_power_entity": "Misst die tatsächliche AC-Aufnahme. Macht AC-Stunden während der 48-V-Stützung lernbar, ohne die Leistung aus Schaltzustand oder Busspannung zu schätzen.",
+              "support_dc48_output_power_entity": "Misst die tatsächliche Abgabe in den DC-Bus. Macht den DC-Verbrauch auch während Regelung und Batterieladung lernbar. Hier gehört die Netzteilabgabe hin, nicht die saldierte Batterieleistung."
             }
           },
           "dc_devices": {

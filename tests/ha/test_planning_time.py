@@ -134,6 +134,26 @@ async def test_empty_horizon_has_no_timer(coordinator, monkeypatch):
     timer.assert_not_called()
 
 
+@pytest.mark.parametrize("seconds,lead", [(0, 60), (80, 105), (300, 240)])
+async def test_psu_only_plan_replans_before_expiry_using_worker_time(
+    coordinator, monkeypatch, seconds, lead
+):
+    now = datetime(2026, 10, 11, 9, tzinfo=UTC)
+    monkeypatch.setattr(coordinator_module.dt_util, "utcnow", lambda: now)
+    coordinator._planning.durations = (
+        {"baseline": 5, "reserve": max(0, seconds - 5)} if seconds else {}
+    )
+    coordinator.live_ac.envelope = SimpleNamespace(expires=now + timedelta(seconds=300))
+    assert not coordinator.live_ac.sources_configured()
+    inputs = PlanInputs(now, 80, (HourSlot(0, now, 1, 9, 0, 100, 60),))
+    timer = Mock(return_value=Mock())
+    monkeypatch.setattr(coordinator_module, "async_track_point_in_time", timer)
+    coordinator._arm_plan_boundary(
+        inputs, SimpleNamespace(load_plans=(), cascade_plans=())
+    )
+    assert timer.call_args.args[2] == now + timedelta(seconds=300 - lead)
+
+
 async def test_split_slots_keep_original_hour_uncertainty(coordinator):
     now = datetime(2026, 9, 8, 9, tzinfo=UTC)
     config = coordinator.build_system_config()

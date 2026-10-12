@@ -89,3 +89,17 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | AC-Off-Referenz + Rückhalt-Retry + geänderte Physik-/Planeingaben + Abbruch + Cache-Verdrängung | Identische Hülle wiederverwenden, jede Betriebsgröße im Physik-Schlüssel, vollständige Gleichheit mit ungecachten Ergebnissen, kein Ergebnis nach Abbruch | `core/test_reserve_cache.py` |
 | Gleiche angrenzende Schaltzustände + Zustandswechsel + Zeitlücken + DST | Nur fertige Intervalle konstruieren; Zustände und Zeitgrenzen bleiben exakt erhalten | `core/test_switching_schedule.py` |
 | Neue Messpublikation während langer Berechnung | Diagnosealter ab Ergebnisveröffentlichung; Aufnahmezeit bleibt erhalten | `ha/test_planning.py::test_publications_during_calculation_use_current_diagnostic_age` |
+
+
+## Wochenbefunde und Verbesserungen 0.57.0
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Verspätetes DC/DC-/48-V-Feedback + SOC unter AC-Floor | Gültige wirtschaftliche DC-Vorgabe erhalten; fremde Quellenänderung plant neu | `ha/test_week_review_regressions.py` |
+| Netz unbekannt/ausgefallen + 24-V-Quellenwechsel + Netzrückkehr | Volle konfigurierte Überlappung nach neuer Quellenbestätigung; erforderliches Netzteil erhalten | `ha/test_week_review_regressions.py`, `ha/test_coordinated_actuation.py` |
+| SOC an Vorbereitungsgrenze + Start/Haltung + manuell/Schutz | Ein SOC-Prozentpunkt Startabstand; Schutz und manuelle Vorgaben bleiben wirksam | `core/test_dc_source_hysteresis.py` |
+| Quellenalternativen + ungegewichtetes Fenster + feste Gegenprüfung | Keine ungenutzten Simulationen; identische Energie- und Golden-Ergebnisse | `core/test_planning_performance.py`, `core/test_reserve_cache.py`, `core/test_golden_topology.py` |
+| 24/48-V-Eingangs-/Ausgangsmessung + fehlende/negative Messstunden | Getrennte AC/DC-Bereinigung; Lücke schließt nur betroffenen Pfad aus | `ha/test_history_recorder.py`, `ha/test_config_flow.py` |
+| Originalprognose + Recorder-Nachlieferung + P80 + DST/Zeitzonenwechsel | Vor Stundenbeginn gespeicherte Werte verwenden; reale Dauer und Zeitidentität beachten | `ha/test_learning_evidence.py` |
+| Neuer Lernzeitpunkt + alte/leere/future Messstunden | Tatsächliche Messfrische getrennt vom Rechenzeitpunkt anzeigen | `ha/test_learning_evidence.py`, `browser/cards.spec.mjs` |
+| Lange Planung + fehlende Live-AC-Messung + nahe Preisgrenze | Vorlauf an Rechenzeit anpassen; bestehende Freigabe läuft weiterhin exakt ab | `ha/test_planning_time.py`, `ha/test_live_ac_runtime.py` |
