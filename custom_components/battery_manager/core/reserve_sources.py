@@ -31,6 +31,17 @@ def net_draw(flow: HourFlows) -> float:
     return max(0.0, flow.battery_discharge_wh - flow.battery_charge_wh)
 
 
+def _allocation_draw(reference: HourFlows, choice: HourFlows) -> float:
+    """Debit forgone incidental charging as well as actual battery draw."""
+    # October 12: spending the whole DC budget while removing incidental PSU
+    # charging lowered the endpoint SOC and discarded the entire peak shift.
+    # Charge is already stored Wh (including efficiency). Retain its lost
+    # contribution within the same budget; unchanged charging costs nothing.
+    return net_draw(choice) + max(
+        0.0, reference.psu48_battery_charge_wh - choice.psu48_battery_charge_wh
+    )
+
+
 def pv_recharge(flow: HourFlows) -> bool:
     """Only solar replenishment closes a window, never PSU charging."""
     return (
@@ -170,7 +181,10 @@ def _allocate_window(
         choices = choices or (step.flow,)
         # Calculate each physical cost once. The finite Pareto comparison must
         # not repeatedly reconstruct the same battery/grid attribution.
-        costs = [(flow, net_draw(flow), grid_dc(config, flow)) for flow in choices]
+        costs = [
+            (flow, _allocation_draw(step.flow, flow), grid_dc(config, flow))
+            for flow in choices
+        ]
         frontier = [
             (flow, draw, grid)
             for flow, draw, grid in costs
@@ -211,7 +225,9 @@ def _allocate_window(
         if revision != revisions[i]:
             continue
         flow = alternatives[i][choice]
-        extra = net_draw(flow) - net_draw(current[i])
+        extra = _allocation_draw(steps[i].flow, flow) - _allocation_draw(
+            steps[i].flow, current[i]
+        )
         saving = grid_dc(config, current[i]) - grid_dc(config, flow)
         if extra > budget + ENERGY_EPSILON_WH:
             continue
@@ -219,7 +235,9 @@ def _allocate_window(
         current[i] = flow
         revisions[i] += 1
         for next_choice, other in enumerate(alternatives[i]):
-            draw = net_draw(other) - net_draw(flow)
+            draw = _allocation_draw(steps[i].flow, other) - _allocation_draw(
+                steps[i].flow, flow
+            )
             gain = grid_dc(config, flow) - grid_dc(config, other)
             if draw > ENERGY_EPSILON_WH and gain > ENERGY_EPSILON_WH:
                 heappush(

@@ -311,3 +311,61 @@ def test_partial_pv_can_use_battery_only_if_reference_permits_it(later_pv, sourc
     else:
         assert result.flows[0].psu24_delivered_wh == 0
         assert result.flows[0].soc_end_percent == pytest.approx(76.5)
+
+
+def test_peak_shift_accounts_for_forgone_incidental_psu_charge():
+    """F-DC-PV-MARKET: a smaller shift preserves stored energy after PSU-off.
+
+    The October 12 peak remained grid-fed because allocation spent the whole
+    DC budget, lost incidental 48 V charging, then failed the end-SOC check.
+    This synthetic night has the same charging/holding interaction without
+    any private forecast, entity IDs or learned household consumption.
+    """
+    c = dc_plant()
+    c = replace(
+        c,
+        battery=replace(
+            c.battery, capacity_wh=5000, eta_charge=0.97, eta_discharge=0.97
+        ),
+        reserve=replace(c.reserve, soft_soc_ceiling_percent=85),
+        support=replace(
+            c.support,
+            native48_base_w=35,
+            psu48_bus_voltage_v=49.5,
+            psu48_output_voltage_v=49.56,
+            psu48_max_power_w=57,
+            dcdc_eta=0.93,
+            psu24_eta=0.89,
+            psu48_eta=0.89,
+        ),
+    )
+    i = priced([(0, 0, 70)] * 4 + [(1200, 0, 0)], [300, 100, 100, 100, 100], soc=67)
+    baseline = simulate(c, replace(i, market_prices=()), 20)
+    result = simulate(c, i, 20)
+
+    assert baseline.flows[0].psu48_battery_charge_wh > 0
+    assert baseline.flows[0].psu24_delivered_wh > 0
+    assert result.flows[0].psu24_delivered_wh == 0
+    assert result.flows[0].psu48_delivered_wh == 0
+    assert result.reserve_decision.reason == "dc_market_supply"
+    assert (
+        result.reserve_decision.dc_budget_wh == baseline.reserve_decision.dc_budget_wh
+    )
+    assert result.reserve_decision.dc_shifted_wh > 0
+    assert sum(f.psu24_delivered_wh for f in result.flows[1:4]) > sum(
+        f.psu24_delivered_wh for f in baseline.flows[1:4]
+    )
+    assert result.total_import_wh < baseline.total_import_wh
+    assert result.total_export_wh <= baseline.total_export_wh + 1e-6
+    assert result.end_soc_percent >= baseline.end_soc_percent
+    assert sum(f.unserved_dc_wh for f in result.flows) == 0
+    assert sum(f.inverter_output_wh for f in result.flows) == 0
+    assert sum(
+        max(0, f.battery_discharge_wh - f.battery_charge_wh) for f in result.flows
+    ) <= sum(
+        max(0, f.battery_discharge_wh - f.battery_charge_wh) for f in baseline.flows
+    )
+    assert all(
+        after.psu48_battery_charge_wh <= before.psu48_battery_charge_wh + 1e-6
+        for before, after in zip(baseline.flows, result.flows, strict=True)
+    )

@@ -51,6 +51,29 @@ verbessert werden. Das ist eine konservative Heuristik, kein globales Tarifoptim
 Der gemeinsame Simulationspfad verwendet diese Politik auch für Lastkandidaten,
 Vergleichsrechnungen und Replay. DC-Verschiebung lockert keine Live-AC-Grenze.
 
+## R2a — Entfallende Netzteilladung (0.57.2)
+
+Ein Oktoberabend zeigte eine gültige Preisspitze und vorhandenes DC-Budget,
+aber keine Verschiebung: Der Kandidat verbrauchte das ganze Budget und verlor
+zugleich beiläufige 48-V-Netzteilladung. Die unveränderte End-SOC-Prüfung verwarf
+daraufhin den gesamten Abschnitt, obwohl eine kleinere Verschiebung möglich war.
+
+Die Allokation bewertet jede Alternative deshalb mit ihrer Netto-Entnahme plus
+der gegenüber demselben Referenzschritt entfallenden 48-V-Batterieladung. Beide
+Werte sind gespeicherte Wh nach Wirkungsgraden. Dieser Aufwand gilt konsistent
+für Dominanz, Mindestauswahl und jeden marginalen Wechsel im sortierten Heap.
+Die Budgetobergrenze bleibt die Netto-DC-Entnahme der Referenz. Erhaltene Ladung
+wird nicht pauschal zurückgehalten; neue Netzladung bleibt verboten.
+
+Die Korrektur benötigt keine zusätzliche Such- oder Simulationsrunde. Die
+vollständige Nachsimulation und alle bestehenden Schutz-, Import-/Export-,
+End-SOC- und Ladeabschnittsprüfungen bleiben unverändert. `dc_budget_wh` und
+`dc_shifted_wh` behalten ihre physische Bedeutung ohne den Allokationsrückhalt.
+Der synthetische Test
+`test_peak_shift_accounts_for_forgone_incidental_psu_charge` beweist die
+Peak-Abschaltung bei späterer Quellenversorgung, geringerem Gesamtimport,
+erhaltener Endenergie und unveränderten Entnahme-/Versorgungsgrenzen.
+
 ## R3 — Gemessener PV-Vorrang
 
 Der vorhandene Fünfsekundentakt prüft frische, vorzeichenbehaftete AC-Messungen

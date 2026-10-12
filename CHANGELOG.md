@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.2] - 2026-10-12
+
+### Fixed
+- DC market allocation now reserves stored energy for incidental 48 V PSU
+  charging lost when a source is switched off. A smaller peak-price shift can
+  therefore pass the existing energy checks instead of discarding the entire
+  shift and running grid supplies during the peak. Discharge budgets, supply
+  protection, import/export limits and endpoint SOC checks remain unchanged.
+
 ## [0.57.1] - 2026-10-12
 
 ### Documentation

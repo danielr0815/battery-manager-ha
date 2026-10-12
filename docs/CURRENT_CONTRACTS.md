@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.57.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.57.2**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -472,6 +472,18 @@ Import-/Exportzuwachs und verdrängte AC-Abgabe. Manuelle Quellen, Schutz und
 Bestätigungen bleiben vorrangig. Der bestehende Live-Takt kann vollständig
 PV-gedeckte automatische Haltung aufheben und stellt bei Verlust der frischen
 Freigabe den gültigen Plan wieder her. Vertrag: [DC/PV/Markt](F-DC-PV-MARKET.md).
+
+### Entfallende Netzteilladung bei Marktverschiebung ab 0.57.2
+
+Wenn eine Quellenalternative beiläufige 48-V-Netzteilladung der Referenz
+entfallen lässt, belastet deren gespeicherte Energie zusätzlich das vorhandene
+DC-Entnahmebudget. Dies gilt bei Quellenvergleich, erster Auswahl und jedem
+weiteren marginalen Wechsel. Unveränderte Ladung benötigt keinen Rückhalt.
+So kann bereits der einzige Markt-Kandidat eine kleinere zulässige Verschiebung
+enthalten. Es entstehen weder zusätzliches Entnahmebudget noch weitere
+Simulationsversuche; alle physischen Prüfungen einschließlich End-SOC bleiben
+verbindlich. Diagnosewerte zählen weiterhin tatsächliche Netto-DC-Entnahme und
+Verschiebung. Vertrag und Regression: [DC/PV/Markt](F-DC-PV-MARKET.md#r2a--entfallende-netzteilladung-0572).
 
 ## Quellenbesitz und korrigierte AC-Bilanz ab 0.56.0
 
