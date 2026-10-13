@@ -1,5 +1,9 @@
 # PV-Vorrang und DC-Marktverschiebung ab 0.56.0
 
+Die Allokationsreihenfolge und Bündelung ab 0.58.0 ergänzt und ersetzt die
+schrittweise Rangfolge von R2 gemäß [Netzteilblöcke](F-DC-SOURCE-BLOCKS.md).
+Die physischen Energie- und Versorgungsschranken gelten unverändert.
+
 Betreiberauftrag vom 07.10.2026: Auch 24/48-V-Verbraucher sollen vorhandene
 Batterieenergie bevorzugt während Marktspitzen nutzen. PV-Überschuss soll die
 DC-Versorgung übernehmen. Die Rückfragen begrenzen dies ausdrücklich auf das

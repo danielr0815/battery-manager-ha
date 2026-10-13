@@ -781,10 +781,11 @@ def _simulate_reserve_policy(
                     # A new economic start must clear a stored-energy band.
                     # Native DC consumption creates this small extra headroom;
                     # no ON hold may displace PV, and protection remains above.
-                    start_margin = (
-                        battery.energy_wh(config.reserve.dc_start_margin_percent)
-                        if j == 0
-                        else 0.0
+                    # F-DC-SOURCE-BLOCKS R1: every forecast restart needs the
+                    # same headroom as a real start, avoiding five-minute
+                    # charge/discharge chatter later in the trajectory.
+                    start_margin = battery.energy_wh(
+                        config.reserve.dc_start_margin_percent
                     )
                     may_start = (
                         battery.energy_wh(held.soc_end_percent)

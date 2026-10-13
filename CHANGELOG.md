@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0] - 2026-10-13
+
+### Changed
+- DC market planning spends existing battery energy in higher price-weight
+  bands first and groups matching source choices into contiguous windows of
+  up to 30 minutes. Small conversion-efficiency differences no longer spread
+  available PSU-OFF time across isolated five-minute steps. Energy-limited
+  windows may be shorter; physical validation, compulsory sources, incidental
+  charge accounting and import/export limits remain binding.
+- Every economic PSU restart in the forecast now requires the configured SOC
+  start margin, reducing repeated boundary crossings later in the forecast.
+
 ## [0.57.3] - 2026-10-13
 
 ### Removed

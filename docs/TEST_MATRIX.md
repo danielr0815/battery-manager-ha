@@ -98,6 +98,7 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | Verspätetes DC/DC-/48-V-Feedback + SOC unter AC-Floor | Gültige wirtschaftliche DC-Vorgabe erhalten; fremde Quellenänderung plant neu | `ha/test_week_review_regressions.py` |
 | Netz unbekannt/ausgefallen + 24-V-Quellenwechsel + Netzrückkehr | Volle konfigurierte Überlappung nach neuer Quellenbestätigung; erforderliches Netzteil erhalten | `ha/test_week_review_regressions.py`, `ha/test_coordinated_actuation.py` |
 | SOC an Vorbereitungsgrenze + Start/Haltung + manuell/Schutz | Ein SOC-Prozentpunkt Startabstand; Schutz und manuelle Vorgaben bleiben wirksam | `core/test_dc_source_hysteresis.py` |
+| Fragmentierte Netzteilzeiten + Preisbänder + knappes DC-Budget | Zusammenhängende OFF-Blöcke bis 30 Minuten, Preisvorrang, Hysterese auch bei späteren Neustarts | `core/test_dc_source_blocks.py` |
 | Quellenalternativen + ungegewichtetes Fenster + feste Gegenprüfung | Keine ungenutzten Simulationen; identische Energie- und Golden-Ergebnisse | `core/test_planning_performance.py`, `core/test_reserve_cache.py`, `core/test_golden_topology.py` |
 | 24/48-V-Eingangs-/Ausgangsmessung + fehlende/negative Messstunden | Getrennte AC/DC-Bereinigung; Lücke schließt nur betroffenen Pfad aus | `ha/test_history_recorder.py`, `ha/test_config_flow.py` |
 | Originalprognose + Recorder-Nachlieferung + P80 + DST/Zeitzonenwechsel | Vor Stundenbeginn gespeicherte Werte verwenden; reale Dauer und Zeitidentität beachten | `ha/test_learning_evidence.py` |

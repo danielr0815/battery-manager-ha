@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC
 from heapq import heappop, heappush
 
 from .model import HourFlows, HourSlot, SystemConfig
@@ -9,6 +10,11 @@ from .planning_control import check_cancelled
 from .reserve_energy import ENERGY_EPSILON_WH
 
 SourceState = tuple[bool, bool]
+
+# Operator 2026-10-13: bundle PSU switching, especially through price peaks.
+# A preference, not a safety dwell: smaller budgets and compulsory sources
+# can shorten a block. Bound lookahead by elapsed time, not forecast row count.
+SOURCE_BLOCK_HOURS = 0.5
 
 
 @dataclass(frozen=True)
@@ -129,9 +135,10 @@ def market_sources(
     """One sorted allocation per recharge window; full physics validates later.
 
     Minimum-draw alternatives supply the same finite battery budget as the
-    reference. Choices then consume that budget in weighted avoided-import
-    order. Complete five-minute choices are indivisible; no energy is borrowed
-    from a subsequent PV recharge, nor is incidental PSU charging a budget.
+    reference. Choices consume that budget by price band, then marginal
+    avoided import, preferring contiguous blocks. Complete steps are indivisible;
+    no energy is borrowed from a subsequent PV recharge, nor is incidental
+    PSU charging a budget.
     """
     selected = [source_state(step.flow) for step in steps]
     start = 0
@@ -154,7 +161,7 @@ def _allocate_window(
     indices: range,
     selected: list[SourceState],
 ) -> None:
-    candidates: list[tuple[float, int, int, int]] = []
+    candidates: list[tuple[float, float, int, int, int]] = []
     alternatives: dict[int, tuple[HourFlows, ...]] = {}
     revisions: dict[int, int] = {}
     current: dict[int, HourFlows] = {}
@@ -214,13 +221,13 @@ def _allocate_window(
             extra = draw - base_draw
             saving = base_grid - grid
             if extra > ENERGY_EPSILON_WH and saving > ENERGY_EPSILON_WH:
-                heappush(candidates, (-saving / extra * weights[i], -i, choice, 0))
+                heappush(candidates, (-weights[i], -saving / extra, -i, choice, 0))
     if budget < -ENERGY_EPSILON_WH:
         return
     # Reprice only the changed step. A bounded heap keeps marginal allocation
     # deterministic without quadratic rescans of the full forecast horizon.
     while candidates:
-        _, negative_i, choice, revision = heappop(candidates)
+        _, _, negative_i, choice, revision = heappop(candidates)
         i = -negative_i
         if revision != revisions[i]:
             continue
@@ -228,24 +235,99 @@ def _allocate_window(
         extra = _allocation_draw(steps[i].flow, flow) - _allocation_draw(
             steps[i].flow, current[i]
         )
-        saving = grid_dc(config, current[i]) - grid_dc(config, flow)
         if extra > budget + ENERGY_EPSILON_WH:
             continue
-        budget -= extra
-        current[i] = flow
-        revisions[i] += 1
-        for next_choice, other in enumerate(alternatives[i]):
-            draw = _allocation_draw(steps[i].flow, other) - _allocation_draw(
-                steps[i].flow, flow
+        block = _source_block(
+            config, steps, weights, indices, alternatives, current, i, flow, budget
+        )
+        for index, chosen in block:
+            budget -= _allocation_draw(steps[index].flow, chosen) - _allocation_draw(
+                steps[index].flow, current[index]
             )
-            gain = grid_dc(config, flow) - grid_dc(config, other)
-            if draw > ENERGY_EPSILON_WH and gain > ENERGY_EPSILON_WH:
-                heappush(
-                    candidates,
-                    (-gain / draw * weights[i], -i, next_choice, revisions[i]),
+            current[index] = chosen
+            revisions[index] += 1
+            for next_choice, other in enumerate(alternatives[index]):
+                draw = _allocation_draw(steps[index].flow, other) - _allocation_draw(
+                    steps[index].flow, chosen
                 )
+                gain = grid_dc(config, chosen) - grid_dc(config, other)
+                if draw > ENERGY_EPSILON_WH and gain > ENERGY_EPSILON_WH:
+                    heappush(
+                        candidates,
+                        (
+                            -weights[index],
+                            -gain / draw,
+                            -index,
+                            next_choice,
+                            revisions[index],
+                        ),
+                    )
     for i, flow in current.items():
         selected[i] = source_state(flow)
+
+
+def _source_block(
+    config: SystemConfig,
+    steps: Sequence[SourceStep],
+    weights: Sequence[float],
+    indices: range,
+    alternatives: dict[int, tuple[HourFlows, ...]],
+    current: dict[int, HourFlows],
+    index: int,
+    chosen: HourFlows,
+    budget: float,
+) -> list[tuple[int, HourFlows]]:
+    """Extend a choice within one price band, never borrowing battery energy."""
+    block = [(index, chosen)]
+    budget -= _allocation_draw(steps[index].flow, chosen) - _allocation_draw(
+        steps[index].flow, current[index]
+    )
+    duration = steps[index].slot.duration
+    # F-DC-SOURCE-BLOCKS R2: prefer contiguous OFF opportunities over tiny
+    # efficiency differences. Higher price bands are always allocated first.
+    # The final full simulation still rejects unsafe or uneconomic shifts.
+    for direction in (-1, 1):
+        neighbor = index + direction
+        while neighbor in indices:
+            left, right = sorted((neighbor, neighbor - direction))
+            before, after = steps[left].slot, steps[right].slot
+            # Legacy naive recordings keep their wall clock; aware prices
+            # cross DST in elapsed UTC time. Missing forecast time is a gap.
+            start = before.start
+            end = after.start
+            if start.tzinfo is not None:
+                start, end = start.astimezone(UTC), end.astimezone(UTC)
+            if (
+                weights[neighbor] != weights[index]
+                or duration + steps[neighbor].slot.duration > SOURCE_BLOCK_HOURS + 1e-9
+                or abs((end - start).total_seconds() - before.duration * 3600) > 1e-6
+            ):
+                break
+            match = next(
+                (
+                    flow
+                    for flow in alternatives[neighbor]
+                    if source_state(flow) == source_state(chosen)
+                ),
+                None,
+            )
+            if match is None:
+                break
+            extra = _allocation_draw(steps[neighbor].flow, match) - _allocation_draw(
+                steps[neighbor].flow, current[neighbor]
+            )
+            saving = grid_dc(config, current[neighbor]) - grid_dc(config, match)
+            if (
+                extra <= ENERGY_EPSILON_WH
+                or extra > budget + ENERGY_EPSILON_WH
+                or saving <= ENERGY_EPSILON_WH
+            ):
+                break
+            block.append((neighbor, match))
+            budget -= extra
+            duration += steps[neighbor].slot.duration
+            neighbor += direction
+    return block
 
 
 def valid_shift(

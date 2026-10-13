@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.57.3**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.58.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -107,6 +107,9 @@ von einem SOC-Prozentpunkt zur DC-Vorbereitungsgrenze. Bereits laufende Haltung
 nutzt die ursprüngliche Grenze. Manuelle Vorgaben, physischer Schutz und die
 PV-Rückkehr behalten Vorrang. Der reine Kern verwendet für alte Aufzeichnungen
 weiterhin den neutralen Standardwert null.
+
+Ab 0.58.0 gilt dieser Startabstand auch bei jedem späteren Neustart innerhalb
+der Prognose, nicht nur im ersten Schritt.
 
 Beide Netzteile können getrennte Messungen für AC-Aufnahme und DC-Abgabe erhalten.
 Gemessene Aufnahme wird aus AC entfernt, gemessene Abgabe zu DC ergänzt. Eine
@@ -461,6 +464,15 @@ Import-/Exportzuwachs und verdrängte AC-Abgabe. Manuelle Quellen, Schutz und
 Bestätigungen bleiben vorrangig. Der bestehende Live-Takt kann vollständig
 PV-gedeckte automatische Haltung aufheben und stellt bei Verlust der frischen
 Freigabe den gültigen Plan wieder her. Vertrag: [DC/PV/Markt](F-DC-PV-MARKET.md).
+
+### Gebündelte Netzteilzeiten ab 0.58.0
+
+Die DC-Marktverteilung priorisiert höhere vorhandene Preisgewichte vor der
+Importersparnis je Batterie-Wh. Innerhalb eines Preisbands erweitert sie eine
+ausgewählte Quellenkombination auf direkt benachbarte Schritte bis zu
+30 realen Minuten. Fehlende Alternativen, Restbudget und Preisbandgrenzen
+verkürzen die Bündelung. Die vollständige physische Nachsimulation bleibt
+verbindlich. Vertrag und Nachweise: [Netzteilblöcke](F-DC-SOURCE-BLOCKS.md).
 
 ### Entfallende Netzteilladung bei Marktverschiebung ab 0.57.2
 
