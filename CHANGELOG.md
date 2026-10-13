@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.3] - 2026-10-13
+
+### Removed
+- Temporary startup memory sampling, phase logs, one-shot allocation tracing
+  and the bundled memory capture script. Diagnostic downloads no longer include
+  `startup_memory`. Startup failure cleanup and operating-history persistence
+  protection remain in place. Increasing host swap mitigates memory pressure;
+  this removal does not claim to fix the underlying allocation spikes.
+
 ## [0.57.2] - 2026-10-12
 
 ### Fixed

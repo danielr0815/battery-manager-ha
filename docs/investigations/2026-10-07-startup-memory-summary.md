@@ -53,5 +53,6 @@ Zeitlich begrenzte externe Prozessmessung mit Stack- oder Allokationszuordnung
 während des Peaks, möglichst in einer isolierten Kopie, bleibt sinnvoll.
 RSS, Python-Allokationen, Tracing-Overhead und parallel laufende HA-Arbeit
 müssen getrennt bleiben. Zusätzlicher Tracing-Speicher gehört in das Messbudget.
-Der vorhandene [Startdiagnosevertrag](../CURRENT_CONTRACTS.md) beschreibt
-begrenzte Erfassung; längeres Beobachten allein ist kein Beweis der Ursache.
+Der [historische Startdiagnosevertrag](../F-STARTUP-MEMORY-DIAGNOSTICS.md)
+beschreibt die damalige begrenzte Erfassung; längeres Beobachten allein ist kein
+Beweis der Ursache.

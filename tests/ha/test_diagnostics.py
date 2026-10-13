@@ -144,6 +144,7 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     dump = await async_get_config_entry_diagnostics(hass, entry)
+    assert "startup_memory" not in dump
     record = json.loads(json.dumps(dump["planner_recording"], allow_nan=False))
     assert replay(record) == (result, True)
     assert not decode(record["config"]).feedin.automatic_enabled

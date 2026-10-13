@@ -1,4 +1,13 @@
-# Startdiagnose für Speicherfehler
+# Historische Startdiagnose für Speicherfehler (0.56.1–0.57.2)
+
+> **Seit 0.57.3 entfernt.** Nach der dauerhaften Erweiterung des Host-Swaps
+> wurde die temporäre Startdiagnose auf Betreiberwunsch aus dem Battery Manager
+> entfernt: Speichermessungen, Phasenmarker, einmaliges Python-Tracing,
+> `startup_memory` im Diagnose-Download und das externe Aufzeichnungsskript.
+> Die folgenden Beschreibungen und Befehle dokumentieren ausschließlich den
+> damaligen Stand; sie sind keine Anleitung für aktuelle Versionen.
+> Vorhandene Messprotokolle und Untersuchungsbefunde bleiben erhalten.
+> Mehr Swap schafft Reserve, identifiziert aber nicht den verursachenden Codepfad.
 
 Ab 0.56.1. Anlass: Wiederholte globale OOM-Abbrüche beim HA-Neustart, zuletzt
 2026-10-07 um 16:31 Uhr Europe/Berlin. HA Core wurde nach etwa 33 Sekunden mit

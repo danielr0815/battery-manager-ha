@@ -104,7 +104,6 @@ from .core import (
     profile_value,
 )
 from .core.load_profile import Bins, local_hour_durations
-from .startup_diagnostics import StartupDiagnostics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -458,7 +457,6 @@ class ProfileLearner:
         self._lock = asyncio.Lock()
         self._repairing = False
         self._unsub_nightly: Callable[[], None] | None = None
-        self.startup_diagnostics = StartupDiagnostics(hass, entry.entry_id)
 
     # ------------------------------------------------------------------
     # Persistence & lifecycle
@@ -908,10 +906,7 @@ class ProfileLearner:
 
     async def async_run_learning(self) -> None:
         try:
-            async with (
-                self._lock,
-                self.startup_diagnostics.phase("consumption_learning"),
-            ):
+            async with self._lock:
                 await self._run_learning()
         except TimeoutError:
             # A hung recorder DB must surface, not stall silently: one
@@ -1680,10 +1675,9 @@ class ProfileLearner:
         it frees the run (and the lock).
         """
         recorder = get_instance(self.hass)
-        async with self.startup_diagnostics.phase("recorder_history"):
-            return await asyncio.wait_for(
-                recorder.async_add_executor_job(job), RECORDER_TIMEOUT_S
-            )
+        return await asyncio.wait_for(
+            recorder.async_add_executor_job(job), RECORDER_TIMEOUT_S
+        )
 
     async def _fetch_days(
         self,

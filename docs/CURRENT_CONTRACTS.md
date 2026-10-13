@@ -9,7 +9,7 @@ Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.57.2**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.57.3**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -179,17 +179,6 @@ Die Diagnose enthält laufende Phase und gemessene Phasenlaufzeiten unter
 `planning`. Wiederverwendung validierter Konfigurationen und unveränderlicher
 Teilintervalle reduziert Rechenarbeit ohne Lockerung fachlicher Gates. Details,
 Messwerkzeug und Nachweise: [Planungsdauer](F-PLANNING-LATENCY.md).
-
-Ab 0.56.1 zeichnet `startup_memory` den Speicher während der ersten 120 Sekunden
-der Entry-Einrichtung auf (maximal 96 Messpunkte, Timer alle zwei Sekunden).
-INFO-Marker für Archiv, Verbrauchsprofile, Recorder, Plattformen und Planung
-bleiben im HA-Log. Werte betreffen den gesamten Prozess/Host; sie behaupten keine
-exklusive Integrationszuordnung. Optionales Python-Tracing wird vor Aktivierung
-für genau einen Start verbraucht und ist begrenzt. Fehler der Diagnose dürfen
-keine Steuerung unterbrechen; Stop/Unload drainiert ihre Arbeit. Das mitgelieferte
-externe CLI-Werkzeug überlebt Core-Neustarts, verändert keine HA-Konfiguration
-und überschreibt keine vorhandene Evidenz. Vertrag und Bedienung:
-[Startdiagnose](F-STARTUP-MEMORY-DIAGNOSTICS.md).
 
 ## Haushaltsgeräte ab 0.47.0
 

@@ -290,7 +290,6 @@ from .reserve_runtime import (
 )
 from .runtime_persistence import persistent_payload
 from .source_health import source_health
-from .startup_diagnostics import StartupDiagnostics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -430,7 +429,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # async_setup_entry (the device sw_version — avoids a hard-coded
         # constant drifting from the manifest).
         self.integration_version: str | None = None
-        self.startup_diagnostics = StartupDiagnostics(hass, entry.entry_id)
 
         # Input caching for graceful degradation
         self._last_valid_soc: float | None = None
@@ -811,7 +809,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Learned consumption profiles (docs/CONSUMPTION_FORECAST.md)
         self.learner = ProfileLearner(hass, entry)
-        self.learner.startup_diagnostics = self.startup_diagnostics
 
         self._planning = PlanningRunner()
         self._update_lock = asyncio.Lock()
@@ -848,11 +845,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_load_persistent_state(self) -> None:
         """Restore the load-SOC cache and plug ownership after a restart."""
-        async with self.startup_diagnostics.phase("learned_profiles_restore"):
-            await self.learner.async_load()
+        await self.learner.async_load()
         try:
-            async with self.startup_diagnostics.phase("runtime_store_load"):
-                data = await self._store.async_load()
+            data = await self._store.async_load()
         except UnsupportedStorageVersionError:
             # A store written by a NEWER envelope major (downgrade scenario)
             # is refused by HA before the migrate callback runs. The cached
@@ -4130,10 +4125,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._ensure_planning_inputs(inputs)
 
         await protect_inputs()
-        async with self.startup_diagnostics.phase(f"planner:{phase}"):
-            result = await self._planning.async_run(
-                self.hass, plan, phase, config, inputs, protect_inputs
-            )
+        result = await self._planning.async_run(
+            self.hass, plan, phase, config, inputs, protect_inputs
+        )
         self._ensure_planning_inputs(inputs)
         return result
 

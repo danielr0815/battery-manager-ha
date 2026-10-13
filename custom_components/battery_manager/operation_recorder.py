@@ -67,8 +67,7 @@ class OperationRecorder:
         """Validate an isolated journal in the worker, then adopt atomically."""
         self._storage_ready = False
         try:
-            async with self.coordinator.startup_diagnostics.phase("archive_load"):
-                stored = await self.storage.async_load()
+            stored = await self.storage.async_load()
         except Exception as err:
             self.storage.last_error = type(err).__name__
             stored = None
@@ -95,8 +94,7 @@ class OperationRecorder:
             return history
 
         try:
-            async with self.coordinator.startup_diagnostics.phase("archive_validate"):
-                restored = await self.coordinator.hass.async_add_executor_job(restore)
+            restored = await self.coordinator.hass.async_add_executor_job(restore)
         except Exception as err:
             self.last_error = type(err).__name__
             _LOGGER.warning("Operating history unavailable: %s", err)
