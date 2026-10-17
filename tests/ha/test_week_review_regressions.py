@@ -43,7 +43,11 @@ async def test_floor_protection_preserves_valid_economic_source_after_late_feedb
     configure_reserve(c, hass)
     now = dt_util.now()
     inputs = PlanInputs(now, 12, (HourSlot(0, now, 1, now.hour, 0, 100, 60),))
-    result = SimpleNamespace(support_dc24_now=True, support_dc48_now=True)
+    result = SimpleNamespace(
+        support_dc24_now=True,
+        support_dc48_now=True,
+        trajectory=SimpleNamespace(flows=()),
+    )
     c._last_planner_recording = (c.build_system_config(), inputs, result)
     dead.add(late)
     await execute(c, dc24=True, dc48=True)

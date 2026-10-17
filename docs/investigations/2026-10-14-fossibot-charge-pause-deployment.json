@@ -1,0 +1,456 @@
+{
+  "deployed_at": "2026-10-14T20:26:08.786Z",
+  "automations": [
+    {
+      "id": "1777827465893",
+      "alias": "Fossibot F2400-B Ladesteuerung mit Passthrough",
+      "description": "Battery Manager Ladefreigabe: EIN erlaubt Laden; AUS erneuert alle zwei Minuten eine zehnminütige Ladepause. Netzversorgung und AC-Ausgang bleiben erhalten. Bei längerem HA/WLAN-Ausfall kann die Pause auslaufen.",
+      "use_blueprint": {
+        "path": "battery_manager/fossibot_charge_pause.yaml",
+        "input": {
+          "charge_enable": "input_boolean.charge_f2400_b",
+          "input_switch": "switch.buro_fossibot_b1_in",
+          "charge_delay": "number.f2400_b_fossibot_e80690c65522_stop_charge_after",
+          "grid_charging": "binary_sensor.buro_f2400_b_fossibot_e80690c65522_grid_charging"
+        }
+      },
+      "trace": {
+        "stored_traces": 10
+      }
+    },
+    {
+      "id": "1777830033676",
+      "alias": "Fossibot F2400-B2 Ladesteuerung mit Passthrough",
+      "description": "Battery Manager Ladefreigabe: EIN erlaubt Laden; AUS erneuert alle zwei Minuten eine zehnminütige Ladepause. Netzversorgung und AC-Ausgang bleiben erhalten. Bei längerem HA/WLAN-Ausfall kann die Pause auslaufen.",
+      "use_blueprint": {
+        "path": "battery_manager/fossibot_charge_pause.yaml",
+        "input": {
+          "charge_enable": "input_boolean.charge_f2400_b2",
+          "input_switch": "switch.buro_fossibot_b2_in",
+          "charge_delay": "number.f2400_b2_fossibot_e8f60a03d0ce_stop_charge_after",
+          "grid_charging": "binary_sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_grid_charging"
+        }
+      },
+      "trace": {
+        "stored_traces": 10
+      }
+    }
+  ],
+  "policy_changes": [
+    {
+      "title": "Fossibot F2400-B",
+      "key": "input_off_policy",
+      "before": "auto",
+      "after": "keep_on"
+    },
+    {
+      "title": "Fossibot F2400-B2",
+      "key": "input_off_policy",
+      "before": "auto",
+      "after": "keep_on"
+    }
+  ],
+  "verification": [
+    {
+      "id": "1777827465893",
+      "entity": "automation.f2400_b_ladesteuerung",
+      "active": true,
+      "blueprint": {
+        "path": "battery_manager/fossibot_charge_pause.yaml",
+        "input": {
+          "charge_enable": "input_boolean.charge_f2400_b",
+          "input_switch": "switch.buro_fossibot_b1_in",
+          "charge_delay": "number.f2400_b_fossibot_e80690c65522_stop_charge_after",
+          "grid_charging": "binary_sensor.buro_f2400_b_fossibot_e80690c65522_grid_charging"
+        }
+      },
+      "mode": "queued"
+    },
+    {
+      "id": "1777830033676",
+      "entity": "automation.f2400_b2_ladesteuerung",
+      "active": true,
+      "blueprint": {
+        "path": "battery_manager/fossibot_charge_pause.yaml",
+        "input": {
+          "charge_enable": "input_boolean.charge_f2400_b2",
+          "input_switch": "switch.buro_fossibot_b2_in",
+          "charge_delay": "number.f2400_b2_fossibot_e8f60a03d0ce_stop_charge_after",
+          "grid_charging": "binary_sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_grid_charging"
+        }
+      },
+      "mode": "queued"
+    }
+  ],
+  "live_check": {
+    "ids": {
+      "plug": "switch.buro_fossibot_b2_in",
+      "manager": "switch.abstellraum_battery_manager_fossibot_f2400_b2_bm_control",
+      "automation": "automation.f2400_b2_ladesteuerung",
+      "enable": "input_boolean.charge_f2400_b2",
+      "timer": "number.f2400_b2_fossibot_e8f60a03d0ce_stop_charge_after",
+      "limit": "number.f2400_b2_fossibot_e8f60a03d0ce_ac_charging_upper_limit",
+      "output": "switch.f2400_b2_fossibot_e8f60a03d0ce_ac_output"
+    },
+    "measurement_ids": {
+      "plug": "switch.buro_fossibot_b2_in",
+      "manager": "switch.abstellraum_battery_manager_fossibot_f2400_b2_bm_control",
+      "automation": "automation.f2400_b2_ladesteuerung",
+      "enable": "input_boolean.charge_f2400_b2",
+      "timer": "number.f2400_b2_fossibot_e8f60a03d0ce_stop_charge_after",
+      "limit": "number.f2400_b2_fossibot_e8f60a03d0ce_ac_charging_upper_limit",
+      "output": "switch.f2400_b2_fossibot_e8f60a03d0ce_ac_output",
+      "socket_power": "sensor.buro_fossibot_b2_in_power",
+      "soc": "sensor.f2400_b2_fossibot_e8f60a03d0ce_state_of_charge",
+      "input": "sensor.f2400_b2_fossibot_e8f60a03d0ce_total_input",
+      "out": "sensor.f2400_b2_fossibot_e8f60a03d0ce_total_output",
+      "ac_out": "sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_ac_output_power",
+      "input_v": "sensor.f2400_b2_fossibot_e8f60a03d0ce_ac_input_voltage",
+      "out_v": "sensor.f2400_b2_fossibot_e8f60a03d0ce_ac_output_voltage",
+      "charging": "binary_sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_grid_charging",
+      "battery_charging": "binary_sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_battery_charging"
+    },
+    "started": "2026-10-14T20:33:42.241Z",
+    "original": {
+      "plug": "off",
+      "manager": "on",
+      "automation": "on",
+      "enable": "off",
+      "timer": "0",
+      "limit": "90.0",
+      "output": "off"
+    },
+    "log": [
+      {
+        "at": "2026-10-14T20:33:51.601Z",
+        "action": "Temporarily pause B2 manager for live adapter check"
+      },
+      {
+        "at": "2026-10-14T20:33:59.453Z",
+        "action": "Wake B2 through external socket; leave helper OFF and adapter active"
+      },
+      {
+        "at": "2026-10-14T20:34:13.217Z",
+        "readings": {
+          "plug": {
+            "state": "on",
+            "reported": "2026-10-14T20:33:59.492094+00:00"
+          },
+          "manager": {
+            "state": "off",
+            "reported": "2026-10-14T20:33:57.961170+00:00"
+          },
+          "automation": {
+            "state": "on",
+            "reported": "2026-10-14T20:34:11.504508+00:00"
+          },
+          "enable": {
+            "state": "off",
+            "reported": "2026-10-14T11:19:56.561143+00:00"
+          },
+          "timer": {
+            "state": "0",
+            "reported": "2026-10-14T20:13:52.463437+00:00"
+          },
+          "limit": {
+            "state": "90.0",
+            "reported": "2026-10-14T20:04:43.179757+00:00"
+          },
+          "output": {
+            "state": "off",
+            "reported": "2026-10-14T20:14:19.959076+00:00"
+          },
+          "socket_power": {
+            "state": "215.2",
+            "reported": "2026-10-14T20:34:13.020239+00:00"
+          },
+          "soc": {
+            "state": "21.5",
+            "reported": "2026-10-14T20:34:10.498829+00:00"
+          },
+          "input": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499006+00:00"
+          },
+          "out": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499022+00:00"
+          },
+          "ac_out": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499040+00:00"
+          },
+          "input_v": {
+            "state": "0.5",
+            "reported": "2026-10-14T20:34:10.499138+00:00"
+          },
+          "out_v": {
+            "state": "3.8",
+            "reported": "2026-10-14T20:34:10.499084+00:00"
+          },
+          "charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:10.498514+00:00"
+          },
+          "battery_charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:10.498646+00:00"
+          }
+        }
+      },
+      {
+        "at": "2026-10-14T20:34:32.726Z",
+        "action": "Enable authorized B2 consumer for automatic passthrough check"
+      },
+      {
+        "at": "2026-10-14T20:35:07.191Z",
+        "readings": {
+          "plug": {
+            "state": "on",
+            "reported": "2026-10-14T20:33:59.492094+00:00"
+          },
+          "manager": {
+            "state": "off",
+            "reported": "2026-10-14T20:33:57.961170+00:00"
+          },
+          "automation": {
+            "state": "on",
+            "reported": "2026-10-14T20:34:37.212449+00:00"
+          },
+          "enable": {
+            "state": "off",
+            "reported": "2026-10-14T11:19:56.561143+00:00"
+          },
+          "timer": {
+            "state": "10",
+            "reported": "2026-10-14T20:34:48.942261+00:00"
+          },
+          "limit": {
+            "state": "90.0",
+            "reported": "2026-10-14T20:04:43.179757+00:00"
+          },
+          "output": {
+            "state": "on",
+            "reported": "2026-10-14T20:34:48.941838+00:00"
+          },
+          "socket_power": {
+            "state": "9.6",
+            "reported": "2026-10-14T20:35:00.256696+00:00"
+          },
+          "soc": {
+            "state": "21.5",
+            "reported": "2026-10-14T20:34:10.498829+00:00"
+          },
+          "input": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:48.941015+00:00"
+          },
+          "out": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499022+00:00"
+          },
+          "ac_out": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499040+00:00"
+          },
+          "input_v": {
+            "state": "224.8",
+            "reported": "2026-10-14T20:34:48.941269+00:00"
+          },
+          "out_v": {
+            "state": "225.7",
+            "reported": "2026-10-14T20:34:48.941112+00:00"
+          },
+          "charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:48.940482+00:00"
+          },
+          "battery_charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:48.940626+00:00"
+          }
+        }
+      },
+      {
+        "at": "2026-10-14T20:35:48.503Z",
+        "readings": {
+          "timer": {
+            "state": "9",
+            "reported": "2026-10-14T20:35:21.086102+00:00"
+          },
+          "socket_power": {
+            "state": "9.6",
+            "reported": "2026-10-14T20:35:00.256696+00:00"
+          },
+          "input": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:48.941015+00:00"
+          },
+          "out": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499022+00:00"
+          },
+          "out_v": {
+            "state": "225.8",
+            "reported": "2026-10-14T20:35:21.085035+00:00"
+          },
+          "charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:48.940482+00:00"
+          },
+          "battery_charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:48.940626+00:00"
+          }
+        }
+      },
+      {
+        "at": "2026-10-14T20:36:19.298Z",
+        "readings": {
+          "timer": {
+            "state": "10",
+            "reported": "2026-10-14T20:36:03.879796+00:00"
+          },
+          "socket_power": {
+            "state": "9.6",
+            "reported": "2026-10-14T20:35:00.256696+00:00"
+          },
+          "input": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:48.941015+00:00"
+          },
+          "out": {
+            "state": "0",
+            "reported": "2026-10-14T20:34:10.499022+00:00"
+          },
+          "out_v": {
+            "state": "225.6",
+            "reported": "2026-10-14T20:36:03.878680+00:00"
+          },
+          "charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:48.940482+00:00"
+          },
+          "battery_charging": {
+            "state": "off",
+            "reported": "2026-10-14T20:34:48.940626+00:00"
+          }
+        }
+      },
+      {
+        "at": "2026-10-14T20:36:32.255Z",
+        "action": "Restore original AC output OFF after adapter check"
+      },
+      {
+        "at": "2026-10-14T20:36:39.181Z",
+        "action": "Restore original external input OFF; timer remains managed by new adapter"
+      },
+      {
+        "at": "2026-10-14T20:36:58.072Z",
+        "action": "Restore original Battery Manager control ON"
+      }
+    ],
+    "traces": [
+      {
+        "last_step": "action/3",
+        "run_id": "2eab4042972e7d74b1ad753fbfeb1d97",
+        "state": "stopped",
+        "script_execution": "finished",
+        "timestamp": {
+          "start": "2026-10-14T20:33:59.492244+00:00",
+          "finish": "2026-10-14T20:34:10.503012+00:00"
+        },
+        "domain": "automation",
+        "item_id": "1777830033676",
+        "trigger": "state of switch.buro_fossibot_b2_in"
+      },
+      {
+        "last_step": "action/3",
+        "run_id": "aace8ca7df0701a1c4121ec2da0ee243",
+        "state": "stopped",
+        "script_execution": "finished",
+        "timestamp": {
+          "start": "2026-10-14T20:34:00.438686+00:00",
+          "finish": "2026-10-14T20:34:11.505300+00:00"
+        },
+        "domain": "automation",
+        "item_id": "1777830033676",
+        "trigger": "time pattern"
+      },
+      {
+        "last_step": "action/3",
+        "run_id": "1e9d16e32974a28b28a4616aaa05a0b2",
+        "state": "stopped",
+        "script_execution": "finished",
+        "timestamp": {
+          "start": "2026-10-14T20:34:22.814192+00:00",
+          "finish": "2026-10-14T20:34:23.817571+00:00"
+        },
+        "domain": "automation",
+        "item_id": "1777830033676",
+        "trigger": "state of binary_sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_grid_charging"
+      },
+      {
+        "last_step": "action/3",
+        "run_id": "43e9fe39ec0e998998eb1caed3bfd0ad",
+        "state": "stopped",
+        "script_execution": "finished",
+        "timestamp": {
+          "start": "2026-10-14T20:34:36.208587+00:00",
+          "finish": "2026-10-14T20:34:37.213160+00:00"
+        },
+        "domain": "automation",
+        "item_id": "1777830033676",
+        "trigger": "state of binary_sensor.keller_f2400_b2_fossibot_e8f60a03d0ce_grid_charging"
+      },
+      {
+        "last_step": "action/3",
+        "run_id": "ad9d9a13bc2adf592e07a62d561dc536",
+        "state": "stopped",
+        "script_execution": "finished",
+        "timestamp": {
+          "start": "2026-10-14T20:36:00.438251+00:00",
+          "finish": "2026-10-14T20:36:03.881415+00:00"
+        },
+        "domain": "automation",
+        "item_id": "1777830033676",
+        "trigger": "time pattern"
+      }
+    ],
+    "restoration": {
+      "at": "2026-10-14T20:37:10.670Z",
+      "current": {
+        "plug": "off",
+        "manager": "on",
+        "automation": "on",
+        "enable": "off",
+        "timer": "9",
+        "limit": "90.0",
+        "output": "off"
+      },
+      "mismatches": [],
+      "restored": true,
+      "timer_note": "Delay remains under permanent adapter control"
+    },
+    "interpretation": "Automatic wake reconciliation and renewal (9 to 10 min at 20:36 UTC) verified. AC output stayed on at about226 V; downstream load drew 0 W during this repeat check. Earlier manual timer test verified76 W input/output passthrough. Temporary test controls restored; delay remains under adapter control."
+  },
+  "validation": {
+    "suite": "2873 passed",
+    "coverage_percent": 97.88,
+    "module_gate": "68 modules, HA >= 95%, core = 100%",
+    "adapter_tests": 21,
+    "static_checks": [
+      "ruff check",
+      "ruff format --check",
+      "mypy",
+      "uv lock --check --offline",
+      "npm run check:bundle",
+      "git diff --check"
+    ]
+  },
+  "integration_code": {
+    "prepared_version": "0.59.2",
+    "live_deployed": false,
+    "note": "The F4 passthrough correction requires a regular integration update. The blueprint and automation/configuration changes are already active."
+  }
+}

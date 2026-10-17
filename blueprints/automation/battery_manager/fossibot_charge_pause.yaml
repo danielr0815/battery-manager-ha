@@ -1,0 +1,162 @@
+blueprint:
+  name: Battery Manager – Fossibot-Ladepause mit Passthrough
+  description: >-
+    Übersetzt die Ladefreigabe des Battery Managers in den Fossibot-Timer
+    „Delay Charge“ / „Stop Charge After“. Nur eine ausdrücklich eingeschaltete
+    Freigabe setzt den Timer auf 0; sonst wird eine Ladepause von 10 Minuten
+    alle 2 Minuten erneuert. Netzstecker, AC-Ausgang und Max-SOC bleiben unter
+    ihrer bisherigen Steuerung. Für Passthrough muss die Netzversorgung
+    eingeschaltet bleiben. Nach einem längeren HA-/WLAN-Ausfall kann das
+    Laden nach Ablauf des Timers wieder beginnen. Den alten Max-SOC-Adapter
+    vor Aktivierung dieser Automation deaktivieren. Bleibt AC-Laden trotz
+    gesperrter Freigabe zwei Minuten aktiv, erscheint eine dauerhafte Meldung.
+  domain: automation
+  homeassistant:
+    min_version: "2026.8.0"
+  input:
+    charge_enable:
+      name: Ladefreigabe
+      description: Vom Battery Manager gesteuerter Ladefreigabe-Helfer.
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+            - domain: switch
+    input_switch:
+      name: Externer Netzstecker
+      description: Wird nur gelesen; die Automation schaltet diesen Stecker nicht.
+      selector:
+        entity:
+          filter:
+            - domain: switch
+    charge_delay:
+      name: Ladeverzögerung
+      description: Fossibot „Delay Charge“ / „Stop Charge After“ in Minuten.
+      selector:
+        entity:
+          filter:
+            - domain: number
+    grid_charging:
+      name: AC-Laderückmeldung
+      description: Fossibot „Grid Charging“; erneutes Laden löst einen Abgleich aus.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+
+variables:
+  charge_enable_entity: !input charge_enable
+  charge_delay_entity: !input charge_delay
+  input_switch_entity: !input input_switch
+  grid_charging_entity: !input grid_charging
+  notification_id: "{{ 'battery_manager_fossibot_charge_pause_' ~ charge_delay_entity | replace('.', '_') }}"
+
+trigger_variables:
+  charge_enable_trigger: !input charge_enable
+  input_switch_trigger: !input input_switch
+  grid_charging_trigger: !input grid_charging
+
+triggers:
+  - trigger: state
+    entity_id: !input charge_enable
+    # Ignore attribute-only updates; unknown/unavailable are intentional pauses.
+    to: null
+    id: permission_changed
+  - trigger: state
+    entity_id: !input input_switch
+    to: "on"
+    id: input_available
+  - trigger: state
+    entity_id: !input charge_delay
+    from: "unavailable"
+    id: device_returned
+  - trigger: state
+    entity_id: !input charge_delay
+    from: "unknown"
+    id: device_initialized
+  - trigger: state
+    entity_id: !input grid_charging
+    to: "on"
+    id: charging_detected
+  - trigger: state
+    entity_id: !input grid_charging
+    to: "off"
+    id: charging_stopped
+  - trigger: state
+    entity_id: !input input_switch
+    to: "off"
+    id: input_removed
+  - trigger: template
+    value_template: >-
+      {{ is_state(input_switch_trigger, 'on')
+         and not is_state(charge_enable_trigger, 'on')
+         and is_state(grid_charging_trigger, 'on') }}
+    for:
+      minutes: 2
+    id: charge_pause_failed
+  - trigger: homeassistant
+    event: start
+    id: startup
+  - trigger: event
+    event_type: automation_reloaded
+    id: automation_reloaded
+  # The integration may keep reporting the commanded 10 instead of counting
+  # down. Renewal must therefore be independent of the reported timer value.
+  - trigger: time_pattern
+    minutes: "/2"
+    id: renewal
+
+actions:
+  # Feedback is checked before timer availability: an unreachable number
+  # must not hide that the device still reports charging. A successful write
+  # alone never clears the warning; only intent or physical feedback does.
+  - choose:
+      - conditions: >-
+          {{ is_state(charge_enable_entity, 'on')
+             or is_state(grid_charging_entity, 'off')
+             or is_state(input_switch_entity, 'off') }}
+        sequence:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ notification_id }}"
+      # Template triggers do not arm when already true at startup/reload.
+      # Renewal also checks the current state's age. Never trust an old queued
+      # failure-trigger alone after a brief recovery reset the grace period.
+      - conditions: >-
+          {{ is_state(input_switch_entity, 'on')
+             and not is_state(charge_enable_entity, 'on')
+             and is_state(grid_charging_entity, 'on')
+             and as_timestamp(now()) -
+                 (expand(input_switch_entity, charge_enable_entity,
+                         grid_charging_entity)
+                  | map(attribute='last_changed') | map('as_timestamp') | max)
+                 >= 120 }}
+        sequence:
+          - action: persistent_notification.create
+            data:
+              notification_id: "{{ notification_id }}"
+              title: Fossibot-Ladepause nicht bestätigt
+              message: >-
+                {{ state_attr(charge_enable_entity, 'friendly_name') or charge_enable_entity }}:
+                Die Fossibot meldet trotz gesperrter Ladefreigabe seit mindestens
+                zwei Minuten AC-Laden. Der Adapter versucht die Ladepause weiter
+                alle zwei Minuten. Bitte Geräteverbindung und Ladeverzögerung
+                prüfen. Netzstecker und AC-Ausgang werden nicht abgeschaltet.
+  # Evaluate guards when a queued run executes, not when its trigger arrived.
+  - condition: state
+    entity_id: !input input_switch
+    state: "on"
+  - condition: template
+    value_template: "{{ is_number(states(charge_delay_entity)) }}"
+  - action: number.set_value
+    target:
+      entity_id: !input charge_delay
+    data:
+      # Read the current helper at the command boundary; queued triggers must
+      # not replay a permission captured before a later stop request.
+      value: "{{ 0 if is_state(charge_enable_entity, 'on') else 10 }}"
+
+# A new trigger must not cancel an in-flight device command. Runs are short,
+# and each queued run rechecks current availability and permission itself.
+mode: queued
+max: 5

@@ -104,3 +104,14 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | Originalprognose + Recorder-Nachlieferung + P80 + DST/Zeitzonenwechsel | Vor Stundenbeginn gespeicherte Werte verwenden; reale Dauer und Zeitidentität beachten | `ha/test_learning_evidence.py` |
 | Neuer Lernzeitpunkt + alte/leere/future Messstunden | Tatsächliche Messfrische getrennt vom Rechenzeitpunkt anzeigen | `ha/test_learning_evidence.py`, `browser/cards.spec.mjs` |
 | Lange Planung + fehlende Live-AC-Messung + nahe Preisgrenze | Vorlauf an Rechenzeit anpassen; bestehende Freigabe läuft weiterhin exakt ab | `ha/test_planning_time.py`, `ha/test_live_ac_runtime.py` |
+
+## Fossibot-Ladepause 0.59.2
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Lade-Helfer + Passthrough + fehlende Freigabe | Nur exakt ON setzt Timer null; sonst zehn Minuten Pause, keine Befehle an Netzstecker, AC-Ausgang oder Max-SOC | `ha/test_fossibot_charge_pause.py` |
+| Gecachter Timer + periodische Erneuerung | Zweiminutentakt schreibt Pause unabhängig vom angezeigten Countdown erneut | `ha/test_fossibot_charge_pause.py` |
+| Offline-Gerät + Eingang ON + Entity-Rückkehr + Reload | Aktuellen Helferzustand beim ausführbaren Gerätebefehl abgleichen, kein Vorab-Wake durch Adapter | `ha/test_fossibot_charge_pause.py` |
+| Gerätebefehl fehlgeschlagen + spätere Lade-Rückmeldung | Nächster Abgleich versucht Pause erneut; Passthrough bleibt erhalten | `ha/test_fossibot_charge_pause.py` |
+| Dauerhaft gemeldete Netzladung + fehlender Timer + späteres Feedback | Fehlerhinweis nach mindestens zwei Minuten; erfolgreicher Timerbefehl allein löscht ihn nicht, kurze Rückmeldungsverzögerung löst ihn nicht aus | `ha/test_fossibot_charge_pause.py` |
+| Lade-Gate OFF + konstante positive Passthrough-Leistung | Keine neue F4-Freeze-Evidenz; vorhandene positive Sperren und G2 erhalten | `ha/test_load_switching.py` |

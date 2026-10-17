@@ -248,6 +248,30 @@ async def test_refresh_reports_dynamic_source_with_learned_quantiles(hass):
     assert diag["soc_buffer_effective"] == expected
 
 
+async def test_provisional_load_uses_fixed_buffer_without_measured_band(hass):
+    """Sparse estimates are useful loads, not proof of zero uncertainty."""
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    learner = coordinator.learner
+    learner.data["profiles"] = {
+        "ac": {
+            day: {"p50": [177.0] * 24, "p80": [None] * 24}
+            for day in ("weekday", "weekend", "absence")
+        },
+        "dc": None,
+    }
+    learner.data["source_entities"] = {"ac": [], "dc": []}
+    learner.data["computed_at"] = dt_util.now().isoformat()
+    await coordinator.async_refresh()
+    diag = coordinator.data["consumption_profile"]
+    assert diag["ac_slot_coverage"] == 1
+    assert diag["coverage_detail"]["ac"]["uncertainty_known_hours"] == 0
+    assert diag["coverage_detail"]["ac"]["uncertainty_unknown_hours"] > 0
+    assert diag["soc_buffer_source"] == "fixed"
+    assert diag["soc_buffer_effective"] == 5
+    assert all(row["ac_w"] == 177 for row in coordinator.data["consumption_forecast"])
+
+
 async def test_refresh_reports_fixed_source_without_quantiles(hass):
     """End-to-end fallback: no learned quantiles -> the fixed planning buffer
     stays in charge (scalar path) and is reported as source=fixed."""

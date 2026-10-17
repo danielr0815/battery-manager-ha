@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.0] - 2026-10-17
+
+### Changed
+- Consumption forecasts use sparse, cleaned measurements as provisional hourly
+  estimates instead of discarding them below the uncertainty-band sample limit.
+  Hours without observations retain their previous estimate; new evidence still
+  uses recency weighting and rate limiting. The learning details distinguish
+  established, provisional, retained and static values with actual sample counts.
+- Uncertainty bands still require the original minimum sample count. Missing
+  bands remain unknown, and a forecast without any bands uses the fixed SOC
+  buffer. Existing cleaning exclusions and explicit history repair remain intact.
+- The first learning setup after upgrading reaggregates existing history without
+  resetting it or changing historical configuration attribution.
+
+## [0.59.2] - 2026-10-14
+
+### Added
+- A reusable Fossibot charging adapter blueprint translates the existing charge
+  helper into a tested 10-minute charging delay or zero delay. A two-minute
+  watchdog renews the pause even if the reported timer is cached; startup and
+  device-return triggers reconcile the current request. Only an explicitly ON
+  helper permits charging. The adapter leaves the input socket, AC output and
+  maximum SOC untouched; Battery Manager remains responsible for planning.
+- A persistent Home Assistant notification reports AC charging that remains
+  reported for two minutes after charging permission is withdrawn, including
+  when the timer entity is unavailable. Clearing it requires a changed charging
+  request or OFF feedback, not merely a successful timer write.
+- Installation and operating guidance for retaining AC passthrough with the
+  existing `keep_on` input policy, replacing unsupported 20 % SOC stop commands,
+  and distinguishing an acknowledged helper from measured charging. The timer
+  can expire during a Home Assistant or device-connection outage; it is not a
+  permanent hardware charging lock.
+
+### Fixed
+- A confirmed OFF charging gate no longer accumulates new frozen-charge
+  evidence from constant positive passthrough power. Existing positive-power
+  telemetry-freeze latches and independent stale-SOC protection remain intact.
+
+## [0.59.1] - 2026-10-14
+
+### Fixed
+- Idle Fossibots no longer become unavailable solely because SOC and standby
+  power remain unchanged after an earlier charging recommendation. The freeze
+  watchdog excludes readings below the existing standby threshold and clears
+  persisted false positives when valid standby readings are available. This
+  also works while both onboard sensors are unavailable if the external socket
+  confirms OFF and the persisted freeze evidence was standby power. A planned
+  charge can then wake the Fossibot through its socket without waiting for Wi-Fi.
+- The first charging recommendation starts the freeze evidence window instead
+  of retroactively counting preceding idle hours. Existing protection against
+  frozen charging telemetry and the independent stale-SOC latch remain active.
+
+## [0.59.0] - 2026-10-14
+
+### Added
+- Adaptive 48 V gate learning from recent, comparable battery-voltage, SOC and
+  power observations. Time-weighted SOC coordinates follow gradual BMS drift;
+  suspected recalibration starts a new evidence epoch. Bounded evidence survives
+  restarts and is invalidated when its source configuration changes.
+- Forecast-card explanations for voltage-gated switching, protective readiness,
+  learned SOC thresholds and insufficient learning evidence.
+
+### Changed
+- Coordinated economic 48 V support now waits for useful battery voltage instead
+  of keeping an idle PSU enabled above its voltage threshold. The existing source
+  owner applies voltage hysteresis and dwell, rechecks delayed commands and retains
+  the support request for fast reactivation. Manual and battery-protection requests
+  retain priority; the 24 V transfer remains independent.
+- Future adaptive forecasts use the learned SOC gate rather than carrying today's
+  voltage through the horizon. Learned support credits direct load coverage only,
+  not invented grid charging; stress forecasts retain zero unmeasured PSU credit.
+  Cold starts disclose the configured SOC fallback without assured future power.
+
 ## [0.58.0] - 2026-10-13
 
 ### Changed

@@ -157,8 +157,9 @@ def aggregate_bins(
     - `weights` (per ISO day, e.g. recency 0.5^(age/half_life)) turn the
       quantiles into the drift/season model; missing/None = equal weights
       (plain median behaviour of Stufe 1).
-    - Bins with fewer than `min_samples[day type]` RAW values stay None
-      (slot-wise fallback to the static profile, D-C6).
+    - Any cleaned observation can supply a provisional P50. The minimum
+      sample count qualifies P80, not the usefulness of the measured load.
+      Without observations retain the previous P50, but never its old band.
     - The change per bin, quantile and run is limited to ±`rate_limit`
       relative to the previous value (damping against residual feedback,
       D-C2), with an absolute minimum step so a bin at 0 W is no fixed
@@ -189,12 +190,21 @@ def aggregate_bins(
         for hour in range(24):
             pairs = collected[dt_key][hour]
             samples[dt_key][hour] = len(pairs)
-            if len(pairs) < needed:
+            if not pairs:
+                retained = profile_value(previous, dt_key, hour)
+                if retained is not None:
+                    bins[dt_key]["p50"][hour] = round(
+                        min(max(retained, 0.0), clamp_w), 1
+                    )
                 continue
             values = [v for v, _w in pairs]
             value_weights = [w for _v, w in pairs]
             results: dict[str, float] = {}
             for q_key, q in QUANTILES.items():
+                # F-PROFILE-CONTINUITY: sparse evidence is useful for the
+                # expected load, but must not claim a measured uncertainty band.
+                if q_key == "p80" and len(pairs) < needed:
+                    continue
                 new = weighted_quantile(values, value_weights, q)
                 prev_list = (
                     prev_bins.get(q_key) if isinstance(prev_bins, dict) else None
@@ -205,7 +215,7 @@ def aggregate_bins(
                     new = min(max(new, prev - step), prev + step)
                 results[q_key] = round(max(new, 0.0), 1)
             # Rate limiting may cross the quantiles: restore the order.
-            if results["p80"] < results["p50"]:
+            if "p80" in results and results["p80"] < results["p50"]:
                 results["p80"] = results["p50"]
             for q_key, value in results.items():
                 bins[dt_key][q_key][hour] = value

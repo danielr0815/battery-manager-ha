@@ -32,6 +32,63 @@ async def learner(hass, freezer):
     return learner
 
 
+async def test_sparse_weekends_and_retained_hours_survive_learning_and_reload(
+    learner, hass, monkeypatch
+):
+    """F-PROFILE-CONTINUITY: real estimates with honest sample quality."""
+    hass.config.components.add("recorder")
+    monkeypatch.setattr(learner, "_fetch_configuration_epochs", AsyncMock())
+    for day in ("2026-09-26", "2026-10-03", "2026-10-10"):
+        values = [200.0] * 24
+        values[4] = None
+        learner.data["daily_hours"][day] = {"ac": values}
+        learner.data["day_log"][day] = {"daytype": "weekend", "vacation": False}
+    learner.data["profiles"]["ac"] = {
+        "weekend": {
+            "p50": [None] * 4 + [77.0] + [None] * 19,
+            "p80": [None] * 4 + [99.0] + [None] * 19,
+        }
+    }
+    await learner._run_learning()
+    bins = learner.profiles_for_planning()["ac"]["weekend"]
+    assert bins["p50"][0] == 200
+    assert bins["p50"][4] == 77
+    assert bins["p80"] == [None] * 24
+    diag = learner.diagnostics()
+    assert diag["samples"]["ac"]["weekend"][0] == 3
+    assert diag["samples"]["ac"]["weekend"][4] == 0
+    assert diag["bin_quality"]["ac"]["weekend"][0] == "provisional"
+    assert diag["bin_quality"]["ac"]["weekend"][4] == "retained"
+    assert diag["bin_quality"]["ac"]["weekday"][0] == "fallback"
+    assert diag["coverage_detail"]["ac"]["mature_bins"] == 0
+    assert _valid_learned_data(learner.data)
+    await learner._store.async_save(learner.data)
+    restored = ProfileLearner(hass, learner.entry)
+    await restored.async_load()
+    assert restored.profiles_for_planning() == learner.profiles_for_planning()
+    assert restored.diagnostics()["bin_quality"] == diag["bin_quality"]
+
+
+async def test_profile_policy_upgrade_reaggregates_once_without_recleaning_history(
+    learner, hass, monkeypatch
+):
+    hass.config.components.add("recorder")
+    monkeypatch.setattr(learner, "_fetch_configuration_epochs", AsyncMock())
+    await learner._run_learning()
+    learner.data["diagnostics"].pop("aggregation_policy")
+    before = deepcopy(learner.data["configuration_epochs"])
+    start = Mock()
+    monkeypatch.setattr(learner, "_start_run", start)
+    learner.async_schedule()
+    start.assert_called_once()
+    await learner._run_learning()
+    start.reset_mock()
+    learner.async_schedule()
+    start.assert_not_called()
+    assert learner.data["configuration_epochs"] == before
+    learner.async_unschedule()
+
+
 def prediction(hour=6, watts=100, day="2026-10-09"):
     return {
         "start": f"{day}T{hour:02d}:00:00+00:00",

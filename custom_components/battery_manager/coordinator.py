@@ -290,6 +290,7 @@ from .reserve_runtime import (
 )
 from .runtime_persistence import persistent_payload
 from .source_health import source_health
+from .voltage_gate import VoltageGateRuntime, requested_dc48
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -558,6 +559,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
         # 48 V gate calibration (F-N3 phase 3): SOC bracket where the real
         # battery voltage crosses the PSU output — helps pick gate_soc.
+        self.voltage_gate = VoltageGateRuntime(self)
         self._gate_cal: dict[str, float | None] = {
             "below_max_soc": None,
             "above_min_soc": None,
@@ -860,6 +862,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             data = None
         self._reserve_runtime.restore(data.get("reserve") if data else None)
+        self.voltage_gate.learner.restore(data.get("voltage_gate") if data else None)
         if data:
             # Cache entries are keyed by subentry AND carry the source entity
             # id so a reconfigured load never reuses another device's SOC.
@@ -1136,6 +1139,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Confirmed ownership and obligations are ready before the large
         # diagnostic archive is restored away from HA's event loop.
+        self.voltage_gate.ready = True
         await self.operation_recorder.async_restore(
             data.get("operation_history") if data else None
         )
@@ -1524,7 +1528,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     not reserve_active
                     or "dc48" not in self._reserve_legacy_hold_sources
                 ),
-                psu48_bus_voltage_v=support_voltage,
+                psu48_bus_voltage_v=self.voltage_gate.voltage()
+                if cfg.get(CONF_INVERTER_LIMIT_ENTITY)
+                and cfg.get(CONF_BATTERY_VOLTAGE_ENTITY)
+                else support_voltage,
+                adaptive_voltage_gate=bool(
+                    cfg.get(CONF_INVERTER_LIMIT_ENTITY)
+                    and cfg.get(CONF_BATTERY_VOLTAGE_ENTITY)
+                ),
+                psu48_on_voltage_v=float(cfg[CONF_PSU48_ON_VOLTAGE_V]),
+                psu48_off_voltage_v=float(cfg[CONF_PSU48_OFF_VOLTAGE_V]),
+                psu48_live_until=dt_util.utcnow().timestamp() + 300,
+                psu48_gate_bands=self.voltage_gate.bands(dt_util.now()),
                 dc48_power_w=float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0)),
                 # Manual override (F-N2): a manually activated PSU is
                 # simulated as permanently on so the SOC forecast matches
@@ -2722,6 +2737,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "gated_above_soc_min": above,
             "suggested_gate_soc": suggested,
             "gate_soc_active": config.support.gate_soc_percent,
+            **(
+                {"adaptive": self.voltage_gate.diagnostic(dt_util.now())}
+                if config.support.adaptive_voltage_gate
+                else {}
+            ),
         }
 
     def _bm_load_active(self, subentry_id: str) -> bool:
@@ -3395,6 +3415,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         live_soc: float | None,
         raw_power: float | None,
         rec_active: bool,
+        sample_bar: float | None,
+        input_off: bool,
+        charge_gate_off: bool,
     ) -> bool:
         """Telemetry-freeze watchdog for energy-limited loads (F4, 2026-07-24
         forensics), independent of the switching path AND the G2 latch.
@@ -3403,7 +3426,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         144 W for 95 h while the planner kept re-booking the same ~50 Wh top-up
         and the recommendation duty-cycled in the 15-min raster — displacing
         ~0.4 kWh of dehumidifier slots, with no warning. When BOTH the SOC and
-        the measured power stay EXACTLY unchanged for FREEZE_STALE_HOURS while
+        the measured power (at or above the standby bar) stay EXACTLY unchanged
+        for FREEZE_STALE_HOURS while
         the recommendation was active at least once in the window, the
         telemetry is frozen: latch stale (WARNING once) and hold the load
         unavailable — the SAME consequence as the G2 stale-SOC guard. Recovery:
@@ -3411,8 +3435,38 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         last_changed watchdog is deliberately avoided (cached values carry
         fresh timestamps, so a legitimately idle device would false-positive);
         the key is EXACT stasis DESPITE an active recommendation over hours.
+        A confirmed OFF charge gate resets only unlatched evidence: positive
+        input can supply passthrough while charging is deliberately paused.
         Returns True while latched."""
         ref = self._load_freeze_ref.get(subentry_id)
+        if sample_bar is not None and (
+            (live_soc is not None and raw_power is not None and raw_power < sample_bar)
+            or (
+                input_off
+                and live_soc is None
+                and raw_power is None
+                and ref is not None
+                and ref[1] < sample_bar
+            )
+        ):
+            # An unchanged full/idle Fossibot is expected. A recommendation
+            # seen once near charge completion must not turn hours of 0 W
+            # into a permanent start veto (October 2026 incident). Also remove
+            # persisted false positives from the old rule without requiring
+            # a SOC change that can only happen after charging is allowed.
+            # With the external socket confirmed OFF, both onboard sensors
+            # may be unavailable. Persisted standby evidence is sufficient
+            # to repair that false latch; missing telemetry alone is not.
+            self._load_freeze_ref.pop(subentry_id, None)
+            if subentry_id in self._load_freeze_stale:
+                self._load_freeze_stale.discard(subentry_id)
+                self._save_persistent_state()
+                _LOGGER.info(
+                    "Load %s: standby is not frozen charging evidence"
+                    " — freeze latch cleared",
+                    title,
+                )
+            return False
         if subentry_id in self._load_freeze_stale:
             if (
                 live_soc is not None
@@ -3433,8 +3487,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 return False
             return True  # still frozen (or no reading): stay latched
-        if live_soc is None or raw_power is None:
-            # No usable telemetry this cycle: reset the freeze window.
+        if input_off or charge_gate_off or live_soc is None or raw_power is None:
+            # A confirmed disconnected input cannot supply charging evidence,
+            # including cached positive readings left over from the last run.
+            # A closed charge gate can leave substantial passthrough power
+            # with an unchanged SOC (Fossibot timer pause, October 2026).
+            # Discard only the unlatched clock here: an OFF request alone
+            # cannot clear an established fault or prove the input is OFF.
             self._load_freeze_ref.pop(subentry_id, None)
             return False
         if ref is None or ref[0] != live_soc or ref[1] != raw_power:
@@ -3449,7 +3508,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # SOC AND power both EXACTLY unchanged since the window start.
         rec_seen = ref[3] or rec_active
         if rec_seen != ref[3]:
-            self._load_freeze_ref[subentry_id] = (ref[0], ref[1], ref[2], rec_seen)
+            # The first recommendation starts evidence; preceding idle hours
+            # must not cause an immediate latch on the very first start.
+            self._load_freeze_ref[subentry_id] = (
+                ref[0],
+                ref[1],
+                dt_util.utcnow(),
+                rec_seen,
+            )
+            return False
         if rec_seen and dt_util.utcnow() - ref[2] >= timedelta(
             hours=FREEZE_STALE_HOURS
         ):
@@ -3663,6 +3730,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 live_soc,
                 raw,
                 self._load_plan_active.get(subentry_id, False),
+                min_sample_w,
+                bool(
+                    (plug := data.get(CONF_LOAD_CONTROL_SWITCH))
+                    and self._entity_tristate(plug) is False
+                ),
+                bool(
+                    (gate := data.get(CONF_LOAD_CHARGE_ENABLE))
+                    and self._entity_tristate(gate) is False
+                ),
             ):
                 available = False
             # F5 (2026-07-24): a LATCHED power warning (full tank — real draw
@@ -4062,7 +4138,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             detail["uncertainty_policy"] = "measured_band_only"
             diag.setdefault("coverage_detail", {})[path] = detail
             overrides.append(tuple(values) if filled else None)
-        quantiles_active = any(delta_count[path] for path in ("ac", "dc"))
+        quantiles_active = any(quantile_hours[path] for path in ("ac", "dc"))
         diag["_forecast_predictions"] = predictions
         return overrides[0], overrides[1], band, quantiles_active, diag
 
@@ -4697,6 +4773,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the one-per-cycle "tank nearly full" push.
         await self._update_tank_forecast(result, now)
         self._update_gate_calibration(config, soc)
+        self.voltage_gate.observe(dt_util.now())
 
         self._successful_updates += 1
         self._first_success_done = True  # V8: latch — grace never re-arms
@@ -6571,7 +6648,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if self._switch_task is not None and not self._switch_task.done():
             return
-        desired = {"dc24": result.support_dc24_now, "dc48": result.support_dc48_now}
+        desired = {"dc24": result.support_dc24_now, "dc48": requested_dc48(result)}
         inverter = bool(
             getattr(self, "_coordinated_inverter_target", result.inverter_on)
         )

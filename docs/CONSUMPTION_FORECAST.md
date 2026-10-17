@@ -1,5 +1,10 @@
 # Specification: Learned consumption forecast from measurement data (v0.5)
 
+> **Update 0.60.0:** [Profile continuity](F-PROFILE-CONTINUITY.md) supersedes
+> the minimum-sample fallback rule for P50: sparse cleaned observations give
+> provisional estimates; empty bins retain their previous estimate. P80 still
+> requires the original minimum. Earlier descriptions below are historical.
+
 > Status: reflects the shipped consumption learner as of v0.7.10 (cleaning rules Rev. 4).
 > Implementation notes: Store v2 discards v1 data (fresh backfill instead of
 > migration — the source data can be re-fetched at any time);

@@ -2,6 +2,28 @@
 
 export const STRINGS = {
   en: {
+    report_gate_48: "48 V switching decision",
+    report_gate_voltage: "Current battery voltage",
+    report_gate_learning: "SOC threshold estimate",
+    report_gate_samples: "Accepted observations",
+    report_gate_soc: "Learned switch-on SOC during discharge",
+    report_gate_spread: "Observed spread",
+    gate_above_off_voltage: "Off: voltage above switch-off threshold",
+    gate_below_on_voltage:
+      "Support requested: voltage below switch-on threshold",
+    gate_hysteresis_hold: "Retaining state within voltage hysteresis band",
+    gate_voltage_unavailable:
+      "Protective readiness: voltage unavailable or stale",
+    gate_manual_readiness: "Readiness requested manually",
+    gate_protection_readiness: "Readiness for battery protection",
+    gate_no_request: "No support requested",
+    gate_waiting_on_voltage: "Waiting for stable low voltage",
+    gate_waiting_off_voltage: "Waiting for stable high voltage",
+    gate_learned:
+      "Learned from recent comparable observations; power is estimated",
+    gate_configured_fallback:
+      "Insufficient recent observations; configured SOC fallback, no assured power",
+
     dc_service: "additional DC supply deficit",
     forecast_last_plan: "Last plan captured",
     forecast_stale:
@@ -344,7 +366,11 @@ export const STRINGS = {
     profile_static: "fallback",
     profile_details: "Learning data and excluded hours",
     profile_samples_note:
-      "Valid comparison days per hour / required minimum. Weekdays, weekends and absence are learned separately.",
+      "Valid comparison days per hour / minimum for a measured uncertainty band. Fewer observations still provide a provisional estimate; with no observations in the window, the previous estimate is retained. Weekdays, weekends and absence are learned separately.",
+    profile_quality_mature: "established",
+    profile_quality_provisional: "provisional · uncertainty unknown",
+    profile_quality_retained: "previous estimate · no observations in window",
+    profile_quality_fallback: "standard profile",
     profile_daytype: "Day type",
     profile_hour: "Hour",
     profile_weekday: "Weekday",
@@ -367,6 +393,28 @@ export const STRINGS = {
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
   de: {
+    report_gate_48: "48-V-Schaltentscheidung",
+    report_gate_voltage: "Aktuelle Batteriespannung",
+    report_gate_learning: "SOC-Schwellenschätzung",
+    report_gate_samples: "Verwertbare Beobachtungen",
+    report_gate_soc: "Gelernter Einschalt-SOC beim Entladen",
+    report_gate_spread: "Beobachtete Streuung",
+    gate_above_off_voltage: "Aus: Spannung oberhalb der Ausschaltgrenze",
+    gate_below_on_voltage:
+      "Stützung angefordert: Spannung unterhalb der Einschaltgrenze",
+    gate_hysteresis_hold: "Zustand im Spannungs-Hystereseband beibehalten",
+    gate_voltage_unavailable:
+      "Schutzbereitschaft: Spannung fehlt oder ist veraltet",
+    gate_manual_readiness: "Bereitschaft manuell angefordert",
+    gate_protection_readiness: "Bereitschaft zum Batterieschutz",
+    gate_no_request: "Keine Stützung angefordert",
+    gate_waiting_on_voltage: "Warten auf stabil niedrige Spannung",
+    gate_waiting_off_voltage: "Warten auf stabil hohe Spannung",
+    gate_learned:
+      "Aus aktuellen vergleichbaren Beobachtungen gelernt; Leistung geschätzt",
+    gate_configured_fallback:
+      "Zu wenig aktuelle Beobachtungen; konfigurierte SOC-Ersatzschwelle, keine gesicherte Leistung",
+
     dc_service: "zusätzliches DC-Versorgungsdefizit",
     forecast_last_plan: "Letzter Plan erfasst",
     forecast_stale:
@@ -722,7 +770,12 @@ export const STRINGS = {
     profile_static: "Fallback",
     profile_details: "Lerndaten und ausgeschlossene Stunden",
     profile_samples_note:
-      "Gültige Vergleichstage je Stunde / erforderliche Mindestanzahl. Werktage, Wochenenden und Abwesenheit werden getrennt gelernt.",
+      "Gültige Vergleichstage je Stunde / Mindestanzahl für ein gemessenes Streuungsband. Weniger Messungen liefern eine vorläufige Schätzung; ohne Messungen im Lernfenster bleibt die bisherige Schätzung erhalten. Werktage, Wochenenden und Abwesenheit werden getrennt gelernt.",
+    profile_quality_mature: "etabliert",
+    profile_quality_provisional: "vorläufig · Unsicherheit unbekannt",
+    profile_quality_retained:
+      "bisherige Schätzung · keine Messungen im Lernfenster",
+    profile_quality_fallback: "Standardprofil",
     profile_daytype: "Tagtyp",
     profile_hour: "Stunde",
     profile_weekday: "Werktag",

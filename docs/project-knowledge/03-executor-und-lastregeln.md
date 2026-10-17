@@ -224,6 +224,13 @@ OFF läuft durch den normalen Executor-Pfad.
 
 ### 3.3 F4 — Telemetrie-Freeze-Watchdog (`_update_telemetry_freeze`)
 
+> Korrektur ab 0.59.1: Standby-Leistung unterhalb der bestehenden Lastschwelle
+> zählt nicht als Freeze-Evidenz; entsprechende alte F4-Sperren werden bei
+> lesbarem SOC und Standby-Leistung freigegeben. Die erste aktive Empfehlung
+> beginnt das Zeitfenster neu, ohne vorherige Ruhezeit anzurechnen. Siehe
+> [aktueller Vertrag](../CURRENT_CONTRACTS.md#fossibot-stillstand-und-freeze-wächter-ab-0591).
+
+
 Redundanter Wächter **nur für energielimitierte Lasten**, unabhängig vom
 Schaltpfad und von G2. Anlass: der Fossibot B2 (Empfehlungslast) fror SOC
 **und** Eingangsleistung 174,7 h lang bei 87,5 % / exakt 144 W ein (20.07.

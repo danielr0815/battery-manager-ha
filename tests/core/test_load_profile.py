@@ -159,7 +159,8 @@ def test_aggregate_median_per_daytype_and_min_samples():
     assert bins[DAY_TYPE_WEEKDAY]["p50"][10] == 200.0  # median of 100/200/300
     assert bins[DAY_TYPE_WEEKDAY]["p80"][10] >= 200.0
     assert samples[DAY_TYPE_WEEKDAY][10] == 3
-    assert bins[DAY_TYPE_WEEKEND]["p50"][10] is None  # 1 < min_samples
+    assert bins[DAY_TYPE_WEEKEND]["p50"][10] == 500.0
+    assert bins[DAY_TYPE_WEEKEND]["p80"][10] is None  # provisional, no band
     assert samples[DAY_TYPE_WEEKEND][10] == 1
 
 
@@ -174,8 +175,66 @@ def test_aggregate_ignores_none_hours():
     day_types = {d: DAY_TYPE_WEEKDAY for d in daily}
     bins, samples = aggregate_bins(daily, day_types, MIN_SAMPLES, None, 0.2, 3000.0)
     assert samples[DAY_TYPE_WEEKDAY][8] == 2
-    assert bins[DAY_TYPE_WEEKDAY]["p50"][8] is None  # 2 < 3
+    assert bins[DAY_TYPE_WEEKDAY]["p50"][8] == 200.0  # lower weighted median
+    assert bins[DAY_TYPE_WEEKDAY]["p80"][8] is None
     assert bins[DAY_TYPE_WEEKDAY]["p50"][9] == 200.0
+
+
+def test_sparse_profile_uses_weighted_measurements_without_claiming_a_band():
+    """F-PROFILE-CONTINUITY: real weekends beat the generic fallback."""
+    daily = {
+        f"2026-10-{d:02d}": _flat_day(w) for d, w in [(3, 100), (4, 200), (10, 400)]
+    }
+    bins, counts = aggregate_bins(
+        daily,
+        dict.fromkeys(daily, DAY_TYPE_WEEKEND),
+        {DAY_TYPE_WEEKEND: 10},
+        None,
+        0.2,
+        3000,
+        weights=dict(zip(daily, [0.25, 0.5, 1], strict=True)),
+    )
+    assert bins[DAY_TYPE_WEEKEND]["p50"] == [400] * 24
+    assert bins[DAY_TYPE_WEEKEND]["p80"] == [None] * 24
+    assert counts[DAY_TYPE_WEEKEND] == [3] * 24
+    assert bins[DAY_TYPE_WEEKDAY]["p50"] == [None] * 24
+
+
+def test_profile_survives_loss_of_samples_and_recovers_with_new_evidence():
+    """F-PROFILE-CONTINUITY: preserve P50, retire P80, then learn again."""
+    previous = {DAY_TYPE_WEEKEND: {"p50": [100.0] * 24, "p80": [150.0] * 24}}
+    empty, counts = aggregate_bins({}, {}, MIN_SAMPLES, previous, 0.2, 3000)
+    assert empty[DAY_TYPE_WEEKEND]["p50"] == [100] * 24
+    assert empty[DAY_TYPE_WEEKEND]["p80"] == [None] * 24
+    assert counts[DAY_TYPE_WEEKEND] == [0] * 24
+    assert previous[DAY_TYPE_WEEKEND]["p80"] == [150] * 24
+    daily = {"2026-10-10": _flat_day(300.0)}
+    sparse, _ = aggregate_bins(
+        daily, dict.fromkeys(daily, DAY_TYPE_WEEKEND), MIN_SAMPLES, empty, 0.2, 3000
+    )
+    assert sparse[DAY_TYPE_WEEKEND]["p50"] == [120] * 24
+    assert sparse[DAY_TYPE_WEEKEND]["p80"] == [None] * 24
+    daily.update({"2026-10-11": _flat_day(300.0), "2026-10-17": _flat_day(300.0)})
+    mature, _ = aggregate_bins(
+        daily, dict.fromkeys(daily, DAY_TYPE_WEEKEND), MIN_SAMPLES, sparse, 0.2, 3000
+    )
+    assert mature[DAY_TYPE_WEEKEND]["p50"] == [144] * 24
+    assert mature[DAY_TYPE_WEEKEND]["p80"] == [300] * 24
+
+
+def test_retained_zero_is_a_measurement_and_reset_does_not_resurrect_it():
+    previous = {DAY_TYPE_WEEKEND: {"p50": [0.0] * 24}}
+    bins, _ = aggregate_bins({}, {}, MIN_SAMPLES, previous, 0.2, 3000)
+    assert bins[DAY_TYPE_WEEKEND]["p50"] == [0] * 24
+    reset, _ = aggregate_bins({}, {}, MIN_SAMPLES, None, 0.2, 3000)
+    assert reset[DAY_TYPE_WEEKEND]["p50"] == [None] * 24
+
+
+def test_retained_estimate_respects_current_physical_clamp():
+    previous = {DAY_TYPE_WEEKEND: {"p50": [5000.0] * 24}}
+    bins, _ = aggregate_bins({}, {}, MIN_SAMPLES, previous, 0.2, 3000)
+    assert bins[DAY_TYPE_WEEKEND]["p50"] == [3000] * 24
+    assert previous[DAY_TYPE_WEEKEND]["p50"] == [5000] * 24
 
 
 def test_aggregate_rate_limit_damps_change():

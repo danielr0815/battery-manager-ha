@@ -135,6 +135,9 @@ class HourMap(dict[tuple[str, int], float]):
 # v6: retain historical attribution; changes open a new configuration epoch.
 _CLEANING_RULES_VERSION = 7
 
+# Reaggregate after an algorithm upgrade without changing historical attribution.
+_AGGREGATION_POLICY = "measured_p50_v1"
+
 
 # Retry recent gaps while recorder switch history is still likely present.
 # Accepted measurements remain immutable across retries.
@@ -563,6 +566,9 @@ class ProfileLearner:
         cleaning_changed = changed or self.data.get(
             "cleaning_fingerprint"
         ) != self._cleaning_fingerprint(cfg)
+        aggregation_changed = (
+            self.data["diagnostics"].get("aggregation_policy") != _AGGREGATION_POLICY
+        )
         # Reload-loop guard: a run that recently aborted because the recorder
         # integration is missing stamps attempted_at — without this check the
         # catch-up conditions above stay true forever (no run can ever
@@ -579,7 +585,7 @@ class ProfileLearner:
             self._binding_changed()
             or (
                 self._learning_configured()
-                and (stale or window_changed or cleaning_changed)
+                and (stale or window_changed or cleaning_changed or aggregation_changed)
             )
         ):
             self._start_run()
@@ -666,6 +672,27 @@ class ProfileLearner:
         # The learned bins themselves (W per day type and hour): visible in
         # the developer tools and usable by dashboard cards/templates.
         diag["profiles"] = self.data.get("profiles")
+        # Derived metadata needs no store migration. Zero observations with a
+        # retained estimate must remain distinguishable from fresh evidence.
+        diag["bin_quality"] = {
+            path: {
+                daytype: [
+                    "fallback"
+                    if profile_value(bins, daytype, hour) is None
+                    else "retained"
+                    if counts[hour] == 0
+                    else "provisional"
+                    if counts[hour] < minimum
+                    else "mature"
+                    for hour in range(24)
+                ]
+                for daytype, minimum in _MIN_SAMPLES.items()
+                for counts in [
+                    (self.data["samples"].get(path) or {}).get(daytype, [0] * 24)
+                ]
+            }
+            for path, bins in self.data["profiles"].items()
+        }
         # Latest watchdog entry per path (full history in the export).
         diag["validation"] = {
             path: (entries[-1] if entries else None)
@@ -1167,6 +1194,7 @@ class ProfileLearner:
 
         await self._update_future_daytypes(cfg, today)
         self.data["diagnostics"]["coverage"] = coverage
+        self.data["diagnostics"]["aggregation_policy"] = _AGGREGATION_POLICY
         self.data["computed_at"] = dt_util.now().isoformat()
         self.data["window_days"] = window_days
         # Only now (successful run) does the fingerprint become current.

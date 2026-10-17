@@ -27,6 +27,7 @@ from .reserve_energy import (
     dc_loads,
     pv_storage_charge,
 )
+from .voltage_gate import forecast_gate
 
 _EPS = FLOW_EPSILON_WH
 
@@ -155,7 +156,30 @@ def step_hour(
     # DELIVERED (a closed gate or a full battery bills ~0), divided by the
     # PSU efficiency. Voltage gate (R1): an SOC proxy for the PSU's
     # output-voltage threshold; gate_soc None = always open.
+    requested48 = dc48_support if support.adaptive_voltage_gate else None
+    voltage = support.psu48_bus_voltage_v
     gate_soc = support.gate_soc_percent
+    if support.adaptive_voltage_gate:
+        allowed, voltage = forecast_gate(
+            support,
+            soc_percent,
+            bus_load / slot.duration,
+            slot.start.timestamp(),
+            support.dc48_active,
+        )
+        protected = (
+            support.dc48_forced_on
+            or soc_percent <= config.control.support_dc48_activate_soc
+            or (
+                support.dc48_active
+                and soc_percent < config.control.support_dc48_recovery_soc
+            )
+        )
+        requested48 = dc48_support and (protected or bus_load > _EPS)
+        dc48_support = requested48 and (protected or allowed)
+        gate_soc = None
+        if pv_scale < 1:
+            voltage = None
     gate_open = (
         dc48_support
         and support.configured
@@ -165,8 +189,8 @@ def step_hour(
     if support.coordinated:
         gate_open = (
             gate_open
-            and support.psu48_bus_voltage_v is not None
-            and support.psu48_bus_voltage_v <= support.psu48_output_voltage_v
+            and voltage is not None
+            and voltage <= support.psu48_output_voltage_v
         )
     psu48_delivered_wh = 0.0
     psu48_battery_charge_wh = 0.0
@@ -176,7 +200,6 @@ def step_hour(
         if support.coordinated:
             # A current-limited PSU supplies U_bus * I_max, not its nameplate
             # power at every voltage. Unknown bus voltage receives no credit.
-            voltage = support.psu48_bus_voltage_v
             potential = (
                 min(voltage, support.psu48_output_voltage_v)
                 / support.psu48_output_voltage_v
@@ -329,6 +352,7 @@ def step_hour(
         extra_ac_wh=extra_ac_wh,
         support_dc24=dc24_from_grid and support.configured,
         support_dc48=dc48_support and support.configured,
+        support_dc48_requested=requested48,
         psu48_battery_charge_wh=psu48_battery_charge_wh,
         psu_grid_import_wh=psu_grid_import_wh,
         psu48_delivered_wh=psu48_delivered_wh,

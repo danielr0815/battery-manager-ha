@@ -35,6 +35,7 @@ from custom_components.battery_manager.const import (
     DOMAIN,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
+    INPUT_OFF_POLICY_KEEP,
     SUBENTRY_TYPE_LOAD,
 )
 
@@ -4698,3 +4699,291 @@ async def test_forecast_interval_ends_at_booked_subhour_duration(hass, minutes):
         == timedelta(minutes=minutes)
         for b in blocks
     )
+
+
+@pytest.mark.parametrize("power", [0.0, 5.0])
+@pytest.mark.parametrize("controlled", [False, True])
+async def test_idle_fossibot_never_latches_after_old_recommendation(
+    hass, power, controlled
+):
+    """An end-of-charge recommendation followed by days of standby is normal."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(
+        hass, [], with_control_switch=controlled, energy_limited=True
+    )
+    hass.states.async_set(FOSSI_SOC, "90")
+    hass.states.async_set(POWER_FEEDBACK, str(power))
+    coordinator._load_plan_active[sub_id] = False
+    coordinator._load_freeze_ref[sub_id] = (
+        90.0,
+        power,
+        dt_util.utcnow() - timedelta(days=3),
+        True,
+    )
+    assert coordinator._get_load_states()[0].available
+    assert sub_id not in coordinator._load_freeze_ref
+    assert sub_id not in coordinator._load_freeze_stale
+    coordinator._load_plan_active[sub_id] = True
+    assert coordinator._get_load_states()[0].available
+    assert sub_id not in coordinator._load_freeze_stale
+
+
+async def test_idle_freeze_false_positive_recovers_after_reload(hass):
+    """Old persisted 90 % / 0 W latches need no sensor change or manual reset."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(hass, [], energy_limited=True)
+    # Observe restore before explicitly running the recovery: queued sensor
+    # callbacks otherwise clear the latch while storage I/O yields.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    hass.states.async_set(FOSSI_SOC, "90")
+    hass.states.async_set(POWER_FEEDBACK, "0")
+    coordinator._load_freeze_ref[sub_id] = (
+        90.0,
+        0.0,
+        dt_util.utcnow() - timedelta(hours=7),
+        True,
+    )
+    coordinator._load_freeze_stale.add(sub_id)
+    await _roundtrip_guard_state(coordinator)
+    assert sub_id in coordinator._load_freeze_stale
+    assert coordinator._get_load_states()[0].available
+    assert sub_id not in coordinator._load_freeze_stale
+    assert sub_id not in coordinator._persistent_payload()["load_freeze_guard"]
+    # Fresh SOC below the target becomes plannable using the existing power
+    # estimate; the repair must not invent demand while SOC equals the target.
+    hass.states.async_set(FOSSI_SOC, "80")
+    state = coordinator._get_load_states()[0]
+    assert state.available
+    assert state.soc_percent == 80
+
+
+async def test_first_recommendation_does_not_count_preceding_idle_hours(hass):
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(
+        hass, [], with_control_switch=False, energy_limited=True
+    )
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    coordinator._load_freeze_ref[sub_id] = (
+        87.5,
+        144.0,
+        dt_util.utcnow() - timedelta(days=3),
+        False,
+    )
+    coordinator._load_plan_active[sub_id] = True
+    assert coordinator._get_load_states()[0].available
+    assert sub_id not in coordinator._load_freeze_stale
+    assert dt_util.utcnow() - coordinator._load_freeze_ref[sub_id][2] < timedelta(
+        seconds=1
+    )
+
+
+@pytest.mark.parametrize(
+    ("plug_state", "frozen_power", "released"),
+    [
+        ("off", 0.0, True),
+        ("on", 0.0, False),
+        ("unavailable", 0.0, False),
+        ("off", 144.0, False),
+    ],
+)
+async def test_offline_freeze_repair_requires_confirmed_off_and_standby_evidence(
+    hass, plug_state, frozen_power, released
+):
+    """An offline socket is not a confirmed OFF; positive freeze evidence stays."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(hass, [], energy_limited=True)
+    hass.states.async_set(PLUG, plug_state)
+    hass.states.async_set(FOSSI_SOC, "unavailable")
+    hass.states.async_set(POWER_FEEDBACK, "unavailable")
+    coordinator._load_freeze_ref[sub_id] = (
+        90.0,
+        frozen_power,
+        dt_util.utcnow() - timedelta(hours=7),
+        True,
+    )
+    coordinator._load_freeze_stale.add(sub_id)
+    assert coordinator._get_load_states()[0].available is released
+    assert (sub_id not in coordinator._load_freeze_stale) is released
+
+
+async def test_sleeping_fossibot_repaired_after_reload_can_start_without_wifi(hass):
+    """The external socket starts a planned run before onboard telemetry returns."""
+    from types import SimpleNamespace
+
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.core.model import LoadPlan
+
+    calls = []
+    coordinator, sub_id, _data = await _setup(
+        hass, calls, energy_limited=True, min_runtime_min=0, min_off_min=0
+    )
+    # This test supplies its own plan at both boundaries. Prevent state events
+    # from concurrently replacing it with a separate real-time forecast.
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._listeners_setup = False
+    if coordinator._debounce_task:
+        coordinator._debounce_task.cancel()
+        coordinator._debounce_task = None
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(FOSSI_SOC, "unavailable")
+    hass.states.async_set(POWER_FEEDBACK, "unavailable")
+    coordinator._load_freeze_ref[sub_id] = (
+        90.0,
+        0.0,
+        dt_util.utcnow() - timedelta(days=3),
+        True,
+    )
+    coordinator._load_freeze_stale.add(sub_id)
+    coordinator._load_soc_cache[sub_id] = {
+        "entity_id": FOSSI_SOC,
+        "soc": 90.0,
+        "ts": (dt_util.utcnow() - timedelta(days=30)).isoformat(),
+    }
+    await _roundtrip_guard_state(coordinator)
+    state = coordinator._get_load_states()[0]
+    assert state.available
+    assert state.soc_percent is None  # expired cached 90 % cannot prevent a start
+    result = SimpleNamespace(
+        load_plans=[
+            LoadPlan(
+                load_id=sub_id,
+                schedule=(True,),
+                planned_energy_wh=150.0,
+                run_hours=(0.5,),
+            )
+        ]
+    )
+    calls.clear()
+    await coordinator._apply_load_switching(result, dt_util.now(), (1.0,))
+    await hass.async_block_till_done()
+    assert ("turn_on", ENABLE) in calls
+    assert ("turn_on", PLUG) in calls
+    assert sub_id in coordinator._load_run_deadline
+    assert hass.states.get(FOSSI_SOC).state == "unavailable"
+    # If Wi-Fi never returns, the existing frozen run cap stops the input;
+    # missing telemetry must not qualify for seamless deadline extensions.
+    await coordinator._apply_load_switching(
+        result, coordinator._load_run_deadline[sub_id] + timedelta(seconds=1), (1.0,)
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(PLUG).state == "off"
+
+
+async def test_confirmed_off_input_does_not_accumulate_cached_charge_evidence(hass):
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(hass, [], energy_limited=True)
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._load_freeze_ref[sub_id] = (
+        87.5,
+        144.0,
+        dt_util.utcnow() - timedelta(days=3),
+        True,
+    )
+    assert coordinator._get_load_states()[0].available
+    assert sub_id not in coordinator._load_freeze_ref
+
+
+async def test_paused_passthrough_resets_freeze_clock_until_charge_gate_reopens(hass):
+    """High passthrough with the charge gate OFF must not block the next charge."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(
+        hass, [], policy=INPUT_OFF_POLICY_KEEP, power_w=500.0
+    )
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set(POWER_FEEDBACK, "300")  # above the 125 W standby bar
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._load_plan_active[sub_id] = True
+    start = dt_util.utcnow()
+    assert coordinator._get_load_states()[0].available
+    assert sub_id in coordinator._load_freeze_ref
+
+    # Even an old recommendation must not turn constant downstream power
+    # into frozen charging evidence while the timer adapter pauses charging.
+    hass.states.async_set(ENABLE, "off")
+    for hours in (7, 72):
+        with patch.object(
+            dt_util, "utcnow", return_value=start + timedelta(hours=hours)
+        ):
+            assert coordinator._get_load_states()[0].available
+            assert sub_id not in coordinator._load_freeze_ref
+            assert sub_id not in coordinator._load_freeze_stale
+    assert hass.states.get(PLUG).state == "on"
+
+    # Reopening the gate starts a fresh evidence window. A real later freeze
+    # is still detected; the preceding three days of passthrough do not count.
+    resumed = start + timedelta(hours=72)
+    hass.states.async_set(ENABLE, "on")
+    with patch.object(dt_util, "utcnow", return_value=resumed):
+        assert coordinator._get_load_states()[0].available
+        assert coordinator._load_freeze_ref[sub_id][2] == resumed
+    with patch.object(
+        dt_util, "utcnow", return_value=resumed + timedelta(hours=6, minutes=1)
+    ):
+        assert not coordinator._get_load_states()[0].available
+        assert sub_id in coordinator._load_freeze_stale
+
+
+@pytest.mark.parametrize("gate_state", ["unknown", "unavailable"])
+async def test_unknown_charge_gate_does_not_discard_freeze_evidence(hass, gate_state):
+    """A missing gate state is not proof that passthrough charging was paused."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(hass, [], policy=INPUT_OFF_POLICY_KEEP)
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, gate_state)
+    hass.states.async_set(POWER_FEEDBACK, "144")
+    hass.states.async_set(FOSSI_SOC, "87.5")
+    coordinator._load_freeze_ref[sub_id] = (
+        87.5,
+        144.0,
+        dt_util.utcnow() - timedelta(hours=7),
+        True,
+    )
+
+    assert not coordinator._get_load_states()[0].available
+    assert sub_id in coordinator._load_freeze_stale
+
+
+@pytest.mark.parametrize(
+    ("frozen_power", "telemetry_available"),
+    [(144.0, True), (144.0, False), (0.0, False)],
+)
+async def test_charge_gate_off_preserves_existing_freeze_fault(
+    hass, frozen_power, telemetry_available
+):
+    """Gate OFF neither clears a positive latch nor proves a disconnected input."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _data = await _setup(hass, [], policy=INPUT_OFF_POLICY_KEEP)
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(
+        POWER_FEEDBACK, str(frozen_power) if telemetry_available else "unavailable"
+    )
+    hass.states.async_set(FOSSI_SOC, "87.5" if telemetry_available else "unavailable")
+    coordinator._load_freeze_ref[sub_id] = (
+        87.5,
+        frozen_power,
+        dt_util.utcnow() - timedelta(hours=7),
+        True,
+    )
+    coordinator._load_freeze_stale.add(sub_id)
+
+    assert not coordinator._get_load_states()[0].available
+    assert sub_id in coordinator._load_freeze_stale
+    assert coordinator._persistent_payload()["load_freeze_guard"][sub_id]["latched"]

@@ -10,7 +10,8 @@ intentional, reviewed behaviour change (scripts/gen_golden.py).
 """
 
 import json
-from datetime import datetime
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 from core.model import (
@@ -21,6 +22,7 @@ from core.model import (
     SurplusLoad,
     SurplusLoadState,
     SystemConfig,
+    VoltageGateBand,
 )
 from core.optimize import plan
 from core.series import build_slots
@@ -119,7 +121,39 @@ def _scenarios():
             psu48_bus_voltage_v=48,
         )
     )
+    gate_now = datetime(2026, 10, 14, 18, tzinfo=UTC)
+    gate_support = replace(
+        reserve.support,
+        adaptive_voltage_gate=True,
+        psu48_live_until=gate_now.timestamp() + 300,
+    )
+    adaptive = replace(reserve, support=gate_support)
+    learned = replace(
+        reserve,
+        support=replace(
+            gate_support,
+            psu48_gate_bands=(
+                VoltageGateBand(
+                    0.55, 0.85, 75, 75, 80, 1, 7, gate_now.timestamp() + 3 * 86400
+                ),
+            ),
+        ),
+    )
+    shifted = replace(
+        reserve,
+        support=replace(
+            gate_support,
+            psu48_gate_bands=(
+                VoltageGateBand(
+                    0.55, 0.85, 78, 78, 83, 1, 7, gate_now.timestamp() + 3 * 86400
+                ),
+            ),
+        ),
+    )
     return {
+        "adaptive48_cold_start": (adaptive, gate_now, 80, [0, 0, 0], ()),
+        "adaptive48_learned": (learned, gate_now, 80, [0, 0, 0], ()),
+        "adaptive48_soc_shift": (shifted, gate_now, 80, [0, 0, 0], ()),
         "reserve_dark_winter": (
             reserve,
             datetime(2026, 12, 1, 18),

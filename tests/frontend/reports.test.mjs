@@ -176,3 +176,38 @@ test("measured PV source requests distinguish confirmed and pending transitions"
     assert.match(html, /no battery discharge budget/);
   }
 });
+
+test("48 V report distinguishes gated OFF, protective readiness and learned SOC", () => {
+  const reserve = { mode: "active" };
+  const html = reserveReport(
+    { ...hass, language: "de" },
+    reserve,
+    { voltage_gate: { reason: "above_off_voltage", voltage_v: 49.89 } },
+    {
+      adaptive: {
+        source: "learned",
+        sample_count: 7,
+        bands: [
+          {
+            current_min_a: 0.25,
+            current_max_a: 1,
+            on_soc: 71,
+            spread_percent: 2,
+          },
+        ],
+      },
+    },
+  );
+  assert.match(html, /Aus: Spannung oberhalb der Ausschaltgrenze/);
+  assert.match(html, /71 %/);
+  assert.match(html, /Streuung: 2 %/);
+  const fallback = reserveReport(
+    hass,
+    reserve,
+    { voltage_gate: { reason: "voltage_unavailable", voltage_v: null } },
+    { adaptive: { source: "configured_fallback", sample_count: 0, bands: [] } },
+  );
+  assert.match(fallback, /Protective readiness/);
+  assert.match(fallback, /no assured power/);
+  assert.doesNotMatch(fallback, /NaN|undefined/);
+});

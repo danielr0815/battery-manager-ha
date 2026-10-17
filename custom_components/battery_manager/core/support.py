@@ -73,6 +73,10 @@ def simulate_support(
         )
         parts: list[HourFlows] = []
         for small, ratio in split_slot(slot):
+            if support.adaptive_voltage_gate:
+                effective = replace(
+                    effective, support=replace(effective.support, dc48_active=dc48)
+                )
             # Only PV sufficient for the full DC demand can release support.
             # The PSU's own charging must not create an AC cycling loop.
             recovering = slot.pv_wh * scale > (
@@ -113,6 +117,7 @@ def simulate_support(
                     export * ratio,
                 )
             parts.append(flow)
+            dc48 = flow.support_dc48
             soc = flow.soc_end_percent
         first = parts[0]
         energies: dict[str, Any] = {

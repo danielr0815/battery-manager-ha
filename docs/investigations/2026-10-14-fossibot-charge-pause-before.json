@@ -1,0 +1,361 @@
+{
+  "captured_at": "2026-10-14",
+  "automations": [
+    {
+      "id": "1777827465893",
+      "config": {
+        "id": "1777827465893",
+        "alias": "Fossibot F2400-B Intelligente Ladesteuerung",
+        "description": "Deaktiviert Laden bei Überschuss; Aktiviert Laden nur manuell oder bei Netztrennung",
+        "triggers": [
+          {
+            "entity_id": "input_boolean.charge_f2400_b",
+            "to": "off",
+            "id": "check_stop",
+            "trigger": "state"
+          },
+          {
+            "value_template": "{{ (states('sensor.fossibot_e80690c65522_total_input') | float(0)) > \n   (states('sensor.fossibot_e80690c65522_total_output') | float(0) + 50) }}\n",
+            "for": "00:02:00",
+            "id": "check_stop",
+            "trigger": "template"
+          },
+          {
+            "entity_id": "input_boolean.charge_f2400_b",
+            "to": "on",
+            "id": "activate_90",
+            "trigger": "state"
+          },
+          {
+            "entity_id": "sensor.fossibot_e80690c65522_ac_input_voltage",
+            "below": 100,
+            "for": "00:02:00",
+            "id": "activate_90",
+            "trigger": "numeric_state"
+          }
+        ],
+        "actions": [
+          {
+            "choose": [
+              {
+                "conditions": [
+                  {
+                    "condition": "trigger",
+                    "id": "check_stop"
+                  },
+                  {
+                    "condition": "state",
+                    "entity_id": "input_boolean.charge_f2400_b",
+                    "state": "off"
+                  },
+                  {
+                    "condition": "template",
+                    "value_template": "{{ (states('sensor.fossibot_e80690c65522_total_input') | float(0)) > \n   (states('sensor.fossibot_e80690c65522_total_output') | float(0) + 50) }}\n"
+                  }
+                ],
+                "sequence": [
+                  {
+                    "target": {
+                      "entity_id": "number.f2400_b_fossibot_e80690c65522_ac_charging_upper_limit"
+                    },
+                    "data": {
+                      "value": "20"
+                    },
+                    "action": "number.set_value"
+                  }
+                ]
+              },
+              {
+                "conditions": [
+                  {
+                    "condition": "trigger",
+                    "id": "activate_90"
+                  }
+                ],
+                "sequence": [
+                  {
+                    "target": {
+                      "entity_id": "number.f2400_b_fossibot_e80690c65522_ac_charging_upper_limit"
+                    },
+                    "data": {
+                      "value": 90
+                    },
+                    "action": "number.set_value"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "mode": "restart"
+      }
+    },
+    {
+      "id": "1777830033676",
+      "config": {
+        "id": "1777830033676",
+        "alias": "F2400-B2 Intelligente Ladesteuerung",
+        "description": "Deaktiviert Laden bei Überschuss; Aktiviert Laden nur manuell oder bei Netztrennung",
+        "triggers": [
+          {
+            "entity_id": "input_boolean.charge_f2400_b2",
+            "to": "off",
+            "id": "check_stop",
+            "trigger": "state"
+          },
+          {
+            "value_template": "{{ (states('sensor.f2400_b2_fossibot_e8f60a03d0ce_total_input') | float(0)) > \n   (states('sensor.f2400_b2_fossibot_e8f60a03d0ce_total_output') | float(0) + 50) }}\n",
+            "for": "00:02:00",
+            "id": "check_stop",
+            "trigger": "template"
+          },
+          {
+            "entity_id": "input_boolean.charge_f2400_b2",
+            "to": "on",
+            "id": "activate_90",
+            "trigger": "state"
+          },
+          {
+            "entity_id": "sensor.f2400_b2_fossibot_e8f60a03d0ce_ac_input_voltage",
+            "below": 100,
+            "for": "00:02:00",
+            "id": "activate_90",
+            "trigger": "numeric_state"
+          }
+        ],
+        "actions": [
+          {
+            "choose": [
+              {
+                "conditions": [
+                  {
+                    "condition": "trigger",
+                    "id": "check_stop"
+                  },
+                  {
+                    "condition": "state",
+                    "entity_id": "input_boolean.charge_f2400_b2",
+                    "state": "off"
+                  },
+                  {
+                    "condition": "template",
+                    "value_template": "{{ (states('sensor.f2400_b2_fossibot_e8f60a03d0ce_total_input') | float(0)) > \n   (states('sensor.f2400_b2_fossibot_e8f60a03d0ce_total_output') | float(0) + 50) }}\n"
+                  }
+                ],
+                "sequence": [
+                  {
+                    "target": {
+                      "entity_id": "number.f2400_b2_fossibot_e8f60a03d0ce_ac_charging_upper_limit"
+                    },
+                    "data": {
+                      "value": "20"
+                    },
+                    "action": "number.set_value"
+                  }
+                ]
+              },
+              {
+                "conditions": [
+                  {
+                    "condition": "trigger",
+                    "id": "activate_90"
+                  }
+                ],
+                "sequence": [
+                  {
+                    "target": {
+                      "entity_id": "number.f2400_b2_fossibot_e8f60a03d0ce_ac_charging_upper_limit"
+                    },
+                    "data": {
+                      "value": 90
+                    },
+                    "action": "number.set_value"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "mode": "restart"
+      }
+    }
+  ],
+  "battery_manager_loads": [
+    {
+      "subentry_id": "01KWP36D4D8G7DY41HTVJDZJDR",
+      "subentry_type": "surplus_load",
+      "title": "Fossibot F2400-B",
+      "unique_id": null,
+      "data": {
+        "battery_tolerance_percent": 5,
+        "capacity_wh": 2000,
+        "cascade_charge_efficiency": 0.9,
+        "cascade_discharge_efficiency": 0.9,
+        "cascade_output_overhead_w": 20,
+        "charge_enable_entity": "input_boolean.charge_f2400_b",
+        "control_switch_entity": "switch.buro_fossibot_b1_in",
+        "discharge_floor_soc_percent": 20,
+        "energy_entity": "sensor.buro_fossibot_b1_in_energy",
+        "energy_limited": true,
+        "gate_actor_mode": "exclusive",
+        "handover_min_power_w": 10,
+        "handover_timeout_s": 180,
+        "in_house_measurement": true,
+        "input_actor_mode": "shared",
+        "input_off_policy": "auto",
+        "min_off_min": 5,
+        "min_runtime_min": 5,
+        "output_actor_mode": "shared",
+        "output_power_entity": "sensor.fossibot_e80690c65522_total_output",
+        "output_switch_entity": "switch.fossibot_e80690c65522_ac_output",
+        "power_entity": "sensor.fossibot_e80690c65522_total_input",
+        "power_w": 300,
+        "power_warning_dwell_min": 15,
+        "power_warning_percent": 0,
+        "priority": 1,
+        "recovery_soc_percent": 50,
+        "soc_entity": "sensor.fossibot_e80690c65522_state_of_charge",
+        "tank_full_runtime_min": 0,
+        "target_soc_percent": 90,
+        "wake_timeout_s": 60
+      },
+      "options": {}
+    },
+    {
+      "subentry_id": "01KWP38RZN9EFPPC7NMYNFS5B1",
+      "subentry_type": "surplus_load",
+      "title": "Fossibot F2400-B2",
+      "unique_id": null,
+      "data": {
+        "battery_tolerance_percent": 5,
+        "capacity_wh": 2000,
+        "cascade_charge_efficiency": 0.9,
+        "cascade_discharge_efficiency": 0.9,
+        "cascade_output_overhead_w": 20,
+        "charge_enable_entity": "input_boolean.charge_f2400_b2",
+        "control_switch_entity": "switch.buro_fossibot_b2_in",
+        "discharge_floor_soc_percent": 20,
+        "energy_entity": "sensor.buro_fossibot_b2_in_energy",
+        "energy_limited": true,
+        "gate_actor_mode": "exclusive",
+        "handover_min_power_w": 10,
+        "handover_timeout_s": 180,
+        "in_house_measurement": true,
+        "input_actor_mode": "shared",
+        "input_off_policy": "auto",
+        "min_off_min": 5,
+        "min_runtime_min": 5,
+        "output_actor_mode": "shared",
+        "output_power_entity": "sensor.f2400_b2_fossibot_e8f60a03d0ce_total_output",
+        "output_switch_entity": "switch.f2400_b2_fossibot_e8f60a03d0ce_ac_output",
+        "power_entity": "sensor.f2400_b2_fossibot_e8f60a03d0ce_total_input",
+        "power_w": 350,
+        "power_warning_dwell_min": 15,
+        "power_warning_percent": 0,
+        "priority": 2,
+        "recovery_soc_percent": 50,
+        "soc_entity": "sensor.f2400_b2_fossibot_e8f60a03d0ce_state_of_charge",
+        "tank_full_runtime_min": 0,
+        "target_soc_percent": 90,
+        "wake_timeout_s": 60
+      },
+      "options": {}
+    }
+  ],
+  "control_states": [
+    {
+      "entity_id": "switch.buro_fossibot_b1_in",
+      "state": "off",
+      "attributes": {
+        "device_class": "outlet",
+        "friendly_name": "Fossibot B1 In"
+      }
+    },
+    {
+      "entity_id": "switch.buro_fossibot_b2_in",
+      "state": "off",
+      "attributes": {
+        "device_class": "outlet",
+        "friendly_name": "Fossibot B2 In"
+      }
+    },
+    {
+      "entity_id": "switch.f2400_b2_fossibot_e8f60a03d0ce_ac_output",
+      "state": "off",
+      "attributes": {
+        "friendly_name": "Out AC"
+      }
+    },
+    {
+      "entity_id": "switch.fossibot_e80690c65522_ac_output",
+      "state": "off",
+      "attributes": {
+        "friendly_name": "Out AC"
+      }
+    },
+    {
+      "entity_id": "number.f2400_b2_fossibot_e8f60a03d0ce_stop_charge_after",
+      "state": "0",
+      "attributes": {
+        "min": 0,
+        "max": 5000,
+        "step": 1,
+        "mode": "box",
+        "unit_of_measurement": "min",
+        "friendly_name": "Delay Charge"
+      }
+    },
+    {
+      "entity_id": "number.f2400_b2_fossibot_e8f60a03d0ce_ac_charging_upper_limit",
+      "state": "90.0",
+      "attributes": {
+        "min": 60,
+        "max": 100,
+        "step": 1,
+        "mode": "slider",
+        "unit_of_measurement": "%",
+        "friendly_name": "Max SOC"
+      }
+    },
+    {
+      "entity_id": "number.f2400_b_fossibot_e80690c65522_stop_charge_after",
+      "state": "0",
+      "attributes": {
+        "min": 0,
+        "max": 5000,
+        "step": 1,
+        "mode": "box",
+        "unit_of_measurement": "min",
+        "friendly_name": "Delay Charge"
+      }
+    },
+    {
+      "entity_id": "number.f2400_b_fossibot_e80690c65522_ac_charging_upper_limit",
+      "state": "90.0",
+      "attributes": {
+        "min": 60,
+        "max": 100,
+        "step": 1,
+        "mode": "slider",
+        "unit_of_measurement": "%",
+        "friendly_name": "Max SOC"
+      }
+    },
+    {
+      "entity_id": "switch.abstellraum_battery_manager_fossibot_f2400_b_bm_control",
+      "state": "on",
+      "attributes": {
+        "icon": "mdi:robot",
+        "friendly_name": "Fossibot F2400-B Fossibot F2400-B BM control"
+      }
+    },
+    {
+      "entity_id": "switch.abstellraum_battery_manager_fossibot_f2400_b2_bm_control",
+      "state": "on",
+      "attributes": {
+        "icon": "mdi:robot",
+        "friendly_name": "Fossibot F2400-B2 Fossibot F2400-B2 BM control"
+      }
+    }
+  ]
+}

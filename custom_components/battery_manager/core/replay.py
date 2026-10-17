@@ -127,6 +127,9 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
                         switching_schedule=flow.switching_schedule
                         if "switching_schedule" in recorded["fields"]
                         else (),
+                        support_dc48_requested=flow.support_dc48_requested
+                        if "support_dc48_requested" in recorded["fields"]
+                        else None,
                         psu_grid_import_wh=flow.psu_grid_import_wh
                         if "psu_grid_import_wh" in recorded["fields"]
                         else None,

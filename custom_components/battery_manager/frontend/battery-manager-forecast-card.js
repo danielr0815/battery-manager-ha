@@ -193,6 +193,23 @@ var cascade_card_style_0 = "<style>\n      :host{display:block;min-width:0}*{box
 // frontend/translations.js
 var STRINGS = {
   en: {
+    report_gate_48: "48 V switching decision",
+    report_gate_voltage: "Current battery voltage",
+    report_gate_learning: "SOC threshold estimate",
+    report_gate_samples: "Accepted observations",
+    report_gate_soc: "Learned switch-on SOC during discharge",
+    report_gate_spread: "Observed spread",
+    gate_above_off_voltage: "Off: voltage above switch-off threshold",
+    gate_below_on_voltage: "Support requested: voltage below switch-on threshold",
+    gate_hysteresis_hold: "Retaining state within voltage hysteresis band",
+    gate_voltage_unavailable: "Protective readiness: voltage unavailable or stale",
+    gate_manual_readiness: "Readiness requested manually",
+    gate_protection_readiness: "Readiness for battery protection",
+    gate_no_request: "No support requested",
+    gate_waiting_on_voltage: "Waiting for stable low voltage",
+    gate_waiting_off_voltage: "Waiting for stable high voltage",
+    gate_learned: "Learned from recent comparable observations; power is estimated",
+    gate_configured_fallback: "Insufficient recent observations; configured SOC fallback, no assured power",
     dc_service: "additional DC supply deficit",
     forecast_last_plan: "Last plan captured",
     forecast_stale: "Forecast entity is unavailable. The last known plan is shown; current execution cannot be confirmed.",
@@ -491,7 +508,11 @@ var STRINGS = {
     profile_learned: "learned",
     profile_static: "fallback",
     profile_details: "Learning data and excluded hours",
-    profile_samples_note: "Valid comparison days per hour / required minimum. Weekdays, weekends and absence are learned separately.",
+    profile_samples_note: "Valid comparison days per hour / minimum for a measured uncertainty band. Fewer observations still provide a provisional estimate; with no observations in the window, the previous estimate is retained. Weekdays, weekends and absence are learned separately.",
+    profile_quality_mature: "established",
+    profile_quality_provisional: "provisional \xB7 uncertainty unknown",
+    profile_quality_retained: "previous estimate \xB7 no observations in window",
+    profile_quality_fallback: "standard profile",
     profile_daytype: "Day type",
     profile_hour: "Hour",
     profile_weekday: "Weekday",
@@ -508,6 +529,23 @@ var STRINGS = {
     no_consumption: "No consumption forecast on this sensor \u2014 needs Battery Manager v0.25.5+."
   },
   de: {
+    report_gate_48: "48-V-Schaltentscheidung",
+    report_gate_voltage: "Aktuelle Batteriespannung",
+    report_gate_learning: "SOC-Schwellensch\xE4tzung",
+    report_gate_samples: "Verwertbare Beobachtungen",
+    report_gate_soc: "Gelernter Einschalt-SOC beim Entladen",
+    report_gate_spread: "Beobachtete Streuung",
+    gate_above_off_voltage: "Aus: Spannung oberhalb der Ausschaltgrenze",
+    gate_below_on_voltage: "St\xFCtzung angefordert: Spannung unterhalb der Einschaltgrenze",
+    gate_hysteresis_hold: "Zustand im Spannungs-Hystereseband beibehalten",
+    gate_voltage_unavailable: "Schutzbereitschaft: Spannung fehlt oder ist veraltet",
+    gate_manual_readiness: "Bereitschaft manuell angefordert",
+    gate_protection_readiness: "Bereitschaft zum Batterieschutz",
+    gate_no_request: "Keine St\xFCtzung angefordert",
+    gate_waiting_on_voltage: "Warten auf stabil niedrige Spannung",
+    gate_waiting_off_voltage: "Warten auf stabil hohe Spannung",
+    gate_learned: "Aus aktuellen vergleichbaren Beobachtungen gelernt; Leistung gesch\xE4tzt",
+    gate_configured_fallback: "Zu wenig aktuelle Beobachtungen; konfigurierte SOC-Ersatzschwelle, keine gesicherte Leistung",
     dc_service: "zus\xE4tzliches DC-Versorgungsdefizit",
     forecast_last_plan: "Letzter Plan erfasst",
     forecast_stale: "Prognose-Entity ist nicht verf\xFCgbar. Der letzte bekannte Plan wird angezeigt; die aktuelle Ausf\xFChrung ist unbest\xE4tigt.",
@@ -806,7 +844,11 @@ var STRINGS = {
     profile_learned: "gelernt",
     profile_static: "Fallback",
     profile_details: "Lerndaten und ausgeschlossene Stunden",
-    profile_samples_note: "G\xFCltige Vergleichstage je Stunde / erforderliche Mindestanzahl. Werktage, Wochenenden und Abwesenheit werden getrennt gelernt.",
+    profile_samples_note: "G\xFCltige Vergleichstage je Stunde / Mindestanzahl f\xFCr ein gemessenes Streuungsband. Weniger Messungen liefern eine vorl\xE4ufige Sch\xE4tzung; ohne Messungen im Lernfenster bleibt die bisherige Sch\xE4tzung erhalten. Werktage, Wochenenden und Abwesenheit werden getrennt gelernt.",
+    profile_quality_mature: "etabliert",
+    profile_quality_provisional: "vorl\xE4ufig \xB7 Unsicherheit unbekannt",
+    profile_quality_retained: "bisherige Sch\xE4tzung \xB7 keine Messungen im Lernfenster",
+    profile_quality_fallback: "Standardprofil",
     profile_daytype: "Tagtyp",
     profile_hour: "Stunde",
     profile_weekday: "Werktag",
@@ -1209,7 +1251,7 @@ function feedinDecisions(hass, decisions) {
   });
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
-function reserveReport(hass, reserve, support) {
+function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
   const fmt = (value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", {
@@ -1264,6 +1306,23 @@ function reserveReport(hass, reserve, support) {
       `${fmt(reserve.psu48_delivered_wh)} Wh`
     ]
   ];
+  const gate = support?.voltage_gate;
+  const learned = calibration?.adaptive;
+  if (gate) {
+    rows.push([t("report_gate_48"), t(`gate_${gate.reason}`)]);
+    rows.push([t("report_gate_voltage"), `${fmt(gate.voltage_v)} V`]);
+  }
+  if (learned) {
+    rows.push([t("report_gate_learning"), t(`gate_${learned.source}`)]);
+    rows.push([t("report_gate_samples"), fmt(learned.sample_count)]);
+    for (const band of learned.bands || []) {
+      if (band.current_min_a < 0 || band.on_soc == null) continue;
+      rows.push([
+        `${t("report_gate_soc")} (${fmt(band.current_min_a)}\u2013${fmt(band.current_max_a)} A)`,
+        `${fmt(band.on_soc)} % \xB7 ${t("report_gate_spread")}: ${fmt(band.spread_percent)} %`
+      ]);
+    }
+  }
   if (support?.pv_priority) {
     rows.push([
       t("report_live_dc_source"),
@@ -1537,7 +1596,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
         </div>
         ${stateNotice(hass, stateObj)}${body}
         ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
-        ${reserveReport(this._hass, stateObj?.attributes?.reserve, stateObj?.attributes?.coordinated_support)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
+        ${reserveReport(this._hass, stateObj?.attributes?.reserve, stateObj?.attributes?.coordinated_support, stateObj?.attributes?.gate_calibration)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
     `
     );
@@ -2571,7 +2630,14 @@ var BatteryManagerConsumptionCard = class extends HTMLElement {
       for (let hour = 0; hour < 24; hour++) {
         const cells = ["ac", "dc"].map((path) => {
           const count = profile.samples?.[path]?.[daytype]?.[hour];
-          return count == null ? "\u2014" : `${count}${minimum == null ? "" : ` / ${minimum}`}`;
+          const quality = profile.bin_quality?.[path]?.[daytype]?.[hour];
+          const label = [
+            "mature",
+            "provisional",
+            "retained",
+            "fallback"
+          ].includes(quality) ? ` \xB7 ${t(`profile_quality_${quality}`)}` : "";
+          return (count == null ? "\u2014" : `${count}${minimum == null ? "" : ` / ${minimum}`}`) + label;
         });
         rows.push(
           `<tr><td>${esc(t(`profile_${daytype}`))}</td><td>${hour}:00</td><td>${esc(cells[0])}</td><td>${esc(cells[1])}</td></tr>`

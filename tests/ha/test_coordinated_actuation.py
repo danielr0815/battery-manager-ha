@@ -196,7 +196,10 @@ async def test_no_sources_still_controls_inverter(rig, hass):
 async def test_background_entrypoint_and_data_loss_protection(rig, hass):
     c, calls, _, _ = rig
     result = SimpleNamespace(
-        support_dc24_now=False, support_dc48_now=False, inverter_on=True
+        support_dc24_now=False,
+        support_dc48_now=False,
+        inverter_on=True,
+        trajectory=SimpleNamespace(flows=()),
     )
     await c._apply_support_switching(result, c.build_system_config(), dt_util.now())
     await c._switch_task

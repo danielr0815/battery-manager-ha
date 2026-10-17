@@ -19,6 +19,7 @@ from .core import SystemConfig
 from .core.live_ac import LIVE_AC_PLAN_MAX_AGE_S
 from .core.model import PlanInputs
 from .core.support import support_state
+from .voltage_gate import requested_dc48
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -117,7 +118,7 @@ def protection_targets(
         elif (record := self._last_planner_recording) is not None:
             _, inputs, result = record
             if dt_util.as_utc(now) < _record_expiry(inputs):
-                planned = result.support_dc24_now, result.support_dc48_now
+                planned = result.support_dc24_now, requested_dc48(result)
     return {
         key: safety or economic
         for key, safety, economic in zip(
@@ -180,7 +181,7 @@ async def execute_coordinated_support(
                     valid = not self._actuation_shutdown and dt_util.utcnow() < expires
                     desired = {
                         "dc24": valid and recorded_result.support_dc24_now,
-                        "dc48": valid and recorded_result.support_dc48_now,
+                        "dc48": valid and requested_dc48(recorded_result),
                     }
                     inverter = valid and bool(
                         getattr(
@@ -272,6 +273,9 @@ async def execute_coordinated_support(
                 diag["desired"] = dict(desired)
 
             planned_desired = dict(desired)
+            desired = self.voltage_gate.apply(config, desired, now)
+            diag["desired"] = dict(desired)
+            diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
 
             def may_remove() -> bool:
                 """Every await can revoke source permission, including rail overlap."""
@@ -290,6 +294,14 @@ async def execute_coordinated_support(
                     and self._reserve_grid_available() is not True
                 ):
                     diag["reason"] = "grid_supply_changed"
+                elif (
+                    not diag.get("pv_priority")
+                    and self.voltage_gate.apply(config, planned_desired, dt_util.now())[
+                        "dc48"
+                    ]
+                    != desired["dc48"]
+                ):
+                    diag["reason"] = "voltage_gate_changed"
                 elif config.reserve.enabled:
                     current_soc = self._get_soc(dt_util.now())
                     protect = support_state(
@@ -344,7 +356,7 @@ async def execute_coordinated_support(
                     )
                     target = {
                         "dc24": valid and recorded_result.support_dc24_now,
-                        "dc48": valid and recorded_result.support_dc48_now,
+                        "dc48": valid and requested_dc48(recorded_result),
                     }
                 current_soc = self._get_soc(dt_util.now())
                 protect = support_state(
@@ -360,7 +372,9 @@ async def execute_coordinated_support(
                     key: target[key] or required or self._support_manual[key]
                     for key, required in zip(("dc24", "dc48"), protect, strict=True)
                 }
+                target = self.voltage_gate.apply(restore_config, target, dt_util.now())
                 diag["desired"] = target
+                diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
                 if target["dc24"] and psu24:
                     if dcdc:
                         restored = await self._sequence_dc24(
@@ -374,12 +388,11 @@ async def execute_coordinated_support(
                         return
                     self._support_state["dc24"] = True
                 if (
-                    target["dc48"]
-                    and psu48
+                    psu48
                     and self._reserve_grid_available() is True
-                    and await confirmed(psu48, True)
+                    and await confirmed(psu48, target["dc48"])
                 ):
-                    self._support_state["dc48"] = True
+                    self._support_state["dc48"] = target["dc48"]
 
             if self.live_ac.pv_source_permission(config):
                 desired = {"dc24": False, "dc48": False}
@@ -518,6 +531,9 @@ async def execute_coordinated_support(
                 diag["reason"] = "missing_rail_transfer_actuator"
                 return
             if psu48 and desired["dc48"]:
+                if not may_remove():
+                    await restore_required()
+                    return
                 if not await confirmed(psu48, True):
                     return
                 self._support_state["dc48"] = True

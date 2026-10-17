@@ -508,9 +508,20 @@ export class BatteryManagerConsumptionCard extends HTMLElement {
       for (let hour = 0; hour < 24; hour++) {
         const cells = ["ac", "dc"].map((path) => {
           const count = profile.samples?.[path]?.[daytype]?.[hour];
-          return count == null
-            ? "—"
-            : `${count}${minimum == null ? "" : ` / ${minimum}`}`;
+          const quality = profile.bin_quality?.[path]?.[daytype]?.[hour];
+          const label = [
+            "mature",
+            "provisional",
+            "retained",
+            "fallback",
+          ].includes(quality)
+            ? ` · ${t(`profile_quality_${quality}`)}`
+            : "";
+          return (
+            (count == null
+              ? "—"
+              : `${count}${minimum == null ? "" : ` / ${minimum}`}`) + label
+          );
         });
         rows.push(
           `<tr><td>${esc(t(`profile_${daytype}`))}</td><td>${hour}:00</td><td>${esc(cells[0])}</td><td>${esc(cells[1])}</td></tr>`,

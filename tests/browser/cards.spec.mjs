@@ -359,6 +359,63 @@ test("power supplies can be enabled in card config and remain readable on a narr
   ).toBe(true);
 });
 
+for (const [language, labels] of [
+  [
+    "en",
+    [
+      "provisional · uncertainty unknown",
+      "previous estimate · no observations in window",
+      "established",
+      "standard profile",
+    ],
+  ],
+  [
+    "de",
+    [
+      "vorläufig · Unsicherheit unbekannt",
+      "bisherige Schätzung · keine Messungen im Lernfenster",
+      "etabliert",
+      "Standardprofil",
+    ],
+  ],
+]) {
+  test(`consumption explains sparse and retained estimates (${language})`, async ({
+    page,
+  }) => {
+    await page.evaluate(
+      ({ attrs, language }) => {
+        window.mount("consumption", attrs);
+        window.card.hass = { ...window.card._hass, language };
+      },
+      {
+        language,
+        attrs: {
+          ...attributes,
+          consumption_profile: {
+            samples: { ac: { weekday: [3, 0, 10, 0] } },
+            minimum_samples: { weekday: 10 },
+            bin_quality: {
+              ac: {
+                weekday: ["provisional", "retained", "mature", "fallback"],
+              },
+            },
+          },
+        },
+      },
+    );
+    await page.locator("#consumption-learning summary").click();
+    const rows = page
+      .locator("#consumption-learning table")
+      .first()
+      .locator("tbody tr");
+    for (const [index, label] of labels.entries()) {
+      await expect(rows.nth(index)).toContainText(label);
+    }
+    await expect(rows.nth(0)).toContainText("3 / 10");
+    await expect(rows.nth(1)).toContainText("0 / 10");
+  });
+}
+
 test("consumption distinguishes mixed sources and explains excluded hours", async ({
   page,
 }) => {

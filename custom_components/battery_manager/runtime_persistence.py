@@ -56,6 +56,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         "appliance_started": {
             k: v.isoformat() for k, v in self._appliance_started.items()
         },
+        "voltage_gate": self.voltage_gate.learner.export(),
         "support_manual": dict(self._support_manual),
         "support_control_mode": "coordinated"
         if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)

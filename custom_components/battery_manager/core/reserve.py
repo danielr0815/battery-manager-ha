@@ -78,7 +78,9 @@ class _ReserveCache:
     budgets: dict[
         tuple[int, int, float, float, float], tuple[HourSlot, BatteryStep]
     ] = field(default_factory=dict)
-    variants: dict[tuple[int, bool, bool], SystemConfig] = field(default_factory=dict)
+    variants: dict[tuple[int, bool, bool, bool], SystemConfig] = field(
+        default_factory=dict
+    )
     trajectories: dict[tuple[object, ...], Trajectory] = field(default_factory=dict)
     expanded: dict[int, tuple[tuple[int, HourSlot, float], ...]] = field(
         default_factory=dict
@@ -648,7 +650,7 @@ def _simulate_reserve_policy(
     protect48 = support.dc48_active and soc < config.control.support_dc48_recovery_soc
     buckets: list[list[HourFlows]] = [[] for _ in inputs.slots]
     cache = _reserve_cache.get()
-    variants: dict[tuple[int, bool, bool], SystemConfig] = (
+    variants: dict[tuple[int, bool, bool, bool], SystemConfig] = (
         cache.variants if cache is not None else {}
     )
     raw_weights, weights = prepared.raw_weights, prepared.weights
@@ -695,17 +697,25 @@ def _simulate_reserve_policy(
             support.psu24_max_power_w is not None
             and rail > support.psu24_max_power_w * slot.duration
         )
-        key = id(config), voltage_credit, rail_available
+        active48 = (
+            previous_sources[1]
+            if support.adaptive_voltage_gate
+            else support.dc48_active
+        )
+        key = id(config), voltage_credit, rail_available, active48
         if key not in variants:
             variants[key] = replace(
                 config,
                 support=replace(
                     support,
-                    gate_soc_percent=None,
+                    gate_soc_percent=support.gate_soc_percent
+                    if support.adaptive_voltage_gate
+                    else None,
                     psu48_bus_voltage_v=support.psu48_bus_voltage_v
-                    if voltage_credit
+                    if voltage_credit or support.adaptive_voltage_gate
                     else None,
                     dc24_available=rail_available,
+                    dc48_active=active48,
                 ),
             )
         effective = variants[key]
@@ -869,9 +879,14 @@ def _simulate_reserve_policy(
         )
         if fixed_limits is not None:
             limit = fixed_limits[j] if not (dc24 or dc48) else 0.0
-        if not limit and (dc24, dc48) == (
-            protected.support_dc24,
-            protected.support_dc48,
+        if (
+            not source.adaptive_voltage_gate
+            and not limit
+            and (dc24, dc48)
+            == (
+                protected.support_dc24,
+                protected.support_dc48,
+            )
         ):
             flow = protected
         elif (
@@ -912,6 +927,7 @@ def _simulate_reserve_policy(
                     effective, soc, slot, 100, extra, dc24, dc48, scale, export
                 )
             )
+        dc24, dc48 = flow.support_dc24, flow.support_dc48
         # Measured loads can replace an actual scheduled AC allocation, not
         # energy that will only arrive with the next solar recharge. Export
         # preparation and DC obligations remain bounded by the same envelope.

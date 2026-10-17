@@ -345,8 +345,11 @@ async def test_fetch_days_balance_cleaning_and_completeness(hass, _min_samples_2
     assert learner.data["diagnostics"]["missing_statistics"] == []
     profiles = learner.data["profiles"]
     assert profiles["ac"]["weekday"]["p50"][0] == 460.0
-    # Hour 22 has a single surviving weekday sample -> bin stays empty (D-C6).
-    assert profiles["ac"]["weekday"]["p50"][22] is None
+    assert learner.diagnostics()["bin_quality"]["ac"]["weekday"][0] == "mature"
+    # A single clean comparison remains useful; the incomplete day is excluded.
+    assert profiles["ac"]["weekday"]["p50"][22] == 460.0
+    assert profiles["ac"]["weekday"]["p80"][22] is None
+    assert learner.diagnostics()["bin_quality"]["ac"]["weekday"][22] == "provisional"
     issue = ir.async_get(hass).async_get_issue(
         DOMAIN, f"learning_no_statistics_{learner.entry.entry_id}"
     )
@@ -599,8 +602,9 @@ async def test_appliance_exclusion_and_coverage_rule(hass, _min_samples_2):
 
     profiles = learner.data["profiles"]
     assert profiles["ac"]["weekday"]["p50"][8] == 500.0
-    # Weekday hour 5 survives only on Tuesday -> below the sample floor.
-    assert profiles["ac"]["weekday"]["p50"][5] is None
+    # Tuesday remains a provisional estimate; excluded Monday is not a zero.
+    assert profiles["ac"]["weekday"]["p50"][5] == 500.0
+    assert profiles["ac"]["weekday"]["p80"][5] is None
     assert learner.data["diagnostics"]["missing_statistics"] == []
 
 

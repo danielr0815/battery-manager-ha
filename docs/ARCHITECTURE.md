@@ -52,7 +52,8 @@ belongs in the HA layer.
 | `planning_rules.py`, `uncertainty.py`, `policy.py` | Shared pure gates, forecast bands and domain constants; reserve has no reverse optimizer import. |
 | `accounting.py` | Shared physical interval accounting for recorder and offline evaluation, including Root/Aux boundaries. |
 | `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and target-limited Aux discharge without a same-day recharge requirement. |
-| `load_profile.py` | The learning math: cleaning measured load into a residual profile, weighted quantiles for the uncertainty bands. |
+| `load_profile.py` | The learning math: cleaning measured load into a residual profile, provisional/retained P50 estimates and mature weighted uncertainty bands (F-PROFILE-CONTINUITY). |
+| `voltage_gate.py` | Voltage hysteresis and learned SOC projection for 48 V support; frozen evidence bands are part of the replayable model. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 
 The HA orchestration delegates load commands to `load_actuation.py`, house supply
@@ -75,6 +76,7 @@ bundles them into the existing integration resource; CI rejects source/bundle dr
 |---|---|
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
+| `gate_learning.py`, `voltage_gate.py` | Recent SOC/voltage learning and fresh telemetry adapter. The coordinated supply owner remains the only PSU actor. |
 | `reserve_runtime.py` | Historical observation reference and reserve-policy migration marker; publishes the core decision without deriving a separate control target. |
 | `cascade_manager.py` | Sole actor owner for storage chains: wake, proof, handover, Root return, Safe-OFF and daily state. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |

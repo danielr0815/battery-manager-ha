@@ -181,7 +181,7 @@ export function feedinDecisions(hass, decisions) {
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
-export function reserveReport(hass, reserve, support) {
+export function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
   const fmt = (value) =>
@@ -241,6 +241,23 @@ export function reserveReport(hass, reserve, support) {
       `${fmt(reserve.psu48_delivered_wh)} Wh`,
     ],
   ];
+  const gate = support?.voltage_gate;
+  const learned = calibration?.adaptive;
+  if (gate) {
+    rows.push([t("report_gate_48"), t(`gate_${gate.reason}`)]);
+    rows.push([t("report_gate_voltage"), `${fmt(gate.voltage_v)} V`]);
+  }
+  if (learned) {
+    rows.push([t("report_gate_learning"), t(`gate_${learned.source}`)]);
+    rows.push([t("report_gate_samples"), fmt(learned.sample_count)]);
+    for (const band of learned.bands || []) {
+      if (band.current_min_a < 0 || band.on_soc == null) continue;
+      rows.push([
+        `${t("report_gate_soc")} (${fmt(band.current_min_a)}–${fmt(band.current_max_a)} A)`,
+        `${fmt(band.on_soc)} % · ${t("report_gate_spread")}: ${fmt(band.spread_percent)} %`,
+      ]);
+    }
+  }
   if (support?.pv_priority) {
     rows.push([
       t("report_live_dc_source"),

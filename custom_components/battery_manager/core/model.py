@@ -330,6 +330,34 @@ class ApplianceRun:
 
 
 @dataclass(frozen=True)
+class VoltageGateBand:
+    """Recent SOC coordinates of voltage thresholds at a comparable current.
+
+    Positive current means discharge. These are estimates, never evidence of
+    available PSU power. Separate signed bands prevent charge/relaxation mixing.
+    """
+
+    current_min_a: float
+    current_max_a: float
+    on_soc: float | None = None
+    delivery_soc: float | None = None
+    off_soc: float | None = None
+    spread_percent: float = 0.0
+    samples: int = 0
+    valid_until: float = 0.0
+
+    def __post_init__(self) -> None:
+        _require(self.current_min_a < self.current_max_a, "Invalid gate current band")
+        for name in ("on_soc", "delivery_soc", "off_soc"):
+            value = getattr(self, name)
+            _require(value is None or 0 <= value <= 100, "Invalid gate SOC")
+        _require(
+            self.spread_percent >= 0 and self.samples >= 0, "Invalid gate evidence"
+        )
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
 class SupportParams:
     """Emergency grid-support paths for the DC rails (docs/ALGORITHM.md D-A9).
 
@@ -386,8 +414,26 @@ class SupportParams:
     psu48_max_power_w: float | None = None
     psu48_output_voltage_v: float = 49.56
     gate_soc_percent: float | None = 40.0
+    # Neutral for old recordings. HA enables the adaptive path with a voltage
+    # sensor and coordinated source ownership (F-ADAPTIVE-48V-GATE).
+    adaptive_voltage_gate: bool = False
+    psu48_on_voltage_v: float = 49.56
+    psu48_off_voltage_v: float = 49.8
+    psu48_live_until: float = 0.0
+    psu48_gate_bands: tuple[VoltageGateBand, ...] = ()
 
     def __post_init__(self) -> None:
+        _require(
+            0 < self.psu48_on_voltage_v < self.psu48_off_voltage_v <= 60,
+            "Invalid PSU48 voltage hysteresis",
+        )
+        _require(
+            isinstance(self.psu48_gate_bands, tuple)
+            and all(
+                isinstance(band, VoltageGateBand) for band in self.psu48_gate_bands
+            ),
+            "Gate bands must be an immutable tuple of VoltageGateBand",
+        )
         _require(
             0.0 <= self.dc24_share <= 1.0, "SupportParams.dc24_share must be in [0, 1]"
         )
@@ -970,6 +1016,9 @@ class HourFlows:
     # None preserves the unsaldiert accounting of pre-0.56 recordings.
     # New simulations book only PSU intake not covered by simultaneous PV.
     psu_grid_import_wh: float | None = None
+    # First-step intent survives a voltage-gated OFF, so live voltage can
+    # restore support without inventing a new economic permission.
+    support_dc48_requested: bool | None = None
 
 
 ReserveDecisionReason = Literal[

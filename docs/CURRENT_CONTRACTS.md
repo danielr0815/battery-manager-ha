@@ -6,10 +6,64 @@ Bei Widersprüchen zu früheren Beschreibungen gelten die hier genannten Verträ
 Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 [Testmatrix](TEST_MATRIX.md) benennt die ausführbaren Nachweise.
 
+## Adaptive 48-V-Zuschaltung ab 0.59.0
+
+Bei koordinierter Versorgung mit konfigurierter Batteriespannung wird normale
+wirtschaftliche 48-V-Bereitschaft durch frische Spannung gefiltert. Der Bedarf
+bleibt erhalten, auch wenn der Schalter aus ist: Der Fünfsekundenpfad ruft bei
+Spannungsänderung denselben Quellenbesitzer auf. Einschalten nach 60 Sekunden
+unter/auf der Einschaltgrenze, Ausschalten nach 300 Sekunden oberhalb/auf der
+Ausschaltgrenze; dazwischen wird der bestätigte Zustand gehalten. Bestehende
+Mindestschaltzeiten gelten zusätzlich. Schutz und ausdrückliche manuelle
+Anforderungen dürfen Bereitschaft erzwingen. Fehlende frische Spannung erlaubt
+Bereitschaft, aber keine Leistungsgutschrift. Quellenbestätigung, Netzstatus,
+Planablauf, Invertersperre und 24-V-Überlappung behalten Vorrang.
+
+Ein begrenzter Lerner beobachtet SOC, Spannung und Batterieleistung nur bei
+bestätigt ausgeschaltetem 48-V-Netzteil. Die vorhandene Zuordnung
+`feedin_battery_power_entity` wird auch ohne aktivierte Einspeisung verwendet;
+positiv bedeutet Laden, negativ Entladen. Ohne diese Messung bleibt Lernen
+unverfügbar. Sensorpublikationen müssen höchstens 30 Sekunden alt sein. Stabile
+Abschnitte werden nach 60 Sekunden höchstens alle fünf Minuten aufgenommen.
+Lade- und Entladestrombereiche bleiben getrennt. Je Spannungsschwelle werden
+Beobachtungen im Band ±0,04 V altersgewichtet ausgewertet (Halbwertszeit zwei Tage,
+maximal 14 Tage). Mindestens drei Beobachtungen über mindestens 30 Minuten und
+höchstens fünf SOC-Prozentpunkte P10–P90-Streuung sind erforderlich. Diese Werte
+sind konservative Startparameter, keine empirisch garantierte Konfidenz.
+
+Ein innerhalb von fünf Minuten nicht durch die gemessene Energie erklärbarer
+SOC-Sprung verwirft alte Koordinaten als Rekalibrierungsverdacht. Das Modell
+ändert weder den BMS-SOC noch die Batteriekapazität. Lernstand, Epoche und
+Quellenbindung überleben Neustarts; Stabilitäts- und Schaltentscheidungstimer
+beginnen neu. Konfigurationsänderungen an Quellen, Kapazität oder Grenzspannungen
+entwerten das Modell. Unter Netzteil-Spannungshaltung findet kein Training statt.
+
+Die nominale Prognose verwendet aktuelle Spannung für das erste kurze Zeitfenster,
+danach eine zur Last passende gelernte SOC-Grenze. Gelernte Lieferung bedeutet
+höchstens direkte Lastdeckung innerhalb der PSU-Leistungsgrenze, keine zusätzliche
+Netzladung. Bei unzureichender Evidenz bestimmt die konfigurierte SOC-Grenze nur
+eine gekennzeichnete Bereitschaftsprognose ohne gesicherte Lieferenergie.
+Pessimistische Läufe erhalten keine ungemessene Stützenergie. Eingeschaltet,
+angefordert und liefernd bleiben getrennte Diagnosen. Die Schaltspur zeigt den
+geplanten Schalterzustand, der Quellenbesitzer prüft Livewerte erneut.
+
+Dies ersetzt die pauschale wirtschaftliche Bereitschaft aus
+`F-COORDINATED-DC-SUPPORT` R4 und die zukünftige Momentanspannungsprojektion aus R6.
+Alte Planneraufzeichnungen ohne `adaptive_voltage_gate` bleiben im früheren
+Modell; neue Aufzeichnungen enthalten den unveränderlichen Lern-Snapshot.
+Die drei neuen Golden-Szenarien frieren Cold-Start, eine gelernte
+75-%-Grenze und ihre Verschiebung auf 78 % ein. Bei identischer Dunkelprognose
+steigen erwarteter Netzbezug und erhaltener SOC zusammen: 6,871 kWh / 41,03 %
+(ohne gelernte Lieferung), 8,720 kWh / 74,95 % und 8,884 kWh / 77,96 %.
+Das ist beabsichtigte direkte DC-Versorgung, keine Netzladung. Alle 16 bisherigen
+Szenarien bleiben unverändert.
+Nachweise: `test_voltage_gate.py`, `test_gate_learning.py`,
+`test_voltage_gate_runtime.py` und die bestehenden Quellen-/Reserveprüfungen.
+
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.58.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.60.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -72,6 +126,14 @@ Aktorpfade; Gate-Reihenfolge und konfigurierte Eingang-Abschaltpolitik gelten
 weiterhin. Die detaillierten Schutzregeln stehen in [LOAD_CONTROL](LOAD_CONTROL.md).
 
 ## Planung und Lernen
+
+Ab **0.60.0** bleiben gültige Verbrauchsmessungen auch unterhalb der bisherigen
+Mindestmenge als vorläufige P50-Schätzung nutzbar. Ohne Beobachtungen im
+Lernfenster bleibt der vorherige Stundenwert erhalten. P80 setzt weiterhin
+ausreichend Vergleichstage voraus; ohne verfügbare Bänder gilt der feste
+SOC-Puffer. Karte und Diagnose unterscheiden etablierte, vorläufige,
+beibehaltene und statische Werte. Ausschlüsse und explizite Reparatur bleiben
+wirksam. Details und Upgrade-Vertrag: [F-PROFILE-CONTINUITY](F-PROFILE-CONTINUITY.md).
 
 Der maximale Charger-Durchsatz umfasst DC-Versorgung, Eigenbedarf und
 Batterieladung gemeinsam. Physisch nicht lieferbare DC-Energie bleibt als
@@ -531,3 +593,63 @@ fehlgeschlagener Abschaltung weiterverfolgt, auch wenn der Helfer bereits aus is
 Aktorretries bleiben auf 60 Sekunden begrenzt; Fremdeingänge für Passthrough
 behalten ihre Besitzregel. Unterstützte Ladezielgrenzen der externen Geräte müssen
 in der Automation eingehalten werden. Details: [Laststeuerung](LOAD_CONTROL.md).
+
+
+## Fossibot-Stillstand und Freeze-Wächter (ab 0.59.1)
+
+Unveränderter SOC und unveränderte Leistung unterhalb der bestehenden
+lastspezifischen Standby-Schwelle sind kein Nachweis eingefrorener Ladetelemetrie.
+Der F4-Wächter verwirft dafür seine Evidenz und hebt auch bereits persistierte
+F4-Fehlsperren auf, sobald beide Messwerte lesbar sind. Bei bestätigt ausgeschalteter
+externer Steckdose dürfen beide Fossibot-Sensoren `unavailable` sein: Dann reicht
+die gespeicherte Standby-Leistung als Nachweis der alten F4-Fehlsperre. Ein
+unerreichbarer Steckdosenschalter ist keine OFF-Bestätigung. Fehlende Messwerte
+allein oder gespeicherte positive Ladeleistung geben keine Sperre frei.
+G2-SOC-Sperren bleiben unabhängig davon
+bestehen: Dort war unveränderter SOC trotz gemeldeter Ladeleistung nachgewiesen.
+
+Die erste aktive Empfehlung beginnt das F4-Zeitfenster neu; vorherige Stunden
+oder Tage ohne Empfehlung zählen nicht rückwirkend. Eingefrorene Werte oberhalb
+der Standby-Schwelle bleiben einschließlich ihrer Neustart-Persistenz überwacht.
+Eine bestätigte ausgeschaltete Steckdose sammelt keine neue F4-Evidenz, auch
+wenn die Geräteintegration noch alte positive Leistungswerte anzeigt.
+Der vorhandene Einschaltpfad startet geplante Ladung ohne vorherige Erreichbarkeit
+der Fossibot. Der SOC-Cache gilt höchstens sieben Tage; anschließend greift die
+bestehende Planung mit unbekanntem SOC. Ein noch gültiger SOC gleich Ladeziel
+erzeugt keinen Ladebedarf. Ohne zurückkehrende Telemetrie wird die eingefrorene
+Laufzeit nicht nahtlos verlängert. Überschuss-, Netzbezugs- und
+Aktorbestätigungsregeln bleiben bestehen.
+
+Nachweis: `tests/ha/test_load_switching.py` prüft Stillstand nach alter Empfehlung,
+Wiederherstellung einer falschen 90-%-/0-W-Sperre sowie den ersten Ladestart nach
+langer Pause zusätzlich zu den bestehenden G2-/F4- und Persistenztests.
+
+## Fossibot-Ladepause mit Passthrough (ab 0.59.2)
+
+Der separat installierbare [Ladepausen-Blueprint](F-FOSSIBOT-CHARGE-PAUSE.md)
+übersetzt den bestehenden Lade-Helfer in einen Gerätebefehl: exakt `on` setzt
+die Ladeverzögerung auf null, jeder andere Zustand auf zehn Minuten. Der
+Adapter schreibt nur bei bestätigt eingeschaltetem Eingang und numerisch
+verfügbarem Timer. Ein Zweiminutentakt erneuert die Pause unabhängig vom
+angezeigten Countdown; Neustart und Geräte-Rückkehr gleichen den aktuellen
+Helferzustand erneut ab. Der Battery Manager bleibt der Planer.
+
+Für erhaltenen Netz-Passthrough wird je Last die bestehende Eingangsregel
+`keep_on` verwendet. Sie erhält einen eingeschalteten Eingang beim Ladestopp,
+erzwingt aber kein Einschalten eines ausgeschalteten Eingangs. Der Adapter
+schaltet weder Eingangsstecker noch AC-Ausgang und verändert keine SOC-Grenze.
+Ein ausgeschalteter Helfer oder positiver Timer bestätigt keine physische
+Ladepause. Nach Ablauf des Timers während eines HA-/Verbindungsausfalls kann
+das Gerät wieder laden; ein dauerhafter Hardware-Ladestopp wird nicht zugesagt.
+
+Gemeldete Netzladung trotz gesperrter Ladefreigabe und eingeschaltetem Eingang
+erzeugt nach zwei durchgehenden Minuten eine dauerhafte HA-Meldung, auch bei
+nicht verfügbarem Timer. Ein erfolgreicher Timerbefehl löscht die Meldung nicht;
+dafür ist eine neue Freigabe oder eine bestätigte OFF-Rückmeldung der Netzladung
+beziehungsweise des Eingangs erforderlich.
+
+Die begleitende Python-Korrektur unterbricht neue F4-Freeze-Evidenz, wenn das
+konfigurierte Lade-Gate bestätigt ausgeschaltet ist: Konstante positive
+Passthrough-Leistung allein belegt keine eingefrorene Batterieladung. Bereits
+gesetzte positive F4-Sperren und G2-Sperren bleiben erhalten. Der Blueprint ist
+separat installierbar; diese F4-Korrektur benötigt das Integrationsupdate.

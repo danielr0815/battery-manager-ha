@@ -4,6 +4,19 @@
 > Extends REQUIREMENTS.md (L requirements) and ALGORITHM.md with direct
 > actuation of powerstation charging paths by the integration.
 
+## Fossibot charging adapter (0.59.2)
+
+The [Fossibot charge-pause blueprint](F-FOSSIBOT-CHARGE-PAUSE.md) replaces the
+historical 20 % maximum-SOC stop command with a renewable 10-minute charging
+delay. The existing charge helper remains Battery Manager's intent signal;
+the adapter writes only the device's delay number. `keep_on` preserves an
+already powered input for passthrough when charging stops. It does not force
+an OFF input ON. The adapter reconciles after startup and device wake-up and
+renews the delay every two minutes regardless of the reported countdown.
+Only an explicitly ON helper clears the delay; physical charging feedback
+must still be checked. A Home Assistant or connection outage can outlast the
+remaining delay and allow charging to resume.
+
 ## Kaskadenbesitz (v0.26.0)
 
 Ist eine Last Mitglied oder Endlast einer Speicher-Kaskade, setzt ihr
@@ -86,8 +99,9 @@ that a partly empty battery stops charging.
      **rolled back OFF** immediately (WARNING; audit 2026-08-04: without the
      rollback the gate stayed orphaned ON for 3.4 days — charging never
      becomes active, so no later path ever reaches the gate — bypassing the
-     legacy automation's 20 % firmware floor and violating the OFF rule
-     below). If the rollback OFF fails too (WARNING), a cyclic sweep in the
+     legacy automation's then-used 20 % SOC stop and violating the OFF rule
+     below; this is historical incident context, not a supported current
+     stop command). If the rollback OFF fails too (WARNING), a cyclic sweep in the
      decision pass turns off any gate that is physically ON while the load
      neither charges nor shall charge.
 - **Charge end (no more planned hour / load saturated):**
@@ -114,8 +128,8 @@ Previously: an energy-limited load with an unreadable SOC ⇒ unavailable.
 **New:**
 
 - The SOC value is **cached** on every valid reading and **reused** on
-  `unavailable`/`unknown` (last valid value, without an age limit —
-  self-discharge is small, correction happens at the next wake-up).
+  `unavailable`/`unknown` (last valid value for up to seven days;
+  older values become unknown, with correction at the next wake-up).
 - The cache is **persisted** (HA storage) so it survives an HA restart with
   a sleeping Fossibot.
 - If no SOC is known at all (fresh install, empty storage): the load is
@@ -126,6 +140,14 @@ Previously: an energy-limited load with an unreadable SOC ⇒ unavailable.
 - No active "waking to measure": the SOC becomes live exactly when it is
   needed (during charging). The operator's external wake automations update
   the cache as a side effect.
+
+Since 0.59.1, a persisted F4 false positive based on standby power also clears
+while SOC and power are unavailable, provided the external socket confirms OFF.
+A socket that is itself unavailable is not proof of OFF. Existing positive-power
+freeze evidence and G2 latches are not discarded solely because telemetry is
+missing. A confirmed OFF input never accumulates new F4 evidence from cached
+readings. Planned charging still follows the normal surplus gates and frozen run
+deadline; unavailable telemetry cannot extend that deadline seamlessly.
 
 ## 5. Power measurement and passthrough
 

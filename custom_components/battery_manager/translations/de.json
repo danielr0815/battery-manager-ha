@@ -269,7 +269,7 @@
               "psu48_efficiency": "Wirkungsgrad des 48-V-Netzteils (1,0 = verlustfrei).",
               "psu48_max_current_a": "Maximaler Ausgangsstrom des 48-V-Netzteils. 0 = unbegrenzt.",
               "battery_cells_series": "Zellenzahl in Serie (z. B. 15 für Pylontech US5000). Nur informativ: ergibt die Spannung pro Zelle als Kalibrier-Hilfe.",
-              "gate_soc_percent": "Das 48-V-Netzteil liefert nur unterhalb dieses SOC (Proxy für die Spannungsschwelle). Standard: 40 %. Bei oder oberhalb der Schwelle liefert es 0 W. 100 % deaktiviert das Gate (immer offen). Wert aus der Gate-Kalibrierung im SOC-Prognose-Sensor ablesen.",
+              "gate_soc_percent": "Statischer SOC-Ersatzwert für die 48-V-Spannungsschwelle. Standard: 40 %; 100 % deaktiviert das statische Gate. Mit koordinierter Versorgung und Batteriespannungssensor steuert die Spannung das reale Schalten; die Prognose lernt den zugehörigen SOC. Bis genug Messungen vorliegen, bestimmt dieser Ersatzwert nur die geplante Bereitschaft und begründet keine verfügbare Netzteilleistung.",
               "psu48_on_voltage_v": "Bei manuellem 48-V-Betrieb: unterhalb dieser Batteriespannung schaltet der Regler das Netzteil EIN. Benötigt den Batteriespannungs-Sensor.",
               "psu48_off_voltage_v": "Bei manuellem 48-V-Betrieb: ab dieser Batteriespannung schaltet der Regler das Netzteil AUS. Muss über der Einschalt-Spannung liegen (Hysterese).",
               "psu48_controller_log_only": "An = Regler protokolliert nur seine Entscheidungen, schaltet aber nicht (Testlauf). Aus = Regler schaltet das 48-V-Netzteil aktiv."
@@ -842,7 +842,7 @@
               "psu48_efficiency": "Wirkungsgrad des 48-V-Netzteils (1,0 = verlustfrei).",
               "psu48_max_current_a": "Maximaler Ausgangsstrom des 48-V-Netzteils. 0 = unbegrenzt.",
               "battery_cells_series": "Zellenzahl in Serie (z. B. 15 für Pylontech US5000). Nur informativ: ergibt die Spannung pro Zelle als Kalibrier-Hilfe.",
-              "gate_soc_percent": "Das 48-V-Netzteil liefert nur unterhalb dieses SOC (Proxy für die Spannungsschwelle). Standard: 40 %. Bei oder oberhalb der Schwelle liefert es 0 W. 100 % deaktiviert das Gate (immer offen). Wert aus der Gate-Kalibrierung im SOC-Prognose-Sensor ablesen.",
+              "gate_soc_percent": "Statischer SOC-Ersatzwert für die 48-V-Spannungsschwelle. Standard: 40 %; 100 % deaktiviert das statische Gate. Mit koordinierter Versorgung und Batteriespannungssensor steuert die Spannung das reale Schalten; die Prognose lernt den zugehörigen SOC. Bis genug Messungen vorliegen, bestimmt dieser Ersatzwert nur die geplante Bereitschaft und begründet keine verfügbare Netzteilleistung.",
               "psu48_on_voltage_v": "Bei manuellem 48-V-Betrieb: unterhalb dieser Batteriespannung schaltet der Regler das Netzteil EIN. Benötigt den Batteriespannungs-Sensor.",
               "psu48_off_voltage_v": "Bei manuellem 48-V-Betrieb: ab dieser Batteriespannung schaltet der Regler das Netzteil AUS. Muss über der Einschalt-Spannung liegen (Hysterese).",
               "psu48_controller_log_only": "An = Regler protokolliert nur seine Entscheidungen, schaltet aber nicht (Testlauf). Aus = Regler schaltet das 48-V-Netzteil aktiv."
@@ -862,7 +862,7 @@
             "data_description": {
               "feedin_enabled": "Vorzeitige Einspeisung planen und anfahren. Braucht beide Entitäten unten; der Schalter „Vorzeitige Netzeinspeisung“ kann sie im Tagesbetrieb pausieren.",
               "feedin_setpoint_entity": "input_number, den der externe Regler als AC-Sollwert liest. NEGATIVER Wert = Export: geplante 500 W Einspeisung werden als -500 geschrieben.",
-              "feedin_battery_power_entity": "Batterieleistungs-Sensor (W), Victron-Konvention: positiv = ladend, negativ = entladend. Treibt die ereignisgesteuerte Nachregelung, die die Batterie während der Einspeisung bei ~0 W hält.",
+              "feedin_battery_power_entity": "Batterieleistungs-Sensor (W), Victron-Konvention: positiv = ladend, negativ = entladend. Dient der Einspeise-Nachregelung und dem adaptiven Lernen des 48-V-Gates. Das Gate nutzt diesen Sensor auch bei deaktivierter Einspeisung.",
               "feedin_max_w": "Obergrenze des Einspeise-Sollwerts (höchstens 2000 W).",
               "feedin_min_soc_percent": "Einspeisung läuft nur oberhalb dieses SOC (muss über dem minimalen Batterie-SOC liegen).",
               "feedin_deadline_hour": "Harte Deadline (0-23): vorzeitige Einspeisung wird nur vor dieser Stunde eingeplant; Restmengen werden danach nicht mehr abgearbeitet (sie gehen mittags natürlich ins Netz)."

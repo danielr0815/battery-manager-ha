@@ -32,6 +32,7 @@ from .core.live_ac import (
 from .core.live_dc import pv_covers_dc
 from .core.model import PlanInputs, PlanResult, SystemConfig
 from .load_safety import stop_unsafe_loads
+from .voltage_gate import requested_dc48
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -128,7 +129,7 @@ class LiveACRuntime:
                     ),
                 ),
                 decision.live_ac_floor_percent,
-                result.support_dc24_now or result.support_dc48_now,
+                result.support_dc24_now or requested_dc48(result),
                 inputs.start_soc_percent
                 - config.battery.soc_percent(decision.headroom_wh),
                 decision.live_ac_override_demand_w,
@@ -136,7 +137,7 @@ class LiveACRuntime:
                 inputs.slots[0].dc_wh / inputs.slots[0].duration
                 + config.battery.energy_wh(config.control.soc_buffer_percent)
                 / DC_FALLBACK_BUFFER_HOURS,
-                (result.support_dc24_now, result.support_dc48_now),
+                (result.support_dc24_now, requested_dc48(result)),
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -424,8 +425,23 @@ class LiveACRuntime:
         c = self.owner
         if c._actuation_shutdown:
             return
+        c.voltage_gate.observe(dt_util.now())
         await stop_unsafe_loads(c)
         await self._reconcile_pv_sources()
+        envelope = self.envelope
+        if (
+            envelope is not None
+            and envelope.config.support.adaptive_voltage_gate
+            and dt_util.utcnow() < envelope.expires
+            and (c._switch_task is None or c._switch_task.done())
+            and (envelope.dc_sources[1] or c._support_state["dc48"])
+        ):
+            await c._execute_coordinated_support(
+                dict(zip(("dc24", "dc48"), envelope.dc_sources, strict=True)),
+                self.planned_limit() > 0,
+                envelope.config,
+                dt_util.now(),
+            )
         # Same ownership lock as planned source transfers; never race a PSU ON.
         async with c._switch_lock:
             live = self.refresh()
