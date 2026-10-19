@@ -38,6 +38,7 @@ def reconcile_supply_feedback(
         ):
             continue
         request.state = "confirmed"
+        self.source_phases.confirmed(entity, request.desired, dt_util.utcnow())
         changed = True
         if entity in (
             self.raw_config.get(CONF_SUPPORT_DC24_SWITCH),
@@ -273,6 +274,44 @@ async def execute_coordinated_support(
                 diag["desired"] = dict(desired)
 
             planned_desired = dict(desired)
+            diag["requested"] = dict(planned_desired)
+
+            def phase_changed() -> bool:
+                if not config.reserve.enabled or diag.get("pv_priority"):
+                    return False
+                soc = self._get_soc(dt_util.now())
+                protective = support_state(
+                    config,
+                    soc if soc is not None else config.battery.soc_min_percent,
+                    False,
+                    False,
+                    False,
+                )
+                if any(protective):
+                    return False  # A stale economic intent never delays protection.
+                phases = self.source_phases.deadlines(dt_util.utcnow())
+                captured = (
+                    config.support.dc24_phase_until,
+                    config.support.dc48_phase_until,
+                )
+                return any(
+                    current > previous and desired[key] != self._support_state[key]
+                    for key, current, previous in zip(
+                        ("dc24", "dc48"),
+                        phases,
+                        captured,
+                        strict=True,
+                    )
+                )
+
+            if phase_changed():
+                # A source was confirmed while this plan was computing.
+                self._inverter_recommendation = False
+                await self._confirm_inverter_limit(True, diag)
+                diag["reason"] = "source_phase_changed"
+                self._schedule_replan()
+                return
+            diag["source_phases"] = self.source_phases.diagnostic(dt_util.utcnow())
             desired = self.voltage_gate.apply(config, desired, now)
             diag["desired"] = dict(desired)
             diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
@@ -285,6 +324,9 @@ async def execute_coordinated_support(
                 )
                 if changed or expired:
                     diag["reason"] = "plan_changed" if changed else "plan_expired"
+                elif phase_changed():
+                    diag["reason"] = "source_phase_changed"
+                    self._schedule_replan()
                 elif diag.get("pv_priority") and not self.live_ac.pv_source_permission(
                     config
                 ):
@@ -328,6 +370,11 @@ async def execute_coordinated_support(
 
             async def restore_required() -> None:
                 """Restore through this owner before releasing its transition lock."""
+                if diag["reason"] == "source_phase_changed":
+                    # The old envelope cannot authorize undoing a source whose
+                    # late confirmation invalidated this transition.
+                    await self._confirm_inverter_limit(True, diag)
+                    return
                 if self._reserve_grid_available() is not True:
                     return
                 current = self.live_ac.envelope
@@ -372,6 +419,8 @@ async def execute_coordinated_support(
                     key: target[key] or required or self._support_manual[key]
                     for key, required in zip(("dc24", "dc48"), protect, strict=True)
                 }
+                diag["requested"] = dict(target)
+                diag["pv_priority"] = False
                 target = self.voltage_gate.apply(restore_config, target, dt_util.now())
                 diag["desired"] = target
                 diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
@@ -464,6 +513,8 @@ async def execute_coordinated_support(
                     diag["reason"] = "inverter_block_unconfirmed"
                     return
 
+            # Blocking/confirmation above may have consumed real time.
+            now = dt_util.now()
             interval = timedelta(seconds=config.control.min_switch_interval_s)
             changes = any(
                 entity and self._entity_tristate(entity) is not desired[key]

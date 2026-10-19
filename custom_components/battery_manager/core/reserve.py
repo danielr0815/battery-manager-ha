@@ -42,6 +42,7 @@ from .reserve_sources import (
     least_grid_source,
     market_sources,
     net_draw,
+    phase_locks,
     source_choices,
     source_state,
     source_windows,
@@ -49,6 +50,7 @@ from .reserve_sources import (
 )
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
+from .source_stability import smooth_sources
 from .support import support_state
 from .uncertainty import reserve_preparation_scales
 
@@ -99,6 +101,19 @@ class _ReserveCache:
 _reserve_cache: ContextVar[_ReserveCache | None] = ContextVar(
     "reserve_cache", default=None
 )
+_smooth_source_schedule: ContextVar[bool] = ContextVar(
+    "smooth_source_schedule", default=True
+)
+
+
+@contextmanager
+def source_schedule_mode(enabled: bool) -> Iterator[None]:
+    """Load probes keep economic physics; smooth only the fully booked plan."""
+    token = _smooth_source_schedule.set(enabled)
+    try:
+        yield
+    finally:
+        _smooth_source_schedule.reset(token)
 
 
 @contextmanager
@@ -286,7 +301,10 @@ def simulate_reserve(
         return _simulate_reserve(config, inputs, extra_ac, pv_scale, feedin)
     cache.references[id(config)] = config
     cache.references[id(inputs)] = inputs
-    key = _probe_key(config, inputs, extra_ac, pv_scale, feedin)
+    key = (
+        *_probe_key(config, inputs, extra_ac, pv_scale, feedin),
+        _smooth_source_schedule.get(),
+    )
     result = cache.trajectories.get(key)
     if result is None:
         result = _simulate_reserve(config, inputs, extra_ac, pv_scale, feedin)
@@ -385,9 +403,48 @@ def _apply_dc_market(
             fixed_limits=tuple(s.flow.inverter_limit_w for s in steps),
             traces=traces,
         )
-        if valid_shift(config, steps, traces[id(trial.flows)], weights):
+        trial_steps = traces[id(trial.flows)]
+        phase_correction = any(
+            locked and not active and before and not after
+            for index in window
+            for locked, active, before, after in zip(
+                phase_locks(config, steps[index].slot),
+                (config.support.dc24_active, config.support.dc48_active),
+                source_state(steps[index].flow),
+                source_state(trial_steps[index].flow),
+                strict=True,
+            )
+        )
+        if valid_shift(
+            config, steps, trial_steps, weights, allow_phase_tradeoff=phase_correction
+        ):
             result = trial
-            accepted_states = proposed
+            accepted_states = [source_state(s.flow) for s in traces[id(trial.flows)]]
+    # Rearrange whole source combinations only inside equal-price input slots.
+    # Validate once for the entire candidate, never once per short ON island.
+    if result is not reference and _smooth_source_schedule.get():
+        current_steps = traces[id(result.flows)]
+        smoothed = smooth_sources(
+            config, current_steps, tuple(accepted_states), weights, inputs.market_prices
+        )
+        if smoothed != tuple(accepted_states):
+            trial = _simulate_reserve_policy(
+                config,
+                inputs,
+                extra_ac,
+                pv_scale,
+                feedin,
+                allow_ac=allow_ac,
+                ac_margin_wh=ac_margin_wh,
+                fixed_sources=smoothed,
+                fixed_limits=tuple(s.flow.inverter_limit_w for s in steps),
+                traces=traces,
+            )
+            trial_steps = traces[id(trial.flows)]
+            if valid_shift(config, current_steps, trial_steps, weights) and valid_shift(
+                config, steps, trial_steps, weights, allow_phase_tradeoff=True
+            ):
+                result = trial
     decision = reference.reserve_decision
     assert decision is not None
     accepted = traces[id(result.flows)]

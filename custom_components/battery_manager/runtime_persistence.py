@@ -63,6 +63,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         else "legacy",
         "support_migration": dict(self._support_migration),
         "support_state": dict(self._support_state),
+        "source_phases": self.source_phases.export(),
         "dc48_ctrl_caused_off": self._dc48_ctrl_caused_off,
         # F-L7: the latched power warning survives reloads/restarts so an
         # options save (which reloads the coordinator) does not silently

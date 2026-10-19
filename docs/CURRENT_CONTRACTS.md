@@ -6,6 +6,23 @@ Bei Widersprüchen zu früheren Beschreibungen gelten die hier genannten Verträ
 Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 [Testmatrix](TEST_MATRIX.md) benennt die ausführbaren Nachweise.
 
+## Stabile Netzteilphasen ab 0.61.0
+
+Bestätigte eigene Netzteilflanken binden die wirtschaftliche Quellenverteilung
+jeweils 30 reale Minuten. Die Restfrist gehört zum Planner-Eingang und bleibt
+über Reloads erhalten. Wiederholte oder unbestätigte Befehle starten sie nicht neu.
+Schutz, manuelle Vorgaben, Netzverlust, PV-Versorgung und notwendiger
+PV-Speicherraum behalten Vorrang. Eine während der Berechnung neu bestätigte
+Phase verlangt vor einem wirtschaftlichen Gegenbefehl einen frischen Plan.
+
+Nach einer Marktverschiebung werden vollständige 24-/48-V-Kombinationen innerhalb
+gleich langer Schritte desselben Prognose- und Preisintervalls zu weniger
+Flanken zusammengelegt. Die Dauer je Kombination bleibt erhalten. Vollständige
+Nachsimulation gegen Marktplan und Referenz schützt Energie, SOC, DC-Versorgung,
+AC-Abgabe, Import und Export. Gleichwertige Pläne mit weniger Flanken sind
+zulässig; ungültige Glättung behält den vorherigen Plan. Details:
+[F-DC-SOURCE-STABILITY](F-DC-SOURCE-STABILITY.md).
+
 ## Adaptive 48-V-Zuschaltung ab 0.59.0
 
 Bei koordinierter Versorgung mit konfigurierter Batteriespannung wird normale
@@ -63,7 +80,7 @@ Nachweise: `test_voltage_gate.py`, `test_gate_learning.py`,
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.60.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.61.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.

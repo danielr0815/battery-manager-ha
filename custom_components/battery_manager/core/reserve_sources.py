@@ -17,6 +17,18 @@ SourceState = tuple[bool, bool]
 SOURCE_BLOCK_HOURS = 0.5
 
 
+def phase_locks(config: SystemConfig, slot: HourSlot) -> SourceState:
+    """Economic phases use elapsed time; naive legacy recordings use UTC."""
+    if not (config.support.dc24_phase_until or config.support.dc48_phase_until):
+        return False, False
+    start = slot.start
+    at = (start if start.tzinfo else start.replace(tzinfo=UTC)).timestamp()
+    return (
+        at < config.support.dc24_phase_until,
+        at < config.support.dc48_phase_until,
+    )
+
+
 @dataclass(frozen=True)
 class SourceStep:
     slot: HourSlot
@@ -168,6 +180,7 @@ def _allocate_window(
     budget = sum(net_draw(steps[i].flow) for i in indices)
     for i in indices:
         step = steps[i]
+        locked_sources = phase_locks(config, step.slot)
         # Freeze AC opportunities; DC cannot buy a new AC budget, and an
         # already admitted AC step cannot be financed by a source swap.
         choices = (
@@ -180,10 +193,26 @@ def _allocate_window(
             if not step.flow.inverter_limit_w
             else (step.flow,)
         )
+        # A confirmed OFF can reserve only existing reference battery Wh. If
+        # compulsory choices or insufficient budget prevent it, keep reference
+        # supply rather than inventing a larger discharge budget for stability.
         choices = tuple(
             f
             for f in choices
             if f.unserved_dc_wh <= step.flow.unserved_dc_wh + ENERGY_EPSILON_WH
+            and (
+                not any(locked_sources)
+                or all(
+                    not locked or selected == (reference and active)
+                    for locked, selected, reference, active in zip(
+                        locked_sources,
+                        source_state(f),
+                        source_state(step.flow),
+                        (config.support.dc24_active, config.support.dc48_active),
+                        strict=True,
+                    )
+                )
+            )
         )
         choices = choices or (step.flow,)
         # Calculate each physical cost once. The finite Pareto comparison must
@@ -335,6 +364,8 @@ def valid_shift(
     reference: Sequence[SourceStep],
     trial: Sequence[SourceStep],
     weights: Sequence[float],
+    *,
+    allow_phase_tradeoff: bool = False,
 ) -> bool:
     """Reject regression in any recharge window, even if a later one improves."""
     start = 0
@@ -374,8 +405,24 @@ def valid_shift(
             (grid_dc(config, a.flow) - grid_dc(config, b.flow)) * weights[i]
             for i, (a, b) in enumerate(zip(old, new, strict=True), start)
         )
-        if gain < -ENERGY_EPSILON_WH:
+        phase_window = allow_phase_tradeoff and any(
+            any(phase_locks(config, step.slot)) for step in old
+        )
+        if gain < -ENERGY_EPSILON_WH and not phase_window:
             return False
-        changed |= gain > ENERGY_EPSILON_WH
+        changed |= gain > ENERGY_EPSILON_WH or phase_window
         start = end + 1
-    return changed
+
+    # F-DC-SOURCE-STABILITY: a physically/cost-equivalent candidate is an
+    # improvement when it removes actual source edges. Do not reject it merely
+    # because the previous acceptance gate counted price gain alone.
+    def edges(sequence: Sequence[SourceStep]) -> int:
+        previous = config.support.dc24_active, config.support.dc48_active
+        count = 0
+        for step in sequence:
+            state = source_state(step.flow)
+            count += sum(a != b for a, b in zip(previous, state, strict=True))
+            previous = state
+        return count
+
+    return changed or edges(trial) < edges(reference)

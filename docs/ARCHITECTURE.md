@@ -54,11 +54,14 @@ belongs in the HA layer.
 | `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and target-limited Aux discharge without a same-day recharge requirement. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, provisional/retained P50 estimates and mature weighted uncertainty bands (F-PROFILE-CONTINUITY). |
 | `voltage_gate.py` | Voltage hysteresis and learned SOC projection for 48 V support; frozen evidence bands are part of the replayable model. |
+| `source_stability.py` | Bounded joint PSU smoothing inside original input/price intervals; fewer edges with full physical validation. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 
 The HA orchestration delegates load commands to `load_actuation.py`, house supply
 transitions to `coordinated_supply.py`, storage serialization to
 `runtime_persistence.py`, and daily output projection to `plan_output.py`.
+`source_phases.py` retains independently confirmed PSU phases across rolling
+plans and reloads; the pure core receives their remaining economic deadlines.
 `load_safety.py` reads fresh net import at each load-start boundary and uses
 the existing fast timer for stop-only protection and completion of owned input
 stops. It allocates no energy and never takes over a cascade or supply actor.

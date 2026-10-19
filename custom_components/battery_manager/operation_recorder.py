@@ -216,6 +216,8 @@ class OperationRecorder:
         return {
             "plan_metadata": dict(c._plan_metadata),
             "floor_guard_active": bool(c._floor_guard_active),
+            "coordinated_support": dict(c._coordinated_support_diag),
+            "source_phases": c.source_phases.diagnostic(dt_util.utcnow()),
             "live_ac": {
                 key: value
                 for key, value in c.live_ac.diagnostics.items()

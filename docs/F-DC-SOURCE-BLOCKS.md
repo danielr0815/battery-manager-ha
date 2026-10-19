@@ -1,5 +1,8 @@
 # Gebündelte Netzteilzeiten und Preisvorrang (0.58.0)
 
+Ab 0.61.0 ergänzt [F-DC-SOURCE-STABILITY](F-DC-SOURCE-STABILITY.md) diese
+Präferenz um bestätigte wirtschaftliche Phasen und gemeinsame EIN-/AUS-Glättung.
+
 ## Befund
 
 Am 13.10.2026 zeigte der Betreiber eine SOC-Prognose mit zahlreichen kurzen

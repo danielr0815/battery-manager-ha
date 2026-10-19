@@ -290,6 +290,7 @@ from .reserve_runtime import (
 )
 from .runtime_persistence import persistent_payload
 from .source_health import source_health
+from .source_phases import SourcePhases
 from .voltage_gate import VoltageGateRuntime, requested_dc48
 
 _LOGGER = logging.getLogger(__name__)
@@ -516,6 +517,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._support_migration: dict[str, Any] = {}
         self._last_support_switch: datetime | None = None
         self._supply_actor_requests: dict[str, ActorRequest] = {}
+        self.source_phases = SourcePhases(self)
         # Last commanded direction per PSU (for the late-confirmation
         # grace), pending unconfirmed activations, the level-triggered
         # DC/DC restore task, and the one-shot pre-0.6.5 adoption flag.
@@ -1024,6 +1026,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data.get("support_state", {}).get(key, False)
                 )
             self._support_migration = dict(data.get("support_migration") or {})
+            self.source_phases.restore(data.get("source_phases"), dt_util.utcnow())
             if (
                 self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
                 and data.get("support_control_mode") != "coordinated"
@@ -1275,6 +1278,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def build_system_config(self) -> SystemConfig:
         """Translate entry data + subentries into the core SystemConfig."""
         cfg = self.raw_config
+        phase24, phase48 = self.source_phases.deadlines(dt_util.utcnow())
         loads = []
         appliances = []
         cascades = []
@@ -1540,6 +1544,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 psu48_off_voltage_v=float(cfg[CONF_PSU48_OFF_VOLTAGE_V]),
                 psu48_live_until=dt_util.utcnow().timestamp() + 300,
                 psu48_gate_bands=self.voltage_gate.bands(dt_util.now()),
+                dc24_phase_until=phase24 if reserve_active else 0.0,
+                dc48_phase_until=phase48 if reserve_active else 0.0,
                 dc48_power_w=float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0)),
                 # Manual override (F-N2): a manually activated PSU is
                 # simulated as permanently on so the SOC forecast matches
@@ -6298,6 +6304,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             supply_request = ActorRequest(turn_on, dt_util.now())
             self._supply_actor_requests[entity_id] = supply_request
+            self.source_phases.requested(entity_id, turn_on)
         recorder = getattr(self, "operation_recorder", None)
         request = (
             recorder.event(

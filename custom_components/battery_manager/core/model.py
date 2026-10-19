@@ -421,8 +421,16 @@ class SupportParams:
     psu48_off_voltage_v: float = 49.8
     psu48_live_until: float = 0.0
     psu48_gate_bands: tuple[VoltageGateBand, ...] = ()
+    # F-DC-SOURCE-STABILITY: confirmed economic phases survive replanning.
+    # Epoch seconds keep old recordings neutral and the pure core HA-free.
+    dc24_phase_until: float = 0.0
+    dc48_phase_until: float = 0.0
 
     def __post_init__(self) -> None:
+        _require(
+            self.dc24_phase_until >= 0 and self.dc48_phase_until >= 0,
+            "Source phase deadlines must be nonnegative",
+        )
         _require(
             0 < self.psu48_on_voltage_v < self.psu48_off_voltage_v <= 60,
             "Invalid PSU48 voltage hysteresis",

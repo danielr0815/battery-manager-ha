@@ -5,6 +5,15 @@ Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
 
+## Netzteilstabilität 0.61.0
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Marktverschiebung + kurze EIN-/AUS-Inseln + gleiche Kosten | Weniger Flanken bei unverändertem stündlichem Bezug und physischer Nachprüfung | `core/test_source_stability.py` |
+| Gleiche Gewichte + andere Preise/Preislücke + Teilstunde/DST | Keine Glättung über reale Preis-, Zeit- oder Eingangsgrenzen | `core/test_source_stability.py` |
+| Laufende Quellenphase + wiederholte Neuplanung + Schutz/PV | Wirtschaftliche Restbindung einhalten; Schutz und PV bleiben vorrangig | `core/test_source_stability.py` |
+| Späte Rückmeldung + Reload + überholter Entwurf | Nur bestätigte Flanken binden; keine Fristverlängerung oder veraltete Umkehr | `ha/test_source_phases.py` |
+
 | Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
 |---|---|---|
 | Service-ACK + verspätetes Feedback | Kein bestätigter Ladezustand/Dwell vor Rückmeldung | `ha/test_load_confirmation.py` |

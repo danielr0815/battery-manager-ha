@@ -109,7 +109,7 @@ from .planning_rules import (
     pv_windows as pv_windows,
 )
 from .policy import FULL_SOC_TOLERANCE_PERCENT
-from .reserve import reserve_planning_scope
+from .reserve import reserve_planning_scope, source_schedule_mode
 from .series import insert_appliance_run
 from .simulate import simulate
 from .uncertainty import (
@@ -1073,6 +1073,17 @@ def _plan_legacy(
     dc24, dc48, traj = support_escalation(
         config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
     )
+    if config.reserve.enabled and config.support.coordinated:
+        # F-DC-SOURCE-STABILITY: do not add a full smoothing validation to
+        # hundreds of hypothetical load probes. All bookings are fixed now;
+        # validate their final source trace once before deriving public metrics.
+        with source_schedule_mode(True):
+            traj = simulate(
+                config, inputs, threshold, extra_ac_wh=extra_ac, feedin_wh=feedin_wh
+            )
+        dc24, dc48, traj = support_escalation(
+            config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
+        )
     advisories: dict[str, ApplianceAdvisory] = {}
     windows = appliance_windows(
         config,
@@ -1240,7 +1251,7 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """Plan with a call-scoped reserve cache, also shared by nested cascades."""
     if not config.reserve.enabled:
         return _plan_in_scope(config, inputs)
-    with reserve_planning_scope():
+    with reserve_planning_scope(), source_schedule_mode(not config.support.coordinated):
         return _plan_in_scope(config, inputs)
 
 

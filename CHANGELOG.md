@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.0] - 2026-10-19
+
+### Changed
+- Confirmed PSU transitions establish independent 30-minute economic phases
+  that survive replanning and reloads. ON phases retain valid reference supply;
+  OFF phases reserve existing discharge budget without increasing depletion.
+  Honouring a confirmed phase can temporarily reduce market-price preference.
+  Protection, manual requests,
+  grid loss, PV supply and required PV headroom retain priority. A source
+  confirmed while a plan is computing requires fresh planning before reversal.
+- Joint 24/48 V schedule smoothing removes short ON/OFF islands within the
+  same forecast and price interval, preserving each combination's duration.
+  Full simulation against both the market candidate and reference retains
+  energy, supply, SOC and import/export constraints. Equal-cost candidates
+  with fewer transitions are accepted. The recorded October case falls from
+  20 to 16 planned 24 V transitions with identical hourly grid import and SOC.
+- Supply command history includes source intent and confirmed phase deadlines
+  so economic, voltage and PV decisions can be investigated together.
+
 ## [0.60.0] - 2026-10-17
 
 ### Changed
