@@ -868,6 +868,10 @@ Object.assign(STRINGS.en, {
   report_joint_reason_phase: "A fixed supply phase prevents this shift.",
   report_joint_reason_search_limit:
     "The comparison limit was reached; a better allocation may still exist.",
+  report_joint_reason_construction_limit:
+    "The proposal construction limit was reached.",
+  report_joint_reason_unsearched_alternatives:
+    "Other combinations remain unsearched; rejection reasons describe individual proposals.",
   report_joint_reason_no_improvement:
     "No improvement found among the compared allocations.",
   report_joint_reason_market_off: "Market price allocation is disabled.",
@@ -1020,6 +1024,10 @@ Object.assign(STRINGS.de, {
     "Eine feste Versorgungsphase verhindert diese Verschiebung.",
   report_joint_reason_search_limit:
     "Die Vergleichsgrenze wurde erreicht; eine bessere Verteilung kann weiterhin möglich sein.",
+  report_joint_reason_construction_limit:
+    "Die Grenze für die Vorschlagskonstruktion wurde erreicht.",
+  report_joint_reason_unsearched_alternatives:
+    "Weitere Kombinationen bleiben ungeprüft; Ablehnungsgründe betreffen einzelne Vorschläge.",
   report_joint_reason_no_improvement:
     "Unter den verglichenen Verteilungen wurde keine Verbesserung gefunden.",
   report_joint_reason_market_off:
@@ -1129,4 +1137,38 @@ Object.assign(STRINGS.de, {
   loads_picker_name: "Battery Manager · Lasten",
   loads_picker_description:
     "Planung und Ausführung für Lasten außerhalb von Kaskaden",
+});
+
+Object.assign(STRINGS.en, {
+  report_joint_targets: "Observed alternatives by interval",
+  report_joint_targets_note:
+    "Local screening uses estimates; complete checks use sequential physics and the configured uncertainty checks. Validated alternatives may be replaced by a better plan. For rows marked “No recorded candidate”, this label refers to the exact interval and variant; overlapping partial intervals may have been checked. The search is bounded and does not establish global optimality or impossibility. Paired DC rows describe receivers in a shared exchange; their local screening is not recorded here.",
+  report_joint_truncated:
+    "The diagnostic list is limited; further intervals or outcomes are omitted.",
+  report_joint_variant_dc_only: "DC only",
+  report_joint_variant_ac_dc: "AC and DC",
+  report_joint_variant_paired_dc: "DC in a paired exchange",
+  report_joint_attempted: "Recorded candidates",
+  report_joint_local_rejected: "Rejected in local screening",
+  report_joint_proof_rejected: "Rejected after complete check",
+  report_joint_proved: "Validated improvements",
+  report_joint_not_searched: "No recorded candidate",
+  report_joint_reason_duplicate: "Same proposed schedule already examined",
+});
+Object.assign(STRINGS.de, {
+  report_joint_targets: "Beobachtete Alternativen je Intervall",
+  report_joint_targets_note:
+    "Lokale Vorprüfungen verwenden Schätzwerte; vollständige Prüfungen verwenden sequenzielle Physik und die eingerichteten Unsicherheitsprüfungen. Validierte Alternativen können einem besseren Plan weichen. Bei Zeilen mit „Kein aufgezeichneter Kandidat“ gilt die Kennzeichnung für genau dieses Intervall und diese Variante; überlappende Teilintervalle können geprüft worden sein. Die Suche ist begrenzt und beweist weder globale Optimalität noch Unmöglichkeit. Gekoppelte DC-Zeilen zeigen Empfänger eines gemeinsamen Tauschs; ihre lokalen Vorprüfungen werden hier nicht aufgezeichnet.",
+  report_joint_truncated:
+    "Die Diagnoseliste ist begrenzt; weitere Intervalle oder Ergebnisse fehlen.",
+  report_joint_variant_dc_only: "Nur DC",
+  report_joint_variant_ac_dc: "AC und DC",
+  report_joint_variant_paired_dc: "DC im gekoppelten Tausch",
+  report_joint_attempted: "Aufgezeichnete Kandidaten",
+  report_joint_local_rejected: "Lokal abgelehnt",
+  report_joint_proof_rejected: "Nach vollständiger Prüfung abgelehnt",
+  report_joint_proved: "Validierte Verbesserungen",
+  report_joint_not_searched: "Kein aufgezeichneter Kandidat",
+  report_joint_reason_duplicate:
+    "Derselbe vorgeschlagene Plan bereits untersucht",
 });

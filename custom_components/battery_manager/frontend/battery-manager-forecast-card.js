@@ -909,6 +909,8 @@ Object.assign(STRINGS.en, {
   report_joint_reason_source_unavailable: "Required supply source is unavailable.",
   report_joint_reason_phase: "A fixed supply phase prevents this shift.",
   report_joint_reason_search_limit: "The comparison limit was reached; a better allocation may still exist.",
+  report_joint_reason_construction_limit: "The proposal construction limit was reached.",
+  report_joint_reason_unsearched_alternatives: "Other combinations remain unsearched; rejection reasons describe individual proposals.",
   report_joint_reason_no_improvement: "No improvement found among the compared allocations.",
   report_joint_reason_market_off: "Market price allocation is disabled.",
   report_joint_reason_flat_prices: "Available prices do not favor a shift.",
@@ -1016,6 +1018,8 @@ Object.assign(STRINGS.de, {
   report_joint_reason_source_unavailable: "Ben\xF6tigte Versorgungsquelle ist nicht verf\xFCgbar.",
   report_joint_reason_phase: "Eine feste Versorgungsphase verhindert diese Verschiebung.",
   report_joint_reason_search_limit: "Die Vergleichsgrenze wurde erreicht; eine bessere Verteilung kann weiterhin m\xF6glich sein.",
+  report_joint_reason_construction_limit: "Die Grenze f\xFCr die Vorschlagskonstruktion wurde erreicht.",
+  report_joint_reason_unsearched_alternatives: "Weitere Kombinationen bleiben ungepr\xFCft; Ablehnungsgr\xFCnde betreffen einzelne Vorschl\xE4ge.",
   report_joint_reason_no_improvement: "Unter den verglichenen Verteilungen wurde keine Verbesserung gefunden.",
   report_joint_reason_market_off: "Verteilung nach Marktpreisen ist deaktiviert.",
   report_joint_reason_flat_prices: "Die verf\xFCgbaren Preise beg\xFCnstigen keine Verschiebung.",
@@ -1093,6 +1097,34 @@ Object.assign(STRINGS.en, {
 Object.assign(STRINGS.de, {
   loads_picker_name: "Battery Manager \xB7 Lasten",
   loads_picker_description: "Planung und Ausf\xFChrung f\xFCr Lasten au\xDFerhalb von Kaskaden"
+});
+Object.assign(STRINGS.en, {
+  report_joint_targets: "Observed alternatives by interval",
+  report_joint_targets_note: "Local screening uses estimates; complete checks use sequential physics and the configured uncertainty checks. Validated alternatives may be replaced by a better plan. For rows marked \u201CNo recorded candidate\u201D, this label refers to the exact interval and variant; overlapping partial intervals may have been checked. The search is bounded and does not establish global optimality or impossibility. Paired DC rows describe receivers in a shared exchange; their local screening is not recorded here.",
+  report_joint_truncated: "The diagnostic list is limited; further intervals or outcomes are omitted.",
+  report_joint_variant_dc_only: "DC only",
+  report_joint_variant_ac_dc: "AC and DC",
+  report_joint_variant_paired_dc: "DC in a paired exchange",
+  report_joint_attempted: "Recorded candidates",
+  report_joint_local_rejected: "Rejected in local screening",
+  report_joint_proof_rejected: "Rejected after complete check",
+  report_joint_proved: "Validated improvements",
+  report_joint_not_searched: "No recorded candidate",
+  report_joint_reason_duplicate: "Same proposed schedule already examined"
+});
+Object.assign(STRINGS.de, {
+  report_joint_targets: "Beobachtete Alternativen je Intervall",
+  report_joint_targets_note: "Lokale Vorpr\xFCfungen verwenden Sch\xE4tzwerte; vollst\xE4ndige Pr\xFCfungen verwenden sequenzielle Physik und die eingerichteten Unsicherheitspr\xFCfungen. Validierte Alternativen k\xF6nnen einem besseren Plan weichen. Bei Zeilen mit \u201EKein aufgezeichneter Kandidat\u201C gilt die Kennzeichnung f\xFCr genau dieses Intervall und diese Variante; \xFCberlappende Teilintervalle k\xF6nnen gepr\xFCft worden sein. Die Suche ist begrenzt und beweist weder globale Optimalit\xE4t noch Unm\xF6glichkeit. Gekoppelte DC-Zeilen zeigen Empf\xE4nger eines gemeinsamen Tauschs; ihre lokalen Vorpr\xFCfungen werden hier nicht aufgezeichnet.",
+  report_joint_truncated: "Die Diagnoseliste ist begrenzt; weitere Intervalle oder Ergebnisse fehlen.",
+  report_joint_variant_dc_only: "Nur DC",
+  report_joint_variant_ac_dc: "AC und DC",
+  report_joint_variant_paired_dc: "DC im gekoppelten Tausch",
+  report_joint_attempted: "Aufgezeichnete Kandidaten",
+  report_joint_local_rejected: "Lokal abgelehnt",
+  report_joint_proof_rejected: "Nach vollst\xE4ndiger Pr\xFCfung abgelehnt",
+  report_joint_proved: "Validierte Verbesserungen",
+  report_joint_not_searched: "Kein aufgezeichneter Kandidat",
+  report_joint_reason_duplicate: "Derselbe vorgeschlagene Plan bereits untersucht"
 });
 
 // frontend/dom.js
@@ -1331,6 +1363,18 @@ function feedinDecisions(hass, decisions) {
   });
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
+function jointTargetReport(hass, joint, reason) {
+  const t = (key) => localize(hass, key);
+  const fmt = (value) => reportNumber(hass, value);
+  const counts = (values) => Object.entries(values && typeof values === "object" ? values : {}).filter(([, count]) => Number.isInteger(count) && count > 0).map(([key, count]) => `${reason(key)} (${count})`).join("; ") || "\u2014";
+  const rows = (Array.isArray(joint.target_diagnostics) ? joint.target_diagnostics : []).filter(
+    (row) => row && Number.isFinite(Date.parse(row.start)) && Date.parse(row.end) > Date.parse(row.start)
+  ).slice(0, 48).map(
+    (row) => `<tr><th scope="row">${esc(reportTime(hass, row.start))} \u2013 ${esc(reportTime(hass, row.end))}<br>${esc(fmt(row.eur_per_mwh))} EUR/MWh \xB7 ${esc(t(`report_joint_variant_${row.variant}`))}</th><td>${row.not_searched ? esc(t("report_joint_not_searched")) : esc(fmt(row.attempted))}</td><td>${esc(counts(row.local_rejections))}</td><td>${esc(counts(row.proof_rejections))}</td><td>${esc(fmt(row.proved_improvements))}</td></tr>`
+  ).join("");
+  if (!rows) return "";
+  return `<h4>${esc(t("report_joint_targets"))}</h4><p>${esc(t("report_joint_targets_note"))}</p>${joint.target_diagnostics_truncated ? `<p>${esc(t("report_joint_truncated"))}</p>` : ""}<div data-scroll-key="joint-targets" style="overflow-x:auto"><table data-joint-targets><thead><tr>${["report_joint_interval", "report_joint_attempted", "report_joint_local_rejected", "report_joint_proof_rejected", "report_joint_proved"].map((key) => `<th scope="col">${esc(t(key))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 function jointMarketReport(hass, joint) {
   if (!joint || typeof joint !== "object") return "";
   const t = (key) => localize(hass, key);
@@ -1380,7 +1424,7 @@ function jointMarketReport(hass, joint) {
   }).map(
     (item) => `<tr><th scope="row">${esc(reportTime(hass, item.start))} \u2013 ${esc(reportTime(hass, item.end))}</th><td>${esc(fmt(item.eur_per_mwh))}</td><td>${esc(fmt(item.allocated_battery_wh))} Wh</td><td>${esc(fmt(item.avoided_total_grid_import_wh))} Wh</td><td>${esc(fmt(item.avoided_import_wh))} Wh</td></tr>`
   ).join("");
-  return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}</section>`;
+  return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}${jointTargetReport(hass, joint, reason)}</section>`;
 }
 function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";

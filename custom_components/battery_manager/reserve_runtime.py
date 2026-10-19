@@ -37,6 +37,16 @@ def joint_diagnostics(decision: ReserveDecision | None) -> dict[str, Any] | None
         }
         for interval in summary.economic_intervals
     ]
+    result["target_diagnostics"] = [
+        {
+            **asdict(row),
+            "start": row.start.isoformat(),
+            "end": row.end.isoformat(),
+            "local_rejections": dict(row.local_rejections),
+            "proof_rejections": dict(row.proof_rejections),
+        }
+        for row in summary.target_diagnostics
+    ]
     return result
 
 

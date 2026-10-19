@@ -1,5 +1,16 @@
 # Projekt-Instruktionen & Index
 
+### Nachtrag 0.62.1: mehrere physische Marktvarianten
+
+Die gemeinsame Suche trennt reine DC- von AC/DC-Empfängern und prüft passende
+alternative Spender sowie begrenzte Paare von Empfängerblöcken. Der exakte
+Abend-Replay vom 19.10., 20:52, verschiebt 61,292 Wh in teurere bekannte
+Intervalle bei identischem Import, Export und Fensterbudget; der historische
+07:31-Fall bleibt physisch unverändert. Die Vertragsgrenzen und Nachweise stehen
+in [F-JOINT-MARKET](../F-JOINT-MARKET.md). Lokale Masken und Konstruktion sind
+begrenzt; nominale und Stressprüfungen teilen weiter insgesamt 32 vollständige
+Simulationen. Ungeprüfte Alternativen bleiben ausdrücklich kenntlich.
+
 ### Aktueller Nachtrag 0.62.0
 
 Der finale Plan verteilt vorhandene Batterieenergie gemeinsam über AC und DC nach tatsächlichen Preisen; der DC-Vorrang bleibt die konservative Referenz. Vier oder fünf Tagesstunden begrenzen die finale Belegung nicht.

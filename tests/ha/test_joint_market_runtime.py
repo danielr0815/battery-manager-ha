@@ -175,6 +175,19 @@ async def test_coordinator_publishes_actual_joint_intervals_and_reads_legacy(
         assert [row["start"] for row in diagnostic["economic_intervals"]] == [
             interval.start.isoformat() for interval in summary.economic_intervals
         ]
+        assert (
+            diagnostic["target_diagnostics_truncated"]
+            == summary.target_diagnostics_truncated
+        )
+        assert [row["start"] for row in diagnostic["target_diagnostics"]] == [
+            row.start.isoformat() for row in summary.target_diagnostics
+        ]
+        for published, original_row in zip(
+            diagnostic["target_diagnostics"], summary.target_diagnostics, strict=True
+        ):
+            assert published["local_rejections"] == dict(original_row.local_rejections)
+            assert published["proof_rejections"] == dict(original_row.proof_rejections)
+            assert published["proved_improvements"] == original_row.proved_improvements
         # The complete nested output must remain valid sensor/diagnostics JSON.
         assert json.loads(json.dumps(market))["joint"] == diagnostic
 

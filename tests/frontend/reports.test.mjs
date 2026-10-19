@@ -271,6 +271,8 @@ test("joint diagnostics preserve unknown values and distinguish bounded comparis
           "extra_import",
           "source_unavailable",
           "phase",
+          "construction_limit",
+          "unsearched_alternatives",
           "<img>",
         ],
         economic_intervals: [
@@ -288,6 +290,9 @@ test("joint diagnostics preserve unknown values and distinguish bounded comparis
     },
   });
   assert.match(html, /better allocation may still exist/);
+  assert.match(html, /proposal construction limit/);
+  assert.match(html, /Other combinations remain unsearched/);
+  assert.match(html, /rejection reasons describe individual proposals/);
   assert.match(html, /Would increase total grid import/);
   assert.match(html, /Required supply source is unavailable/);
   assert.match(html, /fixed supply phase prevents/);
@@ -371,4 +376,55 @@ test("already allocated economic energy remains visible with zero reference chan
   assert.match(html, /Unavoidable DC battery draw<\/dt><dd>— Wh/);
   assert.match(html, /Selected hours · 2026-10-02<\/dt><dd>6 h/);
   assert.match(html, /<td>90<\/td><td>80 Wh<\/td><td>70 Wh<\/td><td>0 Wh/);
+});
+
+test("joint target observations separate screening, proof and unsearched exact spans", () => {
+  const joint = {
+    joint_status: "accepted",
+    target_diagnostics_truncated: true,
+    target_diagnostics: [
+      {
+        start: "2026-10-19T07:20:00Z",
+        end: "2026-10-19T08:00:00Z",
+        eur_per_mwh: 300,
+        variant: "paired_dc",
+        attempted: 2,
+        local_rejections: {},
+        proof_rejections: { extra_import: 1 },
+        proved_improvements: 1,
+        not_searched: false,
+      },
+      {
+        start: "2026-10-19T07:00:00Z",
+        end: "2026-10-19T08:00:00Z",
+        variant: "ac_dc",
+        attempted: 0,
+        not_searched: true,
+      },
+      { start: "bad", end: "bad" },
+    ],
+  };
+  const reserve = {
+    mode: "active",
+    market: { enabled: true, status: "available", joint },
+  };
+  const html = reserveReport(hass, reserve);
+  assert.match(html, /DC in a paired exchange/);
+  assert.match(html, /09:20/);
+  assert.match(html, /Rejected in local screening/);
+  assert.match(html, /Rejected after complete check/);
+  assert.match(html, /Validated improvements/);
+  assert.match(html, /No recorded candidate/);
+  assert.match(html, /does not establish global optimality/);
+  assert.match(html, /further intervals or outcomes are omitted/);
+  const german = reserveReport({ ...hass, language: "de" }, reserve);
+  assert.match(german, /DC im gekoppelten Tausch/);
+  assert.match(german, /Nach vollständiger Prüfung abgelehnt/);
+  assert.doesNotMatch(
+    reserveReport(hass, {
+      ...reserve,
+      market: { ...reserve.market, joint: { joint_status: "accepted" } },
+    }),
+    /data-joint-targets/,
+  );
 });

@@ -9,6 +9,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 
 from .dc_service import preserves_dc_service
+from .joint_balance import balanced_proposals
+from .joint_diagnostics import JointDiagnostics
 from .model import (
     EconomicInterval,
     HourFlows,
@@ -33,6 +35,10 @@ from .reserve_sources import (
 MAX_JOINT_VALIDATIONS = 32
 MAX_RETAINED_SCHEDULES = 4
 JOINT_BLOCK_HOURS = 0.5
+# Bound cheap construction too: a long horizon with analytically impossible
+# swaps must not bypass the complete-simulation limit by enumerating forever.
+MAX_JOINT_PROPOSALS = 4096
+DONOR_VARIANTS = 4
 
 
 @dataclass
@@ -233,14 +239,16 @@ def dispatch(
 ) -> Trajectory:
     """Try coupled receivers and cheaper compensating donors, fairly by target.
 
-    Each target contributes at most one complete validation per sweep. Failed
-    five-minute subdivisions of one expensive hour cannot consume the allowance.
+    Each price family contributes bounded receiver variants per sweep. Donor
+    paths and partial blocks get separate turns; a rejected full AC/DC
+    receiver cannot hide a feasible DC-only receiver at the same price.
     The reference is always retained; at most three successful alternatives stay
     alongside it, irrespective of horizon length.
     """
     slices = price_slices(steps, prices)
     raw = tuple(max((p.price for p in parts), default=None) for parts in slices)
     known = {p.price for parts in slices for p in parts}
+    diagnostics = JointDiagnostics(steps, raw)
     budget = sum(net_draw(s.flow) for s in steps)
     choices = tuple(
         tuple(s.joint_choice_factory())
@@ -324,9 +332,49 @@ def dispatch(
             status = "phase"
     retained = [(reference, steps)]
     if status == "no_improvement":
+        # A pair of receivers can exactly balance donor quantities even when
+        # neither receiver has an admissible isolated exchange (19 Oct replay).
+        balanced, balance_limited = balanced_proposals(
+            steps,
+            choices,
+            tuple(min((p.price for p in parts), default=None) for parts in slices),
+            tuple(tuple((p.price, p.share) for p in parts) for parts in slices),
+        )
+        if balance_limited:
+            rejection.update(("construction_limit", "unsearched_alternatives"))
+        for proposal in balanced:
+            if (
+                shared_budget.used + validation_cost + initial_validation_cost
+                > MAX_JOINT_VALIDATIONS
+            ):
+                rejection.update(("search_limit", "unsearched_alternatives"))
+                status = "search_limit"
+                diagnostics.paired(proposal, "local", "search_limit")
+                break
+            if validation_budget is None:
+                shared_budget.record()
+            trial, trial_steps = evaluate(proposal)
+            failure = validation_failure(trial, trial_steps)
+            if failure is not None:
+                rejection.add(failure)
+                diagnostics.paired(proposal, "proof", failure)
+                continue
+            diagnostics.paired(
+                proposal,
+                "proved" if quality(trial_steps) > quality(steps) else "proof",
+                "no_improvement",
+            )
+            if quality(trial_steps) > quality(best_steps):
+                best, best_steps = trial, trial_steps
+                retained = [(reference, steps), (best, best_steps)]
+                status = "accepted"
+        # Release proposal storage before retaining further accepted schedules.
+        balanced = ()
+        proposal = ()
         # Price/physical-time boundaries define targets; no daily hour quota.
         targets: list[tuple[int, ...]] = []
-        for window in source_windows(steps):
+        windows = source_windows(steps)
+        for window in windows:
             block: list[int] = []
             duration = 0.0
             for i in window:
@@ -352,9 +400,7 @@ def dispatch(
             if block:
                 targets.append(tuple(block))
         window_for = {
-            i: number
-            for number, window in enumerate(source_windows(steps))
-            for i in window
+            i: number for number, window in enumerate(windows) for i in window
         }
         aggregate: list[tuple[int, ...]] = []
         for group in targets:
@@ -373,7 +419,7 @@ def dispatch(
                 aggregate[-1] += group
             else:
                 aggregate.append(group)
-        targets = list(dict.fromkeys([*aggregate, *targets]))
+        targets = aggregate
         targets.sort(
             key=lambda block: (
                 -price_at(block[0]),
@@ -382,26 +428,81 @@ def dispatch(
             )
         )
         seen: set[tuple[tuple[bool, bool, float], ...]] = set()
-        for attempt, original_target in (
-            (attempt, target)
-            for attempt in range(1 + min(12, max((len(t) for t in targets), default=0)))
+        # Every available actuator state gets its own receiver turn, including
+        # INV-off/both-PSUs-off (pure DC). State ordering is deterministic, with
+        # actual avoided imports first. No synthetic capped price enters ranking.
+        receiver_states = sorted(
+            {
+                (*source_state(f), f.inverter_limit_w)
+                for option in choices
+                for f in option
+            }
+        )
+        # Price families get one turn before their subblocks. Receiver variants
+        # are adjacent within that turn, so failed full AC/DC proofs cannot spend
+        # the whole allowance across other targets before DC-only gets a chance.
+        blocks = {
+            target: tuple(
+                dict.fromkeys(
+                    [
+                        target,
+                        *(target[:n] for n in range(1, min(12, len(target)) + 1)),
+                        *(target[-n:] for n in range(1, min(12, len(target)) + 1)),
+                        *(target[n : n + 6] for n in range(0, len(target), 6)),
+                    ]
+                )
+            )
             for target in targets
-        ):
-            target = original_target[:attempt] if attempt else original_target
+        }
+        rounds = (
+            (block, receiver, donor)
+            for block_number in range(max((len(b) for b in blocks.values()), default=0))
+            for donor in range(DONOR_VARIANTS)
+            for family in targets
+            if block_number < len(blocks[family])
+            for block in (blocks[family][block_number],)
+            for receiver in range(len(receiver_states))
+        )
+        constructions = 0
+        for target, receiver, donor_variant in rounds:
+            if constructions >= MAX_JOINT_PROPOSALS:
+                status = "search_limit"
+                rejection.add("construction_limit")
+                rejection.add("unsearched_alternatives")
+                break
             check_cancelled()
-            seed_steps = best_steps if attempt % 3 != 2 else retained[-1][1]
+            seed_steps = best_steps if donor_variant != 3 else retained[-1][1]
             current = [s.flow for s in seed_steps]
             proposed = list(current)
-            window = next(w for w in source_windows(steps) if target[0] in w)
-            for i in target:
-                proposed[i] = min(
-                    choices[i],
-                    key=lambda f: (
-                        f.grid_import_wh,
-                        net_draw(f),
-                        source_state(f) != source_state(current[i]),
-                    ),
+            window = windows[window_for[target[0]]]
+            states = []
+            for state in receiver_states:
+                receiver_option = tuple(
+                    next(
+                        (
+                            f
+                            for f in choices[i]
+                            if (*source_state(f), f.inverter_limit_w) == state
+                        ),
+                        None,
+                    )
+                    for i in target
                 )
+                if all(f is not None for f in receiver_option):
+                    states.append((state, receiver_option))
+            states.sort(
+                key=lambda item: (
+                    sum(f.grid_import_wh for f in item[1] if f is not None),
+                    sum(net_draw(f) for f in item[1] if f is not None),
+                    item[0],
+                )
+            )
+            if receiver >= len(states):
+                continue
+            variant = "ac_dc" if states[receiver][0][2] else "dc_only"
+            for i, selected in zip(target, states[receiver][1], strict=True):
+                assert selected is not None
+                proposed[i] = selected
             if (
                 sum(
                     current[i].grid_import_wh - proposed[i].grid_import_wh
@@ -409,7 +510,9 @@ def dispatch(
                 )
                 <= ENERGY_EPSILON_WH
             ):
+                diagnostics.record(target, variant, "local", "no_improvement")
                 continue
+            constructions += 1
             # A receiver and ALL of its compensating donors are one candidate.
             donors = sorted(
                 (
@@ -423,6 +526,19 @@ def dispatch(
                 key=lambda i: (price_at(i), steps[i].slot.start.timestamp()),
             )
             donor_indices = set(donors)
+            # Different first donors and source combinations can produce equal
+            # local savings but different sequential reserve/phase outcomes.
+            # Four reproducible paths avoid committing to one cheapest prefix.
+            if donors and donor_variant:
+                elapsed = 0.0
+                offset = 0
+                for index in donors:
+                    if elapsed >= donor_variant * JOINT_BLOCK_HOURS - 1e-9:
+                        break
+                    elapsed += steps[index].slot.duration
+                    offset += 1
+                offset = min(offset, len(donors) - 1)
+                donors = donors[offset:] + donors[:offset]
             extra = sum(net_draw(proposed[j]) - net_draw(steps[j].flow) for j in window)
             for i in donors:
                 if extra <= ENERGY_EPSILON_WH:
@@ -490,7 +606,8 @@ def dispatch(
                         )
                 if not block_options:
                     continue
-                chosen = min(block_options, key=lambda item: (item[0], item[1]))
+                block_options.sort(key=lambda item: (item[0], item[1], item[2]))
+                chosen = block_options[min(donor_variant, len(block_options) - 1)]
                 for j, flow in zip(chosen[2], chosen[3], strict=True):
                     extra -= net_draw(proposed[j]) - net_draw(flow)
                     proposed[j] = flow
@@ -499,6 +616,7 @@ def dispatch(
                 > ENERGY_EPSILON_WH
             ):
                 rejection.add("energy_budget")
+                diagnostics.record(target, variant, "local", "energy_budget")
                 continue
             # Reject known conversion losses before paying for sequential proof.
             if (
@@ -509,9 +627,11 @@ def dispatch(
                 > ENERGY_EPSILON_WH
             ):
                 rejection.add("extra_import")
+                diagnostics.record(target, variant, "local", "extra_import")
                 continue
             key = tuple((*source_state(f), f.inverter_limit_w) for f in proposed)
             if key in seen:
+                diagnostics.record(target, variant, "local", "duplicate")
                 continue
             seen.add(key)
             if (
@@ -520,6 +640,8 @@ def dispatch(
             ):
                 status = "search_limit"
                 rejection.add("search_limit")
+                rejection.add("unsearched_alternatives")
+                diagnostics.record(target, variant, "local", "search_limit")
                 break
             if validation_budget is None:
                 shared_budget.record()
@@ -527,10 +649,13 @@ def dispatch(
             failure = validation_failure(trial, trial_steps)
             if failure is not None:
                 rejection.add(failure)
+                diagnostics.record(target, variant, "proof", failure)
                 continue
             if quality(trial_steps) <= quality(steps):
                 rejection.add("no_improvement")
+                diagnostics.record(target, variant, "proof", "no_improvement")
                 continue
+            diagnostics.record(target, variant, "proved")
             if quality(trial_steps) > quality(best_steps):
                 best, best_steps = trial, trial_steps
             retained.append((trial, trial_steps))
@@ -590,14 +715,10 @@ def dispatch(
                     hours.get(day, 0.0)
                     + (part.end.timestamp() - part.start.timestamp()) / 3600
                 )
-    if status == "no_improvement" and rejection:
-        status = (
-            "extra_import"
-            if "extra_import" in rejection
-            else "phase"
-            if "phase" in rejection
-            else "no_improvement"
-        )
+    # Reasons apply to individual proposals. The bounded family is never an
+    # impossibility proof for every combination of subhour source decisions.
+    if status == "no_improvement" and len(known) > 1:
+        rejection.add("unsearched_alternatives")
     summary = JointDispatchSummary(
         status,
         budget,
@@ -626,6 +747,11 @@ def dispatch(
             max(0.0, net_draw(b.flow) - net_draw(a.flow))
             for a, b in zip(steps, best_steps, strict=True)
         ),
+    )
+    summary = replace(
+        summary,
+        target_diagnostics=diagnostics.summary(),
+        target_diagnostics_truncated=diagnostics.truncated,
     )
     decision = best.reserve_decision
     assert decision is not None

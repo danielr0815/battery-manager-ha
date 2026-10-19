@@ -121,3 +121,33 @@ def test_replay_without_joint_summary_still_compares_recorded_physical_results()
     assert replay(record) == (result, True)
     trajectory["total_import_wh"] += 1
     assert replay(record) == (result, False)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        (),
+        ("target_diagnostics",),
+        ("target_diagnostics_truncated",),
+        ("target_diagnostics", "target_diagnostics_truncated"),
+    ],
+)
+def test_old_joint_observations_ignore_only_fields_that_were_not_recorded(missing):
+    config = plant()
+    inputs = forecast([(0, 0, 100), (0, 100, 0), (100, 0, 0)], [100, 100, 100])
+    result = plan(config, inputs)
+    record = json.loads(json.dumps(recording(config, inputs, result)))
+    trajectory = record["result"]["fields"]["trajectory"]["fields"]
+    joint = trajectory["reserve_decision"]["fields"]["joint"]["fields"]
+    for field in missing:
+        joint.pop(field)
+    assert replay(record) == (result, True)
+    for field in ("target_diagnostics", "target_diagnostics_truncated"):
+        if field in missing:
+            continue
+        original = joint[field]
+        joint[field] = {"tuple": []} if field == "target_diagnostics" else True
+        assert replay(record) == (result, False)
+        joint[field] = original
+    trajectory["total_import_wh"] += 1
+    assert replay(record) == (result, False)

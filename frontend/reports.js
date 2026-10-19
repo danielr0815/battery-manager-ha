@@ -181,6 +181,33 @@ export function feedinDecisions(hass, decisions) {
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
+function jointTargetReport(hass, joint, reason) {
+  const t = (key) => localize(hass, key);
+  const fmt = (value) => reportNumber(hass, value);
+  const counts = (values) =>
+    Object.entries(values && typeof values === "object" ? values : {})
+      .filter(([, count]) => Number.isInteger(count) && count > 0)
+      .map(([key, count]) => `${reason(key)} (${count})`)
+      .join("; ") || "—";
+  const rows = (
+    Array.isArray(joint.target_diagnostics) ? joint.target_diagnostics : []
+  )
+    .filter(
+      (row) =>
+        row &&
+        Number.isFinite(Date.parse(row.start)) &&
+        Date.parse(row.end) > Date.parse(row.start),
+    )
+    .slice(0, 48)
+    .map(
+      (row) =>
+        `<tr><th scope="row">${esc(reportTime(hass, row.start))} – ${esc(reportTime(hass, row.end))}<br>${esc(fmt(row.eur_per_mwh))} EUR/MWh · ${esc(t(`report_joint_variant_${row.variant}`))}</th><td>${row.not_searched ? esc(t("report_joint_not_searched")) : esc(fmt(row.attempted))}</td><td>${esc(counts(row.local_rejections))}</td><td>${esc(counts(row.proof_rejections))}</td><td>${esc(fmt(row.proved_improvements))}</td></tr>`,
+    )
+    .join("");
+  if (!rows) return "";
+  return `<h4>${esc(t("report_joint_targets"))}</h4><p>${esc(t("report_joint_targets_note"))}</p>${joint.target_diagnostics_truncated ? `<p>${esc(t("report_joint_truncated"))}</p>` : ""}<div data-scroll-key="joint-targets" style="overflow-x:auto"><table data-joint-targets><thead><tr>${["report_joint_interval", "report_joint_attempted", "report_joint_local_rejected", "report_joint_proof_rejected", "report_joint_proved"].map((key) => `<th scope="col">${esc(t(key))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 function jointMarketReport(hass, joint) {
   if (!joint || typeof joint !== "object") return "";
   const t = (key) => localize(hass, key);
@@ -250,7 +277,7 @@ function jointMarketReport(hass, joint) {
         `<tr><th scope="row">${esc(reportTime(hass, item.start))} – ${esc(reportTime(hass, item.end))}</th><td>${esc(fmt(item.eur_per_mwh))}</td><td>${esc(fmt(item.allocated_battery_wh))} Wh</td><td>${esc(fmt(item.avoided_total_grid_import_wh))} Wh</td><td>${esc(fmt(item.avoided_import_wh))} Wh</td></tr>`,
     )
     .join("");
-  return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}</section>`;
+  return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}${jointTargetReport(hass, joint, reason)}</section>`;
 }
 
 export function reserveReport(hass, reserve, support, calibration) {

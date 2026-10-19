@@ -1,5 +1,16 @@
 # Entwicklung, Tests, Release
 
+### Nachtrag 0.62.1: mehrere physische Marktvarianten
+
+Die gemeinsame Suche trennt reine DC- von AC/DC-Empfängern und prüft passende
+alternative Spender sowie begrenzte Paare von Empfängerblöcken. Der exakte
+Abend-Replay vom 19.10., 20:52, verschiebt 61,292 Wh in teurere bekannte
+Intervalle bei identischem Import, Export und Fensterbudget; der historische
+07:31-Fall bleibt physisch unverändert. Die Vertragsgrenzen und Nachweise stehen
+in [F-JOINT-MARKET](../F-JOINT-MARKET.md). Lokale Masken und Konstruktion sind
+begrenzt; nominale und Stressprüfungen teilen weiter insgesamt 32 vollständige
+Simulationen. Ungeprüfte Alternativen bleiben ausdrücklich kenntlich.
+
 ### Nachtrag 0.62.0: begrenzte gemeinsame Marktverteilung
 
 Neue gemeinsame Marktverträge stehen in `../F-JOINT-MARKET.md`. Tests müssen gekoppelte physische Tausche und Ablehnungen, feste PV-Fenster, Phasen, Preisüberdeckung und mehr als fünf wirtschaftliche Stunden belegen. Ein historischer Erfolg darf erst nach einem Vergleich identischer Eingaben behauptet werden; synthetische Fälle ersetzen diesen Vergleich nicht. Manifest, Projektversion und projektlokaler Lockfile-Eintrag tragen gemeinsam 0.62.0. Die bisherige Releasevorbereitung und alle Coverage-Gates gelten weiter.

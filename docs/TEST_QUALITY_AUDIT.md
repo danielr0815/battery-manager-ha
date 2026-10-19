@@ -139,3 +139,34 @@ Schutzrückkehr ohne wirtschaftliche Wartezeit und fehlgeschlagene Wiederherstel
 beiden Änderungsrichtungen und die letzte physische Befehlsgrenze. Eine separate
 Feed-in-Regression synchronisiert auf die eigene Gerätepublikation, auch vor
 Zuweisung einer von HA sofort gestarteten Hintergrundtask.
+
+## Ergänzung 0.62.1
+
+`core/test_joint_variants.py` reproduziert den verdeckten reinen DC-Empfänger,
+den zu großen ersten Spender und einen notwendigen Tausch zweier Empfänger.
+Unabhängige kartesische Enumeration aller verfügbaren Zustände kleiner echter
+physikalischer Horizonte prüft den erreichten Preisnutzen. Die Enumeration
+verwendet weder die Produktions-Zielbildung noch deren Spenderpfade oder
+wirtschaftliche Rangfunktion. Dieselben Empfänger-/Spendergegenbeispiele
+scheitern gegen den eingefrorenen 0.62.0-Suchcode.
+
+Weitere ausführbare Verträge prüfen ursprüngliche PV-Fenster, die Priorität
+einer späteren teureren Paargelegenheit, das Überspringen eines teuren Fensters
+ohne Spenderbudget, Spender-Opportunitätskosten einschließlich negativer Preise,
+Fünfminutenquantisierung und 30-Minuten-Phasen. Getrennte Tests erschöpfen
+Konstruktion und das gemeinsame vollständige Simulationsbudget, verwerfen
+physisch schädliche Maskenvorschläge und prüfen einen mehr als 1.000 Schritte
+langen Spenderlauf ohne Rekursion. Diese Tests beobachten akzeptierte Flüsse,
+Preisnutzen, unveränderte Bilanz oder konkrete Abbruch-/Fehlerverträge.
+
+Der private identische Abend-Replay ist als aggregierter Nachweis in
+`F-JOINT-MARKET.md` dokumentiert. Seine Verbesserung wird nicht aus synthetischen
+Fällen abgeleitet und nicht auf den unveränderten Morgenfall übertragen.
+
+`core/test_joint_diagnostics.py` prüft konkrete Teilspannen, getrennte lokale
+und physische Ablehnungen, nachgewiesene Alternativen, ungeprüfte Bezeichnungen,
+die Begrenzung und die herbstliche Zeitumstellung. HA-, Frontend- und
+Browsertests prüfen Veröffentlichung, Erklärung und alte Payloads. Die
+Replay-Regression verändert fehlende und vorhandene Diagnosefelder getrennt:
+Nur damals fehlende additive Felder werden ausgeklammert; eine veränderte
+aufgezeichnete Beobachtung oder Netzbilanz muss den exakten Vergleich brechen.

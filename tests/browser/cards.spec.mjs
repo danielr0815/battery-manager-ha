@@ -557,6 +557,20 @@ test("joint economic allocation survives refresh and localizes without limiting 
         status: "available",
         joint: {
           joint_status: "search_limit",
+          target_diagnostics_truncated: true,
+          target_diagnostics: [
+            {
+              start: "2026-10-02T14:20:00Z",
+              end: "2026-10-02T15:00:00Z",
+              eur_per_mwh: 100,
+              variant: "paired_dc",
+              attempted: 1,
+              local_rejections: {},
+              proof_rejections: {},
+              proved_improvements: 1,
+              not_searched: false,
+            },
+          ],
           joint_budget_wh: 900,
           unavoidable_dc_draw_wh: 150,
           economic_daily_hours: { "2026-10-02": 7.5 },
@@ -588,6 +602,13 @@ test("joint economic allocation survives refresh and localizes without limiting 
   await report.locator("summary").click();
   const joint = report.locator("[data-joint-market]");
   await expect(joint).toContainText("7.5 h");
+  await expect(joint.locator("[data-joint-targets]")).toContainText(
+    "04:20:00 PM",
+  );
+  await expect(joint).toContainText("DC in a paired exchange");
+  await expect(joint).toContainText(
+    "further intervals or outcomes are omitted",
+  );
   await expect(joint).toContainText("better allocation may still exist");
   const rows = joint.locator('[data-scroll-key="joint-intervals"] tbody tr');
   await expect(rows).toHaveCount(2);
@@ -597,6 +618,8 @@ test("joint economic allocation survives refresh and localizes without limiting 
   });
   await expect(report).toHaveAttribute("open", "");
   await expect(joint).toContainText("7,5 h");
+  await expect(joint).toContainText("DC im gekoppelten Tausch");
+  await expect(joint).toContainText("Validierte Verbesserungen");
   await expect(joint).toContainText(
     "eine bessere Verteilung kann weiterhin möglich sein",
   );

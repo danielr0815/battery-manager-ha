@@ -162,6 +162,41 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
                     compared.trajectory, reserve_decision=replace(decision, joint=None)
                 ),
             )
+        recorded_joint = (
+            recorded_decision["fields"].get("joint")
+            if isinstance(recorded_decision, dict)
+            else None
+        )
+        observed_decision = compared.trajectory.reserve_decision
+        if (
+            observed_decision is not None
+            and observed_decision.joint is not None
+            and isinstance(recorded_joint, dict)
+        ):
+            # 0.62.0 recorded the physical/economic joint summary before these
+            # additive candidate observations existed. Ignore only absent
+            # fields; observations explicitly captured by newer recordings
+            # remain part of exact replay comparison.
+            joint = observed_decision.joint
+            compared = replace(
+                compared,
+                trajectory=replace(
+                    compared.trajectory,
+                    reserve_decision=replace(
+                        observed_decision,
+                        joint=replace(
+                            joint,
+                            target_diagnostics=joint.target_diagnostics
+                            if "target_diagnostics" in recorded_joint["fields"]
+                            else (),
+                            target_diagnostics_truncated=joint.target_diagnostics_truncated
+                            if "target_diagnostics_truncated"
+                            in recorded_joint["fields"]
+                            else False,
+                        ),
+                    ),
+                ),
+            )
         if (
             isinstance(recorded_decision, dict)
             and "market_ranking_reason" not in recorded_decision["fields"]

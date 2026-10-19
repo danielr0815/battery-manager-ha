@@ -1053,6 +1053,21 @@ class EconomicInterval:
 
 
 @dataclass(frozen=True)
+class JointTargetDiagnostic:
+    """Observed candidate outcomes, never an exhaustive feasibility claim."""
+
+    start: datetime
+    end: datetime
+    eur_per_mwh: float
+    variant: str
+    attempted: int = 0
+    local_rejections: tuple[tuple[str, int], ...] = ()
+    proof_rejections: tuple[tuple[str, int], ...] = ()
+    proved_improvements: int = 0
+    not_searched: bool = True
+
+
+@dataclass(frozen=True)
 class JointDispatchSummary:
     """Immutable proof summary; absent in recordings predating joint dispatch."""
 
@@ -1072,6 +1087,8 @@ class JointDispatchSummary:
     reference_battery_draw_wh: float = 0.0
     actual_battery_draw_wh: float = 0.0
     joint_shifted_wh: float = 0.0
+    target_diagnostics: tuple[JointTargetDiagnostic, ...] = ()
+    target_diagnostics_truncated: bool = False
 
 
 @dataclass(frozen=True)

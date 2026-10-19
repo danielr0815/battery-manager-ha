@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.1] - 2026-10-19
+
+### Fixed
+
+- Die gemeinsame Marktverteilung prüft mehrere physische Empfängerzustände
+  und alternative Ausgleichsblöcke. Ein abgelehnter voller AC/DC-Empfänger
+  verdeckt damit nicht länger einen zulässigen reinen DC-Tausch; ein zu großer
+  günstiger Spender verdeckt keinen kleineren passenden Spender. Eine begrenzte
+  Maskensuche verbindet außerdem zwei Empfänger, wenn erst deren gemeinsame
+  Energiemenge exakt zu zulässigen Spenderphasen passt. Der identische Abend-
+  Replay vom 19.10., 20:52, verschiebt dadurch 61,292 Wh in teurere bekannte
+  Intervalle bei unveränderten Gesamt- und ursprünglichen Fensterbilanzen.
+- Teilblöcke berücksichtigen Anfang, Ende und innere Halbstunden einer
+  Preisphase. Die Suche begrenzt auch die lokale Konstruktion und unterscheidet
+  Ablehnungsgründe einzelner Alternativen von noch ungeprüften Kombinationen.
+  Eine begrenzte Diagnose zeigt je konkreter Preis-/Empfängerspanne getrennt
+  reine DC-, AC/DC- und Paarversuche, lokale Ablehnungen, physische Prüfungen
+  und noch ungeprüfte Varianten. Alte Aufzeichnungen bleiben kompatibel.
+  Die gemeinsame Grenze von 32 nominalen/Stressprüfungen und alle Energie-,
+  Import-, Versorgungs- und Phasenverträge gelten unverändert.
+
 ## [0.62.0] - 2026-10-19
 
 ### Changed
