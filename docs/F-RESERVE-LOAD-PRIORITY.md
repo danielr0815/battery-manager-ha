@@ -1,5 +1,11 @@
 # DC-Vorrang und AC-Lastpriorität ab 0.49.0
 
+> **Ab 0.62.0:** Die finale wirtschaftliche AC/DC-Verteilung folgt
+> [F-JOINT-MARKET](F-JOINT-MARKET.md). DC-Vorrang und bis zu vier bevorzugte
+> Tagesstunden in diesem historischen Vertrag beschreiben die konservative
+> Referenz, keine Obergrenze oder Rangfolge des finalen Plans. Schutz, physische
+> Versorgung und bestätigte Quellenphasen bleiben verbindlich.
+
 Betreiberauftrag vom 28.09.2026: Wenn möglich vollständig auf zusätzliche
 AC-Entnahme verzichten, solange Energie für DC benötigt wird. Unvermeidliche
 AC-Vorbereitung bevorzugt bei höherem nutzbarem AC-Verbrauch statt schwacher

@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.0] - 2026-10-19
+
+### Changed
+- The final reserve plan shares its existing battery discharge budget across AC
+  and DC using actual published prices, with higher prices taking priority.
+  Economic hours follow available energy and physical constraints, without a
+  fixed four- or five-hour daily cap. The conservative DC-first calculation
+  remains the reference for energy and supply guarantees.
+- Complete coupled exchanges receive physical validation against fixed original
+  PV recharge windows. Window battery draw and horizon-total grid import and
+  export cannot increase, window-end energy cannot fall, and DC supply, reserve
+  protection, confirmed PSU phases and manual source requests remain binding. Unknown-price
+  intervals retain their existing allocation; negative prices remain valid.
+- The final allocation shares at most 32 full simulation runs across nominal
+  and uncertainty checks and retains at most four schedules including the
+  reference. Existing reference smoothing remains; joint candidates are built
+  in blocks, with fewer transitions preferred at equal price benefit. Cascade
+  alternatives remain conservative; the joint
+  search runs once after selecting the accepted effective inputs and bookings.
+  Reaching the comparison limit reports an incomplete search, not proof that an improvement is impossible.
+
+### Added
+- Bilingual card diagnostics compare the reference and selected plan, explain
+  rejected alternatives, and show total selected economic intervals and daily
+  hours separately from changes versus the reference. Missing diagnostics remain
+  unknown; existing payloads, recorded inputs and the card URL remain supported.
+
 ## [0.61.0] - 2026-10-19
 
 ### Changed

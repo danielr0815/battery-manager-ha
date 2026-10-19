@@ -152,14 +152,28 @@ def replay(record: dict[str, Any]) -> tuple[PlanResult, bool]:
         )
         if (
             isinstance(recorded_decision, dict)
+            and "joint" not in recorded_decision["fields"]
+        ):
+            decision = compared.trajectory.reserve_decision
+            assert decision is not None
+            compared = replace(
+                compared,
+                trajectory=replace(
+                    compared.trajectory, reserve_decision=replace(decision, joint=None)
+                ),
+            )
+        if (
+            isinstance(recorded_decision, dict)
             and "market_ranking_reason" not in recorded_decision["fields"]
         ):
+            legacy_decision = compared.trajectory.reserve_decision
+            assert legacy_decision is not None
             compared = replace(
                 compared,
                 trajectory=replace(
                     compared.trajectory,
                     reserve_decision=replace(
-                        compared.trajectory.reserve_decision,
+                        legacy_decision,
                         market_ranking_reason="load_priority_no_prices",
                     ),
                 ),

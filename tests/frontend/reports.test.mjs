@@ -211,3 +211,164 @@ test("48 V report distinguishes gated OFF, protective readiness and learned SOC"
   assert.match(fallback, /no assured power/);
   assert.doesNotMatch(fallback, /NaN|undefined/);
 });
+
+test("joint market diagnostics show all economic hours in descending actual-price order", () => {
+  const intervals = Array.from({ length: 7 }, (_, index) => ({
+    start: `2026-10-02T${String(index + 8).padStart(2, "0")}:00:00Z`,
+    end: `2026-10-02T${String(index + 9).padStart(2, "0")}:00:00Z`,
+    eur_per_mwh: index * 10 - 20,
+    avoided_import_wh: 25,
+    allocated_battery_wh: 35,
+    avoided_total_grid_import_wh: 30,
+  }));
+  const reserve = {
+    mode: "active",
+    market: {
+      enabled: true,
+      status: "available",
+      joint: {
+        joint_status: "accepted",
+        joint_budget_wh: 410,
+        unavoidable_dc_draw_wh: 125,
+        joint_shifted_wh: 175,
+        economic_intervals: intervals,
+        economic_daily_hours: { "2026-10-02": 7 },
+        reference_grid_import_wh: 800,
+        actual_grid_import_wh: 800,
+        reference_grid_export_wh: 0,
+        actual_grid_export_wh: 0,
+        reference_battery_draw_wh: 535,
+        actual_battery_draw_wh: 535,
+        reference_end_soc_percent: 48,
+        actual_end_soc_percent: 48,
+      },
+    },
+  };
+  const html = reserveReport(hass, reserve);
+  assert.match(html, /Shared AC\/DC discharge budget/);
+  assert.match(html, /Selected hours · 2026-10-02<\/dt><dd>7 h/);
+  assert.match(html, /Total battery discharge budget<\/dt><dd>410 Wh/);
+  assert.match(html, /Unavoidable DC battery draw<\/dt><dd>125 Wh/);
+  assert.match(html, /Allocated battery energy/);
+  assert.match(html, /Battery draw<\/th><td>535 Wh<\/td><td>535 Wh/);
+  assert.match(html, /Grid export<\/th><td>0 Wh<\/td><td>0 Wh/);
+  const table = html.split('data-scroll-key="joint-intervals"')[1];
+  assert.equal((table.match(/25 Wh/g) || []).length, 7);
+  assert.ok(table.indexOf("<td>40</td>") < table.indexOf("<td>-20</td>"));
+  assert.match(table, /EUR\/MWh/);
+  const german = reserveReport({ ...hass, language: "de" }, reserve);
+  assert.match(german, /Gemeinsames AC\/DC-Entnahmebudget/);
+  assert.match(german, /Ausgewählte Stunden · 2026-10-02<\/dt><dd>7 h/);
+});
+
+test("joint diagnostics preserve unknown values and distinguish bounded comparisons from impossibility", () => {
+  const html = reserveReport(hass, {
+    mode: "active",
+    market: {
+      joint: {
+        joint_status: "search_limit",
+        joint_rejection_reasons: [
+          "extra_import",
+          "source_unavailable",
+          "phase",
+          "<img>",
+        ],
+        economic_intervals: [
+          null,
+          { start: "invalid", end: "invalid", eur_per_mwh: 999 },
+          { start: "2026-10-02T08:00:00Z", end: "2026-10-02T07:00:00Z" },
+          {
+            start: "2026-10-02T08:00:00Z",
+            end: "2026-10-02T09:00:00Z",
+            eur_per_mwh: null,
+          },
+        ],
+        economic_daily_hours: { "<script>": 7, "2026-10-02": null },
+      },
+    },
+  });
+  assert.match(html, /better allocation may still exist/);
+  assert.match(html, /Would increase total grid import/);
+  assert.match(html, /Required supply source is unavailable/);
+  assert.match(html, /fixed supply phase prevents/);
+  assert.match(html, /Total battery discharge budget<\/dt><dd>— Wh/);
+  assert.match(html, /Grid import<\/th><td>— Wh<\/td><td>— Wh/);
+  assert.match(html, /Selected hours · 2026-10-02<\/dt><dd>— h/);
+  assert.match(html, /<td>—<\/td><td>— Wh/);
+  assert.doesNotMatch(html, /<img>|<script>|NaN|undefined/);
+  for (const joint of [undefined, null]) {
+    const legacy = reserveReport(hass, {
+      mode: "active",
+      market: { enabled: true, status: "available", joint },
+    });
+    assert.doesNotMatch(legacy, /data-joint-market|Reference plan/);
+    assert.match(legacy, /Preferred market windows/);
+  }
+});
+
+test("physical rejection reasons explain the protected energy and supply boundaries in both languages", () => {
+  const reasons = [
+    "dc_service",
+    "extra_psu_charge",
+    "source_inverter_loop",
+    "reserve_floor",
+    "energy_budget",
+    "window_end_energy",
+    "extra_export",
+    "unknown_price",
+    "uncertainty_dc_service",
+    "uncertainty_import",
+    "uncertainty_reserve",
+  ];
+  for (const language of ["en", "de"]) {
+    const html = reserveReport(
+      { ...hass, language },
+      {
+        mode: "active",
+        market: {
+          joint: {
+            joint_status: "no_improvement",
+            joint_rejection_reasons: reasons,
+          },
+        },
+      },
+    );
+    const explanations = html
+      .split(
+        language === "en"
+          ? "Reasons alternatives were rejected"
+          : "Gründe für verworfene Alternativen",
+      )[1]
+      .split("</dd>")[0];
+    assert.doesNotMatch(
+      explanations,
+      /No decision reason available|Kein Entscheidungsgrund verfügbar|report_joint_reason_/,
+    );
+  }
+});
+
+test("already allocated economic energy remains visible with zero reference change", () => {
+  const html = reserveReport(hass, {
+    mode: "active",
+    market: {
+      joint: {
+        joint_status: "no_improvement",
+        unavoidable_dc_draw_wh: null,
+        economic_daily_hours: { "2026-10-02": 6 },
+        economic_intervals: [
+          {
+            start: "2026-10-02T08:00:00Z",
+            end: "2026-10-02T14:00:00Z",
+            eur_per_mwh: 90,
+            allocated_battery_wh: 80,
+            avoided_total_grid_import_wh: 70,
+            avoided_import_wh: 0,
+          },
+        ],
+      },
+    },
+  });
+  assert.match(html, /Unavoidable DC battery draw<\/dt><dd>— Wh/);
+  assert.match(html, /Selected hours · 2026-10-02<\/dt><dd>6 h/);
+  assert.match(html, /<td>90<\/td><td>80 Wh<\/td><td>70 Wh<\/td><td>0 Wh/);
+});

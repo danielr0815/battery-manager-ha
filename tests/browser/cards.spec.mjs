@@ -544,3 +544,62 @@ test("DC source reasons and shifted budget remain visible in both languages", as
   await expect(report).toContainText("während einer Marktspitze");
   await expect(report).toContainText("Verfügbares DC-Entnahmebudget");
 });
+
+test("joint economic allocation survives refresh and localizes without limiting daily hours", async ({
+  page,
+}) => {
+  await page.evaluate((attrs) => window.mount("forecast", attrs), {
+    ...attributes,
+    reserve: {
+      mode: "active",
+      market: {
+        enabled: true,
+        status: "available",
+        joint: {
+          joint_status: "search_limit",
+          joint_budget_wh: 900,
+          unavoidable_dc_draw_wh: 150,
+          economic_daily_hours: { "2026-10-02": 7.5 },
+          reference_grid_import_wh: 1234,
+          actual_grid_import_wh: 1200,
+          economic_intervals: [
+            {
+              start: "2026-10-02T12:00:00Z",
+              end: "2026-10-02T13:00:00Z",
+              eur_per_mwh: 5,
+              avoided_import_wh: 10,
+              allocated_battery_wh: 15,
+              avoided_total_grid_import_wh: 12,
+            },
+            {
+              start: "2026-10-02T14:00:00Z",
+              end: "2026-10-02T15:00:00Z",
+              eur_per_mwh: 100,
+              avoided_import_wh: 24,
+              allocated_battery_wh: 30,
+              avoided_total_grid_import_wh: 25,
+            },
+          ],
+        },
+      },
+    },
+  });
+  const report = page.locator('[data-view-key="reserve-policy"]');
+  await report.locator("summary").click();
+  const joint = report.locator("[data-joint-market]");
+  await expect(joint).toContainText("7.5 h");
+  await expect(joint).toContainText("better allocation may still exist");
+  const rows = joint.locator('[data-scroll-key="joint-intervals"] tbody tr');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("100");
+  await page.evaluate(() => {
+    window.card.hass = { ...window.card._hass, language: "de" };
+  });
+  await expect(report).toHaveAttribute("open", "");
+  await expect(joint).toContainText("7,5 h");
+  await expect(joint).toContainText(
+    "eine bessere Verteilung kann weiterhin möglich sein",
+  );
+  await expect(joint).toContainText("1.234 Wh");
+  await expect(joint.locator("tbody").first()).toContainText("— Wh");
+});

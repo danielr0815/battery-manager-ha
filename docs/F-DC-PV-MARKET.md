@@ -1,5 +1,11 @@
 # PV-Vorrang und DC-Marktverschiebung ab 0.56.0
 
+> **Ab 0.62.0:** Die finale wirtschaftliche AC/DC-Verteilung folgt
+> [F-JOINT-MARKET](F-JOINT-MARKET.md). DC-Vorrang und bis zu vier bevorzugte
+> Tagesstunden in diesem historischen Vertrag beschreiben die konservative
+> Referenz, keine Obergrenze oder Rangfolge des finalen Plans. Schutz, physische
+> Versorgung und bestätigte Quellenphasen bleiben verbindlich.
+
 Die Allokationsreihenfolge und Bündelung ab 0.58.0 ergänzt und ersetzt die
 schrittweise Rangfolge von R2 gemäß [Netzteilblöcke](F-DC-SOURCE-BLOCKS.md).
 Die physischen Energie- und Versorgungsschranken gelten unverändert.

@@ -5,6 +5,19 @@ Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
 
+## Gemeinsame AC/DC-Marktverteilung 0.62.0
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Teures AC + günstiges DC + gleicher physischer Aufwand | Gemeinsamer Tausch ohne zusätzliche Gesamt-Netz-kWh oder Batterieentnahme | `core/test_joint_dispatch.py` |
+| Inverterverluste + Standby + hoher Preis | Zusatzimport bleibt unzulässig, auch bei hohem Preis | `core/test_joint_dispatch.py` |
+| Sechs wirtschaftliche Stunden + negative Preise | Keine feste tägliche Vier-/Fünfstundengrenze | `core/test_joint_dispatch.py`, `frontend/reports.test.mjs` |
+| Unbekannte Preisüberdeckung + Viertelstunde/DST | Originalpreise und reale Überdeckung; unbekannte Schritte bleiben Referenz | `core/test_joint_dispatch.py` |
+| Feste PV-Fenster + bestätigte Phase + begrenzte Suche | Energie-/Versorgungsnachweis gegen Referenz; begrenzte Suche behauptet keine Unmöglichkeit | `core/test_joint_dispatch.py`, `ha/test_joint_market_runtime.py` |
+| Kaskaden-/Aux-Gegenentwürfe + verworfene letzte Probe + endgültige Buchung | Genau eine gemeinsame Suche auf akzeptierten effektiven Eingaben; Lasten, Einspeisung und Kaskadensegmente bleiben erhalten | `core/test_joint_cascade_finalization.py` |
+| Finale Schaltzustände + gebuchte Einspeisung + PV-Stress | Veröffentlichte Mindestreserve hält akzeptierte Aktuationen und Erholungsfenster fest | `core/test_joint_stress_diagnostic.py` |
+| Gesamtzuteilung + null Referenzdelta + alte Payloads | Bereits gute Belegung bleibt sichtbar; fehlend bleibt unbekannt, beide Sprachen | `frontend/reports.test.mjs`, `browser/cards.spec.mjs` |
+
 ## Netzteilstabilität 0.61.0
 
 | Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |

@@ -873,6 +873,46 @@ function localize(hass, key) {
   return (STRINGS[lang] || STRINGS.en)[key] || STRINGS.en[key] || key;
 }
 Object.assign(STRINGS.en, {
+  report_joint_market_available: "EPEX available \xB7 expensive intervals share the AC/DC budget",
+  report_joint_title: "Shared AC/DC discharge budget",
+  report_joint_explanation: "Battery energy is allocated to expensive intervals across AC and DC. Reserve and fixed supply phases remain protected; daily hours follow the available energy and prices.",
+  report_joint_result: "Allocation result",
+  report_joint_budget: "Total battery discharge budget",
+  report_joint_unavoidable_dc: "Unavoidable DC battery draw",
+  report_joint_shifted: "Battery energy shifted to expensive intervals",
+  report_joint_rejections: "Reasons alternatives were rejected",
+  report_joint_daily_hours: "Selected hours",
+  report_joint_battery_draw: "Battery draw",
+  report_joint_end_soc: "SOC at forecast end",
+  report_joint_reference: "Reference plan",
+  report_joint_selected: "Selected plan",
+  report_joint_intervals: "Selected economic intervals \xB7 highest price first",
+  report_joint_interval: "Interval",
+  report_joint_allocated_battery: "Allocated battery energy",
+  report_joint_avoided_import: "Grid import avoided by allocation",
+  report_joint_import_change: "Grid import reduction versus reference",
+  report_joint_no_intervals: "No economic intervals selected.",
+  report_joint_reason_accepted: "Energy shifted within the existing discharge budget.",
+  report_joint_reason_no_flex_budget: "No flexible discharge budget is available.",
+  report_joint_reason_unknown_price: "Price coverage is incomplete; the existing allocation is retained.",
+  report_joint_reason_uncertainty_dc_service: "Would reduce DC supply under the lower PV forecast.",
+  report_joint_reason_uncertainty_import: "Would increase grid import under the lower PV forecast.",
+  report_joint_reason_uncertainty_reserve: "Would reduce the protected reserve under the lower PV forecast.",
+  report_joint_reason_dc_service: "Would reduce delivered DC supply.",
+  report_joint_reason_extra_psu_charge: "Would increase incidental power supply charging.",
+  report_joint_reason_source_inverter_loop: "Would feed power supply energy back through the inverter.",
+  report_joint_reason_reserve_floor: "Would breach the protected reserve.",
+  report_joint_reason_energy_budget: "Would exceed the battery discharge budget.",
+  report_joint_reason_window_end_energy: "Would leave less battery energy at a fixed phase boundary.",
+  report_joint_reason_extra_export: "Would increase grid export.",
+  report_joint_reason_extra_import: "Would increase total grid import.",
+  report_joint_reason_source_unavailable: "Required supply source is unavailable.",
+  report_joint_reason_phase: "A fixed supply phase prevents this shift.",
+  report_joint_reason_search_limit: "The comparison limit was reached; a better allocation may still exist.",
+  report_joint_reason_no_improvement: "No improvement found among the compared allocations.",
+  report_joint_reason_market_off: "Market price allocation is disabled.",
+  report_joint_reason_flat_prices: "Available prices do not favor a shift.",
+  report_joint_reason_missing_prices: "Usable market prices are missing.",
   reserve_decision_dc_priority: "Keep energy for DC: AC preparation would require additional later grid support.",
   report_market: "Market peak preference",
   report_market_available: "EPEX available \xB7 prefer expensive hours within the AC budget",
@@ -940,6 +980,46 @@ Object.assign(STRINGS.en, {
   report_a_recording_error_occurred: "A recording error occurred"
 });
 Object.assign(STRINGS.de, {
+  report_joint_market_available: "EPEX verf\xFCgbar \xB7 teure Intervalle teilen sich das AC/DC-Budget",
+  report_joint_title: "Gemeinsames AC/DC-Entnahmebudget",
+  report_joint_explanation: "Batterieenergie wird \xFCber AC und DC auf teure Intervalle verteilt. Reserve und feste Versorgungsphasen bleiben gesch\xFCtzt; die t\xE4glichen Stunden ergeben sich aus verf\xFCgbarer Energie und Preisen.",
+  report_joint_result: "Ergebnis der Verteilung",
+  report_joint_budget: "Gesamtes Batterie-Entnahmebudget",
+  report_joint_unavoidable_dc: "Unvermeidbare DC-Batterieentnahme",
+  report_joint_shifted: "In teure Intervalle verschobene Batterieenergie",
+  report_joint_rejections: "Gr\xFCnde f\xFCr verworfene Alternativen",
+  report_joint_daily_hours: "Ausgew\xE4hlte Stunden",
+  report_joint_battery_draw: "Batterieentnahme",
+  report_joint_end_soc: "SOC am Prognoseende",
+  report_joint_reference: "Referenzplan",
+  report_joint_selected: "Gew\xE4hlter Plan",
+  report_joint_intervals: "Ausgew\xE4hlte wirtschaftliche Intervalle \xB7 h\xF6chster Preis zuerst",
+  report_joint_interval: "Intervall",
+  report_joint_allocated_battery: "Zugewiesene Batterieenergie",
+  report_joint_avoided_import: "Durch Zuteilung vermiedener Netzbezug",
+  report_joint_import_change: "Netzbezugsminderung gegen\xFCber Referenz",
+  report_joint_no_intervals: "Keine wirtschaftlichen Intervalle ausgew\xE4hlt.",
+  report_joint_reason_accepted: "Energie innerhalb des bestehenden Entnahmebudgets verschoben.",
+  report_joint_reason_no_flex_budget: "Kein flexibles Entnahmebudget verf\xFCgbar.",
+  report_joint_reason_unknown_price: "Die Preisabdeckung ist unvollst\xE4ndig; die bestehende Zuteilung bleibt erhalten.",
+  report_joint_reason_uncertainty_dc_service: "W\xFCrde die DC-Versorgung bei niedrigerer PV-Prognose verringern.",
+  report_joint_reason_uncertainty_import: "W\xFCrde den Netzbezug bei niedrigerer PV-Prognose erh\xF6hen.",
+  report_joint_reason_uncertainty_reserve: "W\xFCrde die gesch\xFCtzte Reserve bei niedrigerer PV-Prognose verringern.",
+  report_joint_reason_dc_service: "W\xFCrde die bereitgestellte DC-Versorgung verringern.",
+  report_joint_reason_extra_psu_charge: "W\xFCrde die technisch bedingte Netzteilladung erh\xF6hen.",
+  report_joint_reason_source_inverter_loop: "W\xFCrde Netzteilenergie \xFCber den Inverter zur\xFCckspeisen.",
+  report_joint_reason_reserve_floor: "W\xFCrde die gesch\xFCtzte Reserve unterschreiten.",
+  report_joint_reason_energy_budget: "W\xFCrde das Batterie-Entnahmebudget \xFCberschreiten.",
+  report_joint_reason_window_end_energy: "W\xFCrde an einer festen Phasengrenze weniger Batterieenergie zur\xFCcklassen.",
+  report_joint_reason_extra_export: "W\xFCrde die Netzeinspeisung erh\xF6hen.",
+  report_joint_reason_extra_import: "W\xFCrde den gesamten Netzbezug erh\xF6hen.",
+  report_joint_reason_source_unavailable: "Ben\xF6tigte Versorgungsquelle ist nicht verf\xFCgbar.",
+  report_joint_reason_phase: "Eine feste Versorgungsphase verhindert diese Verschiebung.",
+  report_joint_reason_search_limit: "Die Vergleichsgrenze wurde erreicht; eine bessere Verteilung kann weiterhin m\xF6glich sein.",
+  report_joint_reason_no_improvement: "Unter den verglichenen Verteilungen wurde keine Verbesserung gefunden.",
+  report_joint_reason_market_off: "Verteilung nach Marktpreisen ist deaktiviert.",
+  report_joint_reason_flat_prices: "Die verf\xFCgbaren Preise beg\xFCnstigen keine Verschiebung.",
+  report_joint_reason_missing_prices: "Nutzbare Marktpreise fehlen.",
   reserve_decision_dc_priority: "Energie f\xFCr DC erhalten: AC-Vorbereitung w\xFCrde sp\xE4tere zus\xE4tzliche Netzteilversorgung erfordern.",
   report_market: "Marktspitzen bevorzugen",
   report_market_available: "EPEX verf\xFCgbar \xB7 teure Stunden innerhalb des AC-Budgets bevorzugen",
@@ -1251,6 +1331,57 @@ function feedinDecisions(hass, decisions) {
   });
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
+function jointMarketReport(hass, joint) {
+  if (!joint || typeof joint !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const fmt = (value) => reportNumber(hass, value);
+  const reason = (value) => {
+    const key = `report_joint_reason_${value}`;
+    return t(key) === key ? t("report_reserve_decision_unknown") : t(key);
+  };
+  const rows = [
+    [t("report_joint_result"), reason(joint.joint_status)],
+    [t("report_joint_budget"), `${fmt(joint.joint_budget_wh)} Wh`],
+    [
+      t("report_joint_unavoidable_dc"),
+      `${fmt(joint.unavoidable_dc_draw_wh)} Wh`
+    ],
+    [t("report_joint_shifted"), `${fmt(joint.joint_shifted_wh)} Wh`]
+  ];
+  if (Array.isArray(joint.joint_rejection_reasons)) {
+    const reasons = [...new Set(joint.joint_rejection_reasons)].map(reason);
+    if (reasons.length)
+      rows.push([t("report_joint_rejections"), reasons.join("; ")]);
+  }
+  const daily = joint.economic_daily_hours;
+  if (daily && typeof daily === "object" && !Array.isArray(daily)) {
+    for (const [day, hours] of Object.entries(daily).sort()) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      rows.push([
+        `${t("report_joint_daily_hours")} \xB7 ${day}`,
+        `${fmt(hours)} h`
+      ]);
+    }
+  }
+  const comparisons = [
+    ["report_grid_import", "grid_import_wh", "Wh"],
+    ["report_grid_export", "grid_export_wh", "Wh"],
+    ["report_joint_battery_draw", "battery_draw_wh", "Wh"],
+    ["report_joint_end_soc", "end_soc_percent", "%"]
+  ].map(
+    ([label, key, unit]) => `<tr><th scope="row">${esc(t(label))}</th><td>${esc(fmt(joint[`reference_${key}`]))} ${unit}</td><td>${esc(fmt(joint[`actual_${key}`]))} ${unit}</td></tr>`
+  ).join("");
+  const intervals = (Array.isArray(joint.economic_intervals) ? joint.economic_intervals : []).filter(
+    (item) => item && Number.isFinite(Date.parse(item.start)) && Number.isFinite(Date.parse(item.end)) && Date.parse(item.end) > Date.parse(item.start)
+  ).sort((a, b) => {
+    const priceA = typeof a.eur_per_mwh === "number" && Number.isFinite(a.eur_per_mwh) ? a.eur_per_mwh : -Infinity;
+    const priceB = typeof b.eur_per_mwh === "number" && Number.isFinite(b.eur_per_mwh) ? b.eur_per_mwh : -Infinity;
+    return priceB - priceA || Date.parse(a.start) - Date.parse(b.start);
+  }).map(
+    (item) => `<tr><th scope="row">${esc(reportTime(hass, item.start))} \u2013 ${esc(reportTime(hass, item.end))}</th><td>${esc(fmt(item.eur_per_mwh))}</td><td>${esc(fmt(item.allocated_battery_wh))} Wh</td><td>${esc(fmt(item.avoided_total_grid_import_wh))} Wh</td><td>${esc(fmt(item.avoided_import_wh))} Wh</td></tr>`
+  ).join("");
+  return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}</section>`;
+}
 function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
@@ -1336,7 +1467,7 @@ function reserveReport(hass, reserve, support, calibration) {
     rows.push([
       t("report_market"),
       t(
-        !market.enabled ? "report_market_off" : market.status === "available" ? "report_market_available" : "report_market_fallback"
+        !market.enabled ? "report_market_off" : market.status === "available" ? market.joint ? "report_joint_market_available" : "report_market_available" : "report_market_fallback"
       )
     ]);
     if (market.entity_id)
@@ -1386,6 +1517,7 @@ function reserveReport(hass, reserve, support, calibration) {
     ${reserve.mode === "shadow" ? `<p>${esc(t("report_reserve_shadow_explanation"))}</p>` : ""}
     ${reserve.dc24_transfer_verified === false ? `<p data-reserve-transfer="unverified">${esc(t("report_dc24_transfer_unverified"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+    ${jointMarketReport(hass, reserve.market?.joint)}
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} \xB7 ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 function operationReport(hass, report) {

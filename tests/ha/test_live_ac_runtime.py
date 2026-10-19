@@ -521,9 +521,9 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
 
 
 @pytest.mark.parametrize("current_price", [100, None])
-@pytest.mark.parametrize("soft_target, minimum_floor", [(None, 67.5), (85, 55)])
+@pytest.mark.parametrize("soft_target", [None, 85])
 async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_load(
-    live, hass, current_price, soft_target, minimum_floor
+    live, hass, current_price, soft_target
 ):
     from dataclasses import replace
 
@@ -575,21 +575,27 @@ async def test_real_market_plan_keeps_energy_for_later_peak_despite_measured_loa
     assert c.live_ac.limit_w == 0
     assert c.live_ac.diagnostics["available_wh"] == 0
 
-    # 1500 W is only equal to the future 500 W × 3 opportunity; 2000 W is
-    # materially better and may consume the already scheduled allocation.
+    decision = result.trajectory.reserve_decision
+    assert decision.joint is not None
+    assert decision.headroom_wh == 0
+    assert c.live_ac.envelope.accepted_budget_wh == 0
+    assert c.live_ac.envelope.override_demand_w is None
+    # A stronger unexpected load cannot borrow a future price-selected battery
+    # allocation. Such an exchange needs another complete physical proof.
     hass.states.async_set("sensor.house", "2500", {"unit_of_measurement": "W"})
     await c.live_ac.run()
-    assert calls == [(LIMIT, 2300)]
-    assert c.live_ac.limit_w == 2300
-    # The soft peak needs 250 Wh rather than the former 125 Wh allocation.
-    # A better measured opportunity may spend only that scheduled amount.
-    assert c.live_ac.envelope.override_floor_percent >= minimum_floor
-    # The market budget overrides the ordinary ten-minute hold immediately.
+    assert c.live_ac.measured_demand() == 2000
+    assert not calls
+    assert c.live_ac.limit_w == 0
+    assert c.live_ac.diagnostics["available_wh"] == 0
+    assert c.live_ac.diagnostics["reason"] == "reserve_budget"
+    # A consumer cycling down also leaves the reserved future peak untouched.
     hass.states.async_set("sensor.house", "1200", {"unit_of_measurement": "W"})
     hass.states.async_set("sensor.import", "700", {"unit_of_measurement": "W"})
     await c.live_ac.run()
-    assert calls[-1] == (LIMIT, 0)
+    assert not calls
     assert c.live_ac.limit_w == 0
+    assert c.live_ac.diagnostics["available_wh"] == 0
 
 
 async def test_price_boundary_expires_permission_and_schedules_replanning(

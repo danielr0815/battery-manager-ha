@@ -1,5 +1,11 @@
 # HA-Integration: Entities, Attribute, Config-Flow
 
+### Nachtrag 0.62.0: gemeinsame Marktdiagnose
+
+`reserve.market.joint` ergänzt Gesamtbudget und unvermeidbare DC-Entnahme, Status, Ablehnungsgründe sowie Referenz-/Ist-Vergleich. Wirtschaftliche Intervalle und Tagesstunden zeigen die gesamte akzeptierte bekannte Preisbelegung; `joint_shifted_wh` und `avoided_import_wh` bleiben davon getrennte Änderungen gegenüber der Referenz. Fehlende ältere Zusammenfassungen bleiben unbekannt. Die bestehende Card-URL und vorhandene Attribute bleiben erhalten.
+
+Verbindlicher Vertrag: [Gemeinsame Marktverteilung](../F-JOINT-MARKET.md).
+
 > **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
 > historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
 > aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),

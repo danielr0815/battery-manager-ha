@@ -181,6 +181,78 @@ export function feedinDecisions(hass, decisions) {
   return `<details data-view-key="feedin-decisions" style="padding:12px"><summary>${esc(localize(hass, "feedin_decisions"))}</summary><ul>${rows.join("")}</ul></details>`;
 }
 
+function jointMarketReport(hass, joint) {
+  if (!joint || typeof joint !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const fmt = (value) => reportNumber(hass, value);
+  const reason = (value) => {
+    const key = `report_joint_reason_${value}`;
+    return t(key) === key ? t("report_reserve_decision_unknown") : t(key);
+  };
+  const rows = [
+    [t("report_joint_result"), reason(joint.joint_status)],
+    [t("report_joint_budget"), `${fmt(joint.joint_budget_wh)} Wh`],
+    [
+      t("report_joint_unavoidable_dc"),
+      `${fmt(joint.unavoidable_dc_draw_wh)} Wh`,
+    ],
+    [t("report_joint_shifted"), `${fmt(joint.joint_shifted_wh)} Wh`],
+  ];
+  if (Array.isArray(joint.joint_rejection_reasons)) {
+    const reasons = [...new Set(joint.joint_rejection_reasons)].map(reason);
+    if (reasons.length)
+      rows.push([t("report_joint_rejections"), reasons.join("; ")]);
+  }
+  const daily = joint.economic_daily_hours;
+  if (daily && typeof daily === "object" && !Array.isArray(daily)) {
+    for (const [day, hours] of Object.entries(daily).sort()) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      rows.push([
+        `${t("report_joint_daily_hours")} · ${day}`,
+        `${fmt(hours)} h`,
+      ]);
+    }
+  }
+  const comparisons = [
+    ["report_grid_import", "grid_import_wh", "Wh"],
+    ["report_grid_export", "grid_export_wh", "Wh"],
+    ["report_joint_battery_draw", "battery_draw_wh", "Wh"],
+    ["report_joint_end_soc", "end_soc_percent", "%"],
+  ]
+    .map(
+      ([label, key, unit]) =>
+        `<tr><th scope="row">${esc(t(label))}</th><td>${esc(fmt(joint[`reference_${key}`]))} ${unit}</td><td>${esc(fmt(joint[`actual_${key}`]))} ${unit}</td></tr>`,
+    )
+    .join("");
+  const intervals = (
+    Array.isArray(joint.economic_intervals) ? joint.economic_intervals : []
+  )
+    .filter(
+      (item) =>
+        item &&
+        Number.isFinite(Date.parse(item.start)) &&
+        Number.isFinite(Date.parse(item.end)) &&
+        Date.parse(item.end) > Date.parse(item.start),
+    )
+    .sort((a, b) => {
+      const priceA =
+        typeof a.eur_per_mwh === "number" && Number.isFinite(a.eur_per_mwh)
+          ? a.eur_per_mwh
+          : -Infinity;
+      const priceB =
+        typeof b.eur_per_mwh === "number" && Number.isFinite(b.eur_per_mwh)
+          ? b.eur_per_mwh
+          : -Infinity;
+      return priceB - priceA || Date.parse(a.start) - Date.parse(b.start);
+    })
+    .map(
+      (item) =>
+        `<tr><th scope="row">${esc(reportTime(hass, item.start))} – ${esc(reportTime(hass, item.end))}</th><td>${esc(fmt(item.eur_per_mwh))}</td><td>${esc(fmt(item.allocated_battery_wh))} Wh</td><td>${esc(fmt(item.avoided_total_grid_import_wh))} Wh</td><td>${esc(fmt(item.avoided_import_wh))} Wh</td></tr>`,
+    )
+    .join("");
+  return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}</section>`;
+}
+
 export function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
@@ -276,7 +348,9 @@ export function reserveReport(hass, reserve, support, calibration) {
         !market.enabled
           ? "report_market_off"
           : market.status === "available"
-            ? "report_market_available"
+            ? market.joint
+              ? "report_joint_market_available"
+              : "report_market_available"
             : "report_market_fallback",
       ),
     ]);
@@ -339,6 +413,7 @@ export function reserveReport(hass, reserve, support, calibration) {
     ${reserve.mode === "shadow" ? `<p>${esc(t("report_reserve_shadow_explanation"))}</p>` : ""}
     ${reserve.dc24_transfer_verified === false ? `<p data-reserve-transfer="unverified">${esc(t("report_dc24_transfer_unverified"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+    ${jointMarketReport(hass, reserve.market?.joint)}
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} · ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 

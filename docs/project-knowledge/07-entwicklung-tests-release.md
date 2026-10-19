@@ -1,5 +1,11 @@
 # Entwicklung, Tests, Release
 
+### Nachtrag 0.62.0: begrenzte gemeinsame Marktverteilung
+
+Neue gemeinsame Marktverträge stehen in `../F-JOINT-MARKET.md`. Tests müssen gekoppelte physische Tausche und Ablehnungen, feste PV-Fenster, Phasen, Preisüberdeckung und mehr als fünf wirtschaftliche Stunden belegen. Ein historischer Erfolg darf erst nach einem Vergleich identischer Eingaben behauptet werden; synthetische Fälle ersetzen diesen Vergleich nicht. Manifest, Projektversion und projektlokaler Lockfile-Eintrag tragen gemeinsam 0.62.0. Die bisherige Releasevorbereitung und alle Coverage-Gates gelten weiter.
+
+Verbindlicher Vertrag: [Gemeinsame Marktverteilung](../F-JOINT-MARKET.md).
+
 > **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
 > historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
 > aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),

@@ -1,5 +1,11 @@
 # Gebündelte Netzteilzeiten und Preisvorrang (0.58.0)
 
+> **Ab 0.62.0:** Die finale wirtschaftliche AC/DC-Verteilung folgt
+> [F-JOINT-MARKET](F-JOINT-MARKET.md). DC-Vorrang und bis zu vier bevorzugte
+> Tagesstunden in diesem historischen Vertrag beschreiben die konservative
+> Referenz, keine Obergrenze oder Rangfolge des finalen Plans. Schutz, physische
+> Versorgung und bestätigte Quellenphasen bleiben verbindlich.
+
 Ab 0.61.0 ergänzt [F-DC-SOURCE-STABILITY](F-DC-SOURCE-STABILITY.md) diese
 Präferenz um bestätigte wirtschaftliche Phasen und gemeinsame EIN-/AUS-Glättung.
 

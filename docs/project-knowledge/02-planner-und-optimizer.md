@@ -1,5 +1,11 @@
 # Planner & Optimizer
 
+### Nachtrag 0.62.0: gemeinsame finale AC/DC-Verteilung
+
+`core/joint_dispatch.py` ergänzt die konservative Referenz erst nach Buchung aller Lasten und Einspeisung. Tatsächliche Preise ordnen vollständige gekoppelte Tausche ohne feste Tagesdauer. Höchstens 32 Validierungen und vier gehaltene Pläne einschließlich Referenz begrenzen die Suche. Feste ursprüngliche PV-Ladefenster begrenzen Netto-Entnahme und Endenergie; Gesamtimport/-export bleiben über den Horizont begrenzt. DC-Versorgung und bestätigte Quellenphasen bleiben geschützt; fehlende Preise bleiben in Referenzbelegung. Ein Suchlimit beweist keine Unmöglichkeit.
+
+Verbindlicher Vertrag: [Gemeinsame Marktverteilung](../F-JOINT-MARKET.md).
+
 > **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
 > historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
 > aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),

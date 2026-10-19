@@ -1,5 +1,11 @@
 # Marktorientierter Inverterbetrieb (0.53.0)
 
+> **Ab 0.62.0:** Die finale wirtschaftliche AC/DC-Verteilung folgt
+> [F-JOINT-MARKET](F-JOINT-MARKET.md). DC-Vorrang und bis zu vier bevorzugte
+> Tagesstunden in diesem historischen Vertrag beschreiben die konservative
+> Referenz, keine Obergrenze oder Rangfolge des finalen Plans. Schutz, physische
+> Versorgung und bestätigte Quellenphasen bleiben verbindlich.
+
 > Ab 0.55.0 ersetzt der Abschnitt [Erwartete PV](#erwartete-pv-statt-verbindlicher-p90-vorbereitung-0550)
 > die nachfolgende historische Verwendung der oberen PV als Vorbereitungspfad.
 

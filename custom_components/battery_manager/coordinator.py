@@ -286,6 +286,7 @@ from .planning import (
 from .reserve_runtime import (
     RESERVE_POLICY_VERSION,
     ReserveRuntime,
+    joint_diagnostics,
     reserve_diagnostics,
 )
 from .runtime_persistence import persistent_payload
@@ -4625,6 +4626,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 for flow in candidate.trajectory.flows
             )
+            joint = joint_diagnostics(candidate.trajectory.reserve_decision)
+            if joint is not None:
+                if not market_diag["enabled"]:
+                    joint["joint_status"] = "market_off"
+                market_diag["joint"] = joint
+                market_diag["preferred_intervals"] = joint["economic_intervals"]
             self._reserve_diag["market"] = market_diag
             self._reserve_diag["requested_mode"] = reserve_mode
             self._reserve_diag["grid_available"] = self._reserve_grid_available()

@@ -1,5 +1,11 @@
 # Projekt-Instruktionen & Index
 
+### Aktueller Nachtrag 0.62.0
+
+Der finale Plan verteilt vorhandene Batterieenergie gemeinsam über AC und DC nach tatsächlichen Preisen; der DC-Vorrang bleibt die konservative Referenz. Vier oder fünf Tagesstunden begrenzen die finale Belegung nicht.
+
+Verbindlicher Vertrag: [Gemeinsame Marktverteilung](../F-JOINT-MARKET.md).
+
 > **Einordnung 0.46.0:** Die folgenden Analysen und Nachträge dokumentieren
 > historische Entscheidungen. Aktuelle Verträge: [CURRENT_CONTRACTS](../CURRENT_CONTRACTS.md),
 > aktuelle Befehle und Releasefolge: [CONTRIBUTING](../../CONTRIBUTING.md),

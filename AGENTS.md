@@ -99,6 +99,11 @@ uv run mypy                     # gesamte Integration, siehe [tool.mypy]
 - Optional: `pre-commit install` — die Hooks (`.pre-commit-config.yaml`)
   spiegeln die im Lockfile fixierte ruff-Version.
 
+## Commit- und Release-Modell
+
+Commit- und Release-Operationen immer mit **GPT-6.1 Sol, Reasoning Low**
+ausführen. Diese Vorgabe gilt nur für Commit und Release.
+
 ## Versionierung (CI-Gate, nicht brechen!)
 
 `custom_components/battery_manager/manifest.json` `version` und

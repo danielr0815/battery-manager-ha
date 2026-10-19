@@ -36,6 +36,7 @@ class SourceStep:
     choices: tuple[HourFlows, ...]
     minimum_soc: float
     choice_factory: Callable[[], tuple[HourFlows, ...]] | None = None
+    joint_choice_factory: Callable[[], tuple[HourFlows, ...]] | None = None
 
     def market_choices(self) -> tuple[HourFlows, ...]:
         """AC-ON steps and unweighted windows need no alternative simulation."""

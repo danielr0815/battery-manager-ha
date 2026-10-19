@@ -1043,6 +1043,38 @@ ReserveDecisionReason = Literal[
 
 
 @dataclass(frozen=True)
+class EconomicInterval:
+    start: datetime
+    end: datetime
+    eur_per_mwh: float
+    avoided_import_wh: float
+    allocated_battery_wh: float = 0.0
+    avoided_total_grid_import_wh: float = 0.0
+
+
+@dataclass(frozen=True)
+class JointDispatchSummary:
+    """Immutable proof summary; absent in recordings predating joint dispatch."""
+
+    joint_status: str
+    joint_budget_wh: float
+    unavoidable_dc_draw_wh: float | None
+    joint_validations: int = 0
+    joint_rejection_reasons: tuple[str, ...] = ()
+    economic_intervals: tuple[EconomicInterval, ...] = ()
+    economic_daily_hours: tuple[tuple[str, float], ...] = ()
+    reference_grid_import_wh: float = 0.0
+    actual_grid_import_wh: float = 0.0
+    reference_grid_export_wh: float = 0.0
+    actual_grid_export_wh: float = 0.0
+    reference_end_soc_percent: float = 0.0
+    actual_end_soc_percent: float = 0.0
+    reference_battery_draw_wh: float = 0.0
+    actual_battery_draw_wh: float = 0.0
+    joint_shifted_wh: float = 0.0
+
+
+@dataclass(frozen=True)
 class ReserveDecision:
     """Current physical reserve decision shared by replay and HA diagnostics.
 
@@ -1065,6 +1097,7 @@ class ReserveDecision:
     market_ranking_reason: str = "load_priority_no_prices"
     dc_budget_wh: float = 0.0
     dc_shifted_wh: float = 0.0
+    joint: JointDispatchSummary | None = None
 
 
 @dataclass(frozen=True)

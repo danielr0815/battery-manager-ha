@@ -49,6 +49,7 @@ class LiveACEnvelope:
     override_floor_percent: float = 100.0
     dc_forecast_w: float | None = None
     dc_sources: tuple[bool, bool] = (False, False)
+    accepted_budget_wh: float | None = None
 
 
 # Keep an energy buffer independent of a partial calendar-hour slot.
@@ -138,6 +139,11 @@ class LiveACRuntime:
                 + config.battery.energy_wh(config.control.soc_buffer_percent)
                 / DC_FALLBACK_BUFFER_HOURS,
                 (result.support_dc24_now, requested_dc48(result)),
+                decision.headroom_wh
+                if decision.joint is not None
+                and decision.joint.joint_status
+                not in ("missing_prices", "flat_prices", "market_off")
+                else None,
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -340,6 +346,8 @@ class LiveACRuntime:
                     config.control.soc_buffer_percent, config.control.hysteresis_percent
                 )
                 available_wh = config.battery.energy_wh(max(0.0, soc - floor))
+                if envelope.accepted_budget_wh is not None:
+                    available_wh = min(available_wh, envelope.accepted_budget_wh)
         decision = live_ac_decision(
             self.state,
             now,

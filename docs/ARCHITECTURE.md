@@ -46,7 +46,7 @@ belongs in the HA layer.
 | `series.py` | Builds the per-hour input series (`build_slots`): the slot grid, PV distribution over the day, base AC/DC load profiles, and appliance-run insertion. |
 | `forecast_hours.py` | Reduces raw `wh_period` buckets (15-min or hourly) from the PV forecast entities to a naive-local hour→Wh map (`aggregate_hours`) and computes the per-day residual for uncovered hours (`coverage_and_residual`). |
 | `simulate.py` | `step_hour` / `simulate`: the energy-flow simulation of one slot / the whole horizon. The battery charges via the AC→DC charger, discharges via the DC→AC inverter; DC loads and the two-bus support model are settled here. |
-| `reserve.py`, `reserve_schedule.py`, `reserve_energy.py`, `reserve_sources.py` | DC-first reserve: full available forecast preparation, nominal DC energy obligation, high-load AC priority, upper-PV export budgets and physical inverse transitions shared with simulation. See `F-RESERVE-LOAD-PRIORITY.md`. |
+| `reserve.py`, `reserve_schedule.py`, `reserve_energy.py`, `reserve_sources.py` | Conservative DC-first reference: full available forecast preparation, nominal DC energy obligation, high-load AC priority, upper-PV export budgets and physical inverse transitions shared with simulation. See `F-RESERVE-LOAD-PRIORITY.md`. |
 | `optimize.py` | Planner orchestration: threshold search, feed-in, appliance advisor and support escalation. |
 | `allocation.py`, `allocation_candidates.py` | Ordered allocation passes, shared feasibility gate, typed candidate context/results and recovery. |
 | `planning_rules.py`, `uncertainty.py`, `policy.py` | Shared pure gates, forecast bands and domain constants; reserve has no reverse optimizer import. |
@@ -54,7 +54,8 @@ belongs in the HA layer.
 | `cascade.py` | Pure storage-cascade allocation, joint member SOC flow and target-limited Aux discharge without a same-day recharge requirement. |
 | `load_profile.py` | The learning math: cleaning measured load into a residual profile, provisional/retained P50 estimates and mature weighted uncertainty bands (F-PROFILE-CONTINUITY). |
 | `voltage_gate.py` | Voltage hysteresis and learned SOC projection for 48 V support; frozen evidence bands are part of the replayable model. |
-| `source_stability.py` | Bounded joint PSU smoothing inside original input/price intervals; fewer edges with full physical validation. |
+| `joint_dispatch.py` | Final coupled AC/DC allocation by actual prices within booked reference energy; fixed PV-window physics, at most 32 validations and four retained schedules. See `F-JOINT-MARKET.md`. |
+| `source_stability.py` | PSU smoothing of the fully booked conservative reference inside original input/price intervals; the subsequent joint allocation builds validated blocks and has no extra smoothing pass. |
 | `power_learning.py` | The per-load planning-power estimator (F-ROBUST-POWER): time-weighted windowed median of the real draw with warm-up, dominance bar and fast-adopt; replaced the former EMA/run-max. |
 
 The HA orchestration delegates load commands to `load_actuation.py`, house supply
@@ -273,6 +274,21 @@ bestehenden Erholungsschwellen ab, ohne bestätigte physische Zustände vorzeiti
 umzuschreiben. Die alte Policy-Version bleibt bis zur abgeschlossenen Übergabe
 bzw. Übernahme durch gültigen Schutz erhalten. Die koordinierte Aktorsteuerung
 prüft aktuellen SOC unter ihrem Lock und erneut vor AC-Freigabe.
+
+### Gemeinsame finale Marktverteilung ab 0.62.0
+
+`reserve._simulate_reserve` baut weiterhin die konservative Referenz auf.
+`joint_dispatch.dispatch` läuft nur für den gebuchten finalen Plan im
+`source_schedule_mode(True)`. Es prüft vollständige Inverter-/Quellenänderungen
+mit sequenzieller Physik; `proof_failure` bindet sie an die ursprünglichen
+PV-Ladefenster, Gesamtimport, Netto-Entnahme, Endenergie, DC-Versorgung und
+bestätigte Phasen. `price_slices` erhält tatsächliche Preisüberdeckungen;
+`actual_prices` ordnet unteilbare Kontrollschritte nach dem höchsten berührten
+bekannten Preis. Die unveränderliche `JointDispatchSummary` gehört zur
+`ReserveDecision`; HA und `frontend/reports.js` publizieren und übersetzen sie
+additiv. `simulate_fixed_dispatch` hält akzeptierte Schaltzustände für
+Geräteproben und Stressdiagnose fest. Vollständiger Vertrag:
+[F-JOINT-MARKET](F-JOINT-MARKET.md).
 
 ### 0.56.0 source and accounting boundaries
 

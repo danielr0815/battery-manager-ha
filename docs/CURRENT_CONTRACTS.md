@@ -6,6 +6,50 @@ Bei Widersprüchen zu früheren Beschreibungen gelten die hier genannten Verträ
 Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 [Testmatrix](TEST_MATRIX.md) benennt die ausführbaren Nachweise.
 
+## Gemeinsame AC/DC-Marktverteilung ab 0.62.0
+
+Der konservative DC-Vorrang erzeugt weiterhin eine sichere Referenz. Erst nach
+Buchung der tatsächlichen Lasten verteilt der finale Plan deren bestehendes
+Batterie-Entnahmebudget gemeinsam auf AC und DC. Höhere tatsächlich
+veröffentlichte Preise in EUR/MWh haben Vorrang; der begrenzte Preisbonus der
+Referenz bestimmt nicht die finale Rangfolge. Eine tägliche Vier- oder
+Fünfstundengrenze gibt es dafür nicht. Unbekannte Preise bleiben unbekannt:
+solche Schritte behalten ihre Referenzbelegung. Negative Preise sind gültig,
+begründen aber weder zusätzliche Entnahme noch gezielte Netzladung.
+
+Ein vollständiger Tausch enthält Empfänger und günstigere ausgleichende
+Gelegenheiten. Seine sequenzielle physische Nachsimulation vergleicht ihn mit
+derselben Referenz: kein zusätzlicher Gesamt-Netzbezug oder Export über den
+vollständigen Horizont, keine höhere Netto-Batterieentnahme innerhalb ihrer
+**festen ursprünglichen PV-Ladefenster**, kein niedrigerer Energieinhalt an einer
+Fenstergrenze und keine schlechtere DC-Versorgung. Wirkungsgrade, Standby, Reserveuntergrenze, manuelle Quellen,
+verfügbare Geräte und bestätigte Netzteilphasen bleiben verbindlich. Eine
+Netzteil-/Inverter-Rückspeiseschleife und zusätzliche beiläufige Netzteilladung
+sind unzulässig. Lokale Schätzwerte konstruieren nur Vorschläge.
+
+Die finale Verteilung teilt insgesamt höchstens 32 zusätzliche vollständige
+Simulationsläufe zwischen nominalen Kandidaten, Unsicherheitsreferenzen und
+-kandidaten. Die vollständig gebuchte konservative Referenz behält ihre
+bestehende Glättung; gemeinsame Kandidaten werden blockweise konstruiert und
+nachsimuliert. Bei gleichem Preisnutzen zählen weniger Schaltflanken, dann
+weniger Änderungen gegenüber der Referenz. Es folgt keine zusätzliche gemeinsame
+Glättung. Die Suche hält höchstens vier Pläne einschließlich der Referenz.
+Diese Grenze gilt für
+den gebuchten finalen Plan, nicht erneut je Lastprobe, Kaskadenentwurf oder
+Preisintervall.
+`search_limit` heißt, dass die begrenzte Suche endet; es beweist keine
+Unmöglichkeit. Auch `no_improvement` gilt nur für verglichene Alternativen.
+Ohne bestandenen Vergleich bleibt die Referenz erhalten. Der Live-Pfad schafft
+kein neues Budget und zieht eine finale gemeinsame Zuteilung nicht ohne neue
+Planprüfung vor.
+
+`reserve.market.joint` ergänzt Budget, unvermeidbare DC-Entnahme,
+Referenz-/Ist-Vergleich, Status und Ablehnungsgründe. Wirtschaftliche Intervalle
+und Tagesstunden bezeichnen die gesamte akzeptierte bekannte Preisbelegung;
+Verschiebung und Netzbezugsänderung gegenüber der Referenz sind eigene Werte.
+Fehlende ältere Diagnosen werden nicht als null erfunden. Details und
+Feldbedeutungen: [Gemeinsame Marktverteilung](F-JOINT-MARKET.md).
+
 ## Stabile Netzteilphasen ab 0.61.0
 
 Bestätigte eigene Netzteilflanken binden die wirtschaftliche Quellenverteilung
@@ -80,7 +124,7 @@ Nachweise: `test_voltage_gate.py`, `test_gate_learning.py`,
 ## Installation und Migration
 
 Home Assistant **2026.8.0** oder neuer ist erforderlich. Manifest und
-Projektmetadaten tragen gemeinsam **0.61.0**. Entity-IDs, Subentries, Services,
+Projektmetadaten tragen gemeinsam **0.62.0**. Entity-IDs, Subentries, Services,
 Konfiguration und die bestehende Karten-URL bleiben erhalten. Python benötigt
 weiterhin keine zusätzlichen Laufzeitpakete. Node-Werkzeuge sind reine
 Entwicklungsabhängigkeiten; ausgeliefert wird eine eingecheckte Bundle-Datei.
@@ -371,15 +415,19 @@ Energiebilanzen, mögliche zusätzliche Import-/Export-Restmengen und Tests:
 
 Die Reserveplanung betrachtet jetzt den gesamten verfügbaren Prognosehorizont;
 frühere Heute/Morgen-Bindungen in diesem Dokument sind ersetzt. Optionale EPEX-
-Intervalle bevorzugen bis zu vier teure Tagesstunden innerhalb des bestehenden
-AC-Budgets. Fehlende Preise verwenden Lastpriorität. Ein Vergleich mit derselben
+Intervalle bevorzugen in der konservativen Referenz bis zu vier teure
+Tagesstunden innerhalb des bestehenden AC-Budgets. Ab 0.62.0 ersetzt die oben
+beschriebene gemeinsame AC/DC-Verteilung diese Beschränkung im finalen Plan. Fehlende Preise verwenden Lastpriorität. Ein Vergleich mit derselben
 Prognose ohne AC-Abgabe begrenzt zusätzliche spätere DC-Netzversorgung; nötigenfalls
-wird AC-Energie zurückgehalten oder die Freigabe verworfen. DC-Vorrang, physische
-Simulation, binäre Freigabe und Quellenbesitz bleiben verbindlich.
+wird in der Referenz AC-Energie zurückgehalten oder die Freigabe verworfen.
+DC-Vorrang schützt die Referenz; im finalen Plan ist er keine zusätzliche
+wirtschaftliche Rangfolge vor AC. Physische Simulation, binäre Freigabe und
+Quellenbesitz bleiben verbindlich.
 
-Der Live-Pfad schützt spätere Marktfenster, darf aber bereits geplante AC-Energie
-vorziehen, wenn eine unerwartete aktuelle Last unter Preisgewichtung deutlich
-besser ist. Das Budget reicht nur bis zur nächsten Netto-PV-Ladung und bleibt
+Bei Plänen ohne finale gemeinsame Zusammenfassung schützt der Live-Pfad spätere
+Marktfenster, darf aber bereits geplante AC-Energie vorziehen, wenn eine
+unerwartete aktuelle Last unter Preisgewichtung deutlich besser ist. Ein finaler
+gemeinsamer Plan ab 0.62.0 erlaubt diesen eigenständigen Marktvorgriff nicht. Das Budget reicht nur bis zur nächsten Netto-PV-Ladung und bleibt
 oberhalb der DC-/Schutzgrenze. Verhalten, Gewichtung, Datenformate, Diagnose und
 Nachweise: [Marktorientierter Inverterbetrieb](F-MARKET-AC-PRIORITY.md).
 
@@ -536,17 +584,21 @@ simulierten Forecasts mit begrenztem Zuschlag. Nachweise und Golden-Prüfung:
 ## PV-Vorrang und DC-Marktverschiebung ab 0.56.0
 
 Automatische Quellenhaltung nutzt PV vorrangig, soweit diese DC physisch deckt.
-Teilüberschuss vergrößert kein Entnahmebudget. Bereits freigegebene native DC-
-Entnahme wird mit vorhandenen Preisgewichten zwischen PV-Ladungen verschoben;
+Teilüberschuss vergrößert kein Entnahmebudget. Die konservative Referenz
+verschiebt bereits freigegebene native DC-
+Entnahme mit vorhandenen Preisgewichten zwischen PV-Ladungen; ab 0.62.0 folgt
+anschließend die gemeinsame AC/DC-Verteilung nach tatsächlichen Preisen. Die
 physische Nachsimulation verhindert zusätzliche Entladung, DC-Ausfälle,
-Import-/Exportzuwachs und verdrängte AC-Abgabe. Manuelle Quellen, Schutz und
+Import-/Exportzuwachs; die ältere DC-Referenzverteilung schützt zusätzlich
+bestehende AC-Abgabe. Manuelle Quellen, Schutz und
 Bestätigungen bleiben vorrangig. Der bestehende Live-Takt kann vollständig
 PV-gedeckte automatische Haltung aufheben und stellt bei Verlust der frischen
 Freigabe den gültigen Plan wieder her. Vertrag: [DC/PV/Markt](F-DC-PV-MARKET.md).
 
 ### Gebündelte Netzteilzeiten ab 0.58.0
 
-Die DC-Marktverteilung priorisiert höhere vorhandene Preisgewichte vor der
+Die DC-Verteilung der konservativen Referenz priorisiert höhere vorhandene
+Preisgewichte vor der
 Importersparnis je Batterie-Wh. Innerhalb eines Preisbands erweitert sie eine
 ausgewählte Quellenkombination auf direkt benachbarte Schritte bis zu
 30 realen Minuten. Fehlende Alternativen, Restbudget und Preisbandgrenzen

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from core.market import peak_weights, slot_weights
 from core.model import MarketPrice
+from core.reserve import source_schedule_mode
 from core.simulate import simulate
 from test_reserve_priority import plant, series
 
@@ -48,12 +49,24 @@ def test_flat_small_or_missing_peak_price_retains_load_priority(prices):
     assert result.flows[1].inverter_output_wh == 0
 
 
-def test_peak_cannot_create_ac_budget_or_displace_dc():
+def test_peak_can_exchange_dc_within_joint_energy_and_total_import_contract():
     inputs = priced([(0, 600, 100), (0, 500, 200), (300, 0, 0)], [100, 300, 100], 95)
+    with source_schedule_mode(False):
+        reference = simulate(plant(), inputs, 20)
     result = simulate(plant(), inputs, 20)
-    assert sum(f.inverter_output_wh for f in result.flows) == 0
-    assert sum(f.psu24_delivered_wh for f in result.flows) == 0
-    assert result.total_export_wh == pytest.approx(0)
+    # The former isolated-DC veto is intentionally replaced by the complete
+    # booked reference contract: dear AC may replace cheap DC at equal grid Wh.
+    assert sum(f.inverter_output_wh for f in reference.flows) == 0
+    assert sum(f.inverter_output_wh for f in result.flows) == pytest.approx(500 / 6)
+    assert sum(f.psu24_delivered_wh for f in result.flows) > 0
+    assert result.total_import_wh == pytest.approx(reference.total_import_wh)
+    assert result.total_export_wh == pytest.approx(reference.total_export_wh)
+    assert result.end_soc_percent == pytest.approx(reference.end_soc_percent)
+    assert (
+        result.reserve_decision.joint.actual_battery_draw_wh
+        <= result.reserve_decision.joint.reference_battery_draw_wh + 1e-6
+    )
+    assert sum(f.unserved_dc_wh for f in result.flows) == 0
 
 
 def test_peak_after_pv_deadline_cannot_replace_earlier_headroom():
@@ -207,7 +220,10 @@ def test_missing_useful_opportunity_preserves_known_peak_with_transitive_scores(
     )
     assert result.flows != plain.flows
     assert result.reserve_decision.market_ranking_reason == "weighted_partial"
-    assert result.reserve_decision.live_ac_override_demand_w == pytest.approx(500)
+    # Final joint policy admits only the validated current quantum.
+    assert result.reserve_decision.live_ac_override_demand_w is None
+    # The first five-minute quantum is OFF even though this hour has later AC.
+    assert result.reserve_decision.headroom_wh == 0
     assert result.min_soc_percent >= 20
 
 
@@ -225,7 +241,8 @@ def test_known_later_peak_protects_live_budget_even_without_current_price(
     assert result.flows[2].inverter_output_wh == 0
     assert result.reserve_decision.market_ranking_reason == "weighted_partial"
     assert result.reserve_decision.live_ac_floor_percent >= inputs.start_soc_percent
-    assert result.reserve_decision.live_ac_override_demand_w == pytest.approx(1500)
+    assert result.reserve_decision.live_ac_override_demand_w is None
+    assert result.reserve_decision.headroom_wh == 0
 
 
 def test_unpriced_larger_load_can_still_outrank_a_known_peak():
@@ -236,7 +253,8 @@ def test_unpriced_larger_load_can_still_outrank_a_known_peak():
     )
     assert result.flows[0].inverter_output_wh == 0
     assert result.flows[1].inverter_output_wh == pytest.approx(150)
-    assert result.reserve_decision.live_ac_override_demand_w == pytest.approx(200)
+    assert result.reserve_decision.live_ac_override_demand_w is None
+    assert result.reserve_decision.headroom_wh == 0
 
 
 def test_next_day_without_prices_does_not_erase_today_peak():

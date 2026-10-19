@@ -10,6 +10,7 @@ from core.market import slot_weights
 from core.model import MarketPrice, SupportParams
 from core.optimize import plan
 from core.reserve import (
+    _apply_dc_market,
     _simulate_reserve_policy,
     _simulate_reserve_reference,
     reserve_planning_scope,
@@ -179,6 +180,16 @@ def test_final_schedule_is_smoothed_once_after_booking_and_probe_mode_resets():
         assert len(switching_schedule(i.slots, probe.flows)) - 1 == 9
         raise RuntimeError("cancelled probe")
     result = plan(c, i)
+    # Economic changes must not shorten the reference's fifty-minute ON phase
+    # to its final five minutes just because those remaining states match.
+    decision = result.trajectory.reserve_decision
+    assert "phase" in decision.joint.joint_rejection_reasons
+    assert (
+        decision.joint.actual_battery_draw_wh
+        <= decision.joint.reference_battery_draw_wh + 1e-6
+    )
+    assert result.trajectory.end_soc_percent >= probe.end_soc_percent - 1e-6
+    assert result.trajectory.total_export_wh <= probe.total_export_wh + 1e-6
     assert len(switching_schedule(i.slots, result.trajectory.flows)) - 1 == 5
     assert result.trajectory.total_import_wh == pytest.approx(probe.total_import_wh)
     assert len(switching_schedule(i.slots, simulate(c, i, 20).flows)) - 1 == 5
@@ -244,7 +255,7 @@ def test_market_pipeline_removes_four_edges_at_identical_hourly_energy():
         fixed_limits=tuple(s.flow.inverter_limit_w for s in steps),
         traces=traces,
     )
-    result = simulate(c, i, 20)
+    result = _apply_dc_market(c, i, None, 1, None, reference, traces)
     assert len(switching_schedule(i.slots, raw.flows)) - 1 == 9
     assert len(switching_schedule(i.slots, result.flows)) - 1 == 5
     assert [f.grid_import_wh for f in result.flows] == pytest.approx(

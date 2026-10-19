@@ -109,7 +109,11 @@ from .planning_rules import (
     pv_windows as pv_windows,
 )
 from .policy import FULL_SOC_TOLERANCE_PERCENT
-from .reserve import reserve_planning_scope, source_schedule_mode
+from .reserve import (
+    reserve_planning_scope,
+    simulate_fixed_dispatch,
+    source_schedule_mode,
+)
 from .series import insert_appliance_run
 from .simulate import simulate
 from .uncertainty import (
@@ -765,14 +769,21 @@ def appliance_windows(
         test_inputs = insert_appliance_run(
             inputs, appliance.run_energy_wh, appliance.run_duration_h
         )
-        traj = simulate(
-            config,
-            test_inputs,
-            threshold,
-            extra_ac_wh=extra_ac,
-            dc24_schedule=dc24_schedule,
-            dc48_schedule=dc48_schedule,
-            feedin_wh=feedin_wh,
+        traj = (
+            simulate_fixed_dispatch(
+                config, test_inputs, extra_ac, planned_trajectory, feedin_wh
+            )
+            if planned_trajectory.reserve_decision is not None
+            and planned_trajectory.reserve_decision.joint is not None
+            else simulate(
+                config,
+                test_inputs,
+                threshold,
+                extra_ac_wh=extra_ac,
+                dc24_schedule=dc24_schedule,
+                dc48_schedule=dc48_schedule,
+                feedin_wh=feedin_wh,
+            )
         )
         # An empty horizon must NOT advise a start (code review 2026-07): with
         # no slots the trial imports 0 Wh and never degrades the min SOC, so
@@ -1073,17 +1084,6 @@ def _plan_legacy(
     dc24, dc48, traj = support_escalation(
         config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
     )
-    if config.reserve.enabled and config.support.coordinated:
-        # F-DC-SOURCE-STABILITY: do not add a full smoothing validation to
-        # hundreds of hypothetical load probes. All bookings are fixed now;
-        # validate their final source trace once before deriving public metrics.
-        with source_schedule_mode(True):
-            traj = simulate(
-                config, inputs, threshold, extra_ac_wh=extra_ac, feedin_wh=feedin_wh
-            )
-        dc24, dc48, traj = support_escalation(
-            config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
-        )
     advisories: dict[str, ApplianceAdvisory] = {}
     windows = appliance_windows(
         config,
@@ -1247,6 +1247,99 @@ def _plan_legacy(
     )
 
 
+def _finalize_joint_plan(
+    config: SystemConfig, inputs: PlanInputs, result: PlanResult
+) -> PlanResult:
+    """Spend the joint search allowance only after every cascade booking is fixed."""
+    if not config.reserve.enabled or not config.support.coordinated:
+        return result
+    extra_ac = tuple(flow.extra_ac_wh for flow in result.trajectory.flows)
+    feedin = (
+        tuple(
+            power * slot.duration
+            for power, slot in zip(result.feedin_schedule_w, inputs.slots, strict=True)
+        )
+        if result.feedin_schedule_w
+        else None
+    )
+    with source_schedule_mode(True):
+        trajectory = simulate(
+            config,
+            inputs,
+            result.threshold_percent,
+            extra_ac_wh=extra_ac,
+            feedin_wh=feedin,
+        )
+    dc24, dc48, trajectory = support_escalation(
+        config, inputs, result.threshold_percent, extra_ac, trajectory, feedin_wh=feedin
+    )
+    advisories: dict[str, ApplianceAdvisory] = {}
+    windows = appliance_windows(
+        config,
+        inputs,
+        result.threshold_percent,
+        extra_ac,
+        trajectory,
+        dc24_schedule=dc24,
+        dc48_schedule=dc48,
+        feedin_wh=feedin,
+        advisories=advisories,
+    )
+    stressed_min_soc = None
+    stress, _, _ = _effective_uncertainty(
+        inputs, config.control.predrain_pv_confidence, config.control.upper_pv_reserve
+    )
+    booked = [
+        alloc[0]
+        for load in result.load_plans
+        for alloc in load.allocations
+        if alloc[2] in (2, 3)
+    ]
+    if booked and trajectory.flows and any(scale < 1.0 - _EPS for scale in stress):
+        first = min(booked)
+        recovery = _refill_index(
+            trajectory,
+            first,
+            config.battery.soc_max_percent - FULL_SOC_TOLERANCE_PERCENT,
+        )
+        scale = [
+            value if first <= index <= recovery else 1.0
+            for index, value in enumerate(stress)
+        ]
+        stressed = simulate_fixed_dispatch(
+            config, inputs, extra_ac, trajectory, feedin, pv_scale=scale
+        )
+        stressed_min_soc = _windowed_min_soc(stressed, first, recovery)
+    max_soc = (
+        trajectory.max_soc_percent if trajectory.flows else inputs.start_soc_percent
+    )
+    return replace(
+        result,
+        trajectory=trajectory,
+        inverter_on=trajectory.flows[0].inverter_start if trajectory.flows else False,
+        support_dc24_now=bool(dc24[0]) if dc24 else False,
+        support_dc48_now=bool(dc48[0]) if dc48 else False,
+        grid_import_kwh=trajectory.total_import_wh / 1000.0,
+        grid_export_kwh=trajectory.total_export_wh / 1000.0,
+        lost_surplus_kwh=trajectory.total_export_wh / 1000.0,
+        min_soc_percent=trajectory.min_soc_percent
+        if trajectory.flows
+        else inputs.start_soc_percent,
+        max_soc_percent=max_soc,
+        hours_to_max_soc=next(
+            (
+                index + 1
+                for index, flow in enumerate(trajectory.flows)
+                if flow.soc_end_percent >= max_soc
+            ),
+            0,
+        ),
+        appliance_windows=windows,
+        appliance_advisories=advisories,
+        stressed_min_soc_percent=stressed_min_soc,
+    )
+
+
 def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """Plan with a call-scoped reserve cache, also shared by nested cascades."""
     if not config.reserve.enabled:
@@ -1265,7 +1358,7 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             ),
         )
     if not config.cascades:
-        return _plan_legacy(config, inputs)
+        return _finalize_joint_plan(config, inputs, _plan_legacy(config, inputs))
 
     # F-CASCADE-STORAGE priority/day contract (operator decision 2026-09-02):
     # the complete cascade occupies its first participant's global position.
@@ -1335,6 +1428,12 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         for cascade in config.cascades
         for member in cascade.members
     }
+
+    # Cascade acceptance replaces/reorders PlanResult while retaining its
+    # immutable trajectory. Keep exact effective inputs by that identity; the
+    # last hypothetical replan may have been rejected. Retaining the trajectory
+    # reference prevents identity reuse while the candidates are compared.
+    planning_snapshots: dict[int, tuple[Trajectory, PlanInputs]] = {}
 
     def replan(
         trial_inputs: PlanInputs,
@@ -1513,6 +1612,7 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             cumulative_energy_caps_wh=cumulative_caps or None,
             recovery_cumulative_caps_wh=recovery_cumulative_caps or None,
         )
+        planning_snapshots[id(result.trajectory)] = (result.trajectory, planning_inputs)
         return replace(
             result,
             load_plans=tuple(
@@ -1523,4 +1623,6 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
             ),
         )
 
-    return augment_cascade_plans(config, inputs, replan(inputs), replan)
+    accepted = augment_cascade_plans(config, inputs, replan(inputs), replan)
+    _, accepted_inputs = planning_snapshots[id(accepted.trajectory)]
+    return _finalize_joint_plan(legacy_config, accepted_inputs, accepted)

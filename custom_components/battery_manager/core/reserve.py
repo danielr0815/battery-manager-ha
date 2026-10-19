@@ -18,6 +18,8 @@ from functools import partial
 from typing import Any
 
 from .dc_service import preserves_dc_service
+from .joint_dispatch import ValidationBudget, uncertainty_failure
+from .joint_dispatch import dispatch as joint_dispatch
 from .market import slot_weights
 from .model import (
     HourFlows,
@@ -52,7 +54,7 @@ from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS, split_slot, switching_schedule
 from .source_stability import smooth_sources
 from .support import support_state
-from .uncertainty import reserve_preparation_scales
+from .uncertainty import effective_uncertainty, reserve_preparation_scales
 
 # A planning call probes many nearby load schedules. The cache expires with that
 # call and cannot leak a source, forecast or cancellation context into the next.
@@ -325,8 +327,89 @@ def _simulate_reserve(
     reference = _simulate_reserve_reference(
         config, inputs, extra_ac, pv_scale, feedin, traces=traces
     )
-    return _apply_dc_market(
+    result = _apply_dc_market(
         config, inputs, extra_ac, pv_scale, feedin, reference, traces
+    )
+    if not _smooth_source_schedule.get():
+        return result
+    reference_steps = traces[id(result.flows)]
+    validation_budget = ValidationBudget()
+
+    def evaluate(
+        proposal: tuple[HourFlows, ...],
+    ) -> tuple[Trajectory, tuple[SourceStep, ...]]:
+        trial_traces: dict[int, tuple[SourceStep, ...]] = {}
+        validation_budget.record()
+        trial = _simulate_reserve_policy(
+            config,
+            inputs,
+            extra_ac,
+            pv_scale,
+            feedin,
+            fixed_sources=tuple(source_state(f) for f in proposal),
+            fixed_limits=tuple(f.inverter_limit_w for f in proposal),
+            traces=trial_traces,
+        )
+        return trial, trial_traces[id(trial.flows)]
+
+    stress, _, _ = effective_uncertainty(
+        inputs, config.control.predrain_pv_confidence, config.control.upper_pv_reserve
+    )
+    stressed_reference: Trajectory | None = None
+    stressed_reference_steps: tuple[SourceStep, ...] = ()
+
+    def uncertainty_proof(
+        trial: Trajectory, trial_steps: Sequence[SourceStep]
+    ) -> str | None:
+        nonlocal stressed_reference, stressed_reference_steps
+        if not any(scale < 1 - ENERGY_EPSILON_WH for scale in stress):
+            return None
+        if stressed_reference is None:
+            validation_budget.record()
+            stress_reference_trace: dict[int, tuple[SourceStep, ...]] = {}
+            stressed_reference = _simulate_reserve_policy(
+                config,
+                inputs,
+                extra_ac,
+                stress,
+                feedin,
+                fixed_sources=tuple(source_state(s.flow) for s in reference_steps),
+                fixed_limits=tuple(s.flow.inverter_limit_w for s in reference_steps),
+                traces=stress_reference_trace,
+            )
+            stressed_reference_steps = stress_reference_trace[
+                id(stressed_reference.flows)
+            ]
+        validation_budget.record()
+        stress_trial_trace: dict[int, tuple[SourceStep, ...]] = {}
+        stressed_trial = _simulate_reserve_policy(
+            config,
+            inputs,
+            extra_ac,
+            stress,
+            feedin,
+            fixed_sources=tuple(source_state(s.flow) for s in trial_steps),
+            fixed_limits=tuple(s.flow.inverter_limit_w for s in trial_steps),
+            traces=stress_trial_trace,
+        )
+        return uncertainty_failure(
+            config,
+            stressed_reference,
+            stressed_trial,
+            stressed_reference_steps,
+            stress_trial_trace[id(stressed_trial.flows)],
+        )
+
+    return joint_dispatch(
+        config,
+        result,
+        reference_steps,
+        inputs.market_prices,
+        evaluate,
+        uncertainty_proof,
+        validation_budget,
+        2 if any(scale < 1 - ENERGY_EPSILON_WH for scale in stress) else 1,
+        1 if any(scale < 1 - ENERGY_EPSILON_WH for scale in stress) else 0,
     )
 
 
@@ -363,6 +446,54 @@ def simulate_reserve_variant(
         allow_ac=allow_ac,
         ac_margin_wh=ac_margin_wh,
     )
+
+
+def simulate_fixed_dispatch(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    reference: Trajectory,
+    feedin: tuple[float, ...] | None = None,
+    pv_scale: float | Sequence[float] = 1.0,
+) -> Trajectory:
+    """Counterfactual loads keep accepted subhour actuations, without a search.
+
+    The usual protection pass can still switch a source on. An appliance cannot
+    finance its own permission by silently redistributing the published energy.
+    """
+    sources: list[SourceState] = []
+    limits: list[float] = []
+    for slot, flow in zip(inputs.slots, reference.flows, strict=True):
+        for small, _ in split_slot(slot):
+            at = small.start.timestamp()
+            interval = next(
+                (
+                    interval
+                    for interval in flow.switching_schedule
+                    if interval.start.timestamp() <= at < interval.end.timestamp()
+                ),
+                None,
+            )
+            sources.append(
+                (interval.support_dc24, interval.support_dc48)
+                if interval
+                else source_state(flow)
+            )
+            limits.append(
+                config.inverter.max_power_w
+                if (interval.inverter_on if interval else flow.inverter_on)
+                else 0.0
+            )
+    with source_schedule_mode(False):
+        return _simulate_reserve_policy(
+            config,
+            inputs,
+            extra_ac,
+            pv_scale,
+            feedin,
+            fixed_sources=tuple(sources),
+            fixed_limits=tuple(limits),
+        )
 
 
 def _apply_dc_market(
@@ -671,6 +802,69 @@ def _prepare_reserve(
             del cache.preparations[next(iter(cache.preparations))]
         cache.preparations[key] = prepared
     return prepared
+
+
+def _joint_choices(
+    config: SystemConfig,
+    soc: float,
+    slot: HourSlot,
+    extra: float,
+    scale: float,
+    export: float,
+    required: SourceState,
+    reference: HourFlows,
+) -> tuple[HourFlows, ...]:
+    """Four INV-off source combinations and one both-off INV-max choice."""
+    candidates = list(
+        source_choices(
+            config,
+            required,
+            partial(
+                _step_hour,
+                config,
+                soc,
+                slot,
+                100,
+                extra,
+                pv_scale=scale,
+                feedin_wh=export,
+            ),
+        )
+    )
+    if not any(required):
+        candidates.append(
+            replace(
+                _step_hour(
+                    config,
+                    soc,
+                    slot,
+                    config.control.inverter_min_soc_percent,
+                    extra,
+                    pv_scale=scale,
+                    feedin_wh=export,
+                    inverter_limit_w=config.inverter.max_power_w,
+                ),
+                inverter_limit_w=config.inverter.max_power_w,
+            )
+        )
+    locks = phase_locks(config, slot)
+    active = source_state(reference)
+    result = tuple(
+        f
+        for f in candidates
+        if (
+            f.psu48_battery_charge_wh
+            <= reference.psu48_battery_charge_wh + ENERGY_EPSILON_WH
+            and f.unserved_dc_wh <= reference.unserved_dc_wh + ENERGY_EPSILON_WH
+            and all(
+                not locked or chosen == actual
+                for locked, chosen, actual in zip(
+                    locks, source_state(f), active, strict=True
+                )
+            )
+        )
+    )
+    return result or (reference,)
 
 
 def _simulate_reserve_policy(
@@ -1074,6 +1268,19 @@ def _simulate_reserve_policy(
                 battery.soc_percent(following_minimum + dc_uncertainty_wh),
                 choose_sources
                 if dc_market_active and not choices and fixed_sources is None
+                else None,
+                partial(
+                    _joint_choices,
+                    effective,
+                    soc,
+                    slot,
+                    extra,
+                    scale,
+                    export,
+                    required_sources,
+                    flow,
+                )
+                if _smooth_source_schedule.get()
                 else None,
             )
         )

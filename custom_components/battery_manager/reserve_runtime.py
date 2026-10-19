@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, TypedDict
 
-from .core.model import PlanInputs, PlanResult, SystemConfig
+from .core.model import PlanInputs, PlanResult, ReserveDecision, SystemConfig
 from .core.reserve_sources import grid_dc
 from .core.uncertainty import reserve_preparation_scales
 
@@ -15,6 +16,28 @@ from .core.uncertainty import reserve_preparation_scales
 MAX_OBSERVATION_GAP_SECONDS = 600
 # Version 2 separates historical references from physical reserve decisions.
 RESERVE_POLICY_VERSION = 2
+
+
+def joint_diagnostics(decision: ReserveDecision | None) -> dict[str, Any] | None:
+    """Old recordings have no joint proof; absence must remain visible."""
+    if decision is None or decision.joint is None:
+        return None
+    summary = decision.joint
+    result = asdict(summary)
+    result["joint_rejection_reasons"] = list(summary.joint_rejection_reasons)
+    result["economic_daily_hours"] = dict(summary.economic_daily_hours)
+    result["economic_intervals"] = [
+        {
+            "start": interval.start.isoformat(),
+            "end": interval.end.isoformat(),
+            "eur_per_mwh": interval.eur_per_mwh,
+            "avoided_import_wh": interval.avoided_import_wh,
+            "allocated_battery_wh": interval.allocated_battery_wh,
+            "avoided_total_grid_import_wh": interval.avoided_total_grid_import_wh,
+        }
+        for interval in summary.economic_intervals
+    ]
+    return result
 
 
 class ReserveObservationState(TypedDict):

@@ -818,6 +818,61 @@ export function localize(hass, key) {
 }
 
 Object.assign(STRINGS.en, {
+  report_joint_market_available:
+    "EPEX available · expensive intervals share the AC/DC budget",
+  report_joint_title: "Shared AC/DC discharge budget",
+  report_joint_explanation:
+    "Battery energy is allocated to expensive intervals across AC and DC. Reserve and fixed supply phases remain protected; daily hours follow the available energy and prices.",
+  report_joint_result: "Allocation result",
+  report_joint_budget: "Total battery discharge budget",
+  report_joint_unavoidable_dc: "Unavoidable DC battery draw",
+  report_joint_shifted: "Battery energy shifted to expensive intervals",
+  report_joint_rejections: "Reasons alternatives were rejected",
+  report_joint_daily_hours: "Selected hours",
+  report_joint_battery_draw: "Battery draw",
+  report_joint_end_soc: "SOC at forecast end",
+  report_joint_reference: "Reference plan",
+  report_joint_selected: "Selected plan",
+  report_joint_intervals: "Selected economic intervals · highest price first",
+  report_joint_interval: "Interval",
+  report_joint_allocated_battery: "Allocated battery energy",
+  report_joint_avoided_import: "Grid import avoided by allocation",
+  report_joint_import_change: "Grid import reduction versus reference",
+  report_joint_no_intervals: "No economic intervals selected.",
+  report_joint_reason_accepted:
+    "Energy shifted within the existing discharge budget.",
+  report_joint_reason_no_flex_budget:
+    "No flexible discharge budget is available.",
+  report_joint_reason_unknown_price:
+    "Price coverage is incomplete; the existing allocation is retained.",
+  report_joint_reason_uncertainty_dc_service:
+    "Would reduce DC supply under the lower PV forecast.",
+  report_joint_reason_uncertainty_import:
+    "Would increase grid import under the lower PV forecast.",
+  report_joint_reason_uncertainty_reserve:
+    "Would reduce the protected reserve under the lower PV forecast.",
+  report_joint_reason_dc_service: "Would reduce delivered DC supply.",
+  report_joint_reason_extra_psu_charge:
+    "Would increase incidental power supply charging.",
+  report_joint_reason_source_inverter_loop:
+    "Would feed power supply energy back through the inverter.",
+  report_joint_reason_reserve_floor: "Would breach the protected reserve.",
+  report_joint_reason_energy_budget:
+    "Would exceed the battery discharge budget.",
+  report_joint_reason_window_end_energy:
+    "Would leave less battery energy at a fixed phase boundary.",
+  report_joint_reason_extra_export: "Would increase grid export.",
+  report_joint_reason_extra_import: "Would increase total grid import.",
+  report_joint_reason_source_unavailable:
+    "Required supply source is unavailable.",
+  report_joint_reason_phase: "A fixed supply phase prevents this shift.",
+  report_joint_reason_search_limit:
+    "The comparison limit was reached; a better allocation may still exist.",
+  report_joint_reason_no_improvement:
+    "No improvement found among the compared allocations.",
+  report_joint_reason_market_off: "Market price allocation is disabled.",
+  report_joint_reason_flat_prices: "Available prices do not favor a shift.",
+  report_joint_reason_missing_prices: "Usable market prices are missing.",
   reserve_decision_dc_priority:
     "Keep energy for DC: AC preparation would require additional later grid support.",
   report_market: "Market peak preference",
@@ -911,6 +966,67 @@ Object.assign(STRINGS.en, {
   report_a_recording_error_occurred: "A recording error occurred",
 });
 Object.assign(STRINGS.de, {
+  report_joint_market_available:
+    "EPEX verfügbar · teure Intervalle teilen sich das AC/DC-Budget",
+  report_joint_title: "Gemeinsames AC/DC-Entnahmebudget",
+  report_joint_explanation:
+    "Batterieenergie wird über AC und DC auf teure Intervalle verteilt. Reserve und feste Versorgungsphasen bleiben geschützt; die täglichen Stunden ergeben sich aus verfügbarer Energie und Preisen.",
+  report_joint_result: "Ergebnis der Verteilung",
+  report_joint_budget: "Gesamtes Batterie-Entnahmebudget",
+  report_joint_unavoidable_dc: "Unvermeidbare DC-Batterieentnahme",
+  report_joint_shifted: "In teure Intervalle verschobene Batterieenergie",
+  report_joint_rejections: "Gründe für verworfene Alternativen",
+  report_joint_daily_hours: "Ausgewählte Stunden",
+  report_joint_battery_draw: "Batterieentnahme",
+  report_joint_end_soc: "SOC am Prognoseende",
+  report_joint_reference: "Referenzplan",
+  report_joint_selected: "Gewählter Plan",
+  report_joint_intervals:
+    "Ausgewählte wirtschaftliche Intervalle · höchster Preis zuerst",
+  report_joint_interval: "Intervall",
+  report_joint_allocated_battery: "Zugewiesene Batterieenergie",
+  report_joint_avoided_import: "Durch Zuteilung vermiedener Netzbezug",
+  report_joint_import_change: "Netzbezugsminderung gegenüber Referenz",
+  report_joint_no_intervals: "Keine wirtschaftlichen Intervalle ausgewählt.",
+  report_joint_reason_accepted:
+    "Energie innerhalb des bestehenden Entnahmebudgets verschoben.",
+  report_joint_reason_no_flex_budget:
+    "Kein flexibles Entnahmebudget verfügbar.",
+  report_joint_reason_unknown_price:
+    "Die Preisabdeckung ist unvollständig; die bestehende Zuteilung bleibt erhalten.",
+  report_joint_reason_uncertainty_dc_service:
+    "Würde die DC-Versorgung bei niedrigerer PV-Prognose verringern.",
+  report_joint_reason_uncertainty_import:
+    "Würde den Netzbezug bei niedrigerer PV-Prognose erhöhen.",
+  report_joint_reason_uncertainty_reserve:
+    "Würde die geschützte Reserve bei niedrigerer PV-Prognose verringern.",
+  report_joint_reason_dc_service:
+    "Würde die bereitgestellte DC-Versorgung verringern.",
+  report_joint_reason_extra_psu_charge:
+    "Würde die technisch bedingte Netzteilladung erhöhen.",
+  report_joint_reason_source_inverter_loop:
+    "Würde Netzteilenergie über den Inverter zurückspeisen.",
+  report_joint_reason_reserve_floor:
+    "Würde die geschützte Reserve unterschreiten.",
+  report_joint_reason_energy_budget:
+    "Würde das Batterie-Entnahmebudget überschreiten.",
+  report_joint_reason_window_end_energy:
+    "Würde an einer festen Phasengrenze weniger Batterieenergie zurücklassen.",
+  report_joint_reason_extra_export: "Würde die Netzeinspeisung erhöhen.",
+  report_joint_reason_extra_import: "Würde den gesamten Netzbezug erhöhen.",
+  report_joint_reason_source_unavailable:
+    "Benötigte Versorgungsquelle ist nicht verfügbar.",
+  report_joint_reason_phase:
+    "Eine feste Versorgungsphase verhindert diese Verschiebung.",
+  report_joint_reason_search_limit:
+    "Die Vergleichsgrenze wurde erreicht; eine bessere Verteilung kann weiterhin möglich sein.",
+  report_joint_reason_no_improvement:
+    "Unter den verglichenen Verteilungen wurde keine Verbesserung gefunden.",
+  report_joint_reason_market_off:
+    "Verteilung nach Marktpreisen ist deaktiviert.",
+  report_joint_reason_flat_prices:
+    "Die verfügbaren Preise begünstigen keine Verschiebung.",
+  report_joint_reason_missing_prices: "Nutzbare Marktpreise fehlen.",
   reserve_decision_dc_priority:
     "Energie für DC erhalten: AC-Vorbereitung würde spätere zusätzliche Netzteilversorgung erfordern.",
   report_market: "Marktspitzen bevorzugen",
