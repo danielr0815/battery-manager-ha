@@ -173,6 +173,11 @@ class SurplusLoad:
     # default keeps every legacy constructor and all goldens bit-identical.
     gate_stop_capable: bool = False
 
+    # None preserves disabled recovery in old recordings.
+    recovery_soc_percent: float | None = None
+    eta_charge: float = 1.0
+    max_charge_power_w: float | None = None
+
     def __post_init__(self) -> None:
         _require(
             self.nominal_power_w >= 0.0,
@@ -182,6 +187,18 @@ class SurplusLoad:
             0.0 <= self.battery_tolerance <= 1.0,
             f"SurplusLoad.battery_tolerance must be in [0, 1], "
             f"got {self.battery_tolerance!r}",
+        )
+        _require(
+            0.0 < self.eta_charge <= 1.0, "SurplusLoad.eta_charge must be in (0, 1]"
+        )
+        _require(
+            self.max_charge_power_w is None or self.max_charge_power_w > 0.0,
+            "SurplusLoad.max_charge_power_w must be positive or None",
+        )
+        _require(
+            self.recovery_soc_percent is None
+            or 0.0 <= self.recovery_soc_percent <= self.target_soc_percent <= 100.0,
+            "SurplusLoad recovery must be within the charge target",
         )
         _finite_fields(self)
 
@@ -229,11 +246,15 @@ class SurplusLoadState:
     # Known remaining physical ON dwell and pass-3-only stability floor.
     minimum_run_until: datetime | None = None
     predrain_not_before: datetime | None = None
+    # Reported active charge-input path (plug/gate), never inferred battery
+    # charging or output passthrough. Missing old replay evidence stays False.
+    on: bool = False
 
     def can_start_at(self, when: datetime) -> bool:
         return self.not_before is None or when >= self.not_before
 
     def __post_init__(self) -> None:
+        _require(isinstance(self.on, bool), "SurplusLoadState.on must be a bool")
         _require(
             self.soc_source in ("live", "cache", "missing"),
             f"SurplusLoadState.soc_source is invalid: {self.soc_source!r}",
@@ -293,7 +314,11 @@ class Appliance:
 
 
 type ApplianceAdvisoryReason = Literal[
-    "forecast_horizon_short", "extra_grid_import", "soc_condition", "dc_service"
+    "forecast_horizon_short",
+    "extra_grid_import",
+    "soc_condition",
+    "dc_service",
+    "house_recharge",
 ]
 
 
@@ -919,6 +944,70 @@ class MarketPrice:
 
 
 @dataclass(frozen=True)
+class ConsumptionUncertaintyInterval:
+    """P80 minus P50 energy, on the same elapsed interval as the P50 forecast."""
+
+    start: datetime
+    end: datetime
+    ac_p80_minus_p50_wh: float
+    dc_p80_minus_p50_wh: float
+
+    def __post_init__(self) -> None:
+        _require(
+            self.start.tzinfo is not None and self.end.tzinfo is not None,
+            "Consumption uncertainty requires aware timestamps",
+        )
+        _require(
+            self.end.timestamp() > self.start.timestamp(),
+            "Invalid uncertainty interval",
+        )
+        _require(
+            self.ac_p80_minus_p50_wh >= 0 and self.dc_p80_minus_p50_wh >= 0,
+            "Consumption uncertainty must be nonnegative",
+        )
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
+class ConsumptionUncertaintySnapshot:
+    """Immutable, nonoverlapping AC/DC coverage; gaps cannot fund a release."""
+
+    intervals: tuple[ConsumptionUncertaintyInterval, ...]
+
+    def __post_init__(self) -> None:
+        _require(
+            isinstance(self.intervals, tuple), "Uncertainty intervals must be immutable"
+        )
+        for before, after in zip(self.intervals, self.intervals[1:], strict=False):
+            _require(
+                after.start.timestamp() >= before.end.timestamp(),
+                "Consumption uncertainty intervals overlap",
+            )
+
+
+@dataclass(frozen=True)
+class RechargeCertificate:
+    start: datetime
+    end: datetime
+    anchor: datetime
+    kind: str
+    battery_draw_wh: float
+    # Exact stored-Wh debit per physical decision, never a freely reusable sum.
+    step_debits: tuple[tuple[datetime, float], ...] = ()
+    reference_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RechargeSummary:
+    status: str
+    anchors: tuple[datetime, ...] = ()
+    certificates: tuple[RechargeCertificate, ...] = ()
+    validations: int = 0
+    rejection_reasons: tuple[str, ...] = ()
+    reference_id: str | None = None
+
+
+@dataclass(frozen=True)
 class PlanInputs:
     """Everything a planning run needs, assembled by series.build_slots()."""
 
@@ -932,12 +1021,31 @@ class PlanInputs:
     # neither AC preparation nor protection may depend on this ledger.
     reserve_hold_soc_percent: float | None = None
     market_prices: tuple[MarketPrice, ...] = ()
+    consumption_uncertainty: ConsumptionUncertaintySnapshot | None = None
+    recharge_required_ac_wh: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         _require(0 <= self.start_soc_percent <= 100, "Start SOC must be in [0, 100]")
+        _require(
+            not self.recharge_required_ac_wh
+            or len(self.recharge_required_ac_wh) == len(self.slots),
+            "Required AC must align with slots",
+        )
+        _require(
+            all(
+                isfinite(value) and value >= 0 for value in self.recharge_required_ac_wh
+            ),
+            "Required AC must be finite and nonnegative",
+        )
         for previous, current in zip(self.slots, self.slots[1:], strict=False):
             _require(
-                current.start > previous.start, "Slot starts must be strictly ordered"
+                (
+                    current.start.timestamp() > previous.start.timestamp()
+                    if current.start.tzinfo is not None
+                    and previous.start.tzinfo is not None
+                    else current.start > previous.start
+                ),
+                "Slot starts must be strictly ordered",
             )
         for previous_price, current_price in zip(
             self.market_prices, self.market_prices[1:], strict=False
@@ -1115,6 +1223,7 @@ class ReserveDecision:
     dc_budget_wh: float = 0.0
     dc_shifted_wh: float = 0.0
     joint: JointDispatchSummary | None = None
+    recharge: RechargeSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -1138,6 +1247,19 @@ class Trajectory:
         if not self.flows:
             return self.end_soc_percent
         return max(f.soc_end_percent for f in self.flows)
+
+
+@dataclass(frozen=True)
+class StorageDiagnostics:
+    """Immutable evidence: deficit/day-end are stored Wh, charge totals AC Wh."""
+
+    target_soc_percent: float
+    initial_deficit_wh: float
+    recovery_planned_wh: float
+    topup_planned_wh: float
+    capacity_wh: float = 0.0
+    day_end_energy_wh: tuple[tuple[date, float], ...] = ()
+    reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1169,6 +1291,7 @@ class LoadPlan:
     # First hard-gate rejection per attempted start; retained as evidence of
     # the attempted candidate, not as a claim that all alternatives failed.
     rejected_candidates: tuple[tuple[int, str], ...] = ()
+    storage: StorageDiagnostics | None = None
 
     @property
     def active_now(self) -> bool:

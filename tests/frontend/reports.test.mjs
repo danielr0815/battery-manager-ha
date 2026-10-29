@@ -6,6 +6,9 @@ import {
   sourceHealthReport,
   stateNotice,
   reserveReport,
+  inputControlReport,
+  storageReport,
+  rechargeReport,
 } from "../../frontend/reports.js";
 import { selectionTime } from "../../frontend/time.js";
 const hass = { language: "en", config: { time_zone: "Europe/Berlin" } };
@@ -427,4 +430,102 @@ test("joint target observations separate screening, proof and unsearched exact s
     }),
     /data-joint-targets/,
   );
+});
+
+test("input report separates energized input, denied permission and stopped charging", () => {
+  const html = inputControlReport(hass, {
+    input_on: true,
+    charge_enable: false,
+    charging: false,
+    output_on: true,
+    output_power_w: 0,
+    owned: true,
+    reason: "held_passthrough",
+    paused_input_power_w: 6,
+  });
+  assert.match(html, /Input switch<\/dt><dd>On/);
+  assert.match(html, /Charging permission<\/dt><dd>Off/);
+  assert.match(html, /Reported battery charging<\/dt><dd>Off/);
+  assert.match(html, /AC output is on/);
+  assert.match(html, /6 W/);
+  assert.match(html, /24-hour estimate/);
+  const unknown = inputControlReport(hass, {
+    input_on: null,
+    reason: "unrecognized",
+  });
+  assert.match(unknown, /Input switch<\/dt><dd>—/);
+  assert.match(unknown, /Reported battery charging<\/dt><dd>—/);
+  const kept = inputControlReport(hass, {
+    input_on: true,
+    charge_enable: false,
+    output_on: false,
+    reason: "held_policy",
+  });
+  assert.match(kept, /Input retained by keep_on policy/);
+  assert.doesNotMatch(kept, /AC output is on/);
+  assert.equal(inputControlReport(hass, null), "");
+});
+
+test("storage report uses AC bookings and carries stored energy to a local day SOC", () => {
+  const html = storageReport(hass, {
+    target_soc_percent: 50,
+    initial_deficit_wh: 600,
+    recovery_planned_wh: 500,
+    topup_planned_wh: 100,
+    capacity_wh: 2000,
+    reasons: ["recovery_target_unmet", "house_supply_priority"],
+    day_end_energy_wh: [
+      ["2026-10-27", 800],
+      ["2026-10-28", 1200],
+    ],
+  });
+  assert.match(html, /Recovery AC energy<\/dt><dd>500 Wh/);
+  assert.match(html, /Recovery target remains unmet/);
+  assert.match(
+    html,
+    /House supply and its repayment commitments take priority/,
+  );
+  assert.doesNotMatch(html, /unreachable|impossible/);
+  assert.match(html, /2026-10-27/);
+  assert.match(html, /40 %/);
+  assert.match(html, /200 Wh/);
+  assert.match(html, /60 %/);
+  assert.equal(storageReport(hass, null), "");
+});
+
+test("recharge report shows fixed anchors and cannot turn missing evidence into zero credit", () => {
+  const html = rechargeReport(hass, {
+    status: "search_limit",
+    validations: 32,
+    rejection_reasons: ["anchor_energy", "uncertainty_import", "unrecognized"],
+    certificates: [
+      { anchor: "2026-10-27T12:00:00Z", kind: "dc24", battery_draw_wh: 137 },
+    ],
+  });
+  assert.match(html, /Search limit reached/);
+  assert.match(html, /137 Wh/);
+  assert.match(html, /01:00:00 PM/);
+  assert.match(html, /does not prove/);
+  assert.match(html, /fixed solar deadline/);
+  assert.match(html, /increase grid import under the lower PV forecast/);
+  assert.match(html, /No complete proof/);
+  assert.doesNotMatch(html, /unrecognized/);
+  assert.match(
+    rechargeReport(hass, {
+      status: "manual_feed_in",
+      rejection_reasons: ["manual_feed_in"],
+    }),
+    /Additional battery draw is paused while positive manual feed-in is active/,
+  );
+  assert.match(
+    rechargeReport(hass, { status: "accepted" }),
+    /Certified extra DCDC battery draw<\/dt><dd>— Wh/,
+  );
+  assert.match(
+    rechargeReport(hass, {
+      certificates: [{ kind: "dc24", battery_draw_wh: null }],
+    }),
+    /Certified extra DCDC battery draw<\/dt><dd>— Wh/,
+  );
+  assert.equal(rechargeReport(hass, null), "");
 });

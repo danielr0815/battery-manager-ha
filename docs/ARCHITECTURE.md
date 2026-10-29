@@ -13,6 +13,10 @@ and turns the plan into switching recommendations (and, for the grid-support
 PSUs, direct switching). Everything runs locally on the ~5-minute Home Assistant
 update cycle.
 
+Aktuelle Erweiterung: [Hausversorgung, Rückladepflichten und Speicherziele](F-HOUSE-RECHARGE-STORAGE.md)
+(0.63.0). Sie beschreibt die zusätzliche Budgetzertifizierung, allgemeine
+Speicher-Recovery und die getrennte Eingangs-Schalthoheit.
+
 [Deutscher Architektur- und Betriebsleitfaden (v0.57.1)](BATTERY_MANAGER_GUIDE.md)
 mit Reservepolitik, Quellensteuerung, Messanforderungen und Diagnosewegen.
 Historische Befunde und lokale Aufbewahrung: [Untersuchungsindex](investigations/README.md).

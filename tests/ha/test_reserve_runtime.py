@@ -521,3 +521,57 @@ def test_diagnostics_use_actual_psu_grid_attribution_under_solar():
     )
     assert diagnostics["psu_grid_import_wh"] == 0
     assert result.trajectory.flows[0].psu24_delivered_wh > 0
+
+
+def test_recharge_diagnostics_publish_fixed_iso_anchors_without_inventing_legacy_credit():
+    """Certified extra energy and its immutable repayment time survive HA JSON output."""
+    import json
+    from dataclasses import replace
+
+    from custom_components.battery_manager.core.model import (
+        HourSlot,
+        PlanInputs,
+        RechargeCertificate,
+        RechargeSummary,
+        ReserveDecision,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+    from custom_components.battery_manager.reserve_runtime import reserve_diagnostics
+
+    config = SystemConfig()
+    inputs = PlanInputs(START, 80, (HourSlot(0, START, 1, 0, 0, 0, 0),))
+    baseline = plan(config, inputs)
+    anchor = START + timedelta(hours=1)
+    reference_id = "ab" * 32
+    certificate = RechargeCertificate(
+        START, anchor, anchor, "dc24", 137, reference_id=reference_id
+    )
+    decision = ReserveDecision(
+        anchor,
+        0,
+        0,
+        0,
+        "no_preparation_needed",
+        recharge=RechargeSummary(
+            "accepted", (anchor,), (certificate,), 2, reference_id=reference_id
+        ),
+    )
+    result = replace(
+        baseline, trajectory=replace(baseline.trajectory, reserve_decision=decision)
+    )
+    payload = reserve_diagnostics(
+        config, inputs, result, baseline, ReserveRuntime(), "active"
+    )
+    credit = json.loads(json.dumps(payload))["recharge"]
+    assert credit["reference_id"] == reference_id
+    assert credit["certificates"][0]["reference_id"] == reference_id
+    assert credit["certificates"][0]["anchor"] == anchor.isoformat()
+    assert credit["certificates"][0]["battery_draw_wh"] == 137
+    assert credit["validations"] == 2
+    assert (
+        reserve_diagnostics(
+            config, inputs, baseline, baseline, ReserveRuntime(), "active"
+        )["recharge"]
+        is None
+    )

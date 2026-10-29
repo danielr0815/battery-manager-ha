@@ -16,6 +16,10 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
     return {
         "load_soc": self._load_soc_cache,
         "plug_owned": self._load_plug_owned,
+        "plug_owned_entities": self._load_plug_owned_entities,
+        "load_input_on_since": {
+            key: value.isoformat() for key, value in self._load_input_on_since.items()
+        },
         "last_load_switch": {
             k: v.isoformat() for k, v in self._last_load_switch.items()
         },
@@ -125,6 +129,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
                 "desired": request.desired,
                 "requested_at": request.requested_at.isoformat(),
                 "state": request.state,
+                "owner": request.owner,
             }
             for entity, request in self._load_actor_requests.items()
             if request.state != "confirmed"

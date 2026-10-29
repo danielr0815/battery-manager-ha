@@ -1172,3 +1172,143 @@ Object.assign(STRINGS.de, {
   report_joint_reason_duplicate:
     "Derselbe vorgeschlagene Plan bereits untersucht",
 });
+
+Object.assign(STRINGS.en, {
+  input_on: "On",
+  input_off: "Off",
+  input_control_title: "Input and charging state",
+  input_connection: "Input switch",
+  input_charge_enable: "Charging permission",
+  input_physical_charging: "Reported battery charging",
+  input_output: "AC output",
+  input_output_power: "Output power",
+  input_ownership: "Input control",
+  input_owned: "Battery Manager",
+  input_foreign: "External / manual",
+  input_stop_reason: "Input retention / stop reason",
+  input_paused_power: "Measured input power while paused",
+  input_daily_estimate: "24-hour estimate at constant power",
+  input_reason_charging: "Charging requested",
+  input_reason_held_passthrough: "Input retained: AC output is on",
+  input_reason_held_policy: "Input retained by keep_on policy",
+  input_reason_held_unknown: "Input retained: output feedback unknown",
+  input_reason_pending_off: "Input stop pending",
+  input_reason_off: "Input off",
+  input_reason_foreign: "External input retained",
+  storage_title: "Storage minimum target",
+  storage_minimum_target: "Preferred minimum SOC",
+  storage_deficit: "Stored-energy deficit",
+  storage_recovery_energy: "Recovery AC energy",
+  storage_topup_energy: "Top-up AC energy",
+  storage_day: "Local day",
+  storage_end_soc: "Forecast end-of-day SOC",
+  recharge_title: "Recharge-backed house supply",
+  recharge_explanation:
+    "Additional battery draw is certified against fixed solar repayment times. A search limit does not prove that further supply is impossible.",
+  recharge_status: "Proof result",
+  recharge_validations: "Complete validation runs",
+  recharge_dc_energy: "Certified extra DCDC battery draw",
+  recharge_ac_energy: "Certified extra AC battery draw",
+  recharge_accepted: "Additional supply certified",
+  recharge_no_release: "No additional release proved",
+  recharge_search_limit: "Search limit reached",
+  recharge_manual_feed_in: "Manual feed-in takes priority",
+  recharge_unproved: "No complete proof was obtained for this alternative.",
+  recharge_reason_anchor_energy:
+    "Stored energy would not be repaid by the fixed solar deadline.",
+  recharge_reason_end_energy:
+    "Stored energy would be lower at the forecast end.",
+  recharge_reason_consumption_coverage:
+    "Consumption uncertainty does not cover the complete repayment period.",
+  recharge_reason_consumption_reserve:
+    "The consumption uncertainty reserve would be insufficient.",
+  recharge_reason_dc_priority:
+    "Additional AC supply would displace protected DC supply.",
+  recharge_reason_search_limit:
+    "The search limit was reached before all alternatives were checked.",
+  recharge_reason_manual_feed_in:
+    "Additional battery draw is paused while positive manual feed-in is active.",
+});
+
+Object.assign(STRINGS.de, {
+  input_on: "Ein",
+  input_off: "Aus",
+  input_control_title: "Eingang und Ladezustand",
+  input_connection: "Eingangsschalter",
+  input_charge_enable: "Ladefreigabe",
+  input_physical_charging: "Gemeldete Batterieladung",
+  input_output: "AC-Ausgang",
+  input_output_power: "Ausgangsleistung",
+  input_ownership: "Eingangs-Schalthoheit",
+  input_owned: "Battery Manager",
+  input_foreign: "Extern / manuell",
+  input_stop_reason: "Halte- / Abschaltgrund",
+  input_paused_power: "Gemessene Eingangsaufnahme während Ladepause",
+  input_daily_estimate: "24-Stunden-Hochrechnung bei gleicher Leistung",
+  input_reason_charging: "Laden angefordert",
+  input_reason_held_passthrough: "Eingang erhalten: AC-Ausgang ist ein",
+  input_reason_held_policy: "Eingang durch keep_on-Politik erhalten",
+  input_reason_held_unknown: "Eingang erhalten: Ausgangsrückmeldung unbekannt",
+  input_reason_pending_off: "Eingangsabschaltung ausstehend",
+  input_reason_off: "Eingang aus",
+  input_reason_foreign: "Fremden Eingang erhalten",
+  storage_title: "Speicher-Mindestziel",
+  storage_minimum_target: "Bevorzugtes Mindest-SOC",
+  storage_deficit: "Fehlende gespeicherte Energie",
+  storage_recovery_energy: "Recovery-Energie am AC-Eingang",
+  storage_topup_energy: "Top-up-Energie am AC-Eingang",
+  storage_day: "Lokaler Tag",
+  storage_end_soc: "Prognostiziertes Tagesend-SOC",
+  recharge_title: "Rückladegesicherte Hausversorgung",
+  recharge_explanation:
+    "Zusätzliche Batterieentnahme ist gegen feste solare Rückladetermine geprüft. Ein Suchlimit beweist keine Unmöglichkeit weiterer Versorgung.",
+  recharge_status: "Prüfergebnis",
+  recharge_validations: "Vollständige Prüfläufe",
+  recharge_dc_energy: "Zertifizierte zusätzliche DCDC-Entnahme",
+  recharge_ac_energy: "Zertifizierte zusätzliche AC-Entnahme",
+  recharge_accepted: "Zusätzliche Versorgung zertifiziert",
+  recharge_no_release: "Keine zusätzliche Freigabe nachgewiesen",
+  recharge_search_limit: "Suchlimit erreicht",
+  recharge_manual_feed_in: "Manuelle Einspeisung hat Vorrang",
+  recharge_unproved:
+    "Für diese Alternative liegt kein vollständiger Nachweis vor.",
+  recharge_reason_anchor_energy:
+    "Die gespeicherte Energie wäre bis zum festen solaren Rückladetermin nicht wiederhergestellt.",
+  recharge_reason_end_energy:
+    "Die gespeicherte Energie wäre am Prognoseende geringer.",
+  recharge_reason_consumption_coverage:
+    "Die Verbrauchsunsicherheit deckt den Rückladezeitraum nicht vollständig ab.",
+  recharge_reason_consumption_reserve:
+    "Der Vorhalt für Verbrauchsunsicherheit würde nicht ausreichen.",
+  recharge_reason_dc_priority:
+    "Zusätzliche AC-Versorgung würde geschützte DC-Versorgung verdrängen.",
+  recharge_reason_search_limit:
+    "Das Suchlimit wurde erreicht, bevor alle Alternativen geprüft waren.",
+  recharge_reason_manual_feed_in:
+    "Zusätzliche Batterieentnahme pausiert bei aktiver positiver manueller Einspeisung.",
+});
+
+Object.assign(STRINGS.en, {
+  storage_unproved: "No further permitted booking was proved",
+  recovery_target_unreachable:
+    "Recovery remains incomplete in the evaluated plan",
+  recovery_target_unmet: "Recovery target remains unmet in the evaluated plan",
+  house_supply_priority:
+    "House supply and its repayment commitments take priority",
+  house_recharge: "House-battery repayment is protected",
+});
+Object.assign(STRINGS.de, {
+  storage_unproved: "Keine weitere zulässige Buchung nachgewiesen",
+  recovery_target_unreachable:
+    "Recovery bleibt im geprüften Plan unvollständig",
+  recovery_target_unmet: "Recovery-Ziel bleibt im geprüften Plan unerfüllt",
+  house_supply_priority:
+    "Hausversorgung und ihre Rückladezusagen haben Vorrang",
+  house_recharge: "Rückladung der Hausbatterie bleibt geschützt",
+});
+Object.assign(STRINGS.en, {
+  house_recharge_search_limit: "Recharge proof search limit reached",
+});
+Object.assign(STRINGS.de, {
+  house_recharge_search_limit: "Suchlimit für den Rückladenachweis erreicht",
+});

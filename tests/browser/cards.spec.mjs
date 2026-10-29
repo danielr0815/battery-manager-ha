@@ -626,3 +626,49 @@ test("joint economic allocation survives refresh and localizes without limiting 
   await expect(joint).toContainText("1.234 Wh");
   await expect(joint.locator("tbody").first()).toContainText("— Wh");
 });
+
+test("loads card distinguishes passthrough hold from charging and retains details on refresh", async ({
+  page,
+}) => {
+  const attrs = {
+    ...attributes,
+    loads: [
+      {
+        load_id: "b1",
+        name: "B1",
+        active: false,
+        available: true,
+        schedule: [],
+        input_control: {
+          input_on: true,
+          charge_enable: false,
+          charging: false,
+          output_on: true,
+          output_power_w: 0,
+          owned: true,
+          reason: "held_passthrough",
+          paused_input_power_w: 6,
+        },
+      },
+    ],
+  };
+  await page.evaluate((attrs) => window.mount("loads", attrs), attrs);
+  const section = page.locator('[data-view-key="input-control"]');
+  await section.locator("summary").click();
+  await expect(section).toContainText("AC output is on");
+  await expect(section).toContainText("6 W");
+  await page.evaluate(() => {
+    window.card.hass = {
+      ...window.card._hass,
+      states: {
+        ...window.card._hass.states,
+        "sensor.plan": {
+          ...window.card._hass.states["sensor.plan"],
+          last_updated: "2026-10-27T11:01:00Z",
+        },
+      },
+    };
+  });
+  await expect(section).toHaveAttribute("open", "");
+  await expect(section).toContainText("Reported battery charging");
+});

@@ -1,5 +1,6 @@
 """Cascade alternatives share one final joint dispatch after accepted bookings."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -114,7 +115,21 @@ def test_cascade_probes_do_not_restart_joint_search_and_finalize_accepted_bookin
     final_config, final_inputs, final_reference = finalized[0]
     assert final_inputs is probes[1][0]
     assert final_reference is selected
-    assert result.load_plans == selected.load_plans
+    # Final immutable storage evidence is attached only after the accepted
+    # cascade and market dispatch are fixed; its bookings stay identical.
+    assert tuple(replace(item, storage=None) for item in result.load_plans) == tuple(
+        replace(item, storage=None) for item in selected.load_plans
+    )
+    storage = result.load_plans[0].storage
+    assert storage is not None
+    assert storage.recovery_planned_wh + storage.topup_planned_wh == pytest.approx(
+        result.load_plans[0].planned_energy_wh
+    )
+    assert storage.day_end_energy_wh[-1][1] == pytest.approx(
+        result.cascade_plans[0].flows[-1].member_flows[0].soc_end_percent
+        / 100
+        * storage.capacity_wh
+    )
     assert result.cascade_plans == selected.cascade_plans
     assert all(load.managed_by_cascade for load in result.load_plans)
     assert result.cascade_plans[0].planned_aux_energy_wh == pytest.approx(300)
@@ -138,3 +153,34 @@ def test_cascade_probes_do_not_restart_joint_search_and_finalize_accepted_bookin
     assert physical.end_soc_percent == pytest.approx(result.trajectory.end_soc_percent)
     assert result.grid_import_kwh == pytest.approx(physical.total_import_wh / 1000)
     assert result.min_soc_percent == pytest.approx(physical.min_soc_percent)
+
+
+def test_failed_final_recharge_proof_keeps_exact_accepted_complete_plan(monkeypatch):
+    """An unproved final source change cannot replace accepted load bookings."""
+    config = SystemConfig(loads=(SurplusLoad("useful", "Useful", 100),))
+    now = datetime(2026, 10, 27, 12, tzinfo=UTC)
+    inputs = PlanInputs(now, 95, (HourSlot(0, now, 1, 12, 1000, 0, 0),))
+    accepted = optimize_core.plan(config, inputs)
+    assert accepted.load_plans[0].planned_energy_wh > 0
+    coordinated = replace(
+        config,
+        reserve=ReserveParams(True, 1),
+        support=SupportParams(configured=True, coordinated=True),
+    )
+    unproved = replace(accepted.trajectory, total_import_wh=100)
+    monkeypatch.setattr(optimize_core, "simulate", lambda *args, **kwargs: unproved)
+    monkeypatch.setattr(
+        optimize_core, "support_escalation", lambda *args, **kwargs: ((), (), unproved)
+    )
+    references = []
+
+    def deny(config, inputs, reference, trial):
+        references.append((reference, trial))
+        return False
+
+    monkeypatch.setattr(optimize_core, "recharge_preserved", deny)
+    result = optimize_core._finalize_joint_plan(coordinated, inputs, accepted)
+    assert references == [(accepted.trajectory, unproved)]
+    assert result is accepted
+    assert result.load_plans == accepted.load_plans
+    assert result.trajectory.total_import_wh == 0

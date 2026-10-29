@@ -35,6 +35,35 @@ def _slots(*pv: float) -> tuple[HourSlot, ...]:
     )
 
 
+def _assert_storage_blocks_respect_start_minima(config, inputs, plans):
+    """Short residual extensions must belong to an already contiguous action."""
+    loads = {load.load_id: load for load in config.loads}
+    states = {state.load_id: state for state in inputs.load_states}
+    for load_plan in plans:
+        load = loads[load_plan.load_id]
+        blocks = []
+        hours = 0.0
+        end = None
+        for slot, run in zip(inputs.slots, load_plan.run_hours, strict=True):
+            if run <= 1e-6:
+                if hours:
+                    blocks.append(hours)
+                hours, end = 0.0, None
+                continue
+            if hours and slot.start != end:
+                blocks.append(hours)
+                hours = 0.0
+            hours += run
+            end = slot.start + timedelta(hours=run)
+        if hours:
+            blocks.append(hours)
+        power = states[load_plan.load_id].planning_power_w(load)
+        assert all(
+            hours + 1e-6 >= max(15, load.min_runtime_min) / 60 for hours in blocks
+        )
+        assert all(power * hours + 1e-6 >= 50 for hours in blocks)
+
+
 def _system(
     *,
     members: int = 1,
@@ -604,10 +633,14 @@ def test_recovery_uses_parallel_direct_pv_before_early_feedin() -> None:
     cascade = result.cascade_plans[0]
     b1, b2 = result.load_plans[:2]
 
-    # Closing the terminal gaps has priority over another B1 charge quantum.
+    # Global config order gives B1 the first complete recovery opportunity.
+    # Its short final increment is a contiguous extension, not a new action;
+    # useful terminal service still runs before either storage task.
     assert [flow.soc_end_percent for flow in cascade.flows[-1].member_flows] == (
-        pytest.approx([45.0, 50.0])
+        pytest.approx([50.0, 45.0])
     )
+    assert b1.planned_energy_wh + b2.planned_energy_wh == pytest.approx(1100)
+    _assert_storage_blocks_respect_start_minima(config, inputs, (b1, b2))
     assert any(on1 and on2 for on1, on2 in zip(b1.schedule, b2.schedule, strict=True))
     assert sum(flow.feedin_wh for flow in result.trajectory.flows) < 200.0
     assert result.grid_import_kwh == 0.0
@@ -659,8 +692,14 @@ def test_sunny_following_day_does_not_mask_bad_cascade_recovery_today() -> None:
     )
 
     assert [flow.soc_end_percent for flow in today_end.member_flows] == (
-        pytest.approx([45.0, 50.0])
+        pytest.approx([50.0, 45.0])
     )
+    # Tomorrow cannot mask today's physical debt. The same 1100 Wh charge
+    # is now distributed in configured order, including safe continuations.
+    assert sum(
+        sum(item.run_hours[: len(today_slots)]) * 500 for item in result.load_plans[:2]
+    ) == pytest.approx(1100)
+    _assert_storage_blocks_respect_start_minima(config, inputs, result.load_plans[:2])
     assert today_feedin < 200.0
     assert result.grid_import_kwh == 0.0
 
@@ -964,7 +1003,9 @@ def test_recovery_final_dwell_may_cross_50_to_avoid_export() -> None:
         {"b1": 12.0},
     )
 
-    assert plans[0].planned_energy_wh == pytest.approx(250.0 * 5.0 / 60.0)
+    # New storage actions obey the shared 15-minute / 50-Wh AC minimum,
+    # even when the configured device dwell is only five minutes.
+    assert plans[0].planned_energy_wh == pytest.approx(250.0 * 15.0 / 60.0)
     assert trajectory.total_export_wh - updated.total_export_wh == pytest.approx(
         plans[0].planned_energy_wh
     )

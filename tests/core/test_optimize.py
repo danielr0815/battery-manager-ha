@@ -1169,34 +1169,39 @@ GATED_FB = SurplusLoad(
 )
 
 
-def test_gate_topup_books_final_quantum_in_stall_band():
-    """R7 live scene: 2000 Wh / target 90 % / learned 600 W / min_runtime 30 at
-    SOC 84.9 % -> rem 102 Wh sits below one quantum's commitment (300 Wh), so
-    every k*q candidate fails the saturation gate. The gate-equipped load books
-    the ONE final quantum 102/600 h (~0.17 h, ~102 Wh) with the explain-plan
-    marker; the plug-only twin books nothing (old behaviour, D2 intact)."""
+def test_gate_topup_stall_band_needs_an_already_running_physical_charge():
+    """A 102-Wh / 10.2-min target stop continues an ON path, not a new start.
+
+    The old test authorized a new sub-dwell start. The general storage action
+    contract now requires 15 minutes or the longer configured dwell, while an
+    observed existing charge may still end precisely at the upper target.
+    """
     now = datetime(2026, 7, 4, 11, 0)
 
-    def run(load):
+    def run(load, *, on=False):
         cfg = SystemConfig(loads=(load,))
         states = (
             SurplusLoadState(
-                load_id=load.load_id, soc_percent=84.9, learned_power_w=600.0
+                load_id=load.load_id, soc_percent=84.9, learned_power_w=600.0, on=on
             ),
         )
         return make_plan(cfg, now, 93.0, [12.0, 12.0, 12.0], load_states=states)
 
-    result, _inputs = run(GATED_FB)
+    new_start, _ = run(GATED_FB)
+    assert new_start.load_plans[0].allocations == ()
+    assert new_start.load_plans[0].planned_energy_wh == 0
+    result, _inputs = run(GATED_FB, on=True)
     lp = result.load_plans[0]
     assert len(lp.allocations) == 1
     assert abs(lp.planned_energy_wh - 102.0) < 1.0
     booked = lp.allocations[0][0]
-    assert abs(lp.run_hours[booked] - 102.0 / 600.0) < 1e-3  # ~0.17 h
+    assert booked == 0
+    assert abs(lp.run_hours[booked] - 102.0 / 600.0) < 1e-3
     assert lp.reasons[0].endswith(", final top-up to target")
 
     plug_only = replace(GATED_FB, load_id="fossibot_g", gate_stop_capable=False)
-    result_plug, _ = run(plug_only)
-    assert result_plug.load_plans[0].planned_energy_wh == 0.0  # stall band stays
+    result_plug, _ = run(plug_only, on=True)
+    assert result_plug.load_plans[0].planned_energy_wh == 0.0
 
 
 def test_gate_topup_de_minimis_floor_books_nothing():

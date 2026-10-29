@@ -796,6 +796,7 @@ def _extend_aux_forecast(
             _replace_soc_states(inputs, projected),
             now=inputs.slots[start].start,
             slots=inputs.slots[start:index],
+            recharge_required_ac_wh=inputs.recharge_required_ac_wh[start:index],
             cascade_runtime_states=(),
         )
         window_result = replace(
@@ -877,7 +878,11 @@ def _replan_candidate(
         # up to its first newly booked Root slot and value that smaller
         # discharge headroom again.
         first_conflict = min(conflict_indexes)
-        shortened_inputs = replace(inputs, slots=inputs.slots[:first_conflict])
+        shortened_inputs = replace(
+            inputs,
+            slots=inputs.slots[:first_conflict],
+            recharge_required_ac_wh=inputs.recharge_required_ac_wh[:first_conflict],
+        )
         allocation = _allocate_aux_now(
             cascade,
             config,

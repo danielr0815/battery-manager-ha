@@ -16,9 +16,13 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ACTOR_CONFIRM_TIMEOUT_S,
     CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_MIN_RUNTIME_MIN,
+    CONF_LOAD_OUTPUT_POWER_ENTITY,
+    CONF_LOAD_OUTPUT_SWITCH,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
     INPUT_OFF_POLICY_KEEP,
@@ -61,6 +65,7 @@ class ActorRequest:
     desired: bool
     requested_at: datetime
     state: str = "pending"
+    owner: str | None = None
 
 
 async def confirm_state(hass: HomeAssistant, entity_id: str, desired: bool) -> bool:
@@ -85,48 +90,234 @@ async def confirm_state(hass: HomeAssistant, entity_id: str, desired: bool) -> b
         unsubscribe()
 
 
-def reconcile_feedback(coordinator: BatteryManagerCoordinator) -> None:
-    """Accept late feedback without resending a command or losing input ownership.
+def input_decision(c: BatteryManagerCoordinator, load_id: str) -> str:
+    """Classify the current input obligation using reported output state only.
 
-    A timed-out ON can still arrive. Its successful service request remains
-    evidence of ownership, so a later pause can release that input under auto.
+    Zero output watts cannot prove an OFF relay: a powered output can begin
+    serving its appliance at any time, including between two observations.
     """
-    activated: set[str] = set()
+    sub = c.entry.subentries.get(load_id)
+    if sub is None:
+        return "foreign"
+    data = sub.data
+    plug = data.get(CONF_LOAD_CONTROL_SWITCH)
+    if not plug:
+        return "off"
+    if c._entity_tristate(plug) is False:
+        return "off"
+    if c._charging_is_active(data) is True:
+        return "charging"
+    policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
+    if policy == INPUT_OFF_POLICY_KEEP:
+        return "held_policy"
+    if policy == INPUT_OFF_POLICY_AUTO:
+        if not c._load_plug_owned.get(load_id, False):
+            return "foreign"
+        output = data.get(CONF_LOAD_OUTPUT_SWITCH)
+        if output:
+            state = c._entity_tristate(output)
+            if state is True:
+                return "held_passthrough"
+            if state is None:
+                return "held_unknown"
+    return "pending_off"
+
+
+def input_off_allowed(c: BatteryManagerCoordinator, load_id: str) -> bool:
+    """Final live authorization; no waiting or cached action data."""
+    sub = c.entry.subentries.get(load_id)
+    if sub is None or load_id in c.cascade_manager.managed_load_ids():
+        return False
+    data = sub.data
+    gate = data.get(CONF_LOAD_CHARGE_ENABLE)
+    policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
+    if gate and c._entity_tristate(gate) is not False:
+        return False
+    if policy == INPUT_OFF_POLICY_KEEP:
+        return False
+    if policy == INPUT_OFF_POLICY_ALWAYS or not gate:
+        # Legacy output mappings may lack a charge gate. The input is then
+        # the only physical stop actuator; passthrough cannot override a
+        # charge/safety stop. New configurations reject this combination.
+        return True
+    output = data.get(CONF_LOAD_OUTPUT_SWITCH)
+    if output:
+        if not c._load_plug_owned.get(load_id, False):
+            return False
+        if c._entity_tristate(output) is not False:
+            return False
+    if gate and input_decision(c, load_id) not in ("pending_off", "off"):
+        return False
+    gate_request = c._load_actor_requests.get(gate) if isinstance(gate, str) else None
+    if (
+        gate_request is not None
+        and gate_request.desired
+        and gate_request.state != "service_failed"
+    ):
+        return False
+    if data.get(CONF_LOAD_OUTPUT_SWITCH):
+        since = c._load_input_on_since.get(load_id)
+        if since is not None and dt_util.now() < since + timedelta(
+            minutes=data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30)
+        ):
+            return False
+    return True
+
+
+def input_diagnostics(c: BatteryManagerCoordinator, load_id: str) -> dict[str, Any]:
+    sub = c.entry.subentries.get(load_id)
+    if sub is None:
+        return {}
+    data = sub.data
+    decision = input_decision(c, load_id)
+
+    def state(key: str) -> bool | None:
+        entity = data.get(key)
+        return c._entity_tristate(entity) if entity else None
+
+    def power(key: str) -> float | None:
+        entity = data.get(key)
+        return c._read_power_w(entity) if entity else None
+
+    return {
+        "input_control": {
+            "input_on": state(CONF_LOAD_CONTROL_SWITCH),
+            "charge_enable": state(CONF_LOAD_CHARGE_ENABLE),
+            "charging": state(CONF_LOAD_CHARGING_FEEDBACK_ENTITY),
+            "output_on": state(CONF_LOAD_OUTPUT_SWITCH),
+            "output_power_w": power(CONF_LOAD_OUTPUT_POWER_ENTITY),
+            "owned": c._load_plug_owned.get(load_id, False),
+            "reason": decision,
+            "paused_input_power_w": power(CONF_LOAD_INPUT_POWER_ENTITY)
+            if c._charging_is_active(data) is False
+            else None,
+        }
+    }
+
+
+def reconcile_feedback(
+    coordinator: BatteryManagerCoordinator, event: Any = None
+) -> None:
+    """Reconcile state and retain OFF evidence across queued OFF/ON events."""
+    changed = False
+    event_entity = event.data.get("entity_id") if event is not None else None
+    event_state = event.data.get("new_state") if event is not None else None
     settled: set[str] = set()
+    managed = coordinator.cascade_manager.managed_load_ids()
+    for load_id, sub in coordinator.entry.subentries.items():
+        if sub.subentry_type != SUBENTRY_TYPE_LOAD or load_id in managed:
+            continue
+        plug = sub.data.get(CONF_LOAD_CONTROL_SWITCH)
+        if not isinstance(plug, str) or not plug:
+            continue
+        state = coordinator.hass.states.get(plug)
+        request = coordinator._load_actor_requests.get(plug)
+        if (
+            event_entity == plug
+            and event_state is not None
+            and event_state.state == "off"
+        ):
+            # Reading hass.states alone loses a fast OFF→ON: callbacks can
+            # both run after the new ON has already become current state.
+            # Revoke only the ownership/request that predates this edge, so
+            # an old queued OFF cannot cancel a newer independent BM start.
+            since = coordinator._load_input_on_since.get(load_id)
+            if since is None or since <= event_state.last_changed:
+                coordinator._load_plug_owned[load_id] = False
+                coordinator._load_plug_owned_entities.pop(load_id, None)
+                coordinator._load_input_on_since.pop(load_id, None)
+                changed = True
+            if (
+                request is not None
+                and request.desired
+                and request.requested_at <= event_state.last_changed
+            ):
+                coordinator._load_actor_requests.pop(plug, None)
+                request = None
+                changed = True
+        binding = coordinator._load_plug_owned_entities.get(load_id)
+        if binding and binding != plug:
+            coordinator._load_plug_owned[load_id] = False
+            coordinator._load_plug_owned_entities.pop(load_id, None)
+            coordinator._load_input_on_since.pop(load_id, None)
+            changed = True
+        if state is not None and state.state == "off":
+            if coordinator._load_plug_owned.get(load_id, False):
+                coordinator._load_plug_owned[load_id] = False
+                coordinator._load_plug_owned_entities.pop(load_id, None)
+                coordinator._load_input_on_since.pop(load_id, None)
+                changed = True
+            if (
+                request
+                and request.desired
+                and state.last_changed > request.requested_at
+            ):
+                coordinator._load_actor_requests.pop(plug, None)
+                request = None
+        if (
+            request
+            and request.owner == "load:" + load_id
+            and request.desired
+            and request.state not in ("confirmed", "service_failed")
+            and state is not None
+            and state.state == "on"
+        ):
+            coordinator._load_plug_owned[load_id] = True
+            coordinator._load_plug_owned_entities[load_id] = plug
+            coordinator._load_input_on_since.setdefault(load_id, state.last_changed)
+            changed = True
     for entity, request in coordinator._load_actor_requests.items():
         if request.state == "confirmed" or not coordinator.hass.states.is_state(
             entity, "on" if request.desired else "off"
         ):
             continue
-        if request.desired and request.state != "service_failed":
-            activated.add(entity)
         request.state = "confirmed"
         settled.add(entity)
-    managed = coordinator.cascade_manager.managed_load_ids()
-    for load_id, subentry in coordinator.entry.subentries.items():
-        if subentry.subentry_type != SUBENTRY_TYPE_LOAD or load_id in managed:
+        changed = True
+    for load_id, sub in coordinator.entry.subentries.items():
+        if sub.subentry_type != SUBENTRY_TYPE_LOAD or load_id in managed:
             continue
-        plug = subentry.data.get(CONF_LOAD_CONTROL_SWITCH)
-        gate = subentry.data.get(CONF_LOAD_CHARGE_ENABLE)
-        if plug in activated:
-            coordinator._load_plug_owned[load_id] = True
-        confirmed_path = settled.intersection((plug, gate))
-        if not confirmed_path:
-            continue
-        if plug in settled and coordinator._entity_tristate(plug) is False:
-            coordinator._load_plug_owned[load_id] = False
-        active = coordinator._charging_is_active(subentry.data)
-        if active is not None:
-            # ON and OFF both start their dwell at the reported edge, never at
-            # the earlier service ACK or a possibly much later reconciliation.
-            coordinator._load_charging_active[load_id] = active
-            coordinator._last_load_switch[load_id] = max(
-                state.last_changed
-                for entity in confirmed_path
-                if (state := coordinator.hass.states.get(entity)) is not None
+        path = settled.intersection(
+            (
+                sub.data.get(CONF_LOAD_CONTROL_SWITCH),
+                sub.data.get(CONF_LOAD_CHARGE_ENABLE),
             )
-    if settled:
+        )
+        active = coordinator._charging_is_active(sub.data)
+        if (
+            not path
+            or active is None
+            or coordinator._load_charging_active.get(load_id) is active
+        ):
+            continue
+        # Late device feedback starts a dwell at the actual edge. An input
+        # cleanup behind an already-OFF gate leaves the charge clock intact.
+        coordinator._load_charging_active[load_id] = active
+        coordinator._last_load_switch[load_id] = max(
+            state.last_changed
+            for entity in path
+            if (state := coordinator.hass.states.get(entity)) is not None
+        )
+        if not active:
+            coordinator._load_run_deadline.pop(load_id, None)
+            coordinator._cancel_off_timer(load_id)
+    if changed:
         coordinator._save_persistent_state()
+    publish_input_diagnostics(coordinator)
+
+
+def publish_input_diagnostics(c: BatteryManagerCoordinator) -> None:
+    """Publish physical telemetry even when no forecast can be planned."""
+    changed = False
+    if not c.data:
+        return
+    for load_id, plan in (c.data.get("load_plans") or {}).items():
+        current = input_diagnostics(c, load_id)
+        if plan.get("input_control") != current.get("input_control"):
+            plan.update(current)
+            changed = True
+    if changed:
+        c.async_update_listeners()
 
 
 async def execute_load_switching(
@@ -171,6 +362,11 @@ async def execute_load_switching(
                 subentry_id,
             )
             continue
+        subentry = self.entry.subentries.get(subentry_id)
+        if subentry is None or dict(subentry.data) != data:
+            continue
+        generation = self._load_action_generation.get(subentry_id, 0) + 1
+        self._load_action_generation[subentry_id] = generation
         plug = data[CONF_LOAD_CONTROL_SWITCH]
         enable = data.get(CONF_LOAD_CHARGE_ENABLE)
         subentry = self.entry.subentries.get(subentry_id)
@@ -192,6 +388,8 @@ async def execute_load_switching(
             if enable and not await self._switch_load_entity(
                 enable, True, actor_owner="load:" + subentry_id
             ):
+                continue
+            if self._load_action_generation.get(subentry_id) != generation:
                 continue
             if not self.load_bm_enabled(subentry_id) or (
                 not bypass_guards and start_blocked(self)
@@ -243,7 +441,16 @@ async def execute_load_switching(
                     continue
                 # We switched the plug on for charging: ownership
                 # allows the 'auto' policy to switch it off again.
-                self._load_plug_owned[subentry_id] = True
+                request = self._load_actor_requests.get(plug)
+                if request is not None and request.desired:
+                    self._load_plug_owned[subentry_id] = True
+                    self._load_plug_owned_entities[subentry_id] = plug
+                    state = self.hass.states.get(plug)
+                    self._load_input_on_since[subentry_id] = (
+                        state.last_changed if state is not None else dt_util.now()
+                    )
+            if self._load_action_generation.get(subentry_id) != generation:
+                continue
             # Feedback can arrive after an operator pause or safety trip.
             # Ownership is recorded above so the compensating OFF obeys
             # the configured input policy, including auto-owned plugs.
@@ -297,6 +504,12 @@ async def execute_load_switching(
             if subentry_id in self._load_power_calibration_release:
                 self._complete_power_calibration_release(subentry_id)
         else:
+            charging_was_active = (
+                self._load_charging_active.get(
+                    subentry_id, self._charging_is_active(data)
+                )
+                is True
+            )
             policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
             if not enable and policy == INPUT_OFF_POLICY_KEEP:
                 # Misconfiguration (blocked by the flow, but be safe):
@@ -313,54 +526,64 @@ async def execute_load_switching(
                 # Charge-enable did not confirm off: charging is not
                 # actually stopped — keep state and retry next cycle.
                 continue
-            owned = self._load_plug_owned.get(subentry_id, False)
-            turn_plug_off = policy == INPUT_OFF_POLICY_ALWAYS or (
-                policy == INPUT_OFF_POLICY_AUTO and owned
-            )
-            if not enable and policy != INPUT_OFF_POLICY_KEEP:
-                # Without a charge-enable gate, stopping charging is
-                # only possible by switching the input off.
-                turn_plug_off = True
-            if turn_plug_off and not await self._switch_load_entity(
-                plug, False, actor_owner="load:" + subentry_id
-            ):
-                # Turn-off failed: keep ownership so the plug is never
-                # recorded as not-ours while physically ON. Without a
-                # charge-enable gate charging is still active, so the
-                # next cycle re-attempts the off; with a gate the gate
-                # already stopped charging and the next charge cycle's
-                # stop cleans the plug up (review #3).
+            # The gate's reported edge ends charging even if its input must
+            # remain ON or cannot be reached. Input cleanup never creates a
+            # second charge stop and never moves dwell/flicker clocks.
+            if self._load_action_generation.get(subentry_id) != generation:
                 continue
-            self._load_plug_owned[subentry_id] = False
+            charging_edge = charging_was_active
+            current_sub = self.entry.subentries.get(subentry_id)
+            if (
+                current_sub is None
+                or dict(current_sub.data) != data
+                or subentry_id in self.cascade_manager.managed_load_ids()
+            ):
+                continue
+            if enable and self._entity_tristate(enable) is not False:
+                continue
+            confirmed_stop_at = dt_util.now()
+            if enable:
+                self._load_charging_active[subentry_id] = False
+            turn_plug_off = input_off_allowed(self, subentry_id)
+            input_confirmed = False
+            if turn_plug_off:
+                input_confirmed = await self._switch_load_entity(
+                    plug, False, actor_owner="load:" + subentry_id
+                )
+            if self._load_action_generation.get(subentry_id) != generation:
+                continue
+            if not enable and not input_confirmed:
+                continue
+            if input_confirmed and self._entity_tristate(plug) is False:
+                self._load_plug_owned[subentry_id] = False
+                self._load_plug_owned_entities.pop(subentry_id, None)
+                self._load_input_on_since.pop(subentry_id, None)
             self._load_charging_active[subentry_id] = False
-            now = dt_util.now()
-            self._last_load_switch[subentry_id] = now
-            # F10: the latch-hold run ended (a gate dropped) — clear its
-            # marker so a later hold re-arms the classification fresh.
-            self._load_latch_hold.discard(subentry_id)
-            # F8: record this confirmed OFF and whether it is a flicker
-            # continuation candidate (a recommendation stop, not a
-            # G4/G1 safety stop) so a re-on within the window can waive
-            # min_off.
-            self._load_last_off[subentry_id] = (now, flicker_eligible)
-            # F-SUBHOUR: run finished — clear the frozen deadline + timer.
-            self._load_run_deadline.pop(subentry_id, None)
-            self._cancel_off_timer(subentry_id)
-            # V9a: exactly one INFO line per confirmed switch action.
-            _LOGGER.info(
-                "Load %s -> OFF (%s; input %s)",
-                label,
-                reason,
-                "off" if turn_plug_off else "stays on",
-            )
-            if subentry_id in self._load_power_calibration_release:
-                self._complete_power_calibration_release(subentry_id)
+            if charging_edge:
+                # Confirmed gate OFF ends charging before any independent
+                # input timeout. Late feedback is reconciled separately using
+                # its reported edge; cleanup never starts another dwell.
+                stopped_at = confirmed_stop_at if enable else dt_util.now()
+                self._last_load_switch[subentry_id] = stopped_at
+                self._load_latch_hold.discard(subentry_id)
+                self._load_last_off[subentry_id] = (stopped_at, flicker_eligible)
+                self._load_run_deadline.pop(subentry_id, None)
+                self._cancel_off_timer(subentry_id)
+                _LOGGER.info(
+                    "Load %s -> OFF (%s; input %s)",
+                    label,
+                    reason,
+                    "off" if input_confirmed else "stays on",
+                )
+                if subentry_id in self._load_power_calibration_release:
+                    self._complete_power_calibration_release(subentry_id)
     self._save_persistent_state()
     if self.data:
         plans = self.data.get("load_plans") or {}
         for load_id, active in self._load_charging_active.items():
             if load_id in plans:
                 plans[load_id]["charging_active"] = active
+                plans[load_id].update(input_diagnostics(self, load_id))
         self.async_update_listeners()
     if self._floor_guard_active:
         # G4, in-flight race (part 2): a refresh that tripped the guard

@@ -225,6 +225,26 @@ def reserve_diagnostics(
         ),
         "dc_budget_wh": round(decision.dc_budget_wh, 1) if decision else 0.0,
         "dc_shifted_wh": round(decision.dc_shifted_wh, 1) if decision else 0.0,
+        "recharge": {
+            "reference_id": decision.recharge.reference_id,
+            "status": decision.recharge.status,
+            "anchors": [at.isoformat() for at in decision.recharge.anchors],
+            "certificates": [
+                {
+                    "reference_id": item.reference_id,
+                    "start": item.start.isoformat(),
+                    "end": item.end.isoformat(),
+                    "anchor": item.anchor.isoformat(),
+                    "kind": item.kind,
+                    "battery_draw_wh": item.battery_draw_wh,
+                }
+                for item in decision.recharge.certificates
+            ],
+            "validations": decision.recharge.validations,
+            "rejection_reasons": list(decision.recharge.rejection_reasons),
+        }
+        if decision is not None and decision.recharge is not None
+        else None,
         "remaining_discharge_wh": round(sum(f.battery_discharge_wh for f in flows), 1),
         "extra_grid_import_wh": round(
             max(

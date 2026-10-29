@@ -1,0 +1,184 @@
+{
+  "baseline_commit": "35ed1db4538c7822062812617b81b609fde7c1fc",
+  "measurement_started_at_utc": "2026-10-29T17:32:42.662962+00:00",
+  "repeats": 3,
+  "execution": "sequential; no parallel test processes launched by this checker",
+  "historical_inputs": "Unavailable after temporary-directory loss; no historical replay or benchmark rerun claimed.",
+  "cases": {
+    "multicascade-head": {
+      "fixture_path": "docs/investigations/fixtures/house-storage-benchmark-multicascade.json",
+      "fixture_sha256": "d9a9e2d1df00737580b2797056887bacc4258397b7b587e9c547c3112c8626a1",
+      "core_source_sha256": "9e8549b45c3b032eceb08cdd2bf2e10fbc9b8f0d9177f02f862fa80c843e311c",
+      "started_at_utc": "2026-10-29T17:32:42.664335+00:00",
+      "finished_at_utc": "2026-10-29T17:33:02.696379+00:00",
+      "exit_code": 0,
+      "measurement": {
+        "slots": 72,
+        "loads": 4,
+        "appliances": 0,
+        "median_seconds": 6.657819801999722,
+        "runs": [
+          {
+            "seconds": 6.915071684998111,
+            "work": {
+              "policy_runs": 260,
+              "step_requests": 662707,
+              "physical_steps": 54136
+            },
+            "import_wh": 1091.6666666666665,
+            "export_wh": 69.17241789123581,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 3600.0,
+            "ac_output_wh": 4667.083333333332,
+            "end_energy_wh": 4750.0
+          },
+          {
+            "seconds": 6.3555956879936275,
+            "work": {
+              "policy_runs": 260,
+              "step_requests": 662707,
+              "physical_steps": 54136
+            },
+            "import_wh": 1091.6666666666665,
+            "export_wh": 69.17241789123581,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 3600.0,
+            "ac_output_wh": 4667.083333333332,
+            "end_energy_wh": 4750.0
+          },
+          {
+            "seconds": 6.657819801999722,
+            "work": {
+              "policy_runs": 260,
+              "step_requests": 662707,
+              "physical_steps": 54136
+            },
+            "import_wh": 1091.6666666666665,
+            "export_wh": 69.17241789123581,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 3600.0,
+            "ac_output_wh": 4667.083333333332,
+            "end_energy_wh": 4750.0
+          }
+        ]
+      }
+    },
+    "multicascade-current": {
+      "fixture_path": "docs/investigations/fixtures/house-storage-benchmark-multicascade.json",
+      "fixture_sha256": "d9a9e2d1df00737580b2797056887bacc4258397b7b587e9c547c3112c8626a1",
+      "core_source_sha256": "efdec3edd8386df99963d86064dfcb2ac27fba0aac6c2f6fee6159ac2891c287",
+      "started_at_utc": "2026-10-29T17:33:02.698079+00:00",
+      "finished_at_utc": "2026-10-29T17:33:30.406373+00:00",
+      "exit_code": 0,
+      "measurement": {
+        "slots": 72,
+        "loads": 4,
+        "appliances": 0,
+        "median_seconds": 9.156220896999002,
+        "runs": [
+          {
+            "seconds": 9.471375441004056,
+            "work": {
+              "policy_runs": 354,
+              "step_requests": 902348,
+              "physical_steps": 76782
+            },
+            "import_wh": 1049.9999999999998,
+            "export_wh": 201.66548508862894,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 3600.0,
+            "ac_output_wh": 5914.999999999998,
+            "end_energy_wh": 4750.0
+          },
+          {
+            "seconds": 8.966198145004455,
+            "work": {
+              "policy_runs": 354,
+              "step_requests": 902348,
+              "physical_steps": 76782
+            },
+            "import_wh": 1049.9999999999998,
+            "export_wh": 201.66548508862894,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 3600.0,
+            "ac_output_wh": 5914.999999999998,
+            "end_energy_wh": 4750.0
+          },
+          {
+            "seconds": 9.156220896999002,
+            "work": {
+              "policy_runs": 354,
+              "step_requests": 902348,
+              "physical_steps": 76782
+            },
+            "import_wh": 1049.9999999999998,
+            "export_wh": 201.66548508862894,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 3600.0,
+            "ac_output_wh": 5914.999999999998,
+            "end_energy_wh": 4750.0
+          }
+        ]
+      }
+    },
+    "active-current": {
+      "fixture_path": "docs/investigations/fixtures/house-storage-benchmark-active.json",
+      "fixture_sha256": "3237cd1ac24e8c1377754b5074cf1d3efbf86b5dfa90d78ef55f82db0befe595",
+      "core_source_sha256": "efdec3edd8386df99963d86064dfcb2ac27fba0aac6c2f6fee6159ac2891c287",
+      "started_at_utc": "2026-10-29T17:33:30.408398+00:00",
+      "finished_at_utc": "2026-10-29T17:33:30.579291+00:00",
+      "exit_code": 0,
+      "measurement": {
+        "slots": 3,
+        "loads": 0,
+        "appliances": 0,
+        "median_seconds": 0.023887745002866723,
+        "runs": [
+          {
+            "seconds": 0.027223101998970378,
+            "work": {
+              "policy_runs": 24,
+              "step_requests": 1056,
+              "physical_steps": 244
+            },
+            "import_wh": 525.0,
+            "export_wh": 3.943512183468556e-13,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 0.0,
+            "ac_output_wh": 174.99999999999994,
+            "end_energy_wh": 950.0
+          },
+          {
+            "seconds": 0.023887745002866723,
+            "work": {
+              "policy_runs": 24,
+              "step_requests": 1056,
+              "physical_steps": 244
+            },
+            "import_wh": 525.0,
+            "export_wh": 3.943512183468556e-13,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 0.0,
+            "ac_output_wh": 174.99999999999994,
+            "end_energy_wh": 950.0
+          },
+          {
+            "seconds": 0.023347577000095043,
+            "work": {
+              "policy_runs": 24,
+              "step_requests": 1056,
+              "physical_steps": 244
+            },
+            "import_wh": 525.0,
+            "export_wh": 3.943512183468556e-13,
+            "unserved_dc_wh": 0.0,
+            "served_dc_wh": 0.0,
+            "ac_output_wh": 174.99999999999994,
+            "end_energy_wh": 950.0
+          }
+        ]
+      }
+    }
+  },
+  "measurement_finished_at_utc": "2026-10-29T17:33:30.579846+00:00"
+}

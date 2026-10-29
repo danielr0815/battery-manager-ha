@@ -577,6 +577,8 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                         "available",
                         "soc_percent",
                         "target_soc_percent",
+                        "input_control",
+                        "storage",
                         "observed_power_w",
                         "learned_power_w",
                         "power_warning",
@@ -628,6 +630,8 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                     "name": item.get("name"),
                     "not_before": item.get("not_before"),
                     "execution": item.get("execution") or {},
+                    "input_control": item.get("input_control"),
+                    "storage": item.get("storage"),
                     "waiting_for_confirmation": item.get(
                         "feedin_waiting_for_confirmation", False
                     ),

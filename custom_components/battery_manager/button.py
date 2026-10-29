@@ -8,7 +8,12 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN, SUBENTRY_TYPE_CASCADE, SUBENTRY_TYPE_LOAD
+from .const import (
+    CONF_LOAD_CONTROL_SWITCH,
+    DOMAIN,
+    SUBENTRY_TYPE_CASCADE,
+    SUBENTRY_TYPE_LOAD,
+)
 from .coordinator import BatteryManagerCoordinator
 from .entity import BatteryManagerEntity, async_add_by_subentry
 from .runtime import BatteryManagerConfigEntry
@@ -30,6 +35,12 @@ async def async_setup_entry(
             load_buttons: list[Entity] = [
                 SurplusLoadRuntimeResetButton(coordinator, subentry_id, subentry.title)
             ]
+            if subentry.data.get(CONF_LOAD_CONTROL_SWITCH):
+                load_buttons.append(
+                    SurplusLoadInputTakeoverButton(
+                        coordinator, subentry_id, subentry.title
+                    )
+                )
             if coordinator.power_calibration_supported(subentry_id):
                 load_buttons.append(
                     SurplusLoadPowerCalibrationButton(
@@ -116,3 +127,24 @@ class CascadeFaultResetButton(BatteryManagerEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_reset_cascade_fault(self._subentry_id)
+
+
+class SurplusLoadInputTakeoverButton(BatteryManagerEntity, ButtonEntity):
+    """Release an owned input while leaving current device states untouched."""
+
+    _attr_translation_key = "load_input_takeover"
+    _attr_icon = "mdi:hand-back-right-outline"
+
+    def __init__(
+        self, coordinator: BatteryManagerCoordinator, subentry_id: str, title: str
+    ) -> None:
+        super().__init__(coordinator, f"load_input_takeover_{subentry_id}", subentry_id)
+        self._subentry_id = subentry_id
+        self._attr_translation_placeholders = {"name": title}
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def async_press(self) -> None:
+        self.coordinator.take_over_load_input(self._subentry_id)

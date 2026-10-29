@@ -1,5 +1,18 @@
 # Projekt-Instruktionen & Index
 
+### Nachtrag 0.63.0: Hausversorgung und Speicherziele
+
+Der Vertrag für rückladegesicherte zusätzliche DCDC-/AC-Hausversorgung,
+allgemeine Speicher-Mindestziele und die Eingangs-Schalthoheit steht in
+[F-HOUSE-RECHARGE-STORAGE](../F-HOUSE-RECHARGE-STORAGE.md). Zusätzliche Entnahme
+benötigt gemeinsame nominale und pessimistische Nachweise bis zu einem festen
+solaren Rückladetermin. Speicher-Recovery folgt erst nach gesicherter
+Hausversorgung; ein fehlendes Altziel bleibt deaktiviert. Die Politik `auto`
+schützt bestätigten oder unbekannten konfigurierten Passthrough und schaltet
+eigene Eingänge nach dessen Ende nachträglich ab. `keep_on` behält seinen
+bisherigen ausdrücklichen Einschaltvertrag. Implementierungs- und Prüfstand:
+[Übergabe](../investigations/2026-10-27-implementation-handoff.md).
+
 ### Nachtrag 0.62.1: mehrere physische Marktvarianten
 
 Die gemeinsame Suche trennt reine DC- von AC/DC-Empfängern und prüft passende

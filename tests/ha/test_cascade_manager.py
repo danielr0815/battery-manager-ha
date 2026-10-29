@@ -150,6 +150,12 @@ class _Coordinator:
         state = self.hass.states.get(entity_id)
         return state is not None and state.state == "on"
 
+    def _entity_tristate(self, entity_id):
+        return BatteryManagerCoordinator._entity_tristate(self, entity_id)
+
+    def _charging_is_active(self, data):
+        return BatteryManagerCoordinator._charging_is_active(self, data)
+
     async def _switch_entity(self, entity_id, turn_on, *, actor_owner=None):
         self.calls.append((entity_id, turn_on))
         self.hass.states.values[entity_id].state = "on" if turn_on else "off"
@@ -1851,6 +1857,9 @@ async def test_live_root_rejects_generic_off_at_entity_boundary(
     coordinator._floor_guard_active = False
     coordinator._stale_shed_active = False
     coordinator._load_plug_owned = {"b1": True}
+    coordinator._load_plug_owned_entities = {"b1": "switch.bad_waschmaschine"}
+    coordinator._load_input_on_since = {}
+    coordinator._load_action_generation = {}
     coordinator._load_charging_active = {"b1": True}
     coordinator._last_load_switch = {}
     coordinator._load_last_off = {}

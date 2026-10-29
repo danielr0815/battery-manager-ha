@@ -14,11 +14,15 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.battery_manager.const import (
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_MIN_OFF_MIN,
     CONF_LOAD_MIN_RUNTIME_MIN,
+    CONF_LOAD_OUTPUT_POWER_ENTITY,
+    CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
     CONF_LOAD_POWER_WARNING_DWELL_MIN,
@@ -82,6 +86,10 @@ async def _setup(
     power_warning_pct=50.0,
     power_warning_dwell_min=30,
     tank_full_runtime_min=0,
+    output_switch=None,
+    charging_feedback=None,
+    input_power=None,
+    additional_load_data=(),
 ):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
@@ -102,6 +110,13 @@ async def _setup(
         CONF_LOAD_POWER_WARNING_DWELL_MIN: power_warning_dwell_min,
         CONF_LOAD_TANK_FULL_RUNTIME_MIN: tank_full_runtime_min,
     }
+    if charging_feedback is not None:
+        load_data[CONF_LOAD_CHARGING_FEEDBACK_ENTITY] = charging_feedback
+    if input_power is not None:
+        load_data[CONF_LOAD_INPUT_POWER_ENTITY] = input_power
+    if output_switch is not None:
+        load_data[CONF_LOAD_OUTPUT_SWITCH] = output_switch
+        load_data[CONF_LOAD_OUTPUT_POWER_ENTITY] = "sensor.output_w"
     if power_entity is not None:
         load_data[CONF_LOAD_POWER_ENTITY] = power_entity
     if min_runtime_min is not None:
@@ -126,7 +141,16 @@ async def _setup(
                 subentry_type=SUBENTRY_TYPE_LOAD,
                 title="Fossibot Test",
                 unique_id=None,
-            )
+            ),
+            *(
+                ConfigSubentryData(
+                    data=extra,
+                    subentry_type=SUBENTRY_TYPE_LOAD,
+                    title=f"Independent load {index}",
+                    unique_id=None,
+                )
+                for index, extra in enumerate(additional_load_data)
+            ),
         ],
     )
     entry.add_to_hass(hass)
@@ -4987,3 +5011,805 @@ async def test_charge_gate_off_preserves_existing_freeze_fault(
     assert not coordinator._get_load_states()[0].available
     assert sub_id in coordinator._load_freeze_stale
     assert coordinator._persistent_payload()["load_freeze_guard"][sub_id]["latched"]
+
+
+# The input relay is a separate ownership obligation from the charge gate.
+@pytest.mark.parametrize("output_state", ["on", "unknown", "unavailable", None])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "plan off",
+        "manual pause",
+        "quantum end",
+        "measured grid import",
+        "stale-data load shed",
+    ],
+)
+async def test_auto_input_holds_for_mapped_output_even_at_zero_w(
+    hass, output_state, reason
+):
+    from custom_components.battery_manager.load_actuation import input_diagnostics
+
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass, calls, output_switch="switch.output", min_runtime_min=0
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set("sensor.output_w", "0", {"unit_of_measurement": "W"})
+    if output_state is None:
+        hass.states.async_remove("switch.output")
+    else:
+        hass.states.async_set("switch.output", output_state)
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    coordinator._load_charging_active[load_id] = True
+    calls.clear()
+
+    await coordinator._execute_load_switching(
+        [(load_id, data, False, True, 0.0, False, reason)]
+    )
+
+    assert hass.states.is_state(ENABLE, "off")
+    assert hass.states.is_state(PLUG, "on")
+    assert ("turn_off", PLUG) not in calls
+    assert coordinator._load_plug_owned[load_id]
+    assert coordinator._load_charging_active[load_id] is False
+    diag = input_diagnostics(coordinator, load_id)["input_control"]
+    assert diag["reason"] == (
+        "held_passthrough" if output_state == "on" else "held_unknown"
+    )
+    assert diag["output_power_w"] == 0.0
+
+
+async def test_output_off_cleanup_works_without_plan_and_preserves_charge_timestamps(
+    hass,
+):
+    from custom_components.battery_manager.load_safety import stop_unsafe_loads
+
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass, calls, output_switch="switch.output", min_runtime_min=0
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set("switch.output", "on")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    coordinator._load_charging_active[load_id] = True
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    stopped = coordinator._last_load_switch[load_id]
+    flicker = coordinator._load_last_off[load_id]
+    coordinator.data = {"valid": False, "load_plans": {load_id: {}}}
+    hass.states.async_set("switch.output", "off")
+    calls.clear()
+
+    await stop_unsafe_loads(coordinator)
+    if coordinator._load_switch_task is not None:
+        await coordinator._load_switch_task
+
+    assert ("turn_off", PLUG) in calls
+    assert hass.states.is_state(PLUG, "off")
+    assert not coordinator._load_plug_owned[load_id]
+    assert coordinator._last_load_switch[load_id] == stopped
+    assert coordinator._load_last_off[load_id] == flicker
+    assert coordinator.data["load_plans"][load_id]["input_control"]["input_on"] is False
+
+
+async def test_input_cleanup_waits_for_original_input_dwell_without_sleep(hass):
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.load_actuation import input_off_allowed
+
+    calls = []
+    coordinator, load_id, _ = await _setup(
+        hass, calls, output_switch="switch.output", min_runtime_min=30
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set("switch.output", "off")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_input_on_since[load_id] = dt_util.now() - timedelta(minutes=29)
+    assert not input_off_allowed(coordinator, load_id)
+    coordinator._load_input_on_since[load_id] -= timedelta(minutes=2)
+    assert input_off_allowed(coordinator, load_id)
+
+
+async def test_foreign_input_stays_on_with_confirmed_output_off(hass):
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass, calls, output_switch="switch.output", min_runtime_min=0
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set("switch.output", "off")
+    coordinator._load_plug_owned[load_id] = False
+    calls.clear()
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    assert hass.states.is_state(ENABLE, "off")
+    assert hass.states.is_state(PLUG, "on")
+    assert ("turn_off", PLUG) not in calls
+
+
+async def test_manual_takeover_drops_late_on_ownership_without_switching(hass):
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.load_actuation import (
+        ActorRequest,
+        reconcile_feedback,
+    )
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    coordinator._load_actor_requests[PLUG] = ActorRequest(
+        True, dt_util.now(), "confirmation_failed", "load:" + load_id
+    )
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    before_enabled = coordinator.load_bm_enabled(load_id)
+    calls.clear()
+
+    coordinator.take_over_load_input(load_id)
+    hass.states.async_set(PLUG, "on")
+    reconcile_feedback(coordinator)
+
+    assert not coordinator._load_plug_owned[load_id]
+    assert PLUG not in coordinator._load_actor_requests
+    assert coordinator.load_bm_enabled(load_id) == before_enabled
+    assert hass.states.is_state(ENABLE, "off")
+    assert calls == []
+
+
+async def test_external_off_then_on_does_not_reacquire_input(hass):
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.load_actuation import (
+        ActorRequest,
+        reconcile_feedback,
+    )
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    coordinator._load_actor_requests[PLUG] = ActorRequest(
+        True, dt_util.now() - timedelta(minutes=1), "confirmed", "load:" + load_id
+    )
+    hass.states.async_set(PLUG, "off")
+    reconcile_feedback(coordinator)
+    hass.states.async_set(PLUG, "on")
+    reconcile_feedback(coordinator)
+    assert not coordinator._load_plug_owned[load_id]
+
+
+async def test_failed_input_cleanup_marks_charging_stopped_once(hass):
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls = []
+    coordinator, load_id, data = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_charging_active[load_id] = True
+
+    async def fail_input(call):
+        if call.data["entity_id"] == PLUG:
+            raise HomeAssistantError("offline")
+        hass.states.async_set(call.data["entity_id"], "off")
+
+    hass.services.async_register("homeassistant", "turn_off", fail_input)
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    stopped = coordinator._last_load_switch[load_id]
+    assert coordinator._load_charging_active[load_id] is False
+    assert coordinator._load_plug_owned[load_id] is True
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    assert coordinator._last_load_switch[load_id] == stopped
+
+
+async def test_owned_input_binding_restores_only_matching_entity(hass):
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    entry = coordinator.entry
+    hass.states.async_set(PLUG, "on")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    await coordinator.async_flush_persistent_state()
+    coordinator._load_plug_owned.clear()
+    coordinator._load_plug_owned_entities.clear()
+    await coordinator.async_load_persistent_state()
+    assert coordinator._load_plug_owned[load_id]
+
+    # Complete the lifecycle before changing wiring. Leaving the automatic
+    # reload queued races HA shutdown and can register the next learner's
+    # nightly timer after the stop event has already been handled.
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.config_entries.async_update_subentry(
+        entry,
+        entry.subentries[load_id],
+        data={
+            **entry.subentries[load_id].data,
+            CONF_LOAD_CONTROL_SWITCH: "switch.rewired",
+        },
+    )
+    # Restoration must be observed before a new valid plan can independently
+    # acquire the new plug. An existing ON is never an ownership proof.
+    for entity in (
+        "sensor.test_soc",
+        "sensor.pv_today",
+        "sensor.pv_tomorrow",
+        "sensor.pv_day_after",
+    ):
+        hass.states.async_set(entity, "unavailable")
+    try:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        restored = hass.data[DOMAIN][entry.entry_id]
+        assert restored is not coordinator
+        assert not restored._load_plug_owned.get(load_id, False)
+        assert load_id not in restored._load_plug_owned_entities
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_unbound_legacy_boolean_cannot_grant_input_ownership(hass):
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities.clear()
+    await coordinator.async_flush_persistent_state()
+    await coordinator.async_load_persistent_state()
+    assert not coordinator._load_plug_owned.get(load_id, False)
+
+
+async def test_output_turning_on_during_gate_confirmation_prevents_input_off(hass):
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass, calls, output_switch="switch.output", min_runtime_min=0
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set("switch.output", "off")
+    coordinator._load_plug_owned[load_id] = True
+
+    async def gate_off_with_new_output(call):
+        entity = call.data["entity_id"]
+        calls.append(("turn_off", entity))
+        hass.states.async_set(entity, "off")
+        if entity == ENABLE:
+            hass.states.async_set("switch.output", "on")
+
+    hass.services.async_register("homeassistant", "turn_off", gate_off_with_new_output)
+    calls.clear()
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    assert ("turn_off", PLUG) not in calls
+    assert hass.states.is_state(PLUG, "on")
+    assert coordinator._load_plug_owned[load_id]
+
+
+async def test_gate_off_failure_does_not_confirm_pause(hass):
+    from homeassistant.exceptions import HomeAssistantError
+
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass, calls, output_switch="switch.output", min_runtime_min=0
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    hass.states.async_set("switch.output", "off")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_charging_active[load_id] = True
+    before = coordinator._last_load_switch.get(load_id)
+
+    async def unavailable_gate(call):
+        calls.append(("turn_off", call.data["entity_id"]))
+        raise HomeAssistantError("gate unreachable")
+
+    hass.services.async_register("homeassistant", "turn_off", unavailable_gate)
+    calls.clear()
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    assert coordinator._load_charging_active[load_id] is True
+    assert coordinator._last_load_switch.get(load_id) == before
+    assert ("turn_off", PLUG) not in calls
+
+
+async def test_feedback_republishes_input_diagnostics_without_a_plan(hass):
+    from custom_components.battery_manager.load_actuation import reconcile_feedback
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls, output_switch="switch.output")
+    coordinator._listeners_setup = False
+    coordinator.data = {"valid": False, "load_plans": {load_id: {}}}
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set("switch.output", "on")
+    hass.states.async_set(POWER_FEEDBACK, "0.012", {"unit_of_measurement": "kW"})
+    reconcile_feedback(coordinator)
+    diag = coordinator.data["load_plans"][load_id]["input_control"]
+    assert diag["input_on"] is True
+    assert diag["charging"] is None  # no physical battery feedback configured
+    assert diag["paused_input_power_w"] is None  # device input is not the wall plug
+    hass.states.async_set("switch.output", "unavailable")
+    reconcile_feedback(coordinator)
+    assert coordinator.data["load_plans"][load_id]["input_control"]["output_on"] is None
+
+
+async def test_storage_settings_are_mapped_for_ordinary_energy_limited_load(hass):
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_ETA_CHARGE,
+        CONF_LOAD_MAX_CHARGE_POWER_W,
+        CONF_LOAD_RECOVERY_SOC,
+    )
+
+    calls = []
+    coordinator, load_id, data = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    original = next(
+        load
+        for load in coordinator.build_system_config().loads
+        if load.load_id == load_id
+    )
+    assert original.recovery_soc_percent is None
+    hass.config_entries.async_update_subentry(
+        coordinator.entry,
+        coordinator.entry.subentries[load_id],
+        data={
+            **data,
+            CONF_LOAD_RECOVERY_SOC: 45.0,
+            CONF_LOAD_ETA_CHARGE: 0.85,
+            CONF_LOAD_MAX_CHARGE_POWER_W: 250.0,
+        },
+    )
+    mapped = next(
+        load
+        for load in coordinator.build_system_config().loads
+        if load.load_id == load_id
+    )
+    assert mapped.recovery_soc_percent == 45.0
+    assert mapped.eta_charge == 0.85
+    assert mapped.max_charge_power_w == 250.0
+
+
+def test_consumption_uncertainty_requires_complete_ac_and_dc_coverage():
+    from datetime import UTC, datetime
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.core.model import HourSlot, PlanInputs
+
+    start = datetime(2026, 10, 27, 12, 30, tzinfo=UTC)
+    slot = HourSlot(
+        index=0,
+        start=start,
+        duration=0.5,
+        hour_of_day=12,
+        pv_wh=0.0,
+        ac_wh=50.0,
+        dc_wh=25.0,
+    )
+    inputs = PlanInputs(now=start, start_soc_percent=50.0, slots=(slot,))
+    prediction = {
+        "start": start.isoformat(),
+        "ac": {"source": "learned", "p50_w": 100.0, "p80_w": 140.0},
+        "dc": {"source": "learned", "p50_w": 50.0, "p80_w": 70.0},
+    }
+    snapshot = BatteryManagerCoordinator._consumption_uncertainty_snapshot(
+        inputs, [prediction]
+    )
+    assert snapshot is not None
+    assert snapshot.intervals[0].ac_p80_minus_p50_wh == 20.0
+    assert snapshot.intervals[0].dc_p80_minus_p50_wh == 10.0
+    prediction["dc"]["p80_w"] = None
+    assert (
+        BatteryManagerCoordinator._consumption_uncertainty_snapshot(
+            inputs, [prediction]
+        )
+        is None
+    )
+    prediction["dc"]["p80_w"] = 70.0
+    prediction["dc"]["source"] = "static"
+    assert (
+        BatteryManagerCoordinator._consumption_uncertainty_snapshot(
+            inputs, [prediction]
+        )
+        is None
+    )
+    assert (
+        BatteryManagerCoordinator._consumption_uncertainty_snapshot(inputs, []) is None
+    )
+
+
+def test_consumption_uncertainty_keeps_both_dst_fold_intervals():
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.core.model import HourSlot, PlanInputs
+
+    zone = ZoneInfo("Europe/Berlin")
+    starts = [datetime(2026, 10, 25, 2, tzinfo=zone, fold=fold) for fold in (0, 1)]
+    slots = tuple(
+        HourSlot(
+            index=index,
+            start=start,
+            duration=1.0,
+            hour_of_day=2,
+            pv_wh=0.0,
+            ac_wh=50.0,
+            dc_wh=25.0,
+        )
+        for index, start in enumerate(starts)
+    )
+    inputs = PlanInputs(now=starts[0], start_soc_percent=50.0, slots=slots)
+    predictions = [
+        {
+            "start": start.isoformat(),
+            "ac": {"source": "learned", "p50_w": 100.0, "p80_w": 110.0 + index * 10},
+            "dc": {"source": "learned", "p50_w": 50.0, "p80_w": 60.0},
+        }
+        for index, start in enumerate(starts)
+    ]
+    snapshot = BatteryManagerCoordinator._consumption_uncertainty_snapshot(
+        inputs, predictions
+    )
+    assert snapshot is not None
+    first, second = snapshot.intervals
+    assert first.end == second.start
+    assert first.start.tzinfo == UTC
+    assert first.ac_p80_minus_p50_wh == 10.0
+    assert second.ac_p80_minus_p50_wh == 20.0
+
+
+async def test_physical_charging_feedback_and_wall_input_meter_are_independent(hass):
+    from custom_components.battery_manager.load_actuation import input_diagnostics
+
+    calls = []
+    coordinator, load_id, _ = await _setup(
+        hass,
+        calls,
+        charging_feedback="binary_sensor.battery_charging",
+        input_power="sensor.matter_wall_input",
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(POWER_FEEDBACK, "0", {"unit_of_measurement": "W"})
+    hass.states.async_set(
+        "sensor.matter_wall_input", "0.006", {"unit_of_measurement": "kW"}
+    )
+    hass.states.async_set("binary_sensor.battery_charging", "on")
+    control = input_diagnostics(coordinator, load_id)["input_control"]
+    assert control["charge_enable"] is False
+    assert control["charging"] is True  # contradictory feedback stays visible
+    assert control["paused_input_power_w"] == 6.0
+    hass.states.async_set("binary_sensor.battery_charging", "off")
+    assert input_diagnostics(coordinator, load_id)["input_control"]["charging"] is False
+    hass.states.async_set("binary_sensor.battery_charging", "unavailable")
+    hass.states.async_set("sensor.matter_wall_input", "unknown")
+    control = input_diagnostics(coordinator, load_id)["input_control"]
+    assert control["charging"] is None
+    assert control["paused_input_power_w"] is None
+
+
+@pytest.mark.parametrize("output_state", ["on", "unknown", "unavailable", None])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "plan off",
+        "manual pause",
+        "quantum end",
+        "measured grid import",
+        "stale-data load shed",
+    ],
+)
+async def test_legacy_output_mapping_without_charge_gate_retains_effective_stop(
+    hass, output_state, reason
+):
+    """An existing invalid mapping cannot disable its only stop actuator."""
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass,
+        calls,
+        output_switch="switch.output",
+        charge_enable=None,
+        min_runtime_min=0,
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    if output_state is None:
+        hass.states.async_remove("switch.output")
+    else:
+        hass.states.async_set("switch.output", output_state)
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_charging_active[load_id] = True
+    calls.clear()
+
+    await coordinator._execute_load_switching(
+        [(load_id, data, False, True, 0.0, False, reason)]
+    )
+
+    assert ("turn_off", PLUG) in calls
+    assert hass.states.is_state(PLUG, "off")
+    assert coordinator._load_charging_active[load_id] is False
+
+
+async def test_queued_external_off_on_revokes_ownership_before_both_callbacks(hass):
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.load_actuation import ActorRequest
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    await hass.async_block_till_done()
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    coordinator._load_input_on_since[load_id] = dt_util.now() - timedelta(minutes=1)
+    coordinator._load_actor_requests[PLUG] = ActorRequest(
+        True, dt_util.now() - timedelta(minutes=1), "confirmed", "load:" + load_id
+    )
+
+    # Do not yield: both events are queued while the final current state is ON.
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(PLUG, "on")
+    await hass.async_block_till_done()
+
+    assert hass.states.is_state(PLUG, "on")
+    assert coordinator._load_plug_owned[load_id] is False
+    assert load_id not in coordinator._load_plug_owned_entities
+    assert PLUG not in coordinator._load_actor_requests
+
+
+async def test_input_telemetry_publishes_without_an_economic_replan(hass, monkeypatch):
+    from unittest.mock import Mock
+
+    calls = []
+    coordinator, load_id, _ = await _setup(
+        hass,
+        calls,
+        charging_feedback="binary_sensor.battery_charging",
+        input_power="sensor.wall_input",
+    )
+    schedule = Mock()
+    monkeypatch.setattr(coordinator, "_schedule_replan", schedule)
+    coordinator.data = {"valid": False, "load_plans": {load_id: {}}}
+    assert "sensor.wall_input" in coordinator._tracked_entities()
+    assert "sensor.wall_input" not in coordinator._tracked_entities(planning_only=True)
+    assert "binary_sensor.battery_charging" not in coordinator._tracked_entities(
+        planning_only=True
+    )
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set("binary_sensor.battery_charging", "off")
+    hass.states.async_set("sensor.wall_input", "6", {"unit_of_measurement": "W"})
+    await hass.async_block_till_done()
+    control = coordinator.data["load_plans"][load_id]["input_control"]
+    assert control["paused_input_power_w"] == 6.0
+    assert control["charging"] is False
+    schedule.assert_not_called()
+
+
+async def test_nonstorage_load_ignores_retained_storage_charge_parameters(hass):
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_ETA_CHARGE,
+        CONF_LOAD_MAX_CHARGE_POWER_W,
+        CONF_LOAD_RECOVERY_SOC,
+    )
+
+    calls = []
+    coordinator, load_id, data = await _setup(hass, calls, energy_limited=False)
+    coordinator._listeners_setup = False
+    hass.config_entries.async_update_subentry(
+        coordinator.entry,
+        coordinator.entry.subentries[load_id],
+        data={
+            **data,
+            CONF_LOAD_RECOVERY_SOC: 45.0,
+            CONF_LOAD_ETA_CHARGE: 0.85,
+            CONF_LOAD_MAX_CHARGE_POWER_W: 250.0,
+        },
+    )
+    mapped = next(
+        load
+        for load in coordinator.build_system_config().loads
+        if load.load_id == load_id
+    )
+    assert mapped.recovery_soc_percent is None
+    assert mapped.eta_charge == 1.0
+    assert mapped.max_charge_power_w is None
+
+
+@pytest.mark.parametrize("output_state", ["on", "off", None])
+async def test_keep_on_diagnosis_names_policy_independently_of_output(
+    hass, output_state
+):
+    from custom_components.battery_manager.load_actuation import input_diagnostics
+
+    calls = []
+    coordinator, load_id, data = await _setup(
+        hass,
+        calls,
+        policy=INPUT_OFF_POLICY_KEEP,
+        output_switch="switch.output" if output_state is not None else None,
+    )
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "off")
+    if output_state is not None:
+        hass.states.async_set("switch.output", output_state)
+    calls.clear()
+    await coordinator._execute_load_switching([(load_id, data, False, True)])
+    control = input_diagnostics(coordinator, load_id)["input_control"]
+    assert control["reason"] == "held_policy"
+    assert control["output_on"] == (
+        None if output_state is None else output_state == "on"
+    )
+    assert ("turn_off", PLUG) not in calls
+    assert hass.states.is_state(PLUG, "on")
+
+
+async def test_recommendation_only_input_diagnostics_preserve_unknown_feedback(hass):
+    from custom_components.battery_manager.load_actuation import (
+        input_diagnostics,
+        reconcile_feedback,
+    )
+
+    calls = []
+    coordinator, load_id, data = await _setup(hass, calls, with_control_switch=False)
+    assert coordinator._charging_is_active(data) is None
+    control = input_diagnostics(coordinator, load_id)["input_control"]
+    assert control["input_on"] is None
+    assert control["charge_enable"] is None
+    assert control["charging"] is None
+    assert control["paused_input_power_w"] is None
+    reconcile_feedback(coordinator)
+
+
+async def test_input_takeover_button_relinquishes_only_ownership(hass):
+    from homeassistant.helpers import entity_registry as er
+    from homeassistant.util import dt as dt_util
+
+    from custom_components.battery_manager.load_actuation import ActorRequest
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    coordinator._listeners_setup = False
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    coordinator._load_plug_owned[load_id] = True
+    coordinator._load_plug_owned_entities[load_id] = PLUG
+    coordinator._load_plan_active[load_id] = True
+    coordinator._load_actor_requests[PLUG] = ActorRequest(
+        True, dt_util.now(), "confirmed", "load:" + load_id
+    )
+    button_entity = er.async_get(hass).async_get_entity_id(
+        "button",
+        DOMAIN,
+        f"{coordinator.entry.entry_id}_load_input_takeover_{load_id}",
+    )
+    assert button_entity is not None
+    calls.clear()
+    await hass.services.async_call(
+        "button", "press", {"entity_id": button_entity}, blocking=True
+    )
+    assert coordinator._load_plug_owned[load_id] is False
+    assert load_id not in coordinator._load_plug_owned_entities
+    assert PLUG not in coordinator._load_actor_requests
+    assert coordinator._load_plan_active[load_id] is True
+    assert coordinator.load_bm_enabled(load_id)
+    assert hass.states.is_state(PLUG, "on")
+    assert hass.states.is_state(ENABLE, "on")
+    assert calls == []
+
+
+async def test_action_buttons_route_to_their_matching_load_and_cascade(
+    hass, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from custom_components.battery_manager.button import (
+        CascadeFaultResetButton,
+        SurplusLoadPowerCalibrationButton,
+    )
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_CASCADE
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls)
+    calibrate = AsyncMock()
+    reset = AsyncMock()
+    monkeypatch.setattr(coordinator, "async_toggle_load_power_calibration", calibrate)
+    monkeypatch.setattr(coordinator, "async_reset_cascade_fault", reset)
+    calibration_button = SurplusLoadPowerCalibrationButton(coordinator, load_id, "Load")
+    assert calibration_button.available
+    await calibration_button.async_press()
+    calibrate.assert_awaited_once_with(load_id)
+    reset.assert_not_awaited()
+    cascade_entry = MockConfigEntry(
+        domain=DOMAIN,
+        subentries_data=[
+            ConfigSubentryData(
+                data={},
+                subentry_type=SUBENTRY_TYPE_CASCADE,
+                title="Matching cascade",
+                unique_id=None,
+            )
+        ],
+    )
+    cascade_id = next(iter(cascade_entry.subentries))
+    cascade_coordinator = SimpleNamespace(
+        entry=cascade_entry,
+        integration_version=coordinator.integration_version,
+        async_reset_cascade_fault=reset,
+    )
+    cascade_button = CascadeFaultResetButton(cascade_coordinator, cascade_id, "Cascade")
+    assert cascade_button.available
+    await cascade_button.async_press()
+    reset.assert_awaited_once_with(cascade_id)
+    assert calibrate.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "plug_state,gate_state,already_on",
+    [
+        ("on", "on", True),
+        ("on", "off", False),
+        ("off", "on", False),
+        ("unavailable", "on", False),
+        ("on", "unavailable", False),
+    ],
+)
+async def test_storage_continuation_requires_reported_active_charge_path(
+    hass, plug_state, gate_state, already_on
+):
+    """Only a known active path can waive a new storage action's minimums."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, load_id, _ = await _setup(hass, [])
+    hass.states.async_set(PLUG, plug_state)
+    hass.states.async_set(ENABLE, gate_state)
+    state = next(
+        item
+        for item in coordinator._get_load_states(dt_util.now())
+        if item.load_id == load_id
+    )
+    assert state.on is already_on
+
+
+async def test_nonstorage_load_removes_stale_power_calibration_action(hass):
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.battery_manager import button
+
+    calls = []
+    coordinator, load_id, _ = await _setup(hass, calls, energy_limited=False)
+    registry = er.async_get(hass)
+    unique = f"{coordinator.entry.entry_id}_load_power_calibrate_{load_id}"
+    stale = registry.async_get_or_create(
+        "button",
+        DOMAIN,
+        unique,
+        config_entry=coordinator.entry,
+        config_subentry_id=load_id,
+    )
+    assert registry.async_get(stale.entity_id) is not None
+    await button.async_setup_entry(
+        hass, coordinator.entry, lambda _entities, **_kwargs: None
+    )
+    assert registry.async_get_entity_id("button", DOMAIN, unique) is None
+    assert not coordinator.power_calibration_supported(load_id)

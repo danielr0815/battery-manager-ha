@@ -110,8 +110,10 @@ def proof_failure(
     trial: Trajectory,
     before: Sequence[SourceStep],
     after: Sequence[SourceStep],
+    *,
+    check_windows: bool = True,
 ) -> str | None:
-    """Physical guarantees are independent of the economic search heuristic."""
+    """Physical guarantees; only separately certified recharge may cross windows."""
     if not preserves_dc_service(trial, baseline=reference):
         return "dc_service"
     if trial.total_import_wh > reference.total_import_wh + ENERGY_EPSILON_WH:
@@ -144,7 +146,7 @@ def proof_failure(
             )
         ):
             return "phase"
-    for window in source_windows(before):
+    for window in source_windows(before) if check_windows else ():
         old_flows = [before[i].flow for i in window]
         new_flows = [after[i].flow for i in window]
         if (

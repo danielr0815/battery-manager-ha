@@ -8,6 +8,7 @@ import {
   isForecastEntity,
 } from "./shared.js";
 import { localize } from "./translations.js";
+import { inputControlReport, storageReport } from "./reports.js";
 
 export class BatteryManagerLoadsCard extends BatteryManagerCascadeCard {
   _cardTitle() {
@@ -99,6 +100,8 @@ export class BatteryManagerLoadsCard extends BatteryManagerCascadeCard {
       ${load.target_soc_percent != null ? `<p class="muted">${esc(localize(this._hass, "card_state_of_charge_at_plan_start_charge_target"))}: ${this._number(num(load.soc_percent), 1)} % / ${this._number(num(load.target_soc_percent), 1)} %</p>` : ""}
       <p class="muted">${esc(localize(this._hass, "card_robust_power_estimate_while_running"))}: ${this._number(num(load.observed_power_w), 0)} W · ${esc(localize(this._hass, "card_last_learned_power"))}: ${this._number(num(load.learned_power_w), 0)} W</p>
       ${this._decisions(load)}
+      ${inputControlReport(this._hass, load.input_control)}
+      ${storageReport(this._hass, load.storage)}
       <div class="period">${[
         ["today", localize(this._hass, "card_today_from_now")],
         ["tomorrow", localize(this._hass, "card_tomorrow")],

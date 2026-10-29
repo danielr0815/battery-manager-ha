@@ -25,6 +25,7 @@ from .model import (
     HourFlows,
     HourSlot,
     PlanInputs,
+    RechargeSummary,
     ReserveDecision,
     ReserveDecisionReason,
     SystemConfig,
@@ -77,6 +78,18 @@ class _PreparedReserve:
 
 
 @dataclass
+class _RechargeState:
+    reference: Trajectory
+    reference_steps: tuple[SourceStep, ...]
+    stress_reference: Trajectory
+    stress_steps: tuple[SourceStep, ...]
+    accepted: Trajectory
+    accepted_steps: tuple[SourceStep, ...]
+    stress: tuple[float, ...]
+    budget: ValidationBudget
+
+
+@dataclass
 class _ReserveCache:
     references: dict[int, object] = field(default_factory=dict)
     budgets: dict[
@@ -95,6 +108,10 @@ class _ReserveCache:
     preparations: dict[tuple[object, ...], _PreparedReserve] = field(
         default_factory=dict
     )
+    recharge: dict[tuple[object, ...], _RechargeState] = field(default_factory=dict)
+    validation_budget: ValidationBudget = field(default_factory=ValidationBudget)
+    recharge_inputs: PlanInputs | None = None
+    recharge_config: SystemConfig | None = None
     flows: OrderedDict[tuple[object, ...], tuple[SystemConfig, HourSlot, HourFlows]] = (
         field(default_factory=OrderedDict)
     )
@@ -102,6 +119,9 @@ class _ReserveCache:
 
 _reserve_cache: ContextVar[_ReserveCache | None] = ContextVar(
     "reserve_cache", default=None
+)
+_counted_validation: ContextVar[ValidationBudget | None] = ContextVar(
+    "counted_validation", default=None
 )
 _smooth_source_schedule: ContextVar[bool] = ContextVar(
     "smooth_source_schedule", default=True
@@ -119,12 +139,14 @@ def source_schedule_mode(enabled: bool) -> Iterator[None]:
 
 
 @contextmanager
-def reserve_planning_scope() -> Iterator[None]:
+def reserve_planning_scope(
+    config: SystemConfig | None = None, inputs: PlanInputs | None = None
+) -> Iterator[None]:
     """Nested cascade planning shares the owner cache; errors always release it."""
     if _reserve_cache.get() is not None:
         yield
         return
-    token = _reserve_cache.set(_ReserveCache())
+    token = _reserve_cache.set(_ReserveCache(recharge_inputs=inputs))
     try:
         yield
     finally:
@@ -323,6 +345,12 @@ def _simulate_reserve(
     pv_scale: float | Sequence[float],
     feedin: tuple[float, ...] | None,
 ) -> Trajectory:
+    if (
+        inputs.consumption_uncertainty is not None
+        and isinstance(pv_scale, (int, float))
+        and pv_scale == 1.0
+    ):
+        return _simulate_recharge(config, inputs, extra_ac, feedin)
     traces: dict[int, tuple[SourceStep, ...]] = {}
     reference = _simulate_reserve_reference(
         config, inputs, extra_ac, pv_scale, feedin, traces=traces
@@ -333,7 +361,10 @@ def _simulate_reserve(
     if not _smooth_source_schedule.get():
         return result
     reference_steps = traces[id(result.flows)]
-    validation_budget = ValidationBudget()
+    active_cache = _reserve_cache.get()
+    validation_budget = (
+        active_cache.validation_budget if active_cache else ValidationBudget()
+    )
 
     def evaluate(
         proposal: tuple[HourFlows, ...],
@@ -413,6 +444,515 @@ def _simulate_reserve(
     )
 
 
+def _same_recharge_inputs(left: PlanInputs, right: PlanInputs) -> bool:
+    """Datetime equality collapses a repeated local DST hour; compare instants."""
+
+    def instants(value: PlanInputs) -> tuple[tuple[float, float], ...]:
+        snapshot = value.consumption_uncertainty
+        return (
+            tuple(
+                (part.start.timestamp(), part.end.timestamp())
+                for part in snapshot.intervals
+            )
+            if snapshot is not None
+            else ()
+        )
+
+    return (
+        left.start_soc_percent == right.start_soc_percent
+        and left.slots == right.slots
+        and tuple(slot.start.timestamp() for slot in left.slots)
+        == tuple(slot.start.timestamp() for slot in right.slots)
+        and left.recharge_required_ac_wh == right.recharge_required_ac_wh
+        and left.consumption_uncertainty == right.consumption_uncertainty
+        and instants(left) == instants(right)
+    )
+
+
+def _recharge_key(
+    config: SystemConfig, inputs: PlanInputs, feedin: tuple[float, ...] | None
+) -> tuple[object, ...]:
+    return ("full_horizon_recharge",)
+
+
+def _simulate_recharge(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    extra_ac: tuple[float, ...] | None,
+    feedin: tuple[float, ...] | None,
+) -> Trajectory:
+    from .recharge import certify, preserves_certificates
+
+    if (
+        config.feedin.enabled
+        and config.feedin.max_w > ENERGY_EPSILON_WH
+        and config.feedin.manual_w is not None
+        and config.feedin.manual_w > ENERGY_EPSILON_WH
+    ):
+        # Manual export owns PV before any new repayment promise. Until its
+        # actual curve belongs to the frozen proof, use the complete existing
+        # reserve policy with that curve, not limits frozen without export.
+        legacy = _simulate_reserve(
+            config, replace(inputs, consumption_uncertainty=None), extra_ac, 1.0, feedin
+        )
+        assert legacy.reserve_decision is not None
+        return replace(
+            legacy,
+            reserve_decision=replace(
+                legacy.reserve_decision,
+                recharge=RechargeSummary(
+                    status="manual_feed_in",
+                    rejection_reasons=("manual_feed_in",),
+                ),
+            ),
+        )
+    cache = _reserve_cache.get()
+    if cache is None:
+        with reserve_planning_scope():
+            return _simulate_recharge(config, inputs, extra_ac, feedin)
+    owner = cache.recharge_inputs
+    if owner is None:
+        cache.recharge_inputs = inputs
+    elif not _same_recharge_inputs(inputs, owner):
+        # Aux/horizon counterfactuals retain the established legacy entitlement.
+        # They cannot mint a second long-window credit from a shortened ledger.
+        return _simulate_reserve(
+            config, replace(inputs, consumption_uncertainty=None), extra_ac, 1.0, feedin
+        )
+    original_config = cache.recharge_config
+    if original_config is None:
+        cache.recharge_config = config
+    elif any(
+        getattr(config, name) != getattr(original_config, name)
+        for name in (
+            "battery",
+            "charger",
+            "inverter",
+            "support",
+            "pv",
+            "control",
+            "reserve",
+        )
+    ):
+        return _simulate_reserve(
+            config, replace(inputs, consumption_uncertainty=None), extra_ac, 1.0, feedin
+        )
+    # Feed-in and optional consumers may use the frozen permission, never
+    # construct a new externally financed reference or a fresh search budget.
+    key = _recharge_key(config, inputs, None)
+    state = cache.recharge.get(key)
+    required = inputs.recharge_required_ac_wh or None
+    if state is None:
+        budget = cache.validation_budget
+        stress, _, _ = effective_uncertainty(
+            inputs,
+            config.control.predrain_pv_confidence,
+            config.control.upper_pv_reserve,
+        )
+        stressed = any(scale < 1 - ENERGY_EPSILON_WH for scale in stress)
+
+        def evaluate(proposal: tuple[HourFlows, ...] | None, pessimistic: bool):
+            budget.record()
+            traces: dict[int, tuple[SourceStep, ...]] = {}
+            trial = _simulate_reserve_policy(
+                config,
+                inputs,
+                required,
+                stress if pessimistic else 1.0,
+                None,
+                fixed_sources=tuple(source_state(f) for f in proposal)
+                if proposal
+                else None,
+                fixed_limits=tuple(f.inverter_limit_w for f in proposal)
+                if proposal
+                else None,
+                traces=traces,
+            )
+            return trial, traces[id(trial.flows)]
+
+        # Keep the established, fully guarded AC/DC reference even when no
+        # additional long-window entitlement can be proved.
+        reference_traces: dict[int, tuple[SourceStep, ...]] = {}
+        from .joint_dispatch import MAX_JOINT_VALIDATIONS
+
+        if budget.used > MAX_JOINT_VALIDATIONS - 8:
+            return _simulate_reserve(
+                config,
+                replace(inputs, consumption_uncertainty=None),
+                extra_ac,
+                1.0,
+                feedin,
+            )
+        counter_token = _counted_validation.set(budget)
+        try:
+            reference = _simulate_reserve_reference(
+                config, inputs, required, 1.0, None, traces=reference_traces
+            )
+            reference = _apply_dc_market(
+                config, inputs, required, 1.0, None, reference, reference_traces
+            )
+        finally:
+            _counted_validation.reset(counter_token)
+        steps = reference_traces[id(reference.flows)]
+        stress_reference, stress_steps = (
+            evaluate(tuple(s.flow for s in steps), True)
+            if stressed
+            else (reference, steps)
+        )
+        assert inputs.consumption_uncertainty is not None
+        accepted, accepted_steps, certified_summary = certify(
+            config,
+            reference,
+            steps,
+            stress_reference,
+            stress_steps,
+            inputs.consumption_uncertainty,
+            evaluate,
+            budget,
+            stressed,
+        )
+        assert accepted.reserve_decision is not None
+        first = accepted_steps[0].flow if accepted_steps else None
+        optional = (
+            max(0.0, first.battery_discharge_wh - steps[0].flow.battery_discharge_wh)
+            if first and first.inverter_limit_w
+            else 0.0
+        )
+        floor = max(
+            0.0, inputs.start_soc_percent - config.battery.soc_percent(optional)
+        )
+        accepted = replace(
+            accepted,
+            reserve_decision=replace(
+                accepted.reserve_decision,
+                recharge=certified_summary,
+                inverter_limit_w=first.inverter_limit_w if first else 0.0,
+                headroom_wh=reference.reserve_decision.headroom_wh + optional
+                if reference.reserve_decision
+                else optional,
+                live_ac_floor_percent=max(
+                    0.0,
+                    floor
+                    - max(
+                        config.control.soc_buffer_percent,
+                        config.control.hysteresis_percent,
+                    ),
+                )
+                if optional > ENERGY_EPSILON_WH
+                else reference.reserve_decision.live_ac_floor_percent
+                if reference.reserve_decision
+                else 100.0,
+            ),
+        )
+        state = _RechargeState(
+            reference,
+            steps,
+            stress_reference,
+            stress_steps,
+            accepted,
+            accepted_steps,
+            tuple(stress),
+            budget,
+        )
+        cache.references[id(inputs)] = inputs
+        cache.references[id(config)] = config
+        cache.recharge[key] = state
+    booked, booked_steps = state.accepted, state.accepted_steps
+    if feedin is not None or (extra_ac is not None and extra_ac != required):
+        if not _smooth_source_schedule.get():
+            return simulate_fixed_dispatch(
+                config, inputs, extra_ac, state.accepted, feedin
+            )
+        booked_traces: dict[int, tuple[SourceStep, ...]] = {}
+        booked = _simulate_reserve_policy(
+            config,
+            inputs,
+            extra_ac,
+            1.0,
+            feedin,
+            fixed_sources=tuple(source_state(s.flow) for s in state.accepted_steps),
+            fixed_limits=tuple(s.flow.inverter_limit_w for s in state.accepted_steps),
+            traces=booked_traces,
+        )
+        booked_steps = booked_traces[id(booked.flows)]
+        assert booked.reserve_decision is not None
+        booked = replace(
+            booked,
+            reserve_decision=replace(
+                booked.reserve_decision,
+                recharge=state.accepted.reserve_decision.recharge
+                if state.accepted.reserve_decision
+                else None,
+            ),
+        )
+    if not _smooth_source_schedule.get():
+        return booked
+    actual_extra = extra_ac if extra_ac is not None else required
+    summary = (
+        state.accepted.reserve_decision.recharge
+        if state.accepted.reserve_decision
+        else None
+    )
+    assert summary is not None
+    stress_required = any(scale < 1 - ENERGY_EPSILON_WH for scale in state.stress)
+
+    def evaluate_joint(proposal: tuple[HourFlows, ...]):
+        state.budget.record()
+        traces: dict[int, tuple[SourceStep, ...]] = {}
+        trial = _simulate_reserve_policy(
+            config,
+            inputs,
+            actual_extra,
+            1.0,
+            feedin,
+            fixed_sources=tuple(source_state(f) for f in proposal),
+            fixed_limits=tuple(f.inverter_limit_w for f in proposal),
+            traces=traces,
+        )
+        return trial, traces[id(trial.flows)]
+
+    def validate_joint(
+        trial: Trajectory, trial_steps: Sequence[SourceStep]
+    ) -> str | None:
+        if not preserves_certificates(trial_steps, summary.certificates):
+            return "recharge_certificate"
+        return _recharge_failure(
+            config,
+            inputs,
+            state,
+            trial,
+            trial_steps,
+            actual_extra,
+            feedin,
+        )
+
+    result = joint_dispatch(
+        config,
+        booked,
+        booked_steps,
+        inputs.market_prices,
+        evaluate_joint,
+        validate_joint,
+        state.budget,
+        2 if stress_required else 1,
+    )
+    assert result.reserve_decision is not None
+    return replace(
+        result,
+        reserve_decision=replace(
+            result.reserve_decision,
+            recharge=replace(summary, validations=state.budget.used),
+        ),
+    )
+
+
+def _recharge_failure(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    state: _RechargeState,
+    trial: Trajectory,
+    steps: Sequence[SourceStep],
+    extra_ac: tuple[float, ...] | None,
+    feedin: tuple[float, ...] | None,
+) -> str | None:
+    from .joint_dispatch import MAX_JOINT_VALIDATIONS
+    from .recharge import anchor_failure, preserves_certificates
+
+    summary = (
+        state.accepted.reserve_decision.recharge
+        if state.accepted.reserve_decision
+        else None
+    )
+    assert summary is not None and inputs.consumption_uncertainty is not None
+    if not preserves_certificates(steps, summary.certificates):
+        return "recharge_certificate"
+    stressed = any(scale < 1 - ENERGY_EPSILON_WH for scale in state.stress)
+    if state.budget.used + int(stressed) > MAX_JOINT_VALIDATIONS:
+        return "search_limit"
+    stressed_trial, stressed_steps = trial, steps
+    if stressed:
+        state.budget.record()
+        traces: dict[int, tuple[SourceStep, ...]] = {}
+        stressed_trial = _simulate_reserve_policy(
+            config,
+            inputs,
+            extra_ac,
+            state.stress,
+            feedin,
+            fixed_sources=tuple(source_state(s.flow) for s in steps),
+            fixed_limits=tuple(s.flow.inverter_limit_w for s in steps),
+            traces=traces,
+        )
+        stressed_steps = traces[id(stressed_trial.flows)]
+    general_failure = uncertainty_failure(
+        config,
+        state.stress_reference,
+        stressed_trial,
+        state.stress_steps,
+        stressed_steps,
+    )
+    if general_failure is not None:
+        return general_failure
+    for certificate in summary.certificates:
+        start = next(
+            i
+            for i, step in enumerate(steps)
+            if step.slot.start.timestamp() == certificate.start.timestamp()
+        )
+        from .recharge import step_end
+
+        anchor = next(
+            i
+            for i, step in enumerate(state.reference_steps)
+            if step_end(step).timestamp() == certificate.anchor.timestamp()
+        )
+        failure = anchor_failure(
+            config,
+            state.reference,
+            trial,
+            state.reference_steps,
+            steps,
+            start,
+            anchor,
+            inputs.consumption_uncertainty,
+            summary.certificates,
+        )
+        if failure is None:
+            failure = anchor_failure(
+                config,
+                state.stress_reference,
+                stressed_trial,
+                state.stress_steps,
+                stressed_steps,
+                start,
+                anchor,
+                inputs.consumption_uncertainty,
+                summary.certificates,
+            )
+        if failure is not None:
+            return failure
+    return None
+
+
+def recharge_preserved(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    reference: Trajectory,
+    trial: Trajectory,
+    *,
+    evaluation_inputs: PlanInputs | None = None,
+) -> bool:
+    """Optional loads receive a fixed-dispatch proof, never a fresh DC search."""
+    if reference is trial and evaluation_inputs is None:
+        return True
+    if not reference.reserve_decision or not reference.reserve_decision.recharge:
+        return True
+    if reference.reserve_decision.recharge.status == "manual_feed_in":
+        # This diagnostic marks the unchanged legacy path, which creates no
+        # frozen repayment reference or new credit for optional callers.
+        return True
+    cache = _reserve_cache.get()
+    if cache is None:
+        return False
+    owner = cache.recharge_inputs
+    original_config = cache.recharge_config
+    if owner is None or not _same_recharge_inputs(inputs, owner):
+        return False
+    if original_config is not None and any(
+        getattr(config, name) != getattr(original_config, name)
+        for name in (
+            "battery",
+            "charger",
+            "inverter",
+            "support",
+            "pv",
+            "control",
+            "reserve",
+        )
+    ):
+        return False
+    # Feed-in candidates retain the original no-feed-in reference.
+    state = cache.recharge.get(_recharge_key(config, inputs, None))
+    if state is None:
+        return False
+    actual_inputs = evaluation_inputs if evaluation_inputs is not None else inputs
+    if len(actual_inputs.slots) != len(owner.slots) or len(trial.flows) != len(
+        owner.slots
+    ):
+        return False
+    if any(
+        slot.ac_wh < original.ac_wh - ENERGY_EPSILON_WH
+        for original, slot in zip(owner.slots, actual_inputs.slots, strict=True)
+    ):
+        return False
+    # An appliance may add measured AC demand, never substitute PV, DC,
+    # interval boundaries or uncertainty to create a different proof ledger.
+    unchanged_house = replace(
+        actual_inputs,
+        slots=tuple(
+            replace(slot, ac_wh=original.ac_wh)
+            for original, slot in zip(owner.slots, actual_inputs.slots, strict=True)
+        ),
+    )
+    if not _same_recharge_inputs(unchanged_house, owner):
+        return False
+    sources: list[SourceState] = []
+    limits: list[float] = []
+    for slot, flow in zip(actual_inputs.slots, trial.flows, strict=True):
+        for small, _ in split_slot(slot):
+            interval = next(
+                (
+                    part
+                    for part in flow.switching_schedule
+                    if part.start.timestamp()
+                    <= small.start.timestamp()
+                    < part.end.timestamp()
+                ),
+                None,
+            )
+            sources.append(
+                (interval.support_dc24, interval.support_dc48)
+                if interval
+                else source_state(flow)
+            )
+            limits.append(
+                config.inverter.max_power_w
+                if (interval.inverter_on if interval else flow.inverter_on)
+                else 0.0
+            )
+    traces: dict[int, tuple[SourceStep, ...]] = {}
+    extra = tuple(flow.extra_ac_wh for flow in trial.flows)
+    feedin = tuple(flow.feedin_wh for flow in trial.flows)
+    # Rebuild trace using the booked sources; no source economics or search.
+    from .joint_dispatch import MAX_JOINT_VALIDATIONS
+
+    if state.budget.used >= MAX_JOINT_VALIDATIONS:
+        return False
+    state.budget.record()
+    physical = _simulate_reserve_policy(
+        config,
+        actual_inputs,
+        extra,
+        1.0,
+        feedin,
+        fixed_sources=tuple(sources),
+        fixed_limits=tuple(limits),
+        traces=traces,
+    )
+    return (
+        _recharge_failure(
+            config,
+            actual_inputs,
+            state,
+            physical,
+            traces[id(physical.flows)],
+            extra,
+            feedin,
+        )
+        is None
+    )
+
+
 def simulate_reserve_variant(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -485,7 +1025,7 @@ def simulate_fixed_dispatch(
                 else 0.0
             )
     with source_schedule_mode(False):
-        return _simulate_reserve_policy(
+        result = _simulate_reserve_policy(
             config,
             inputs,
             extra_ac,
@@ -494,6 +1034,14 @@ def simulate_fixed_dispatch(
             fixed_sources=tuple(sources),
             fixed_limits=tuple(limits),
         )
+    if reference.reserve_decision is not None and result.reserve_decision is not None:
+        result = replace(
+            result,
+            reserve_decision=replace(
+                result.reserve_decision, recharge=reference.reserve_decision.recharge
+            ),
+        )
+    return result
 
 
 def _apply_dc_market(
@@ -522,6 +1070,11 @@ def _apply_dc_market(
             proposed[index] = states[index]
         if proposed == accepted_states:
             continue
+        counted = _counted_validation.get()
+        if counted is not None and counted.used >= 31:
+            # Leave one pass for the fixed stressed reference. An unsearched
+            # legacy market alternative cannot spend the shared 32nd proof.
+            break
         trial = _simulate_reserve_policy(
             config,
             inputs,
@@ -558,7 +1111,10 @@ def _apply_dc_market(
         smoothed = smooth_sources(
             config, current_steps, tuple(accepted_states), weights, inputs.market_prices
         )
-        if smoothed != tuple(accepted_states):
+        counted = _counted_validation.get()
+        if smoothed != tuple(accepted_states) and (
+            counted is None or counted.used < 31
+        ):
             trial = _simulate_reserve_policy(
                 config,
                 inputs,
@@ -882,6 +1438,9 @@ def _simulate_reserve_policy(
     traces: dict[int, tuple[SourceStep, ...]] | None = None,
 ) -> Trajectory:
     """Execute source protection and the shared forecast preparation envelope."""
+    counted = _counted_validation.get()
+    if counted is not None:
+        counted.record()
     prepared = _prepare_reserve(config, inputs, extra_ac, pv_scale, feedin)
     steps, budgets, nominal_budgets, priorities = (
         prepared.steps,

@@ -23,6 +23,119 @@ const reportNumber = (hass, value) =>
       }).format(value)
     : "—";
 
+export function inputControlReport(hass, input) {
+  if (!input || typeof input !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const state = (value) =>
+    value === true ? t("input_on") : value === false ? t("input_off") : "—";
+  const reasonKey = `input_reason_${input.reason}`;
+  const reason = t(reasonKey);
+  const rows = [
+    [t("input_connection"), state(input.input_on)],
+    [t("input_charge_enable"), state(input.charge_enable)],
+    [t("input_physical_charging"), state(input.charging)],
+    [t("input_output"), state(input.output_on)],
+    [t("input_output_power"), `${reportNumber(hass, input.output_power_w)} W`],
+    [
+      t("input_ownership"),
+      input.owned === true
+        ? t("input_owned")
+        : input.owned === false
+          ? t("input_foreign")
+          : "—",
+    ],
+    [t("input_stop_reason"), reason === reasonKey ? "—" : reason],
+  ];
+  if (
+    typeof input.paused_input_power_w === "number" &&
+    Number.isFinite(input.paused_input_power_w)
+  ) {
+    rows.push([
+      t("input_paused_power"),
+      `${reportNumber(hass, input.paused_input_power_w)} W`,
+    ]);
+    rows.push([
+      t("input_daily_estimate"),
+      `${reportNumber(hass, (input.paused_input_power_w * 24) / 1000)} kWh`,
+    ]);
+  }
+  return `<details data-view-key="input-control"><summary>${esc(t("input_control_title"))}</summary><dl data-input-control>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl></details>`;
+}
+
+export function storageReport(hass, storage) {
+  if (!storage || typeof storage !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const rows = [
+    [
+      t("storage_minimum_target"),
+      `${reportNumber(hass, storage.target_soc_percent)} %`,
+    ],
+    [
+      t("storage_deficit"),
+      `${reportNumber(hass, storage.initial_deficit_wh)} Wh`,
+    ],
+    [
+      t("storage_recovery_energy"),
+      `${reportNumber(hass, storage.recovery_planned_wh)} Wh`,
+    ],
+    [
+      t("storage_topup_energy"),
+      `${reportNumber(hass, storage.topup_planned_wh)} Wh`,
+    ],
+  ];
+  const days = Array.isArray(storage.day_end_energy_wh)
+    ? storage.day_end_energy_wh.map(([day, energy]) => [
+        day,
+        typeof energy === "number" && storage.capacity_wh > 0
+          ? (energy / storage.capacity_wh) * 100
+          : undefined,
+      ])
+    : [];
+  const reasons = Array.isArray(storage.reasons)
+    ? [...new Set(storage.reasons)]
+    : [];
+  return `<details data-view-key="storage-target"><summary>${esc(t("storage_title"))}</summary><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${reasons.length ? `<ul>${reasons.map((reason) => `<li>${esc(t(reason) === reason ? t("storage_unproved") : t(reason))}</li>`).join("")}</ul>` : ""}${days.length ? `<table data-storage-days><thead><tr><th>${esc(t("storage_day"))}</th><th>${esc(t("storage_end_soc"))}</th><th>${esc(t("storage_deficit"))}</th></tr></thead><tbody>${days.map((day) => `<tr><th>${esc(day[0])}</th><td>${esc(reportNumber(hass, day[1]))} %</td><td>${esc(reportNumber(hass, storage.target_soc_percent != null && day[1] != null && storage.capacity_wh != null ? (Math.max(0, storage.target_soc_percent - day[1]) / 100) * storage.capacity_wh : undefined))} Wh</td></tr>`).join("")}</tbody></table>` : ""}</details>`;
+}
+
+export function rechargeReport(hass, recharge) {
+  if (!recharge || typeof recharge !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const commitments = Array.isArray(recharge.certificates)
+    ? recharge.certificates
+    : [];
+  const total = (kind) => {
+    if (!Array.isArray(recharge.certificates)) return undefined;
+    const matching = commitments.filter((item) => item.kind === kind);
+    if (
+      matching.some(
+        (item) =>
+          typeof item.battery_draw_wh !== "number" ||
+          !Number.isFinite(item.battery_draw_wh),
+      )
+    )
+      return undefined;
+    return matching.reduce((sum, item) => sum + item.battery_draw_wh, 0);
+  };
+  const statusKey = `recharge_${recharge.status}`;
+  const rejections = Array.isArray(recharge.rejection_reasons)
+    ? [...new Set(recharge.rejection_reasons)]
+    : [];
+  const rejectionText = (reason) => {
+    for (const prefix of ["recharge_reason_", "report_joint_reason_"]) {
+      const key = `${prefix}${reason}`;
+      if (t(key) !== key) return t(key);
+    }
+    return t("recharge_unproved");
+  };
+  const rows = [
+    [t("recharge_status"), t(statusKey) === statusKey ? "—" : t(statusKey)],
+    [t("recharge_validations"), reportNumber(hass, recharge.validations)],
+    [t("recharge_dc_energy"), `${reportNumber(hass, total("dc24"))} Wh`],
+    [t("recharge_ac_energy"), `${reportNumber(hass, total("ac"))} Wh`],
+  ];
+  return `<section data-recharge><h4>${esc(t("recharge_title"))}</h4><p>${esc(t("recharge_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${commitments.length ? `<ol>${commitments.map((item) => `<li>${esc(reportTime(hass, item.anchor))} · ${esc(reportNumber(hass, item.battery_draw_wh))} Wh</li>`).join("")}</ol>` : ""}${rejections.length ? `<details data-recharge-rejections><summary>${esc(t("report_joint_rejections"))}</summary><ul>${rejections.map((reason) => `<li>${esc(rejectionText(reason))}</li>`).join("")}</ul></details>` : ""}</section>`;
+}
+
 export function stateNotice(hass, state) {
   if (!state || !["unknown", "unavailable"].includes(state.state)) return "";
   const hasPlan = [
@@ -441,6 +554,7 @@ export function reserveReport(hass, reserve, support, calibration) {
     ${reserve.dc24_transfer_verified === false ? `<p data-reserve-transfer="unverified">${esc(t("report_dc24_transfer_unverified"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
     ${jointMarketReport(hass, reserve.market?.joint)}
+    ${rechargeReport(hass, reserve.recharge)}
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} · ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 

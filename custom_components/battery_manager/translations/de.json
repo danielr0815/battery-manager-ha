@@ -322,7 +322,8 @@
         "cascade_soc_order": "Es muss Sicherheitsuntergrenze < Kaskaden-Entladeziel <= Ladeziel-SOC gelten.",
         "cascade_handover_timeout": "Der Zeitlimit für Quellenwechsel muss mindestens 60 Sekunden betragen.",
         "cascade_actor_in_use": "Alle Aktoren müssen eindeutig und exklusiv einer Kaskade zugeordnet sein.",
-        "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet."
+        "actor_in_use": "Dieser Aktor wird bereits von einer Last, Kaskade oder Versorgung verwendet.",
+        "auto_output_requires_enable": "Automatischer Passthrough-Schutz benötigt eine separate Ladefreigabe, damit die Batterie unabhängig vom Eingang gestoppt werden kann."
       },
       "initiate_flow": {
         "user": "Überschusslast hinzufügen",
@@ -364,7 +365,7 @@
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
-            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird.",
+            "input_off_policy": "Automatisch: eigene Eingänge nach Ladeende ausschalten, sobald ein konfigurierter AC-Ausgang bestätigt AUS ist. EIN oder unbekannt schützt Passthrough, auch bei 0 W. Fremd eingeschaltete Eingänge bleiben an. Anlassen erhält den Eingang immer.",
             "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15.",
             "tank_full_runtime_min": "Für ein Gerät mit Leistungsmessung, das intern stoppt, wenn ein Verbrauchsbehälter voll ist (z. B. Entfeuchter: Wassertank voll -> ~2 W). Startschätzung der Laufzeit bis der Behälter voll ist; sobald ein Tank-Zyklus beobachtet wurde, übernimmt der gelernte Median. Wird NUR für die Leerungs-Benachrichtigung (voraussichtlich voll in < 60 Min. geplanter Laufzeit) und die Diagnose genutzt — das Gerät wird nie vorsorglich abgeschaltet; ist der Behälter wirklich voll, stoppt das Gerät selbst und die Planung folgt der gemessenen Leistung (Leistungswarnung). Mit dem Laufzeit-Reset-Knopf (oder automatisch, sobald das Gerät wieder mit voller Leistung läuft) den Behälter als geleert markieren. 0 = aus; nur sinnvoll mit Leistungssensor."
           }
@@ -403,7 +404,7 @@
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang.",
-            "input_off_policy": "Was mit der Steckdose passiert, wenn BM die Last abschaltet. „Automatisch“ = nur ausschalten, wenn BM sie selbst eingeschaltet hat — empfohlen, wenn die Steckdose auch für Passthrough genutzt wird.",
+            "input_off_policy": "Automatisch: eigene Eingänge nach Ladeende ausschalten, sobald ein konfigurierter AC-Ausgang bestätigt AUS ist. EIN oder unbekannt schützt Passthrough, auch bei 0 W. Fremd eingeschaltete Eingänge bleiben an. Anlassen erhält den Eingang immer.",
             "power_warning_dwell_min": "Wie lange die Abweichung anhalten muss, bevor die Warnung angeht. Überbrückt kurze Abtau-Pausen; ein kleinerer Wert warnt früher. Standard 15.",
             "tank_full_runtime_min": "Für ein Gerät mit Leistungsmessung, das intern stoppt, wenn ein Verbrauchsbehälter voll ist (z. B. Entfeuchter: Wassertank voll -> ~2 W). Startschätzung der Laufzeit bis der Behälter voll ist; sobald ein Tank-Zyklus beobachtet wurde, übernimmt der gelernte Median. Wird NUR für die Leerungs-Benachrichtigung (voraussichtlich voll in < 60 Min. geplanter Laufzeit) und die Diagnose genutzt — das Gerät wird nie vorsorglich abgeschaltet; ist der Behälter wirklich voll, stoppt das Gerät selbst und die Planung folgt der gemessenen Leistung (Leistungswarnung). Mit dem Laufzeit-Reset-Knopf (oder automatisch, sobald das Gerät wieder mit voller Leistung läuft) den Behälter als geleert markieren. 0 = aus; nur sinnvoll mit Leistungssensor."
           }
@@ -417,7 +418,7 @@
             "soc_entity": "SOC-Sensor (optional)",
             "charge_enable_entity": "Lade-Freigabe-Entität (optional, z. B. input_boolean)",
             "discharge_floor_soc_percent": "Sicherheitsuntergrenze (%)",
-            "recovery_soc_percent": "Kaskaden-Entladeziel (%)",
+            "recovery_soc_percent": "Bevorzugtes Mindest-Ladeziel / Kaskaden-Entladeziel (%)",
             "wake_timeout_s": "Zeitlimit für Speicheraktivierung (s)",
             "handover_min_power_w": "Leistungsnachweis mindestens (W)",
             "handover_timeout_s": "Zeitlimit für Quellenwechsel (s)",
@@ -433,15 +434,19 @@
             "cascade_max_output_power_w": "Maximale Ausgangsleistung (W, optional)",
             "cascade_max_passthrough_power_w": "Maximale Durchleitungsleistung (W, optional)",
             "output_idle_power_w": "Leerlaufschwelle im Einzelbetrieb (W, optional)",
-            "output_idle_duration_min": "Leerlaufdauer im Einzelbetrieb (min, optional)"
+            "output_idle_duration_min": "Leerlaufdauer im Einzelbetrieb (min, optional)",
+            "charging_feedback_entity": "Tatsächliche Batterieladung: Rückmeldung (optional)",
+            "input_power_entity": "Leistungsaufnahme am Eingang: Sensor (optional)"
           },
           "data_description": {
             "capacity_wh": "Speichergröße der Last (nur bei „energiebegrenzt“ relevant), z. B. 2000 für eine 2-kWh-Powerstation.",
             "target_soc_percent": "Bis zu diesem Ladezustand wird die Last geladen; darüber gilt sie als voll und wird nicht mehr eingeplant.",
             "discharge_floor_soc_percent": "Untere Sicherheitsgrenze. Der normale Kaskadenbetrieb beendet die Entladung bereits am Kaskaden-Entladeziel.",
-            "recovery_soc_percent": "Bis zu diesem SOC darf die Kaskade den Speicher über die Endlast entladen. Energie oberhalb des Ziels darf auch ohne Wiederauflade-Nachweis für denselben Tag genutzt werden.",
+            "recovery_soc_percent": "Bevorzugtes Ladeziel für diesen Speicher, unabhängig von Kaskaden. Erst nach Hausversorgung und Recovery aller Speicher folgt zusätzliches Laden bis zum oberen Ziel. Innerhalb einer Kaskade zugleich das normale Entladeziel. Ohne Wert bleibt die bevorzugte Recovery für Einzel-Speicher deaktiviert.",
             "soc_entity": "Ladezustands-Sensor der Last. Schläft das Gerät (Sensor nicht verfügbar), rechnet die Planung mit dem letzten bekannten Wert weiter.",
-            "charge_enable_entity": "Freigabe „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Durchleitung), ohne die Batterie zu laden."
+            "charge_enable_entity": "Freigabe „Batterie darf laden“: wird zusammen mit dem Eingang geschaltet. Erlaubt es, den Ausgang der Powerstation aus dem Netz zu versorgen (Durchleitung), ohne die Batterie zu laden.",
+            "charging_feedback_entity": "Binärer Gerätesensor für die tatsächliche Batterieladung. Ladefreigabe und Eingangsschalter sind kein Ladungsnachweis. Ohne diese Zuordnung bleibt die Rückmeldung unbekannt.",
+            "input_power_entity": "Leistungssensor am externen Eingangsstecker einschließlich Eigenverbrauch. Der Geräte-Eingangssensor kann während einer Ladepause 0 W melden und eignet sich nicht zur Standby-Messung."
           }
         }
       }
@@ -1109,6 +1114,9 @@
       },
       "cascade_fault_reset": {
         "name": "{name} Störung zurücksetzen"
+      },
+      "load_input_takeover": {
+        "name": "{name} Eingang manuell übernehmen"
       }
     }
   },

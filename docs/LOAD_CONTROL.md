@@ -4,6 +4,17 @@
 > Extends REQUIREMENTS.md (L requirements) and ALGORITHM.md with direct
 > actuation of powerstation charging paths by the integration.
 
+## Eingangssteuerung ab 0.63.0
+
+Aktueller Vertrag: [Hausversorgung und Eingangssteuerung](F-HOUSE-RECHARGE-STORAGE.md).
+`auto` erhält fremd eingeschaltete Eingänge. Bei eigenen Eingängen schützt ein
+bestätigt eingeschalteter AC-Ausgang auch bei 0 W den Passthrough. Eine unbekannte
+konfigurierte Ausgangsrückmeldung hält ebenfalls; bestätigt OFF erlaubt eine
+fristgerechte Abschaltung. Eingangsnachlauf erhält die Schalthoheit und wird auch
+bei fehlgeschlagener Planung wieder geprüft. `keep_on` bedeutet weiterhin, den
+Eingang dauerhaft zu erhalten. Die folgenden historischen Ablaufbeschreibungen
+werden durch diesen Zusatz ergänzt.
+
 ## Fossibot charging adapter (0.59.2)
 
 The [Fossibot charge-pause blueprint](F-FOSSIBOT-CHARGE-PAUSE.md) replaces the

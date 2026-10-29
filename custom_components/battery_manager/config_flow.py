@@ -78,6 +78,7 @@ from .const import (
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_DISCHARGE_FLOOR_SOC,
     CONF_LOAD_ENERGY_ENTITY,
@@ -92,6 +93,7 @@ from .const import (
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_ACTOR_MODE,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_MAX_CHARGE_POWER_W,
     CONF_LOAD_MAX_OUTPUT_POWER_W,
     CONF_LOAD_MAX_PASSTHROUGH_POWER_W,
@@ -152,6 +154,7 @@ from .const import (
     DEFAULT_LOAD_CONFIG,
     DOMAIN,
     INPUT_OFF_POLICIES,
+    INPUT_OFF_POLICY_AUTO,
     INPUT_OFF_POLICY_KEEP,
     LIVE_AC_POWER_KEYS,
     OPERATION_POWER_SOURCES,
@@ -749,6 +752,13 @@ def _validate_load_control(data: dict[str, Any]) -> str | None:
         CONF_LOAD_CHARGE_ENABLE
     ):
         return "keep_on_requires_enable"
+    if (
+        data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
+        == INPUT_OFF_POLICY_AUTO
+        and data.get(CONF_LOAD_OUTPUT_SWITCH)
+        and not data.get(CONF_LOAD_CHARGE_ENABLE)
+    ):
+        return "auto_output_requires_enable"
     control = data.get(CONF_LOAD_CONTROL_SWITCH)
     if control and control == data.get(CONF_LOAD_CHARGE_ENABLE):
         return "control_entities_not_distinct"
@@ -1302,6 +1312,8 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
     _STORAGE_ENTITY_KEYS = (
         CONF_LOAD_SOC_ENTITY,
         CONF_LOAD_CHARGE_ENABLE,
+        CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
+        CONF_LOAD_INPUT_POWER_ENTITY,
         CONF_LOAD_OUTPUT_SWITCH,
         CONF_LOAD_OUTPUT_POWER_ENTITY,
         CONF_LOAD_MAX_CHARGE_POWER_W,
@@ -1429,8 +1441,9 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                 CONF_LOAD_DISCHARGE_FLOOR_SOC,
                 default=dv(CONF_LOAD_DISCHARGE_FLOOR_SOC),
             ): _number(0, 99, 1, "%"),
-            vol.Required(
-                CONF_LOAD_RECOVERY_SOC, default=dv(CONF_LOAD_RECOVERY_SOC)
+            vol.Optional(
+                CONF_LOAD_RECOVERY_SOC,
+                description={"suggested_value": data.get(CONF_LOAD_RECOVERY_SOC, 50.0)},
             ): _number(1, 100, 1, "%"),
             vol.Required(
                 CONF_LOAD_WAKE_TIMEOUT_S, default=dv(CONF_LOAD_WAKE_TIMEOUT_S)
@@ -1456,6 +1469,8 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
         }
         for key, domain in (
             (CONF_LOAD_SOC_ENTITY, "sensor"),
+            (CONF_LOAD_CHARGING_FEEDBACK_ENTITY, "binary_sensor"),
+            (CONF_LOAD_INPUT_POWER_ENTITY, "sensor"),
             (CONF_LOAD_CHARGE_ENABLE, ["input_boolean", "switch"]),
             (CONF_LOAD_OUTPUT_SWITCH, "switch"),
             (CONF_LOAD_OUTPUT_POWER_ENTITY, "sensor"),
@@ -1500,6 +1515,15 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                 data[key] = self._existing[key]
         data.update(self._basic)
         data.update(storage_input)
+        # The suggestion is not a persisted default; omission disables recovery.
+        data.pop(CONF_LOAD_RECOVERY_SOC, None)
+        if CONF_LOAD_RECOVERY_SOC in storage_input:
+            data[CONF_LOAD_RECOVERY_SOC] = storage_input[CONF_LOAD_RECOVERY_SOC]
+        elif (
+            not self._basic.get(CONF_LOAD_ENERGY_LIMITED)
+            and CONF_LOAD_RECOVERY_SOC in self._existing
+        ):
+            data[CONF_LOAD_RECOVERY_SOC] = self._existing[CONF_LOAD_RECOVERY_SOC]
         if self._is_reconfigure:
             # Reject incompatible type/actor changes before any sibling writes.
             entry = self._get_entry()
@@ -1687,10 +1711,13 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             # from the basic step, charge-enable from this one.
             combined = {**self._basic, **user_input}
             error = _validate_load_control(combined)
-            floor = float(combined.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 0.0))
-            recovery = float(combined.get(CONF_LOAD_RECOVERY_SOC, 0.0))
+            recovery = combined.get(CONF_LOAD_RECOVERY_SOC)
             target = float(combined.get(CONF_LOAD_TARGET_SOC, 100.0))
-            if error is None and not floor < recovery <= target:
+            if (
+                error is None
+                and recovery is not None
+                and not 0.0 < float(recovery) <= target
+            ):
                 error = "cascade_soc_order"
             idle_power = combined.get(CONF_LOAD_IDLE_POWER_W)
             idle_duration = combined.get(CONF_LOAD_IDLE_DURATION_MIN)
@@ -1944,7 +1971,10 @@ class CascadeSubentryFlow(ConfigSubentryFlow):
             if index > 0 and values.get(CONF_LOAD_CONTROL_SWITCH):
                 return "cascade_nonroot_input_forbidden"
             floor = float(values.get(CONF_LOAD_DISCHARGE_FLOOR_SOC, 20.0))
-            recovery = float(values.get(CONF_LOAD_RECOVERY_SOC, 50.0))
+            recovery_value = values.get(CONF_LOAD_RECOVERY_SOC)
+            if recovery_value is None:
+                return "cascade_member_incomplete"
+            recovery = float(recovery_value)
             target = float(values.get(CONF_LOAD_TARGET_SOC, 100.0))
             if not 0.0 <= floor < recovery <= target <= 100.0:
                 return "cascade_soc_order"

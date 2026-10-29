@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.0] - 2026-10-29
+
+### Added
+
+- Rückladegesicherte zusätzliche Hausbatterienutzung: DCDC vor AC, feste
+  solare Rückladetermine sowie gemeinsame nominale und pessimistische
+  Energie-, Versorgungs- und Reserveprüfungen.
+- Bevorzugte Speicher-Mindestladeziele unabhängig von Kaskadenmitgliedschaft,
+  mit globaler Recovery vor Top-up und durchgängiger Mehrtagesbilanz.
+- Passthrough-Schutz für die automatische Eingangsabschaltung und ausdrückliche
+  manuelle Übernahme eines Eingangs. Ladefreigabe, physische Ladung,
+  Eingangsbesitz und gehaltene Eingänge werden getrennt diagnostiziert.
+
+### Changed
+
+- Hausversorgung hat Vorrang vor optionalen Speicher-Mindestzielen. Zusätzliche
+  Entnahme darf erst nach vollständigem Rückladenachweis eingeplant werden;
+  eine erste kleine PV-Ladung beendet diesen Nachweis nicht.
+- `auto` erhält eigene Eingänge bei eingeschaltetem oder unbekanntem
+  konfiguriertem AC-Ausgang. Nach bestätigtem Ausgang-OFF wird die Abschaltung
+  unabhängig von einer erfolgreichen neuen Planung nachgeholt. `keep_on`
+  behält die ausdrückliche dauerhafte Eingangsversorgung.
+- Gespeicherte Recovery-Ziele werden für Einzel-Speicher wirksam; fehlende
+  Altwerte bleiben neutral. Vorhandene Konfigurationen und alte
+  Planneraufzeichnungen bleiben lesbar.
+- Aktive manuelle Einspeisung bleibt beim bisherigen Reserveverfahren und
+  erhält keine zusätzlichen Rückladekredite. Die Diagnose weist diese
+  Grenze ausdrücklich aus.
+
 ## [0.62.1] - 2026-10-19
 
 ### Fixed

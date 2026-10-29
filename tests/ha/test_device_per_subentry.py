@@ -108,8 +108,13 @@ async def test_entities_survive_setup(hass, caplog):
     rows = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
     # Entry-level (7 sensors, inverter binary sensor, vacation switch) plus
     # per-load rows (recommendation, power warning, runtime, planning power,
-    # control, runtime reset and power calibration).
-    assert len(rows) == 16
+    # control, runtime reset, input ownership takeover and power calibration).
+    assert len(rows) == 17
+    takeover = ent_reg.async_get_entity_id(
+        "button", DOMAIN, f"{entry.entry_id}_load_input_takeover_{sub_id}"
+    )
+    assert takeover is not None
+    assert hass.states.get(takeover) is not None
     missing = [row.entity_id for row in rows if hass.states.get(row.entity_id) is None]
     assert not missing, f"entities missing from the state machine: {missing}"
 

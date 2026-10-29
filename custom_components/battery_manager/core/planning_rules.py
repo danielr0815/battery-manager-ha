@@ -449,11 +449,13 @@ def _cumulative_charge_caps(
     discharge_by_slot_wh: list[float],
 ) -> tuple[float, ...]:
     """Release a target's AC-input budget only after headroom exists."""
-    available_wh = max(0.0, target_soc - initial_soc) / 100.0 * capacity_wh / eta_charge
+    # Keep surplus above the target as credit: an Aux discharge that merely
+    # spends that credit does not create a recovery obligation.
+    deficit_stored_wh = (target_soc - initial_soc) / 100.0 * capacity_wh
     caps: list[float] = []
     for discharged_wh in discharge_by_slot_wh:
-        caps.append(min(total_wh, available_wh))
-        available_wh += discharged_wh / eta_charge
+        caps.append(min(total_wh, max(0.0, deficit_stored_wh) / eta_charge))
+        deficit_stored_wh += discharged_wh
     return tuple(caps)
 
 

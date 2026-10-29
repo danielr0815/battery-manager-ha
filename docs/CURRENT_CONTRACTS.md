@@ -6,6 +6,20 @@ Bei Widersprüchen zu früheren Beschreibungen gelten die hier genannten Verträ
 Die [Architektur](ARCHITECTURE.md) ordnet sie dem Code zu; die
 [Testmatrix](TEST_MATRIX.md) benennt die ausführbaren Nachweise.
 
+## Hausversorgung, Speicherziele und Eingangssteuerung ab 0.63.0
+
+[Hausversorgung und Rückladepflichten](F-HOUSE-RECHARGE-STORAGE.md) ergänzt die
+konservative Referenz um separat zertifizierte zusätzliche DCDC-/AC-Entnahme.
+Hausversorgung steht vor optionaler Recovery; Mindestladeziele gelten unabhängig
+von Kaskaden. Die erste kleine PV-Ladung beendet den neuen Nachweis nicht.
+Die bisherige reine Marktumverteilung behält ihre festen Fenster; zusätzliche
+Freigaben müssen ihre längeren Rückladezusagen auch nach Lastbuchungen erhalten.
+
+`auto` hält eigene Eingänge bei eingeschaltetem oder unbekanntem konfiguriertem
+AC-Ausgang und holt die Abschaltung bei bestätigtem OFF nach. Eingangsnachlauf,
+Ladezustand und Schalthoheit bleiben getrennt. `keep_on` behält seine Bedeutung.
+Alte Aufzeichnungen ohne neue Eingaben bleiben neutral und lesbar.
+
 ## Gemeinsame AC/DC-Marktverteilung ab 0.62.0
 
 Der konservative DC-Vorrang erzeugt weiterhin eine sichere Referenz. Erst nach

@@ -8,7 +8,7 @@ import logging
 import math
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from typing import Any
@@ -88,6 +88,7 @@ from .const import (
     CONF_LOAD_BATTERY_TOLERANCE,
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_DISCHARGE_FLOOR_SOC,
     CONF_LOAD_ENERGY_ENTITY,
@@ -97,6 +98,7 @@ from .const import (
     CONF_LOAD_HANDOVER_TIMEOUT_S,
     CONF_LOAD_IN_HOUSE,
     CONF_LOAD_INPUT_OFF_POLICY,
+    CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_MAX_CHARGE_POWER_W,
     CONF_LOAD_MAX_OUTPUT_POWER_W,
     CONF_LOAD_MAX_PASSTHROUGH_POWER_W,
@@ -255,7 +257,11 @@ from .core import (
     slot_starts,
 )
 from .core.live_ac import LIVE_AC_PLAN_MAX_AGE_S, LIVE_AC_REPLAN_LEAD_S
-from .core.model import ReserveParams
+from .core.model import (
+    ConsumptionUncertaintyInterval,
+    ConsumptionUncertaintySnapshot,
+    ReserveParams,
+)
 from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
@@ -268,6 +274,8 @@ from .load_actuation import (
     LoadAction,
     confirm_state,
     execute_load_switching,
+    input_diagnostics,
+    input_off_allowed,
     reconcile_feedback,
 )
 from .load_safety import LOAD_GRID_IMPORT_TOLERANCE_W, grid_import_w, start_blocked
@@ -643,6 +651,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._load_soc_cache: dict[str, dict[str, Any]] = {}
         self._load_plug_owned: dict[str, bool] = {}
+        self._load_plug_owned_entities: dict[str, str] = {}
+        self._load_input_on_since: dict[str, datetime] = {}
+        self._load_action_generation: dict[str, int] = {}
         self._last_load_switch: dict[str, datetime] = {}
         self._plan_boundary_cancel: Callable[[], None] | None = None
         self._load_charging_active: dict[str, bool] = {}
@@ -874,9 +885,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for k, v in data.get("load_soc", {}).items()
                 if isinstance(v, dict) and "soc" in v
             }
-            self._load_plug_owned = {
-                k: bool(v) for k, v in data.get("plug_owned", {}).items()
+            # Historical booleans carry no wiring identity and cannot safely
+            # grant control over an input reconfigured while HA was offline.
+            self._load_plug_owned_entities = {
+                k: entity
+                for k, entity in data.get("plug_owned_entities", {}).items()
+                if k in self.entry.subentries
+                and self.entry.subentries[k].data.get(CONF_LOAD_CONTROL_SWITCH)
+                == entity
+                and data.get("plug_owned", {}).get(k) is True
             }
+            self._load_plug_owned = dict.fromkeys(self._load_plug_owned_entities, True)
+            for load_id, stamp in data.get("load_input_on_since", {}).items():
+                parsed = (
+                    dt_util.parse_datetime(stamp) if isinstance(stamp, str) else None
+                )
+                if load_id in self._load_plug_owned_entities and parsed is not None:
+                    self._load_input_on_since[load_id] = parsed
             # The switch dwell survives restarts: a wiped timestamp allowed
             # switching right after boot (co-factor of the 2026-07-05
             # night-charge incident). The live power-sample buffer is
@@ -1077,7 +1102,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 stamp = dt_util.parse_datetime(request.get("requested_at", ""))
                 if stamp is not None:
                     self._load_actor_requests[entity] = ActorRequest(
-                        bool(request["desired"]), stamp, request.get("state", "pending")
+                        bool(request["desired"]),
+                        stamp,
+                        request.get("state", "pending"),
+                        request.get("owner"),
                     )
             # F-FEEDIN: the runtime switch, the manual-mode deadline and our
             # last written setpoint survive restarts — after a reboot "setpoint
@@ -1237,7 +1265,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # feeds the realized accounting on every state change.
                     CONF_LOAD_ENERGY_ENTITY,
                 ]
-                if subentry_id in cascade_member_ids:
+                if not planning_only:
+                    keys.extend(
+                        (
+                            CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
+                            CONF_LOAD_INPUT_POWER_ENTITY,
+                        )
+                    )
+                if subentry_id in cascade_member_ids or not planning_only:
                     keys.extend(
                         (
                             CONF_LOAD_CONTROL_SWITCH,
@@ -1307,6 +1342,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     energy_limited=bool(data.get(CONF_LOAD_ENERGY_LIMITED, False)),
                     capacity_wh=float(data.get(CONF_LOAD_CAPACITY_WH, 0.0)),
                     target_soc_percent=float(data.get(CONF_LOAD_TARGET_SOC, 100.0)),
+                    recovery_soc_percent=(
+                        float(data[CONF_LOAD_RECOVERY_SOC])
+                        if data.get(CONF_LOAD_ENERGY_LIMITED)
+                        and data.get(CONF_LOAD_RECOVERY_SOC) is not None
+                        else None
+                    ),
+                    eta_charge=float(data.get(CONF_LOAD_ETA_CHARGE, 1.0))
+                    if data.get(CONF_LOAD_ENERGY_LIMITED)
+                    else 1.0,
+                    max_charge_power_w=(
+                        float(data[CONF_LOAD_MAX_CHARGE_POWER_W])
+                        if data.get(CONF_LOAD_ENERGY_LIMITED)
+                        and data.get(CONF_LOAD_MAX_CHARGE_POWER_W) is not None
+                        else None
+                    ),
                     # F-GATE-TOPUP R1: a configured charge-enable gate means the
                     # G1 dwell-exempt target stop delivers exactly `rem`, so the
                     # planner may book the final sub-quantum top-up.
@@ -2788,6 +2838,24 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Whether BM may plan/actuate this load (the per-load control switch)."""
         return self._load_bm_enabled.get(load_id, True)
 
+    def take_over_load_input(self, load_id: str) -> None:
+        """Relinquish BM input ownership without changing relays or planning."""
+        sub = self.entry.subentries.get(load_id)
+        if sub is None:
+            return
+        self._load_plug_owned[load_id] = False
+        self._load_plug_owned_entities.pop(load_id, None)
+        self._load_input_on_since.pop(load_id, None)
+        plug = sub.data.get(CONF_LOAD_CONTROL_SWITCH)
+        if isinstance(plug, str):
+            request = self._load_actor_requests.get(plug)
+            if request is not None and request.desired:
+                self._load_actor_requests.pop(plug, None)
+        self._save_persistent_state()
+        if self.data and load_id in self.data.get("load_plans", {}):
+            self.data["load_plans"][load_id].update(input_diagnostics(self, load_id))
+        self.async_update_listeners()
+
     def set_load_enabled(self, load_id: str, enabled: bool) -> None:
         """Enable/disable BM control of one load (v0.7.17 per-load switch).
 
@@ -2867,12 +2935,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return True
         now = dt_util.now()
         previous = self._load_actor_requests.get(entity_id)
-        if previous is not None and previous.desired == desired:
+        if (
+            previous is not None
+            and previous.desired == desired
+            and previous.state != "confirmed"
+        ):
+            # A confirmed command is complete. If the device subsequently
+            # reports the opposite state, stopping it again is a new action,
+            # not a retry of the old request subject to the failure backoff.
             if (now - previous.requested_at).total_seconds() < LOAD_RETRY_INTERVAL_S:
                 return False
             if state is None or state.state not in ("on", "off"):
                 return False
-        request = ActorRequest(desired, now)
+        request = ActorRequest(desired, now, owner=actor_owner)
         self._load_actor_requests[entity_id] = request
         self._save_persistent_state()
         if not await self._switch_entity(entity_id, desired, actor_owner=actor_owner):
@@ -3775,6 +3850,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     minimum_run_until=projection["minimum_run_until"],
                     predrain_not_before=projection["predrain_not_before"],
                     feedin_ready=not projection["confirmation_pending"],
+                    # A reported active charging path is a continuation, not
+                    # a fresh storage start. Unknown feedback cannot waive the
+                    # minimum energy/duration for a new action.
+                    on=self._charging_is_active(data) is True,
                     soc_percent=soc,
                     measured_power_w=measured,
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
@@ -4017,6 +4096,44 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def async_setup_learning(self) -> None:
         """Start the nightly learning job (plus an initial catch-up run)."""
         self.learner.async_schedule()
+
+    @staticmethod
+    def _consumption_uncertainty_snapshot(
+        inputs: PlanInputs, predictions: Sequence[Mapping[str, Any]]
+    ) -> ConsumptionUncertaintySnapshot | None:
+        """Only full measured AC/DC coverage provides a recovery proof."""
+        if not predictions or not all(
+            item[path]["p80_w"] is not None and item[path]["source"] == "learned"
+            for item in predictions
+            for path in ("ac", "dc")
+        ):
+            return None
+        by_start = {
+            dt_util.as_utc(stamp): item
+            for item in predictions
+            if (stamp := dt_util.parse_datetime(item["start"])) is not None
+        }
+        intervals = []
+        for slot in inputs.slots:
+            start = dt_util.as_utc(slot.start)
+            item = by_start.get(start)
+            if item is None:
+                return None
+            intervals.append(
+                ConsumptionUncertaintyInterval(
+                    start=start,
+                    end=start + timedelta(hours=slot.duration),
+                    ac_p80_minus_p50_wh=max(
+                        0.0, item["ac"]["p80_w"] - item["ac"]["p50_w"]
+                    )
+                    * slot.duration,
+                    dc_p80_minus_p50_wh=max(
+                        0.0, item["dc"]["p80_w"] - item["dc"]["p50_w"]
+                    )
+                    * slot.duration,
+                )
+            )
+        return ConsumptionUncertaintySnapshot(tuple(intervals))
 
     def _learned_series(
         self, now: datetime, config: SystemConfig, num_days: int
@@ -4506,7 +4623,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         )
         market_prices, market_diag = read_prices(self.hass, self.raw_config, now)
-        inputs = replace(inputs, market_prices=market_prices)
+        inputs = replace(
+            inputs,
+            market_prices=market_prices,
+            consumption_uncertainty=self._consumption_uncertainty_snapshot(
+                inputs, forecast_predictions
+            ),
+        )
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
         # soon as any learned quantiles exist. Only soc_buffer_percent is
         # overridden here; the grid-support escalation reads its own absolute
@@ -4867,6 +4990,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             since = diag.get("since")
             load_plans[load_plan.load_id] = {
                 "name": load.name,
+                "storage": asdict(load_plan.storage)
+                if load_plan.storage is not None
+                else None,
+                **input_diagnostics(self, load_plan.load_id),
                 "available": load_state.available,
                 "soc_percent": load_state.soc_percent,
                 "target_soc_percent": load.target_soc_percent
@@ -6304,6 +6431,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     entity_id,
                 )
             return False
+        if not turn_on and actor_owner and actor_owner.startswith("load:"):
+            load_id = actor_owner.removeprefix("load:")
+            sub = self.entry.subentries.get(load_id)
+            if sub is None:
+                return False
+            if sub.data.get(
+                CONF_LOAD_CONTROL_SWITCH
+            ) == entity_id and not input_off_allowed(self, load_id):
+                return False
         service = "turn_on" if turn_on else "turn_off"
         supply_request = None
         if actor_owner == SUPPLY_OWNER and self.raw_config.get(
@@ -6850,7 +6986,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         None while an involved entity is unavailable/unknown — a dropout
         must not read as 'charge over' (it would delete the learned power
         EMA mid-charge; same principle as the support-switch re-sync)."""
-        plug = self._entity_tristate(data[CONF_LOAD_CONTROL_SWITCH])
+        input_entity = data.get(CONF_LOAD_CONTROL_SWITCH)
+        if not input_entity:
+            # Recommendation-only loads have no observed charging path.
+            return None
+        plug = self._entity_tristate(input_entity)
         if plug is not True:
             return plug  # False, or None while unavailable
         enable = data.get(CONF_LOAD_CHARGE_ENABLE)
@@ -8140,6 +8280,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
+        reconcile_feedback(self, event)
+        if event is not None:
+            # Normal-load relay feedback only needs ownership/diagnostics.
+            # Scheduling another runtime/planning pass for our own confirmed
+            # writes adds no observation and races counter resets. Output
+            # events still wake the independent cleanup path below.
+            entity = event.data["entity_id"]
+            managed = self.cascade_manager.managed_load_ids()
+            if any(
+                load_id not in managed
+                and sub.subentry_type == SUBENTRY_TYPE_LOAD
+                and entity
+                in (
+                    sub.data.get(CONF_LOAD_CONTROL_SWITCH),
+                    sub.data.get(CONF_LOAD_CHARGE_ENABLE),
+                    sub.data.get(CONF_LOAD_CHARGING_FEEDBACK_ENTITY),
+                    sub.data.get(CONF_LOAD_INPUT_POWER_ENTITY),
+                )
+                for load_id, sub in self.entry.subentries.items()
+            ):
+                return
         own_source_feedback = (
             event is not None
             and event.data["entity_id"] in self._supply_actor_requests

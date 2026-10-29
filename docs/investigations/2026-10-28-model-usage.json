@@ -1,0 +1,226 @@
+{
+  "measured_at_utc": "2026-10-29T17:40:15.312784+00:00",
+  "status": "pre_commit_measurement_cutoff",
+  "scope": "Cumulative local per-session runtime counters. Root includes historical investigation, planning and implementation; agent totals group their preassigned responsibilities. Work after the latest observation is not included.",
+  "counting": "Cached input is a subset of input; reasoning output is a subset of output. Neither is added twice. Recorded cache writes are included only where present. No estimated phase allocation.",
+  "pricing": {
+    "source": "https://developers.openai.com/api/docs/pricing",
+    "verified_date": "2026-10-29",
+    "currency": "USD",
+    "comparison_tier": "Standard",
+    "comparison_context": "Short (normalized reference, not observed per-request context mix)",
+    "unit": "per 1000000 tokens",
+    "rates": {
+      "gpt-6.1-sol": {
+        "uncached_input": 2,
+        "cached_input": 0.1,
+        "output": 10,
+        "cache_write_30m": 2.5,
+        "cache_write_12h": 5
+      },
+      "gpt-6-astra": {
+        "uncached_input": 10,
+        "cached_input": 1,
+        "output": 50,
+        "cache_write_30m": 12.5,
+        "cache_write_12h": 25
+      }
+    },
+    "actual_billing": "unknown; hypothetical API comparison is not ChatGPT/Codex billing",
+    "context_and_tier_limit": "Actual per-request context/tier mix is not reconstructed. The same explicitly selected Standard/Short reference tariff is applied to measured token totals.",
+    "cache_retention_and_surcharges": "Cache-write counters are recorded as zero. Retention mode and actual regional/FedRAMP surcharges are unknown; none is assumed in the reference comparison."
+  },
+  "sessions": [
+    {
+      "agent": "/root",
+      "session_id": "01a17cda-43f0-7011-bf8b-878633cc407a",
+      "started_at_utc": "2026-10-27T10:14:01.462Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6.1-sol",
+          "reasoning": "medium"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-29T17:39:21.992Z",
+        "counters": {
+          "input_tokens": 96285681,
+          "cached_input_tokens": 94487168,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 183278,
+          "reasoning_output_tokens": 66485,
+          "total_tokens": 96468959,
+          "uncached_input_tokens": 1798513
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "14.8785228",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    },
+    {
+      "agent": "/root/analyze_dc_positive",
+      "session_id": "01a1810b-29fe-7aa0-9cd9-f620336f7e70",
+      "started_at_utc": "2026-10-28T05:45:54.990Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6.1-sol",
+          "reasoning": "high"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-28T05:50:39.591Z",
+        "counters": {
+          "input_tokens": 988152,
+          "cached_input_tokens": 895488,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 7037,
+          "reasoning_output_tokens": 4309,
+          "total_tokens": 995189,
+          "uncached_input_tokens": 92664
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "0.3452468",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    },
+    {
+      "agent": "/root/check_partial_state",
+      "session_id": "01a17e22-4147-7970-9c57-56181bf2f890",
+      "started_at_utc": "2026-10-27T16:12:16.586Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6.1-sol",
+          "reasoning": "low"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-29T17:39:13.012Z",
+        "counters": {
+          "input_tokens": 85826371,
+          "cached_input_tokens": 84861568,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 70142,
+          "reasoning_output_tokens": 6088,
+          "total_tokens": 85896513,
+          "uncached_input_tokens": 964803
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "11.1171828",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    },
+    {
+      "agent": "/root/implement_actuation",
+      "session_id": "01a17d08-a2e0-7d02-a3af-16f09fd38eb9",
+      "started_at_utc": "2026-10-27T11:04:40.421Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6.1-sol",
+          "reasoning": "medium"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-28T05:53:42.103Z",
+        "counters": {
+          "input_tokens": 12361479,
+          "cached_input_tokens": 11807872,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 44777,
+          "reasoning_output_tokens": 12467,
+          "total_tokens": 12406256,
+          "uncached_input_tokens": 553607
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "2.7357712",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    },
+    {
+      "agent": "/root/implement_recharge",
+      "session_id": "01a17d07-ec00-7d50-a419-080c778d5e85",
+      "started_at_utc": "2026-10-27T11:03:53.604Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6.1-sol",
+          "reasoning": "medium"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-29T04:49:01.954Z",
+        "counters": {
+          "input_tokens": 26096298,
+          "cached_input_tokens": 25331328,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 104449,
+          "reasoning_output_tokens": 47199,
+          "total_tokens": 26200747,
+          "uncached_input_tokens": 764970
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "5.1075628",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    },
+    {
+      "agent": "/root/implement_storage",
+      "session_id": "01a17d08-4fc3-7b83-b2bb-577172503ae5",
+      "started_at_utc": "2026-10-27T11:04:19.143Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6.1-sol",
+          "reasoning": "medium"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-29T17:27:12.235Z",
+        "counters": {
+          "input_tokens": 32214873,
+          "cached_input_tokens": 30890752,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 88225,
+          "reasoning_output_tokens": 35041,
+          "total_tokens": 32303098,
+          "uncached_input_tokens": 1324121
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "6.6195672",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    },
+    {
+      "agent": "/root/review_recovery_plan",
+      "session_id": "01a17ce2-c842-7210-a675-944b07459942",
+      "started_at_utc": "2026-10-27T10:23:19.623Z",
+      "execution_contexts": [
+        {
+          "model": "gpt-6-astra",
+          "reasoning": "high"
+        }
+      ],
+      "latest_observation": {
+        "at_utc": "2026-10-29T17:32:48.974Z",
+        "counters": {
+          "input_tokens": 17400191,
+          "cached_input_tokens": 16606720,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 54472,
+          "reasoning_output_tokens": 15795,
+          "total_tokens": 17454663,
+          "uncached_input_tokens": 793471
+        }
+      },
+      "hypothetical_api_cost": {
+        "amount_usd": "27.26503",
+        "basis": "normalized Standard/Short tariff; measured session totals through latest_observation"
+      }
+    }
+  ],
+  "hypothetical_api_total_usd": "68.0688836",
+  "post_cutoff_work": "Commit preparation after this snapshot, commit, push, CI observation, tag and release are not included; tokens and costs for that later work are unknown at commit creation."
+}

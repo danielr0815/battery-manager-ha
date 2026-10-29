@@ -294,3 +294,49 @@ def test_peak_allowance_scales_with_capacity_without_weakening_import(capacity):
     assert not any(a[2] == 3 for a in plans[0].allocations)
     assert (0, "daily_peak") in plans[0].rejected_candidates
     assert trajectory.total_import_wh == 0
+
+
+@pytest.mark.parametrize(
+    "status,reason",
+    [("blocked", "house_recharge"), ("search_limit", "house_recharge_search_limit")],
+)
+def test_feedin_reports_failed_fixed_recharge_proof_and_search_limit(
+    monkeypatch, status, reason
+):
+    """Automatic export cannot inherit or conceal a missing house certificate."""
+    from core import optimize as optimize_core
+    from core.model import RechargeSummary, ReserveDecision
+
+    case = _feedin_case((1, 1, 1, 0))
+    assert _book(case)[0][0] > 0  # This energy is otherwise a valid PV booking.
+    config, inputs, extra, load_plan, baseline = case
+
+    def candidate_with_proof_status(*args, **kwargs):
+        candidate = simulate(*args, **kwargs)
+        return replace(
+            candidate,
+            reserve_decision=ReserveDecision(
+                inputs.now + timedelta(hours=4),
+                0,
+                0,
+                0,
+                "dc_priority",
+                recharge=RechargeSummary(status),
+            ),
+        )
+
+    monkeypatch.setattr(optimize_core, "simulate", candidate_with_proof_status)
+    monkeypatch.setattr(optimize_core, "recharge_preserved", lambda *args: False)
+    decisions = []
+    booked, totals = plan_feedin(
+        config,
+        inputs,
+        20,
+        extra,
+        baseline,
+        load_plans=(load_plan,),
+        decisions=decisions,
+    )
+    assert booked == (0, 0, 0, 0)
+    assert totals == {}
+    assert decisions[0] == (0, reason)

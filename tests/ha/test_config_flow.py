@@ -1915,6 +1915,7 @@ async def test_cascade_subentry_creates_ordered_topology(hass):
         CONF_LOAD_OUTPUT_POWER_ENTITY,
         CONF_LOAD_OUTPUT_SWITCH,
         CONF_LOAD_POWER_W,
+        CONF_LOAD_RECOVERY_SOC,
         CONF_LOAD_SOC_ENTITY,
         CONF_LOAD_TARGET_SOC,
         SUBENTRY_TYPE_CASCADE,
@@ -1933,6 +1934,7 @@ async def test_cascade_subentry_creates_ordered_topology(hass):
                     CONF_LOAD_ENERGY_LIMITED: True,
                     CONF_LOAD_CAPACITY_WH: 2000.0,
                     CONF_LOAD_TARGET_SOC: 90.0,
+                    CONF_LOAD_RECOVERY_SOC: 50.0,
                     CONF_LOAD_SOC_ENTITY: "sensor.b1_soc",
                     CONF_LOAD_CONTROL_SWITCH: "switch.b1_input",
                     CONF_LOAD_CHARGE_ENABLE: "switch.b1_charge",
@@ -2172,6 +2174,7 @@ def test_cascade_validator_rejects_load_or_actor_owned_by_another_chain():
         CONF_LOAD_NAME,
         CONF_LOAD_OUTPUT_POWER_ENTITY,
         CONF_LOAD_OUTPUT_SWITCH,
+        CONF_LOAD_RECOVERY_SOC,
         CONF_LOAD_SOC_ENTITY,
         SUBENTRY_TYPE_CASCADE,
         SUBENTRY_TYPE_LOAD,
@@ -2182,6 +2185,7 @@ def test_cascade_validator_rejects_load_or_actor_owned_by_another_chain():
             subentry_type=SUBENTRY_TYPE_LOAD,
             data={
                 CONF_LOAD_ENERGY_LIMITED: True,
+                CONF_LOAD_RECOVERY_SOC: 50.0,
                 CONF_LOAD_SOC_ENTITY: f"sensor.{prefix}_soc",
                 CONF_LOAD_CONTROL_SWITCH: control,
                 CONF_LOAD_CHARGE_ENABLE: f"switch.{prefix}_gate",
@@ -2293,6 +2297,7 @@ def test_separate_cascades_cannot_alias_one_terminal_switch():
             subentry_type=c.SUBENTRY_TYPE_LOAD,
             data={
                 c.CONF_LOAD_ENERGY_LIMITED: True,
+                c.CONF_LOAD_RECOVERY_SOC: 50.0,
                 c.CONF_LOAD_SOC_ENTITY: f"sensor.{prefix}",
                 c.CONF_LOAD_CONTROL_SWITCH: f"switch.{prefix}_input",
                 c.CONF_LOAD_CHARGE_ENABLE: f"switch.{prefix}_gate",
@@ -2523,3 +2528,107 @@ async def test_all_supply_meters_roundtrip_and_clear_entry_data_bindings(hass):
     result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
     assert result["type"] == "create_entry"
     assert all(entry.options[key] is None for key in SUPPORT_POWER_ENTITY_KEYS)
+
+
+def test_storage_recovery_is_an_optional_suggestion_not_a_persisted_default():
+    import voluptuous as vol
+
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.config_flow import (
+        SurplusLoadSubentryFlow as Flow,
+    )
+
+    schema = Flow._storage_schema(SimpleNamespace(), {})
+    marker = next(
+        key for key in schema.schema if key.schema == c.CONF_LOAD_RECOVERY_SOC
+    )
+    assert isinstance(marker, vol.Optional)
+    assert marker.default is vol.UNDEFINED
+    assert marker.description["suggested_value"] == 50.0
+    assert c.CONF_LOAD_RECOVERY_SOC not in schema(
+        {
+            key.schema: key.default()
+            for key in schema.schema
+            if isinstance(key, vol.Required) and key.default is not vol.UNDEFINED
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "storage, existing, submitted, expected",
+    [
+        (False, {}, {}, None),
+        (True, {}, {}, None),
+        (True, {}, {"recovery_soc_percent": 50}, 50),
+        (False, {"recovery_soc_percent": 60}, {}, 60),
+        (True, {"recovery_soc_percent": 60}, {}, None),
+    ],
+)
+def test_storage_finish_keeps_missing_legacy_recovery_disabled(
+    storage, existing, submitted, expected
+):
+    from unittest.mock import Mock
+
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.config_flow import (
+        SurplusLoadSubentryFlow as Flow,
+    )
+
+    entry = SimpleNamespace(subentries={}, data={}, options={})
+    flow = SimpleNamespace(
+        _STORAGE_KEYS=Flow._STORAGE_KEYS,
+        _STORAGE_ENTITY_KEYS=Flow._STORAGE_ENTITY_KEYS,
+        _existing=existing,
+        _basic={
+            c.CONF_LOAD_NAME: "Storage",
+            c.CONF_LOAD_PRIORITY: 1,
+            c.CONF_LOAD_ENERGY_LIMITED: storage,
+        },
+        _is_reconfigure=False,
+        _get_entry=lambda: entry,
+        _renumber_siblings=lambda _: 1,
+        async_create_entry=Mock(),
+    )
+    Flow._finish(flow, submitted)
+    data = flow.async_create_entry.call_args.kwargs["data"]
+    assert data.get(c.CONF_LOAD_RECOVERY_SOC) == expected
+    if expected is None:
+        assert c.CONF_LOAD_RECOVERY_SOC not in data
+
+
+def test_storage_feedback_and_plug_power_are_optional_separate_mappings():
+    import voluptuous as vol
+
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.config_flow import (
+        SurplusLoadSubentryFlow as Flow,
+    )
+
+    schema = Flow._storage_schema(SimpleNamespace(), {})
+    for field in (c.CONF_LOAD_CHARGING_FEEDBACK_ENTITY, c.CONF_LOAD_INPUT_POWER_ENTITY):
+        marker = next(key for key in schema.schema if key.schema == field)
+        assert isinstance(marker, vol.Optional)
+        assert marker.default is vol.UNDEFINED
+        assert field in Flow._STORAGE_ENTITY_KEYS
+
+
+def test_auto_output_requires_independent_charge_gate():
+    from custom_components.battery_manager import const as c
+    from custom_components.battery_manager.config_flow import _validate_load_control
+
+    data = {
+        c.CONF_LOAD_INPUT_OFF_POLICY: c.INPUT_OFF_POLICY_AUTO,
+        c.CONF_LOAD_OUTPUT_SWITCH: "switch.output",
+        c.CONF_LOAD_CONTROL_SWITCH: "switch.input",
+    }
+    assert _validate_load_control(data) == "auto_output_requires_enable"
+    assert (
+        _validate_load_control({**data, c.CONF_LOAD_CHARGE_ENABLE: "switch.gate"})
+        is None
+    )
+    assert (
+        _validate_load_control(
+            {**data, c.CONF_LOAD_INPUT_OFF_POLICY: c.INPUT_OFF_POLICY_ALWAYS}
+        )
+        is None
+    )

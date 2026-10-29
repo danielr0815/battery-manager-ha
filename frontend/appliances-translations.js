@@ -204,6 +204,8 @@ Object.assign(TEXT.en, {
   forecast_horizon_short: "Forecast does not cover a complete cycle",
   extra_grid_import: "Starting would require additional grid energy",
   soc_condition: "Battery conditions are not met",
+  house_recharge:
+    "Starting would compromise a certified house-battery recharge",
   missing_start: "Cycle start was not observed",
   measurement_gap: "Measurement gap",
   clock_changed: "Clock changed during the cycle",
@@ -231,6 +233,8 @@ Object.assign(TEXT.de, {
   forecast_horizon_short: "Prognose deckt keinen vollständigen Lauf ab",
   extra_grid_import: "Ein Start würde zusätzlichen Netzbezug erfordern",
   soc_condition: "Batteriebedingungen sind nicht erfüllt",
+  house_recharge:
+    "Start würde die zugesagte Rückladung der Hausbatterie gefährden",
   missing_start: "Laufbeginn wurde nicht beobachtet",
   measurement_gap: "Messlücke",
   clock_changed: "Uhrzeit während des Laufs geändert",

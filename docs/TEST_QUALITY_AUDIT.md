@@ -170,3 +170,21 @@ Browsertests prüfen Veröffentlichung, Erklärung und alte Payloads. Die
 Replay-Regression verändert fehlende und vorhandene Diagnosefelder getrennt:
 Nur damals fehlende additive Felder werden ausgeklammert; eine veränderte
 aufgezeichnete Beobachtung oder Netzbilanz muss den exakten Vergleich brechen.
+
+## Ergänzung 0.63.0
+
+- `core/test_recharge.py`: feste Tagesanker, nominaler und pessimistischer
+  Rückladenachweis, gemeinsame Zertifikate und planweite Suchgrenze.
+- `core/test_storage_recovery.py`: globale Mindestziel-/Top-up-Reihenfolge,
+  AC-/Speicherenergie, obere Ziele, Zeitkausalität und mehrtägige Bilanz.
+- `ha/test_load_switching.py`: passthroughgeschützte Eingangsabschaltung,
+  gebundene Schalthoheit, Neustart, manuelle Übernahme, verspätete Bestätigung,
+  unbekannte Zustände und unabhängige Messquellen.
+- `ha/test_config_flow.py`: optionale Mindestziele, neutrale fehlende Altwerte
+  und Zuordnung von Ladefeedback/Steckdosenleistung.
+- Frontend- und Browsertests: Ladeabsicht versus Gerätefeedback, Eingangsaufnahme,
+  feste Rückladetermine, tägliche Speicherbilanz und Erhalt offener Details.
+
+Die neue Entnahme gilt erst mit vollständigem Produktionspfad-Nachweis als
+abgenommen. Ein isolierter Helpertest oder eine nominale Sensitivitätsrechnung
+ersetzt weder diesen Nachweis noch das unabhängige kritische Review.

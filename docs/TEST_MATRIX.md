@@ -1,6 +1,6 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.49.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.63.0. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
@@ -137,3 +137,18 @@ bestehenden Golden-Dateien nicht. Der korrigierte Charger-Test berücksichtigt
 | Gerätebefehl fehlgeschlagen + spätere Lade-Rückmeldung | Nächster Abgleich versucht Pause erneut; Passthrough bleibt erhalten | `ha/test_fossibot_charge_pause.py` |
 | Dauerhaft gemeldete Netzladung + fehlender Timer + späteres Feedback | Fehlerhinweis nach mindestens zwei Minuten; erfolgreicher Timerbefehl allein löscht ihn nicht, kurze Rückmeldungsverzögerung löst ihn nicht aus | `ha/test_fossibot_charge_pause.py` |
 | Lade-Gate OFF + konstante positive Passthrough-Leistung | Keine neue F4-Freeze-Evidenz; vorhandene positive Sperren und G2 erhalten | `ha/test_load_switching.py` |
+
+## 0.63.0: zusätzliche Hausversorgung und Speicher-Eingänge
+
+| Vertrag | Hauptnachweis |
+|---|---|
+| Rückladeanker und gemeinsame nominale/Stressprüfung | `core/test_recharge.py` |
+| DCDC-Dienst bleibt nach optionaler Buchung und tatsächlicher Marktprüfung unter PV-Stress erhalten | `core/test_recharge.py`, `core/test_storage_recovery.py`; zusätzliche DCDC-Zertifizierung mit eng eingesetzter physischer Referenz |
+| Bestätigte Kaskaden-Dwell enthält einmalige Ausgangsverluste auch bei erschöpftem Suchbudget | `core/test_storage_recovery.py` (110 Wh und 136,25 Wh) |
+| Allgemeine Recovery und kausale Aux-Kapazität | `core/test_storage_recovery.py`, `core/test_cascade.py` |
+| Neuer kleiner Speicherstart gesperrt, tatsächlich aktive Ladung darf bis zum Ziel fortgesetzt werden | `core/test_optimize.py`, `ha/test_load_switching.py` |
+| 15-Minuten-Startminimum vergröbert kein konfiguriertes 5-Minuten-Suchraster | `core/test_storage_recovery.py` (40 statt 30 Minuten, 50,1667 Wh Exportdifferenz) |
+| Input-OFF nur bei erlaubter Schalthoheit und Ausgangszustand | `ha/test_load_switching.py` |
+| Fehlende Altwerte aktivieren kein Mindestziel | `ha/test_config_flow.py` |
+| Rücklade- und Messdiagnose bleibt JSON-fähig | `ha/test_reserve_runtime.py`, Frontend-Berichtstests |
+| Eingang ON ist keine physische Ladebestätigung | Frontend-Berichtstests und lokale Browsertests |

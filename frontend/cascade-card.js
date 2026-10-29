@@ -22,6 +22,8 @@ import {
   feedinDecisions,
   stateNotice,
   sourceHealthReport,
+  inputControlReport,
+  storageReport,
 } from "./reports.js";
 import { replaceCardHTML, bindEntityButtons } from "./dom.js";
 
@@ -1022,6 +1024,10 @@ export class BatteryManagerCascadeCard extends HTMLElement {
         );
       }
       messages.push(...executionLines(this._hass, decision.execution));
+      if (cascade.members?.length && decision.input_control)
+        messages.push(inputControlReport(this._hass, decision.input_control));
+      if (cascade.members?.length && decision.storage)
+        messages.push(storageReport(this._hass, decision.storage));
       if (decision.waiting_for_confirmation)
         messages.push(esc(localize(this._hass, "feedin_wait")));
       for (const rejection of Array.isArray(decision.rejected_candidates)

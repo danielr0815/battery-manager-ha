@@ -196,6 +196,8 @@ async def _setup(
     _cancel_debounce(coordinator)
     # Reset any setup-time switching so each test drives from a clean state.
     coordinator._load_plug_owned.clear()
+    coordinator._load_plug_owned_entities.clear()
+    coordinator._load_input_on_since.clear()
     coordinator._load_charging_active.clear()
     coordinator._last_load_switch.clear()
     coordinator._load_plan_active.clear()
@@ -430,10 +432,19 @@ async def test_stale_clock_survives_reload_and_still_escalates(hass, hass_storag
     notifications: list[dict] = []
     entry, coordinator = await _setup(hass, calls, notifications)
     sub_id = next(iter(entry.subentries))
-    hass.states.async_set(PLUG, "on")
-    hass.states.async_set(ENABLE, "on")
-    coordinator._load_plug_owned[sub_id] = True
-    coordinator._load_charging_active[sub_id] = True
+    # Acquire ownership through a real confirmed BM start. A historical bool
+    # alone intentionally cannot grant input ownership after a reload because
+    # it carries no entity binding and may refer to another configured plug.
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    with _at(MIDDAY):
+        await coordinator._execute_load_switching(
+            [
+                (sub_id, dict(entry.subentries[sub_id].data), True, False),
+            ]
+        )
+    assert coordinator._load_plug_owned[sub_id] is True
+    assert coordinator._load_plug_owned_entities[sub_id] == PLUG
 
     t1 = _stage_outage(hass, coordinator, MIDDAY)
     await _refresh_at(hass, coordinator, t1)
@@ -441,6 +452,7 @@ async def test_stale_clock_survives_reload_and_still_escalates(hass, hass_storag
     await coordinator.async_flush_persistent_state()
     store_key = f"{DOMAIN}.{entry.entry_id}"
     assert hass_storage[store_key]["data"]["stale_since"] == t1.isoformat()
+    assert hass_storage[store_key]["data"]["plug_owned_entities"][sub_id] == PLUG
 
     # Restart (reload) half an hour into the outage.
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -453,6 +465,8 @@ async def test_stale_clock_survives_reload_and_still_escalates(hass, hass_storag
     assert coordinator2 is not coordinator
     assert coordinator2._data_stale_since == t1
     assert coordinator2._stale_shed_active is False
+    assert coordinator2._load_plug_owned[sub_id] is True
+    assert coordinator2._load_plug_owned_entities[sub_id] == PLUG
     calls.clear()
 
     # 2 h after the ORIGINAL stamp the new coordinator sheds.

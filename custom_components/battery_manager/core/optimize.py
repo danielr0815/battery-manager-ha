@@ -20,7 +20,6 @@ from .allocation import (
 from .cascade import augment_cascade_plans
 from .dc_service import first_dc_service_regression, preserves_dc_service
 from .model import (
-    STORAGE_ACTION_MINUTES,
     STORAGE_TARGET_TOLERANCE_PERCENT,
     STORAGE_TARGET_TOLERANCE_WH,
     ApplianceAdvisory,
@@ -110,12 +109,18 @@ from .planning_rules import (
 )
 from .policy import FULL_SOC_TOLERANCE_PERCENT
 from .reserve import (
+    recharge_preserved,
     reserve_planning_scope,
     simulate_fixed_dispatch,
     source_schedule_mode,
 )
 from .series import insert_appliance_run
 from .simulate import simulate
+from .storage import (
+    effective_storage_config,
+    required_dwell_energy,
+    storage_diagnostics,
+)
 from .uncertainty import (
     effective_uncertainty as _effective_uncertainty,
 )
@@ -323,7 +328,11 @@ def search_threshold(
     if merge_end is not None:
         terminal_factor = _terminal_credit_factor(full_factor, margin_wh)
         scan_inputs = (
-            replace(inputs, slots=inputs.slots[: merge_end + 1])
+            replace(
+                inputs,
+                slots=inputs.slots[: merge_end + 1],
+                recharge_required_ac_wh=inputs.recharge_required_ac_wh[: merge_end + 1],
+            )
             if merge_active
             else inputs
         )
@@ -631,6 +640,21 @@ def plan_feedin(
                 dc48_schedule=dc48_schedule,
                 feedin_wh=tuple(booked),
             )
+            if not manual_today and not recharge_preserved(
+                config, inputs, alloc_traj, candidate
+            ):
+                booked[i] = 0.0
+                summary = (
+                    candidate.reserve_decision.recharge
+                    if candidate.reserve_decision
+                    else None
+                )
+                reasons[i] = (
+                    "house_recharge_search_limit"
+                    if summary is not None and summary.status == "search_limit"
+                    else "house_recharge"
+                )
+                continue
             if not manual_today and not preserves_dc_service(
                 candidate, baseline=alloc_traj, accepted=trial
             ):
@@ -774,7 +798,10 @@ def appliance_windows(
                 config, test_inputs, extra_ac, planned_trajectory, feedin_wh
             )
             if planned_trajectory.reserve_decision is not None
-            and planned_trajectory.reserve_decision.joint is not None
+            and (
+                planned_trajectory.reserve_decision.joint is not None
+                or planned_trajectory.reserve_decision.recharge is not None
+            )
             else simulate(
                 config,
                 test_inputs,
@@ -797,7 +824,10 @@ def appliance_windows(
         import_ok = traj.total_import_wh <= planned_trajectory.total_import_wh + _EPS
         soc_ok = not _degrades_min_soc(traj, planned_trajectory, buffer_floor)
         dc_ok = preserves_dc_service(traj, baseline=planned_trajectory)
-        allowed = horizon_ok and import_ok and soc_ok and dc_ok
+        recharge_ok = recharge_preserved(
+            config, inputs, planned_trajectory, traj, evaluation_inputs=test_inputs
+        )
+        allowed = horizon_ok and import_ok and soc_ok and dc_ok and recharge_ok
         windows[appliance.appliance_id] = allowed
         if advisories is not None:
             reasons: list[ApplianceAdvisoryReason] = []
@@ -809,6 +839,8 @@ def appliance_windows(
                 reasons.append("soc_condition")
             if not dc_ok:
                 reasons.append("dc_service")
+            if not recharge_ok:
+                reasons.append("house_recharge")
             advisories[appliance.appliance_id] = ApplianceAdvisory(
                 allowed, tuple(reasons)
             )
@@ -926,6 +958,7 @@ def _plan_legacy(
     inputs: PlanInputs,
     *,
     direct_surplus_only_load_ids: frozenset[str] = frozenset(),
+    confirmed_gate_stop_load_ids: frozenset[str] = frozenset(),
     remaining_energy_overrides: dict[str, float] | None = None,
     recovery_targets_wh: dict[str, float] | None = None,
     priority_terminals: dict[str, str] | None = None,
@@ -984,12 +1017,15 @@ def _plan_legacy(
         dc24_schedule=forced_dc24,
         dc48_schedule=forced_dc48,
         direct_surplus_only_load_ids=direct_surplus_only_load_ids,
+        confirmed_gate_stop_load_ids=confirmed_gate_stop_load_ids,
         remaining_energy_overrides=remaining_energy_overrides,
         power_caps_w=power_caps_w,
         path_power_limits=path_power_limits,
         path_overheads=path_overheads,
         cumulative_energy_caps_wh=cumulative_energy_caps_wh,
         recovery_cumulative_caps_wh=recovery_cumulative_caps_wh,
+        recovery_targets_wh=recovery_targets_wh,
+        priority_terminals=priority_terminals,
     )
     # `alloc_traj` is the real allocation trajectory, including any manually
     # forced support.  R4 deliberately retains its established WITHOUT-support
@@ -998,51 +1034,6 @@ def _plan_legacy(
     # below instead compares the real supported trajectories because those are
     # the trajectories protected by the allocator's absolute 50 Wh gate.
     alloc_traj = traj
-    if recovery_targets_wh:
-        load_plans, extra_ac, alloc_traj = _allocate_recovery_after_continuous_loads(
-            config,
-            inputs,
-            threshold,
-            load_plans,
-            extra_ac,
-            alloc_traj,
-            recovery_targets_wh,
-            dc24_schedule=forced_dc24,
-            dc48_schedule=forced_dc48,
-            power_caps_w=power_caps_w,
-            path_power_limits=path_power_limits,
-            path_overheads=path_overheads,
-            cumulative_energy_caps_wh=recovery_cumulative_caps_wh,
-            priority_terminals=priority_terminals,
-        )
-        # The terminal's continuous block can also expose residual export for
-        # ordinary member top-up. Recovery for every member has already had
-        # both strict and final-dwell passes, so this phase may only consume
-        # export that is visibly still present in each covered slot.
-        if remaining_energy_overrides:
-            load_plans, extra_ac, alloc_traj = (
-                _allocate_recovery_after_continuous_loads(
-                    config,
-                    inputs,
-                    threshold,
-                    load_plans,
-                    extra_ac,
-                    alloc_traj,
-                    remaining_energy_overrides,
-                    dc24_schedule=forced_dc24,
-                    dc48_schedule=forced_dc48,
-                    power_caps_w=power_caps_w,
-                    path_power_limits=path_power_limits,
-                    path_overheads=path_overheads,
-                    cumulative_energy_caps_wh=cumulative_energy_caps_wh,
-                    priority_terminals=priority_terminals,
-                    visible_export_only=True,
-                    today_only=False,
-                    repeat_final_rounding=False,
-                    phase_name="top-up",
-                )
-            )
-        traj = alloc_traj
     metric_alloc_traj = (
         simulate(config, inputs, threshold, extra_ac_wh=extra_ac)
         if forced_dc24 is not None or forced_dc48 is not None
@@ -1273,6 +1264,10 @@ def _finalize_joint_plan(
     dc24, dc48, trajectory = support_escalation(
         config, inputs, result.threshold_percent, extra_ac, trajectory, feedin_wh=feedin
     )
+    if not recharge_preserved(config, inputs, result.trajectory, trajectory):
+        # Joint source changes must preserve the already accepted complete
+        # plan's certificate. On exhausted proof budget retain that exact plan.
+        return result
     advisories: dict[str, ApplianceAdvisory] = {}
     windows = appliance_windows(
         config,
@@ -1342,10 +1337,15 @@ def _finalize_joint_plan(
 
 def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     """Plan with a call-scoped reserve cache, also shared by nested cascades."""
+    config = effective_storage_config(config)
+    inputs = required_dwell_energy(config, inputs)
     if not config.reserve.enabled:
-        return _plan_in_scope(config, inputs)
-    with reserve_planning_scope(), source_schedule_mode(not config.support.coordinated):
-        return _plan_in_scope(config, inputs)
+        return storage_diagnostics(config, inputs, _plan_in_scope(config, inputs))
+    with (
+        reserve_planning_scope(config, inputs),
+        source_schedule_mode(not config.support.coordinated),
+    ):
+        return storage_diagnostics(config, inputs, _plan_in_scope(config, inputs))
 
 
 def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
@@ -1357,8 +1357,43 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                 config.control, upper_pv_reserve=config.reserve.upper_pv_factor
             ),
         )
-    if not config.cascades:
-        return _finalize_joint_plan(config, inputs, _plan_legacy(config, inputs))
+    if not config.cascades and not any(
+        load.energy_limited and load.recovery_soc_percent is not None
+        for load in config.loads
+    ):
+        # Physical charge parameters still apply without enabling recovery.
+        overrides = {
+            load.load_id: (state.remaining_energy_wh(load) or 0.0) / load.eta_charge
+            for load in config.loads
+            if load.energy_limited
+            and load.eta_charge != 1.0
+            and (
+                state := next(
+                    (
+                        item
+                        for item in inputs.load_states
+                        if item.load_id == load.load_id
+                    ),
+                    SurplusLoadState(load.load_id),
+                )
+            )
+            is not None
+        }
+        caps = {
+            load.load_id: load.max_charge_power_w
+            for load in config.loads
+            if load.max_charge_power_w is not None
+        }
+        return _finalize_joint_plan(
+            config,
+            inputs,
+            _plan_legacy(
+                config,
+                inputs,
+                remaining_energy_overrides=overrides or None,
+                power_caps_w=caps or None,
+            ),
+        )
 
     # F-CASCADE-STORAGE priority/day contract (operator decision 2026-09-02):
     # the complete cascade occupies its first participant's global position.
@@ -1388,39 +1423,24 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         if cascade is None:
             priority_loads.append(load)
             continue
-        if cascade.cascade_id in emitted_cascades:
-            continue
-        emitted_cascades.add(cascade.cascade_id)
-        member_ids = tuple(member.load_id for member in cascade.members)
-        priority_loads.extend(
-            (loads_by_id[cascade.terminal_load_id],)
-            + tuple(loads_by_id[load_id] for load_id in member_ids)
-        )
-    # A configured five-minute device dwell is a physical minimum, not a
-    # request to optimize every 20 Wh residual with another storage switch.
-    legacy_config = replace(
-        config,
-        loads=tuple(
-            replace(
-                load,
-                min_runtime_min=max(STORAGE_ACTION_MINUTES, load.min_runtime_min),
-                gate_stop_capable=False,
-            )
-            if load.load_id in member_by_id
-            else load
-            for load in priority_loads
-        ),
-        cascades=(),
-    )
+        if cascade.cascade_id not in emitted_cascades:
+            emitted_cascades.add(cascade.cascade_id)
+            # Only useful terminal service moves to the first participant.
+            # Member recovery retains its own global configured position.
+            priority_loads.append(loads_by_id[cascade.terminal_load_id])
+        if load.load_id != cascade.terminal_load_id:
+            priority_loads.append(load)
+    # Preserve each device's search raster. New physical starts are checked
+    # independently against the common action minimum in the allocator.
+    legacy_config = replace(config, loads=tuple(priority_loads), cascades=())
     result_order = {load.load_id: index for index, load in enumerate(config.loads)}
     cascade_member_ids = frozenset(
         member.load_id for cascade in config.cascades for member in cascade.members
     )
     cascade_power_caps_w = {
-        member.load_id: member.max_charge_power_w
-        for cascade in config.cascades
-        for member in cascade.members
-        if member.max_charge_power_w is not None
+        load.load_id: load.max_charge_power_w
+        for load in config.loads
+        if load.max_charge_power_w is not None
     }
     original_states = {state.load_id: state for state in inputs.load_states}
     cascade_by_member = {
@@ -1477,8 +1497,10 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
         )
         remaining_overrides: dict[str, float] = {}
         recovery_targets: dict[str, float] = {}
-        for load_id, member in member_by_id.items():
-            load = loads_by_id[load_id]
+        for load in config.loads:
+            if not load.energy_limited:
+                continue
+            load_id = load.load_id
             state = states.get(load_id)
             soc = (
                 state.soc_percent
@@ -1492,19 +1514,21 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                 max(0.0, load.target_soc_percent - soc)
                 / 100.0
                 * load.capacity_wh
-                / member.eta_charge
+                / load.eta_charge
             )
+            if load.recovery_soc_percent is None:
+                continue
             recovery_target_wh = (
-                max(0.0, member.recovery_soc_percent - soc)
+                max(0.0, load.recovery_soc_percent - soc)
                 / 100.0
                 * load.capacity_wh
-                / member.eta_charge
+                / load.eta_charge
             )
             tolerance_wh = max(
                 STORAGE_TARGET_TOLERANCE_WH,
                 load.capacity_wh * STORAGE_TARGET_TOLERANCE_PERCENT / 100,
             )
-            if recovery_target_wh * member.eta_charge <= tolerance_wh + _EPS:
+            if recovery_target_wh * load.eta_charge <= tolerance_wh + _EPS:
                 recovery_target_wh = 0.0
             recovery_targets[load_id] = recovery_target_wh
 
@@ -1576,7 +1600,7 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                     remaining_overrides[load_id],
                     initial_soc,
                     load.capacity_wh,
-                    member.eta_charge,
+                    load.eta_charge,
                     discharge_by_slot[load_id],
                 )
                 recovery_cumulative_caps[load_id] = _cumulative_charge_caps(
@@ -1584,13 +1608,16 @@ def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
                     recovery_targets[load_id],
                     initial_soc,
                     load.capacity_wh,
-                    member.eta_charge,
+                    load.eta_charge,
                     discharge_by_slot[load_id],
                 )
         result = _plan_legacy(
             legacy_config,
             planning_inputs,
             direct_surplus_only_load_ids=cascade_member_ids,
+            confirmed_gate_stop_load_ids=frozenset(
+                load.load_id for load in config.loads if load.gate_stop_capable
+            ),
             remaining_energy_overrides=remaining_overrides,
             recovery_targets_wh=recovery_targets,
             priority_terminals={

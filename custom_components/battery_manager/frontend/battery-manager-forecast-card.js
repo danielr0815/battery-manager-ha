@@ -1126,6 +1126,122 @@ Object.assign(STRINGS.de, {
   report_joint_not_searched: "Kein aufgezeichneter Kandidat",
   report_joint_reason_duplicate: "Derselbe vorgeschlagene Plan bereits untersucht"
 });
+Object.assign(STRINGS.en, {
+  input_on: "On",
+  input_off: "Off",
+  input_control_title: "Input and charging state",
+  input_connection: "Input switch",
+  input_charge_enable: "Charging permission",
+  input_physical_charging: "Reported battery charging",
+  input_output: "AC output",
+  input_output_power: "Output power",
+  input_ownership: "Input control",
+  input_owned: "Battery Manager",
+  input_foreign: "External / manual",
+  input_stop_reason: "Input retention / stop reason",
+  input_paused_power: "Measured input power while paused",
+  input_daily_estimate: "24-hour estimate at constant power",
+  input_reason_charging: "Charging requested",
+  input_reason_held_passthrough: "Input retained: AC output is on",
+  input_reason_held_policy: "Input retained by keep_on policy",
+  input_reason_held_unknown: "Input retained: output feedback unknown",
+  input_reason_pending_off: "Input stop pending",
+  input_reason_off: "Input off",
+  input_reason_foreign: "External input retained",
+  storage_title: "Storage minimum target",
+  storage_minimum_target: "Preferred minimum SOC",
+  storage_deficit: "Stored-energy deficit",
+  storage_recovery_energy: "Recovery AC energy",
+  storage_topup_energy: "Top-up AC energy",
+  storage_day: "Local day",
+  storage_end_soc: "Forecast end-of-day SOC",
+  recharge_title: "Recharge-backed house supply",
+  recharge_explanation: "Additional battery draw is certified against fixed solar repayment times. A search limit does not prove that further supply is impossible.",
+  recharge_status: "Proof result",
+  recharge_validations: "Complete validation runs",
+  recharge_dc_energy: "Certified extra DCDC battery draw",
+  recharge_ac_energy: "Certified extra AC battery draw",
+  recharge_accepted: "Additional supply certified",
+  recharge_no_release: "No additional release proved",
+  recharge_search_limit: "Search limit reached",
+  recharge_manual_feed_in: "Manual feed-in takes priority",
+  recharge_unproved: "No complete proof was obtained for this alternative.",
+  recharge_reason_anchor_energy: "Stored energy would not be repaid by the fixed solar deadline.",
+  recharge_reason_end_energy: "Stored energy would be lower at the forecast end.",
+  recharge_reason_consumption_coverage: "Consumption uncertainty does not cover the complete repayment period.",
+  recharge_reason_consumption_reserve: "The consumption uncertainty reserve would be insufficient.",
+  recharge_reason_dc_priority: "Additional AC supply would displace protected DC supply.",
+  recharge_reason_search_limit: "The search limit was reached before all alternatives were checked.",
+  recharge_reason_manual_feed_in: "Additional battery draw is paused while positive manual feed-in is active."
+});
+Object.assign(STRINGS.de, {
+  input_on: "Ein",
+  input_off: "Aus",
+  input_control_title: "Eingang und Ladezustand",
+  input_connection: "Eingangsschalter",
+  input_charge_enable: "Ladefreigabe",
+  input_physical_charging: "Gemeldete Batterieladung",
+  input_output: "AC-Ausgang",
+  input_output_power: "Ausgangsleistung",
+  input_ownership: "Eingangs-Schalthoheit",
+  input_owned: "Battery Manager",
+  input_foreign: "Extern / manuell",
+  input_stop_reason: "Halte- / Abschaltgrund",
+  input_paused_power: "Gemessene Eingangsaufnahme w\xE4hrend Ladepause",
+  input_daily_estimate: "24-Stunden-Hochrechnung bei gleicher Leistung",
+  input_reason_charging: "Laden angefordert",
+  input_reason_held_passthrough: "Eingang erhalten: AC-Ausgang ist ein",
+  input_reason_held_policy: "Eingang durch keep_on-Politik erhalten",
+  input_reason_held_unknown: "Eingang erhalten: Ausgangsr\xFCckmeldung unbekannt",
+  input_reason_pending_off: "Eingangsabschaltung ausstehend",
+  input_reason_off: "Eingang aus",
+  input_reason_foreign: "Fremden Eingang erhalten",
+  storage_title: "Speicher-Mindestziel",
+  storage_minimum_target: "Bevorzugtes Mindest-SOC",
+  storage_deficit: "Fehlende gespeicherte Energie",
+  storage_recovery_energy: "Recovery-Energie am AC-Eingang",
+  storage_topup_energy: "Top-up-Energie am AC-Eingang",
+  storage_day: "Lokaler Tag",
+  storage_end_soc: "Prognostiziertes Tagesend-SOC",
+  recharge_title: "R\xFCckladegesicherte Hausversorgung",
+  recharge_explanation: "Zus\xE4tzliche Batterieentnahme ist gegen feste solare R\xFCckladetermine gepr\xFCft. Ein Suchlimit beweist keine Unm\xF6glichkeit weiterer Versorgung.",
+  recharge_status: "Pr\xFCfergebnis",
+  recharge_validations: "Vollst\xE4ndige Pr\xFCfl\xE4ufe",
+  recharge_dc_energy: "Zertifizierte zus\xE4tzliche DCDC-Entnahme",
+  recharge_ac_energy: "Zertifizierte zus\xE4tzliche AC-Entnahme",
+  recharge_accepted: "Zus\xE4tzliche Versorgung zertifiziert",
+  recharge_no_release: "Keine zus\xE4tzliche Freigabe nachgewiesen",
+  recharge_search_limit: "Suchlimit erreicht",
+  recharge_manual_feed_in: "Manuelle Einspeisung hat Vorrang",
+  recharge_unproved: "F\xFCr diese Alternative liegt kein vollst\xE4ndiger Nachweis vor.",
+  recharge_reason_anchor_energy: "Die gespeicherte Energie w\xE4re bis zum festen solaren R\xFCckladetermin nicht wiederhergestellt.",
+  recharge_reason_end_energy: "Die gespeicherte Energie w\xE4re am Prognoseende geringer.",
+  recharge_reason_consumption_coverage: "Die Verbrauchsunsicherheit deckt den R\xFCckladezeitraum nicht vollst\xE4ndig ab.",
+  recharge_reason_consumption_reserve: "Der Vorhalt f\xFCr Verbrauchsunsicherheit w\xFCrde nicht ausreichen.",
+  recharge_reason_dc_priority: "Zus\xE4tzliche AC-Versorgung w\xFCrde gesch\xFCtzte DC-Versorgung verdr\xE4ngen.",
+  recharge_reason_search_limit: "Das Suchlimit wurde erreicht, bevor alle Alternativen gepr\xFCft waren.",
+  recharge_reason_manual_feed_in: "Zus\xE4tzliche Batterieentnahme pausiert bei aktiver positiver manueller Einspeisung."
+});
+Object.assign(STRINGS.en, {
+  storage_unproved: "No further permitted booking was proved",
+  recovery_target_unreachable: "Recovery remains incomplete in the evaluated plan",
+  recovery_target_unmet: "Recovery target remains unmet in the evaluated plan",
+  house_supply_priority: "House supply and its repayment commitments take priority",
+  house_recharge: "House-battery repayment is protected"
+});
+Object.assign(STRINGS.de, {
+  storage_unproved: "Keine weitere zul\xE4ssige Buchung nachgewiesen",
+  recovery_target_unreachable: "Recovery bleibt im gepr\xFCften Plan unvollst\xE4ndig",
+  recovery_target_unmet: "Recovery-Ziel bleibt im gepr\xFCften Plan unerf\xFCllt",
+  house_supply_priority: "Hausversorgung und ihre R\xFCckladezusagen haben Vorrang",
+  house_recharge: "R\xFCckladung der Hausbatterie bleibt gesch\xFCtzt"
+});
+Object.assign(STRINGS.en, {
+  house_recharge_search_limit: "Recharge proof search limit reached"
+});
+Object.assign(STRINGS.de, {
+  house_recharge_search_limit: "Suchlimit f\xFCr den R\xFCckladenachweis erreicht"
+});
 
 // frontend/dom.js
 function replaceCardHTML(card, html) {
@@ -1249,6 +1365,94 @@ var reportTime = (hass, value) => {
 var reportNumber = (hass, value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", {
   maximumFractionDigits: 1
 }).format(value) : "\u2014";
+function inputControlReport(hass, input) {
+  if (!input || typeof input !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const state = (value) => value === true ? t("input_on") : value === false ? t("input_off") : "\u2014";
+  const reasonKey = `input_reason_${input.reason}`;
+  const reason = t(reasonKey);
+  const rows = [
+    [t("input_connection"), state(input.input_on)],
+    [t("input_charge_enable"), state(input.charge_enable)],
+    [t("input_physical_charging"), state(input.charging)],
+    [t("input_output"), state(input.output_on)],
+    [t("input_output_power"), `${reportNumber(hass, input.output_power_w)} W`],
+    [
+      t("input_ownership"),
+      input.owned === true ? t("input_owned") : input.owned === false ? t("input_foreign") : "\u2014"
+    ],
+    [t("input_stop_reason"), reason === reasonKey ? "\u2014" : reason]
+  ];
+  if (typeof input.paused_input_power_w === "number" && Number.isFinite(input.paused_input_power_w)) {
+    rows.push([
+      t("input_paused_power"),
+      `${reportNumber(hass, input.paused_input_power_w)} W`
+    ]);
+    rows.push([
+      t("input_daily_estimate"),
+      `${reportNumber(hass, input.paused_input_power_w * 24 / 1e3)} kWh`
+    ]);
+  }
+  return `<details data-view-key="input-control"><summary>${esc(t("input_control_title"))}</summary><dl data-input-control>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl></details>`;
+}
+function storageReport(hass, storage) {
+  if (!storage || typeof storage !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const rows = [
+    [
+      t("storage_minimum_target"),
+      `${reportNumber(hass, storage.target_soc_percent)} %`
+    ],
+    [
+      t("storage_deficit"),
+      `${reportNumber(hass, storage.initial_deficit_wh)} Wh`
+    ],
+    [
+      t("storage_recovery_energy"),
+      `${reportNumber(hass, storage.recovery_planned_wh)} Wh`
+    ],
+    [
+      t("storage_topup_energy"),
+      `${reportNumber(hass, storage.topup_planned_wh)} Wh`
+    ]
+  ];
+  const days = Array.isArray(storage.day_end_energy_wh) ? storage.day_end_energy_wh.map(([day, energy]) => [
+    day,
+    typeof energy === "number" && storage.capacity_wh > 0 ? energy / storage.capacity_wh * 100 : void 0
+  ]) : [];
+  const reasons = Array.isArray(storage.reasons) ? [...new Set(storage.reasons)] : [];
+  return `<details data-view-key="storage-target"><summary>${esc(t("storage_title"))}</summary><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${reasons.length ? `<ul>${reasons.map((reason) => `<li>${esc(t(reason) === reason ? t("storage_unproved") : t(reason))}</li>`).join("")}</ul>` : ""}${days.length ? `<table data-storage-days><thead><tr><th>${esc(t("storage_day"))}</th><th>${esc(t("storage_end_soc"))}</th><th>${esc(t("storage_deficit"))}</th></tr></thead><tbody>${days.map((day) => `<tr><th>${esc(day[0])}</th><td>${esc(reportNumber(hass, day[1]))} %</td><td>${esc(reportNumber(hass, storage.target_soc_percent != null && day[1] != null && storage.capacity_wh != null ? Math.max(0, storage.target_soc_percent - day[1]) / 100 * storage.capacity_wh : void 0))} Wh</td></tr>`).join("")}</tbody></table>` : ""}</details>`;
+}
+function rechargeReport(hass, recharge) {
+  if (!recharge || typeof recharge !== "object") return "";
+  const t = (key) => localize(hass, key);
+  const commitments = Array.isArray(recharge.certificates) ? recharge.certificates : [];
+  const total = (kind) => {
+    if (!Array.isArray(recharge.certificates)) return void 0;
+    const matching = commitments.filter((item) => item.kind === kind);
+    if (matching.some(
+      (item) => typeof item.battery_draw_wh !== "number" || !Number.isFinite(item.battery_draw_wh)
+    ))
+      return void 0;
+    return matching.reduce((sum, item) => sum + item.battery_draw_wh, 0);
+  };
+  const statusKey = `recharge_${recharge.status}`;
+  const rejections = Array.isArray(recharge.rejection_reasons) ? [...new Set(recharge.rejection_reasons)] : [];
+  const rejectionText = (reason) => {
+    for (const prefix of ["recharge_reason_", "report_joint_reason_"]) {
+      const key = `${prefix}${reason}`;
+      if (t(key) !== key) return t(key);
+    }
+    return t("recharge_unproved");
+  };
+  const rows = [
+    [t("recharge_status"), t(statusKey) === statusKey ? "\u2014" : t(statusKey)],
+    [t("recharge_validations"), reportNumber(hass, recharge.validations)],
+    [t("recharge_dc_energy"), `${reportNumber(hass, total("dc24"))} Wh`],
+    [t("recharge_ac_energy"), `${reportNumber(hass, total("ac"))} Wh`]
+  ];
+  return `<section data-recharge><h4>${esc(t("recharge_title"))}</h4><p>${esc(t("recharge_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${commitments.length ? `<ol>${commitments.map((item) => `<li>${esc(reportTime(hass, item.anchor))} \xB7 ${esc(reportNumber(hass, item.battery_draw_wh))} Wh</li>`).join("")}</ol>` : ""}${rejections.length ? `<details data-recharge-rejections><summary>${esc(t("report_joint_rejections"))}</summary><ul>${rejections.map((reason) => `<li>${esc(rejectionText(reason))}</li>`).join("")}</ul></details>` : ""}</section>`;
+}
 function stateNotice(hass, state) {
   if (!state || !["unknown", "unavailable"].includes(state.state)) return "";
   const hasPlan = [
@@ -1562,6 +1766,7 @@ function reserveReport(hass, reserve, support, calibration) {
     ${reserve.dc24_transfer_verified === false ? `<p data-reserve-transfer="unverified">${esc(t("report_dc24_transfer_unverified"))}</p>` : ""}
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
     ${jointMarketReport(hass, reserve.market?.joint)}
+    ${rechargeReport(hass, reserve.recharge)}
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} \xB7 ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 function operationReport(hass, report) {
@@ -3764,6 +3969,10 @@ var BatteryManagerCascadeCard = class extends HTMLElement {
         );
       }
       messages.push(...executionLines(this._hass, decision.execution));
+      if (cascade.members?.length && decision.input_control)
+        messages.push(inputControlReport(this._hass, decision.input_control));
+      if (cascade.members?.length && decision.storage)
+        messages.push(storageReport(this._hass, decision.storage));
       if (decision.waiting_for_confirmation)
         messages.push(esc(localize(this._hass, "feedin_wait")));
       for (const rejection of Array.isArray(decision.rejected_candidates) ? decision.rejected_candidates : []) {
@@ -4101,6 +4310,8 @@ var BatteryManagerLoadsCard = class extends BatteryManagerCascadeCard {
       ${load.target_soc_percent != null ? `<p class="muted">${esc(localize(this._hass, "card_state_of_charge_at_plan_start_charge_target"))}: ${this._number(num(load.soc_percent), 1)} % / ${this._number(num(load.target_soc_percent), 1)} %</p>` : ""}
       <p class="muted">${esc(localize(this._hass, "card_robust_power_estimate_while_running"))}: ${this._number(num(load.observed_power_w), 0)} W \xB7 ${esc(localize(this._hass, "card_last_learned_power"))}: ${this._number(num(load.learned_power_w), 0)} W</p>
       ${this._decisions(load)}
+      ${inputControlReport(this._hass, load.input_control)}
+      ${storageReport(this._hass, load.storage)}
       <div class="period">${[
       ["today", localize(this._hass, "card_today_from_now")],
       ["tomorrow", localize(this._hass, "card_tomorrow")],
@@ -4342,6 +4553,7 @@ Object.assign(TEXT.en, {
   forecast_horizon_short: "Forecast does not cover a complete cycle",
   extra_grid_import: "Starting would require additional grid energy",
   soc_condition: "Battery conditions are not met",
+  house_recharge: "Starting would compromise a certified house-battery recharge",
   missing_start: "Cycle start was not observed",
   measurement_gap: "Measurement gap",
   clock_changed: "Clock changed during the cycle",
@@ -4369,6 +4581,7 @@ Object.assign(TEXT.de, {
   forecast_horizon_short: "Prognose deckt keinen vollst\xE4ndigen Lauf ab",
   extra_grid_import: "Ein Start w\xFCrde zus\xE4tzlichen Netzbezug erfordern",
   soc_condition: "Batteriebedingungen sind nicht erf\xFCllt",
+  house_recharge: "Start w\xFCrde die zugesagte R\xFCckladung der Hausbatterie gef\xE4hrden",
   missing_start: "Laufbeginn wurde nicht beobachtet",
   measurement_gap: "Messl\xFCcke",
   clock_changed: "Uhrzeit w\xE4hrend des Laufs ge\xE4ndert",

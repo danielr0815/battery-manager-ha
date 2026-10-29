@@ -44,6 +44,9 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
     """
     if c._actuation_shutdown:
         return
+    from .load_actuation import reconcile_feedback
+
+    reconcile_feedback(c)
     imported = grid_import_w(c)
     guard = imported is not None and imported > LOAD_GRID_IMPORT_TOLERANCE_W
     diag = {"active": guard, "grid_import_w": imported}
