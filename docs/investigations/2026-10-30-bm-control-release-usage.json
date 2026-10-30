@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "task": "pilot-1-bm-control-release",
+  "measurement_start": "2026-10-30T10:04:14.859702+00:00",
+  "cutoff": "2026-10-30T12:02:26.348419+00:00",
+  "measurement_complete": true,
+  "measurement_issue_codes": [],
+  "scope": "Original prospective pilot declaration through cutoff, including implementation, corrections, coordination, checks, independent review, accounting and release preparation; initial root exploration and prior separate analysis excluded. Reused-agent baselines recovered from timestamped counters at the same declared start. No inferred phase allocation.",
+  "post_cutoff_effort_excluded": true,
+  "supersedes_earlier_checkpoint_totals": true,
+  "do_not_add_earlier_checkpoint_totals": true,
+  "steps": [
+    {
+      "role": "/root",
+      "actual_models_effort": [
+        "gpt-6.1-sol/medium"
+      ],
+      "request_count": 85,
+      "tokens": {
+        "input": 18767429,
+        "cached_input": 18484736,
+        "cache_write": 0,
+        "output": 10210,
+        "reasoning": 1579,
+        "input_without_cache": 282693
+      },
+      "hypothetical_api_cost_usd": 2.5159596,
+      "scope": "Coordination, task decisions, integration and publication preparation; measured together without inferred split"
+    },
+    {
+      "role": "/root/bm_hands_off",
+      "actual_models_effort": [
+        "gpt-6.1-sol/medium"
+      ],
+      "request_count": 102,
+      "tokens": {
+        "input": 12330111,
+        "cached_input": 12077952,
+        "cache_write": 0,
+        "output": 46058,
+        "reasoning": 14993,
+        "input_without_cache": 252159
+      },
+      "hypothetical_api_cost_usd": 2.1726932,
+      "scope": "Implementation, regression tests and review corrections"
+    },
+    {
+      "role": "/root/framework_checks",
+      "actual_models_effort": [
+        "gpt-6.1-sol/low"
+      ],
+      "request_count": 47,
+      "tokens": {
+        "input": 3013580,
+        "cached_input": 2922880,
+        "cache_write": 0,
+        "output": 4243,
+        "reasoning": 27,
+        "input_without_cache": 90700
+      },
+      "hypothetical_api_cost_usd": 0.516118,
+      "scope": "Prescribed checks and publication preparation"
+    },
+    {
+      "role": "/root/framework_review",
+      "actual_models_effort": [
+        "gpt-6-astra/high"
+      ],
+      "request_count": 32,
+      "tokens": {
+        "input": 4522657,
+        "cached_input": 4344704,
+        "cache_write": 0,
+        "output": 5637,
+        "reasoning": 750,
+        "input_without_cache": 177953
+      },
+      "hypothetical_api_cost_usd": 6.406084,
+      "scope": "Independent critical review and correction reviews"
+    },
+    {
+      "role": "/root/framework_usage",
+      "actual_models_effort": [
+        "gpt-6.1-sol/medium"
+      ],
+      "request_count": 18,
+      "tokens": {
+        "input": 1652342,
+        "cached_input": 1475968,
+        "cache_write": 0,
+        "output": 5723,
+        "reasoning": 119,
+        "input_without_cache": 176374
+      },
+      "hypothetical_api_cost_usd": 0.5575748,
+      "scope": "Accounting, evaluation and release documentation"
+    }
+  ],
+  "totals": {
+    "input": 40286119,
+    "cached_input": 39306240,
+    "output": 71871,
+    "reasoning": 17468,
+    "cache_write": 0,
+    "input_without_cache": 979879
+  },
+  "model_request_count": 284,
+  "hypothetical_api_cost_usd": 12.1684296,
+  "actual_billing": null,
+  "price_basis": {
+    "date": "2026-10-30",
+    "source": "https://developers.openai.com/api/docs/pricing",
+    "currency": "USD",
+    "service_tier": "standard",
+    "context": "short",
+    "unit": "per_million_tokens",
+    "rates": {
+      "gpt-6.1-sol": {
+        "input": 2,
+        "cached_input": 0.1,
+        "output": 10,
+        "cache_write": null
+      },
+      "gpt-6-astra": {
+        "input": 10,
+        "cached_input": 1,
+        "output": 50,
+        "cache_write": null
+      },
+      "gpt-6-luna": {
+        "input": 0.1,
+        "cached_input": 0.01,
+        "output": 0.5,
+        "cache_write": null
+      }
+    },
+    "note": "Normalized reference comparison, not observed billing; cache-write retention and surcharges unknown. Verify current official prices before each commit.",
+    "sha256": "b275a46d93d1f60e5ddb20c5424efec2aa5d0db83ab88e8eef758a61b8fd2075",
+    "verification_date": "2026-10-30",
+    "verification": "Coordinator freshly searched and opened official source before this commit preparation",
+    "comparison_mode": "Explicit normalized Standard/Short reference; actual service tier/context unknown",
+    "cache_retention_and_surcharges": "unknown; recorded cache-write tokens zero"
+  },
+  "pilot_completed": 1,
+  "pilot_target": 3,
+  "pilot_acceptance": "Implementation, independent Astra/High approval and all required frozen gates accepted; no live deployment performed",
+  "historical_comparable_baseline": null,
+  "savings": null,
+  "metrics": {
+    "retained_pilot_log_files": 31,
+    "retained_pilot_log_characters": 89758,
+    "model_consumed_successful_output_characters": null,
+    "unchanged_status_query_count": null,
+    "limit": "Disk log artifacts are not model-consumed output; no 50%/80% reduction claim"
+  }
+}

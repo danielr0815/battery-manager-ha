@@ -52,12 +52,11 @@ async def test_queued_on_is_dropped_after_pause(hass):
         )
         coordinator.set_load_enabled(load_id, False)
     await task
-    await coordinator._pause_tasks[load_id]
     assert not any(service == "turn_on" for service, _ in calls)
     assert hass.states.is_state(PLUG, "off")
 
 
-async def test_pause_stops_without_a_planner_refresh(hass):
+async def test_control_off_relinquishes_without_a_planner_refresh(hass):
     calls = []
     coordinator, load_id, data = await _setup(hass, calls)
     coordinator._last_load_switch[load_id] = dt_util.now() - timedelta(hours=1)
@@ -66,9 +65,9 @@ async def test_pause_stops_without_a_planner_refresh(hass):
     hass.states.async_set(ENABLE, "on")
     with patch.object(coordinator, "async_request_refresh", AsyncMock()):
         coordinator.set_load_enabled(load_id, False)
-        await coordinator._pause_tasks[load_id]
-    assert hass.states.is_state(PLUG, "off")
-    assert hass.states.is_state(ENABLE, "off")
+        assert hass.states.is_state(PLUG, "on")
+    assert hass.states.is_state(ENABLE, "on")
+    assert not coordinator._load_plug_owned[load_id]
 
 
 async def test_confirmation_timeout_uses_production_deadline(hass):
@@ -108,7 +107,7 @@ async def test_failed_off_retries_only_known_state_after_sixty_seconds(hass):
             assert command.await_count == 2
 
 
-async def test_late_on_feedback_after_pause_is_immediately_stopped(hass):
+async def test_late_on_feedback_after_release_is_left_to_operator(hass):
     calls = []
     coordinator, load_id, data = await _setup(hass, calls)
     coordinator._floor_guard_active = False
@@ -124,47 +123,34 @@ async def test_late_on_feedback_after_pause_is_immediately_stopped(hass):
         coordinator._execute_load_switching([LoadAction(load_id, data, True, False)])
     )
     await requested.wait()
-    coordinator._load_bm_enabled[load_id] = False
+    coordinator.set_load_enabled(load_id, False)
     hass.states.async_set(PLUG, "on")
     await task
-    assert hass.states.is_state(ENABLE, "off")
-    assert hass.states.is_state(PLUG, "off")
+    assert hass.states.is_state(ENABLE, "on")
+    assert hass.states.is_state(PLUG, "on")
     assert not coordinator._load_charging_active.get(load_id, False)
 
 
-async def test_pause_honours_remaining_runtime_and_resume_cancels_stop(hass):
+async def test_release_cancels_deadline_and_resume_does_not_adopt_manual_input(hass):
     calls = []
-    coordinator, load_id, _ = await _setup(hass, calls, min_runtime_min=30)
+    coordinator, load_id, data = await _setup(hass, calls, min_runtime_min=30)
     coordinator._floor_guard_active = False
-    coordinator._stale_shed_active = False
-    now = dt_util.now()
-    coordinator._last_load_switch[load_id] = now - timedelta(minutes=10)
-    coordinator._load_plug_owned[load_id] = True
     hass.states.async_set(PLUG, "on")
     hass.states.async_set(ENABLE, "on")
-    waiting = asyncio.Event()
-    resume_clock = asyncio.Event()
-
-    async def controlled_sleep(seconds):
-        assert seconds == 20 * 60
-        waiting.set()
-        await resume_clock.wait()
-
-    with (
-        patch.object(dt_util, "now", return_value=now),
-        patch(
-            "custom_components.battery_manager.coordinator.asyncio.sleep",
-            side_effect=controlled_sleep,
-        ),
-    ):
-        coordinator.set_load_enabled(load_id, False)
-        task = coordinator._pause_tasks[load_id]
-        await waiting.wait()
-        assert hass.states.is_state(PLUG, "on")
-        coordinator.set_load_enabled(load_id, True)
-        await asyncio.gather(task, return_exceptions=True)
-    assert task.cancelled()
+    coordinator._load_plug_owned[load_id] = True
+    deadline = dt_util.now() + timedelta(minutes=20)
+    coordinator._load_run_deadline[load_id] = deadline
+    coordinator._arm_off_timer(load_id, deadline)
+    calls.clear()
+    coordinator.set_load_enabled(load_id, False)
+    assert load_id not in coordinator._load_run_deadline
+    assert load_id not in coordinator._load_off_timer
+    assert not coordinator._pause_tasks
+    coordinator.set_load_enabled(load_id, True)
+    await coordinator._execute_load_switching([LoadAction(load_id, data, False, True)])
+    assert calls == [("turn_off", ENABLE)]
     assert hass.states.is_state(PLUG, "on")
+    assert not coordinator._load_plug_owned[load_id]
 
 
 async def test_unconfirmed_off_does_not_block_another_load_shutdown(hass):
@@ -255,10 +241,10 @@ async def test_gate_confirmation_followed_by_pause_never_starts_input(hass):
         )
     )
     await requested.wait()
-    coordinator._load_bm_enabled[load_id] = False
+    coordinator.set_load_enabled(load_id, False)
     hass.states.async_set(ENABLE, "on")
     await task
-    assert hass.states.is_state(ENABLE, "off")
+    assert hass.states.is_state(ENABLE, "on")
     assert hass.states.is_state(PLUG, "off")
 
 
@@ -319,7 +305,7 @@ async def test_reload_keeps_pending_off_and_retry_timestamp(hass):
         command.assert_awaited_once()
 
 
-async def test_on_arriving_after_timeout_retains_input_ownership_for_pause(hass):
+async def test_on_arriving_after_timeout_cannot_reclaim_released_input(hass):
     calls = []
     coordinator, load_id, data = await _setup(hass, calls)
     coordinator._floor_guard_active = False
@@ -340,10 +326,10 @@ async def test_on_arriving_after_timeout_retains_input_ownership_for_pause(hass)
     assert coordinator._load_actor_requests[PLUG].state == "confirmation_failed"
     assert not coordinator._load_charging_active.get(load_id, False)
     # The input reports the accepted ON after the grace period, while paused.
-    coordinator._load_bm_enabled[load_id] = False
+    coordinator.set_load_enabled(load_id, False)
     hass.states.async_set(PLUG, "on")
-    await coordinator._async_pause_load(load_id)
-    assert hass.states.is_state(PLUG, "off")
+    load_actuation.reconcile_feedback(coordinator)
+    assert hass.states.is_state(PLUG, "on")
     assert not coordinator._load_plug_owned[load_id]
 
 
@@ -384,9 +370,7 @@ async def test_repeated_pause_of_an_off_load_preserves_its_dwell_stamp(hass):
         "custom_components.battery_manager.coordinator.asyncio.sleep", AsyncMock()
     ) as sleep:
         coordinator.set_load_enabled(load_id, False)
-        await coordinator._pause_tasks[load_id]
-        await coordinator._async_pause_load(load_id)
-    sleep.assert_not_awaited()
+        sleep.assert_not_awaited()
     assert coordinator._last_load_switch[load_id] == stamp
     assert calls == []
 

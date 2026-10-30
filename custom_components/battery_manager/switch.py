@@ -64,8 +64,8 @@ async def async_setup_entry(
         if stale:
             ent_reg.async_remove(stale)
 
-    # A "BM control active" switch per surplus load (v0.7.17): off holds the load
-    # unavailable so a device can be paused without removing its control switch.
+    # A "BM control active" switch per surplus load: OFF immediately releases
+    # all device actors to manual control without issuing relay commands.
     # Scoped to its subentry so it is removed automatically with the load (v0.7.19).
     per_subentry: dict[str, list[Entity]] = {}
     for subentry_id, subentry in entry.subentries.items():
@@ -185,12 +185,11 @@ class BatteryManagerFeedInSwitch(BatteryManagerEntity, SwitchEntity):
 
 
 class SurplusLoadControlSwitch(BatteryManagerEntity, SwitchEntity):
-    """Per-load 'BM control active' switch (v0.7.17).
+    """Per-load authority: OFF immediately leaves input, gate and output alone.
 
-    On (default) = BM plans and actuates the load. Off = BM holds the load
-    unavailable (drops it from the plan and switches it off next cycle) WITHOUT
-    removing its control-switch config — a one-tap temporary pause for a device
-    that resumes when switched back on.
+    OFF persists across restart and revokes pending control and input ownership.
+    ON permits fresh planning without claiming an already-ON manual input.
+    A command already dispatched to a device may still finish after OFF.
     """
 
     _attr_translation_key = "load_control"

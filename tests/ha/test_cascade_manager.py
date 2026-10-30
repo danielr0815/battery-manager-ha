@@ -174,8 +174,22 @@ class _Coordinator:
     def _load_standby_bar(data):
         return max(10.0, 0.1 * float(data["power_w"]))
 
-    def load_bm_enabled(self, _load_id):
-        return True
+    def load_bm_enabled(self, load_id):
+        return getattr(self, "_load_bm_enabled", {}).get(load_id, True)
+
+    def released_load_actors(self):
+        return {
+            sub.data[key]
+            for load_id, sub in self.entry.subentries.items()
+            if sub.subentry_type == SUBENTRY_TYPE_LOAD
+            and not self.load_bm_enabled(load_id)
+            for key in (
+                CONF_LOAD_CONTROL_SWITCH,
+                CONF_LOAD_CHARGE_ENABLE,
+                CONF_LOAD_OUTPUT_SWITCH,
+            )
+            if sub.data.get(key)
+        }
 
 
 class _LiveIncidentCoordinator(_Coordinator):
@@ -1860,6 +1874,7 @@ async def test_live_root_rejects_generic_off_at_entity_boundary(
     coordinator._load_plug_owned_entities = {"b1": "switch.bad_waschmaschine"}
     coordinator._load_input_on_since = {}
     coordinator._load_action_generation = {}
+    coordinator._load_control_generation = {}
     coordinator._load_charging_active = {"b1": True}
     coordinator._last_load_switch = {}
     coordinator._load_last_off = {}
@@ -6047,3 +6062,313 @@ def test_accepted_aux_projects_only_required_output_pauses(monkeypatch, phase, s
     assert manager.runtime_state("chain").aux_path_releases == (release,)
     state.pop("restart_source_hint")
     assert manager.runtime_state("chain").aux_path_releases is None
+
+
+@pytest.mark.parametrize("released", ["b1", "leaf"])
+@pytest.mark.parametrize("initial", ["on", "off"])
+async def test_member_release_keeps_manual_actors_and_stops_only_claimed_enabled_path(
+    released, initial
+):
+    """0.64.0 relinquishes every disabled actor, including cascade Safe-OFF."""
+    now = datetime(2026, 10, 30, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    topology = manager._topology("chain")
+    state.update(enabled=True, phase="running", source="b1", actor_topology=topology)
+    state["claims"] = {actor: True for actor in manager._off_order(topology)}
+    for actor in state["claims"]:
+        coordinator.hass.states.values[actor].state = "on"
+    coordinator._load_bm_enabled = {released: False}
+    protected = coordinator.released_load_actors()
+    for actor in protected:
+        coordinator.hass.states.values[actor].state = initial
+    manager._proof["chain"] = {"source": "b1"}
+    manager.release_member_control(released)
+    assert state["source"] is None
+    assert "chain" not in manager._proof
+    assert not protected.intersection(state["claims"])
+    assert await manager.async_safe_off("chain", "manual release")
+    assert all(actor not in protected for actor, _ in coordinator.calls)
+    assert {actor for actor, _ in coordinator.calls} == set(
+        manager._off_order(topology)
+    ) - protected
+    for actor in protected:
+        assert coordinator.hass.states.get(actor).state == initial
+        assert not await manager._actor("chain", actor, False)
+        assert not await manager._actor("chain", actor, True)
+    assert state["phase"] == "idle"
+    assert not state.get("fault")
+    coordinator.calls.clear()
+    await manager.async_safe_off("chain", "repeat")
+    assert coordinator.calls == []
+
+
+async def test_cascade_late_confirmation_cannot_reclaim_after_member_off_on():
+    """An already dispatched ON may arrive, but its old sequence is revoked."""
+    coordinator = _Coordinator(datetime(2026, 10, 30, 12))
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    state.update(
+        enabled=True, phase="running", actor_topology=manager._topology("chain")
+    )
+    sent = asyncio.Event()
+    feedback = asyncio.Event()
+
+    async def delayed_command(entity, desired, **kwargs):
+        sent.set()
+        await feedback.wait()
+        coordinator.hass.states.values[entity].state = "on"
+        return True
+
+    coordinator._switch_entity = delayed_command
+    task = asyncio.create_task(manager._actor("chain", "switch.output", True))
+    await sent.wait()
+    coordinator._load_bm_enabled = {"b1": False}
+    manager.release_member_control("b1")
+    coordinator._load_bm_enabled["b1"] = True
+    feedback.set()
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    assert "switch.output" not in state["claims"]
+    assert state["source"] is None
+    assert coordinator.hass.states.get("switch.output").state == "on"
+
+
+@pytest.mark.parametrize("boundary", ["refresh", "observation"])
+async def test_recovery_off_on_cannot_retry_helper_or_adopt_late_feedback(
+    monkeypatch, boundary
+):
+    """The recovery invocation retains its epoch across refresh and observation."""
+    now = datetime(2026, 10, 30, 12)
+    coordinator = _Coordinator(now)
+    manager = CascadeManager(coordinator)
+    actor = "input_boolean.recovery_gate"
+    coordinator.entry.subentries["b1"].data[CONF_LOAD_CHARGE_ENABLE] = actor
+    coordinator.hass.states.values[actor] = SimpleNamespace(state="off", attributes={})
+    state = manager._state("chain")
+    state.update(enabled=True, last_actor_error={"kind": "service_failed"})
+    entered, resume = asyncio.Event(), asyncio.Event()
+
+    async def pause():
+        entered.set()
+        await resume.wait()
+
+    async def refresh(*args, **kwargs):
+        if boundary == "refresh":
+            await pause()
+
+    async def observe(*args, **kwargs):
+        await pause()
+        coordinator.hass.states.values[actor].state = "on"
+
+    coordinator.hass.services = SimpleNamespace(async_call=refresh)
+    if boundary == "observation":
+        coordinator.hass.states.values[actor].state = "on"
+        monkeypatch.setattr(manager, "_wait_actor_state", observe)
+    running = asyncio.create_task(manager._recover_actor("chain", actor, True))
+    await entered.wait()
+    coordinator._load_bm_enabled = {"b1": False}
+    manager.release_member_control("b1")
+    coordinator._load_bm_enabled["b1"] = True
+    resume.set()
+    await asyncio.gather(running, return_exceptions=True)
+    assert running.cancelled()
+    assert coordinator.calls == []
+    assert actor not in state["claims"]
+    assert not state["actor_recovery"]["command_retried"]
+    assert not state.get("fault")
+
+
+@pytest.mark.parametrize(
+    "boundary", ["flush", "fresh_member", "proof", "retry", "restore"]
+)
+async def test_terminal_release_invalidates_whole_invocation_and_snapshot(
+    monkeypatch, boundary
+):
+    """OFF revokes waiting tests and shielded restores, even after immediate ON."""
+    coordinator = _Coordinator(datetime(2026, 10, 30, 12))
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    entered, resume, restored_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def pause(*args, **kwargs):
+        entered.set()
+        await resume.wait()
+
+    monkeypatch.setattr(manager, "_wait_for_fresh_member", AsyncMock())
+    monkeypatch.setattr(manager, "_wait_for_terminal_proof", AsyncMock())
+    if boundary == "flush":
+        original_flush = coordinator.async_flush_persistent_state
+        first = True
+
+        async def flush():
+            nonlocal first
+            if first:
+                first = False
+                await pause()
+            await original_flush()
+
+        coordinator.async_flush_persistent_state = flush
+    elif boundary == "fresh_member":
+        monkeypatch.setattr(manager, "_wait_for_fresh_member", pause)
+    elif boundary == "proof":
+        monkeypatch.setattr(manager, "_wait_for_terminal_proof", pause)
+    elif boundary == "retry":
+        original_actor = manager._actor
+
+        async def failed_output(cid, actor, desired):
+            if actor == "switch.output" and desired:
+                return False
+            return await original_actor(cid, actor, desired)
+
+        monkeypatch.setattr(manager, "_actor", failed_output)
+        monkeypatch.setattr(cascade_manager_module.asyncio, "sleep", pause)
+    else:
+        original_restore = manager._restore_terminal_test_snapshot
+
+        async def restore(*args):
+            try:
+                await pause()
+                return await original_restore(*args)
+            finally:
+                restored_done.set()
+
+        monkeypatch.setattr(manager, "_restore_terminal_test_snapshot", restore)
+    running = asyncio.create_task(manager.async_test_terminal("chain"))
+    await entered.wait()
+    snapshot = state.get("terminal_test_restore")
+    coordinator._load_bm_enabled = {"b1": False}
+    manager.release_member_control("b1")
+    coordinator._load_bm_enabled["b1"] = True
+    coordinator.calls.clear()
+    resume.set()
+    await asyncio.gather(running, return_exceptions=True)
+    if boundary == "restore":
+        await restored_done.wait()
+    assert running.cancelled()
+    assert coordinator.calls == []
+    assert snapshot["revoked"]
+    assert "terminal_test_restore" not in state
+    assert state["terminal_test"]["state"] == "aborted"
+    assert not state.get("fault")
+    # A stale snapshot cannot regain validity on a later integration restart.
+    state["terminal_test_restore"] = snapshot
+    await manager.async_recover_terminal_tests()
+    assert "terminal_test_restore" not in state
+    assert coordinator.calls == []
+    assert not state.get("fault")
+
+
+@pytest.mark.parametrize(
+    "kind", ["plan", "terminal", "safety", "topology", "restart", "enable", "reset"]
+)
+async def test_cascade_lock_queue_drops_old_invocation_after_member_off_on(
+    monkeypatch, kind
+):
+    coordinator = _Coordinator(datetime(2026, 10, 30, 12))
+    manager = CascadeManager(coordinator)
+    manager._state("chain")["enabled"] = True
+    for actor in manager._off_order(manager._topology("chain")):
+        coordinator.hass.states.values[actor].state = "on"
+    acquired = asyncio.Event()
+    lock = asyncio.Lock()
+    await lock.acquire()
+
+    class ObservedLock:
+        async def __aenter__(self):
+            acquired.set()
+            await lock.acquire()
+
+        async def __aexit__(self, *args):
+            lock.release()
+
+    manager._locks["chain"] = ObservedLock()
+    if kind != "topology":
+        monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    if kind == "plan":
+        config = SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),))
+        queued_plan = _root_plan(datetime(2026, 10, 30, 12))
+        queued_plan.cascade_id = "chain"
+        result = SimpleNamespace(cascade_plans=(queued_plan,))
+        invocation = manager.async_apply(config, result, (), datetime(2026, 10, 30, 12))
+    elif kind == "terminal":
+        invocation = manager.async_test_terminal("chain")
+    elif kind == "safety":
+        invocation = manager.async_safety_off_active(
+            "stale", datetime(2026, 10, 30, 12)
+        )
+    elif kind == "topology":
+        monkeypatch.setattr(manager, "_topology", lambda _cid: None)
+        invocation = manager.async_reconcile_topologies()
+    elif kind == "restart":
+        manager._state("chain")["terminal_test_restore"] = (
+            manager._terminal_test_snapshot(manager._topology("chain"))
+        )
+        invocation = manager.async_recover_terminal_tests()
+    elif kind == "enable":
+        invocation = manager.async_set_enabled("chain", False)
+    else:
+        invocation = manager.async_reset_fault("chain")
+    running = asyncio.create_task(invocation)
+    await acquired.wait()
+    coordinator._load_bm_enabled = {"b1": False}
+    manager.release_member_control("b1")
+    coordinator._load_bm_enabled["b1"] = True
+    lock.release()
+    await asyncio.gather(running, return_exceptions=True)
+    assert running.cancelled()
+    assert coordinator.calls == []
+    assert not manager._state("chain").get("fault")
+
+
+@pytest.mark.parametrize("released", ["b1", "leaf"])
+@pytest.mark.parametrize("direct", [False, True])
+async def test_new_terminal_test_rejects_already_released_member(released, direct):
+    """Manual authority forbids entering a new test or creating restore debt."""
+    coordinator = _Coordinator(datetime(2026, 10, 30, 12))
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    coordinator._load_bm_enabled = {released: False}
+    manager.release_member_control(released)
+    assert not manager.terminal_test_available("chain")
+    invocation = (
+        manager._run_terminal_test_locked if direct else manager.async_test_terminal
+    )
+    with pytest.raises(HomeAssistantError, match="Terminal test"):
+        await invocation("chain")
+    assert coordinator.calls == []
+    assert "terminal_test_restore" not in state
+    assert state["phase"] == "idle"
+    assert not state.get("fault")
+
+
+@pytest.mark.parametrize("known_topology", [False, True])
+async def test_member_release_does_not_command_unmapped_legacy_claim(
+    monkeypatch, known_topology
+):
+    """Unknown historical bindings cannot establish authority over a device."""
+    coordinator = _Coordinator(datetime(2026, 10, 30, 12))
+    manager = CascadeManager(coordinator)
+    state = manager._state("chain")
+    topology = manager._topology("chain")
+    state.update(
+        enabled=True,
+        source="b1",
+        claims={"switch.leaf": True, "switch.unmapped_old_device": True},
+    )
+    coordinator.hass.states.values["switch.leaf"].state = "on"
+    coordinator.hass.states.values["switch.unmapped_old_device"] = SimpleNamespace(
+        state="on", attributes={}
+    )
+    if known_topology:
+        state["actor_topology"] = topology
+    else:
+        monkeypatch.setattr(manager, "_topology", lambda _cid: None)
+    coordinator._load_bm_enabled = {"b1": False}
+    manager.release_member_control("b1")
+    assert await manager.async_safe_off("chain", "manual release")
+    assert coordinator.calls == [("switch.leaf", False)]
+    assert coordinator.hass.states.get("switch.unmapped_old_device").state == "on"
+    assert state["source"] is None
+    assert not state.get("fault")

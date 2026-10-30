@@ -12,10 +12,12 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from functools import wraps
+from typing import TYPE_CHECKING, Any, cast
 
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -94,6 +96,64 @@ class CascadeExecutionSnapshot:
     check_at: datetime | None
 
 
+# A whole invocation owns one permission generation. Context propagates into
+# asyncio.shield's restore task, so a late reply or retry cannot silently begin
+# a new ownership episode after an operator OFF -> ON.
+_CONTROL_GENERATIONS: ContextVar[dict[str, int] | None] = ContextVar(
+    "cascade_control_generations", default=None
+)
+
+
+def _control_sequence[ControlMethod: Callable[..., Any]](
+    method: ControlMethod,
+) -> ControlMethod:
+    @wraps(method)
+    async def guarded(
+        self: CascadeManager, cascade_id: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        generations = _CONTROL_GENERATIONS.get() or {}
+        generation = generations.get(
+            cascade_id, self._state(cascade_id).get("control_generation", 0)
+        )
+        token = _CONTROL_GENERATIONS.set({**generations, cascade_id: generation})
+        try:
+            self._check_control_generation(cascade_id)
+            return await method(self, cascade_id, *args, **kwargs)
+        finally:
+            _CONTROL_GENERATIONS.reset(token)
+
+    return cast(ControlMethod, guarded)
+
+
+def _control_sequences[ControlMethod: Callable[..., Any]](
+    method: ControlMethod,
+) -> ControlMethod:
+    """Bind all chain epochs before an entry point can wait for another task."""
+
+    @wraps(method)
+    async def guarded(self: CascadeManager, *args: Any, **kwargs: Any) -> Any:
+        ids = set(self.coordinator._cascade_state)
+        ids.update(
+            cid
+            for cid, sub in self.coordinator.entry.subentries.items()
+            if sub.subentry_type == SUBENTRY_TYPE_CASCADE
+        )
+        inherited = _CONTROL_GENERATIONS.get() or {}
+        generations = {
+            cid: inherited.get(cid, self._state(cid).get("control_generation", 0))
+            for cid in ids
+        }
+        token = _CONTROL_GENERATIONS.set({**inherited, **generations})
+        try:
+            for cid in generations:
+                self._check_control_generation(cid)
+            return await method(self, *args, **kwargs)
+        finally:
+            _CONTROL_GENERATIONS.reset(token)
+
+    return cast(ControlMethod, guarded)
+
+
 class CascadeManager:
     """Execute cascade plans without allowing independent actor ownership."""
 
@@ -108,6 +168,60 @@ class CascadeManager:
         self._restart_actor_unknown_since: dict[str, datetime] = {}
         self._wake_deadline_cancel: dict[str, Callable[[], None]] = {}
         self._terminal_test_tasks: dict[str, asyncio.Task[Any]] = {}
+
+    def _check_control_generation(self, cascade_id: str) -> None:
+        expected = (_CONTROL_GENERATIONS.get() or {}).get(cascade_id)
+        if (
+            expected is not None
+            and self._state(cascade_id).get("control_generation", 0) != expected
+        ):
+            raise asyncio.CancelledError
+
+    def member_control_released(self, cascade_id: str) -> bool:
+        """Current and retained topology bindings both preserve manual authority."""
+        cascade = self.coordinator.entry.subentries.get(cascade_id)
+        data = cascade.data if cascade is not None else {}
+        ids = set(data.get(CONF_CASCADE_MEMBER_IDS, ()))
+        ids.add(data.get(CONF_CASCADE_TERMINAL_LOAD_ID))
+        topology = (
+            self.coordinator._cascade_state.get(cascade_id, {}).get("actor_topology")
+            or {}
+        )
+        ids.update(load_id for load_id, _ in topology.get("members", ()))
+        ids.add(topology.get("terminal_id"))
+        return any(
+            load_id and not self.coordinator.load_bm_enabled(load_id) for load_id in ids
+        )
+
+    def release_member_control(self, load_id: str) -> None:
+        """Revoke source/proof/claims immediately, preserving other actors for stop."""
+        protected = self.coordinator.released_load_actors()
+        for cascade_id, state in self.coordinator._cascade_state.items():
+            if not self.member_control_released(cascade_id):
+                continue
+            state["control_generation"] = state.get("control_generation", 0) + 1
+            snapshot = state.pop("terminal_test_restore", None)
+            if isinstance(snapshot, dict):
+                snapshot["revoked"] = True
+            task = self._terminal_test_tasks.get(cascade_id)
+            if task is not None and not task.done():
+                task.cancel()
+            if snapshot is not None or task is not None:
+                state["terminal_test"] = {"state": "aborted", "error": None}
+            state["source"] = None
+            state["phase"] = "idle"
+            state["claims"] = {
+                actor: desired
+                for actor, desired in state.get("claims", {}).items()
+                if actor not in protected
+            }
+            state.pop("restart_reconcile_pending", None)
+            state.pop("restart_safe_off_pending", None)
+            if cancel := self._proof_refresh_cancel.pop(cascade_id, None):
+                cancel()
+            self._proof.pop(cascade_id, None)
+            self._aux_tick.pop(cascade_id, None)
+            self._clear_member_wake(cascade_id)
 
     def _stopping(self) -> bool:
         return bool(
@@ -618,6 +732,7 @@ class CascadeManager:
         actors.extend(data.get(CONF_LOAD_CONTROL_SWITCH) for _, data in members)
         return list(dict.fromkeys(entity for entity in actors if entity))
 
+    @_control_sequences
     async def async_reconcile_topologies(self) -> None:
         """Release old wiring before the planner can forget removed actors.
 
@@ -633,6 +748,10 @@ class CascadeManager:
         )
         changed = False
         for cid in sorted(ids):
+            self._check_control_generation(cid)
+            if self.member_control_released(cid):
+                await self.async_safe_off(cid, "member control released")
+                continue
             state = self._state(cid)
             current = self._topology(cid)
             previous = state.get("actor_topology")
@@ -743,9 +862,11 @@ class CascadeManager:
                 blocked.add(terminal_id)
         return blocked
 
+    @_control_sequence
     async def async_set_enabled(self, cascade_id: str, enabled: bool) -> bool:
         lock = self._locks.setdefault(cascade_id, asyncio.Lock())
         async with lock:
+            self._check_control_generation(cascade_id)
             return await self._set_enabled_locked(cascade_id, enabled)
 
     async def _set_enabled_locked(self, cascade_id: str, enabled: bool) -> bool:
@@ -819,9 +940,11 @@ class CascadeManager:
         )
         return True
 
+    @_control_sequence
     async def async_reset_fault(self, cascade_id: str) -> bool:
         lock = self._locks.setdefault(cascade_id, asyncio.Lock())
         async with lock:
+            self._check_control_generation(cascade_id)
             return await self._reset_fault_locked(cascade_id)
 
     async def _reset_fault_locked(self, cascade_id: str) -> bool:
@@ -873,6 +996,8 @@ class CascadeManager:
 
     def terminal_test_available(self, cascade_id: str) -> bool:
         """Return whether a terminal test can start or be aborted."""
+        if self.member_control_released(cascade_id):
+            return False
         task = self._terminal_test_tasks.get(cascade_id)
         if task is not None and not task.done():
             return True
@@ -1053,6 +1178,7 @@ class CascadeManager:
             },
         )
 
+    @_control_sequence
     async def _restore_terminal_test_snapshot(
         self,
         cascade_id: str,
@@ -1060,6 +1186,13 @@ class CascadeManager:
         snapshot: dict[str, Any],
     ) -> bool:
         """Restore an arbitrary confirmed pre-test vector in safe order."""
+        if (
+            snapshot.get("revoked")
+            or snapshot.get("control_generation", 0)
+            != self._state(cascade_id).get("control_generation", 0)
+            or self.member_control_released(cascade_id)
+        ):
+            raise asyncio.CancelledError
         targets = snapshot["actors"]
         terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
         ok = True
@@ -1100,6 +1233,7 @@ class CascadeManager:
             state.pop("restart_safe_off_pending", None)
         return ok
 
+    @_control_sequence
     async def async_test_terminal(self, cascade_id: str) -> None:
         """Test the terminal path and restore it; a second call aborts."""
         running = self._terminal_test_tasks.get(cascade_id)
@@ -1133,8 +1267,15 @@ class CascadeManager:
                 self._terminal_test_tasks.pop(cascade_id, None)
             self.coordinator.async_update_listeners()
 
+    @_control_sequence
     async def _run_terminal_test_locked(self, cascade_id: str) -> None:
         """Own the cascade until proof/hold and exact state restoration."""
+        if self.member_control_released(cascade_id):
+            raise HomeAssistantError(
+                "Terminal test unavailable while member control is released",
+                translation_domain=DOMAIN,
+                translation_key="terminal_test_unavailable",
+            )
         topology = self._topology(cascade_id)
         if topology is None:
             raise HomeAssistantError(
@@ -1144,11 +1285,14 @@ class CascadeManager:
             )
         state = self._state(cascade_id)
         snapshot = self._terminal_test_snapshot(topology)
+        generation = state.get("control_generation", 0)
+        snapshot["control_generation"] = generation
         state["terminal_test_restore"] = snapshot
         state["terminal_test"] = {"state": "starting", "error": None}
         state["phase"] = "testing_terminal"
         # Persist the recovery vector before the first temporary actor write.
         await self.coordinator.async_flush_persistent_state()
+        self._check_control_generation(cascade_id)
         self._begin_actor_sequence(cascade_id)
         error: Exception | None = None
         cancelled = False
@@ -1186,6 +1330,7 @@ class CascadeManager:
                 }
                 self.coordinator.async_update_listeners()
                 await self._wait_for_fresh_member(data, baseline)
+                self._check_control_generation(cascade_id)
                 if index + 1 < len(topology["members"]):
                     baseline = self._member_telemetry_reported_at(
                         topology["members"][index + 1][1]
@@ -1214,44 +1359,69 @@ class CascadeManager:
             }
             self.coordinator.async_update_listeners()
             await self._wait_for_terminal_proof(topology["terminal"], terminal_baseline)
+            self._check_control_generation(cascade_id)
         except asyncio.CancelledError:
             cancelled = True
             raise
         except Exception as err:
             error = err
         finally:
-            restored = await asyncio.shield(
-                self._restore_terminal_test_snapshot(cascade_id, topology, snapshot)
-            )
-            state.pop("terminal_test_restore", None)
-            if not restored:
-                state["terminal_test"] = {
-                    "state": "failed",
-                    "error": "Previous actor state could not be restored",
-                }
-                await self._fault(cascade_id, "terminal_test_restore_failed")
-                await self.async_safe_off(cascade_id, "terminal test restore failure")
+            if state.get("control_generation", 0) != generation or snapshot.get(
+                "revoked"
+            ):
+                state.pop("terminal_test_restore", None)
+                state["terminal_test"] = {"state": "aborted", "error": None}
+                await self.coordinator.async_flush_persistent_state()
             else:
-                terminal_result = {
-                    "state": (
-                        "aborted" if cancelled else "failed" if error else "successful"
-                    ),
-                    "error": str(error) if error else None,
-                    "completed_at": dt_util.now().isoformat(),
-                }
-                if error:
-                    progress = state.get("terminal_test", {})
-                    for key in (
-                        "member_index",
-                        "output_entity",
-                        "attempts",
-                        "deadline",
-                        "last_actor_error",
-                    ):
-                        if key in progress:
-                            terminal_result[key] = deepcopy(progress[key])
-                state["terminal_test"] = terminal_result
-            await self.coordinator.async_flush_persistent_state()
+                try:
+                    restored = await asyncio.shield(
+                        self._restore_terminal_test_snapshot(
+                            cascade_id, topology, snapshot
+                        )
+                    )
+                except asyncio.CancelledError:
+                    if state.get(
+                        "control_generation", 0
+                    ) == generation and not snapshot.get("revoked"):
+                        raise
+                    state["terminal_test"] = {"state": "aborted", "error": None}
+                    await self.coordinator.async_flush_persistent_state()
+                    raise
+                state.pop("terminal_test_restore", None)
+                if not restored:
+                    state["terminal_test"] = {
+                        "state": "failed",
+                        "error": "Previous actor state could not be restored",
+                    }
+                    await self._fault(cascade_id, "terminal_test_restore_failed")
+                    await self.async_safe_off(
+                        cascade_id, "terminal test restore failure"
+                    )
+                else:
+                    terminal_result = {
+                        "state": (
+                            "aborted"
+                            if cancelled
+                            else "failed"
+                            if error
+                            else "successful"
+                        ),
+                        "error": str(error) if error else None,
+                        "completed_at": dt_util.now().isoformat(),
+                    }
+                    if error:
+                        progress = state.get("terminal_test", {})
+                        for key in (
+                            "member_index",
+                            "output_entity",
+                            "attempts",
+                            "deadline",
+                            "last_actor_error",
+                        ):
+                            if key in progress:
+                                terminal_result[key] = deepcopy(progress[key])
+                    state["terminal_test"] = terminal_result
+                await self.coordinator.async_flush_persistent_state()
         if error is not None:
             if isinstance(error, HomeAssistantError):
                 raise error
@@ -1271,6 +1441,7 @@ class CascadeManager:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
+    @_control_sequences
     async def async_recover_terminal_tests(self) -> None:
         """Restore a pre-test vector persisted across an integration reload."""
         for cascade_id in tuple(self.coordinator._cascade_state):
@@ -1278,6 +1449,16 @@ class CascadeManager:
             snapshot = state.get("terminal_test_restore")
             topology = self._topology(cascade_id)
             if not isinstance(snapshot, dict) or topology is None:
+                continue
+            if (
+                snapshot.get("revoked")
+                or snapshot.get("control_generation", 0)
+                != state.get("control_generation", 0)
+                or self.member_control_released(cascade_id)
+            ):
+                state.pop("terminal_test_restore", None)
+                state["terminal_test"] = {"state": "aborted", "error": None}
+                self.coordinator._save_persistent_state()
                 continue
             lock = self._locks.setdefault(cascade_id, asyncio.Lock())
             async with lock:
@@ -1698,23 +1879,37 @@ class CascadeManager:
                     self._record_observed_off(cascade_id, entity_id, current)
                     state["claims"][entity_id] = False
 
+    @_control_sequence
     async def _actor(
         self, cascade_id: str, entity_id: str | None, turn_on: bool
     ) -> bool:
         if self._stopping():
             raise asyncio.CancelledError
+        state = self._state(cascade_id)
+        generation = state.get("control_generation", 0)
+        if entity_id in self.coordinator.released_load_actors() or (
+            turn_on and self.member_control_released(cascade_id)
+        ):
+            return False
         task = asyncio.current_task()
         assert task is not None
         self._actor_tasks.add(task)
         try:
             if entity_id and turn_on:
                 self._check_minimum_off(cascade_id, {entity_id: True})
-            if await self._confirm_actor(cascade_id, entity_id, turn_on):
+            confirmed = await self._confirm_actor(cascade_id, entity_id, turn_on)
+            if state.get("control_generation", 0) != generation:
+                raise asyncio.CancelledError
+            if confirmed:
                 return True
-            return await self._recover_actor(cascade_id, entity_id, turn_on)
+            recovered = await self._recover_actor(cascade_id, entity_id, turn_on)
+            if state.get("control_generation", 0) != generation:
+                raise asyncio.CancelledError
+            return recovered
         finally:
             self._actor_tasks.discard(task)
 
+    @_control_sequence
     async def _recover_actor(
         self, cascade_id: str, entity_id: str | None, turn_on: bool
     ) -> bool:
@@ -1765,6 +1960,7 @@ class CascadeManager:
                     self._actor_event(
                         cascade_id, "actor_recovery_refreshed", entity_id, target
                     )
+                self._check_control_generation(cascade_id)
                 current = self.coordinator.hass.states.get(entity_id)
                 if (
                     entity_id
@@ -1789,7 +1985,9 @@ class CascadeManager:
                     await self.coordinator._switch_entity(
                         entity_id, turn_on, actor_owner=cascade_id
                     )
+                self._check_control_generation(cascade_id)
                 await self._wait_actor_state(entity_id, target, accept_assumed=False)
+                self._check_control_generation(cascade_id)
         except asyncio.CancelledError:
             recovery["status"] = "interrupted"
             self._actor_event(
@@ -1797,6 +1995,7 @@ class CascadeManager:
             )
             raise
         except Exception as err:
+            self._check_control_generation(cascade_id)
             recovery["status"] = "failed"
             recovery["error"] = str(err) or type(err).__name__
             _LOGGER.warning(
@@ -1812,6 +2011,7 @@ class CascadeManager:
             )
             self._actor_event(cascade_id, "actor_recovery_failed", entity_id, target)
             return False
+        self._check_control_generation(cascade_id)
         recovery["status"] = "succeeded"
         # Adoption records the confirmed OFF timestamp without another command.
         await self._confirm_actor(cascade_id, entity_id, turn_on)
@@ -1923,6 +2123,7 @@ class CascadeManager:
         self._actor_event(cascade_id, "off_recovery_succeeded")
         return True
 
+    @_control_sequence
     async def _confirm_actor(
         self,
         cascade_id: str,
@@ -1932,6 +2133,11 @@ class CascadeManager:
         if not entity_id:
             return True
         state = self._state(cascade_id)
+        generation = state.get("control_generation", 0)
+        if entity_id in self.coordinator.released_load_actors() or (
+            turn_on and self.member_control_released(cascade_id)
+        ):
+            return False
         # Shared ownership only changes how an *external* deviation from our
         # last claim is handled.  It must not reject our own next transition
         # merely because the desired state differs from that previous claim.
@@ -2000,6 +2206,11 @@ class CascadeManager:
                     "kind": "confirmation_timeout",
                 }
                 return False
+        if (
+            state.get("control_generation", 0) != generation
+            or entity_id in self.coordinator.released_load_actors()
+        ):
+            return False
         self._actor_event(cascade_id, "target_confirmed", entity_id, target_state)
         if not turn_on:
             state.setdefault("actor_off_since", {})[entity_id] = (
@@ -2055,6 +2266,7 @@ class CascadeManager:
         state.pop("last_actor_error", None)
         state.pop("safe_off_reason", None)
 
+    @_control_sequence
     async def _fault(self, cascade_id: str, reason: str) -> None:
         if self._stopping():
             raise asyncio.CancelledError
@@ -2106,8 +2318,50 @@ class CascadeManager:
         )
         self.coordinator._save_persistent_state()
 
+    @_control_sequence
     async def async_safe_off(self, cascade_id: str, reason: str) -> bool:
         """Break the load path downstream-to-upstream and keep Root open."""
+        if self.member_control_released(cascade_id):
+            # Manual members are outside our safety authority. Break only
+            # paths whose remaining enabled actors were actually claimed;
+            # manual ON is never evidence of ownership or a failed Safe-OFF.
+            state = self._state(cascade_id)
+            protected = self.coordinator.released_load_actors()
+            topology = state.get("actor_topology") or self._topology(cascade_id)
+            claimed = {
+                actor
+                for actor, desired in state.get("claims", {}).items()
+                if desired and actor not in protected
+            }
+            if topology is None:
+                cascade = self.coordinator.entry.subentries.get(cascade_id)
+                data = cascade.data if cascade is not None else {}
+                terminal = self.coordinator.entry.subentries.get(
+                    data.get(CONF_CASCADE_TERMINAL_LOAD_ID) or ""
+                )
+                topology = {
+                    "members": [
+                        (lid, load.data)
+                        for lid in data.get(CONF_CASCADE_MEMBER_IDS, ())
+                        if (load := self.coordinator.entry.subentries.get(lid))
+                        is not None
+                    ],
+                    "terminal": terminal.data if terminal is not None else {},
+                }
+            ordered = self._off_order(topology)
+            # An unmapped legacy claim cannot prove which device is enabled.
+            # Only known bindings may participate in the remaining break path.
+            claimed.intersection_update(ordered)
+            ok = True
+            for actor in dict.fromkeys([*ordered, *sorted(claimed)]):
+                if actor in claimed:
+                    ok &= await self._actor(cascade_id, actor, False)
+            state["source"] = None
+            state["phase"] = "idle"
+            state["safe_off_reason"] = "member control released"
+            state["fault_safe_off_complete"] = ok
+            self.coordinator._save_persistent_state()
+            return ok
         self._begin_actor_sequence(cascade_id)
         self._state(cascade_id)["safe_off_reason"] = reason
         self._actor_event(cascade_id, "safe_off_started")
@@ -2197,6 +2451,7 @@ class CascadeManager:
         self.coordinator._save_persistent_state()
         return ok
 
+    @_control_sequence
     async def async_safety_off(
         self, cascade_id: str, reason: str, now: datetime | None = None
     ) -> bool:
@@ -2227,6 +2482,7 @@ class CascadeManager:
             self.coordinator._save_persistent_state()
         return ok
 
+    @_control_sequences
     async def async_safety_off_active(self, reason: str, now: datetime) -> None:
         """Apply the global fail-safe to every configured active cascade."""
         await self.async_cancel_terminal_tests()
@@ -2918,6 +3174,7 @@ class CascadeManager:
         self._schedule_proof_refresh(cascade_id, min(_PROOF_SECONDS, remaining))
         return None
 
+    @_control_sequence
     async def _apply_one(
         self,
         cascade_id: str,
@@ -2956,6 +3213,9 @@ class CascadeManager:
         # local-day refresh could unexpectedly undo a manual operator change.
         # A fault remains latched until reset, but a successful fault-triggered
         # Safe-OFF releases actor ownership for manual troubleshooting.
+        if self.member_control_released(cascade_id):
+            await self.async_safe_off(cascade_id, "member control released")
+            return
         if state.get("fault"):
             if not state.get("fault_safe_off_complete"):
                 await self.async_safe_off(cascade_id, "cascade fault")
@@ -3280,6 +3540,7 @@ class CascadeManager:
             state["phase"] = terminal_phase
             self.coordinator._save_persistent_state()
 
+    @_control_sequences
     async def async_apply(
         self,
         config: SystemConfig,
@@ -3290,6 +3551,12 @@ class CascadeManager:
     ) -> None:
         if self._stopping():
             return
+        generations = {
+            cascade.cascade_id: self._state(cascade.cascade_id).get(
+                "control_generation", 0
+            )
+            for cascade in config.cascades
+        }
         await self.async_reconcile_topologies()
         if safety_reason is not None:
             await self.async_cancel_terminal_tests()
@@ -3306,10 +3573,17 @@ class CascadeManager:
                 item: Any = plan,
                 owned: asyncio.Lock = lock,
             ) -> None:
-                async with owned:
-                    await self._apply_one(
-                        cid, item, load_states, now, safety_reason=safety_reason
-                    )
+                token = _CONTROL_GENERATIONS.set(
+                    {**(_CONTROL_GENERATIONS.get() or {}), cid: generations[cid]}
+                )
+                try:
+                    async with owned:
+                        self._check_control_generation(cid)
+                        await self._apply_one(
+                            cid, item, load_states, now, safety_reason=safety_reason
+                        )
+                finally:
+                    _CONTROL_GENERATIONS.reset(token)
 
             tasks.append(run_one())
         if tasks:

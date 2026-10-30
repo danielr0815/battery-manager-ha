@@ -27,6 +27,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
             k: v.isoformat() for k, v in self._load_run_deadline.items()
         },
         "load_bm_enabled": dict(self._load_bm_enabled),
+        "load_released_actors": dict(self._load_released_actors),
         "cascade_state": self.cascade_manager.persistent_state_snapshot(),
         # Only the accumulated total is persisted; the in-progress tick cursor
         # is deliberately NOT — restoring it would credit the whole restart

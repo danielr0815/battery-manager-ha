@@ -140,3 +140,11 @@ vollständige Qualitätsgates und unabhängiges Astra-/High-Review. Liveprüfung
 verwenden ausschließlich den lokalen Playwright-MCP. B1/B2 werden erst nach
 Prüfung von Ausgangsrückmeldung und Schalthoheit auf auto umgestellt. Aus einem
 bereits eingeschalteten Eingang wird dabei kein Besitz erfunden.
+
+## BM-Steuerung OFF ab 0.64.0
+
+Die manuelle Übergabe hat Vorrang vor allen Eingangs-Abschaltpflichten dieser
+Spezifikation: OFF widerruft Besitz und ausstehende Anforderungen ohne Befehl.
+Auch Schutz, Neustart und verspätete Rückmeldungen dürfen das freigegebene Gerät
+nicht schalten. ON übernimmt einen bereits eingeschalteten Eingang nicht.
+Der aktuelle vollständige Vertrag steht in [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md#lasten-pausieren-und-schalten).

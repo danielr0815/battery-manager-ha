@@ -180,11 +180,26 @@ laufen auch während der CPU-Planung; Telemetrie verschiebt keine Planzeitstempe
 
 ## Lasten pausieren und schalten
 
-Der vorhandene BM-Kontrollschalter einer Last sperrt beim Ausschalten neue Starts
-sofort. Ein laufender Verbraucher erhält seine verbleibende Mindestlaufzeit;
-danach wird der Ladepfad geordnet abgeschaltet. Das gilt auch ohne gültige
-PV-Prognose. Wiederaktivieren hebt einen noch wartenden manuellen Pausenauftrag
-auf. Schutzabschaltungen dürfen die Mindestlaufzeit weiterhin übergehen.
+Ab **0.64.0** übergibt OFF am BM-Kontrollschalter einer Last sofort alle
+Geräteaktoren (Eingang, Lade-Gate, Ausgang) an den Betreiber. BM sendet danach
+weder ON noch OFF für dieses Gerät, auch bei Schutz, Kalibrierung, verspäteter
+Bestätigung, Konfigurationswechsel und Neustart. Mindestlaufzeit und frühere
+Abschaltpflichten erteilen keine Ausnahme. Offene Anforderungen, Eingangsbesitz
+und Laufzeit-Timer werden ohne Gerätebefehl widerrufen. Bereits versendete
+Befehle können noch eintreffen; die Übergabe verspricht keine Geräteatomarität.
+
+OFF und die dabei freigegebenen Aktorbindungen werden gespeichert. Alte
+Bindings bleiben bei geänderter Zuordnung geschützt, solange die Last OFF ist.
+Ein Konflikt mit anderen Aktorrollen erteilt auch diesen keine Schreibfreigabe.
+ON erlaubt frische normale Planung, übernimmt aber keinen bereits eingeschalteten
+Eingang allein aus dessen ON-Zustand.
+
+Kaskaden dürfen ein freigegebenes Mitglied nicht weiter als Quelle nutzen.
+Quellen-, Wake- und Proof-Absichten werden verworfen. Geordnetes Stoppen betrifft
+nur zuvor beanspruchte Aktoren anderer weiterhin BM-aktiver Geräte; der manuelle
+Teil wird weder geschaltet noch als fehlgeschlagene OFF-Bestätigung behandelt.
+Eine physische vollständige Trennung der manuell gehaltenen Kaskade wird daher
+nicht behauptet. Nach ON gelten die normalen Kaskadenfreigaben erneut.
 
 Ein Serviceaufruf ist eine Anforderung. Erst der gemeldete Gerätezustand bestätigt
 ON oder OFF. Normale Lasten warten dafür höchstens **30 Sekunden**. Dwell und

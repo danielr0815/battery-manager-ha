@@ -51,6 +51,7 @@ class LoadAction:
     flicker_eligible: bool = False
     reason: str = "plan change"
     bypass_guards: bool = False
+    control_generation: int | None = None
 
     @classmethod
     def from_legacy(cls, action: LoadAction | tuple[Any, ...]) -> LoadAction:
@@ -205,7 +206,11 @@ def reconcile_feedback(
     settled: set[str] = set()
     managed = coordinator.cascade_manager.managed_load_ids()
     for load_id, sub in coordinator.entry.subentries.items():
-        if sub.subentry_type != SUBENTRY_TYPE_LOAD or load_id in managed:
+        if (
+            sub.subentry_type != SUBENTRY_TYPE_LOAD
+            or load_id in managed
+            or not coordinator.load_bm_enabled(load_id)
+        ):
             continue
         plug = sub.data.get(CONF_LOAD_CONTROL_SWITCH)
         if not isinstance(plug, str) or not plug:
@@ -275,7 +280,11 @@ def reconcile_feedback(
         settled.add(entity)
         changed = True
     for load_id, sub in coordinator.entry.subentries.items():
-        if sub.subentry_type != SUBENTRY_TYPE_LOAD or load_id in managed:
+        if (
+            sub.subentry_type != SUBENTRY_TYPE_LOAD
+            or load_id in managed
+            or not coordinator.load_bm_enabled(load_id)
+        ):
             continue
         path = settled.intersection(
             (
@@ -338,6 +347,7 @@ async def execute_load_switching(
         return
     # Preserve the final queue barrier, but never hold the shared safety
     # lock while waiting for device feedback.
+    queued_generations = dict(self._load_control_generation)
     async with self._switch_lock:
         pass
     # F-CASCADE-STORAGE live incident 2026-09-01: a generic action
@@ -354,7 +364,15 @@ async def execute_load_switching(
         activate, plug_was_on = command.activate, command.plug_was_on
         run_h, flicker_eligible = command.run_h, command.flicker_eligible
         reason, bypass_guards = command.reason, command.bypass_guards
-        if activate and not self.load_bm_enabled(subentry_id):
+        control_generation = (
+            command.control_generation
+            if command.control_generation is not None
+            else queued_generations.get(subentry_id, 0)
+        )
+        if (
+            not self.load_bm_enabled(subentry_id)
+            or self._load_control_generation.get(subentry_id, 0) != control_generation
+        ):
             continue
         if subentry_id in cascade_managed:
             _LOGGER.info(
@@ -391,9 +409,9 @@ async def execute_load_switching(
                 continue
             if self._load_action_generation.get(subentry_id) != generation:
                 continue
-            if not self.load_bm_enabled(subentry_id) or (
-                not bypass_guards and start_blocked(self)
-            ):
+            if not self.load_bm_enabled(subentry_id):
+                continue
+            if not bypass_guards and start_blocked(self):
                 if enable:
                     await self._switch_load_entity(
                         enable, False, actor_owner="load:" + subentry_id
@@ -406,6 +424,11 @@ async def execute_load_switching(
                 if not await self._switch_load_entity(
                     plug, True, actor_owner="load:" + subentry_id
                 ):
+                    if (
+                        self._load_control_generation.get(subentry_id, 0)
+                        != control_generation
+                    ):
+                        continue
                     # Rollback (7-day live audit 2026-08-04): the gate
                     # confirmed ON but the plug did not (BLE-RPC
                     # failure) — without this OFF the gate stays
@@ -438,6 +461,11 @@ async def execute_load_switching(
                                 " too — the gate stays ON for now",
                                 label,
                             )
+                    continue
+                if (
+                    self._load_control_generation.get(subentry_id, 0)
+                    != control_generation
+                ):
                     continue
                 # We switched the plug on for charging: ownership
                 # allows the 'auto' policy to switch it off again.

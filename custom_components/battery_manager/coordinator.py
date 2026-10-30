@@ -7,7 +7,7 @@ import contextlib
 import logging
 import math
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from statistics import median
@@ -27,6 +27,7 @@ from homeassistant.util import dt as dt_util
 
 from .actor_ownership import (
     COLLISION_OWNER,
+    LOAD_ACTOR_KEYS,
     SUPPLY_OWNER,
     actor_claims,
     actor_conflicts,
@@ -97,7 +98,6 @@ from .const import (
     CONF_LOAD_ETA_DISCHARGE,
     CONF_LOAD_HANDOVER_TIMEOUT_S,
     CONF_LOAD_IN_HOUSE,
-    CONF_LOAD_INPUT_OFF_POLICY,
     CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_MAX_CHARGE_POWER_W,
     CONF_LOAD_MAX_OUTPUT_POWER_W,
@@ -172,8 +172,6 @@ from .const import (
     HOUSE_SOC_STALE_CHECK_MIN_PERCENT,
     HOUSE_SOC_STALE_POWER_W,
     INITIAL_UPDATE_INTERVAL_SECONDS,
-    INPUT_OFF_POLICY_ALWAYS,
-    INPUT_OFF_POLICY_AUTO,
     LATCH_HOLD_OVERPOWER_FACTOR,
     LIVE_AC_POWER_KEYS,
     LOAD_RUNTIME_MIN_W,
@@ -705,6 +703,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # and actuates the load; False holds it UNAVAILABLE (planner drops it,
         # executor switches it off) without touching the control-switch config.
         self._load_bm_enabled: dict[str, bool] = {}
+        self._load_released_actors: dict[str, list[str]] = {}
+        self._load_control_generation: dict[str, int] = {}
         # F-CASCADE-STORAGE: the manager owns every actor in configured
         # chains.  Its serialisable state is restored below; new cascades are
         # deliberately disabled until the operator explicitly enables them.
@@ -922,6 +922,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_bm_enabled = {
                 k: bool(v) for k, v in data.get("load_bm_enabled", {}).items()
             }
+            self._load_released_actors = {
+                str(key): [actor for actor in actors if isinstance(actor, str)]
+                for key, actors in data.get("load_released_actors", {}).items()
+                if isinstance(actors, list)
+            }
             cascade_state = data.get("cascade_state")
             if isinstance(cascade_state, dict):
                 self._cascade_state = {
@@ -1107,6 +1112,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         request.get("state", "pending"),
                         request.get("owner"),
                     )
+            for load_id, enabled in self._load_bm_enabled.items():
+                if not enabled:
+                    self._release_load_control(load_id)
             # F-FEEDIN: the runtime switch, the manual-mode deadline and our
             # last written setpoint survive restarts — after a reboot "setpoint
             # ≠ ours" must still be judgeable as an external override instead
@@ -2856,79 +2864,93 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.data["load_plans"][load_id].update(input_diagnostics(self, load_id))
         self.async_update_listeners()
 
-    def set_load_enabled(self, load_id: str, enabled: bool) -> None:
-        """Enable/disable BM control of one load (v0.7.17 per-load switch).
+    def released_load_actors(self, only_load_id: str | None = None) -> set[str]:
+        """Actors reserved for manual use, including old persisted wiring.
 
-        Disabling blocks new starts immediately and schedules an independent
-        stop after the remaining minimum runtime. Resume cancels that pending
-        pause. The choice survives restarts without altering actor wiring."""
+        Retain disabled bindings across reassignment/restart: a stale cleanup
+        must never regain authority merely because options changed first.
+        """
+        actors: set[str] = set()
+        for load_id, enabled in self._load_bm_enabled.items():
+            if enabled or (only_load_id is not None and load_id != only_load_id):
+                continue
+            actors.update(self._load_released_actors.get(load_id, ()))
+            sub = self.entry.subentries.get(load_id)
+            if sub is not None:
+                actors.update(
+                    sub.data[key] for key in LOAD_ACTOR_KEYS if sub.data.get(key)
+                )
+            for state in self._cascade_state.values():
+                topology = state.get("actor_topology") or {}
+                entries = list(topology.get("members", ()))
+                entries.append(
+                    (topology.get("terminal_id"), topology.get("terminal", {}))
+                )
+                for member_id, data in entries:
+                    if member_id == load_id:
+                        actors.update(
+                            data[key] for key in LOAD_ACTOR_KEYS if data.get(key)
+                        )
+        return actors
+
+    def _release_load_control(self, load_id: str) -> None:
+        """Revoke volatile obligations synchronously, without device commands."""
+        actors = self.released_load_actors(load_id)
+        if binding := self._load_plug_owned_entities.get(load_id):
+            actors.add(binding)
+        actors.update(
+            actor
+            for actor, request in self._load_actor_requests.items()
+            if request.owner == "load:" + load_id
+        )
+        self._load_released_actors[load_id] = sorted(
+            set(self._load_released_actors.get(load_id, ())) | actors
+        )
+        self._load_control_generation[load_id] = (
+            self._load_control_generation.get(load_id, 0) + 1
+        )
+        self._load_action_generation[load_id] = (
+            self._load_action_generation.get(load_id, 0) + 1
+        )
+        self._load_plug_owned[load_id] = False
+        self._load_plug_owned_entities.pop(load_id, None)
+        self._load_input_on_since.pop(load_id, None)
+        self._load_run_deadline.pop(load_id, None)
+        self._cancel_off_timer(load_id)
+        self._load_charging_active.pop(load_id, None)
+        self._load_plan_active.pop(load_id, None)
+        self._load_learn_ok.pop(load_id, None)
+        self._load_latch_hold.discard(load_id)
+        self._stale_shed_pending.discard(load_id)
+        for actor in actors:
+            self._load_actor_requests.pop(actor, None)
+        self._complete_power_calibration_release(load_id)
+        if self._load_power_calibration_id == load_id:
+            self._load_power_calibration_id = None
+            self._set_power_calibration_diag(load_id, state="aborted")
+            task = self._load_power_calibration_task
+            if task is not None:
+                task.cancel()
+        self.cascade_manager.release_member_control(load_id)
+
+    def set_load_enabled(self, load_id: str, enabled: bool) -> None:
+        """OFF immediately hands actors to the operator; ON permits fresh plans."""
         self._load_bm_enabled[load_id] = bool(enabled)
         previous = self._pause_tasks.pop(load_id, None)
         if previous is not None:
             previous.cancel()
         if not enabled:
-            self._pause_tasks[load_id] = self.entry.async_create_background_task(
-                self.hass, self._async_pause_load(load_id), name="battery_manager_pause"
-            )
+            self._release_load_control(load_id)
+        else:
+            self._load_released_actors.pop(load_id, None)
         self._save_persistent_state()
-
-    async def _async_pause_load(self, load_id: str) -> None:
-        """A manual pause must finish even while planner inputs are unavailable."""
-        subentry = self.entry.subentries.get(load_id)
-        if subentry is None or not subentry.data.get(CONF_LOAD_CONTROL_SWITCH):
-            return
-        reconcile_feedback(self)
-        data = subentry.data
-        plug = data[CONF_LOAD_CONTROL_SWITCH]
-        gate = data.get(CONF_LOAD_CHARGE_ENABLE)
-        policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
-        input_must_stop = (
-            not gate
-            or policy == INPUT_OFF_POLICY_ALWAYS
-            or (
-                policy == INPUT_OFF_POLICY_AUTO
-                and self._load_plug_owned.get(load_id, False)
-            )
-        )
-        if load_id not in self.cascade_manager.managed_load_ids() and (
-            (not gate or self._entity_tristate(gate) is False)
-            and (not input_must_stop or self._entity_tristate(plug) is False)
-        ):
-            # Reconciliation is idempotent: an already stopped device has no
-            # new edge and must not repeatedly restart its minimum-off clock.
-            return
-        last = self._last_load_switch.get(load_id)
-        if last is not None and self._charging_is_active(data) is not False:
-            stop_at = last + timedelta(minutes=data.get(CONF_LOAD_MIN_RUNTIME_MIN, 30))
-            delay = (stop_at - dt_util.now()).total_seconds()
-            if delay > 0 and not (self._floor_guard_active or self._stale_shed_active):
-                await asyncio.sleep(delay)
-        if not self.load_bm_enabled(load_id):
-            for cascade_id, cascade in self.entry.subentries.items():
-                if cascade.subentry_type == SUBENTRY_TYPE_CASCADE and (
-                    load_id in cascade.data.get(CONF_CASCADE_MEMBER_IDS, [])
-                    or load_id == cascade.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
-                ):
-                    await self.cascade_manager.async_safe_off(
-                        cascade_id, "manual pause"
-                    )
-                    return
-            await self._execute_load_switching(
-                [
-                    LoadAction(
-                        load_id,
-                        dict(data),
-                        False,
-                        self._entity_is_on(data[CONF_LOAD_CONTROL_SWITCH]),
-                        reason="manual pause",
-                    )
-                ]
-            )
 
     async def _switch_load_entity(
         self, entity_id: str, desired: bool, *, actor_owner: str | None = None
     ) -> bool:
         """Confirm physical feedback and limit retries, including service failures."""
+        if entity_id in self.released_load_actors():
+            return False
         state = self.hass.states.get(entity_id)
         if state is not None and state.state == ("on" if desired else "off"):
             self._load_actor_requests.pop(entity_id, None)
@@ -2956,13 +2978,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not await confirm_state(self.hass, entity_id, desired):
             request.state = "confirmation_failed"
             return False
+        if self._load_actor_requests.get(entity_id) is not request:
+            return False
         request.state = "confirmed"
         return True
 
     def power_calibration_supported(self, load_id: str) -> bool:
         """Whether a load has every actor/sensor needed for a manual probe."""
         subentry = self.entry.subentries.get(load_id)
-        if subentry is None or subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+        if (
+            subentry is None
+            or subentry.subentry_type != SUBENTRY_TYPE_LOAD
+            or not self.load_bm_enabled(load_id)
+        ):
             return False
         data = subentry.data
         if not (
@@ -3040,6 +3068,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "The load already draws power; calibration needs an idle baseline"
             )
 
+        control_generation = self._load_control_generation.get(load_id, 0)
         self._load_power_calibration_id = load_id
         self._load_power_calibration_restored = None
         self._set_power_calibration_diag(
@@ -3053,16 +3082,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Persist actor ownership BEFORE applying grid power. A clean reload can
         # then stop a probe interrupted between any two awaits below.
         await self.async_flush_persistent_state()
+        if (
+            not self.load_bm_enabled(load_id)
+            or self._load_control_generation.get(load_id, 0) != control_generation
+        ):
+            self._load_power_calibration_id = None
+            return
         self._load_power_calibration_task = self.entry.async_create_background_task(
             self.hass,
-            self._run_load_power_calibration(load_id, dict(data), baseline),
+            self._run_load_power_calibration(
+                load_id, dict(data), baseline, control_generation=control_generation
+            ),
             name=f"battery_manager_power_calibration_{load_id}",
         )
 
     async def _run_load_power_calibration(
-        self, load_id: str, data: Mapping[str, Any], baseline_w: float
+        self,
+        load_id: str,
+        data: Mapping[str, Any],
+        baseline_w: float,
+        *,
+        control_generation: int | None = None,
     ) -> None:
         """Actuate, sample new sensor publications, learn their median, release."""
+        if control_generation is None:
+            control_generation = self._load_control_generation.get(load_id, 0)
+        if (
+            not self.load_bm_enabled(load_id)
+            or self._load_control_generation.get(load_id, 0) != control_generation
+        ):
+            return
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         measurement_started_at: float | None = None
@@ -3193,6 +3242,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # executor skipped this load, so no normal plan could terminate the
             # grid-powered probe halfway through its measurement.
             self._load_power_calibration_id = None
+            activation_attempted = (
+                activation_attempted
+                and self.load_bm_enabled(load_id)
+                and self._load_control_generation.get(load_id, 0) == control_generation
+            )
             self._load_power_calibration_restored = (
                 load_id if activation_attempted else None
             )
@@ -4491,15 +4545,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._reconcile_actor_ownership()
         await self.cascade_manager.async_reconcile_topologies()
         reconcile_feedback(self)
-        # Manual pause and restored OFF obligations do not depend on forecasts.
-        for load_id, enabled in self._load_bm_enabled.items():
-            pending = self._pause_tasks.get(load_id)
-            if not enabled and (pending is None or pending.done()):
-                self._pause_tasks[load_id] = self.entry.async_create_background_task(
-                    self.hass,
-                    self._async_pause_load(load_id),
-                    name="battery_manager_pause_reconcile",
-                )
         now = dt_util.now()
         if self._startup_at is None:
             self._startup_at = now  # V8: anchor the SOC startup grace window
@@ -6391,6 +6436,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # call, and require CascadeManager to present the owning cascade ID.
         # This also fail-closes support/calibration/stale detached paths if a
         # future refactor accidentally points them at a cascade actor.
+        if entity_id in self.released_load_actors():
+            return False
+        if (
+            actor_owner
+            and self.cascade_manager.member_control_released(actor_owner)
+            and turn_on
+        ):
+            return False
         claims = actor_claims(self.raw_config, self.entry.subentries)
         normalized_owner = (
             "cascade:" + actor_owner
@@ -6503,6 +6556,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, entity_id: str, value: float, *, actor_owner: str | None = None
     ) -> bool:
         """Write a setpoint only after rechecking its current owner."""
+        if entity_id in self.released_load_actors():
+            return False
         if not command_allowed(
             actor_claims(self.raw_config, self.entry.subentries),
             entity_id,
@@ -7451,7 +7506,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cascade_managed = self.cascade_manager.managed_load_ids()
         actions: list[LoadAction] = []
         for subentry_id, subentry in self.entry.subentries.items():
-            if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
+            if subentry.subentry_type != SUBENTRY_TYPE_LOAD or not self.load_bm_enabled(
+                subentry_id
+            ):
                 continue
             data = subentry.data
             plan = plans_by_id.get(subentry_id)
@@ -7759,12 +7816,28 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 name="battery_manager_load_switching",
             )
 
-    async def _execute_load_switching(
+    def _execute_load_switching(
         self,
         actions: Sequence[LoadAction | tuple[Any, ...]],
         now: datetime | None = None,
-    ) -> None:
-        await execute_load_switching(self, actions, now)
+    ) -> Coroutine[Any, Any, None]:
+        """Capture authority when queued, before the coroutine can be scheduled.
+
+        A coroutine body may start only after OFF -> ON has already revoked its
+        old intent. Immutable stamps survive fanout and every retry/rollback.
+        """
+        captured = []
+        for action in actions:
+            command = LoadAction.from_legacy(action)
+            if command.control_generation is None:
+                command = replace(
+                    command,
+                    control_generation=self._load_control_generation.get(
+                        command.load_id, 0
+                    ),
+                )
+            captured.append(command)
+        return execute_load_switching(self, captured, now)
 
     async def _execute_stale_load_shed(
         self, reason: str = "stale-data load shed"
@@ -8468,6 +8541,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         load off (F-SUBHOUR approach A, R8). Re-arming cancels any prior timer.
         """
         self._cancel_off_timer(load_id)
+        if not self.load_bm_enabled(load_id):
+            return
 
         @callback
         def _fire(_now: datetime) -> None:

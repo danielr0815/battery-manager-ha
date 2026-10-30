@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.0] - 2026-10-30
+
+### Changed
+
+- Der Lastschalter „BM-Steuerung“ OFF übergibt Eingang, Lade-Gate und Ausgang
+  sofort an die manuelle Steuerung, ohne ON- oder OFF-Befehle. Offene Aufträge,
+  Laufzeit-Timer und Eingangsbesitz werden verworfen; Neustarts erhalten OFF.
+- Kaskaden verwenden freigegebene Mitglieder nicht mehr als Quelle. Nur zuvor
+  beanspruchte Aktoren weiterhin BM-aktivierter Geräte dürfen gestoppt werden.
+  ON erlaubt neue Planung, übernimmt jedoch keinen bereits eingeschalteten Eingang.
+- Bereits an das Gerät gesendete Befehle können nach der Übergabe noch eintreffen.
+
 ## [0.63.0] - 2026-10-29
 
 ### Added

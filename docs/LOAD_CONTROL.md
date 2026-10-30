@@ -575,6 +575,12 @@ buffer form is the pass-3 block, §17).
 The [current actor contract](CURRENT_CONTRACTS.md#lasten-pausieren-und-schalten)
 supersedes older descriptions that equated service completion with device
 confirmation or described shedding as one command attempt per outage. Normal
-loads have a 30 s physical feedback deadline. Pause scheduling is independent
-of planner success; the remaining minimum runtime is respected unless safety
-requires immediate shutdown. Resume cancels a pending manual pause.
+loads have a 30 s physical feedback deadline. From 0.64.0 the per-load BM
+control switch OFF immediately relinquishes input, charge gate and output:
+no ON or OFF commands, including guards, cleanup and late-feedback rollback.
+Pending requests, input ownership and run deadlines are revoked without a
+command. The choice and released actor bindings survive restart and wiring
+changes. Already dispatched device commands may still complete. ON permits
+fresh planning without adopting an already-ON input. A cascade stops using
+the released member and may stop only previously claimed actors of enabled
+members; it cannot promise physical isolation of manually held actors.

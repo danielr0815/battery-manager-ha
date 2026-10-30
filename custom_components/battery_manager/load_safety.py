@@ -70,6 +70,7 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
         if (
             entry.subentry_type != SUBENTRY_TYPE_LOAD
             or not plug
+            or not c.load_bm_enabled(load_id)
             or load_id in managed
             or load_id == c._load_power_calibration_id
         ):
