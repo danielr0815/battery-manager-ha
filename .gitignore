@@ -376,3 +376,6 @@ version_*.txt
 node_modules/
 playwright-report/
 test-results/
+
+# Durable private agent evidence, full logs and usage ledgers
+.codex-artifacts/

@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "core": {
+      "commands": [
+        {
+          "name": "core",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "pytest",
+            "tests/core",
+            "-p",
+            "no:homeassistant",
+            "--cov=custom_components/battery_manager/core",
+            "--cov-fail-under=100",
+            "--cov-report=json:{artifact_dir}/core-coverage.json",
+            "--junitxml={artifact_dir}/core.xml"
+          ],
+          "kind": "tests",
+          "timeout_seconds": 1200,
+          "reports": [
+            {
+              "type": "junit",
+              "path": "{artifact_dir}/core.xml"
+            },
+            {
+              "type": "coverage-json",
+              "path": "{artifact_dir}/core-coverage.json",
+              "minimum": 100
+            }
+          ]
+        }
+      ],
+      "version_probes": [
+        [
+          "uv",
+          "--version"
+        ],
+        [
+          "uv",
+          "run",
+          "--locked",
+          "python",
+          "--version"
+        ],
+        [
+          "uv",
+          "pip",
+          "freeze"
+        ]
+      ]
+    },
+    "python-full": {
+      "commands": [
+        {
+          "name": "core",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "pytest",
+            "tests/core",
+            "-p",
+            "no:homeassistant",
+            "--cov=custom_components/battery_manager/core",
+            "--cov-fail-under=100",
+            "--cov-report=json:{artifact_dir}/core-coverage.json",
+            "--junitxml={artifact_dir}/core.xml"
+          ],
+          "kind": "tests",
+          "timeout_seconds": 1200,
+          "reports": [
+            {
+              "type": "junit",
+              "path": "{artifact_dir}/core.xml"
+            },
+            {
+              "type": "coverage-json",
+              "path": "{artifact_dir}/core-coverage.json",
+              "minimum": 100
+            }
+          ]
+        },
+        {
+          "name": "all",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "pytest",
+            "tests",
+            "-n",
+            "4",
+            "--dist=loadscope",
+            "--cov",
+            "--cov-report=json:{artifact_dir}/coverage.json",
+            "--junitxml={artifact_dir}/all.xml"
+          ],
+          "kind": "tests",
+          "timeout_seconds": 1200,
+          "reports": [
+            {
+              "type": "junit",
+              "path": "{artifact_dir}/all.xml"
+            },
+            {
+              "type": "coverage-json",
+              "path": "{artifact_dir}/coverage.json",
+              "minimum": 95
+            }
+          ]
+        },
+        {
+          "name": "module-coverage",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "python",
+            "scripts/check_module_coverage.py",
+            "{artifact_dir}/coverage.json"
+          ]
+        },
+        {
+          "name": "branches",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "pytest",
+            "tests",
+            "-n",
+            "4",
+            "--dist=loadscope",
+            "--cov",
+            "--cov-branch",
+            "--cov-fail-under=0",
+            "--cov-report=json:{artifact_dir}/branches.json",
+            "--junitxml={artifact_dir}/branches.xml"
+          ],
+          "kind": "tests",
+          "timeout_seconds": 1200,
+          "reports": [
+            {
+              "type": "junit",
+              "path": "{artifact_dir}/branches.xml"
+            },
+            {
+              "type": "coverage-json",
+              "path": "{artifact_dir}/branches.json"
+            }
+          ],
+          "env": {
+            "COVERAGE_FILE": "{artifact_dir}/.coverage.branches"
+          }
+        }
+      ],
+      "version_probes": [
+        [
+          "uv",
+          "--version"
+        ],
+        [
+          "uv",
+          "run",
+          "--locked",
+          "python",
+          "--version"
+        ],
+        [
+          "uv",
+          "pip",
+          "freeze"
+        ]
+      ]
+    },
+    "static": {
+      "commands": [
+        {
+          "name": "ruff",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "ruff",
+            "check",
+            "custom_components",
+            "tests",
+            "scripts"
+          ]
+        },
+        {
+          "name": "format",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "ruff",
+            "format",
+            "--check",
+            "."
+          ]
+        },
+        {
+          "name": "mypy",
+          "argv": [
+            "uv",
+            "run",
+            "--locked",
+            "mypy"
+          ],
+          "timeout_seconds": 600
+        }
+      ],
+      "version_probes": [
+        [
+          "uv",
+          "--version"
+        ],
+        [
+          "uv",
+          "run",
+          "--locked",
+          "python",
+          "--version"
+        ],
+        [
+          "uv",
+          "pip",
+          "freeze"
+        ]
+      ]
+    },
+    "frontend": {
+      "commands": [
+        {
+          "name": "check-bundle",
+          "argv": [
+            "npm",
+            "run",
+            "check:bundle"
+          ],
+          "timeout_seconds": 600
+        },
+        {
+          "name": "lint",
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "timeout_seconds": 600
+        },
+        {
+          "name": "format-check",
+          "argv": [
+            "npm",
+            "run",
+            "format:check"
+          ],
+          "timeout_seconds": 600
+        },
+        {
+          "name": "frontend-tests",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=junit",
+            "--test-reporter-destination={artifact_dir}/frontend.xml"
+          ],
+          "kind": "tests",
+          "reports": [
+            {
+              "type": "junit",
+              "path": "{artifact_dir}/frontend.xml"
+            }
+          ],
+          "timeout_seconds": 600
+        },
+        {
+          "name": "browser-tests",
+          "argv": [
+            "npx",
+            "--no-install",
+            "playwright",
+            "test",
+            "--reporter=junit"
+          ],
+          "kind": "tests",
+          "reports": [
+            {
+              "type": "junit",
+              "path": "{artifact_dir}/browser.xml"
+            }
+          ],
+          "env": {
+            "PLAYWRIGHT_JUNIT_OUTPUT_FILE": "{artifact_dir}/browser.xml"
+          },
+          "timeout_seconds": 600
+        }
+      ],
+      "version_probes": [
+        [
+          "node",
+          "--version"
+        ],
+        [
+          "npm",
+          "--version"
+        ],
+        [
+          "npm",
+          "ls",
+          "--depth=0",
+          "--json"
+        ]
+      ]
+    }
+  }
+}

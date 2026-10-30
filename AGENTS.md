@@ -99,10 +99,17 @@ uv run mypy                     # gesamte Integration, siehe [tool.mypy]
 - Optional: `pre-commit install` — die Hooks (`.pre-commit-config.yaml`)
   spiegeln die im Lockfile fixierte ruff-Version.
 
-## Commit- und Release-Modell
+## Modellregeln und kompakte Prüfungen
 
-Commit- und Release-Operationen immer mit **GPT-6.1 Sol, Reasoning Low**
-ausführen. Diese Vorgabe gilt nur für Commit und Release.
+Die globale Policy aus `danielr0815/codex-model-policy` steuert Modellrouting,
+Eskalation, unabhängige Reviews und Verbrauchsmessung. Kritische Energie- und
+Schaltlogik benötigt weiterhin Astra / High; Git/Release bleibt Sol / Low.
+Ohne globale Installation zuerst die explizite portable Variante einbinden;
+siehe [Framework-Anleitung](docs/CODEX_FRAMEWORK.md).
+
+Lokale Prüfprofile stehen in `.codex-checks.json`. Vollständige Logs und
+Arbeitsnachweise bleiben lokal in `.codex-artifacts/`; erfolgreiche Ausgaben
+kompakt lesen. Alle unten/oben definierten Qualitätsgates bleiben verbindlich.
 
 ## Versionierung (CI-Gate, nicht brechen!)
 
