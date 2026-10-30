@@ -672,3 +672,69 @@ test("loads card distinguishes passthrough hold from charging and retains detail
   await expect(section).toHaveAttribute("open", "");
   await expect(section).toContainText("Reported battery charging");
 });
+
+for (const [language, label, cached, age, unknown] of [
+  ["en", "SOC read for this plan", "Cached value", "41.0 h", "Unknown"],
+  [
+    "de",
+    "SOC-Ablesung für diesen Plan",
+    "Zwischengespeicherter Wert",
+    "41,0 h",
+    "Unbekannt",
+  ],
+]) {
+  test(`loads: accessible cached SOC age and legacy unknown (${language})`, async ({
+    page,
+  }) => {
+    await page.evaluate(
+      ({ language }) => {
+        window.mount("loads", {
+          loads: [
+            {
+              load_id: "b1",
+              name: "Battery",
+              soc_percent: 64.8,
+              target_soc_percent: 90,
+              soc_stale: false,
+              soc_observation: {
+                source: "cached",
+                soc_percent: 64.8,
+                observed_at: "2026-10-28T10:00:00Z",
+                age_seconds: 41 * 3600,
+              },
+              schedule: [],
+            },
+          ],
+        });
+        window.card.hass = { ...window.card._hass, language };
+      },
+      { language },
+    );
+    const observation = page.getByLabel(label, { exact: true });
+    await expect(observation).toContainText(cached);
+    await expect(observation).toContainText(age);
+    await expect(page.locator("[data-soc-observation]")).toHaveCount(1);
+    await expect(page.locator(".fault")).toHaveCount(0);
+    await page.evaluate(() => {
+      const hass = window.card._hass;
+      const attrs = hass.states["sensor.plan"].attributes;
+      const loads = attrs.loads.map(
+        ({ soc_observation: _socObservation, ...load }) => load,
+      );
+      window.card.hass = {
+        ...hass,
+        states: {
+          ...hass.states,
+          "sensor.plan": {
+            ...hass.states["sensor.plan"],
+            attributes: { ...attrs, loads },
+          },
+        },
+      };
+    });
+    await expect(observation).toContainText(unknown);
+    await expect(observation).not.toContainText(cached);
+    await expect(observation).not.toContainText("0.0 h");
+    await expect(observation).not.toContainText("0,0 h");
+  });
+}

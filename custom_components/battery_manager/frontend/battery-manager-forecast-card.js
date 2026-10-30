@@ -193,6 +193,12 @@ var cascade_card_style_0 = "<style>\n      :host{display:block;min-width:0}*{box
 // frontend/translations.js
 var STRINGS = {
   en: {
+    card_soc_read_for_plan: "SOC read for this plan",
+    card_soc_entity_reported: "Entity-reported value (device freshness unconfirmed)",
+    card_soc_cached: "Cached value",
+    card_soc_source_unknown: "Source unknown",
+    card_soc_publication_age: "Age of HA publication at plan capture",
+    card_soc_age_unknown: "Unknown",
     report_gate_48: "48 V switching decision",
     report_gate_voltage: "Current battery voltage",
     report_gate_learning: "SOC threshold estimate",
@@ -529,6 +535,12 @@ var STRINGS = {
     no_consumption: "No consumption forecast on this sensor \u2014 needs Battery Manager v0.25.5+."
   },
   de: {
+    card_soc_read_for_plan: "SOC-Ablesung f\xFCr diesen Plan",
+    card_soc_entity_reported: "Von der Entit\xE4t gemeldet (Ger\xE4teaktualit\xE4t unbest\xE4tigt)",
+    card_soc_cached: "Zwischengespeicherter Wert",
+    card_soc_source_unknown: "Quelle unbekannt",
+    card_soc_publication_age: "Alter der HA-Meldung bei Planerfassung",
+    card_soc_age_unknown: "Unbekannt",
     report_gate_48: "48-V-Schaltentscheidung",
     report_gate_voltage: "Aktuelle Batteriespannung",
     report_gate_learning: "SOC-Schwellensch\xE4tzung",
@@ -4274,6 +4286,16 @@ var BatteryManagerLoadsCard = class extends BatteryManagerCascadeCard {
       schedule: (Array.isArray(load.schedule) ? load.schedule : []).filter((b) => b && typeof b === "object").map((b) => ({ ...b, root_input_wh: num(b.wh), activities: [] }))
     }));
   }
+  _socObservation(load) {
+    const observation = load.soc_observation;
+    const source = observation?.source === "live-source" ? "card_soc_entity_reported" : observation?.source === "cached" ? "card_soc_cached" : null;
+    const age = observation?.age_seconds;
+    const knownAge = source && typeof observation?.observed_at === "string" && Number.isFinite(Date.parse(observation.observed_at)) && typeof age === "number" && Number.isFinite(age) && age >= 0 && age <= 7 * 24 * 3600;
+    const ageText = knownAge ? `${this._number(age / 3600, 1)} h` : localize(this._hass, "card_soc_age_unknown");
+    const label = localize(this._hass, "card_soc_read_for_plan");
+    const value = source ? num(observation?.soc_percent) : void 0;
+    return `<p class="muted" data-soc-observation aria-label="${esc(label)}">${esc(label)}: ${esc(this._number(value, 1))} % \xB7 ${esc(localize(this._hass, source || "card_soc_source_unknown"))} \xB7 ${esc(localize(this._hass, "card_soc_publication_age"))}: ${esc(ageText)}</p>`;
+  }
   _renderCascade(load, index) {
     const view = this._ui(load, index), blocks = this._blocks(load, view.period);
     const source = {
@@ -4308,6 +4330,7 @@ var BatteryManagerLoadsCard = class extends BatteryManagerCascadeCard {
       ${load.target_soc_percent != null && num(load.soc_percent) === void 0 ? `<p class="muted" data-tentative-plan>${esc(localize(this._hass, "card_tentative_wake"))}</p>` : ""}
       <div class="metrics">${metrics.map(([label, value]) => `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
       ${load.target_soc_percent != null ? `<p class="muted">${esc(localize(this._hass, "card_state_of_charge_at_plan_start_charge_target"))}: ${this._number(num(load.soc_percent), 1)} % / ${this._number(num(load.target_soc_percent), 1)} %</p>` : ""}
+      ${load.target_soc_percent != null ? this._socObservation(load) : ""}
       <p class="muted">${esc(localize(this._hass, "card_robust_power_estimate_while_running"))}: ${this._number(num(load.observed_power_w), 0)} W \xB7 ${esc(localize(this._hass, "card_last_learned_power"))}: ${this._number(num(load.learned_power_w), 0)} W</p>
       ${this._decisions(load)}
       ${inputControlReport(this._hass, load.input_control)}

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.1] - 2026-10-30
+
+### Fixed
+
+- Umfangreiche Reserve-, Support- und Kalibrierdiagnosen werden nicht mehr in Recorder-
+  Zustandsattribute geschrieben; Live-Karten und Diagnose-Download behalten sie.
+- Die Lastenkarte zeigt SOC-Herkunft und das Alter der HA-Meldung bei
+  Planerfassung getrennt vom SOC am Planstart. Cachewerte und unbekannte
+  Zeitangaben sind ausdrücklich gekennzeichnet. Eine HA-Meldung bestätigt
+  keine frische physische Gerätemessung.
+
 ## [0.64.0] - 2026-10-30
 
 ### Changed

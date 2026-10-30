@@ -315,3 +315,91 @@ async def test_soc_forecast_sensor_exposes_predrain_diagnostics(hass):
     # PV-window ends: a dict keyed by ISO date -> local hour (may be empty when
     # no day reaches the strong-PV cutoff, e.g. a low synthetic profile).
     assert isinstance(attrs["pv_window_ends"], dict)
+
+
+async def test_recorder_filters_large_reserve_but_keeps_live_diagnostics(hass):
+    """A realistic multi-day curve plus recharge certificates exceeds 16 KiB.
+
+    This models the nested shape seen in the 7-day log review (reserve alone
+    27,924 bytes), rather than padding a scalar with arbitrary repeated text.
+    """
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from custom_components.battery_manager.diagnostics import _last_plan_metrics
+    from custom_components.battery_manager.sensor import BatteryManagerSocForecastSensor
+
+    entry = await _setup_entry(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    start = datetime(2026, 10, 30, tzinfo=UTC)
+    curve = []
+    certificates = []
+    for index in range(96):
+        at = start + timedelta(hours=index)
+        curve.append(
+            {
+                "t": at.isoformat(),
+                "ceiling_soc": 85.0,
+                "dc_ceiling_soc": 80.0,
+                "soc": 64.8,
+                "inverter_limit_w": 0.0,
+            }
+        )
+        certificates.append(
+            {
+                "reference_id": "house-recharge",
+                "start": at.isoformat(),
+                "end": (at + timedelta(hours=1)).isoformat(),
+                "anchor": (start + timedelta(days=4)).isoformat(),
+                "kind": "dc",
+                "battery_draw_wh": 120.0,
+            }
+        )
+    reserve = {
+        "mode": "active",
+        "curve": curve,
+        "recharge": {
+            "reference_id": "house-recharge",
+            "status": "verified",
+            "anchors": [(start + timedelta(days=4)).isoformat()],
+            "certificates": certificates,
+            "validations": 2,
+            "rejection_reasons": [],
+        },
+    }
+    observation = {
+        "source": "cached",
+        "soc_percent": 64.8,
+        "observed_at": start.isoformat(),
+        "age_seconds": 41 * 3600,
+        "captured_at": (start + timedelta(hours=41)).isoformat(),
+    }
+    coordinator.data = {
+        **coordinator.data,
+        "reserve": reserve,
+        "load_plans": {"b1": {"soc_percent": 64.8, "soc_observation": observation}},
+    }
+    sensor = BatteryManagerSocForecastSensor(coordinator)
+    attrs = sensor.extra_state_attributes
+
+    def encoded(value):
+        return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+    assert encoded(reserve) > 27924
+    assert encoded(attrs) > 16384
+    recorded = {
+        key: value
+        for key, value in attrs.items()
+        if key not in sensor._unrecorded_attributes
+    }
+    assert encoded(recorded) < 16384
+    assert {
+        "reserve",
+        "coordinated_support",
+        "gate_calibration",
+    } <= sensor._unrecorded_attributes
+    assert attrs["reserve"] == reserve
+    assert attrs["loads"][0]["soc_observation"] == observation
+    metrics = _last_plan_metrics(coordinator)
+    assert metrics["reserve"] == reserve
+    assert metrics["load_soc_observations"]["b1"] == observation

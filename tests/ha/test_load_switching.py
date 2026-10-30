@@ -5813,3 +5813,92 @@ async def test_nonstorage_load_removes_stale_power_calibration_action(hass):
     )
     assert registry.async_get_entity_id("button", DOMAIN, unique) is None
     assert not coordinator.power_calibration_supported(load_id)
+
+
+async def test_soc_diagnostic_publication_survives_reread_and_sleep(hass):
+    """Rereading is not a publication, nor is unavailable a new observation."""
+
+    coordinator, sub_id, _ = await _setup(hass, [])
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    published = hass.states.get(FOSSI_SOC).last_reported
+    now = published + timedelta(hours=41)
+    coordinator._get_load_states(now)
+    live = coordinator._load_soc_observations[sub_id]
+    assert live == {
+        "source": "live-source",
+        "soc_percent": 40.0,
+        "observed_at": published.isoformat(),
+        "age_seconds": 41 * 3600,
+        "captured_at": now.isoformat(),
+    }
+    hass.states.async_set(FOSSI_SOC, "unknown")
+    coordinator._get_load_states(now + timedelta(minutes=1))
+    cached = coordinator._load_soc_observations[sub_id]
+    assert cached["source"] == "cached"
+    assert cached["soc_percent"] == live["soc_percent"]
+    assert cached["observed_at"] == live["observed_at"]
+    assert cached["age_seconds"] == 41 * 3600 + 60
+    assert sub_id not in coordinator._load_soc_stale
+
+
+@pytest.mark.parametrize(
+    ("entity", "cache_hours", "stamp", "source"),
+    [
+        (FOSSI_SOC, 1, None, "cached"),  # pre-0.64.1 cache
+        (FOSSI_SOC, 1, "bad", "cached"),
+        (FOSSI_SOC, 1, "2026-10-01T00:00:00", "cached"),  # naive
+        (FOSSI_SOC, 1, "2099-01-01T00:00:00Z", "cached"),
+        (FOSSI_SOC, 1, "2000-01-01T00:00:00Z", "cached"),
+        ("sensor.other_battery", 1, None, "unknown"),
+        (FOSSI_SOC, 169, None, "unknown"),
+    ],
+)
+async def test_soc_diagnostic_unknown_age_never_uses_cache_reread_time(
+    hass, entity, cache_hours, stamp, source
+):
+    from homeassistant.util import dt as dt_util
+
+    coordinator, sub_id, _ = await _setup(hass, [])
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    now = dt_util.utcnow()
+    coordinator._load_soc_cache[sub_id] = {
+        "entity_id": entity,
+        "soc": 64.8,
+        "ts": (now - timedelta(hours=cache_hours)).isoformat(),
+        "observed_at": stamp,
+    }
+    hass.states.async_set(FOSSI_SOC, "unavailable")
+    states = coordinator._get_load_states(now)
+    observation = coordinator._load_soc_observations[sub_id]
+    assert observation["source"] == source
+    assert observation["observed_at"] is None
+    assert observation["age_seconds"] is None
+    assert observation["soc_percent"] == states[0].soc_percent
+    assert states[0].soc_percent == (64.8 if source == "cached" else None)
+
+
+async def test_soc_diagnostic_plan_capture_is_coherent_during_async_planning(hass):
+    """A concurrent diagnostic reread cannot relabel the in-flight plan value."""
+    coordinator, sub_id, _ = await _setup(hass, [])
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    original_plan = coordinator._async_plan
+    expected = None
+
+    async def plan_with_new_read(*args, **kwargs):
+        nonlocal expected
+        if expected is None:
+            expected = dict(coordinator._load_soc_observations[sub_id])
+            hass.states.async_set(FOSSI_SOC, "77")
+            coordinator._get_load_states()
+        return await original_plan(*args, **kwargs)
+
+    with patch.object(coordinator, "_async_plan", side_effect=plan_with_new_read):
+        result = await coordinator._async_update_data()
+    plan = result["load_plans"][sub_id]
+    assert expected["soc_percent"] == 40.0
+    assert plan["soc_percent"] == 40.0
+    assert plan["soc_observation"] == expected
+    assert coordinator._load_soc_observations[sub_id]["soc_percent"] == 77.0

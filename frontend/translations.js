@@ -2,6 +2,14 @@
 
 export const STRINGS = {
   en: {
+    card_soc_read_for_plan: "SOC read for this plan",
+    card_soc_entity_reported:
+      "Entity-reported value (device freshness unconfirmed)",
+    card_soc_cached: "Cached value",
+    card_soc_source_unknown: "Source unknown",
+    card_soc_publication_age: "Age of HA publication at plan capture",
+    card_soc_age_unknown: "Unknown",
+
     report_gate_48: "48 V switching decision",
     report_gate_voltage: "Current battery voltage",
     report_gate_learning: "SOC threshold estimate",
@@ -393,6 +401,14 @@ export const STRINGS = {
       "No consumption forecast on this sensor — needs Battery Manager v0.25.5+.",
   },
   de: {
+    card_soc_read_for_plan: "SOC-Ablesung für diesen Plan",
+    card_soc_entity_reported:
+      "Von der Entität gemeldet (Geräteaktualität unbestätigt)",
+    card_soc_cached: "Zwischengespeicherter Wert",
+    card_soc_source_unknown: "Quelle unbekannt",
+    card_soc_publication_age: "Alter der HA-Meldung bei Planerfassung",
+    card_soc_age_unknown: "Unbekannt",
+
     report_gate_48: "48-V-Schaltentscheidung",
     report_gate_voltage: "Aktuelle Batteriespannung",
     report_gate_learning: "SOC-Schwellenschätzung",

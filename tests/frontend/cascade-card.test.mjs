@@ -1671,3 +1671,66 @@ test("market report joins adjacent quarter-hours without mutating telemetry", ()
   assert.doesNotMatch(html, /17:15/);
   assert.equal(intervals[0].end, "2026-10-02T17:15:00Z");
 });
+
+for (const [language, cached, unknown, label] of [
+  ["en", "Cached value", "Unknown", "SOC read for this plan"],
+  [
+    "de",
+    "Zwischengespeicherter Wert",
+    "Unbekannt",
+    "SOC-Ablesung für diesen Plan",
+  ],
+]) {
+  test(`SOC provenance and publication age are explicit and escaped (${language})`, () => {
+    const c = loadsCard([]);
+    c._hass.language = language;
+    const observation = {
+      source: "cached",
+      soc_percent: 64.8,
+      observed_at: "2026-10-28T10:00:00Z",
+      age_seconds: 41 * 3600,
+    };
+    const html = c._socObservation({ soc_observation: observation });
+    assert.ok(html.includes(cached));
+    assert.ok(html.includes(label));
+    assert.match(html, /41[.,]0 h/);
+    assert.match(html, /64[.,]8/);
+    assert.ok(html.includes(`aria-label="${label}"`));
+    for (const bad of [
+      undefined,
+      null,
+      {},
+      { ...observation, observed_at: null },
+      { ...observation, age_seconds: null },
+      { ...observation, age_seconds: -1 },
+      { ...observation, age_seconds: 8 * 24 * 3600 },
+      { ...observation, age_seconds: "0" },
+      { ...observation, source: "toString" },
+      { ...observation, source: "__proto__" },
+    ]) {
+      const result = c._socObservation({ soc_observation: bad });
+      assert.ok(result.includes(unknown));
+      assert.doesNotMatch(result, /0[.,]0 h/);
+    }
+    const malicious = c._socObservation({
+      soc_observation: {
+        ...observation,
+        source: '<img src=x onerror="alert(1)">',
+        observed_at: '<img src=x onerror="alert(1)">',
+        soc_percent: "<img>",
+      },
+    });
+    assert.doesNotMatch(malicious, /<img|onerror/);
+    assert.ok(malicious.includes(unknown));
+    const live = c._socObservation({
+      soc_observation: { ...observation, source: "live-source" },
+    });
+    assert.ok(
+      live.includes(
+        language === "en"
+          ? "device freshness unconfirmed"
+          : "Geräteaktualität unbestätigt",
+      ),
+    );
+  });
+}

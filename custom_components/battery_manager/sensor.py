@@ -545,6 +545,11 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "source_health",
             "plan_metadata",
             "inverter_control",
+            # Nested reserve candidates/trajectories can exceed Recorder's
+            # 16 KiB limit alone; live state and diagnostics retain them.
+            "reserve",
+            "coordinated_support",
+            "gate_calibration",
         }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -576,6 +581,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
                     for key in (
                         "available",
                         "soc_percent",
+                        "soc_observation",
                         "target_soc_percent",
                         "input_control",
                         "storage",

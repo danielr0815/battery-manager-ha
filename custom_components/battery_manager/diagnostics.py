@@ -89,6 +89,11 @@ def _last_plan_metrics(coordinator: BatteryManagerCoordinator) -> dict[str, Any]
         "lost_surplus_kwh": data.get("lost_surplus_kwh"),
         "prevented_export_kwh": prevented_export_kwh,
         "daily_surplus": daily,
+        "reserve": data.get("reserve") or {},
+        "load_soc_observations": {
+            load_id: plan.get("soc_observation")
+            for load_id, plan in (data.get("load_plans") or {}).items()
+        },
     }
 
 

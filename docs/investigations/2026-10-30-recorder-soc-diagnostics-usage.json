@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "task": "pilot-3-recorder-and-soc-diagnostics",
+  "start": "2026-10-30T13:53:39.825343+00:00",
+  "cutoff": "2026-10-30T15:09:12.125877+00:00",
+  "measurement_scope": "Pilot 3 from original prospective declaration start; excludes earlier root exploration. Root, implementation, reused review/check agents within window only; no phase allocation.",
+  "measurement_complete": true,
+  "issue_codes": [],
+  "steps": [
+    {
+      "role": "/root",
+      "actual_models_effort": [
+        "gpt-6.1-sol/medium"
+      ],
+      "request_count": 32,
+      "tokens": {
+        "input": 10727033,
+        "cached_input": 10715008,
+        "cache_write": 0,
+        "output": 8480,
+        "reasoning": 3204,
+        "input_without_cache": 12025
+      },
+      "hypothetical_api_cost_usd": 1.1803508,
+      "scope": "Coordination, integration and release preparation; jointly measured, no estimated phase split"
+    },
+    {
+      "role": "/root/framework_checks",
+      "actual_models_effort": [
+        "gpt-6.1-sol/low"
+      ],
+      "request_count": 21,
+      "tokens": {
+        "input": 1945960,
+        "cached_input": 1939712,
+        "cache_write": 0,
+        "output": 2309,
+        "reasoning": 0,
+        "input_without_cache": 6248
+      },
+      "hypothetical_api_cost_usd": 0.22955720000000002,
+      "scope": "Prescribed quality checks and publication preparation"
+    },
+    {
+      "role": "/root/pilot2_plan_review",
+      "actual_models_effort": [
+        "gpt-6.1-sol/medium"
+      ],
+      "request_count": 8,
+      "tokens": {
+        "input": 674327,
+        "cached_input": 655616,
+        "cache_write": 0,
+        "output": 1573,
+        "reasoning": 549,
+        "input_without_cache": 18711
+      },
+      "hypothetical_api_cost_usd": 0.1187136,
+      "scope": "Independent Sol/Medium review"
+    },
+    {
+      "role": "/root/pilot3_recorder_soc",
+      "actual_models_effort": [
+        "gpt-6.1-sol/medium"
+      ],
+      "request_count": 49,
+      "tokens": {
+        "input": 3543057,
+        "cached_input": 3479808,
+        "cache_write": 0,
+        "output": 18565,
+        "reasoning": 3834,
+        "input_without_cache": 63249
+      },
+      "hypothetical_api_cost_usd": 0.6601288000000001,
+      "scope": "Implementation, regression tests, rebuilt bundle and targeted development checks"
+    }
+  ],
+  "totals": {
+    "input": 16890377,
+    "cached_input": 16790144,
+    "output": 30927,
+    "reasoning": 7587,
+    "cache_write": 0,
+    "input_without_cache": 100233
+  },
+  "requests": 110,
+  "hypothetical_api_cost_usd": 2.1887504,
+  "actual_billing": null,
+  "price_basis": {
+    "date": "2026-10-30",
+    "source": "https://developers.openai.com/api/docs/pricing",
+    "currency": "USD",
+    "service_tier": "standard",
+    "context": "short",
+    "unit": "per_million_tokens",
+    "rates": {
+      "gpt-6.1-sol": {
+        "input": 2,
+        "cached_input": 0.1,
+        "output": 10,
+        "cache_write": null
+      },
+      "gpt-6-astra": {
+        "input": 10,
+        "cached_input": 1,
+        "output": 50,
+        "cache_write": null
+      },
+      "gpt-6-luna": {
+        "input": 0.1,
+        "cached_input": 0.01,
+        "output": 0.5,
+        "cache_write": null
+      }
+    },
+    "note": "Normalized reference comparison, not observed billing; cache-write retention and surcharges unknown. Verify current official prices before each commit.",
+    "sha256": "b275a46d93d1f60e5ddb20c5424efec2aa5d0db83ab88e8eef758a61b8fd2075",
+    "verified_date": "2026-10-30",
+    "verification": "coordinator searched and opened official source before commit",
+    "normalization": "Standard/Short reference, not observed actual tier/context"
+  },
+  "counting": "cached input is subset of input; reasoning is subset of output; no double counting",
+  "initial_local_inspection_excluded": true,
+  "post_cutoff_excluded": true,
+  "pilot": 3,
+  "pilot_total": 3,
+  "savings_comparison": "unknown; heterogeneous tasks without comparable historical reference"
+}

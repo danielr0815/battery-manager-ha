@@ -648,6 +648,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
         )
         self._load_soc_cache: dict[str, dict[str, Any]] = {}
+        self._load_soc_observations: dict[str, dict[str, Any]] = {}
         self._load_plug_owned: dict[str, bool] = {}
         self._load_plug_owned_entities: dict[str, str] = {}
         self._load_input_on_since: dict[str, datetime] = {}
@@ -2842,6 +2843,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return dt_util.now() - parsed > timedelta(hours=LOAD_SOC_CACHE_MAX_AGE_HOURS)
 
+    @staticmethod
+    def _soc_observation(
+        soc: float | None, source: str, stamp: Any, now: datetime
+    ) -> dict[str, Any]:
+        """HA publication provenance only; never a physical freshness guarantee.
+
+        Legacy cache timestamps track rereads, not source publications. Keep
+        those separate and leave unavailable publication ages explicitly unknown.
+        """
+        observed = dt_util.parse_datetime(stamp) if isinstance(stamp, str) else None
+        age = None
+        if observed is not None and observed.tzinfo is not None:
+            elapsed = (dt_util.as_utc(now) - observed).total_seconds()
+            if 0 <= elapsed <= LOAD_SOC_CACHE_MAX_AGE_HOURS * 3600:
+                age = elapsed
+        return {
+            "source": source if soc is not None else "unknown",
+            "soc_percent": soc,
+            "observed_at": observed.isoformat()
+            if observed is not None and age is not None
+            else None,
+            "age_seconds": age,
+            "captured_at": now.isoformat(),
+        }
+
     def load_bm_enabled(self, load_id: str) -> bool:
         """Whether BM may plan/actuate this load (the per-load control switch)."""
         return self._load_bm_enabled.get(load_id, True)
@@ -3701,6 +3727,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if now is None:
             now = dt_util.utcnow()
         states = []
+        self._load_soc_observations = {}
         # A disabled, hard-faulted or hands-off cascade cannot execute a
         # schedule. Remove its members and terminal from the effective plan so
         # the house-SOC trajectory, feed-in and competing load allocations do
@@ -3730,10 +3757,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 available = False
             soc = None
             live_soc = None  # validated LIVE reading only (stale guard input)
+            observation_source = "unknown"
+            observation_stamp = None
             if data.get(CONF_LOAD_SOC_ENTITY):
                 soc_entity = data[CONF_LOAD_SOC_ENTITY]
                 raw_soc = self._read_float(soc_entity)
                 if raw_soc is not None and 0.0 <= raw_soc <= 100.0:
+                    source_state = self.hass.states.get(soc_entity)
+                    observation_source = "live-source"
+                    observation_stamp = (
+                        source_state.last_reported.isoformat() if source_state else None
+                    )
                     cached = self._load_soc_cache.get(subentry_id)
                     changed = (
                         cached is None
@@ -3747,6 +3781,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "entity_id": soc_entity,
                         "soc": raw_soc,
                         "ts": dt_util.now().isoformat(),
+                        "observed_at": observation_stamp,
                     }
                     if changed:
                         self._save_persistent_state()
@@ -3768,6 +3803,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         and not self._load_soc_cache_stale(cached)
                     ):
                         soc = cached["soc"]
+                        observation_source = "cached"
+                        observation_stamp = cached.get("observed_at")
+            self._load_soc_observations[subentry_id] = self._soc_observation(
+                soc, observation_source, observation_stamp, now
+            )
             measured = None
             raw = None
             min_sample_w = None
@@ -4627,6 +4667,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         config = self.build_system_config()
         load_states = self._get_load_states(now)
+        soc_observations = dict(self._load_soc_observations)
         # Snapshot before actuation: a successful switch in this cycle must
         # not retroactively change the explanation of the plan that caused it.
         execution_by_id = {
@@ -5041,6 +5082,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **input_diagnostics(self, load_plan.load_id),
                 "available": load_state.available,
                 "soc_percent": load_state.soc_percent,
+                "soc_observation": soc_observations.get(load_plan.load_id),
                 "target_soc_percent": load.target_soc_percent
                 if load.energy_limited
                 else None,

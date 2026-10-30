@@ -751,3 +751,27 @@ konfigurierte Lade-Gate bestätigt ausgeschaltet ist: Konstante positive
 Passthrough-Leistung allein belegt keine eingefrorene Batterieladung. Bereits
 gesetzte positive F4-Sperren und G2-Sperren bleiben erhalten. Der Blueprint ist
 separat installierbar; diese F4-Korrektur benötigt das Integrationsupdate.
+
+### SOC-Diagnose und Recorder (0.64.1)
+
+`load_plans[id].soc_observation` und das entsprechende `loads`-Attribut sind
+HA-Diagnosen des für den Plan eingelesenen SOC: `source` ist `live-source`,
+`cached` oder `unknown`; `soc_percent` gehört genau zu dieser Erfassung.
+`captured_at` bezeichnet die Erfassung vor der asynchronen Planung.
+`observed_at` stammt aus HA `State.last_reported`, bei Cache-Nutzung aus dem
+beim gültigen Einlesen separat gesicherten `observed_at`. `age_seconds` ist
+sein Alter bei Erfassung, keine laufende Uhr und keine Garantie einer frischen
+physischen Messung. Wiederholtes Einlesen setzt diese Meldungszeit nicht neu.
+Fehlende, ungültige, zeitzonenlose, zukünftige oder über sieben Tage alte
+Meldungszeiten liefern `null` für Zeit und Alter. Ein Legacy-Cache mit gültigem
+SOC bleibt als `cached` erkennbar, sein Meldungsalter jedoch unbekannt.
+Unbenutzbare oder fremden Entitäten zugeordnete Cachewerte liefern `unknown`.
+Alte Planschemata ohne Diagnosefeld haben unbekannte Herkunft und unbekanntes
+Alter. `soc_percent` bleibt der SOC am Planstart; die neue Anzeige bezeichnet
+ausdrücklich die Ablesung für diesen Plan.
+
+Die bestehende sieben Tage gültige SOC-Cache-Nutzung und ihr `ts`-Rereadvertrag,
+Core-Eingaben sowie `soc_stale` (G2-/F4-Sperrlatch) bleiben unverändert.
+`reserve`, `coordinated_support` und `gate_calibration` sind wie die bisherigen
+umfangreichen Diagnosen vom Recorder ausgeschlossen. Sie bleiben vollständig
+im Live-Zustand; Reserve und SOC-Erfassungen stehen auch im Diagnose-Download.
