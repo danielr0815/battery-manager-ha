@@ -49,3 +49,45 @@ Drei geeignete reale Aufgaben nach Einführung messen, Setup/Smokechecks zählen
 nicht. Aktuell keine Gesamtersparnis nachgewiesen. Globaler Tracker:
 `CODEX_HOME/model-policy-evaluation.md`. Messumfang, unbekannte Werte und
 Vergleichbarkeit ausweisen; Qualität und Nacharbeit gehören zur Kostenbewertung.
+
+Die ersten drei Aufgaben sind fachlich abgeschlossen; siehe
+[Pilotabschluss](investigations/2026-10-30-pilot-1-3-closeout.md). Weitere drei
+reale Nutzeraufgaben werden vor Beginn als Untersuchung, begrenzte Änderung
+oder kritische Fachänderung eingeordnet. Umfang, Abnahmekriterien, tatsächliche
+Rollen, Messbeginn und Sitzungen deklarieren; bei wiederverwendeten Agenten
+Zählerbaseline festhalten. Keine künstlichen Aufgaben und keine doppelte
+Modellbearbeitung für Vergleichszwecke.
+
+## Werkzeug- und Ausgabemetriken
+
+Das aktualisierte zentrale Framework ergänzt den Tokenledger durch `metrics`:
+
+```sh
+python3 ~/.codex/model-policy/run.py metrics --declaration /private/task.json --sessions /private/session.jsonl --end 2026-10-30T18:00:00Z --reports /private/check/run.json --ledger /private/usage.json --output /private/metrics.json
+```
+
+Die Deklaration und Sitzungen gehören zum selben Auftrag und Messfenster wie
+der Verbrauchsbericht. Prüfberichte und Ledger sind optionale Belege. Details
+der Zuordnung und unterstützte Sitzungsformate stehen in der zentralen
+Framework-Anleitung. Ausgaben bleiben lokal in `.codex-artifacts/`; nur geprüfte
+Metadaten und Aggregate dürfen veröffentlicht werden.
+
+Der Bericht trennt Werkzeugaufrufe, Warte-/Statusabfragen, eindeutig unveränderte
+Statusabfragen und UTF-8-Ausgabebytes. Unbekannte Formate, fehlende Zuordnungen
+und abgeschnittene Ausgaben bleiben sichtbare Messlücken. Verschachtelte
+Werkzeugaufrufe werden ohne eindeutigen Beleg nicht aus Skripttext erraten.
+
+„Im Modellkontext protokollierte Ausgabe“ bedeutet weder nachweislich gelesene
+Textmenge noch abrechenbare Token. Vollständige lokale Logs sind eine eigene
+Messgröße. Wiederholte Kontextverarbeitung wird über tatsächliche Tokenzähler
+bewertet; Cache und Reasoning bleiben Teilmengen.
+
+Vollständige Logs und kompakte Zusammenfassung desselben erfolgreichen Laufs
+können deterministisch verglichen werden. Das zeigt mögliche Ausgabereduktion,
+keine gleich große Kostenersparnis. Zusätzliche Logabrufe separat erfassen.
+Historische Vergleiche nur bei vergleichbarem Umfang und Laufzeit vornehmen.
+Die Ziele 50 % weniger unveränderte Statusabfragen und 80 % weniger erfolgreiche
+Prüfausgabe jeweils als erreicht, verfehlt oder nicht bewertbar kennzeichnen.
+Nach drei weiteren Aufgaben gemeinsam auswerten; ohne belastbare Vergleichsbasis
+keine Einsparung behaupten oder Modelle herabstufen. Später bekannte Fehler dem
+ursprünglichen Auftrag zuordnen. Veröffentlichungskosten separat abschließen.
