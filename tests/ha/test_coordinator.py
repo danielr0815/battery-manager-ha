@@ -1494,6 +1494,12 @@ async def test_refresh_at_floor_soc_activates_guard_end_to_end(hass):
     hass.states.async_set(
         "sensor.test_soc", "19", {"unit_of_measurement": "%", "device_class": "battery"}
     )
+    # HA may coalesce an explicit refresh with a sensor-triggered calculation
+    # that captured the previous SOC. That calculation must protect the floor
+    # and reject its old inputs, without reaching economic cascade async_apply.
+    # Settle the original publication before requesting the stable-input cycle
+    # whose full plan/cascade publication is the contract of this test.
+    await hass.async_block_till_done(wait_background_tasks=True)
     await coordinator.async_refresh()
     await hass.async_block_till_done()
 

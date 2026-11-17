@@ -16,9 +16,12 @@ konservative SOC-Prognosen und fehlende Lieferbelege. Ein momentaner Messwert
 begründet keine zusätzliche mehrtägige Lieferzusage. Der BMS-SOC und die
 konfigurierte Kapazität werden nicht verändert.
 
-Validiert mit 1.085 Core-Tests bei 100 % Coverage, 3.500 Gesamttests bei
+Validiert mit 1.085 Core-Tests bei 100 % Coverage, 3.502 Gesamttests bei
 97,98 % Zeilen-Coverage und mindestens 95 % je HA-Modul. Separater Branch-Lauf,
 Ruff, Format und mypy sowie Frontend-Bundle, Lint, Format, 101 Node-Tests und
 48 lokale Browsertests bestehen. Fünf historische Replays stimmen exakt überein.
 Das unabhängige kritische Astra-/High-Review ist ohne offene P1-/P2-Befunde
 abgeschlossen. Die Veröffentlichung führt keine Änderungen am Live-System aus.
+
+Der Floor-Guard-End-to-End-Test synchronisiert seine Eingaben deterministisch.
+Zwei zusätzliche Regressionstests prüfen den Schutz bei abgebrochener Planung.
