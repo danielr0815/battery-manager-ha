@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -28,6 +29,7 @@ from .const import (
     INPUT_OFF_POLICY_KEEP,
     SUBENTRY_TYPE_LOAD,
 )
+from .core.model import SocCoordinateSnapshot
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -52,6 +54,9 @@ class LoadAction:
     reason: str = "plan change"
     bypass_guards: bool = False
     control_generation: int | None = None
+    soc_coordinate: SocCoordinateSnapshot | None = None
+    coordinate_captured: bool = False
+    coordinate_cleanup: int | None = None
 
     @classmethod
     def from_legacy(cls, action: LoadAction | tuple[Any, ...]) -> LoadAction:
@@ -67,6 +72,330 @@ class ActorRequest:
     requested_at: datetime
     state: str = "pending"
     owner: str | None = None
+    sent: bool = False
+    command: LoadAction | None = None
+
+
+@dataclass(frozen=True)
+class LoadStartBinding:
+    plug: str
+    charge_enable: str | None
+    output_switch: str | None
+    input_off_policy: str
+
+
+@dataclass(frozen=True)
+class RevokedLoadStart:
+    actors: tuple[str, ...]
+    control_generation: int
+    revision: int
+    requested_at: datetime
+    binding: LoadStartBinding
+    observed_on: bool = False
+
+
+class CleanupBindingState(TypedDict):
+    plug: str
+    charge_enable: str | None
+    output_switch: str | None
+    input_off_policy: str
+
+
+class CleanupItemState(TypedDict):
+    sent: bool
+    actors: list[str]
+    control_generation: int
+    revision: int
+    requested_at: str
+    observed_on: bool
+    binding: CleanupBindingState
+
+
+class CoordinateCleanupState(TypedDict):
+    version: int
+    items: dict[str, CleanupItemState]
+
+
+def _cleanup_binding(data: Any) -> LoadStartBinding | None:
+    plug = data.get(CONF_LOAD_CONTROL_SWITCH)
+    gate = data.get(CONF_LOAD_CHARGE_ENABLE)
+    output = data.get(CONF_LOAD_OUTPUT_SWITCH)
+    policy = data.get(CONF_LOAD_INPUT_OFF_POLICY, INPUT_OFF_POLICY_AUTO)
+    if (
+        not isinstance(plug, str)
+        or not plug
+        or gate is not None
+        and not isinstance(gate, str)
+        or output is not None
+        and not isinstance(output, str)
+        or policy
+        not in (INPUT_OFF_POLICY_AUTO, INPUT_OFF_POLICY_ALWAYS, INPUT_OFF_POLICY_KEEP)
+    ):
+        return None
+    return LoadStartBinding(plug, gate, output, policy)
+
+
+def _cleanup_marker_current(
+    c: BatteryManagerCoordinator, load_id: str, marker: RevokedLoadStart
+) -> bool:
+    sub = c.entry.subentries.get(load_id)
+    return (
+        sub is not None
+        and c.load_bm_enabled(load_id)
+        and c._load_control_generation.get(load_id, 0) == marker.control_generation
+        and _cleanup_binding(sub.data) == marker.binding
+    )
+
+
+def export_coordinate_cleanup(c: BatteryManagerCoordinator) -> CoordinateCleanupState:
+    """Persist only our sent, still-owned intent; bare legacy ON is no evidence."""
+    items: dict[str, CleanupItemState] = {}
+    for load_id, marker in c.live_ac.revoked_load_starts.items():
+        if not _cleanup_marker_current(c, load_id, marker):
+            continue
+        binding: CleanupBindingState = {
+            "plug": marker.binding.plug,
+            "charge_enable": marker.binding.charge_enable,
+            "output_switch": marker.binding.output_switch,
+            "input_off_policy": marker.binding.input_off_policy,
+        }
+        items[load_id] = {
+            "sent": True,
+            "actors": list(marker.actors),
+            "control_generation": marker.control_generation,
+            "revision": marker.revision,
+            "requested_at": marker.requested_at.isoformat(),
+            "observed_on": marker.observed_on,
+            "binding": binding,
+        }
+    return {"version": 1, "items": items}
+
+
+def restore_coordinate_cleanup(c: BatteryManagerCoordinator, raw: Any) -> None:
+    """Restore cleanup authority after manual generations/config are restored.
+
+    No actor writes and no dwell are reconstructed. Physical ON is handled by
+    the regular feedback/stop path once the coordinator has finished loading.
+    """
+    restored: dict[str, RevokedLoadStart] = {}
+    if (
+        not isinstance(raw, dict)
+        or type(raw.get("version")) is not int
+        or raw["version"] != 1
+        or not isinstance(raw.get("items"), dict)
+    ):
+        c.live_ac.revoked_load_starts = restored
+        return
+    for load_id, item in raw["items"].items():
+        if (
+            not isinstance(load_id, str)
+            or load_id not in c.entry.subentries
+            or not isinstance(item, dict)
+            or item.get("sent") is not True
+        ):
+            continue
+        generation, revision = item.get("control_generation"), item.get("revision")
+        actors, observed = item.get("actors"), item.get("observed_on")
+        binding_raw = item.get("binding")
+        if (
+            type(generation) is not int
+            or generation < 0
+            or type(revision) is not int
+            or revision < 0
+            or type(observed) is not bool
+            or not isinstance(actors, list)
+            or not 1 <= len(actors) <= 2
+            or not all(isinstance(actor, str) and actor for actor in actors)
+            or len(set(actors)) != len(actors)
+            or not isinstance(binding_raw, dict)
+        ):
+            continue
+        binding = _cleanup_binding(
+            {
+                CONF_LOAD_CONTROL_SWITCH: binding_raw.get("plug"),
+                CONF_LOAD_CHARGE_ENABLE: binding_raw.get("charge_enable"),
+                CONF_LOAD_OUTPUT_SWITCH: binding_raw.get("output_switch"),
+                CONF_LOAD_INPUT_OFF_POLICY: binding_raw.get("input_off_policy"),
+            }
+        )
+        if binding is None or not set(actors).issubset(
+            {binding.plug, binding.charge_enable}
+        ):
+            continue
+        try:
+            stamp = datetime.fromisoformat(item.get("requested_at", ""))
+        except TypeError, ValueError:
+            continue
+        if stamp.tzinfo is None:
+            continue
+        marker = RevokedLoadStart(
+            tuple(actors), generation, revision, stamp, binding, observed
+        )
+        if not _cleanup_marker_current(c, load_id, marker):
+            continue
+        restored[load_id] = marker
+        c._load_charging_active[load_id] = False
+        c._load_run_deadline.pop(load_id, None)
+        c._cancel_off_timer(load_id)
+        switched = c._last_load_switch.get(load_id)
+        if switched is not None and switched.timestamp() >= stamp.timestamp():
+            c._last_load_switch.pop(load_id, None)
+        since = c._load_input_on_since.get(load_id)
+        if (
+            binding.plug in marker.actors
+            and since is not None
+            and since.timestamp() >= stamp.timestamp()
+        ):
+            c._load_input_on_since.pop(load_id, None)
+        from .load_safety import effective_start_power_w
+
+        power = effective_start_power_w(c, load_id, c.entry.subentries[load_id].data)
+        if power is not None:
+            c.live_ac.note_start_power(
+                "load:" + load_id,
+                power,
+                input_entity=c.entry.subentries[load_id].data.get(
+                    CONF_LOAD_INPUT_POWER_ENTITY
+                ),
+            )
+    c.live_ac.revoked_load_starts = restored
+
+
+_CURRENT_LOAD_ACTION: ContextVar[LoadAction | None] = ContextVar(
+    "current_load_action", default=None
+)
+
+
+def coordinate_cleanup_pending(c: BatteryManagerCoordinator, load_id: str) -> bool:
+    """Retain cleanup authority for our request, never adopt it as a valid dwell."""
+    marker = getattr(getattr(c, "live_ac", None), "revoked_load_starts", {}).get(
+        load_id
+    )
+    if marker is None:
+        return False
+    sub = c.entry.subentries.get(load_id)
+    if sub is None or not _cleanup_marker_current(c, load_id, marker):
+        c.live_ac.revoked_load_starts.pop(load_id, None)
+        return False
+    on = any(c._entity_tristate(entity) is True for entity in marker.actors)
+    if on:
+        marker = replace(marker, observed_on=True)
+        c.live_ac.revoked_load_starts[load_id] = marker
+        plug = sub.data.get(CONF_LOAD_CONTROL_SWITCH)
+        if (
+            isinstance(plug, str)
+            and plug in marker.actors
+            and c._entity_tristate(plug) is True
+        ):
+            c._load_plug_owned[load_id] = True
+            c._load_plug_owned_entities[load_id] = plug
+        c._load_charging_active[load_id] = False
+    elif marker.observed_on and all(
+        c._entity_tristate(entity) is False for entity in marker.actors
+    ):
+        c.live_ac.revoked_load_starts.pop(load_id, None)
+    return on
+
+
+def _schedule_coordinate_cleanup(c: BatteryManagerCoordinator) -> None:
+    if (
+        c._actuation_shutdown
+        or c.live_ac.coordinate_cleanup_scheduled
+        or c.live_ac.coordinate_cleanup_task is not None
+        and not c.live_ac.coordinate_cleanup_task.done()
+    ):
+        return
+
+    async def cleanup() -> None:
+        from .load_safety import stop_unsafe_loads
+
+        try:
+            running = c._load_switch_task
+            if running is not None and running is not asyncio.current_task():
+                await asyncio.gather(running, return_exceptions=True)
+            await stop_unsafe_loads(c)
+            queued = c._load_switch_task
+            if (
+                queued is not None
+                and queued is not running
+                and queued is not asyncio.current_task()
+            ):
+                await asyncio.gather(queued, return_exceptions=True)
+        finally:
+            c.live_ac.coordinate_cleanup_scheduled = False
+
+    # HA starts entry tasks eagerly, before async_create_background_task returns.
+    # Claim scheduling ownership before the cleanup can re-enter feedback.
+    c.live_ac.coordinate_cleanup_scheduled = True
+    c.live_ac.coordinate_cleanup_task = c.entry.async_create_background_task(
+        c.hass, cleanup(), name="battery_manager_revoked_start_cleanup"
+    )
+
+
+def bind_coordinate_request(request: ActorRequest) -> None:
+    """Keep origin outside task context, so listeners can reject stale feedback."""
+    request.command = _CURRENT_LOAD_ACTION.get()
+
+
+def _revoke_stale_feedback(
+    c: BatteryManagerCoordinator, entity: str, request: ActorRequest | None
+) -> None:
+    if (
+        request is not None
+        and request.desired
+        and request.sent
+        and request.state != "confirmed"
+        and request.command is not None
+        and not c.voltage_gate.coordinate_matches(request.command.soc_coordinate)
+    ):
+        request.state = "coordinate_changed"
+        coordinate_request_revoked(c, entity, request)
+
+
+def coordinate_request_revoked(
+    c: BatteryManagerCoordinator, entity_id: str, request: ActorRequest
+) -> None:
+    """Register a request that may become physically ON after its grant expired."""
+    command = request.command or _CURRENT_LOAD_ACTION.get()
+    if (
+        command is None
+        or not request.sent
+        or not command.activate
+        or command.bypass_guards
+        or request.owner != "load:" + command.load_id
+        or not c.load_bm_enabled(command.load_id)
+    ):
+        return
+    generation = c._load_control_generation.get(command.load_id, 0)
+    if (
+        command.control_generation is not None
+        and command.control_generation != generation
+    ):
+        return  # Manual control was handed over while this service awaited.
+    if entity_id not in (
+        command.data.get(CONF_LOAD_CONTROL_SWITCH),
+        command.data.get(CONF_LOAD_CHARGE_ENABLE),
+    ):
+        return
+    previous = c.live_ac.revoked_load_starts.get(command.load_id)
+    actors = (
+        tuple(dict.fromkeys((*previous.actors, entity_id)))
+        if previous
+        else (entity_id,)
+    )
+    binding = _cleanup_binding(command.data)
+    if binding is None:
+        return
+    c.live_ac.revoked_load_starts[command.load_id] = RevokedLoadStart(
+        actors,
+        generation,
+        c._load_action_generation.get(command.load_id, 0),
+        request.requested_at,
+        binding,
+        previous.observed_on if previous else False,
+    )
+    if coordinate_cleanup_pending(c, command.load_id):
+        _schedule_coordinate_cleanup(c)
 
 
 async def confirm_state(hass: HomeAssistant, entity_id: str, desired: bool) -> bool:
@@ -217,6 +546,9 @@ def reconcile_feedback(
             continue
         state = coordinator.hass.states.get(plug)
         request = coordinator._load_actor_requests.get(plug)
+        _revoke_stale_feedback(coordinator, plug, request)
+        if coordinate_cleanup_pending(coordinator, load_id):
+            _schedule_coordinate_cleanup(coordinator)
         if (
             event_entity == plug
             and event_state is not None
@@ -263,7 +595,8 @@ def reconcile_feedback(
             request
             and request.owner == "load:" + load_id
             and request.desired
-            and request.state not in ("confirmed", "service_failed")
+            and request.state
+            not in ("confirmed", "service_failed", "coordinate_changed")
             and state is not None
             and state.state == "on"
         ):
@@ -271,8 +604,12 @@ def reconcile_feedback(
             coordinator._load_plug_owned_entities[load_id] = plug
             coordinator._load_input_on_since.setdefault(load_id, state.last_changed)
             changed = True
-    for entity, request in coordinator._load_actor_requests.items():
-        if request.state == "confirmed" or not coordinator.hass.states.is_state(
+    for entity, request in tuple(coordinator._load_actor_requests.items()):
+        _revoke_stale_feedback(coordinator, entity, request)
+        if request.state in (
+            "confirmed",
+            "coordinate_changed",
+        ) or not coordinator.hass.states.is_state(
             entity, "on" if request.desired else "off"
         ):
             continue
@@ -284,6 +621,10 @@ def reconcile_feedback(
             sub.subentry_type != SUBENTRY_TYPE_LOAD
             or load_id in managed
             or not coordinator.load_bm_enabled(load_id)
+        ):
+            continue
+        if load_id in getattr(
+            getattr(coordinator, "live_ac", None), "revoked_load_starts", {}
         ):
             continue
         path = settled.intersection(
@@ -329,7 +670,67 @@ def publish_input_diagnostics(c: BatteryManagerCoordinator) -> None:
         c.async_update_listeners()
 
 
+# One queued action owns its coordinate across service/confirmation awaits.
+_COORDINATE_PERMISSION: ContextVar[Callable[[], bool] | None] = ContextVar(
+    "load_coordinate_permission", default=None
+)
+
+
+def coordinate_request_current(c: BatteryManagerCoordinator) -> bool:
+    """Final service boundary hook; unbound manual/protective calls retain authority."""
+    permission = _COORDINATE_PERMISSION.get()
+    return permission is None or permission()
+
+
+def _coordinate_action_allowed(
+    c: BatteryManagerCoordinator, command: LoadAction
+) -> bool:
+    if not command.activate or command.bypass_guards:
+        return True
+    gate = getattr(c, "voltage_gate", None)
+    if gate is None:
+        return True  # Isolated legacy actor adapters have no SOC observer.
+    from .load_safety import effective_start_power_w
+
+    power = effective_start_power_w(c, command.load_id, command.data)
+    owner = "load:" + command.load_id
+    input_entity = command.data.get(CONF_LOAD_INPUT_POWER_ENTITY)
+    if gate.coordinate_permission_valid(command.soc_coordinate):
+        c.live_ac.revoked_load_starts.pop(command.load_id, None)
+        if power is not None:
+            c.live_ac.note_start_power(owner, power, input_entity=input_entity)
+        return True
+    if not gate.coordinate_permission_valid(
+        command.soc_coordinate, direct_pv_proven=True
+    ):
+        return False
+    return power is not None and c.live_ac.reserve_pv_start(
+        owner, power, input_entity=input_entity, exclude_load_id=command.load_id
+    )
+
+
 async def execute_load_switching(
+    self: BatteryManagerCoordinator,
+    actions: Sequence[LoadAction | tuple[Any, ...]],
+    now: datetime | None = None,
+) -> None:
+    """Capture no new coordinate here: queued provenance belongs to its plan."""
+    if len(actions) != 1:
+        await _execute_load_switching(self, actions, now)
+        return
+    command = LoadAction.from_legacy(actions[0])
+    action_token = _CURRENT_LOAD_ACTION.set(command)
+    token = _COORDINATE_PERMISSION.set(
+        lambda: _coordinate_action_allowed(self, command)
+    )
+    try:
+        await _execute_load_switching(self, (command,), now)
+    finally:
+        _COORDINATE_PERMISSION.reset(token)
+        _CURRENT_LOAD_ACTION.reset(action_token)
+
+
+async def _execute_load_switching(
     self: BatteryManagerCoordinator,
     actions: Sequence[LoadAction | tuple[Any, ...]],
     now: datetime | None = None,
@@ -361,6 +762,10 @@ async def execute_load_switching(
     for action in actions:
         command = LoadAction.from_legacy(action)
         subentry_id, data = command.load_id, command.data
+        if command.coordinate_cleanup is not None:
+            pending = self.live_ac.revoked_load_starts.get(subentry_id)
+            if pending is None or pending.revision != command.coordinate_cleanup:
+                continue
         activate, plug_was_on = command.activate, command.plug_was_on
         run_h, flicker_eligible = command.run_h, command.flicker_eligible
         reason, bypass_guards = command.reason, command.bypass_guards
@@ -389,7 +794,11 @@ async def execute_load_switching(
         enable = data.get(CONF_LOAD_CHARGE_ENABLE)
         subentry = self.entry.subentries.get(subentry_id)
         label = subentry.title if subentry else subentry_id
-        if activate and not bypass_guards and start_blocked(self):
+        if (
+            activate
+            and not bypass_guards
+            and (start_blocked(self) or not coordinate_request_current(self))
+        ):
             # G4 floor guard / D-A8 stale shed, in-flight race: the
             # guard may have tripped AFTER this ON was queued (a
             # debounced SOC refresh returns early while this task is
@@ -406,12 +815,20 @@ async def execute_load_switching(
             if enable and not await self._switch_load_entity(
                 enable, True, actor_owner="load:" + subentry_id
             ):
+                # A late ON may be real even when its coordinate was revoked
+                # before confirmation. Roll back our gate, never enable input.
+                if not coordinate_request_current(self) and self._entity_is_on(enable):
+                    await self._switch_load_entity(
+                        enable, False, actor_owner="load:" + subentry_id
+                    )
                 continue
             if self._load_action_generation.get(subentry_id) != generation:
                 continue
             if not self.load_bm_enabled(subentry_id):
                 continue
-            if not bypass_guards and start_blocked(self):
+            if not bypass_guards and (
+                start_blocked(self) or not coordinate_request_current(self)
+            ):
                 if enable:
                     await self._switch_load_entity(
                         enable, False, actor_owner="load:" + subentry_id
@@ -429,6 +846,10 @@ async def execute_load_switching(
                         != control_generation
                     ):
                         continue
+                    if not coordinate_request_current(
+                        self
+                    ) and coordinate_cleanup_pending(self, subentry_id):
+                        _schedule_coordinate_cleanup(self)
                     # Rollback (7-day live audit 2026-08-04): the gate
                     # confirmed ON but the plug did not (BLE-RPC
                     # failure) — without this OFF the gate stays
@@ -483,7 +904,8 @@ async def execute_load_switching(
             # Ownership is recorded above so the compensating OFF obeys
             # the configured input policy, including auto-owned plugs.
             if not self.load_bm_enabled(subentry_id) or (
-                not bypass_guards and start_blocked(self)
+                not bypass_guards
+                and (start_blocked(self) or not coordinate_request_current(self))
             ):
                 await self._execute_load_switching(
                     [
@@ -498,6 +920,11 @@ async def execute_load_switching(
                 )
                 continue
             now = dt_util.now()
+            confirm_start = getattr(
+                getattr(self, "live_ac", None), "confirm_pv_start", None
+            )
+            if callable(confirm_start):
+                confirm_start("load:" + subentry_id)
             self._load_charging_active[subentry_id] = True
             self._last_load_switch[subentry_id] = now
             # F8: a fresh run started — close the previous off episode
@@ -586,6 +1013,11 @@ async def execute_load_switching(
                 self._load_plug_owned[subentry_id] = False
                 self._load_plug_owned_entities.pop(subentry_id, None)
                 self._load_input_on_since.pop(subentry_id, None)
+            release_start = getattr(
+                getattr(self, "live_ac", None), "release_pv_start", None
+            )
+            if callable(release_start):
+                release_start("load:" + subentry_id)
             self._load_charging_active[subentry_id] = False
             if charging_edge:
                 # Confirmed gate OFF ends charging before any independent

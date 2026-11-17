@@ -1,9 +1,24 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.63.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.65.0. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
+
+## SOC-Koordinate und Netzteil-Evidenz 0.65.0
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Hoher Roh-SOC während Nachführung | Keine neue optionale Batterieentnahme; notwendige DC-Versorgung bleibt erhalten | `core/test_soc_coordinate.py`, `ha/test_soc_coordinate_runtime.py`, `ha/test_load_grid_safety.py`, `ha/test_coordinated_actuation.py`, `ha/test_cascade_manager.py` |
+| Quellenwechsel + frischer alter PSU-Wert | Alte Generation und unpassende Zeitabdeckung liefern keine neue Gutschrift | `core/test_soc_coordinate.py`, `ha/test_psu_observation.py` |
+| Leistungspulse + unterschiedliche Reihenfolge von SOC/V/P | Originalpublikationen vor Debounce; Polling erfindet keine vollständige Energiekurve | `ha/test_soc_consistency.py`, `ha/test_voltage_gate_runtime.py` |
+| Neustart während Stabilisierung | Epoche bleibt erhalten; fehlende Beobachtung ist keine abgedeckte Ruhezeit | `ha/test_soc_coordinate_runtime.py`, `ha/test_store_migration.py` |
+| Gleichzeitige SOC-/V-/P-Publikationen | Stabilisierung zählt reale Zeit genau einmal, unabhängig von sechs Meldereihenfolgen | `ha/test_soc_consistency.py`, `ha/test_voltage_gate_runtime.py` |
+| Mehrere PV-Starts + bekannte höhere Lernleistung | Gemeinsame Reservierung für Lasten und Kaskaden mit effektiver Startleistung | `ha/test_live_ac_runtime.py`, `ha/test_load_grid_safety.py`, `ha/test_cascade_manager.py` |
+| Verspätetes Input-ON ohne Lade-Gate | Eigener widerrufener Start wird bereinigt; manuelle Übernahme und echte Schutzfälle bleiben erhalten | `ha/test_load_grid_safety.py`, `ha/test_coordinated_actuation.py`, `ha/test_support_switching.py` |
+| Viele alte Gatepunkte + neue SOC-Koordinate | Ablehnung nach Strombereich und on/delivery/off erklärt; Mindestzeit unverändert | `ha/test_gate_learning.py`, `ha/test_voltage_gate_runtime.py` |
+| Neue Eingabesnapshots + alte Archive | Neutrale fehlende Felder, vollständiger neuer Replay | `core/test_soc_coordinate.py`, `core/test_replay.py` |
+| Normale Nachkalibrierung + fehlende Zukunftslieferung | Information und konservative Prognose, kein erfundener wahrer SOC | `frontend/reports.test.mjs`, lokale Browserregressionen |
 
 ## Gemeinsame AC/DC-Marktverteilung 0.62.0
 

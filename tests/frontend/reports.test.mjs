@@ -9,9 +9,237 @@ import {
   inputControlReport,
   storageReport,
   rechargeReport,
+  socCoordinateReport,
+  psuObservationReport,
 } from "../../frontend/reports.js";
 import { selectionTime } from "../../frontend/time.js";
 const hass = { language: "en", config: { time_zone: "Europe/Berlin" } };
+
+test("normal SOC reconciliation explains BMS change and measured energy separately", () => {
+  const html = socCoordinateReport(hass, {
+    coordinate: {
+      phase: "reconciling",
+      level: "info",
+      last_event: { at: Date.parse("2026-02-03T11:34:00Z") / 1000 },
+      residual: {
+        observed_soc_delta_percent: 9,
+        energy_equivalent_soc_delta_percent: 1.5,
+        residual_percent: 7.5,
+        covered_seconds: 300,
+      },
+    },
+  });
+  assert.match(html, /SOC coordinate is being adjusted/);
+  assert.match(html, /Change reported by the BMS<\/dt><dd>9 %/);
+  assert.match(html, /measured energy change<\/dt><dd>1.5 %/);
+  assert.match(html, /linear energy estimate<\/dt><dd>7.5 %/);
+  assert.match(html, /12:34:00/);
+  assert.match(html, /not itself a device fault/);
+  assert.match(html, /Conservative SOC forecast/);
+  assert.doesNotMatch(html, /role="alert"|data-history-error/);
+});
+
+test("many stored points do not conceal conflicting delivery coordinates", () => {
+  const html = socCoordinateReport(
+    { ...hass, language: "de" },
+    {
+      sample_count: 1518,
+      coordinate: { phase: "settling" },
+      qualification: {
+        query_current_a: 0.706,
+        current_covered: false,
+        roles: [
+          {
+            role: "delivery",
+            reason: "conflicting_coordinates",
+            near_count: 12,
+            span_seconds: 1800,
+            spread_percent: 9,
+          },
+          {
+            role: "off",
+            reason: "insufficient_span",
+            near_count: 4,
+            span_seconds: 920,
+            spread_percent: 0,
+          },
+        ],
+      },
+    },
+  );
+  assert.match(html, /Stabile Beobachtungen nach der Nachführung sammeln/);
+  assert.match(html, /Ältere und neuere SOC-Ablesungen widersprechen sich/);
+  assert.match(html, /Beobachtungszeitspanne zu kurz/);
+  assert.match(html, /12 nahe Beobachtungen/);
+  assert.match(html, /Streuung: 9 %/);
+  assert.match(html, /0,7 A/);
+  assert.match(html, /eingeschaltetes Netzteil garantiert keine zukünftige/);
+});
+
+test("coordinate diagnostics preserve unknown values and escape unexpected phases", () => {
+  const html = socCoordinateReport(hass, {
+    coordinate: { phase: "<script>", last_event: { at: Number.NaN } },
+    qualification: {
+      query_current_a: null,
+      reason: "out_of_current_range",
+      roles: [
+        { role: "delivery", reason: "expired" },
+        { role: "<img>", reason: "qualified" },
+      ],
+    },
+  });
+  assert.match(html, /Unknown observation/);
+  assert.match(html, /outside the observed range/);
+  assert.match(html, /Evidence has expired/);
+  assert.match(html, /— A/);
+  assert.doesNotMatch(html, /<script>|<img>|NaN|>null</);
+});
+
+test("legacy payloads do not invent coordinate evidence or a measured SOC", () => {
+  assert.equal(socCoordinateReport(hass, undefined), "");
+  assert.equal(socCoordinateReport(hass, { bands: [] }), "");
+  const html = socCoordinateReport(hass, {
+    coordinate: {
+      phase: "tracking",
+      residual: {
+        observed_soc_delta_percent: 0,
+        energy_equivalent_soc_delta_percent: 0,
+        covered_seconds: 60,
+      },
+    },
+  });
+  assert.match(html, /BMS<\/dt><dd>0 %/);
+  assert.match(html, /measured energy change<\/dt><dd>0 %/);
+  assert.match(html, /does not independently determine absolute SOC/);
+});
+
+test("PSU ON and missing measurements never manufacture present or future delivery", () => {
+  const html = psuObservationReport(hass, [
+    {
+      source_id: "dc48",
+      quality: "unknown",
+      confirmed_on: true,
+      ac_input_w: null,
+      dc_output_w: null,
+      present_delivery_w: null,
+      efficiency: null,
+      channel_reasons: {
+        ac_input: "not_configured",
+        dc_output: "not_configured",
+      },
+    },
+  ]);
+  assert.match(html, /Confirmed switch state<\/dt><dd>On/);
+  assert.match(html, /present DC delivery<\/dt><dd>— W/);
+  assert.match(html, /Not configured/);
+  assert.match(html, /do not establish future delivery/);
+  assert.doesNotMatch(html, /<dd>0 W/);
+});
+
+test("PSU observation shows actual zero and refuses a fabricated efficiency", () => {
+  const html = psuObservationReport({ ...hass, language: "de" }, [
+    {
+      source_id: "dc24",
+      quality: "measured",
+      confirmed_on: false,
+      ac_input_w: 0,
+      dc_output_w: 0,
+      present_delivery_w: 0,
+      efficiency: 1.4,
+    },
+    { source_id: "<script>" },
+  ]);
+  assert.match(html, /Bestätigter Schaltzustand<\/dt><dd>Aus/);
+  assert.match(html, /Status<\/dt><dd>Messung vorhanden/);
+  assert.match(html, /Beobachtete DC-Abgabe<\/dt><dd>0 W/);
+  assert.match(html, /überdeckten Messungen<\/dt><dd>—/);
+  assert.doesNotMatch(html, /140|<script>/);
+  assert.equal(psuObservationReport(hass, undefined), "");
+  assert.equal(psuObservationReport(hass, [{ source_id: "unknown" }]), "");
+});
+
+test("PSU quality codes match actual runtime vocabulary in both languages", () => {
+  for (const [language, expected] of [
+    [
+      "en",
+      ["Measurement available", "Source state is not confirmed", "invalid"],
+    ],
+    [
+      "de",
+      ["Messung vorhanden", "Quellenzustand ist nicht bestätigt", "ungültig"],
+    ],
+  ]) {
+    for (const [index, quality] of [
+      "measured",
+      "unconfirmed",
+      "incompatible",
+    ].entries()) {
+      const html = psuObservationReport({ ...hass, language }, [
+        {
+          source_id: "dc48",
+          quality,
+          confirmed_on: true,
+          dc_output_w: 40,
+          present_delivery_w: quality === "measured" ? 40 : null,
+          channel_reasons: { ac_input: "previous_source_generation" },
+        },
+      ]);
+      assert.ok(html.includes(expected[index]));
+      assert.doesNotMatch(html, /psu_quality_|psu_channel_/);
+    }
+  }
+});
+
+test("actual PSU channel reasons distinguish measurement, limits and missing evidence", () => {
+  const reasons = [
+    "measured",
+    "missing",
+    "incompatible",
+    "hardware_limit",
+    "unconfirmed",
+    "stale",
+    "previous_source_generation",
+  ];
+  for (const language of ["en", "de"]) {
+    const rows = reasons.map((reason) =>
+      psuObservationReport({ ...hass, language }, [
+        {
+          source_id: "dc48",
+          quality: "unknown",
+          channel_reasons: { dc_output: reason },
+        },
+      ]),
+    );
+    assert.equal(new Set(rows).size, reasons.length);
+    for (const html of rows) {
+      assert.doesNotMatch(
+        html,
+        /psu_channel_|Unknown observation|Unbekannte Beobachtung/,
+      );
+    }
+  }
+});
+
+test("missing covered or band intervals stay unknown while an actual zero remains zero", () => {
+  const html = socCoordinateReport(hass, {
+    coordinate: { phase: "tracking", residual: { covered_seconds: null } },
+    qualification: {
+      roles: [
+        { role: "on", reason: "insufficient_samples", span_seconds: null },
+        { role: "off", reason: "insufficient_span", span_seconds: 0 },
+      ],
+    },
+  });
+  assert.match(html, /Covered comparison interval<\/dt><dd>— min/);
+  assert.match(
+    html,
+    /Too few comparable observations · — nearby observations · — min/,
+  );
+  assert.match(
+    html,
+    /Observation span is too short · — nearby observations · 0 min/,
+  );
+});
 
 test("inverter permission distinguishes the captured plan, command and physical feedback", () => {
   const attributes = {
@@ -41,6 +269,22 @@ test("inverter permission distinguishes the captured plan, command and physical 
   assert.match(html, /not measured inverter power/);
   const stale = inverterControlReport(hass, attributes, "unavailable");
   assert.match(stale, /Last known inverter/);
+});
+
+test("SOC coordinate hold is explained as waiting for a fresh plan in both languages", () => {
+  for (const [language, expected] of [
+    ["en", "Waiting for SOC coordinate stabilization and a fresh plan"],
+    ["de", "Warte auf stabilisierte SOC-Koordinate und frischen Plan"],
+  ]) {
+    const html = inverterControlReport(
+      { ...hass, language },
+      {
+        live_ac: { limit_w: 0, reason: "soc_coordinate_hold" },
+      },
+    );
+    assert.ok(html.includes(expected));
+    assert.doesNotMatch(html, /live_ac_reason_soc_coordinate_hold/);
+  }
 });
 
 test("old diagnostics cannot manufacture a confirmed device limit from live permission", () => {

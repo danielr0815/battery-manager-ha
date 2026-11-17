@@ -71,6 +71,10 @@ plans and reloads; the pure core receives their remaining economic deadlines.
 the existing fast timer for stop-only protection and completion of owned input
 stops. It allocates no energy and never takes over a cascade or supply actor.
 `operation_archive.py` wraps timezone-specific journals in schema 2.
+`soc_consistency.py` observes reported SOC against covered battery energy as a
+coordinate episode; it never rewrites BMS SOC or capacity. `voltage_gate.py`
+binds its diagnostics and current coordinate to runtime permissions. The frozen
+`SocCoordinateSnapshot` and `PsuDeliverySnapshot` keep those inputs replayable.
 `runtime.py` defines typed entry data; `CascadeExecutionSnapshot` is the public
 read-only link between cascade execution and constraint diagnostics.
 
@@ -85,6 +89,7 @@ bundles them into the existing integration resource; CI rejects source/bundle dr
 | `__init__.py` | Setup/unload/reload, the export services, and serving + registering the dashboard card. |
 | `coordinator.py` | The heart. A `DataUpdateCoordinator` that runs the update cycle (below), reads inputs, calls `plan`, actuates the support PSUs and load switches, writes the F-FEEDIN feed-in setpoint, keeps the F-REALIZED-SURPLUS measured day counters, and holds the F-N2 manual-override, R2 controller and feed-in manual-mode state machines + persistence. |
 | `gate_learning.py`, `voltage_gate.py` | Recent SOC/voltage learning and fresh telemetry adapter. The coordinated supply owner remains the only PSU actor. |
+| `soc_consistency.py`, `psu_observation.py` | Bounded publication-level energy/SOC reconciliation and source-generation-bound electrical observations; neither module sends commands or guarantees future PSU delivery. |
 | `reserve_runtime.py` | Historical observation reference and reserve-policy migration marker; publishes the core decision without deriving a separate control target. |
 | `cascade_manager.py` | Sole actor owner for storage chains: wake, proof, handover, Root return, Safe-OFF and daily state. |
 | `config_flow.py` | The config + options flows (sectioned) and all cross-field validators; sub-entry flows for surplus loads and appliances. |

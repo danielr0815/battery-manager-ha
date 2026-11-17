@@ -38,6 +38,54 @@ async function refresh(page, attrs) {
     };
   }, attrs);
 }
+
+test("normal SOC adjustment stays informative and preserves its open diagnostic on refresh", async ({
+  page,
+}) => {
+  const attrs = {
+    ...attributes,
+    reserve: { mode: "active", upper_pv_factor: 1.2 },
+    gate_calibration: {
+      adaptive: {
+        source: "configured_fallback",
+        sample_count: 1518,
+        bands: [],
+        coordinate: { phase: "reconciling", level: "info" },
+        qualification: {
+          query_current_a: 0.706,
+          current_covered: false,
+          roles: [
+            {
+              role: "delivery",
+              reason: "conflicting_coordinates",
+              near_count: 12,
+              span_seconds: 1800,
+              spread_percent: 9,
+            },
+          ],
+        },
+      },
+    },
+  };
+  await mount(page, "forecast", attrs);
+  const reserve = page.locator('details[data-view-key="reserve-policy"]');
+  await reserve.locator(":scope > summary").click();
+  const diagnostic = page.locator('details[data-view-key="soc-coordinate"]');
+  await diagnostic.locator(":scope > summary").click();
+  await expect(diagnostic).toContainText("SOC coordinate is being adjusted");
+  await expect(diagnostic).toContainText(
+    "Older and newer SOC observations disagree",
+  );
+  await expect(diagnostic).toContainText("Conservative SOC forecast");
+  await expect(diagnostic.locator('[role="alert"]')).toHaveCount(0);
+  const updated = structuredClone(attrs);
+  updated.gate_calibration.adaptive.coordinate.phase = "settling";
+  await refresh(page, updated);
+  await expect(diagnostic).toHaveAttribute("open", "");
+  await expect(diagnostic).toContainText(
+    "Collecting stable observations after adjustment",
+  );
+});
 async function pointAt(page, time) {
   // ResizeObserver can replace the chart before HA publishes its shadow slot.
   // Wait for the current measured width and visible target before using raw

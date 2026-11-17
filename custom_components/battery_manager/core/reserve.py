@@ -358,7 +358,13 @@ def _simulate_reserve(
     result = _apply_dc_market(
         config, inputs, extra_ac, pv_scale, feedin, reference, traces
     )
-    if not _smooth_source_schedule.get():
+    if (
+        not _smooth_source_schedule.get()
+        or inputs.soc_coordinate is not None
+        and inputs.soc_coordinate.holds_optional_discharge
+    ):
+        # No joint search can allocate battery entitlements while the coordinate
+        # is quarantined. The physical source/protection/PV policy remains live.
         return result
     reference_steps = traces[id(result.flows)]
     active_cache = _reserve_cache.get()
@@ -464,6 +470,8 @@ def _same_recharge_inputs(left: PlanInputs, right: PlanInputs) -> bool:
         and tuple(slot.start.timestamp() for slot in left.slots)
         == tuple(slot.start.timestamp() for slot in right.slots)
         and left.recharge_required_ac_wh == right.recharge_required_ac_wh
+        and left.soc_coordinate == right.soc_coordinate
+        and left.psu_delivery == right.psu_delivery
         and left.consumption_uncertainty == right.consumption_uncertainty
         and instants(left) == instants(right)
     )
@@ -483,6 +491,16 @@ def _simulate_recharge(
 ) -> Trajectory:
     from .recharge import certify, preserves_certificates
 
+    if (
+        inputs.soc_coordinate is not None
+        and inputs.soc_coordinate.holds_optional_discharge
+    ):
+        # Even a complete uncertainty ledger cannot turn quarantined SOC into
+        # new repayment certificates. Keep physical service and independent PV
+        # selection, without entering certification or publishing its budget.
+        return _simulate_reserve(
+            config, replace(inputs, consumption_uncertainty=None), extra_ac, 1.0, feedin
+        )
     if (
         config.feedin.enabled
         and config.feedin.max_w > ENERGY_EPSILON_WH
@@ -1034,7 +1052,14 @@ def simulate_fixed_dispatch(
             fixed_sources=tuple(sources),
             fixed_limits=tuple(limits),
         )
-    if reference.reserve_decision is not None and result.reserve_decision is not None:
+    if (
+        reference.reserve_decision is not None
+        and result.reserve_decision is not None
+        and not (
+            inputs.soc_coordinate is not None
+            and inputs.soc_coordinate.holds_optional_discharge
+        )
+    ):
         result = replace(
             result,
             reserve_decision=replace(
@@ -1057,6 +1082,11 @@ def _apply_dc_market(
     ac_margin_wh: float = 0.0,
 ) -> Trajectory:
     """One budget contract for planner candidates, comparisons and replay."""
+    if (
+        inputs.soc_coordinate is not None
+        and inputs.soc_coordinate.holds_optional_discharge
+    ):
+        return reference
     steps = traces[id(reference.flows)]
     weights = effective_market_weights(
         _market_weights(inputs, _steps(config, inputs, extra_ac, pv_scale))
@@ -1467,6 +1497,11 @@ def _simulate_reserve_policy(
     partial_prices = any(
         p > 0 and w is None for p, w in zip(priorities, raw_weights, strict=True)
     )
+    coordinate_hold = (
+        inputs.soc_coordinate is not None
+        and inputs.soc_coordinate.holds_optional_discharge
+    )
+    allow_ac = allow_ac and not coordinate_hold
     market_active = allow_ac and any(weight > 1 for weight in weights)
     dc_market_active = any(weight > 1 for weight in weights)
     ranking_reason = (
@@ -1644,6 +1679,27 @@ def _simulate_reserve_policy(
         if fixed_sources is not None:
             dc24 = fixed_sources[j][0] or required_sources[0]
             dc48 = fixed_sources[j][1] or required_sources[1]
+        elif coordinate_hold:
+            # The coordinate increase cannot finance a cheaper battery phase.
+            # Essential DC remains served, including unavoidable battery draw
+            # when no physically compatible PSU can replace it. Zero-draw PV
+            # alternatives win on actual grid cost, independently of SOC budget.
+            held_choices = (protected, *choose_sources())
+            best = min(
+                (
+                    candidate
+                    for candidate in held_choices
+                    if candidate.unserved_dc_wh
+                    <= protected.unserved_dc_wh + ENERGY_EPSILON_WH
+                ),
+                key=lambda candidate: (
+                    round(net_draw(candidate), 6),
+                    round(candidate.grid_import_wh, 6),
+                    sum(source_state(candidate)),
+                ),
+            )
+            dc24, dc48 = source_state(best)
+            holding = dc24 or dc48
         elif pv_surplus:
             source_baseline = _step_hour(
                 effective, soc, slot, 100, extra, dc24, dc48, scale, export
@@ -1688,7 +1744,9 @@ def _simulate_reserve_policy(
             else 0.0
         )
         if fixed_limits is not None:
-            limit = fixed_limits[j] if not (dc24 or dc48) else 0.0
+            limit = (
+                fixed_limits[j] if not (dc24 or dc48) and not coordinate_hold else 0.0
+            )
         if (
             not source.adaptive_voltage_gate
             and not limit
@@ -1764,6 +1822,8 @@ def _simulate_reserve_policy(
                 reason = "manual_support"
             elif protect24 or protect48:
                 reason = "dc_support_protection"
+            elif coordinate_hold:
+                reason = "soc_coordinate_hold"
             elif holding and (dc24 or dc48):
                 reason = "dc_reserve_holding"
             elif pv_recovery and not (dc24 or dc48) and slot.dc_wh > ENERGY_EPSILON_WH:

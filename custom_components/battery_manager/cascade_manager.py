@@ -42,6 +42,7 @@ from .const import (
     CONF_LOAD_HANDOVER_MIN_POWER_W,
     CONF_LOAD_HANDOVER_TIMEOUT_S,
     CONF_LOAD_INPUT_ACTOR_MODE,
+    CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_MIN_OFF_MIN,
     CONF_LOAD_OUTPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
@@ -61,8 +62,10 @@ from .core import (
     SurplusLoadState,
     SystemConfig,
 )
+from .core.model import SocCoordinateSnapshot
 from .core.policy import CASCADE_SOURCE_PROOF_SECONDS
 from .core.series import fixed_local_time
+from .load_safety import effective_start_power_w
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -85,6 +88,10 @@ class _MinimumOffPending(Exception):
     """A planned start must wait; this is not an actor failure."""
 
 
+class _CoordinatePermissionPending(Exception):
+    """A withdrawn optional budget is informational, never an actor fault."""
+
+
 @dataclass(frozen=True)
 class CascadeExecutionSnapshot:
     """Stable public diagnostic view, with no references to mutable actor state."""
@@ -101,6 +108,11 @@ class CascadeExecutionSnapshot:
 # a new ownership episode after an operator OFF -> ON.
 _CONTROL_GENERATIONS: ContextVar[dict[str, int] | None] = ContextVar(
     "cascade_control_generations", default=None
+)
+
+
+_COORDINATE_SNAPSHOT: ContextVar[tuple[SocCoordinateSnapshot | None] | None] = (
+    ContextVar("cascade_soc_coordinate", default=None)
 )
 
 
@@ -144,12 +156,20 @@ def _control_sequences[ControlMethod: Callable[..., Any]](
             for cid in ids
         }
         token = _CONTROL_GENERATIONS.set({**inherited, **generations})
+        coordinate_token = None
+        if method.__name__ == "async_apply":
+            result = args[1] if len(args) > 1 else kwargs.get("result")
+            coordinate_token = _COORDINATE_SNAPSHOT.set(
+                (getattr(result, "soc_coordinate", None),)
+            )
         try:
             for cid in generations:
                 self._check_control_generation(cid)
             return await method(self, *args, **kwargs)
         finally:
             _CONTROL_GENERATIONS.reset(token)
+            if coordinate_token is not None:
+                _COORDINATE_SNAPSHOT.reset(coordinate_token)
 
     return cast(ControlMethod, guarded)
 
@@ -1879,12 +1899,72 @@ class CascadeManager:
                     self._record_observed_off(cascade_id, entity_id, current)
                     state["claims"][entity_id] = False
 
+    def _check_coordinate_permission(
+        self,
+        cascade_id: str,
+        entity_id: str | None,
+        turn_on: bool,
+        *,
+        retain_confirmed: bool = True,
+    ) -> None:
+        captured = _COORDINATE_SNAPSHOT.get()
+        if not turn_on or captured is None or not entity_id:
+            return
+        c = self.coordinator
+        if retain_confirmed and c._entity_is_on(entity_id):
+            return  # Observing an existing dwell never creates a new start.
+        gate = getattr(c, "voltage_gate", None)
+        if gate is None:
+            return
+        topology = self._topology(cascade_id)
+        if topology is None:
+            raise _CoordinatePermissionPending
+        root_data = topology["members"][0][1]
+        root = root_data.get(CONF_LOAD_CONTROL_SWITCH)
+        if entity_id != root and not c._entity_is_on(root):
+            return  # Aux service uses its own storage, not the house SOC budget.
+        powers = [
+            effective_start_power_w(c, load_id, data)
+            for load_id, data in topology["members"]
+        ]
+        terminal_id = self.coordinator.entry.subentries[cascade_id].data.get(
+            CONF_CASCADE_TERMINAL_LOAD_ID
+        )
+        powers.append(
+            effective_start_power_w(c, terminal_id or "", topology["terminal"])
+        )
+        owner = "cascade:" + cascade_id
+        power = (
+            sum(value for value in powers if value is not None)
+            if all(value is not None for value in powers)
+            else None
+        )
+        if gate.coordinate_permission_valid(captured[0]):
+            if power is not None:
+                c.live_ac.note_start_power(
+                    owner,
+                    power,
+                    input_entity=root_data.get(CONF_LOAD_INPUT_POWER_ENTITY),
+                )
+            return
+        direct_pv = (
+            gate.coordinate_permission_valid(captured[0], direct_pv_proven=True)
+            and power is not None
+            and c.live_ac.reserve_pv_start(
+                owner, power, input_entity=root_data.get(CONF_LOAD_INPUT_POWER_ENTITY)
+            )
+        )
+        if not direct_pv:
+            self._state(cascade_id)["coordinate_reason"] = "soc_coordinate_hold"
+            raise _CoordinatePermissionPending
+
     @_control_sequence
     async def _actor(
         self, cascade_id: str, entity_id: str | None, turn_on: bool
     ) -> bool:
         if self._stopping():
             raise asyncio.CancelledError
+        self._check_coordinate_permission(cascade_id, entity_id, turn_on)
         state = self._state(cascade_id)
         generation = state.get("control_generation", 0)
         if entity_id in self.coordinator.released_load_actors() or (
@@ -1898,16 +1978,34 @@ class CascadeManager:
             if entity_id and turn_on:
                 self._check_minimum_off(cascade_id, {entity_id: True})
             confirmed = await self._confirm_actor(cascade_id, entity_id, turn_on)
+            self._check_coordinate_permission(
+                cascade_id, entity_id, turn_on, retain_confirmed=False
+            )
             if state.get("control_generation", 0) != generation:
                 raise asyncio.CancelledError
             if confirmed:
                 return True
             recovered = await self._recover_actor(cascade_id, entity_id, turn_on)
+            self._check_coordinate_permission(
+                cascade_id, entity_id, turn_on, retain_confirmed=False
+            )
             if state.get("control_generation", 0) != generation:
                 raise asyncio.CancelledError
             return recovered
         finally:
             self._actor_tasks.discard(task)
+            runtime = getattr(self.coordinator, "live_ac", None)
+            topology = self._topology(cascade_id)
+            if (
+                not turn_on
+                and topology is not None
+                and entity_id == topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH)
+                and entity_id is not None
+                and self.coordinator._entity_tristate(entity_id) is False
+            ):
+                release = getattr(runtime, "release_pv_start", None)
+                if callable(release):
+                    release("cascade:" + cascade_id)
 
     @_control_sequence
     async def _recover_actor(
@@ -1978,6 +2076,9 @@ class CascadeManager:
                         raise asyncio.CancelledError
                     if turn_on:
                         self._check_minimum_off(cascade_id, {entity_id: True})
+                    self._check_coordinate_permission(
+                        cascade_id, entity_id, turn_on, retain_confirmed=False
+                    )
                     recovery["command_retried"] = True
                     self._actor_event(
                         cascade_id, "actor_recovery_command_retry", entity_id, target
@@ -1988,6 +2089,9 @@ class CascadeManager:
                 self._check_control_generation(cascade_id)
                 await self._wait_actor_state(entity_id, target, accept_assumed=False)
                 self._check_control_generation(cascade_id)
+        except _CoordinatePermissionPending:
+            recovery["status"] = "coordinate_hold"
+            raise
         except asyncio.CancelledError:
             recovery["status"] = "interrupted"
             self._actor_event(
@@ -2164,8 +2268,12 @@ class CascadeManager:
         self._actor_event(cascade_id, "command_started", entity_id, target_state)
         try:
             async with asyncio.timeout(timeout_s):
+                self._check_coordinate_permission(cascade_id, entity_id, turn_on)
                 ok = await self.coordinator._switch_entity(
                     entity_id, turn_on, actor_owner=cascade_id
+                )
+                self._check_coordinate_permission(
+                    cascade_id, entity_id, turn_on, retain_confirmed=False
                 )
                 if not ok:
                     self._actor_event(
@@ -2833,6 +2941,10 @@ class CascadeManager:
             if any(targets.values())
             else "idle"
         )
+        runtime = getattr(self.coordinator, "live_ac", None)
+        confirm = getattr(runtime, "confirm_pv_start", None)
+        if callable(confirm):
+            confirm("cascade:" + cascade_id)
         return True
 
     async def _apply_root(self, cascade_id: str, plan: Any, now: datetime) -> bool:
@@ -3189,6 +3301,9 @@ class CascadeManager:
             await self._apply_one_ready(
                 cascade_id, plan, load_states, now, safety_reason
             )
+        except _CoordinatePermissionPending:
+            # Preserve confirmed service/dwell and stop extending the old plan.
+            self._state(cascade_id)["coordinate_reason"] = "soc_coordinate_hold"
         except _MinimumOffPending:
             # A partially built path must not remain energised while waiting.
             # Already OFF actors are not rewritten and their clocks stay fixed.

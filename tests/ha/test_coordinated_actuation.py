@@ -377,3 +377,102 @@ async def test_optional_feedback_can_be_omitted(rig):
     await execute(c, inverter=False)
     assert calls == [(LIMIT, 0)]
     assert c._inverter_limit_confirmed(True)
+
+
+async def test_stale_coordinate_cannot_release_psu_or_inverter(rig, hass):
+    c, calls, *_ = rig
+    c._schedule_replan = Mock()
+    c.voltage_gate.coordinate_snapshot(dt_util.now())
+    c.voltage_gate.monitor.epoch = 1
+    c.voltage_gate.monitor.generation = 2
+    c.voltage_gate.monitor.phase = "settling"
+    c.voltage_gate.monitor.has_reconciled = True
+    hass.states.async_set(PSU24, "on")
+    hass.states.async_set(DCDC, "off")
+    c._support_state["dc24"] = True
+    calls.clear()
+    await execute(c, False, False, True)
+    assert (PSU24, False) not in calls
+    assert (LIMIT, 2300) not in calls
+    assert not c._inverter_recommendation
+
+
+@pytest.mark.parametrize("fresh_record", [False, True])
+async def test_queued_coordinate_requires_complete_fresh_successor_plan(
+    rig, hass, fresh_record
+):
+    from custom_components.battery_manager.core.model import HourSlot, PlanInputs
+
+    c, calls, *_ = rig
+    c._schedule_replan = Mock()
+    config = c.build_system_config()
+    now = dt_util.now()
+    c.voltage_gate.coordinate_snapshot(now)
+    hass.states.async_set(LIMIT, "0")
+    hass.states.async_set(BLOCK, "on")
+    # Capture legacy None before the episode, then delay executing that intent.
+    queued = c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, True, config, now
+    )
+    monitor = c.voltage_gate.monitor
+    monitor.epoch, monitor.phase, monitor.generation, monitor.has_reconciled = (
+        1,
+        "tracking",
+        4,
+        True,
+    )
+    c.live_ac.plan_revision += 1
+    if fresh_record:
+        coordinate = c.voltage_gate.coordinate_snapshot(now)
+        inputs = PlanInputs(
+            now,
+            80,
+            (
+                HourSlot(0, now, 1, now.hour, 0, 100, 80),
+                HourSlot(
+                    1, now + timedelta(hours=1), 1, (now.hour + 1) % 24, 4000, 100, 80
+                ),
+            ),
+            soc_coordinate=coordinate,
+        )
+        from custom_components.battery_manager.core.optimize import plan
+
+        successor = plan(config, inputs)
+        assert successor.inverter_on
+        assert not successor.support_dc24_now and not successor.support_dc48_now
+        c._last_planner_recording = (config, inputs, successor)
+    await queued
+    assert ((LIMIT, 2300) in calls) is fresh_record
+    assert c._inverter_recommendation is fresh_record
+
+
+@pytest.mark.parametrize("record_revision,allowed", [(None, True), (1, False)])
+async def test_known_stale_legacy_record_cannot_fund_current_revision(
+    rig, hass, record_revision, allowed
+):
+    from custom_components.battery_manager.core.model import HourSlot, PlanInputs
+    from custom_components.battery_manager.core.optimize import plan
+
+    c, calls, *_ = rig
+    c._schedule_replan = Mock()
+    config = c.build_system_config()
+    now = dt_util.now()
+    inputs = PlanInputs(
+        now,
+        80,
+        (
+            HourSlot(0, now, 1, now.hour, 0, 100, 80),
+            HourSlot(
+                1, now + timedelta(hours=1), 1, (now.hour + 1) % 24, 4000, 100, 80
+            ),
+        ),
+    )
+    result = plan(config, inputs)
+    assert result.inverter_on
+    c._last_planner_recording = (config, inputs, result)
+    c.live_ac.plan_revision = 2
+    c._last_planner_recording_revision = record_revision
+    hass.states.async_set(LIMIT, "0")
+    hass.states.async_set(BLOCK, "on")
+    await execute(c, False, False, True)
+    assert ((LIMIT, 2300) in calls) is allowed

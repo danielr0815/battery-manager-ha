@@ -1,6 +1,6 @@
 """SOC forecast projection of a voltage-controlled 48 V support source."""
 
-from .model import SupportParams, VoltageGateBand
+from .model import PsuDeliverySnapshot, SupportParams, VoltageGateBand
 
 
 def gate_band(
@@ -63,3 +63,62 @@ def forecast_gate(
         else None
     )
     return allowed, voltage
+
+
+# Matches the runtime physical-sample hold; not a forecast validity horizon.
+PSU_MEASUREMENT_MAX_AGE_S = 30.0
+
+
+def present_delivery_w(
+    snapshot: PsuDeliverySnapshot,
+    at: float,
+    source_generation: int,
+    topology_fingerprint: str,
+) -> float | None:
+    """Accept only a fresh DC observation from this confirmed source episode."""
+    observation = snapshot.dc_output
+    if (
+        snapshot.quality != "measured"
+        or not snapshot.confirmed_on
+        or snapshot.confirmed_on_since is None
+        or snapshot.source_generation != source_generation
+        or snapshot.topology_fingerprint != topology_fingerprint
+        or not 0 <= at - snapshot.captured_at <= PSU_MEASUREMENT_MAX_AGE_S
+        or observation is None
+        or observation.source_generation != source_generation
+        or observation.topology_fingerprint != topology_fingerprint
+        or not snapshot.confirmed_on_since <= observation.interval_start
+        or not 0 <= at - observation.published_at <= PSU_MEASUREMENT_MAX_AGE_S
+        or observation.published_at > snapshot.captured_at
+        or not 0 <= at - observation.interval_end <= PSU_MEASUREMENT_MAX_AGE_S
+    ):
+        return None
+    return observation.power_w
+
+
+def observed_psu_efficiency(snapshot: PsuDeliverySnapshot) -> float | None:
+    """An electrical balance requires covered, overlapping compatible channels."""
+    dc, ac = snapshot.dc_output, snapshot.ac_input
+    if (
+        present_delivery_w(
+            snapshot,
+            snapshot.captured_at,
+            snapshot.source_generation,
+            snapshot.topology_fingerprint,
+        )
+        is None
+        or dc is None
+        or ac is None
+        or ac.source_generation != snapshot.source_generation
+        or ac.topology_fingerprint != snapshot.topology_fingerprint
+        or snapshot.confirmed_on_since is None
+        or ac.interval_start < snapshot.confirmed_on_since
+        or not 0 <= snapshot.captured_at - ac.published_at <= PSU_MEASUREMENT_MAX_AGE_S
+        or not 0 <= snapshot.captured_at - ac.interval_end <= PSU_MEASUREMENT_MAX_AGE_S
+        or max(dc.interval_start, ac.interval_start)
+        >= min(dc.interval_end, ac.interval_end)
+        or ac.power_w <= 0
+        or dc.power_w > ac.power_w
+    ):
+        return None
+    return dc.power_w / ac.power_w

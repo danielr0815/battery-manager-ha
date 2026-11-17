@@ -205,6 +205,61 @@ var STRINGS = {
     report_gate_samples: "Accepted observations",
     report_gate_soc: "Learned switch-on SOC during discharge",
     report_gate_spread: "Observed spread",
+    report_soc_coordinate: "SOC observation and energy comparison",
+    report_soc_coordinate_state: "Observation state",
+    report_soc_coordinate_event: "Last observed adjustment",
+    report_soc_reported_change: "Change reported by the BMS",
+    report_soc_energy_change: "SOC equivalent of measured energy change",
+    report_soc_model_residual: "Difference from the linear energy estimate",
+    report_soc_covered_time: "Covered comparison interval",
+    report_soc_coordinate_explanation: "The reported BMS SOC can drift and be recalibrated near the upper range. An adjustment is not itself a device fault. Measured energy change does not independently determine absolute SOC.",
+    report_soc_conservative_forecast: "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
+    soc_phase_tracking: "Observing the current SOC coordinate",
+    soc_observation_unknown: "Unknown observation",
+    soc_phase_reconciling: "SOC coordinate is being adjusted",
+    soc_phase_settling: "Collecting stable observations after adjustment",
+    report_gate_query: "Reference current of the native 48 V base load",
+    report_gate_query_status: "Qualification for the reference current",
+    report_gate_points: "nearby observations",
+    gate_role_on: "Switch-on estimate",
+    gate_role_delivery: "Delivery estimate",
+    gate_role_off: "Switch-off estimate",
+    gate_qualification_qualified: "Qualified observations",
+    gate_qualification_insufficient_samples: "Too few comparable observations",
+    gate_qualification_insufficient_span: "Observation span is too short",
+    gate_qualification_conflicting_coordinates: "Older and newer SOC observations disagree",
+    gate_qualification_out_of_current_range: "Reference current is outside the observed range",
+    gate_qualification_expired: "Evidence has expired",
+    gate_qualification_inconsistent_threshold_order: "Threshold observations are inconsistent",
+    reserve_decision_soc_coordinate_hold: "Optional battery use waits for stable SOC observations",
+    report_psu_observations: "Measured PSU observations",
+    report_psu_24: "24 V PSU",
+    report_psu_48: "48 V PSU",
+    report_psu_confirmed_state: "Confirmed switch state",
+    report_psu_ac_input: "Observed AC input",
+    report_psu_dc_output: "Observed DC output",
+    report_psu_present_delivery: "Qualified present DC delivery",
+    report_psu_observed_efficiency: "Efficiency from overlapping measurements",
+    report_psu_ac_input_status: "AC input measurement status",
+    report_psu_dc_output_status: "DC output measurement status",
+    psu_quality_measured: "Measurement available",
+    psu_quality_unknown: "No qualified measurement",
+    psu_quality_stale: "Measurement is stale",
+    psu_quality_unconfirmed: "Source state is not confirmed",
+    psu_quality_incompatible: "Measurement or source binding is invalid",
+    psu_channel_not_configured: "Not configured",
+    psu_channel_measured: "Fresh measurement",
+    psu_channel_missing: "No measurement available",
+    psu_channel_incompatible: "Incompatible measurement",
+    psu_channel_hardware_limit: "Measurement exceeds hardware limit",
+    psu_channel_unconfirmed: "Source state is unconfirmed",
+    psu_channel_not_found: "Entity not found",
+    psu_channel_unavailable: "Measurement unavailable",
+    psu_channel_invalid: "Invalid measurement",
+    psu_channel_invalid_unit: "Invalid measurement unit",
+    psu_channel_stale: "Publication is stale",
+    psu_channel_previous_source_generation: "Publication predates the confirmed source change",
+    report_psu_present_only: "These observations describe the captured operating point. ON, nominal power and a fresh measurement do not establish future delivery. Missing values remain unknown.",
     gate_above_off_voltage: "Off: voltage above switch-off threshold",
     gate_below_on_voltage: "Support requested: voltage below switch-on threshold",
     gate_hysteresis_hold: "Retaining state within voltage hysteresis band",
@@ -275,6 +330,7 @@ var STRINGS = {
     card_tentative_wake: "Tentative plan: wake-up and valid SOC telemetry are required before execution.",
     live_ac_reason_measured_ac_demand: "Measured AC demand within the available reserve budget",
     live_ac_reason_soc_unavailable: "SOC telemetry unavailable or stale",
+    live_ac_reason_soc_coordinate_hold: "Waiting for SOC coordinate stabilization and a fresh plan",
     live_ac_reason_grid_unavailable: "Grid supply unavailable",
     live_ac_reason_dc_supply: "DC supply has priority",
     live_ac_reason_measurement_unavailable: "Live AC measurements unavailable or stale",
@@ -547,6 +603,61 @@ var STRINGS = {
     report_gate_samples: "Verwertbare Beobachtungen",
     report_gate_soc: "Gelernter Einschalt-SOC beim Entladen",
     report_gate_spread: "Beobachtete Streuung",
+    report_soc_coordinate: "SOC-Ablesung und Energievergleich",
+    report_soc_coordinate_state: "Beobachtungszustand",
+    report_soc_coordinate_event: "Letzte beobachtete Nachf\xFChrung",
+    report_soc_reported_change: "Vom BMS gemeldete \xC4nderung",
+    report_soc_energy_change: "SOC-\xC4quivalent der gemessenen Energie\xE4nderung",
+    report_soc_model_residual: "Abweichung zur linearen Energierechnung",
+    report_soc_covered_time: "Abgedeckter Vergleichszeitraum",
+    report_soc_coordinate_explanation: "Der gemeldete BMS-SOC kann driften und im oberen Bereich nachkalibriert werden. Eine Nachf\xFChrung ist f\xFCr sich kein Ger\xE4tefehler. Die gemessene Energie\xE4nderung bestimmt keinen unabh\xE4ngig bekannten absoluten SOC.",
+    report_soc_conservative_forecast: "Konservative SOC-Prognose: K\xFCnftige 48-V-St\xFCtzung wird nur bei g\xFCltigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zuk\xFCnftige Lieferleistung.",
+    soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
+    soc_observation_unknown: "Beobachtung unbekannt",
+    soc_phase_reconciling: "SOC-Koordinate wird nachgef\xFChrt",
+    soc_phase_settling: "Stabile Beobachtungen nach der Nachf\xFChrung sammeln",
+    report_gate_query: "Referenzstrom der nativen 48-V-Grundlast",
+    report_gate_query_status: "Qualifikation f\xFCr den Referenzstrom",
+    report_gate_points: "nahe Beobachtungen",
+    gate_role_on: "Einschaltsch\xE4tzung",
+    gate_role_delivery: "Liefersch\xE4tzung",
+    gate_role_off: "Ausschaltsch\xE4tzung",
+    gate_qualification_qualified: "Qualifizierte Beobachtungen",
+    gate_qualification_insufficient_samples: "Zu wenige vergleichbare Beobachtungen",
+    gate_qualification_insufficient_span: "Beobachtungszeitspanne zu kurz",
+    gate_qualification_conflicting_coordinates: "\xC4ltere und neuere SOC-Ablesungen widersprechen sich",
+    gate_qualification_out_of_current_range: "Referenzstrom au\xDFerhalb des beobachteten Bereichs",
+    gate_qualification_expired: "Nachweise abgelaufen",
+    gate_qualification_inconsistent_threshold_order: "Schwellenbeobachtungen widersprechen sich",
+    reserve_decision_soc_coordinate_hold: "Optionale Batterienutzung wartet auf stabile SOC-Beobachtungen",
+    report_psu_observations: "Gemessene Netzteilbeobachtungen",
+    report_psu_24: "24-V-Netzteil",
+    report_psu_48: "48-V-Netzteil",
+    report_psu_confirmed_state: "Best\xE4tigter Schaltzustand",
+    report_psu_ac_input: "Beobachtete AC-Aufnahme",
+    report_psu_dc_output: "Beobachtete DC-Abgabe",
+    report_psu_present_delivery: "Qualifizierte momentane DC-Lieferung",
+    report_psu_observed_efficiency: "Wirkungsgrad aus zeitlich \xFCberdeckten Messungen",
+    report_psu_ac_input_status: "Status der AC-Aufnahmemessung",
+    report_psu_dc_output_status: "Status der DC-Abgabemessung",
+    psu_quality_measured: "Messung vorhanden",
+    psu_quality_unknown: "Keine qualifizierte Messung",
+    psu_quality_stale: "Messung ist veraltet",
+    psu_quality_unconfirmed: "Quellenzustand ist nicht best\xE4tigt",
+    psu_quality_incompatible: "Messung oder Quellenbindung ist ung\xFCltig",
+    psu_channel_not_configured: "Nicht konfiguriert",
+    psu_channel_measured: "Frische Messung",
+    psu_channel_missing: "Keine Messung verf\xFCgbar",
+    psu_channel_incompatible: "Unpassende Messung",
+    psu_channel_hardware_limit: "Messung \xFCberschreitet Hardwaregrenze",
+    psu_channel_unconfirmed: "Quellenzustand nicht best\xE4tigt",
+    psu_channel_not_found: "Entity nicht gefunden",
+    psu_channel_unavailable: "Messung nicht verf\xFCgbar",
+    psu_channel_invalid: "Ung\xFCltige Messung",
+    psu_channel_invalid_unit: "Ung\xFCltige Messeinheit",
+    psu_channel_stale: "Publikation ist veraltet",
+    psu_channel_previous_source_generation: "Publikation liegt vor dem best\xE4tigten Quellenwechsel",
+    report_psu_present_only: "Diese Beobachtungen beschreiben den erfassten Betriebspunkt. ON, Nennleistung und eine frische Messung belegen keine k\xFCnftige Lieferung. Fehlende Werte bleiben unbekannt.",
     gate_above_off_voltage: "Aus: Spannung oberhalb der Ausschaltgrenze",
     gate_below_on_voltage: "St\xFCtzung angefordert: Spannung unterhalb der Einschaltgrenze",
     gate_hysteresis_hold: "Zustand im Spannungs-Hystereseband beibehalten",
@@ -617,6 +728,7 @@ var STRINGS = {
     card_tentative_wake: "Vorl\xE4ufiger Plan: Aufwecken und g\xFCltige SOC-Telemetrie sind vor der Ausf\xFChrung erforderlich.",
     live_ac_reason_measured_ac_demand: "Gemessener AC-Bedarf innerhalb des verf\xFCgbaren Reservebudgets",
     live_ac_reason_soc_unavailable: "SOC-Telemetrie fehlt oder ist veraltet",
+    live_ac_reason_soc_coordinate_hold: "Warte auf stabilisierte SOC-Koordinate und frischen Plan",
     live_ac_reason_grid_unavailable: "Netzversorgung nicht verf\xFCgbar",
     live_ac_reason_dc_supply: "DC-Versorgung hat Vorrang",
     live_ac_reason_measurement_unavailable: "Live-AC-Messung fehlt oder ist veraltet",
@@ -1642,6 +1754,120 @@ function jointMarketReport(hass, joint) {
   ).join("");
   return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}${jointTargetReport(hass, joint, reason)}</section>`;
 }
+function socCoordinateReport(hass, learned) {
+  if (!learned?.coordinate && !learned?.qualification) return "";
+  const t = (key) => localize(hass, key);
+  const translated = (prefix, value) => {
+    const key = `${prefix}_${value}`;
+    const text = t(key);
+    return text === key ? t("soc_observation_unknown") : text;
+  };
+  const coordinate = learned.coordinate;
+  const qualification = learned.qualification;
+  const rows = [];
+  if (coordinate) {
+    rows.push([
+      t("report_soc_coordinate_state"),
+      translated("soc_phase", coordinate.phase)
+    ]);
+    const eventAt = coordinate.last_event?.at;
+    const eventDate = new Date(
+      typeof eventAt === "number" ? eventAt * 1e3 : NaN
+    );
+    if (Number.isFinite(eventDate.getTime()))
+      rows.push([
+        t("report_soc_coordinate_event"),
+        reportTime(hass, eventDate.toISOString())
+      ]);
+    if (coordinate.residual) {
+      rows.push([
+        t("report_soc_reported_change"),
+        `${reportNumber(hass, coordinate.residual.observed_soc_delta_percent)} %`
+      ]);
+      rows.push([
+        t("report_soc_energy_change"),
+        `${reportNumber(hass, coordinate.residual.energy_equivalent_soc_delta_percent)} %`
+      ]);
+      rows.push([
+        t("report_soc_model_residual"),
+        `${reportNumber(hass, coordinate.residual.residual_percent)} %`
+      ]);
+      rows.push([
+        t("report_soc_covered_time"),
+        `${reportNumber(hass, Number.isFinite(coordinate.residual.covered_seconds) ? coordinate.residual.covered_seconds / 60 : null)} min`
+      ]);
+    }
+  }
+  if (qualification) {
+    rows.push([
+      t("report_gate_query"),
+      `${reportNumber(hass, qualification.query_current_a)} A`
+    ]);
+    for (const role of Array.isArray(qualification.roles) ? qualification.roles : []) {
+      if (!role || typeof role !== "object") continue;
+      if (!["on", "delivery", "off"].includes(role.role)) continue;
+      rows.push([
+        translated("gate_role", role.role),
+        `${translated("gate_qualification", role.reason)} \xB7 ${reportNumber(hass, role.near_count)} ${t("report_gate_points")} \xB7 ${reportNumber(hass, Number.isFinite(role.span_seconds) ? role.span_seconds / 60 : null)} min \xB7 ${t("report_gate_spread")}: ${reportNumber(hass, role.spread_percent)} %`
+      ]);
+    }
+    if (qualification.reason)
+      rows.push([
+        t("report_gate_query_status"),
+        translated("gate_qualification", qualification.reason)
+      ]);
+  }
+  return `<details data-view-key="soc-coordinate"><summary>${esc(t("report_soc_coordinate"))}</summary>
+    <p>${esc(t("report_soc_coordinate_explanation"))}</p>
+    <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+    <p data-soc-forecast-basis="conservative">${esc(t("report_soc_conservative_forecast"))}</p></details>`;
+}
+function psuObservationReport(hass, observations) {
+  if (!Array.isArray(observations) || !observations.length) return "";
+  const t = (key) => localize(hass, key);
+  const sections = observations.filter((item) => item && ["dc24", "dc48"].includes(item.source_id)).map((item) => {
+    const qualityKey = `psu_quality_${item.quality}`;
+    const quality = t(qualityKey);
+    const rows = [
+      [
+        t("report_source_status"),
+        quality === qualityKey ? t("soc_observation_unknown") : quality
+      ],
+      [
+        t("report_psu_confirmed_state"),
+        item.confirmed_on === true ? t("input_on") : item.confirmed_on === false ? t("input_off") : "\u2014"
+      ],
+      [t("report_psu_ac_input"), `${reportNumber(hass, item.ac_input_w)} W`],
+      [
+        t("report_psu_dc_output"),
+        `${reportNumber(hass, item.dc_output_w)} W`
+      ],
+      [
+        t("report_psu_present_delivery"),
+        `${reportNumber(hass, item.present_delivery_w)} W`
+      ],
+      [
+        t("report_psu_observed_efficiency"),
+        typeof item.efficiency === "number" && Number.isFinite(item.efficiency) && item.efficiency >= 0 && item.efficiency <= 1 ? `${reportNumber(hass, item.efficiency * 100)} %` : "\u2014"
+      ]
+    ];
+    for (const channel of ["ac_input", "dc_output"]) {
+      const reason = item.channel_reasons?.[channel];
+      if (!reason) continue;
+      const reasonKey = `psu_channel_${reason}`;
+      const text = t(reasonKey);
+      rows.push([
+        channel === "ac_input" ? t("report_psu_ac_input_status") : t("report_psu_dc_output_status"),
+        text === reasonKey ? t("soc_observation_unknown") : text
+      ]);
+    }
+    return `<section data-psu-observation="${esc(item.source_id)}"><h4>${esc(item.source_id === "dc24" ? t("report_psu_24") : t("report_psu_48"))}</h4>
+        <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl></section>`;
+  });
+  if (!sections.length) return "";
+  return `<details data-view-key="psu-observations"><summary>${esc(t("report_psu_observations"))}</summary>
+    <p>${esc(t("report_psu_present_only"))}</p>${sections.join("")}</details>`;
+}
 function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
@@ -1779,6 +2005,8 @@ function reserveReport(hass, reserve, support, calibration) {
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
     ${jointMarketReport(hass, reserve.market?.joint)}
     ${rechargeReport(hass, reserve.recharge)}
+    ${socCoordinateReport(hass, learned)}
+    ${psuObservationReport(hass, learned?.psu_observations)}
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} \xB7 ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 function operationReport(hass, report) {
@@ -4575,6 +4803,7 @@ Object.assign(TEXT.en, {
   safety_block: "Safety conditions block a start",
   forecast_horizon_short: "Forecast does not cover a complete cycle",
   extra_grid_import: "Starting would require additional grid energy",
+  soc_coordinate_hold: "Battery-backed operation waits for stable SOC observations",
   soc_condition: "Battery conditions are not met",
   house_recharge: "Starting would compromise a certified house-battery recharge",
   missing_start: "Cycle start was not observed",
@@ -4603,6 +4832,7 @@ Object.assign(TEXT.de, {
   safety_block: "Schutzbedingungen verhindern einen Start",
   forecast_horizon_short: "Prognose deckt keinen vollst\xE4ndigen Lauf ab",
   extra_grid_import: "Ein Start w\xFCrde zus\xE4tzlichen Netzbezug erfordern",
+  soc_coordinate_hold: "Batteriegest\xFCtzter Betrieb wartet auf stabile SOC-Beobachtungen",
   soc_condition: "Batteriebedingungen sind nicht erf\xFCllt",
   house_recharge: "Start w\xFCrde die zugesagte R\xFCckladung der Hausbatterie gef\xE4hrden",
   missing_start: "Laufbeginn wurde nicht beobachtet",

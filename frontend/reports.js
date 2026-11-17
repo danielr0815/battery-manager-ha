@@ -393,6 +393,137 @@ function jointMarketReport(hass, joint) {
   return `<section data-joint-market><h4>${esc(t("report_joint_title"))}</h4><p>${esc(t("report_joint_explanation"))}</p><dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl><div data-scroll-key="joint-comparison" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_metric"))}</th><th scope="col">${esc(t("report_joint_reference"))}</th><th scope="col">${esc(t("report_joint_selected"))}</th></tr></thead><tbody>${comparisons}</tbody></table></div><h4>${esc(t("report_joint_intervals"))}</h4>${intervals ? `<div data-scroll-key="joint-intervals" style="overflow-x:auto"><table><thead><tr><th scope="col">${esc(t("report_joint_interval"))}</th><th scope="col">EUR/MWh</th><th scope="col">${esc(t("report_joint_allocated_battery"))}</th><th scope="col">${esc(t("report_joint_avoided_import"))}</th><th scope="col">${esc(t("report_joint_import_change"))}</th></tr></thead><tbody>${intervals}</tbody></table></div>` : `<p>${esc(t("report_joint_no_intervals"))}</p>`}${jointTargetReport(hass, joint, reason)}</section>`;
 }
 
+export function socCoordinateReport(hass, learned) {
+  if (!learned?.coordinate && !learned?.qualification) return "";
+  const t = (key) => localize(hass, key);
+  const translated = (prefix, value) => {
+    const key = `${prefix}_${value}`;
+    const text = t(key);
+    return text === key ? t("soc_observation_unknown") : text;
+  };
+  const coordinate = learned.coordinate;
+  const qualification = learned.qualification;
+  const rows = [];
+  if (coordinate) {
+    rows.push([
+      t("report_soc_coordinate_state"),
+      translated("soc_phase", coordinate.phase),
+    ]);
+    const eventAt = coordinate.last_event?.at;
+    const eventDate = new Date(
+      typeof eventAt === "number" ? eventAt * 1000 : NaN,
+    );
+    if (Number.isFinite(eventDate.getTime()))
+      rows.push([
+        t("report_soc_coordinate_event"),
+        reportTime(hass, eventDate.toISOString()),
+      ]);
+    if (coordinate.residual) {
+      rows.push([
+        t("report_soc_reported_change"),
+        `${reportNumber(hass, coordinate.residual.observed_soc_delta_percent)} %`,
+      ]);
+      rows.push([
+        t("report_soc_energy_change"),
+        `${reportNumber(hass, coordinate.residual.energy_equivalent_soc_delta_percent)} %`,
+      ]);
+      rows.push([
+        t("report_soc_model_residual"),
+        `${reportNumber(hass, coordinate.residual.residual_percent)} %`,
+      ]);
+      rows.push([
+        t("report_soc_covered_time"),
+        `${reportNumber(hass, Number.isFinite(coordinate.residual.covered_seconds) ? coordinate.residual.covered_seconds / 60 : null)} min`,
+      ]);
+    }
+  }
+  if (qualification) {
+    rows.push([
+      t("report_gate_query"),
+      `${reportNumber(hass, qualification.query_current_a)} A`,
+    ]);
+    for (const role of Array.isArray(qualification.roles)
+      ? qualification.roles
+      : []) {
+      if (!role || typeof role !== "object") continue;
+      if (!["on", "delivery", "off"].includes(role.role)) continue;
+      rows.push([
+        translated("gate_role", role.role),
+        `${translated("gate_qualification", role.reason)} · ${reportNumber(hass, role.near_count)} ${t("report_gate_points")} · ${reportNumber(hass, Number.isFinite(role.span_seconds) ? role.span_seconds / 60 : null)} min · ${t("report_gate_spread")}: ${reportNumber(hass, role.spread_percent)} %`,
+      ]);
+    }
+    if (qualification.reason)
+      rows.push([
+        t("report_gate_query_status"),
+        translated("gate_qualification", qualification.reason),
+      ]);
+  }
+  return `<details data-view-key="soc-coordinate"><summary>${esc(t("report_soc_coordinate"))}</summary>
+    <p>${esc(t("report_soc_coordinate_explanation"))}</p>
+    <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+    <p data-soc-forecast-basis="conservative">${esc(t("report_soc_conservative_forecast"))}</p></details>`;
+}
+
+export function psuObservationReport(hass, observations) {
+  if (!Array.isArray(observations) || !observations.length) return "";
+  const t = (key) => localize(hass, key);
+  const sections = observations
+    .filter((item) => item && ["dc24", "dc48"].includes(item.source_id))
+    .map((item) => {
+      const qualityKey = `psu_quality_${item.quality}`;
+      const quality = t(qualityKey);
+      const rows = [
+        [
+          t("report_source_status"),
+          quality === qualityKey ? t("soc_observation_unknown") : quality,
+        ],
+        [
+          t("report_psu_confirmed_state"),
+          item.confirmed_on === true
+            ? t("input_on")
+            : item.confirmed_on === false
+              ? t("input_off")
+              : "—",
+        ],
+        [t("report_psu_ac_input"), `${reportNumber(hass, item.ac_input_w)} W`],
+        [
+          t("report_psu_dc_output"),
+          `${reportNumber(hass, item.dc_output_w)} W`,
+        ],
+        [
+          t("report_psu_present_delivery"),
+          `${reportNumber(hass, item.present_delivery_w)} W`,
+        ],
+        [
+          t("report_psu_observed_efficiency"),
+          typeof item.efficiency === "number" &&
+          Number.isFinite(item.efficiency) &&
+          item.efficiency >= 0 &&
+          item.efficiency <= 1
+            ? `${reportNumber(hass, item.efficiency * 100)} %`
+            : "—",
+        ],
+      ];
+      for (const channel of ["ac_input", "dc_output"]) {
+        const reason = item.channel_reasons?.[channel];
+        if (!reason) continue;
+        const reasonKey = `psu_channel_${reason}`;
+        const text = t(reasonKey);
+        rows.push([
+          channel === "ac_input"
+            ? t("report_psu_ac_input_status")
+            : t("report_psu_dc_output_status"),
+          text === reasonKey ? t("soc_observation_unknown") : text,
+        ]);
+      }
+      return `<section data-psu-observation="${esc(item.source_id)}"><h4>${esc(item.source_id === "dc24" ? t("report_psu_24") : t("report_psu_48"))}</h4>
+        <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl></section>`;
+    });
+  if (!sections.length) return "";
+  return `<details data-view-key="psu-observations"><summary>${esc(t("report_psu_observations"))}</summary>
+    <p>${esc(t("report_psu_present_only"))}</p>${sections.join("")}</details>`;
+}
+
 export function reserveReport(hass, reserve, support, calibration) {
   if (!reserve || !["shadow", "active"].includes(reserve.mode)) return "";
   const t = (key) => localize(hass, key);
@@ -555,6 +686,8 @@ export function reserveReport(hass, reserve, support, calibration) {
     <dl>${rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
     ${jointMarketReport(hass, reserve.market?.joint)}
     ${rechargeReport(hass, reserve.recharge)}
+    ${socCoordinateReport(hass, learned)}
+    ${psuObservationReport(hass, learned?.psu_observations)}
     <p>${esc(t("report_forecast_bands_otherwise_uncalibrated_pv_factor"))}: ${fmt(reserve.upper_pv_factor)} · ${esc(t("report_no_targeted_grid_recharge_feed_in_requires_proven_emergency_benefit"))}</p></details>`;
 }
 

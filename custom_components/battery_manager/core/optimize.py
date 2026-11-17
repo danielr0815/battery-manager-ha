@@ -827,7 +827,26 @@ def appliance_windows(
         recharge_ok = recharge_preserved(
             config, inputs, planned_trajectory, traj, evaluation_inputs=test_inputs
         )
-        allowed = horizon_ok and import_ok and soc_ok and dc_ok and recharge_ok
+        coordinate_ok = not (
+            inputs.soc_coordinate is not None
+            and inputs.soc_coordinate.holds_optional_discharge
+            and any(
+                flow.battery_discharge_wh > flow.battery_charge_wh + _EPS
+                or flow.grid_import_wh > _EPS
+                for before, after, flow in zip(
+                    inputs.slots, test_inputs.slots, traj.flows, strict=True
+                )
+                if after.ac_wh > before.ac_wh + _EPS
+            )
+        )
+        allowed = (
+            horizon_ok
+            and import_ok
+            and soc_ok
+            and dc_ok
+            and recharge_ok
+            and coordinate_ok
+        )
         windows[appliance.appliance_id] = allowed
         if advisories is not None:
             reasons: list[ApplianceAdvisoryReason] = []
@@ -841,6 +860,8 @@ def appliance_windows(
                 reasons.append("dc_service")
             if not recharge_ok:
                 reasons.append("house_recharge")
+            if not coordinate_ok:
+                reasons.append("soc_coordinate_hold")
             advisories[appliance.appliance_id] = ApplianceAdvisory(
                 allowed, tuple(reasons)
             )
@@ -1340,12 +1361,18 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     config = effective_storage_config(config)
     inputs = required_dwell_energy(config, inputs)
     if not config.reserve.enabled:
-        return storage_diagnostics(config, inputs, _plan_in_scope(config, inputs))
+        return replace(
+            storage_diagnostics(config, inputs, _plan_in_scope(config, inputs)),
+            soc_coordinate=inputs.soc_coordinate,
+        )
     with (
         reserve_planning_scope(config, inputs),
         source_schedule_mode(not config.support.coordinated),
     ):
-        return storage_diagnostics(config, inputs, _plan_in_scope(config, inputs))
+        return replace(
+            storage_diagnostics(config, inputs, _plan_in_scope(config, inputs)),
+            soc_coordinate=inputs.soc_coordinate,
+        )
 
 
 def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:

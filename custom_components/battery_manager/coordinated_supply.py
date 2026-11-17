@@ -17,7 +17,7 @@ from .const import (
 )
 from .core import SystemConfig
 from .core.live_ac import LIVE_AC_PLAN_MAX_AGE_S
-from .core.model import PlanInputs
+from .core.model import PlanInputs, SocCoordinateSnapshot
 from .core.support import support_state
 from .voltage_gate import requested_dc48
 
@@ -78,6 +78,7 @@ class SupplyRequest:
     inverter: bool
     plan_revision: int
     expires: datetime | None
+    soc_coordinate: SocCoordinateSnapshot | None = None
 
 
 def _record_expiry(inputs: PlanInputs) -> datetime:
@@ -128,16 +129,16 @@ def protection_targets(
     }
 
 
-async def execute_coordinated_support(
+def capture_supply_request(
     self: BatteryManagerCoordinator,
     desired: dict[str, bool],
     inverter: bool,
-    config: SystemConfig,
     now: datetime,
-) -> None:
+) -> SupplyRequest:
+    """Freeze planner provenance synchronously, before creating a queued task."""
     envelope = self.live_ac.envelope
     record = self._last_planner_recording
-    request = SupplyRequest(
+    return SupplyRequest(
         (desired["dc24"], desired["dc48"]),
         inverter,
         self.live_ac.plan_revision,
@@ -146,7 +147,27 @@ async def execute_coordinated_support(
         else _record_expiry(record[1])
         if record is not None
         else None,
+        envelope.soc_coordinate
+        if envelope is not None
+        else record[1].soc_coordinate
+        if record is not None
+        else None,
     )
+
+
+async def execute_coordinated_support(
+    self: BatteryManagerCoordinator,
+    desired: dict[str, bool],
+    inverter: bool,
+    config: SystemConfig,
+    now: datetime,
+    *,
+    request: SupplyRequest | None = None,
+) -> None:
+    if request is None:
+        request = capture_supply_request(self, desired, inverter, now)
+    desired = dict(zip(("dc24", "dc48"), request.sources, strict=True))
+    inverter = request.inverter
     self._coordinated_support_diag = {
         "mode": "coordinated",
         "reason": "waiting_for_lock",
@@ -196,6 +217,11 @@ async def execute_coordinated_support(
                     inverter,
                     self.live_ac.plan_revision,
                     expires if valid else None,
+                    envelope.soc_coordinate
+                    if envelope is not None
+                    else record[1].soc_coordinate
+                    if record is not None
+                    else None,
                 )
             now = dt_util.now()
             psu24 = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
@@ -207,6 +233,10 @@ async def execute_coordinated_support(
                 "desired": dict(desired),
             }
             self._coordinated_support_diag = diag
+            sources_before_transition = {
+                "dc24": bool(psu24 and self._entity_tristate(psu24) is True),
+                "dc48": bool(psu48 and self._entity_tristate(psu48) is True),
+            }
 
             async def confirmed(entity: str, on: bool) -> bool:
                 if self._entity_tristate(entity) is on:
@@ -318,11 +348,26 @@ async def execute_coordinated_support(
 
             def may_remove() -> bool:
                 """Every await can revoke source permission, including rail overlap."""
-                changed = request.plan_revision != self.live_ac.plan_revision
+                recorded_revision = getattr(
+                    self, "_last_planner_recording_revision", None
+                )
+                changed = request.plan_revision != self.live_ac.plan_revision or (
+                    self.live_ac.envelope is None
+                    and recorded_revision is not None
+                    and recorded_revision != self.live_ac.plan_revision
+                )
                 expired = (
                     request.expires is not None and dt_util.utcnow() >= request.expires
                 )
-                if changed or expired:
+                coordinate_valid = self.voltage_gate.coordinate_permission_valid(
+                    request.soc_coordinate,
+                    direct_pv_proven=bool(diag.get("pv_priority"))
+                    and self.live_ac.pv_source_permission(config),
+                )
+                if not coordinate_valid:
+                    diag["reason"] = "soc_coordinate_hold"
+                    self._schedule_replan()
+                elif changed or expired:
                     diag["reason"] = "plan_changed" if changed else "plan_expired"
                 elif phase_changed():
                     diag["reason"] = "source_phase_changed"
@@ -422,6 +467,13 @@ async def execute_coordinated_support(
                 diag["requested"] = dict(target)
                 diag["pv_priority"] = False
                 target = self.voltage_gate.apply(restore_config, target, dt_util.now())
+                if diag["reason"] == "soc_coordinate_hold":
+                    # A rejected optional removal cannot be retried via restore.
+                    # Restore sources already removed before a late revocation.
+                    target = {
+                        key: target[key] or sources_before_transition[key]
+                        for key in target
+                    }
                 diag["desired"] = target
                 diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
                 if target["dc24"] and psu24:
@@ -439,6 +491,7 @@ async def execute_coordinated_support(
                 if (
                     psu48
                     and self._reserve_grid_available() is True
+                    and (target["dc48"] or may_remove())
                     and await confirmed(psu48, target["dc48"])
                 ):
                     self._support_state["dc48"] = target["dc48"]

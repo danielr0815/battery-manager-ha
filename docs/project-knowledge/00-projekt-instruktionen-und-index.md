@@ -1,5 +1,14 @@
 # Projekt-Instruktionen & Index
 
+### Nachtrag 0.65.0: SOC-Nachführung und Netzteil-Evidenz
+
+Der Vertrag für die getrennte Bewertung von BMS-SOC und gemessener Energie,
+gemeinsame Nachführungsepisoden, neue Lernkoordinaten und die Sperre neuer
+optionaler Batterieentnahmen steht in
+[F-SOC-RECONCILIATION](../F-SOC-RECONCILIATION.md). Messwerte der Netzteile werden
+an den bestätigten Quellenzustand und dessen Generation gebunden. Eine frische
+Momentanmessung begründet noch keine zusätzliche Lieferung im Prognosehorizont.
+
 ### Nachtrag 0.63.0: Hausversorgung und Speicherziele
 
 Der Vertrag für rückladegesicherte zusätzliche DCDC-/AC-Hausversorgung,

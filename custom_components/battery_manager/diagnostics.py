@@ -22,6 +22,7 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import BatteryManagerCoordinator
@@ -136,6 +137,9 @@ async def async_get_config_entry_diagnostics(
     diagnostics["integration_version"] = coordinator.integration_version
     diagnostics["core_config"] = _core_config(coordinator)
     diagnostics["learned_state"] = coordinator.learned_state_snapshot()
+    diagnostics["gate_learning"] = coordinator.voltage_gate.private_diagnostic(
+        dt_util.now()
+    )
     diagnostics["planning"] = coordinator._planning.snapshot()
     diagnostics["appliances"] = coordinator.appliances.payload()
     diagnostics["last_plan_metrics"] = _last_plan_metrics(coordinator)

@@ -185,3 +185,84 @@ def test_even_small_charging_and_discharging_currents_do_not_mix():
     episode(learner, 14000, 80, current=-0.1)
     bands = learner.bands(17000, (49.56, 49.56, 49.8))
     assert [b.on_soc for b in bands] == [80, 65]
+
+
+def test_qualification_explains_coordinate_contradiction_without_changing_bands():
+    learner = GateLearner()
+    learner.samples = [GateSample(10000 + i * 600, 55, 49.56, 0.7) for i in range(11)]
+    before, details = learner.evaluate(16000, (49.56, 49.56, 49.8))
+    assert learner.bands(16000, (49.56, 49.56, 49.8)) == before
+    assert before[0].delivery_soc == 55 and before[0].off_soc is None
+    learner.samples += [GateSample(20000 + i * 300, 64, 49.56, 0.7) for i in range(4)]
+    bands, details = learner.evaluate(21000, (49.56, 49.56, 49.8))
+    assert not bands
+    native = next(item for item in details if item["current_min_a"] == 0.25)
+    assert native["roles"][0]["reason"] == "conflicting_coordinates"
+    assert native["roles"][0]["spread_percent"] == 9
+    assert native["roles"][2]["reason"] == "insufficient_samples"
+
+
+def test_four_points_over_920_seconds_do_not_qualify_new_coordinate():
+    learner = GateLearner()
+    learner.samples = [
+        GateSample(10000 + offset, 64, 49.56, 0.7) for offset in (0, 300, 600, 920)
+    ]
+    bands, details = learner.evaluate(11000, (49.56, 49.56, 49.8))
+    assert not bands
+    native = next(item for item in details if item["current_min_a"] == 0.25)
+    assert native["roles"][0]["near_count"] == 4
+    assert native["roles"][0]["reason"] == "insufficient_span"
+
+
+def test_qualification_separates_expiry_from_missing_samples():
+    learner = GateLearner()
+    episode(learner, 10000)
+    bands, details = learner.evaluate(13000 + MAX_AGE_SECONDS, (49.56, 49.56, 49.8))
+    assert not bands
+    native = next(item for item in details if item["current_min_a"] == 0.25)
+    assert native["roles"][0]["reason"] == "expired"
+    assert native["roles"][2]["reason"] == "insufficient_samples"
+
+
+def test_epoch_history_quarantines_old_and_short_new_coordinates():
+    learner = GateLearner()
+    learner.bind("same-battery")
+    episode(learner, 10000, soc=55)
+    old = list(learner.samples)
+    learner.begin_epoch(learner.epoch + 1, "soc_coordinate_adjustment")
+    assert not learner.samples
+    assert [item.sample for item in learner.history] == old
+    for offset in (0, 300, 600, 920):
+        learner.quarantine(GateSample(14000 + offset, 64, 49.56, 0.7), "settling")
+    assert not learner.bands(15000, (49.56, 49.56, 49.8))
+    assert not learner.samples
+    assert learner.export()["version"] == 2
+    restored = GateLearner()
+    restored.restore(learner.export())
+    assert restored.history == learner.history and not restored.samples
+
+
+def test_all_epochs_share_one_retention_limit_and_expire():
+    from custom_components.battery_manager.gate_learning import MAX_SAMPLES
+
+    learner = GateLearner()
+    learner.samples = [
+        GateSample(10000 + i * 300, 55, 49.56, 0.7) for i in range(MAX_SAMPLES)
+    ]
+    learner.begin_epoch(1, "coordinate_adjustment")
+    now = 10000 + MAX_SAMPLES * 300
+    learner.quarantine(GateSample(now, 64, 49.56, 0.7), "reconciling")
+    assert len(learner.samples) + len(learner.history) == MAX_SAMPLES
+    assert learner.expire(now + MAX_AGE_SECONDS + 1)
+    assert not learner.history and not learner.samples
+
+
+def test_version_one_migration_preserves_evidence_without_new_event():
+    learner = GateLearner()
+    episode(learner, 10000)
+    legacy = {key: value for key, value in learner.export().items() if key != "history"}
+    legacy["version"] = 1
+    restored = GateLearner()
+    restored.restore(legacy)
+    assert restored.samples == learner.samples and not restored.history
+    assert restored.epoch == learner.epoch

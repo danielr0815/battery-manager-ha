@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
@@ -15,11 +16,14 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_DC_LOAD_ENTITY,
     CONF_DCDC_SWITCH,
+    CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CONTROL_SWITCH,
     CONF_RESERVE_MODE,
     CONF_SOC_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
     CONF_SUPPORT_DC48_SWITCH,
     LIVE_AC_POWER_KEYS,
+    SUBENTRY_TYPE_LOAD,
 )
 from .core.live_ac import (
     LIVE_AC_INTERVAL_S,
@@ -30,8 +34,9 @@ from .core.live_ac import (
     live_ac_decision,
 )
 from .core.live_dc import pv_covers_dc
-from .core.model import PlanInputs, PlanResult, SystemConfig
-from .load_safety import stop_unsafe_loads
+from .core.model import PlanInputs, PlanResult, SocCoordinateSnapshot, SystemConfig
+from .load_actuation import RevokedLoadStart
+from .load_safety import effective_start_power_w, stop_unsafe_loads
 from .voltage_gate import requested_dc48
 
 if TYPE_CHECKING:
@@ -50,10 +55,20 @@ class LiveACEnvelope:
     dc_forecast_w: float | None = None
     dc_sources: tuple[bool, bool] = (False, False)
     accepted_budget_wh: float | None = None
+    soc_coordinate: SocCoordinateSnapshot | None = None
 
 
 # Keep an energy buffer independent of a partial calendar-hour slot.
 DC_FALLBACK_BUFFER_HOURS = 1.0
+
+
+@dataclass
+class PvStartReservation:
+    """An issued load remains budgeted until measured in the common balance."""
+
+    power_w: float
+    input_entity: str | None
+    confirmed_at: float | None = None
 
 
 class LiveACRuntime:
@@ -76,6 +91,10 @@ class LiveACRuntime:
         self._owns_limit = False
         self.pv_active = False
         self._pv_restore_pending = False
+        self._pv_start_reservations: dict[str, PvStartReservation] = {}
+        self.revoked_load_starts: dict[str, RevokedLoadStart] = {}
+        self.coordinate_cleanup_task: asyncio.Task | None = None
+        self.coordinate_cleanup_scheduled = False
 
     def start(self) -> None:
         if self._cancel is None:
@@ -98,6 +117,8 @@ class LiveACRuntime:
             self._cancel = None
         if self.task is not None:
             self.task.cancel()
+        if self.coordinate_cleanup_task is not None:
+            self.coordinate_cleanup_task.cancel()
         self.state = LiveACState()
         self.limit_w = 0
         self.plan_revision += 1
@@ -144,6 +165,7 @@ class LiveACRuntime:
                 and decision.joint.joint_status
                 not in ("missing_prices", "flat_prices", "market_off")
                 else None,
+                inputs.soc_coordinate,
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -178,11 +200,193 @@ class LiveACRuntime:
             return None
         return max(0.0, house - max(0.0, pv), imported or 0.0)
 
+    def load_pv_permission(
+        self,
+        extra_ac_w: float,
+        *,
+        exclude_load_id: str | None = None,
+        reservation_owner: str | None = None,
+    ) -> bool:
+        """Fresh complete physical coverage, independent of any SOC headroom."""
+        c = self.owner
+        envelope = self.envelope
+        record = c._last_planner_recording
+        config = (
+            envelope.config if envelope is not None else record[0] if record else None
+        )
+        if (
+            config is None
+            or not isfinite(extra_ac_w)
+            or extra_ac_w < 0
+            or c._reserve_grid_available() is not True
+        ):
+            return False
+        now = dt_util.utcnow()
+        soc = c._get_soc(dt_util.now())
+        state = c.hass.states.get(c.raw_config.get(CONF_SOC_ENTITY) or "")
+        if (
+            soc is None
+            or state is None
+            or not 0
+            <= (now - state.last_reported).total_seconds()
+            <= LIVE_AC_SAMPLE_MAX_AGE_S
+        ):
+            return False
+        pv = c._reserve_power(c.raw_config.get("operation_pv_power_entity"))
+        dc = c._reserve_power(c.raw_config.get(CONF_DC_LOAD_ENTITY))
+        if pv is None or pv <= 0 or dc is None:
+            return False
+        if any(c.raw_config.get(key) for key in LIVE_AC_POWER_KEYS):
+            values = [
+                c._reserve_power(c.raw_config.get(key)) for key in LIVE_AC_POWER_KEYS
+            ]
+            if any(value is None for value in values):
+                return False
+            grid, ac_input, ac_output = values
+            assert grid is not None and ac_input is not None and ac_output is not None
+            surplus = -(grid + ac_output - ac_input)
+        else:
+            house = c._reserve_power(c.raw_config.get("operation_house_power_entity"))
+            if house is None:
+                return False
+            surplus = pv - house
+        self._retire_measured_pv_reservations()
+        # Concurrent starts can share the same still-fresh meter publication.
+        # Reserve other issued ON intents until their physical demand is visible.
+        pending_w = 0.0
+        for load_id, subentry in c.entry.subentries.items():
+            if (
+                load_id == exclude_load_id
+                or "load:" + load_id in self._pv_start_reservations
+                or subentry.subentry_type != SUBENTRY_TYPE_LOAD
+            ):
+                continue
+            actors = (
+                subentry.data.get(CONF_LOAD_CONTROL_SWITCH),
+                subentry.data.get(CONF_LOAD_CHARGE_ENABLE),
+            )
+            if any(
+                actor in c._load_actor_requests
+                and c._load_actor_requests[actor].desired
+                and c._load_actor_requests[actor].state != "service_failed"
+                for actor in actors
+                if actor
+            ):
+                power = effective_start_power_w(c, load_id, subentry.data)
+                if power is None:
+                    return False
+                pending_w += power
+        return pv_covers_dc(
+            config,
+            soc,
+            now,
+            surplus
+            - extra_ac_w
+            - pending_w
+            - sum(
+                item.power_w
+                for owner, item in self._pv_start_reservations.items()
+                if owner != reservation_owner
+            ),
+            dc,
+            False,
+        )
+
+    def note_start_power(
+        self, owner: str, power_w: float, *, input_entity: str | None = None
+    ) -> None:
+        previous = self._pv_start_reservations.get(owner)
+        if previous is None:
+            self._pv_start_reservations[owner] = PvStartReservation(
+                power_w, input_entity
+            )
+        else:
+            previous.power_w = max(previous.power_w, power_w)
+
+    def reserve_pv_start(
+        self,
+        owner: str,
+        power_w: float,
+        *,
+        input_entity: str | None = None,
+        exclude_load_id: str | None = None,
+    ) -> bool:
+        """Atomically claim shared PV before an optional actor can await."""
+        previous = self._pv_start_reservations.get(owner)
+        power_w = max(power_w, previous.power_w) if previous is not None else power_w
+        if not self.load_pv_permission(
+            power_w, exclude_load_id=exclude_load_id, reservation_owner=owner
+        ):
+            return False
+        if previous is None:
+            self._pv_start_reservations[owner] = PvStartReservation(
+                power_w, input_entity
+            )
+        else:
+            previous.power_w = power_w
+        return True
+
+    def confirm_pv_start(self, owner: str) -> None:
+        reservation = self._pv_start_reservations.get(owner)
+        if reservation is not None and reservation.confirmed_at is None:
+            reservation.confirmed_at = dt_util.utcnow().timestamp()
+
+    def release_pv_start(self, owner: str) -> None:
+        self._pv_start_reservations.pop(owner, None)
+
+    def _retire_measured_pv_reservations(self) -> None:
+        c = self.owner
+        entities = (
+            [c.raw_config.get(key) for key in LIVE_AC_POWER_KEYS]
+            if any(c.raw_config.get(key) for key in LIVE_AC_POWER_KEYS)
+            else [
+                c.raw_config.get("operation_house_power_entity"),
+                c.raw_config.get("operation_pv_power_entity"),
+            ]
+        )
+        entities.append(c.raw_config.get(CONF_DC_LOAD_ENTITY))
+        for owner, reservation in tuple(self._pv_start_reservations.items()):
+            if reservation.confirmed_at is None or not reservation.input_entity:
+                continue
+            power = c._reserve_power(reservation.input_entity)
+            input_state = c.hass.states.get(reservation.input_entity)
+            observations = [
+                c.hass.states.get(entity) if entity else None for entity in entities
+            ]
+            if (
+                power is not None
+                and power >= reservation.power_w
+                and input_state is not None
+                and input_state.last_reported.timestamp() > reservation.confirmed_at
+                and all(
+                    state is not None
+                    and state.last_reported.timestamp()
+                    > input_state.last_reported.timestamp()
+                    for state in observations
+                )
+            ):
+                # Fresh input demand now belongs to the fresh signed house
+                # balance. Until then even confirmed ON reserves the full load.
+                self._pv_start_reservations.pop(owner, None)
+
+    def coordinate_permission(self) -> bool:
+        """Optional AC budgets require the exact published coordinate snapshot."""
+        gate = getattr(self.owner, "voltage_gate", None)
+        return gate is None or gate.coordinate_permission_valid(
+            self.envelope.soc_coordinate if self.envelope else None
+        )
+
     def pv_source_permission(self, config: SystemConfig) -> bool:
         """Fresh signed meters may release only economic PSU holding."""
         c, envelope = self.owner, self.envelope
         now = dt_util.utcnow()
         if envelope is None or not config.reserve.enabled:
+            self.pv_active = False
+            return False
+        gate = getattr(c, "voltage_gate", None)
+        if gate is not None and not gate.coordinate_permission_valid(
+            envelope.soc_coordinate, direct_pv_proven=True
+        ):
             self.pv_active = False
             return False
         soc = c._get_soc(dt_util.now())
@@ -236,6 +440,9 @@ class LiveACRuntime:
                     surplus = pv - house
         dc = c._reserve_power(c.raw_config.get(CONF_DC_LOAD_ENTITY))
         if dc is None:
+            if not self.coordinate_permission():
+                self.pv_active = False
+                return False
             dc = envelope.dc_forecast_w
         self.pv_active = pv_covers_dc(config, soc, now, surplus, dc, self.pv_active)
         return self.pv_active
@@ -295,6 +502,8 @@ class LiveACRuntime:
             reason = "inactive"
         elif envelope is None or now >= envelope.expires:
             reason = "plan_expired"
+        elif not self.coordinate_permission():
+            reason = "soc_coordinate_hold"
         else:
             config = envelope.config
             soc = c._get_soc(dt_util.now())
@@ -398,6 +607,7 @@ class LiveACRuntime:
                 "soc_unavailable",
                 "grid_unavailable",
                 "dc_supply",
+                "soc_coordinate_hold",
             )
             or soc is None
         ):
@@ -467,6 +677,7 @@ class LiveACRuntime:
                 "soc_unavailable",
                 "grid_unavailable",
                 "dc_supply",
+                "soc_coordinate_hold",
             )
             target = 0 if protected else max(planned, live)
             diag: dict[str, Any] = {}
@@ -479,6 +690,7 @@ class LiveACRuntime:
                 "soc_unavailable",
                 "grid_unavailable",
                 "dc_supply",
+                "soc_coordinate_hold",
             )
             if target and (
                 protection_changed or (not still_live and not self.planned_limit())

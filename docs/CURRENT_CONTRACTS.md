@@ -1,5 +1,19 @@
 # Aktuelle Verträge ab 0.46.0
 
+## SOC-Nachführung und Quellenbelege ab 0.65.0
+
+[SOC-Nachführung und Netzteil-Evidenz](F-SOC-RECONCILIATION.md) behandelt eine
+obere BMS-Nachkalibrierung als normalen Koordinatenwechsel. Ein rollierender
+Energievergleich, getrennte Lernbelege und einheitliche Epochen-/Phasenprüfung
+verhindern, dass die Nachführung ungeprüft zusätzliche Batterieentnahmen erlaubt.
+Versorgung, Schutz und manuelle Vorgaben bleiben erhalten. Nach der beobachteten
+Stabilisierung benötigt eine neue Freigabe eine neue Planung.
+
+Bandablehnungen und fehlende Liefergutschriften werden erklärt. Optionale
+PSU-Messungen liefern quellen- und zeitgebundene Momentanbelege; sie ersetzen
+keinen Nachweis einer mehrtägigen Lieferung. BMS-SOC und Kapazität werden nicht
+automatisch korrigiert. Alte Aufzeichnungen ohne die neuen Eingaben bleiben neutral.
+
 Dieses Dokument ist der Einstieg für das aktuelle Verhalten. Die `F-*.md` und
 ältere Versionsanalysen dokumentieren die Entscheidungs- und Änderungshistorie.
 Bei Widersprüchen zu früheren Beschreibungen gelten die hier genannten Verträge.

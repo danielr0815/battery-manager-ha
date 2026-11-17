@@ -409,6 +409,11 @@ def simulate(
     (code review 2026-07) and now fails up-front with a speaking ValueError.
     """
     check_cancelled()
+    if (
+        inputs.soc_coordinate is not None
+        and inputs.soc_coordinate.holds_optional_discharge
+    ):
+        threshold_percent = 100.0
     n_slots = len(inputs.slots)
     for name, series in (
         ("extra_ac_wh", extra_ac_wh),

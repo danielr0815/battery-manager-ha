@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_INVERTER_LIMIT_ENTITY
+from .load_actuation import export_coordinate_cleanup
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -27,6 +28,10 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
             k: v.isoformat() for k, v in self._load_run_deadline.items()
         },
         "load_bm_enabled": dict(self._load_bm_enabled),
+        # A revoked, already sent start can report ON after a restart. Keep
+        # cleanup evidence separate from valid charging/dwell authority.
+        "load_control_generation": dict(self._load_control_generation),
+        "revoked_load_starts": export_coordinate_cleanup(self),
         "load_released_actors": dict(self._load_released_actors),
         "cascade_state": self.cascade_manager.persistent_state_snapshot(),
         # Only the accumulated total is persisted; the in-progress tick cursor
@@ -61,7 +66,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         "appliance_started": {
             k: v.isoformat() for k, v in self._appliance_started.items()
         },
-        "voltage_gate": self.voltage_gate.learner.export(),
+        "voltage_gate": self.voltage_gate.export(),
         "support_manual": dict(self._support_manual),
         "support_control_mode": "coordinated"
         if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
@@ -131,6 +136,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
                 "requested_at": request.requested_at.isoformat(),
                 "state": request.state,
                 "owner": request.owner,
+                "sent": request.sent,
             }
             for entity, request in self._load_actor_requests.items()
             if request.state != "confirmed"

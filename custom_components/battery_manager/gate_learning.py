@@ -31,6 +31,14 @@ class GateSample:
     current: float  # positive discharge, unlike the Victron battery-power sign
 
 
+@dataclass(frozen=True)
+class ArchivedGateSample:
+    epoch: int
+    fingerprint: str
+    reason: str
+    sample: GateSample
+
+
 def _quantile(values: list[tuple[float, float]], fraction: float) -> float:
     ordered = sorted(values)
     target = sum(weight for _, weight in ordered) * fraction
@@ -47,23 +55,87 @@ class GateLearner:
 
     def __init__(self) -> None:
         self.samples: list[GateSample] = []
+        self.history: list[ArchivedGateSample] = []
         self.fingerprint: str = ""
         self.epoch = 0
         self.reason = "warming_up"
         self._previous: GateSample | None = None
         self._stable_since: float | None = None
 
-    def bind(self, fingerprint: str) -> None:
+    def bind(self, fingerprint: str, *, epoch: int | None = None) -> None:
         if fingerprint != self.fingerprint:
-            self.samples.clear()
-            self._previous = None
-            self._stable_since = None
+            self.begin_epoch(
+                self.epoch + 1 if epoch is None else epoch, "configuration_changed"
+            )
             self.fingerprint = fingerprint
-            self.epoch += 1
             self.reason = "configuration_changed"
 
+    def begin_epoch(self, epoch: int, reason: str) -> None:
+        if epoch == self.epoch:
+            return
+        self.quarantine_active(reason)
+        self.epoch = epoch
+        self.reason = reason
+
+    def quarantine_active(self, reason: str) -> None:
+        self.history.extend(
+            ArchivedGateSample(self.epoch, self.fingerprint, reason, sample)
+            for sample in self.samples
+        )
+        self.samples.clear()
+        self.reset_stability()
+        self.reason = reason
+        if self.history:
+            self._prune(max(item.sample.at for item in self.history))
+
+    def reset_stability(self) -> None:
+        self._previous = None
+        self._stable_since = None
+
+    def expire(self, now: float) -> bool:
+        before = len(self.samples) + len(self.history)
+        self._prune(now)
+        return before != len(self.samples) + len(self.history)
+
+    def _prune(self, now: float) -> None:
+        active: list[tuple[float, bool, object]] = [
+            (point.at, True, point) for point in self.samples
+        ]
+        archived: list[tuple[float, bool, object]] = [
+            (item.sample.at, False, item) for item in self.history
+        ]
+        retained = sorted(
+            (
+                item
+                for item in active + archived
+                if 0 <= now - item[0] <= MAX_AGE_SECONDS
+            ),
+            key=lambda item: item[0],
+        )[-MAX_SAMPLES:]
+        active_ids = {id(item[2]) for item in retained if item[1]}
+        archived_ids = {id(item[2]) for item in retained if not item[1]}
+        self.samples = [point for point in self.samples if id(point) in active_ids]
+        self.history = [item for item in self.history if id(item) in archived_ids]
+
+    def quarantine(self, sample: GateSample, reason: str) -> bool:
+        self.reset_stability()
+        self._prune(sample.at)
+        if self.history and sample.at - self.history[-1].sample.at < SAMPLE_SECONDS:
+            return False
+        self.history.append(
+            ArchivedGateSample(self.epoch, self.fingerprint, reason, sample)
+        )
+        self._prune(sample.at)
+        self.reason = "coordinate_quarantined"
+        return True
+
     def observe(
-        self, sample: GateSample | None, *, eligible: bool, capacity_wh: float
+        self,
+        sample: GateSample | None,
+        *,
+        eligible: bool,
+        capacity_wh: float,
+        detect_recalibration: bool = True,
     ) -> bool:
         """Sample stable episodes; return whether persistent evidence changed."""
         if sample is None:
@@ -76,10 +148,8 @@ class GateLearner:
             return False  # Duplicate/out-of-order callbacks are not new evidence.
         self._previous = sample
         changed = False
-        self.samples = [
-            p for p in self.samples if 0 <= sample.at - p.at <= MAX_AGE_SECONDS
-        ]
-        if previous is not None:
+        self._prune(sample.at)
+        if previous is not None and detect_recalibration:
             elapsed = sample.at - previous.at
             # An intentionally generous energy bound avoids interpreting a real
             # load change or 1%-quantized SOC as a BMS recalibration. Gaps are
@@ -100,9 +170,7 @@ class GateLearner:
                 0 < elapsed <= SAMPLE_SECONDS
                 and abs(sample.soc - previous.soc) > energy_bound
             ):
-                self.samples.clear()
-                self.epoch += 1
-                self._stable_since = None
+                self.begin_epoch(self.epoch + 1, "recalibration_suspected")
                 self.reason = "recalibration_suspected"
                 return True
         if not eligible:
@@ -126,14 +194,21 @@ class GateLearner:
         if self.samples and sample.at - self.samples[-1].at < SAMPLE_SECONDS:
             return changed
         self.samples.append(sample)
-        self.samples = self.samples[-MAX_SAMPLES:]
+        self._prune(sample.at)
         self.reason = "learning"
         return True
 
     def bands(
         self, now: float, thresholds: tuple[float, float, float]
     ) -> tuple[VoltageGateBand, ...]:
+        return self.evaluate(now, thresholds)[0]
+
+    def evaluate(
+        self, now: float, thresholds: tuple[float, float, float]
+    ) -> tuple[tuple[VoltageGateBand, ...], list[dict[str, Any]]]:
+        """Project bands and explain qualification through the same filters."""
         result = []
+        diagnostics = []
         for low, high in zip(CURRENT_EDGES[:-1], CURRENT_EDGES[1:], strict=True):
             points = [
                 p
@@ -144,8 +219,51 @@ class GateLearner:
             spreads = []
             expiries = []
             evidence: list[GateSample] = []
-            for voltage in thresholds:
+            roles = []
+            for role, voltage in zip(
+                ("on", "delivery", "off"), thresholds, strict=True
+            ):
                 near = [p for p in points if abs(p.voltage - voltage) <= VOLTAGE_WINDOW]
+                values = [
+                    (p.soc, 2 ** (-(now - p.at) / HALF_LIFE_SECONDS)) for p in near
+                ]
+                span = max(p.at for p in near) - min(p.at for p in near) if near else 0
+                p10 = _quantile(values, 0.1) if values else None
+                p90 = _quantile(values, 0.9) if values else None
+                spread = p90 - p10 if p90 is not None and p10 is not None else None
+                reason = (
+                    "expired"
+                    if not near
+                    and any(
+                        low <= p.current < high
+                        and abs(p.voltage - voltage) <= VOLTAGE_WINDOW
+                        and now - p.at > MAX_AGE_SECONDS
+                        for p in self.samples
+                    )
+                    else "insufficient_samples"
+                    if len(near) < 3
+                    else "insufficient_span"
+                    if span < 1800
+                    else "conflicting_coordinates"
+                    if spread is not None and spread > 5
+                    else "qualified"
+                )
+                roles.append(
+                    {
+                        "role": role,
+                        "voltage_v": voltage,
+                        "near_count": len(near),
+                        "span_seconds": span,
+                        "p10_soc": p10,
+                        "p50_soc": _quantile(values, 0.5) if values else None,
+                        "p90_soc": p90,
+                        "spread_percent": spread,
+                        "reason": reason,
+                        "valid_until": max(p.at for p in near) + MAX_AGE_SECONDS
+                        if near
+                        else None,
+                    }
+                )
                 # A single burst is not a learned crossing. Retain a minimum
                 # half-hour observation span and reject broad contradictory SOCs.
                 if (
@@ -154,10 +272,7 @@ class GateLearner:
                 ):
                     estimates.append(None)
                     continue
-                values = [
-                    (p.soc, 2 ** (-(now - p.at) / HALF_LIFE_SECONDS)) for p in near
-                ]
-                spread = _quantile(values, 0.9) - _quantile(values, 0.1)
+                assert spread is not None
                 if spread > 5:
                     estimates.append(None)
                     continue
@@ -171,7 +286,16 @@ class GateLearner:
                 if estimate is not None
             )
             if any(b[1] < a[1] for a, b in zip(ordered[:-1], ordered[1:], strict=True)):
+                for item in roles:
+                    if item["reason"] == "qualified":
+                        item["reason"] = "inconsistent_threshold_order"
+                diagnostics.append(
+                    {"current_min_a": low, "current_max_a": high, "roles": roles}
+                )
                 continue  # Partially shifted coordinates must not invert hysteresis.
+            diagnostics.append(
+                {"current_min_a": low, "current_max_a": high, "roles": roles}
+            )
             if evidence:
                 observed_low = min(p.current for p in evidence)
                 observed_high = max(p.current for p in evidence)
@@ -189,19 +313,20 @@ class GateLearner:
                         min(expiries),
                     )
                 )
-        return tuple(result)
+        return tuple(result), diagnostics
 
     def export(self) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "fingerprint": self.fingerprint,
             "epoch": self.epoch,
             "samples": [asdict(p) for p in self.samples],
+            "history": [asdict(item) for item in self.history],
         }
 
     def restore(self, data: Any) -> None:
         """Corrupt derived evidence is disposable; never restore live timers."""
-        if not isinstance(data, dict) or data.get("version") != 1:
+        if not isinstance(data, dict) or data.get("version") not in (1, 2):
             return
         try:
             points = [GateSample(**p) for p in data["samples"][-MAX_SAMPLES:]]
@@ -218,12 +343,46 @@ class GateLearner:
                 for p in points
             ):
                 return
-            if not isinstance(data["fingerprint"], str) or not isinstance(
-                data["epoch"], int
+            if (
+                not isinstance(data["fingerprint"], str)
+                or len(data["fingerprint"]) > 4096
+                or type(data["epoch"]) is not int
+                or data["epoch"] < 0
             ):
                 return
             self.samples = sorted(points, key=lambda p: p.at)
             self.fingerprint = data["fingerprint"]
             self.epoch = data["epoch"]
+            self.history = []
+            if data["version"] == 2:
+                for item in data.get("history", [])[-MAX_SAMPLES:]:
+                    sample = GateSample(**item["sample"])
+                    if (
+                        type(item["epoch"]) is int
+                        and item["epoch"] >= 0
+                        and isinstance(item["fingerprint"], str)
+                        and len(item["fingerprint"]) <= 4096
+                        and isinstance(item["reason"], str)
+                        and len(item["reason"]) <= 64
+                        and all(isfinite(value) for value in asdict(sample).values())
+                        and 0 <= sample.soc <= 100
+                        and 40 <= sample.voltage <= 60
+                        and -100 <= sample.current < 100
+                    ):
+                        self.history.append(
+                            ArchivedGateSample(
+                                item["epoch"],
+                                item["fingerprint"],
+                                item["reason"],
+                                sample,
+                            )
+                        )
+            if self.samples or self.history:
+                self._prune(
+                    max(
+                        [p.at for p in self.samples]
+                        + [item.sample.at for item in self.history]
+                    )
+                )
         except KeyError, TypeError, ValueError:
             return

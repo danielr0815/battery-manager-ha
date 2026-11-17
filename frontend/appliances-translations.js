@@ -203,6 +203,8 @@ Object.assign(TEXT.en, {
   safety_block: "Safety conditions block a start",
   forecast_horizon_short: "Forecast does not cover a complete cycle",
   extra_grid_import: "Starting would require additional grid energy",
+  soc_coordinate_hold:
+    "Battery-backed operation waits for stable SOC observations",
   soc_condition: "Battery conditions are not met",
   house_recharge:
     "Starting would compromise a certified house-battery recharge",
@@ -232,6 +234,8 @@ Object.assign(TEXT.de, {
   safety_block: "Schutzbedingungen verhindern einen Start",
   forecast_horizon_short: "Prognose deckt keinen vollständigen Lauf ab",
   extra_grid_import: "Ein Start würde zusätzlichen Netzbezug erfordern",
+  soc_coordinate_hold:
+    "Batteriegestützter Betrieb wartet auf stabile SOC-Beobachtungen",
   soc_condition: "Batteriebedingungen sind nicht erfüllt",
   house_recharge:
     "Start würde die zugesagte Rückladung der Hausbatterie gefährden",

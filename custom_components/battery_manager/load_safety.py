@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from math import isfinite
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_LOAD_CHARGE_ENABLE, CONF_LOAD_CONTROL_SWITCH, SUBENTRY_TYPE_LOAD
+from .const import (
+    CONF_LOAD_CHARGE_ENABLE,
+    CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_POWER_W,
+    SUBENTRY_TYPE_LOAD,
+)
 from .load_actuation import LoadAction
 
 if TYPE_CHECKING:
@@ -15,6 +21,25 @@ if TYPE_CHECKING:
 # Ignore meter noise around the ESS zero-import setpoint, never a load-sized
 # deficit. This is an execution tolerance, not an economic import allowance.
 LOAD_GRID_IMPORT_TOLERANCE_W = 50.0
+
+
+def effective_start_power_w(
+    c: BatteryManagerCoordinator, load_id: str, data: Any
+) -> float | None:
+    """A small nameplate cannot override larger learned/published start demand."""
+    values = [data.get(CONF_LOAD_POWER_W)]
+    values.append(getattr(c, "_load_learned_power_w", {}).get(load_id))
+    plans = (getattr(c, "data", None) or {}).get("load_plans", {})
+    values.append(plans.get(load_id, {}).get("planning_power_w"))
+    powers = [
+        float(value)
+        for value in values
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and isfinite(value)
+        and value > 0
+    ]
+    return max(powers) if powers else None
 
 
 def grid_import_w(c: BatteryManagerCoordinator) -> float | None:
@@ -44,7 +69,7 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
     """
     if c._actuation_shutdown:
         return
-    from .load_actuation import reconcile_feedback
+    from .load_actuation import coordinate_cleanup_pending, reconcile_feedback
 
     reconcile_feedback(c)
     imported = grid_import_w(c)
@@ -77,6 +102,7 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
             continue
         owned = c._load_plug_owned.get(load_id, False)
         gate = data.get(CONF_LOAD_CHARGE_ENABLE)
+        revoked_start = coordinate_cleanup_pending(c, load_id)
         unfinished_stop = (
             owned
             and gate
@@ -86,6 +112,7 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
         if not (
             (guard and (c._charging_is_active(data) is not False or owned))
             or unfinished_stop
+            or revoked_start
         ):
             continue
         actions.append(
@@ -94,7 +121,14 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
                 dict(data),
                 False,
                 c._entity_is_on(plug),
-                reason="measured grid import" if guard else "unfinished input stop",
+                reason="revoked SOC coordinate start"
+                if revoked_start
+                else "measured grid import"
+                if guard
+                else "unfinished input stop",
+                coordinate_cleanup=c.live_ac.revoked_load_starts[load_id].revision
+                if revoked_start
+                else None,
             )
         )
     if actions:

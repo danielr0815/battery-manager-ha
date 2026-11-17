@@ -140,11 +140,15 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
         integration_version="0.38.0",
         build_system_config=lambda: changed,
         learned_state_snapshot=lambda: {},
+        voltage_gate=SimpleNamespace(
+            private_diagnostic=lambda _now: {"natural_voltage": {"samples": []}}
+        ),
         data=None,
     )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     dump = await async_get_config_entry_diagnostics(hass, entry)
     assert "startup_memory" not in dump
+    assert dump["gate_learning"] == {"natural_voltage": {"samples": []}}
     record = json.loads(json.dumps(dump["planner_recording"], allow_nan=False))
     assert replay(record) == (result, True)
     assert not decode(record["config"]).feedin.automatic_enabled

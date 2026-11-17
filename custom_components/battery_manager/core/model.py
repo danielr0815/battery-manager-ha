@@ -314,6 +314,7 @@ class Appliance:
 
 
 type ApplianceAdvisoryReason = Literal[
+    "soc_coordinate_hold",
     "forecast_horizon_short",
     "extra_grid_import",
     "soc_condition",
@@ -1008,6 +1009,124 @@ class RechargeSummary:
 
 
 @dataclass(frozen=True)
+class SocCoordinateSnapshot:
+    """Coordinate provenance, not an independently measured stored-energy budget.
+
+    Generation changes at every episode transition, including return to tracking.
+    An old plan therefore cannot revive when settling finishes.
+    """
+
+    epoch: int = 0
+    phase: Literal["tracking", "reconciling", "settling"] = "tracking"
+    generation: int = 0
+    captured_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        _require(type(self.epoch) is int and self.epoch >= 0, "Invalid SOC epoch")
+        _require(
+            type(self.generation) is int and self.generation >= 0,
+            "Invalid SOC generation",
+        )
+        _require(
+            self.phase in ("tracking", "reconciling", "settling"), "Invalid SOC phase"
+        )
+        _require(self.captured_at >= 0, "Invalid SOC capture time")
+        _finite_fields(self)
+
+    @property
+    def holds_optional_discharge(self) -> bool:
+        return self.phase != "tracking"
+
+    def same_coordinate(self, other: SocCoordinateSnapshot) -> bool:
+        """Capture time does not change coordinate identity between plans."""
+        return (self.epoch, self.phase, self.generation) == (
+            other.epoch,
+            other.phase,
+            other.generation,
+        )
+
+
+@dataclass(frozen=True)
+class PsuPowerObservation:
+    """Physical power at one electrical boundary over a covered interval."""
+
+    source_id: str
+    role: Literal["ac_input", "dc_output"]
+    power_w: float
+    published_at: float
+    interval_start: float
+    interval_end: float
+    source_generation: int
+    topology_fingerprint: str
+
+    def __post_init__(self) -> None:
+        _require(
+            bool(self.source_id) and bool(self.topology_fingerprint),
+            "Missing PSU source binding",
+        )
+        _require(self.role in ("ac_input", "dc_output"), "Invalid PSU measurement role")
+        _require(0 <= self.power_w <= 100000, "Invalid PSU power")
+        _require(
+            0 <= self.interval_start <= self.interval_end <= self.published_at,
+            "Invalid PSU observation interval",
+        )
+        _require(
+            type(self.source_generation) is int and self.source_generation >= 0,
+            "Invalid PSU source generation",
+        )
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
+class PsuDeliverySnapshot:
+    """Present electrical evidence; never a future charging guarantee."""
+
+    captured_at: float
+    source_generation: int
+    topology_fingerprint: str
+    confirmed_on: bool = False
+    confirmed_on_since: float | None = None
+    dc_output: PsuPowerObservation | None = None
+    ac_input: PsuPowerObservation | None = None
+    quality: Literal["unknown", "measured", "stale", "unconfirmed", "incompatible"] = (
+        "unknown"
+    )
+    source_id: Literal["dc24", "dc48"] = "dc48"
+
+    def __post_init__(self) -> None:
+        _require(self.source_id in ("dc24", "dc48"), "Invalid PSU source")
+        _require(
+            self.captured_at >= 0 and bool(self.topology_fingerprint),
+            "Invalid PSU capture",
+        )
+        _require(
+            type(self.source_generation) is int and self.source_generation >= 0,
+            "Invalid PSU source generation",
+        )
+        _require(
+            self.confirmed_on_since is None
+            or 0 <= self.confirmed_on_since <= self.captured_at,
+            "Invalid PSU ON time",
+        )
+        _require(
+            self.quality
+            in ("unknown", "measured", "stale", "unconfirmed", "incompatible"),
+            "Invalid PSU quality",
+        )
+        for name, role in (("dc_output", "dc_output"), ("ac_input", "ac_input")):
+            observation = getattr(self, name)
+            _require(
+                observation is None
+                or (
+                    isinstance(observation, PsuPowerObservation)
+                    and observation.role == role
+                ),
+                "Invalid PSU channel",
+            )
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
 class PlanInputs:
     """Everything a planning run needs, assembled by series.build_slots()."""
 
@@ -1023,8 +1142,23 @@ class PlanInputs:
     market_prices: tuple[MarketPrice, ...] = ()
     consumption_uncertainty: ConsumptionUncertaintySnapshot | None = None
     recharge_required_ac_wh: tuple[float, ...] = ()
+    soc_coordinate: SocCoordinateSnapshot | None = None
+    psu_delivery: tuple[PsuDeliverySnapshot, ...] = ()
 
     def __post_init__(self) -> None:
+        _require(
+            self.soc_coordinate is None
+            or isinstance(self.soc_coordinate, SocCoordinateSnapshot),
+            "Invalid SOC coordinate snapshot",
+        )
+        _require(
+            isinstance(self.psu_delivery, tuple)
+            and all(
+                isinstance(snapshot, PsuDeliverySnapshot)
+                for snapshot in self.psu_delivery
+            ),
+            "Invalid PSU delivery snapshots",
+        )
         _require(0 <= self.start_soc_percent <= 100, "Start SOC must be in [0, 100]")
         _require(
             not self.recharge_required_ac_wh
@@ -1139,6 +1273,7 @@ class HourFlows:
 
 ReserveDecisionReason = Literal[
     "no_preparation_needed",
+    "soc_coordinate_hold",
     "pv_headroom_preparation",
     "dc_support_protection",
     "dc_reserve_holding",
@@ -1388,6 +1523,7 @@ class PlanResult:
     feedin_decisions: tuple[tuple[int, str], ...] = ()
     # Additive explanation of appliance_windows; absent in older recordings.
     appliance_advisories: Mapping[str, ApplianceAdvisory] = field(default_factory=dict)
+    soc_coordinate: SocCoordinateSnapshot | None = None
 
     def __post_init__(self) -> None:
         # Copy first: retained caller dictionaries cannot mutate a published plan.

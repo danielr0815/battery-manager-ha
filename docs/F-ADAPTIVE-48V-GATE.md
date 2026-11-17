@@ -1,5 +1,10 @@
 # Adaptive 48-V-Zuschaltung und SOC-Kalibrierung
 
+Ab 0.65.0 ergänzt [SOC-Nachführung und Netzteil-Evidenz](F-SOC-RECONCILIATION.md)
+die Erkennung schrittweiser Nachkalibrierung, episodengebundene Lernkoordinaten
+und erklärte Bandqualifikation. Eine normale obere Nachführung ist kein
+Gerätefehler; fehlende neue Evidenz erzeugt weiterhin keine Liefergutschrift.
+
 Implementiert ab 0.59.0. Maßgeblicher Betriebsvertrag:
 [CURRENT_CONTRACTS](CURRENT_CONTRACTS.md#adaptive-48-v-zuschaltung-ab-0590).
 

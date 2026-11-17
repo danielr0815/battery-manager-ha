@@ -39,6 +39,152 @@ def fresh(hass, voltage=50, soc=82, power=-35):
         )
 
 
+async def test_coordinate_episode_does_not_change_supply_or_capacity(
+    gate, hass, freezer
+):
+    c, calls, *_ = gate
+    from unittest.mock import Mock
+
+    c._schedule_replan = Mock()
+    capacity = c.raw_config["battery_capacity_wh"]
+    for tick in range(0, 401, 10):
+        freezer.move_to(f"2026-10-14T18:{tick // 60:02}:{tick % 60:02}Z")
+        fresh(hass, soc=55 + min(9, tick // 40), power=600)
+        c.voltage_gate.observe(dt_util.now())
+        await hass.async_block_till_done()
+    diagnostic = c.voltage_gate.diagnostic(dt_util.now())
+    assert diagnostic["coordinate"]["mode"] == "active"
+    assert diagnostic["coordinate"]["last_event"]["level"] == "info"
+    assert c.raw_config["battery_capacity_wh"] == capacity
+    assert not calls  # No actuator or BMS/capacity service from observation.
+    assert len(diagnostic["qualification"]["roles"]) == 3
+
+
+async def test_coordinate_adapter_does_not_accept_wrong_power_units(gate, hass):
+    c, *_ = gate
+    hass.states.async_set(
+        "sensor.battery_w", "600", {"unit_of_measurement": "kWh"}, force_update=True
+    )
+    c.voltage_gate.observe(dt_util.now())
+    assert c.voltage_gate.monitor.reason == "measurement_unavailable"
+    assert not c.voltage_gate.monitor.events
+
+
+async def test_raw_gate_evidence_stays_private_and_public_summary_is_bounded(gate):
+    import json
+
+    from custom_components.battery_manager.gate_learning import GateSample
+
+    c, *_ = gate
+    c.voltage_gate._bind()
+    now = dt_util.now()
+    c.voltage_gate.learner.samples = [
+        GateSample(now.timestamp() - i * 300, 55, 49.56, 0.7) for i in range(1518)
+    ]
+    public = c.voltage_gate.diagnostic(now)
+    private = c.voltage_gate.private_diagnostic(now)
+    assert len(private["natural_voltage"]["samples"]) == 1518
+    assert "natural_voltage" not in public
+    assert "coordinate_events" not in public
+    assert len(json.dumps(public).encode()) < 4096
+
+
+async def test_qualification_names_trimmed_current_range_miss(gate):
+    from custom_components.battery_manager.gate_learning import GateSample
+
+    c, *_ = gate
+    c.voltage_gate._bind()
+    now = dt_util.now()
+    c.voltage_gate.learner.samples = [
+        GateSample(now.timestamp() - offset, 55, 49.56, 0.95)
+        for offset in (0, 900, 1800)
+    ]
+    diag = c.voltage_gate.diagnostic(now)["qualification"]
+    assert diag["roles"][0]["reason"] == "qualified"
+    assert not diag["current_covered"]
+    assert diag["reason"] == "out_of_current_range"
+
+
+@pytest.mark.parametrize("force_update", [False, True])
+async def test_original_power_publications_prevent_five_second_aliasing(
+    hass, freezer, force_update
+):
+    """The actual runtime entry point sees 1s changes before a 5s tick samples0W."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from custom_components.battery_manager.voltage_gate import VoltageGateRuntime
+
+    freezer.move_to("2026-10-14T12:00:00Z")
+    start = dt_util.utcnow()
+    cfg = {
+        "soc_entity": "sensor.synthetic_soc",
+        "battery_voltage_entity": "sensor.synthetic_v",
+        "feedin_battery_power_entity": "sensor.synthetic_w",
+        "support_dc48_switch_entity": "switch.synthetic_psu",
+        "battery_capacity_wh": 5000,
+        "psu48_on_voltage_v": 49.56,
+        "psu48_output_voltage_v": 49.56,
+        "psu48_off_voltage_v": 49.8,
+    }
+    owner = SimpleNamespace(
+        hass=hass,
+        raw_config=cfg,
+        _house_soc_stale=None,
+        _save_persistent_state=Mock(),
+        live_ac=SimpleNamespace(envelope=None),
+        _last_planner_recording=None,
+        _schedule_replan=Mock(),
+    )
+    owner._read_float = lambda entity: float(hass.states.get(entity).state)
+    owner._reserve_power = owner._read_float
+    owner._entity_tristate = lambda _entity: False
+    runtime = VoltageGateRuntime(owner)
+    runtime.ready = True
+    values = (
+        ("synthetic_soc", 55, "%"),
+        ("synthetic_v", 50, "V"),
+        ("synthetic_w", 0, "W"),
+    )
+    for entity, value, unit in values:
+        hass.states.async_set(f"sensor.{entity}", value, {"unit_of_measurement": unit})
+    runtime.start_observing()
+    true_wh = 0
+    previous_w = 0
+    try:
+        for second in range(301):
+            freezer.move_to(start + timedelta(seconds=second))
+            if second:
+                true_wh += previous_w / 3600
+            watts = 0 if second % 5 == 0 else 3000
+            for entity, value, unit in (
+                ("synthetic_w", watts, "W"),
+                ("synthetic_soc", 55 + int(true_wh / 50), "%"),
+                ("synthetic_v", 50, "V"),
+            ):
+                hass.states.async_set(
+                    f"sensor.{entity}",
+                    value,
+                    {"unit_of_measurement": unit},
+                    force_update=force_update,
+                )
+            await hass.async_block_till_done()
+            if second % 5 == 0:
+                runtime.observe(dt_util.now())  # Every such tick reads exactly0W.
+            previous_w = watts
+        assert true_wh == pytest.approx(200)
+        assert not runtime.monitor.has_reconciled and not runtime.monitor.events
+        assert runtime.monitor.diagnostic()["residual"]["qualified"]
+        assert runtime.monitor.diagnostic()["residual"][
+            "charge_terminal_wh"
+        ] == pytest.approx(200)
+        assert len(runtime.learner.samples) <= 2  # No flood of natural gate samples.
+        assert not owner._schedule_replan.called
+    finally:
+        runtime.stop_observing()
+
+
 async def test_high_voltage_keeps_idle_psu_off_without_removing_rail(gate, hass):
     c, calls, *_ = gate
     await execute(c, True, True)
@@ -222,10 +368,12 @@ async def test_recalibration_expires_old_soc_permission_and_replans(
     c.voltage_gate.observe(dt_util.now())
     freezer.tick(5)
     fresh(hass, 50, 90)
+    await hass.async_block_till_done()
     c.voltage_gate.observe(dt_util.now())
     assert c.live_ac.envelope.expires == dt_util.utcnow()
     c._schedule_replan.assert_called_once()
-    assert c.voltage_gate.learner.reason == "recalibration_suspected"
+    assert c.voltage_gate.monitor.phase == "reconciling"
+    assert c.voltage_gate.monitor.events[-1]["kind"] == "soc_coordinate_adjustment"
 
 
 async def test_coordinator_restores_learning_before_enabling_observation(gate):
@@ -237,7 +385,7 @@ async def test_coordinator_restores_learning_before_enabling_observation(gate):
     c.voltage_gate.bands(dt_util.now())
     sample = GateSample(dt_util.utcnow().timestamp() - 60, 70, 49.56, 0.7)
     c.voltage_gate.learner.samples = [sample]
-    payload = c.voltage_gate.learner.export()
+    payload = c.voltage_gate.export()
     c.voltage_gate.learner.samples.clear()
     c.voltage_gate.ready = False
     c.learner.async_load = AsyncMock()

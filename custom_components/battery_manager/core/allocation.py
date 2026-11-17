@@ -506,6 +506,20 @@ def allocate_loads(
             dc24_schedule=dc24_schedule,
             dc48_schedule=dc48_schedule,
         )
+        if (
+            not confirmed_commitment
+            and inputs.soc_coordinate is not None
+            and inputs.soc_coordinate.holds_optional_discharge
+            and any(
+                traj.flows[index].battery_discharge_wh
+                > traj.flows[index].battery_charge_wh + _EPS
+                or traj.flows[index].grid_import_wh > _EPS
+                for index, _ in covered
+            )
+        ):
+            # A favourable SOC or a battery-backed baseline is not PV evidence.
+            reject("soc_coordinate_hold")
+            return None
         if not import_ok(traj):  # Z2''
             reject("additional_import")
             return None
@@ -1701,6 +1715,18 @@ def _allocate_recovery_after_continuous_loads(
                     dc24_schedule=dc24_schedule,
                     dc48_schedule=dc48_schedule,
                 )
+                if (
+                    inputs.soc_coordinate is not None
+                    and inputs.soc_coordinate.holds_optional_discharge
+                    and any(
+                        trial.flows[j].battery_discharge_wh
+                        > trial.flows[j].battery_charge_wh + _EPS
+                        or trial.flows[j].grid_import_wh > _EPS
+                        for j, _take in covered
+                    )
+                ):
+                    rejected.setdefault(i, "soc_coordinate_hold")
+                    continue
                 if trial.total_import_wh > current.total_import_wh + _EPS:
                     rejected.setdefault(i, "additional_import")
                     continue

@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import timedelta
+from itertools import permutations
 from unittest.mock import AsyncMock
 
 import pytest
@@ -693,3 +694,381 @@ async def test_expected_forecast_withdraws_permission_despite_high_p90_and_missi
     assert calls == [(LIMIT, 1000), (LIMIT, 0)]
     assert c.live_ac.diagnostics["reason"] == "measurement_unavailable"
     assert c.live_ac.planned_limit() == 0
+
+
+async def test_coordinate_hold_revokes_old_ac_budget_and_requires_fresh_replan(
+    live, hass
+):
+    from dataclasses import replace
+
+    c, calls, *_ = live
+    stamp = c.voltage_gate.coordinate_snapshot(dt_util.now())
+    c.live_ac.envelope = replace(c.live_ac.envelope, soc_coordinate=stamp)
+    await c.live_ac.run()
+    assert float(hass.states.get(LIMIT).state) == 2300
+    monitor = c.voltage_gate.monitor
+    monitor.epoch, monitor.phase, monitor.generation, monitor.has_reconciled = (
+        1,
+        "settling",
+        2,
+        True,
+    )
+    await c.live_ac.run()
+    assert float(hass.states.get(LIMIT).state) == 0
+    assert c.live_ac.diagnostics["reason"] == "soc_coordinate_hold"
+    monitor.phase, monitor.generation = "tracking", 3
+    await c.live_ac.run()
+    assert float(hass.states.get(LIMIT).state) == 0
+    c.live_ac.envelope = replace(
+        c.live_ac.envelope,
+        soc_coordinate=c.voltage_gate.coordinate_snapshot(dt_util.now()),
+    )
+    await c.live_ac.run()
+    assert float(hass.states.get(LIMIT).state) == 2300
+
+
+@pytest.mark.parametrize(
+    "dc,pv,expected", [(None, 2000, False), (100, 400, False), (100, 2000, True)]
+)
+async def test_held_direct_pv_requires_fresh_complete_dc_and_prospective_load(
+    live, hass, dc, pv, expected
+):
+    from custom_components.battery_manager.const import CONF_DC_LOAD_ENTITY
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.actual_dc"
+    hass.states.async_set("sensor.house", "100", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.pv", str(pv), {"unit_of_measurement": "W"})
+    if dc is not None:
+        hass.states.async_set("sensor.actual_dc", str(dc), {"unit_of_measurement": "W"})
+    assert c.live_ac.load_pv_permission(300) is expected
+
+
+async def test_coordinate_changes_during_inverter_ack_are_physically_revoked(
+    live, hass
+):
+    c, calls, *_ = live
+    original = c._confirm_inverter_limit
+
+    async def late_limit(blocked, diag):
+        result = await original(blocked, diag)
+        if not blocked:
+            c.voltage_gate.monitor.epoch += 1
+            c.voltage_gate.monitor.generation += 1
+            c.voltage_gate.monitor.phase = "settling"
+            c.voltage_gate.monitor.has_reconciled = True
+        return result
+
+    c._confirm_inverter_limit = late_limit
+    await c.live_ac.run()
+    assert calls == [(LIMIT, 2300), (LIMIT, 0)]
+    assert float(hass.states.get(LIMIT).state) == 0
+    assert not c._inverter_recommendation
+
+
+@pytest.mark.parametrize("pending_power", [600, None])
+async def test_direct_pv_proof_accounts_for_other_pending_load_starts(
+    live, hass, pending_power
+):
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.const import (
+        CONF_DC_LOAD_ENTITY,
+        SUBENTRY_TYPE_LOAD,
+    )
+    from custom_components.battery_manager.load_actuation import ActorRequest
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.actual_dc"
+    for entity, value in (
+        ("sensor.house", 100),
+        ("sensor.pv", 1000),
+        ("sensor.actual_dc", 100),
+    ):
+        hass.states.async_set(entity, str(value), {"unit_of_measurement": "W"})
+    assert c.live_ac.load_pv_permission(300)
+    original_entry = c.entry
+    c.entry = SimpleNamespace(
+        subentries={
+            "pending": SimpleNamespace(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                data={
+                    "control_switch_entity": "switch.pending",
+                    "power_w": pending_power,
+                },
+            )
+        }
+    )
+    c._load_actor_requests["switch.pending"] = ActorRequest(True, dt_util.now())
+    try:
+        assert not c.live_ac.load_pv_permission(300)
+    finally:
+        c.entry = original_entry
+        c._load_actor_requests.pop("switch.pending")
+
+
+@pytest.mark.parametrize("mode", ["active", "off"])
+@pytest.mark.parametrize("envelope_state", ["missing", "expired"])
+@pytest.mark.parametrize("source", [PSU24, PSU48])
+async def test_coordinate_hold_restore_preserves_confirmed_psu_source(
+    live, hass, mode, envelope_state, source
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    c, calls, *_ = live
+    c.raw_config["reserve_mode"] = mode
+    c._schedule_replan = Mock()
+    c.voltage_gate.coordinate_snapshot(dt_util.now())
+    c.voltage_gate.monitor.phase = "settling"
+    c.voltage_gate.monitor.has_reconciled = True
+    c._last_planner_recording = None
+    c.live_ac.envelope = (
+        None
+        if envelope_state == "missing"
+        else replace(
+            c.live_ac.envelope, expires=dt_util.utcnow() - timedelta(seconds=1)
+        )
+    )
+    hass.states.async_set(source, "on")
+    if source == PSU24:
+        hass.states.async_set(DCDC, "off")
+    calls.clear()
+    await c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, False, c.build_system_config(), dt_util.now()
+    )
+    assert (source, False) not in calls
+    assert hass.states.is_state(source, "on")
+    assert not c._inverter_recommendation
+
+
+@pytest.mark.parametrize("mode", ["active", "off"])
+async def test_coordinate_revoked_after_psu48_off_ack_restores_prior_source(
+    live, hass, mode
+):
+    from unittest.mock import Mock
+
+    c, calls, *_ = live
+    c.raw_config["reserve_mode"] = mode
+    c._schedule_replan = Mock()
+    c.live_ac.envelope = None
+    c.voltage_gate.coordinate_snapshot(dt_util.now())
+    hass.states.async_set(PSU48, "on")
+    original = c._switch_entity
+
+    async def late_off(entity, on, **kw):
+        result = await original(entity, on, **kw)
+        if entity == PSU48 and not on:
+            c.voltage_gate.monitor.phase = "settling"
+            c.voltage_gate.monitor.has_reconciled = True
+            c.voltage_gate.monitor.generation += 1
+        return result
+
+    c._switch_entity = late_off
+    calls.clear()
+    await c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, False, c.build_system_config(), dt_util.now()
+    )
+    assert (PSU48, False) in calls and (PSU48, True) in calls
+    assert hass.states.is_state(PSU48, "on")
+    assert not c._inverter_recommendation
+
+
+async def test_shared_reservation_waits_for_covered_poststart_electrical_balance(
+    live, hass, freezer
+):
+    from custom_components.battery_manager.const import CONF_DC_LOAD_ENTITY
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.actual_dc"
+    for entity, value in (
+        ("sensor.house", 100),
+        ("sensor.pv", 600),
+        ("sensor.actual_dc", 80),
+        ("sensor.start_input", 0),
+    ):
+        hass.states.async_set(entity, str(value), {"unit_of_measurement": "W"})
+    assert c.live_ac.reserve_pv_start(
+        "cascade:first", 300, input_entity="sensor.start_input"
+    )
+    c.live_ac.confirm_pv_start("cascade:first")
+    assert not c.live_ac.reserve_pv_start("load:second", 300)
+    # ON alone and even a later house publication do not prove the new input
+    # load has entered the shared balance.
+    freezer.tick(timedelta(seconds=1))
+    for entity, value in (
+        ("sensor.house", 400),
+        ("sensor.pv", 600),
+        ("sensor.actual_dc", 80),
+        ("sensor.start_input", 0),
+    ):
+        hass.states.async_set(
+            entity, str(value), {"unit_of_measurement": "W"}, force_update=True
+        )
+    assert not c.live_ac.load_pv_permission(50)
+    assert "cascade:first" in c.live_ac._pv_start_reservations
+    hass.states.async_set(
+        "sensor.start_input", "300", {"unit_of_measurement": "W"}, force_update=True
+    )
+    assert not c.live_ac.load_pv_permission(50)
+    freezer.tick(timedelta(seconds=1))
+    for entity, value in (
+        ("sensor.house", 400),
+        ("sensor.pv", 600),
+        ("sensor.actual_dc", 80),
+    ):
+        hass.states.async_set(
+            entity, str(value), {"unit_of_measurement": "W"}, force_update=True
+        )
+    assert c.live_ac.load_pv_permission(50)
+    assert "cascade:first" not in c.live_ac._pv_start_reservations
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "no_config",
+        "invalid_power",
+        "missing_soc",
+        "stale_soc",
+        "no_pv",
+        "no_dc",
+        "missing_house",
+        "partial_channels",
+    ],
+)
+async def test_independent_start_proof_rejects_missing_or_invalid_physical_channels(
+    live, hass, freezer, invalid
+):
+    from custom_components.battery_manager.const import CONF_DC_LOAD_ENTITY
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.actual_dc"
+    hass.states.async_set("sensor.actual_dc", "80", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.house", "100", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.pv", "3000", {"unit_of_measurement": "W"})
+    power = 300
+    if invalid == "no_config":
+        c.live_ac.envelope = None
+        c._last_planner_recording = None
+    elif invalid == "invalid_power":
+        power = float("nan")
+    elif invalid == "missing_soc":
+        hass.states.async_remove("sensor.test_soc")
+    elif invalid == "stale_soc":
+        freezer.tick(timedelta(seconds=31))
+    elif invalid == "no_pv":
+        hass.states.async_set("sensor.pv", "0", {"unit_of_measurement": "W"})
+    elif invalid == "no_dc":
+        hass.states.async_remove("sensor.actual_dc")
+    elif invalid == "missing_house":
+        hass.states.async_remove("sensor.house")
+    else:
+        c.raw_config["live_ac_grid_power_entity"] = "sensor.missing_channel"
+    assert not c.live_ac.load_pv_permission(power)
+
+
+@pytest.mark.parametrize("net_w,expected", [(-1000, True), (-50, False)])
+async def test_direct_pv_uses_complete_signed_ac_balance_instead_of_gross_pv(
+    live, hass, net_w, expected
+):
+    from dataclasses import replace
+
+    from custom_components.battery_manager.const import (
+        CONF_DC_LOAD_ENTITY,
+        LIVE_AC_POWER_KEYS,
+    )
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.actual_dc"
+    hass.states.async_set("sensor.actual_dc", "80", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.pv", "2000", {"unit_of_measurement": "W"})
+    c.live_ac.envelope = replace(c.live_ac.envelope, dc_forecast_w=80)
+    for key, entity, value in zip(
+        LIVE_AC_POWER_KEYS,
+        ("sensor.net", "sensor.ac_in", "sensor.ac_out"),
+        (net_w, 0, 0),
+        strict=True,
+    ):
+        c.raw_config[key] = entity
+        hass.states.async_set(entity, str(value), {"unit_of_measurement": "W"})
+    assert c.live_ac.load_pv_permission(300) is expected
+    assert c.live_ac.pv_source_permission(c.live_ac.envelope.config) is expected
+
+
+async def test_settling_pv_source_cannot_replace_missing_actual_dc_with_old_forecast(
+    live, hass
+):
+    from dataclasses import replace
+
+    from custom_components.battery_manager.const import CONF_DC_LOAD_ENTITY
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.missing_dc"
+    hass.states.async_set("sensor.house", "100", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.pv", "2000", {"unit_of_measurement": "W"})
+    c.voltage_gate.coordinate_snapshot(dt_util.now())
+    c.voltage_gate.monitor.phase = "settling"
+    c.voltage_gate.monitor.has_reconciled = True
+    c.voltage_gate.monitor.generation += 1
+    stamp = c.voltage_gate.coordinate_snapshot(dt_util.now())
+    c.live_ac.envelope = replace(
+        c.live_ac.envelope, soc_coordinate=stamp, dc_forecast_w=0
+    )
+    assert not c.live_ac.pv_source_permission(c.live_ac.envelope.config)
+    hass.states.async_set("sensor.missing_dc", "80", {"unit_of_measurement": "W"})
+    assert c.live_ac.pv_source_permission(c.live_ac.envelope.config)
+
+
+@pytest.mark.parametrize(
+    "order", list(permutations(("sensor.house", "sensor.pv", "sensor.actual_dc")))
+)
+@pytest.mark.parametrize("equal_timestamp", [False, True])
+async def test_reservation_balance_must_follow_actual_input_start_in_all_channel_orders(
+    live, hass, freezer, order, equal_timestamp
+):
+    from custom_components.battery_manager.const import CONF_DC_LOAD_ENTITY
+
+    c, *_ = live
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.actual_dc"
+    values = {"sensor.house": 100, "sensor.pv": 600, "sensor.actual_dc": 80}
+    for entity, value in (*values.items(), ("sensor.start_input", 0)):
+        hass.states.async_set(entity, str(value), {"unit_of_measurement": "W"})
+    assert c.live_ac.reserve_pv_start(
+        "cascade:first", 300, input_entity="sensor.start_input"
+    )
+    c.live_ac.confirm_pv_start("cascade:first")
+    freezer.tick(timedelta(seconds=1))
+    for entity, value in values.items():
+        hass.states.async_set(
+            entity, str(value), {"unit_of_measurement": "W"}, force_update=True
+        )
+    freezer.tick(timedelta(seconds=4))
+    hass.states.async_set(
+        "sensor.start_input", "300", {"unit_of_measurement": "W"}, force_update=True
+    )
+    assert not c.live_ac.reserve_pv_start("load:second", 300)
+    assert "cascade:first" in c.live_ac._pv_start_reservations
+    values["sensor.house"] = 400
+    for index, entity in enumerate(order):
+        if not equal_timestamp:
+            freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(
+            entity, str(values[entity]), {"unit_of_measurement": "W"}, force_update=True
+        )
+        allowed = c.live_ac.load_pv_permission(50)
+        assert ("cascade:first" in c.live_ac._pv_start_reservations) is (
+            index < 2 or equal_timestamp
+        )
+        if index == 2 and not equal_timestamp:
+            assert allowed
+        assert not c.live_ac.reserve_pv_start("load:second", 300)
+    if equal_timestamp:
+        assert "cascade:first" in c.live_ac._pv_start_reservations
+        freezer.tick(timedelta(seconds=1))
+        for entity, value in values.items():
+            hass.states.async_set(
+                entity, str(value), {"unit_of_measurement": "W"}, force_update=True
+            )
+        assert c.live_ac.load_pv_permission(50)
+    assert "cascade:first" not in c.live_ac._pv_start_reservations

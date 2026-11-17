@@ -6372,3 +6372,241 @@ async def test_member_release_does_not_command_unmapped_legacy_claim(
     assert coordinator.hass.states.get("switch.unmapped_old_device").state == "on"
     assert state["source"] is None
     assert not state.get("fault")
+
+
+async def test_coordinate_hold_does_not_start_root_or_report_actor_fault(monkeypatch):
+    from custom_components.battery_manager.core.model import SocCoordinateSnapshot
+
+    now = datetime(2026, 2, 3, 12)
+    c = _Coordinator(now)
+    c.voltage_gate = SimpleNamespace(
+        coordinate_permission_valid=lambda snapshot, **kw: False
+    )
+    c.live_ac = SimpleNamespace(load_pv_permission=lambda power: False)
+    manager = CascadeManager(c)
+    manager._state("chain")["enabled"] = True
+    monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    result = SimpleNamespace(
+        cascade_plans=(item,), soc_coordinate=SocCoordinateSnapshot(1, "settling", 2)
+    )
+    await manager.async_apply(
+        SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),)),
+        result,
+        (),
+        now,
+    )
+    assert ("switch.input", True) not in c.calls
+    assert manager._state("chain")["coordinate_reason"] == "soc_coordinate_hold"
+    assert not manager._state("chain").get("fault")
+
+
+async def test_root_coordinate_changed_during_ack_does_not_start_charge_gate(
+    monkeypatch,
+):
+    from custom_components.battery_manager.core.model import SocCoordinateSnapshot
+
+    now = datetime(2026, 2, 3, 12)
+    c = _Coordinator(now)
+    permission = {"current": True}
+    c.voltage_gate = SimpleNamespace(
+        coordinate_permission_valid=lambda snapshot, **kw: permission["current"]
+    )
+    c.live_ac = SimpleNamespace(load_pv_permission=lambda power: False)
+    original = c._switch_entity
+
+    async def late_ack(entity, on, **kw):
+        result = await original(entity, on, **kw)
+        if entity == "switch.input" and on:
+            permission["current"] = False
+        return result
+
+    c._switch_entity = late_ack
+    manager = CascadeManager(c)
+    manager._state("chain")["enabled"] = True
+    monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    result = SimpleNamespace(
+        cascade_plans=(item,), soc_coordinate=SocCoordinateSnapshot(0, "tracking", 0)
+    )
+    await manager.async_apply(
+        SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),)),
+        result,
+        (),
+        now,
+    )
+    assert ("switch.input", True) in c.calls
+    assert ("switch.gate", True) not in c.calls
+    assert not manager._state("chain").get("fault")
+
+
+def _shared_pv_start_rig():
+    from custom_components.battery_manager.const import (
+        CONF_DC_LOAD_ENTITY,
+        CONF_LOAD_POWER_W,
+    )
+    from custom_components.battery_manager.live_ac import LiveACEnvelope, LiveACRuntime
+
+    now = datetime(2026, 2, 3, 12, tzinfo=UTC)
+    c = _Coordinator(now)
+    c.raw_config = {
+        "soc_entity": "sensor.soc",
+        "operation_pv_power_entity": "sensor.shared_pv",
+        "operation_house_power_entity": "sensor.shared_house",
+        CONF_DC_LOAD_ENTITY: "sensor.shared_dc",
+    }
+    for entity, value in (
+        ("sensor.shared_pv", 600),
+        ("sensor.shared_house", 100),
+        ("sensor.shared_dc", 80),
+    ):
+        c.hass.states.values[entity] = SimpleNamespace(
+            state=str(value), last_reported=now, attributes={"unit_of_measurement": "W"}
+        )
+    c._reserve_power = lambda entity: (
+        float(c.hass.states.get(entity).state) if c.hass.states.get(entity) else None
+    )
+    c._reserve_grid_available = lambda: True
+    c._get_soc = lambda at: 80
+    c._load_actor_requests = {}
+    c._load_learned_power_w = {}
+    c._last_planner_recording = None
+    c.data = {}
+    c.voltage_gate = SimpleNamespace(
+        coordinate_permission_valid=lambda snapshot, *, direct_pv_proven=False: (
+            direct_pv_proven
+        )
+    )
+    c.entry.subentries["b1"].data[CONF_LOAD_POWER_W] = 150
+    c.entry.subentries["leaf"].data[CONF_LOAD_POWER_W] = 150
+    second_data = dict(c.entry.subentries["b1"].data)
+    second_data.update(
+        {
+            CONF_LOAD_CONTROL_SWITCH: "switch.input2",
+            CONF_LOAD_CHARGE_ENABLE: "switch.gate2",
+            CONF_LOAD_OUTPUT_SWITCH: "switch.output2",
+        }
+    )
+    c.entry.subentries["b2"] = SimpleNamespace(
+        data=second_data, subentry_type=SUBENTRY_TYPE_LOAD, title="Second storage"
+    )
+    c.entry.subentries["leaf2"] = SimpleNamespace(
+        data={CONF_LOAD_CONTROL_SWITCH: "switch.leaf2", CONF_LOAD_POWER_W: 150},
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        title="Second terminal",
+    )
+    c.entry.subentries["chain2"] = SimpleNamespace(
+        data={CONF_CASCADE_MEMBER_IDS: ["b2"], CONF_CASCADE_TERMINAL_LOAD_ID: "leaf2"},
+        subentry_type=SUBENTRY_TYPE_CASCADE,
+        title="Second chain",
+    )
+    c.entry.subentries["generic"] = SimpleNamespace(
+        data={CONF_LOAD_CONTROL_SWITCH: "switch.generic", CONF_LOAD_POWER_W: 300},
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        title="Other consumer",
+    )
+    for entity in (
+        "switch.input2",
+        "switch.gate2",
+        "switch.output2",
+        "switch.leaf2",
+        "switch.generic",
+    ):
+        c.hass.states.values[entity] = SimpleNamespace(state="off", attributes={})
+    c.live_ac = LiveACRuntime(c)
+    c.live_ac.envelope = LiveACEnvelope(
+        SystemConfig(), now + timedelta(minutes=5), 100, False
+    )
+    manager = CascadeManager(c)
+    manager._state("chain")["enabled"] = True
+    manager._state("chain2")["enabled"] = True
+    return c, manager
+
+
+@pytest.mark.parametrize(
+    "first,second", [("chain", "chain2"), ("generic", "chain"), ("chain", "generic")]
+)
+async def test_cascade_and_generic_starts_share_one_prepublication_pv_budget(
+    first, second, monkeypatch
+):
+    from custom_components.battery_manager.core.model import SocCoordinateSnapshot
+    from custom_components.battery_manager.load_actuation import (
+        LoadAction,
+        _coordinate_action_allowed,
+    )
+
+    c, manager = _shared_pv_start_rig()
+    # Match HA time to the fixed physical publications, without real delays.
+    monkeypatch.setattr(
+        cascade_manager_module.dt_util,
+        "utcnow",
+        lambda: datetime(2026, 2, 3, 12, tzinfo=UTC),
+    )
+    stamp = SocCoordinateSnapshot(1, "settling", 2)
+    token = cascade_manager_module._COORDINATE_SNAPSHOT.set((stamp,))
+
+    async def start(owner):
+        if owner == "generic":
+            return _coordinate_action_allowed(
+                c,
+                LoadAction(
+                    "generic",
+                    dict(c.entry.subentries["generic"].data),
+                    True,
+                    False,
+                    soc_coordinate=stamp,
+                    coordinate_captured=True,
+                ),
+            )
+        root = "switch.input" if owner == "chain" else "switch.input2"
+        return await manager._actor(owner, root, True)
+
+    try:
+        assert await start(first)
+        if second == "generic":
+            assert not await start(second)
+        else:
+            with pytest.raises(cascade_manager_module._CoordinatePermissionPending):
+                await start(second)
+            assert (
+                ("switch.input" if second == "chain" else "switch.input2"),
+                True,
+            ) not in c.calls
+    finally:
+        cascade_manager_module._COORDINATE_SNAPSHOT.reset(token)
+
+
+@pytest.mark.parametrize("source", ["learned", "planning"])
+async def test_shared_start_proof_uses_larger_effective_power_than_nominal(
+    source, monkeypatch
+):
+    from custom_components.battery_manager.core.model import SocCoordinateSnapshot
+    from custom_components.battery_manager.load_actuation import (
+        LoadAction,
+        _coordinate_action_allowed,
+    )
+
+    c, _ = _shared_pv_start_rig()
+    monkeypatch.setattr(
+        cascade_manager_module.dt_util,
+        "utcnow",
+        lambda: datetime(2026, 2, 3, 12, tzinfo=UTC),
+    )
+    c.entry.subentries["generic"].data["power_w"] = 100
+    if source == "learned":
+        c._load_learned_power_w["generic"] = 450
+    else:
+        c.data = {"load_plans": {"generic": {"planning_power_w": 450}}}
+    assert not _coordinate_action_allowed(
+        c,
+        LoadAction(
+            "generic",
+            dict(c.entry.subentries["generic"].data),
+            True,
+            False,
+            soc_coordinate=SocCoordinateSnapshot(1, "settling", 2),
+            coordinate_captured=True,
+        ),
+    )

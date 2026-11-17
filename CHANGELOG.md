@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.0] - 2026-11-17
+
+### Added
+
+- Rollierender SOC-/Energieabgleich mit erklärten Lernband-Ablehnungen und
+  begrenzten privaten Diagnosebelegen. Eine obere BMS-Nachkalibrierung wird
+  als normale Nachführung der SOC-Koordinate behandelt.
+- Quellengebundene Momentanbelege der optionalen Netzteilmessungen, getrennt
+  nach bestätigtem Schaltzustand, AC-Aufnahme und DC-Abgabe. Ein Messwert
+  begründet keine zusätzliche mehrtägige Lieferzusage.
+
+### Changed
+
+- Während einer SOC-Nachführung und ihrer beobachteten Stabilisierung bleiben
+  neue optionale batteriegestützte Entnahmen gesperrt. Versorgung, Schutz,
+  manuelle Vorgaben und unabhängig nachgewiesene direkte PV-Nutzung bleiben
+  erhalten. Nach der Stabilisierung ist eine neue Planung erforderlich.
+- Natürliche Spannungs-/SOC-Lernpunkte unterschiedlicher Koordinatenstände
+  werden getrennt. Neustarts überbrücken weder Energie- noch Stabilitätslücken.
+- Die Karten erklären konservative SOC-Prognosen und fehlende Netzteil-
+  Lieferbelege. Der BMS-SOC und die konfigurierte Kapazität werden nicht verändert.
+
 ## [0.64.1] - 2026-10-30
 
 ### Fixed

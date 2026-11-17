@@ -223,6 +223,7 @@ from .const import (
     UPPER_PV_RESERVE_DEFAULT,
 )
 from .coordinated_supply import (
+    capture_supply_request,
     execute_coordinated_support,
     protection_targets,
     reconcile_supply_feedback,
@@ -259,6 +260,7 @@ from .core.model import (
     ConsumptionUncertaintyInterval,
     ConsumptionUncertaintySnapshot,
     ReserveParams,
+    SocCoordinateSnapshot,
 )
 from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
 from .core.series import fixed_local_time
@@ -270,11 +272,15 @@ from .load_actuation import (
     LOAD_RETRY_INTERVAL_S,
     ActorRequest,
     LoadAction,
+    bind_coordinate_request,
     confirm_state,
+    coordinate_request_current,
+    coordinate_request_revoked,
     execute_load_switching,
     input_diagnostics,
     input_off_allowed,
     reconcile_feedback,
+    restore_coordinate_cleanup,
 )
 from .load_safety import LOAD_GRID_IMPORT_TOLERANCE_W, grid_import_w, start_blocked
 from .localization import message
@@ -298,7 +304,7 @@ from .reserve_runtime import (
 from .runtime_persistence import persistent_payload
 from .source_health import source_health
 from .source_phases import SourcePhases
-from .voltage_gate import VoltageGateRuntime, requested_dc48
+from .voltage_gate import CoordinatePlanChanged, VoltageGateRuntime, requested_dc48
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -846,6 +852,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_planner_recording: (
             tuple[SystemConfig, PlanInputs, PlanResult] | None
         ) = None
+        self._last_planner_recording_revision: int | None = None
         self._first_success_done = False
 
         self._debounce_task: asyncio.Task | None = None
@@ -877,7 +884,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             data = None
         self._reserve_runtime.restore(data.get("reserve") if data else None)
-        self.voltage_gate.learner.restore(data.get("voltage_gate") if data else None)
+        self.voltage_gate.restore(data.get("voltage_gate") if data else None)
         if data:
             # Cache entries are keyed by subentry AND carry the source entity
             # id so a reconfigured load never reuses another device's SOC.
@@ -923,6 +930,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_bm_enabled = {
                 k: bool(v) for k, v in data.get("load_bm_enabled", {}).items()
             }
+            generations = data.get("load_control_generation")
+            self._load_control_generation = (
+                {
+                    key: value
+                    for key, value in generations.items()
+                    if key in self.entry.subentries
+                    and type(value) is int
+                    and value >= 0
+                }
+                if isinstance(generations, dict)
+                else {}
+            )
             self._load_released_actors = {
                 str(key): [actor for actor in actors if isinstance(actor, str)]
                 for key, actors in data.get("load_released_actors", {}).items()
@@ -1112,10 +1131,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         stamp,
                         request.get("state", "pending"),
                         request.get("owner"),
+                        request.get("sent") is True,
                     )
             for load_id, enabled in self._load_bm_enabled.items():
                 if not enabled:
                     self._release_load_control(load_id)
+            restore_coordinate_cleanup(self, data.get("revoked_load_starts"))
             # F-FEEDIN: the runtime switch, the manual-mode deadline and our
             # last written setpoint survive restarts — after a reboot "setpoint
             # ≠ ours" must still be judgeable as an external override instead
@@ -1181,6 +1202,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Confirmed ownership and obligations are ready before the large
         # diagnostic archive is restored away from HA's event loop.
         self.voltage_gate.ready = True
+        self.voltage_gate.start_observing()
         await self.operation_recorder.async_restore(
             data.get("operation_history") if data else None
         )
@@ -2975,6 +2997,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self, entity_id: str, desired: bool, *, actor_owner: str | None = None
     ) -> bool:
         """Confirm physical feedback and limit retries, including service failures."""
+        if desired and not coordinate_request_current(self):
+            return False
         if entity_id in self.released_load_actors():
             return False
         state = self.hass.states.get(entity_id)
@@ -2996,12 +3020,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if state is None or state.state not in ("on", "off"):
                 return False
         request = ActorRequest(desired, now, owner=actor_owner)
+        bind_coordinate_request(request)
         self._load_actor_requests[entity_id] = request
         self._save_persistent_state()
-        if not await self._switch_entity(entity_id, desired, actor_owner=actor_owner):
+        if desired and not coordinate_request_current(self):
+            request.state = "coordinate_changed"
+            coordinate_request_revoked(self, entity_id, request)
+            return False
+        request.sent = True
+        switched = await self._switch_entity(
+            entity_id, desired, actor_owner=actor_owner
+        )
+        if desired and not coordinate_request_current(self):
+            request.state = "coordinate_changed"
+            coordinate_request_revoked(self, entity_id, request)
+            return False
+        if not switched:
             request.state = "service_failed"
             return False
-        if not await confirm_state(self.hass, entity_id, desired):
+        confirmed = await confirm_state(self.hass, entity_id, desired)
+        if desired and not coordinate_request_current(self):
+            request.state = "coordinate_changed"
+            coordinate_request_revoked(self, entity_id, request)
+            return False
+        if not confirmed:
             request.state = "confirmation_failed"
             return False
         if self._load_actor_requests.get(entity_id) is not request:
@@ -4436,6 +4478,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if self._actuation_shutdown:
             raise asyncio.CancelledError
+        if not self.voltage_gate.coordinate_matches(inputs.soc_coordinate):
+            raise CoordinatePlanChanged
         now = dt_util.now()
         slot_end = dt_util.as_utc(inputs.slots[0].start) + timedelta(
             hours=inputs.slots[0].duration
@@ -4524,6 +4568,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 data = await self._async_update_data_serial()
                 if not data.get("valid"):
                     self.appliances.plan_failed()
+                return data
+            except CoordinatePlanChanged:
+                # A normal BMS coordinate reconciliation invalidates economic
+                # work, not the integration or necessary source supply.
+                self.voltage_gate.request_fresh_plan()
+                self.appliances.plan_failed()
+                data = dict(self.data or {"valid": False})
+                data["soc_coordinate"] = self.voltage_gate.monitor.diagnostic()
+                data["planning_pending"] = "soc_coordinate_update"
                 return data
             except BaseException:
                 self.appliances.plan_failed()
@@ -4712,6 +4765,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         inputs = replace(
             inputs,
             market_prices=market_prices,
+            soc_coordinate=self.voltage_gate.coordinate_snapshot(dt_util.now()),
+            psu_delivery=self.voltage_gate.psu.capture(self, dt_util.now()),
             consumption_uncertainty=self._consumption_uncertainty_snapshot(
                 inputs, forecast_predictions
             ),
@@ -4882,8 +4937,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "captured_at": inputs.now.isoformat(),
             "activated_at": dt_util.utcnow().isoformat(),
         }
-        self.operation_recorder.plan(config, inputs, result)
+        # Publish complete actor authority together, before set_plan advances
+        # the revision and before any shadow/source/load await. A new revision
+        # must never finance source removal with the preceding plan's record.
+        self._last_planner_recording = (config, inputs, result)
+        self.voltage_gate.published_coordinate = inputs.soc_coordinate
         self.live_ac.set_plan(config, inputs, result)
+        self._last_planner_recording_revision = self.live_ac.plan_revision
+        self.operation_recorder.plan(config, inputs, result)
         self.learner.record_forecasts(
             forecast_predictions, dt_util.utcnow(), profile_diag.get("computed_at")
         )
@@ -4924,6 +4985,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._inverter_recommendation = recommendation
         else:
             recommendation = self._apply_hysteresis(soc, threshold, config, now)
+            if not self.voltage_gate.coordinate_permission_valid(inputs.soc_coordinate):
+                # Hysteresis must not recreate a battery entitlement withheld
+                # by the Core while its SOC coordinate is being reconciled.
+                recommendation = self._inverter_recommendation = False
         if config.support.coordinated:
             recommendation = (recommendation and result.inverter_on) or bool(
                 self.live_ac.refresh()
@@ -5288,7 +5353,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Telemetry may already have booked newer meter readings while the
         # CPU worker ran. Account live readings at publication, not capture.
         realized = self._update_realized_surplus(dt_util.now(), daily_surplus)
-        self._last_planner_recording = (config, inputs, result)
         self._planned_feedin_delivered_wh = feedin_delivered_at_capture
         self._planned_appliance_signature = appliance_signature
         self.appliances.plan_updated(
@@ -6284,6 +6348,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "displayed_threshold_percent": self._displayed_threshold
             },
             "floor_guard": {"active": self._floor_guard_active},
+            "soc_coordinate": self.voltage_gate.monitor.diagnostic(),
             "learned_power_w": dict(self._load_learned_power_w),
             "load_runtime_seconds": dict(self._load_runtime_seconds),
             "power_warning_latched": dict(self._load_power_warning),
@@ -6665,6 +6730,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         psu_entity: str,
         *,
         may_remove: Callable[[], bool] | None = None,
+        may_start: Callable[[], bool] | None = None,
     ) -> bool:
         """Switch the 24 V rail supply make-before-break (docs/ALGORITHM.md D-A9).
 
@@ -6676,6 +6742,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         dcdc_entity = self.raw_config.get(CONF_DCDC_SWITCH)
         delay_s = float(self.raw_config.get(CONF_SUPPORT_SWITCH_DELAY_S, 3))
+        if may_start is not None and not may_start():
+            return False
 
         if not dcdc_entity:
             # No switchable DC/DC configured: plain PSU toggle (parallel feed).
@@ -6687,6 +6755,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             (psu_entity, dcdc_entity) if activate else (dcdc_entity, psu_entity)
         )
         if not await self._switch_entity(first_on, True, actor_owner=SUPPLY_OWNER):
+            return False
+        if may_start is not None and not may_start():
             return False
         if not self._entity_is_on(first_on):
             _LOGGER.error(
@@ -6905,10 +6975,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name="battery_manager_coordinated_support",
         )
 
-    async def _execute_coordinated_support(
+    def _execute_coordinated_support(
         self, desired, inverter, config, now
-    ) -> None:
-        await execute_coordinated_support(self, desired, inverter, config, now)
+    ) -> Coroutine[Any, Any, None]:
+        request = capture_supply_request(self, desired, inverter, now)
+        return execute_coordinated_support(
+            self, desired, inverter, config, now, request=request
+        )
 
     async def _apply_support_switching(
         self, result, config: SystemConfig, now: datetime
@@ -6963,18 +7036,116 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name="battery_manager_support_switching",
         )
 
-    async def _execute_support_switching(self, desired: dict[str, bool]) -> None:
-        """Carry out the switching sequences; runs detached from the refresh."""
+    def _legacy_support_permitted(
+        self, key: str, activate: bool, coordinate: SocCoordinateSnapshot | None
+    ) -> bool:
+        """Economic source changes require their captured coordinate authority.
+
+        Turning on necessary protection/a dead rail remains independent of an
+        economic SOC budget. Removal during reconciliation has no such proof.
+        Manual source ownership is checked separately at every mutation.
+        """
+        if self.voltage_gate.coordinate_permission_valid(coordinate):
+            return True
+        if not activate:
+            return False
+        soc = self._get_soc(dt_util.now())
+        config = self.build_system_config()
+        threshold = (
+            config.control.support_dc24_activate_soc
+            if key == "dc24"
+            else config.control.support_dc48_activate_soc
+        )
+        if soc is None or soc <= threshold:
+            return True
+        if key == "dc24":
+            dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
+            return bool(dcdc and self._entity_tristate(dcdc) is not True)
+        voltage = self.voltage_gate.voltage()
+        return voltage is not None and voltage <= config.support.psu48_on_voltage_v
+
+    def _execute_support_switching(
+        self, desired: dict[str, bool]
+    ) -> Coroutine[Any, Any, None]:
+        """Freeze legacy authority before scheduling, just like coordinated supply."""
+        return self._async_execute_support_switching(
+            dict(desired), self.voltage_gate.published_coordinate
+        )
+
+    async def _restore_legacy_source(
+        self,
+        key: str,
+        was_on: bool,
+        dcdc_was_on: bool | None,
+        *,
+        expected_bindings: tuple[str | None, str | None] | None = None,
+    ) -> None:
+        conf_key = (
+            CONF_SUPPORT_DC24_SWITCH if key == "dc24" else CONF_SUPPORT_DC48_SWITCH
+        )
+        entity = self.raw_config.get(conf_key)
+        dcdc = self.raw_config.get(CONF_DCDC_SWITCH) if key == "dc24" else None
+        bindings = expected_bindings or (entity, dcdc)
+
+        def owned() -> bool:
+            return (
+                not self._support_manual[key]
+                and not self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+                and (
+                    self.raw_config.get(conf_key),
+                    self.raw_config.get(CONF_DCDC_SWITCH) if key == "dc24" else None,
+                )
+                == bindings
+            )
+
+        if not was_on or not entity or not owned():
+            return
+        if self._entity_tristate(entity) is not True and not await self._switch_entity(
+            entity, True, actor_owner=SUPPLY_OWNER
+        ):
+            return
+        if not owned() or self._entity_tristate(entity) is not True:
+            return
+        self._support_state[key] = True
+        if key == "dc24" and dcdc_was_on is False and dcdc:
+            # A revoked OFF may already have reached the PSU. Its restoration
+            # is a NEW make-before-break handover: confirmed ON plus a full new
+            # overlap, never the delay spent before that OFF acknowledgement.
+            if self._entity_tristate(dcdc) is not True:
+                return
+            await asyncio.sleep(
+                float(self.raw_config.get(CONF_SUPPORT_SWITCH_DELAY_S, 3))
+            )
+            if (
+                owned()
+                and self._entity_tristate(entity) is True
+                and self._entity_tristate(dcdc) is True
+            ):
+                await self._switch_entity(dcdc, False, actor_owner=SUPPLY_OWNER)
+
+    async def _async_execute_support_switching(
+        self, desired: dict[str, bool], coordinate: SocCoordinateSnapshot | None
+    ) -> None:
+        """Carry out the switching sequences with final live coordinate checks."""
         async with self._switch_lock:
             dc48_entity = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
             if (
                 dc48_entity
                 and not self._support_manual["dc48"]
                 and desired["dc48"] != self._support_state["dc48"]
+                and self._legacy_support_permitted("dc48", desired["dc48"], coordinate)
             ):
-                if await self._switch_entity(
+                was_on = self._entity_tristate(dc48_entity) is True
+                switched = await self._switch_entity(
                     dc48_entity, desired["dc48"], actor_owner=SUPPLY_OWNER
+                )
+                if self._support_manual["dc48"] or not self._legacy_support_permitted(
+                    "dc48", desired["dc48"], coordinate
                 ):
+                    await self._restore_legacy_source(
+                        "dc48", was_on, None, expected_bindings=(dc48_entity, None)
+                    )
+                elif switched:
                     # A successful service call is no device confirmation; the
                     # idle re-sync corrects _support_state on the next cycle.
                     self._support_state["dc48"] = desired["dc48"]
@@ -6992,11 +7163,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dc24_entity
                 and not self._support_manual["dc24"]
                 and desired["dc24"] != self._support_state["dc24"]
+                and self._legacy_support_permitted("dc24", desired["dc24"], coordinate)
             ):
+                was_on = self._entity_tristate(dc24_entity) is True
+                dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
+                dcdc_was_on = self._entity_tristate(dcdc) if dcdc else None
+
+                def permitted() -> bool:
+                    return not self._support_manual[
+                        "dc24"
+                    ] and self._legacy_support_permitted(
+                        "dc24", desired["dc24"], coordinate
+                    )
+
                 # _sequence_dc24's False covers BOTH failure classes the F7/U5
                 # escalation counts: a failed service call AND an unconfirmed
                 # make-before-break switchover.
-                if await self._sequence_dc24(desired["dc24"], dc24_entity):
+                switched = await self._sequence_dc24(
+                    desired["dc24"],
+                    dc24_entity,
+                    may_start=permitted,
+                    may_remove=permitted,
+                )
+                if not permitted():
+                    await self._restore_legacy_source(
+                        "dc24",
+                        was_on,
+                        dcdc_was_on,
+                        expected_bindings=(dc24_entity, dcdc),
+                    )
+                elif switched:
                     self._support_state["dc24"] = desired["dc24"]
                     _LOGGER.info(
                         "24 V rail now fed by %s",
@@ -7273,8 +7469,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Planner-G4 parity: rec-off only grid-feeds the loads when PV cannot
         # cover them. Strict `<` (PV exactly equal counts as covered) mirrors
         # `_slot_serviceable`'s `pv_wh + _EPS < ac_wh`.
-        rec_off_grid_fed = (not self._inverter_recommendation) and (
-            pv_power_w < running_load_power_w
+        coordinate_current = self.voltage_gate.coordinate_permission_valid(
+            self.voltage_gate.published_coordinate
+        )
+        rec_off_grid_fed = (
+            coordinate_current
+            and not self._inverter_recommendation
+            and pv_power_w < running_load_power_w
         )
         guard = soc_low or rec_off_grid_fed
         if guard and not prev:
@@ -7871,6 +8072,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         captured = []
         for action in actions:
             command = LoadAction.from_legacy(action)
+            if not command.coordinate_captured:
+                command = replace(
+                    command,
+                    soc_coordinate=getattr(
+                        getattr(self, "voltage_gate", None),
+                        "published_coordinate",
+                        None,
+                    ),
+                    coordinate_captured=True,
+                )
             if command.control_generation is None:
                 command = replace(
                     command,
@@ -8385,6 +8596,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass, self._tracked_entities(), self._handle_entity_change
             )
             self._listeners_setup = True
+            self.voltage_gate.start_observing()
             self.live_ac.start()
         except Exception as err:
             _LOGGER.warning(
@@ -8619,6 +8831,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.appliances.stop()
         self.operation_recorder.stop()
         self._actuation_shutdown = True
+        self.voltage_gate.stop_observing()
         self.live_ac.stop()
         if self._plan_boundary_cancel is not None:
             self._plan_boundary_cancel()
@@ -8664,6 +8877,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.operation_recorder.storage.stop_scheduling()
         self.live_ac.stop()
         self.cascade_manager.cleanup()
+        self.voltage_gate.stop_observing()
         self.learner.async_unschedule()
         if self._unsub_state_listener is not None:
             self._unsub_state_listener()
