@@ -417,3 +417,46 @@ for (const kind of ["cascade", "loads"]) {
     await expect(page.getByRole("status")).toContainText("Last plan captured");
   });
 }
+
+test("measured PSU expectation ends separately from the safety curve", async ({
+  page,
+}) => {
+  const attrs = {
+    ...attributes,
+    forecast: attributes.forecast.map((point, index) =>
+      index < 2 ? { ...point, expected_soc: [40, 65][index] } : point,
+    ),
+    soc_expectation: { status: "available", delivery_w: 35 },
+  };
+  await mount(page, "forecast", attrs);
+  const card = page.locator("battery-manager-forecast-card");
+  const safety = card.locator('[data-soc-curve="safety"]');
+  const expected = card.locator('[data-soc-curve="expected"]');
+  await expect(card.locator("[data-soc-curve-legend]")).toContainText(
+    "Planning and safety curve",
+  );
+  await expect(expected).toHaveAttribute("stroke-dasharray", "5 3");
+  expect((await safety.getAttribute("points")).split(" ")).toHaveLength(3);
+  expect((await expected.getAttribute("points")).split(" ")).toHaveLength(2);
+  await card.locator("#chart").focus();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowRight");
+  await expect(card.locator("#readout")).toContainText(
+    "With continued 48 V delivery 65 %",
+  );
+  await page.keyboard.press("End");
+  await expect(card.locator("#readout")).not.toContainText(
+    "With continued 48 V delivery",
+  );
+  await refresh(page, {
+    ...attributes,
+    soc_expectation: { status: "unqualified" },
+  });
+  await expect(expected).toHaveCount(0);
+  await expect(card.locator("[data-soc-curve-explanation]")).toContainText(
+    "30 minutes of continuous 48 V DC output readings",
+  );
+  await refresh(page, attributes);
+  await expect(card.locator("[data-soc-curve-legend]")).toHaveCount(0);
+  await expect(safety).toHaveCount(1);
+});

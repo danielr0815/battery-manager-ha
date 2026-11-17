@@ -350,12 +350,19 @@ export class BatteryManagerForecastCard extends HTMLElement {
       .map((p) => ({
         time: new Date(p.t).getTime(),
         soc: Number(p.soc),
+        expectedSoc:
+          typeof p.expected_soc === "number" &&
+          p.expected_soc >= 0 &&
+          p.expected_soc <= 100
+            ? p.expected_soc
+            : undefined,
         feedin: num(p.feedin) ?? 0,
       }))
       .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.soc));
     if (points.length < 2) {
       return this._message(t("no_data"));
     }
+    const expectationStatus = a.soc_expectation?.status;
     const horizonMs = Number(this._config.hours) * 3600 * 1000;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -496,6 +503,10 @@ export class BatteryManagerForecastCard extends HTMLElement {
     const line = "var(--divider-color, #e0e0e0)";
     const text = "var(--secondary-text-color, #727272)";
     const accent = "var(--primary-color, #03a9f4)";
+    // Fallbacks meet 3:1 against light and dark cards. Dashes keep the
+    // expectation distinguishable without relying on color.
+    const safetyColor = "var(--bmpc-soc-safety-color, #0277bd)";
+    const expectationColor = "var(--bmpc-soc-expected-color, #388e3c)";
     const warn = "var(--warning-color, #ff9800)";
     const err = "var(--error-color, #db4437)";
 
@@ -606,9 +617,22 @@ export class BatteryManagerForecastCard extends HTMLElement {
         " ",
       )} ${x(points[points.length - 1].time).toFixed(1)},${y(0)}"
         fill="${accent}" opacity="0.12"/>`,
-      `<polyline points="${coords.join(" ")}" fill="none" stroke="${accent}"
+      `<polyline data-soc-curve="safety" points="${coords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
         stroke-width="2" stroke-linejoin="round"/>`,
     );
+
+    const expectationEnd = points.findIndex((p) => p.expectedSoc == null);
+    const expected =
+      expectationStatus === "available"
+        ? points.slice(0, expectationEnd < 0 ? points.length : expectationEnd)
+        : [];
+    if (expected.length >= 2) {
+      const expectedCoords = expected.map(
+        (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`,
+      );
+      svg.push(`<polyline data-soc-curve="expected" points="${expectedCoords.join(" ")}"
+        fill="none" stroke="${expectationColor}" stroke-width="2" stroke-dasharray="5 3"/>`);
+    }
 
     // "now" marker: the curve starts at the current SOC
     svg.push(
@@ -691,6 +715,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
       lang,
       lanes,
       inverterFloor: activeReserve && showInverterFloor ? invMin : undefined,
+      showExpectation: expected.length >= 2,
     };
 
     const whenFmt = dateTimeFormat(this._hass, {
@@ -846,6 +871,14 @@ export class BatteryManagerForecastCard extends HTMLElement {
       .join("");
 
     return `
+      ${
+        expectationStatus
+          ? `<div class="legend" data-soc-curve-legend style="color:var(--primary-text-color, inherit)">
+        <span><span aria-hidden="true" style="color:${safetyColor}">━</span> ${esc(t("soc_safety_curve"))}</span>
+        ${expected.length >= 2 ? `<span><span aria-hidden="true" style="color:${expectationColor}">┄</span> ${esc(t("soc_expected_curve"))}</span>` : ""}
+      </div><div class="readout" data-soc-curve-explanation>${esc(t(expected.length >= 2 ? "soc_expected_basis" : expectationStatus === "unqualified" ? "soc_expected_unqualified" : "soc_expected_no_window"))}</div>`
+          : ""
+      }
       <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
@@ -1044,12 +1077,18 @@ export class BatteryManagerForecastCard extends HTMLElement {
       meta.inverterFloor === undefined
         ? ""
         : ` · ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
+    const forecastText =
+      nearest.soc == null
+        ? ""
+        : meta.showExpectation && nearest.expectedSoc != null
+          ? ` · ${t("soc_safety_curve")} ${nearest.soc} % · ${t("soc_expected_curve")} ${nearest.expectedSoc} %`
+          : ` · ${nearest.soc} %`;
     const when = esc(
       `${selectionTime(
         this._hass,
         nearest.time,
         meta.points.map((p) => p.time),
-      )}${nearest.soc == null ? "" : ` · ${nearest.soc} %`}${floorText}`,
+      )}${forecastText}${floorText}`,
     );
     const chips = activeLanes
       .map((lane) => {

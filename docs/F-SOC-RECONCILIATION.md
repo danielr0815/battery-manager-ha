@@ -103,6 +103,44 @@ Die SOC-Kurve wird als konservativ gekennzeichnet, wenn zukünftige 48-V-Lieferu
 nicht verifiziert ist. Eine spätere zusätzliche Erwartungskurve benötigt ein
 qualifiziertes Modell; bedingte Szenarien ändern keine Schutz- oder Entnahmebudgets.
 
+## Erwartungskurve bei gemessener 48-V-Lieferung ab 0.66.0
+
+Die Erwartungskurve zeigt den SOC unter der Annahme, dass das 48-V-Netzteil
+weiter mindestens so viel DC-Leistung abgibt wie im beobachteten Abschnitt.
+Der Abschnitt gehört zur aktuellen, bestätigten Schaltfolge. Beide Netzteile
+sind eingeschaltet, der DC/DC-Wandler ist bestätigt aus und das Inverterlimit
+steht bestätigt auf null. Konfiguriertes Blockierungsfeedback wird ebenfalls
+geprüft. Die Messung nutzt die bestehende optionale Zuordnung
+`support_dc48_output_power_entity` und verarbeitet originale HA-Publikationen
+einschließlich erneut gemeldeter unveränderter Werte. Eine konfigurierte
+48-V-Stromgrenze liefert die Obergrenze für plausible Messwerte. Dafür ist eine
+eindeutig als DC-Ausgang gebundene Messstelle erforderlich. Als angenommen
+oder wiederhergestellt markierte Zustände gelten als unbelegt.
+
+Die Leistung ist das Minimum aus mindestens 30 Minuten zusammenhängenden
+DC-Messmeldungen. Jeder Abstand und das Alter der letzten Meldung dürfen
+höchstens 30 Sekunden betragen. Ein gemeldeter Nullwert zählt zum Minimum.
+Wechsel im bestätigten Versorgungsmodus, neue Messbindungen, Lücken und
+ungültige Messwerte trennen die Abschnitte. Nach einem Neustart beginnt die
+Beobachtung neu. Ohne qualifizierte Messungen zeigt die Karte die Planungs- und
+Sicherheitskurve mit einem Hinweis auf die fehlende Erwartungskurve.
+
+Die DC-Lieferannahme gilt höchstens über die beobachtete Zeitspanne und maximal
+48 Stunden. Die Projektion folgt zusammenhängenden, vollständig belegten
+Planintervallen im beobachteten Modus. Eine geplante Abschaltung, eine andere
+Versorgungsart oder ein ungedeckter DC-Bedarf beenden die Linie. Der berechnete
+SOC-Vorteil ersetzt ausschließlich geplante Batterieentnahme für die native
+48-V-Grundlast und zieht bereits angesetzte 48-V-Lieferung ab. Zusätzliche
+Netzladung, Entladebudget und Schaltentscheidungen folgen daraus nicht.
+Die übrigen Energieflüsse stammen aus demselben angenommenen Plan. Das Modell
+schätzt daher weder zusätzlichen Netzbezug noch einen neuen optimalen Plan.
+
+Der Forecast-Sensor veröffentlicht die optionalen Erwartungswerte an denselben
+Zeitpunkten wie den Plan. Das Dashboard zeigt die Linie gestrichelt und macht
+die Annahme neben dem Diagramm sichtbar. Planner-Replay, Schaltungen,
+Freigaben und der skalare Forecast-Sensor verwenden weiterhin den akzeptierten
+Plan. Die neue Kurve ist keine statistische Unter- oder Obergrenze.
+
 ## Kompatibilität und Nachweise
 
 Alte Planner-Aufzeichnungen ohne Koordinaten- oder PSU-Snapshot behalten neutrale

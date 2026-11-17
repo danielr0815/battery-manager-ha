@@ -215,6 +215,11 @@ var STRINGS = {
     report_soc_coordinate_explanation: "The reported BMS SOC can drift and be recalibrated near the upper range. An adjustment is not itself a device fault. Measured energy change does not independently determine absolute SOC.",
     report_soc_conservative_forecast: "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
     soc_phase_tracking: "Observing the current SOC coordinate",
+    soc_safety_curve: "Planning and safety curve",
+    soc_expected_curve: "With continued 48 V delivery",
+    soc_expected_basis: "The dashed curve assumes continued measured 48 V delivery under the same switching conditions. Planning uses the solid curve.",
+    soc_expected_unqualified: "The expected curve needs at least 30 minutes of continuous 48 V DC output readings in the current supply mode.",
+    soc_expected_no_window: "The observed 48 V delivery does not support an expected curve for the current schedule.",
     soc_observation_unknown: "Unknown observation",
     soc_phase_reconciling: "SOC coordinate is being adjusted",
     soc_phase_settling: "Collecting stable observations after adjustment",
@@ -613,6 +618,11 @@ var STRINGS = {
     report_soc_coordinate_explanation: "Der gemeldete BMS-SOC kann driften und im oberen Bereich nachkalibriert werden. Eine Nachf\xFChrung ist f\xFCr sich kein Ger\xE4tefehler. Die gemessene Energie\xE4nderung bestimmt keinen unabh\xE4ngig bekannten absoluten SOC.",
     report_soc_conservative_forecast: "Konservative SOC-Prognose: K\xFCnftige 48-V-St\xFCtzung wird nur bei g\xFCltigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zuk\xFCnftige Lieferleistung.",
     soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
+    soc_safety_curve: "Planungs- und Sicherheitskurve",
+    soc_expected_curve: "Bei anhaltender 48-V-Lieferung",
+    soc_expected_basis: "Die gestrichelte Kurve setzt voraus, dass die gemessene 48-V-Lieferung bei gleicher Schaltung anh\xE4lt. F\xFCr die Planung gilt die durchgezogene Kurve.",
+    soc_expected_unqualified: "Die Erwartungskurve ben\xF6tigt mindestens 30 Minuten durchgehende Messwerte der 48-V-DC-Abgabe im aktuellen Versorgungsmodus.",
+    soc_expected_no_window: "Aus der beobachteten 48-V-Lieferung ergibt sich f\xFCr den aktuellen Schaltplan keine Erwartungskurve.",
     soc_observation_unknown: "Beobachtung unbekannt",
     soc_phase_reconciling: "SOC-Koordinate wird nachgef\xFChrt",
     soc_phase_settling: "Stabile Beobachtungen nach der Nachf\xFChrung sammeln",
@@ -2299,11 +2309,13 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     let points = a.forecast.filter((p) => p && p.t != null && p.soc != null).map((p) => ({
       time: new Date(p.t).getTime(),
       soc: Number(p.soc),
+      expectedSoc: typeof p.expected_soc === "number" && p.expected_soc >= 0 && p.expected_soc <= 100 ? p.expected_soc : void 0,
       feedin: num(p.feedin) ?? 0
     })).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.soc));
     if (points.length < 2) {
       return this._message(t("no_data"));
     }
+    const expectationStatus = a.soc_expectation?.status;
     const horizonMs = Number(this._config.hours) * 3600 * 1e3;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -2398,6 +2410,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     const line = "var(--divider-color, #e0e0e0)";
     const text = "var(--secondary-text-color, #727272)";
     const accent = "var(--primary-color, #03a9f4)";
+    const safetyColor = "var(--bmpc-soc-safety-color, #0277bd)";
+    const expectationColor = "var(--bmpc-soc-expected-color, #388e3c)";
     const warn = "var(--warning-color, #ff9800)";
     const err = "var(--error-color, #db4437)";
     const svg = [];
@@ -2485,9 +2499,18 @@ var BatteryManagerForecastCard = class extends HTMLElement {
         " "
       )} ${x(points[points.length - 1].time).toFixed(1)},${y(0)}"
         fill="${accent}" opacity="0.12"/>`,
-      `<polyline points="${coords.join(" ")}" fill="none" stroke="${accent}"
+      `<polyline data-soc-curve="safety" points="${coords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
         stroke-width="2" stroke-linejoin="round"/>`
     );
+    const expectationEnd = points.findIndex((p) => p.expectedSoc == null);
+    const expected = expectationStatus === "available" ? points.slice(0, expectationEnd < 0 ? points.length : expectationEnd) : [];
+    if (expected.length >= 2) {
+      const expectedCoords = expected.map(
+        (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`
+      );
+      svg.push(`<polyline data-soc-curve="expected" points="${expectedCoords.join(" ")}"
+        fill="none" stroke="${expectationColor}" stroke-width="2" stroke-dasharray="5 3"/>`);
+    }
     svg.push(
       `<circle cx="${x(t0)}" cy="${y(points[0].soc)}" r="3.5"
         fill="${accent}"/>`,
@@ -2553,7 +2576,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       t1,
       lang,
       lanes,
-      inverterFloor: activeReserve && showInverterFloor ? invMin : void 0
+      inverterFloor: activeReserve && showInverterFloor ? invMin : void 0,
+      showExpectation: expected.length >= 2
     };
     const whenFmt = dateTimeFormat(this._hass, {
       weekday: "short",
@@ -2630,6 +2654,10 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       )} (${t("root")} ${root} kWh)</span>`;
     }).join("");
     return `
+      ${expectationStatus ? `<div class="legend" data-soc-curve-legend style="color:var(--primary-text-color, inherit)">
+        <span><span aria-hidden="true" style="color:${safetyColor}">\u2501</span> ${esc(t("soc_safety_curve"))}</span>
+        ${expected.length >= 2 ? `<span><span aria-hidden="true" style="color:${expectationColor}">\u2504</span> ${esc(t("soc_expected_curve"))}</span>` : ""}
+      </div><div class="readout" data-soc-curve-explanation>${esc(t(expected.length >= 2 ? "soc_expected_basis" : expectationStatus === "unqualified" ? "soc_expected_unqualified" : "soc_expected_no_window"))}</div>` : ""}
       <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
@@ -2782,12 +2810,13 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       (lane) => lane.kind === "switching" || covering(lane)
     );
     const floorText = meta.inverterFloor === void 0 ? "" : ` \xB7 ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
+    const forecastText = nearest.soc == null ? "" : meta.showExpectation && nearest.expectedSoc != null ? ` \xB7 ${t("soc_safety_curve")} ${nearest.soc} % \xB7 ${t("soc_expected_curve")} ${nearest.expectedSoc} %` : ` \xB7 ${nearest.soc} %`;
     const when = esc(
       `${selectionTime(
         this._hass,
         nearest.time,
         meta.points.map((p) => p.time)
-      )}${nearest.soc == null ? "" : ` \xB7 ${nearest.soc} %`}${floorText}`
+      )}${forecastText}${floorText}`
     );
     const chips = activeLanes.map((lane) => {
       const block = covering(lane);

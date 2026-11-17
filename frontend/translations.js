@@ -28,6 +28,14 @@ export const STRINGS = {
     report_soc_conservative_forecast:
       "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
     soc_phase_tracking: "Observing the current SOC coordinate",
+    soc_safety_curve: "Planning and safety curve",
+    soc_expected_curve: "With continued 48 V delivery",
+    soc_expected_basis:
+      "The dashed curve assumes continued measured 48 V delivery under the same switching conditions. Planning uses the solid curve.",
+    soc_expected_unqualified:
+      "The expected curve needs at least 30 minutes of continuous 48 V DC output readings in the current supply mode.",
+    soc_expected_no_window:
+      "The observed 48 V delivery does not support an expected curve for the current schedule.",
     soc_observation_unknown: "Unknown observation",
     soc_phase_reconciling: "SOC coordinate is being adjusted",
     soc_phase_settling: "Collecting stable observations after adjustment",
@@ -492,6 +500,14 @@ export const STRINGS = {
     report_soc_conservative_forecast:
       "Konservative SOC-Prognose: Künftige 48-V-Stützung wird nur bei gültigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zukünftige Lieferleistung.",
     soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
+    soc_safety_curve: "Planungs- und Sicherheitskurve",
+    soc_expected_curve: "Bei anhaltender 48-V-Lieferung",
+    soc_expected_basis:
+      "Die gestrichelte Kurve setzt voraus, dass die gemessene 48-V-Lieferung bei gleicher Schaltung anhält. Für die Planung gilt die durchgezogene Kurve.",
+    soc_expected_unqualified:
+      "Die Erwartungskurve benötigt mindestens 30 Minuten durchgehende Messwerte der 48-V-DC-Abgabe im aktuellen Versorgungsmodus.",
+    soc_expected_no_window:
+      "Aus der beobachteten 48-V-Lieferung ergibt sich für den aktuellen Schaltplan keine Erwartungskurve.",
     soc_observation_unknown: "Beobachtung unbekannt",
     soc_phase_reconciling: "SOC-Koordinate wird nachgeführt",
     soc_phase_settling: "Stabile Beobachtungen nach der Nachführung sammeln",

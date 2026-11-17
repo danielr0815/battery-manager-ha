@@ -1,9 +1,17 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.65.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.66.0. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
+
+## SOC-Erwartung bei gemessener Netzteillieferung 0.66.0
+
+| Kombination / Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Dauerhafte DC-Abgabe, Nullmessung, Zeitlücke oder Zustandswechsel | Untergrenze aus frischen Originalmeldungen im bestätigten Modus. Bei Unterbrechung beginnt die Beobachtung neu. | `ha/test_psu_on_delivery.py` |
+| Bereits angerechnete Lieferung, teilweise DC-Deckung und andere geplante Quellen | Nur vermiedene native Entladung und nur bis zum Ende der belegten Dauer oder Schaltfolge. | `core/test_psu_expectation.py` |
+| Unterschiedliche SOC-Kurven bei gleicher Planung | Sensorwert und Plan bleiben auf der Sicherheitskurve. Die gestrichelte Linie endet sichtbar am letzten abgedeckten Zeitpunkt. | `ha/test_psu_forecast_display.py`, `browser/review-regressions.spec.mjs` |
 
 ## SOC-Koordinate und Netzteil-Evidenz 0.65.0
 

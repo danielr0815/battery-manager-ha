@@ -73,6 +73,7 @@ class VoltageGateRuntime:
 
     def start_observing(self) -> None:
         """Keep original publications before planner debounce / five-second ticks."""
+        self.psu.start(self.owner)
         entities = tuple(
             entity
             for key in (
@@ -84,7 +85,7 @@ class VoltageGateRuntime:
         )
         if self._coordinate_unsub and entities == self._coordinate_entities:
             return
-        self.stop_observing()
+        self._stop_coordinate_observing()
         self._coordinate_entities = entities
         for entity in entities:
             state = self.owner.hass.states.get(entity)
@@ -100,6 +101,10 @@ class VoltageGateRuntime:
             ]
 
     def stop_observing(self) -> None:
+        self.psu.stop()
+        self._stop_coordinate_observing()
+
+    def _stop_coordinate_observing(self) -> None:
         for unsubscribe in self._coordinate_unsub:
             unsubscribe()
         self._coordinate_unsub.clear()
@@ -487,6 +492,7 @@ class VoltageGateRuntime:
             "power_credit": "estimate_only",
             "coordinate": {"mode": "active", **self.monitor.diagnostic()},
             "psu_observations": self.psu.diagnostic(),
+            "psu48_on_delivery": self.psu.expected48_diagnostic(now),
             "qualification": {
                 "query_current_a": current,
                 "query_basis": "native48_base_only",
@@ -517,4 +523,5 @@ class VoltageGateRuntime:
             "soc_coordinate": self.monitor.diagnostic(),
             "coordinate_events": list(self.monitor.events),
             "psu_observations": self.psu.private_diagnostic(),
+            "psu48_on_delivery": self.psu.expected48_diagnostic(now),
         }

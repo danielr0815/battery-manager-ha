@@ -263,6 +263,7 @@ from .core.model import (
     SocCoordinateSnapshot,
 )
 from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
+from .core.psu_expectation import expected_soc_with_psu48
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
 from .execution import execution_attributes, load_execution
@@ -5255,6 +5256,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         local_now = fixed_local_time(now)
         soc_forecast = [{"t": local_now.isoformat(), "soc": round(soc, 1)}]
+        soc_expectation: dict[str, Any] | None = None
+        expected_soc: tuple[float, ...] = ()
+        if config.support.adaptive_voltage_gate:
+            # Read proof after the actuation awaits. An old ON episode must
+            # not authorize a display projection after a source transition.
+            evidence_now = dt_util.now()
+            self.voltage_gate.psu.capture(self, evidence_now)
+            evidence = self.voltage_gate.psu.expected48(evidence_now)
+            soc_expectation = {"status": "unqualified"}
+            if evidence is not None:
+                delivery_w, observed_seconds = evidence
+                expected_soc = expected_soc_with_psu48(
+                    config, inputs, result.trajectory, delivery_w, observed_seconds
+                )
+                soc_expectation = {
+                    "status": "available" if expected_soc else "no_window",
+                    "delivery_w": delivery_w,
+                }
+                if expected_soc:
+                    soc_forecast[0]["expected_soc"] = round(soc, 1)
         # F-FEEDIN: the per-slot planned feed-in power rides on each forecast
         # point (only when the schedule is populated — the card renders its
         # lane purely on attribute presence, keeping old backends compatible).
@@ -5266,6 +5287,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "t": (slot.start + timedelta(hours=slot.duration)).isoformat(),
                 "soc": round(flow.soc_end_percent, 1),
             }
+            if i < len(expected_soc):
+                point["expected_soc"] = round(expected_soc[i], 1)
             if config.support.coordinated:
                 point["support_mode"] = flow.support_mode
                 point["psu24_wh"] = round(flow.psu24_delivered_wh, 2)
@@ -5439,6 +5462,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if run.appliance_id in self.entry.subentries
             ],
             "soc_forecast": soc_forecast,
+            "soc_expectation": soc_expectation,
             "switching_schedule": [
                 {
                     "start": interval.start.isoformat(),

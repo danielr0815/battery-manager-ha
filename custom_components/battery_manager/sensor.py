@@ -550,6 +550,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
             "reserve",
             "coordinated_support",
             "gate_calibration",
+            "soc_expectation",
         }
     )
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -615,6 +616,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
         per_day_loads = _per_day_attrs(daily, "loads_kwh")
         return {
             "forecast": data.get("soc_forecast") or [],
+            "soc_expectation": data.get("soc_expectation"),
             "switching_schedule": data.get("switching_schedule") or [],
             "soc_threshold_percent": data.get("soc_threshold_percent"),
             "grid_import_kwh": data.get("grid_import_kwh"),
