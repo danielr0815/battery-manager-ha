@@ -135,12 +135,14 @@ async def test_bad_median_and_band_buckets_keep_distinct_dst_folds(start_entry, 
             BAD_NOVEMBER: 800,
         },
         wh_period_p10={
-            "2026-10-25T02:00:00+02:00": 200,
+            "2026-10-25T02:00:00+02:00": 160,
+            "2026-10-25T02:15:00+02:00": 40,
             "2026-10-25T02:00:00+01:00": 250,
             BAD_NOVEMBER: 700,
         },
         wh_period_p90={
-            "2026-10-25T02:00:00+02:00": 600,
+            "2026-10-25T02:00:00+02:00": 480,
+            "2026-10-25T02:15:00+02:00": 120,
             "2026-10-25T02:00:00+01:00": 750,
             "2026-10-25T03:00:00+24:00": 650,
         },
@@ -210,3 +212,228 @@ async def test_unusable_band_leaves_fresh_median_and_fresh_other_band(
         s for s in inputs.slots if s.start.isoformat() == "2026-11-18T10:00:00+01:00"
     )
     assert (slot.pv_wh, slot.pv_p10_wh, slot.pv_p90_wh) == (200, None, 360)
+
+
+async def test_multiday_dc_uses_own_local_publication_day_only(start_entry):
+    # 22:15 UTC is already the following day in Berlin, which has both folds.
+    published = datetime(2026, 10, 24, 22, 15, tzinfo=UTC)
+    first = "2026-10-25T02:00:00+02:00"
+    second = "2026-10-25T02:00:00+01:00"
+    next_day = "2026-10-26T10:00:00+01:00"
+    coordinator = await start_entry(
+        published,
+        0.8,
+        wh_period={first: 600, second: 400, next_day: 900},
+        wh_period_p10={first: 500, second: 300, next_day: 700},
+        wh_period_p90={first: 800, second: 600, next_day: 1000},
+    )
+    _, inputs, _ = coordinator._last_planner_recording
+    slots = {s.start.isoformat(): s for s in inputs.slots}
+    assert (slots[first].pv_wh, slots[first].pv_p10_wh, slots[first].pv_p90_wh) == (
+        480,
+        400,
+        640,
+    )
+    assert (slots[second].pv_wh, slots[second].pv_p10_wh, slots[second].pv_p90_wh) == (
+        320,
+        240,
+        480,
+    )
+    assert (slots[next_day].pv_wh, slots[next_day].pv_p10_wh) == (0, None)
+
+
+@pytest.mark.parametrize(
+    ("curves", "expected"),
+    [
+        (
+            dict(
+                wh_period={NOVEMBER_BUCKET: 1000},
+                wh_period_ac={},
+                wh_period_ac_p10={NOVEMBER_BUCKET: 450},
+                wh_period_p90={NOVEMBER_BUCKET: 1200},
+            ),
+            (500, 450, 600),
+        ),
+        (
+            dict(
+                wh_period={NOVEMBER_BUCKET: 1000},
+                wh_period_ac={BAD_NOVEMBER: 200},
+                wh_period_ac_p10={NOVEMBER_BUCKET: 450},
+            ),
+            (500, 450, None),
+        ),
+        (
+            dict(
+                wh_period={NOVEMBER_BUCKET: 1000},
+                wh_period_ac={NOVEMBER_BUCKET: 500},
+                wh_period_p10={NOVEMBER_BUCKET: 700},
+                wh_period_p90={NOVEMBER_BUCKET: 1200},
+            ),
+            (500, 350, 600),
+        ),
+        (
+            dict(
+                wh_period_ac={NOVEMBER_BUCKET: 500},
+                wh_period_p10={NOVEMBER_BUCKET: 700},
+                wh_period_ac_p90={NOVEMBER_BUCKET: 600},
+            ),
+            (500, None, 600),
+        ),
+        (
+            dict(wh_period={NOVEMBER_BUCKET: 1000}, wh_period_ac={NOVEMBER_BUCKET: 0}),
+            (0, None, None),
+        ),
+    ],
+)
+async def test_hourly_channels_keep_ac_provenance(start_entry, curves, expected):
+    coordinator = await start_entry(NOVEMBER, 0.5, **curves)
+    _, inputs, _ = coordinator._last_planner_recording
+    slot = next(
+        s for s in inputs.slots if s.start.isoformat() == "2026-11-18T10:00:00+01:00"
+    )
+    assert (slot.pv_wh, slot.pv_p10_wh, slot.pv_p90_wh) == expected
+
+
+async def test_fresh_hour_wins_over_cached_median_and_bands_as_a_unit(
+    hass, freezer, start_entry
+):
+    tomorrow = "2026-11-19T10:15:00+01:00"
+    coordinator = await start_entry(NOVEMBER, 0.9, wh_period_ac={NOVEMBER_BUCKET: 900})
+    hass.states.async_set(
+        "sensor.pv_tomorrow",
+        "0.9",
+        {
+            "unit_of_measurement": "kWh",
+            "wh_period_ac": {NOVEMBER_BUCKET: 900, tomorrow: 900},
+            "wh_period_ac_p10": {NOVEMBER_BUCKET: 800, tomorrow: 500},
+            "wh_period_ac_p90": {NOVEMBER_BUCKET: 1000, tomorrow: 1000},
+        },
+    )
+    await coordinator.async_refresh()
+    _, captured, _ = coordinator._last_planner_recording
+    assert coordinator.pv_plan_evidence_valid(
+        coordinator.build_system_config(), captured
+    )
+
+    freezer.move_to(NOVEMBER.replace(minute=5))
+    hass.states.async_set("sensor.pv_tomorrow", "unavailable")
+    _publish_today(
+        hass,
+        0.2,
+        wh_period_ac={NOVEMBER_BUCKET: 200},
+        wh_period_ac_p90={NOVEMBER_BUCKET: 300},
+    )
+    assert not coordinator.pv_plan_evidence_valid(
+        coordinator.build_system_config(), captured
+    )
+    await coordinator.async_refresh()
+    _, inputs, _ = coordinator._last_planner_recording
+    slots = {s.start.isoformat(): s for s in inputs.slots if s.start.hour == 10}
+    today = slots["2026-11-18T10:00:00+01:00"]
+    assert (today.pv_wh, today.pv_p10_wh, today.pv_p90_wh) == (200, None, 300)
+    next_day = slots["2026-11-19T10:00:00+01:00"]
+    assert (next_day.pv_wh, next_day.pv_p10_wh, next_day.pv_p90_wh) == (900, 500, 1000)
+
+
+async def test_daily_role_breaks_only_equal_publication_timestamps(
+    hass, freezer, start_entry
+):
+    coordinator = await start_entry(
+        NOVEMBER,
+        0.2,
+        wh_period_ac={NOVEMBER_BUCKET: 200},
+        wh_period_ac_p10={NOVEMBER_BUCKET: 100},
+    )
+    hour = datetime.fromisoformat("2026-11-18T10:00:00+01:00")
+
+    def publish_overlap():
+        hass.states.async_set(
+            "sensor.pv_tomorrow",
+            "0.5",
+            {"unit_of_measurement": "kWh", "wh_period_ac": {NOVEMBER_BUCKET: 500}},
+            force_update=True,
+        )
+
+    publish_overlap()
+    median, low, high = coordinator._get_pv_hourly(NOVEMBER)
+    assert (median[hour], low[hour], high) == (200, 100, None)
+
+    newer = NOVEMBER.replace(minute=5)
+    freezer.move_to(newer)
+    publish_overlap()
+    median, low, high = coordinator._get_pv_hourly(newer)
+    assert (median[hour], low, high) == (500, None, None)
+
+
+async def test_future_day_paired_curves_are_independent_from_other_daily_states(
+    hass, start_entry
+):
+    tomorrow = "2026-11-19T10:15:00+01:00"
+    no_pair = "2026-11-20T10:15:00+01:00"
+    coordinator = await start_entry(
+        NOVEMBER,
+        0.8,
+        wh_period={NOVEMBER_BUCKET: 1000, tomorrow: 1600, no_pair: 1000},
+        wh_period_ac={tomorrow: 800},
+        wh_period_p10={tomorrow: 1200, no_pair: 500},
+        wh_period_p90={tomorrow: 1800, no_pair: 1400},
+    )
+    # A total from another publication cannot act as the AC reference for this
+    # curve. Tomorrow has a matching pair of its own, the day after does not.
+    hass.states.async_set("sensor.pv_day_after", "1", {"unit_of_measurement": "kWh"})
+    await coordinator.async_refresh()
+    median, low, high = coordinator._get_pv_hourly(NOVEMBER)
+    paired = datetime.fromisoformat("2026-11-19T10:00:00+01:00")
+    guess = datetime.fromisoformat("2026-11-20T10:00:00+01:00")
+    assert (median[paired], low[paired], high[paired]) == (800, 600, 900)
+    assert guess not in median and guess not in low and guess not in high
+
+
+@pytest.mark.parametrize(
+    ("ac_minute", "band_minute", "expected_p10"),
+    [(45, 0, None), (0, 0, 192), (0, 45, None)],
+)
+async def test_dc_band_needs_matching_raw_periods_for_ac_conversion(
+    start_entry, ac_minute, band_minute, expected_p10
+):
+    # The only daily state is for today. Tomorrow's conversion must come
+    # from the raw timestamps of the paired medians and the converted band.
+    dc = "2026-11-19T10:00:00+01:00"
+    ac = f"2026-11-19T10:{ac_minute:02d}:00+01:00"
+    band = f"2026-11-19T10:{band_minute:02d}:00+01:00"
+    coordinator = await start_entry(
+        NOVEMBER,
+        0.9,
+        wh_period={dc: 250},
+        wh_period_ac={ac: 200},
+        wh_period_p10={band: 240},
+        wh_period_ac_p90={ac: 260},
+    )
+    _, inputs, _ = coordinator._last_planner_recording
+    slot = next(s for s in inputs.slots if s.start.isoformat() == dc)
+    assert (slot.pv_wh, slot.pv_p10_wh, slot.pv_p90_wh) == (200, expected_p10, 260)
+
+
+@pytest.mark.parametrize(
+    ("median_attr", "band_attr"),
+    [
+        ("wh_period_ac", "wh_period_ac_p10"),
+        ("wh_period", "wh_period_p10"),
+        ("wh_period", "wh_period_ac_p10"),
+    ],
+)
+@pytest.mark.parametrize("both_periods", [False, True])
+async def test_hourly_band_must_cover_all_periods_of_selected_median(
+    start_entry, median_attr, band_attr, both_periods
+):
+    first = "2026-11-18T10:00:00+01:00"
+    second = "2026-11-18T10:15:00+01:00"
+    band = {second: 40}
+    if both_periods:
+        band[first] = 40
+    coordinator = await start_entry(
+        NOVEMBER, 0.1, **{median_attr: {first: 50, second: 50}, band_attr: band}
+    )
+    _, inputs, _ = coordinator._last_planner_recording
+    slot = next(s for s in inputs.slots if s.start.isoformat() == first)
+    assert (slot.pv_wh, slot.pv_p10_wh) == (100, 80 if both_periods else None)

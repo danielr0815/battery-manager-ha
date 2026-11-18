@@ -9,14 +9,31 @@ from typing import TYPE_CHECKING
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from .const import MAX_HISTORICAL_FORECAST_AGE_HOURS
+from .const import MAX_HISTORICAL_FORECAST_AGE_HOURS, REALIZED_ENERGY_UNIT_FACTORS_WH
 
 if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
+    from homeassistant.core import HomeAssistant, State
 
 
 _Source = tuple[str, ...]
 _DAY_SUFFIXES = (("_today",), ("_tomorrow",), ("_day_after_tomorrow", "_day_after"))
+
+
+def forecast_energy_wh(state: State, *, unitless_kwh: bool = False) -> float | None:
+    """Read declared energy. Only daily totals use the legacy unitless kWh."""
+    unit = state.attributes.get("unit_of_measurement")
+    if unitless_kwh and unit in (None, ""):
+        unit = "kWh"
+    factor = (
+        REALIZED_ENERGY_UNIT_FACTORS_WH.get(unit) if isinstance(unit, str) else None
+    )
+    if factor is None:
+        return None
+    try:
+        wh = float(state.state) * factor
+    except ValueError:
+        return None
+    return max(0.0, wh) if isfinite(wh) else None
 
 
 def _source(registry: er.EntityRegistry, entity: str, offset: int) -> _Source:
@@ -70,17 +87,12 @@ class DailyPVCache:
             if not cutoff <= published <= instant:
                 continue
             target = dt_util.as_local(published).date() + timedelta(days=offset)
-            try:
-                value = float(state.state)
-            except ValueError:
+            wh = forecast_energy_wh(state, unitless_kwh=True)
+            if wh is None:
                 continue
             previous = self._readings.get((target, source))
-            if (
-                isfinite(value)
-                and target >= today
-                and (previous is None or published >= previous[1])
-            ):
-                self._readings[target, source] = max(0.0, value), published
+            if target >= today and (previous is None or published >= previous[1]):
+                self._readings[target, source] = wh / 1000.0, published
         totals = [
             reading[0]
             if (reading := self._readings.get((today + timedelta(days=i), source)))

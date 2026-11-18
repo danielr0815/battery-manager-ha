@@ -4,6 +4,7 @@ Spec: docs/LOAD_CONTROL.md — charging active = input plug on AND charge-enable
 on; ownership rule / configurable input-off policy; last-known-SOC caching.
 """
 
+import asyncio
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -1265,9 +1266,7 @@ async def test_f10_hold_gated_off_when_conditions_unmet(hass):
     assert ("turn_on", PLUG) not in calls
 
 
-async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(
-    hass, monkeypatch
-):
+async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(hass, freezer):
     """(d) A gate loss (the shadow plan stops activating the load — the normal
     planner would no longer run it now) stops the hold after the min_runtime
     dwell via the normal path (flicker-INELIGIBLE, so min_off is not waived);
@@ -1308,7 +1307,7 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(
     # Past min_runtime with the gate still lost: stop via the normal path.
     calls.clear()
     t_off = t0 + timedelta(minutes=31)
-    monkeypatch.setattr(dt_util, "now", lambda: t_off)
+    freezer.tick(timedelta(minutes=31))
     await coordinator._apply_load_switching(
         _inactive_result(sub_id), t_off, (1.0,), 0.0, {}
     )
@@ -1319,6 +1318,8 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(
     # A gate-loss stop is NOT a flicker-continuation seed.
     assert coordinator._load_last_off[sub_id][1] is False
 
+    # Advance HA's clock too, so reported actuator edges follow their commands.
+    freezer.tick(timedelta(minutes=30))
     # Gate returns but min_off (45 min) not yet elapsed: no re-hold.
     calls.clear()
     await coordinator._apply_load_switching(
@@ -1332,6 +1333,7 @@ async def test_f10_hold_stops_on_gate_loss_then_reholds_after_min_off(
     assert ("turn_on", PLUG) not in calls
 
     # Gate returns AND min_off elapsed: the load is held again.
+    freezer.tick(timedelta(minutes=16))
     calls.clear()
     await coordinator._apply_load_switching(
         _inactive_result(sub_id),
@@ -5086,9 +5088,7 @@ async def test_output_off_cleanup_works_without_plan_and_preserves_charge_timest
     hass.states.async_set("switch.output", "off")
     calls.clear()
 
-    await stop_unsafe_loads(coordinator)
-    if coordinator._load_switch_task is not None:
-        await coordinator._load_switch_task
+    await asyncio.gather(*await stop_unsafe_loads(coordinator))
 
     assert ("turn_off", PLUG) in calls
     assert hass.states.is_state(PLUG, "off")
@@ -5902,3 +5902,87 @@ async def test_soc_diagnostic_plan_capture_is_coherent_during_async_planning(has
     assert plan["soc_percent"] == 40.0
     assert plan["soc_observation"] == expected
     assert coordinator._load_soc_observations[sub_id]["soc_percent"] == 77.0
+
+
+@pytest.mark.parametrize("gap_inside", [False, True])
+def test_learned_recharge_coverage_stops_at_each_fixed_anchor(gap_inside):
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.core.model import (
+        BatteryParams,
+        ConverterParams,
+        HourSlot,
+        PlanInputs,
+        ReserveParams,
+        SupportParams,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+    from custom_components.battery_manager.core.recharge import uncertainty_wh
+
+    now = datetime(2026, 10, 27, tzinfo=UTC)
+    config = SystemConfig(
+        battery=BatteryParams(1000, 5, 95, 1, 1),
+        charger=ConverterParams(1000, 1, 0),
+        inverter=ConverterParams(1000, 1, 0),
+        support=SupportParams(configured=True, coordinated=True, dc48_available=False),
+        reserve=ReserveParams(True, 1),
+    )
+    config = replace(config, control=replace(config.control, soc_buffer_percent=0))
+    # A timed release splits 00:00-01:00 in the plan. The 02:00 solar
+    # hour gives the fixed proof endpoint at 03:00.
+    series = (
+        (0, 0.25, 0, 25),
+        (0.25, 0.75, 0, 75),
+        (1, 1, 0, 600),
+        (2, 1, 325, 0),
+        (3, 1, 0, 0),
+    )
+    slots = tuple(
+        HourSlot(
+            index,
+            now + timedelta(hours=hour),
+            duration,
+            int(hour),
+            pv,
+            ac,
+            0,
+            pv_p10_wh=pv,
+        )
+        for index, (hour, duration, pv, ac) in enumerate(series)
+    )
+    inputs = PlanInputs(now, 80, slots)
+    predictions = [
+        {
+            "start": (now + timedelta(hours=hour)).isoformat(),
+            "ac": {"source": "learned", "p50_w": 100, "p80_w": 104},
+            "dc": {"source": "learned", "p50_w": 0, "p80_w": 0},
+        }
+        for hour in range(4)
+        if hour != (1 if gap_inside else 3)
+    ]
+    snapshot = BatteryManagerCoordinator._consumption_uncertainty_snapshot(
+        inputs, predictions
+    )
+
+    assert snapshot is not None
+    assert snapshot.intervals[0].start == now
+    assert uncertainty_wh(
+        snapshot, now + timedelta(minutes=15), now + timedelta(hours=1), config
+    ) == pytest.approx(3)
+    nominal = plan(config, replace(inputs, consumption_uncertainty=snapshot)).trajectory
+    legacy = plan(config, inputs).trajectory
+    summary = nominal.reserve_decision.recharge
+    assert summary.validations <= 32
+    assert nominal.end_soc_percent == pytest.approx(legacy.end_soc_percent)
+    assert bool(summary.certificates) is not gap_inside
+    if gap_inside:
+        assert "consumption_coverage" in summary.rejection_reasons
+        assert nominal.total_import_wh == pytest.approx(legacy.total_import_wh)
+    else:
+        assert all(
+            cert.anchor == now + timedelta(hours=3) for cert in summary.certificates
+        )
+        assert nominal.total_import_wh < legacy.total_import_wh

@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_INVERTER_LIMIT_ENTITY
-from .load_actuation import export_coordinate_cleanup
+from .load_actuation import (
+    export_coordinate_cleanup,
+    export_load_booking,
+    export_load_on_edges,
+)
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -32,6 +36,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         # cleanup evidence separate from valid charging/dwell authority.
         "load_control_generation": dict(self._load_control_generation),
         "revoked_load_starts": export_coordinate_cleanup(self),
+        "load_on_edges": export_load_on_edges(self),
         "load_released_actors": dict(self._load_released_actors),
         "cascade_state": self.cascade_manager.persistent_state_snapshot(),
         # Only the accumulated total is persisted; the in-progress tick cursor
@@ -137,6 +142,12 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
                 "state": request.state,
                 "owner": request.owner,
                 "sent": request.sent,
+                "context_id": request.context_id,
+                **(
+                    {"booking": booking}
+                    if (booking := export_load_booking(self, request)) is not None
+                    else {}
+                ),
             }
             for entity, request in self._load_actor_requests.items()
             if request.state != "confirmed"

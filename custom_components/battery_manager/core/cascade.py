@@ -117,6 +117,10 @@ def _allocate_aux_now(
 
     loads = {load.load_id: load for load in config.loads}
     states = {state.load_id: state for state in inputs.load_states}
+    terminal_state = states.get(cascade.terminal_load_id)
+    # A proven output path still depends on a reachable terminal.
+    if terminal_state is not None and not terminal_state.available:
+        return None
     terminal = loads[cascade.terminal_load_id]
     terminal_power_w = _effective_power_w(
         cascade.terminal_load_id, cascade, config, inputs

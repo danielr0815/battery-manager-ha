@@ -81,12 +81,12 @@ def slot_weights(
             )
             covered += seconds
             total += seconds * weight
-        seconds = slot.duration * 3600
+        seconds = (end - start).total_seconds()
         result.append(
-            total / covered
-            if covered >= seconds - 1e-6
+            None
+            if covered == 0
+            else total / covered
+            if covered >= seconds
             else (total + seconds - covered) / seconds
-            if covered > 0
-            else None
         )
     return result

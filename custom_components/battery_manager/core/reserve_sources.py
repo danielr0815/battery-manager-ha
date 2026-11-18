@@ -73,6 +73,11 @@ def grid_dc(config: SystemConfig, flow: HourFlows) -> float:
     """Actual PSU grid intake; old evidence retains its original accounting."""
     if flow.psu_grid_import_wh is not None:
         return flow.psu_grid_import_wh
+    return psu_ac_input_wh(config, flow)
+
+
+def psu_ac_input_wh(config: SystemConfig, flow: HourFlows) -> float:
+    """Total AC intake, including the part already supplied by PV."""
     return (
         flow.psu24_delivered_wh / config.support.psu24_eta
         + flow.psu48_delivered_wh / config.support.psu48_eta

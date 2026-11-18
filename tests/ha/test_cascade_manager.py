@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.config_entries import ConfigSubentry
+from homeassistant.core import Context, State
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -29,6 +30,7 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_ENERGY_LIMITED,
+    CONF_LOAD_GATE_ACTOR_MODE,
     CONF_LOAD_INPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
@@ -235,7 +237,9 @@ class _Coordinator:
     def _charging_is_active(self, data):
         return BatteryManagerCoordinator._charging_is_active(self, data)
 
-    async def _switch_entity(self, entity_id, turn_on, *, actor_owner=None):
+    async def _switch_entity(
+        self, entity_id, turn_on, *, actor_owner=None, context=None
+    ):
         self.calls.append((entity_id, turn_on))
         self.hass.states.values[entity_id].state = "on" if turn_on else "off"
         return True
@@ -1792,12 +1796,16 @@ async def test_live_two_fossibot_real_refreshes_keep_root_stable(
     real_switch_entity = coordinator._switch_entity
 
     async def observed_switch_entity(
-        entity_id: str, turn_on: bool, *, actor_owner: str | None = None
+        entity_id: str,
+        turn_on: bool,
+        *,
+        actor_owner: str | None = None,
+        context: Context | None = None,
     ) -> bool:
         actor_calls.append((entity_id, turn_on, actor_owner))
-        if actor_owner is None:
-            return await real_switch_entity(entity_id, turn_on)
-        return await real_switch_entity(entity_id, turn_on, actor_owner=actor_owner)
+        return await real_switch_entity(
+            entity_id, turn_on, actor_owner=actor_owner, context=context
+        )
 
     coordinator._switch_entity = observed_switch_entity
     state = coordinator.cascade_manager._state("chain")
@@ -6749,3 +6757,297 @@ async def test_shared_start_proof_uses_larger_effective_power_than_nominal(
             coordinate_captured=True,
         ),
     )
+
+
+@pytest.mark.parametrize("mode", ["exclusive", "shared"])
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "immediate",
+        "late",
+        "linked",
+        "after_window",
+        "operator",
+        "republished_operator",
+        "stale",
+    ],
+)
+async def test_root_charge_ack_after_soc_revocation_stops_only_new_gate(
+    monkeypatch, mode, reply
+):
+    from custom_components.battery_manager import cascade_manager
+    from custom_components.battery_manager.core.model import SocCoordinateSnapshot
+
+    now = datetime(2026, 2, 3, 12, tzinfo=UTC)
+    processing_time = now
+    monkeypatch.setattr(cascade_manager.dt_util, "utcnow", lambda: processing_time)
+    c = _Coordinator(now)
+    permission = True
+    c.voltage_gate = SimpleNamespace(
+        coordinate_permission_valid=lambda snapshot, **kw: permission
+    )
+    c.live_ac = SimpleNamespace(load_pv_permission=lambda power: False)
+    manager = CascadeManager(c)
+    monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    monkeypatch.setattr(cascade_manager.ir, "async_create_issue", Mock())
+    c.entry.subentries["b1"].data[CONF_LOAD_GATE_ACTOR_MODE] = mode
+    state = manager._state("chain")
+    state["enabled"] = True
+    passthrough = ("switch.input", "switch.output", "switch.leaf")
+    for actor in passthrough:
+        c.hass.states.values[actor].state = "on"
+        state["claims"][actor] = True
+    state["claims"]["switch.gate"] = False
+    original = c._switch_entity
+    wait = manager._wait_actor_state
+    origin = None
+
+    async def late_ack(entity, on, **kw):
+        nonlocal permission, origin
+        if entity == "switch.gate" and on:
+            permission = False
+            origin = kw.get("context")
+            if reply != "immediate":
+                c.calls.append((entity, on))
+                return True
+        return await original(entity, on, **kw)
+
+    async def confirm(entity, target, **kw):
+        if reply != "immediate" and entity == "switch.gate" and target == "on":
+            raise TimeoutError
+        return await wait(entity, target, **kw)
+
+    c._switch_entity = late_ack
+    monkeypatch.setattr(manager, "_wait_actor_state", confirm)
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    result = SimpleNamespace(
+        cascade_plans=(item,), soc_coordinate=SocCoordinateSnapshot(0, "tracking", 0)
+    )
+    config = SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),))
+
+    await manager.async_apply(config, result, (), now)
+    manual = reply in ("operator", "republished_operator")
+    if reply != "immediate":
+        assert c.calls == [("switch.gate", True)]
+        edge = now + timedelta(seconds=-5 if reply == "stale" else 5)
+        origin = origin if reply == "linked" else None
+        gate = State(
+            "switch.gate",
+            "on",
+            last_changed=edge,
+            last_updated=now + timedelta(seconds=5),
+            context=Context(user_id="operator") if manual else origin,
+        )
+        if reply == "republished_operator":
+            manager.observe_actor_feedback(
+                SimpleNamespace(
+                    data={
+                        "old_state": c.hass.states.values["switch.gate"],
+                        "new_state": gate,
+                    }
+                )
+            )
+            gate = State(
+                "switch.gate",
+                "on",
+                {"updated": True},
+                last_changed=edge,
+                last_updated=now + timedelta(seconds=6),
+                context=Context(),
+            )
+        # The hardware test double mutates its reporting object in place.
+        c.hass.states.values["switch.gate"] = SimpleNamespace(
+            state=gate.state,
+            attributes=gate.attributes,
+            last_changed=gate.last_changed,
+            last_updated=gate.last_updated,
+            last_reported=gate.last_updated,
+            context=gate.context,
+        )
+        processing_time += timedelta(seconds=31 if reply == "after_window" else 6)
+        await manager.async_apply(config, result, (), processing_time)
+    if manual or reply == "stale":
+        if mode == "exclusive":
+            assert state["fault"] == "exclusive_actor_changed_externally"
+            assert all(
+                not c._entity_is_on(actor) for actor in (*passthrough, "switch.gate")
+            )
+        else:
+            assert state["hands_off"]
+            assert c.calls == [("switch.gate", True)]
+            assert c._entity_is_on("switch.gate")
+        return
+    assert c.calls == [("switch.gate", True), ("switch.gate", False)]
+    assert not c._charging_is_active(c.entry.subentries["b1"].data)
+    await manager.async_apply(config, result, (), now)
+    assert c.calls == [("switch.gate", True), ("switch.gate", False)]
+    assert all(c._entity_is_on(actor) for actor in passthrough)
+    assert not state.get("fault")
+    assert not state.get("hands_off")
+
+    # Once the old command has settled, actual foreign ON is still a
+    # deviation from the owned OFF in both modes.
+    c.hass.states.values["switch.gate"].state = "on"
+    await manager.async_apply(config, result, (), now)
+    if mode == "exclusive":
+        assert state["fault"] == "exclusive_actor_changed_externally"
+        assert not c._entity_is_on("switch.gate")
+    else:
+        assert state["hands_off"]
+        assert c._entity_is_on("switch.gate")
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+@pytest.mark.parametrize(
+    ("actor", "mode", "reply"),
+    [
+        ("switch.gate", "shared", "operator"),
+        ("switch.gate", "exclusive", "operator"),
+        ("switch.gate", "shared", "republished_operator"),
+        ("switch.input", "shared", "operator"),
+        ("switch.output", "shared", "operator"),
+        ("switch.leaf", "exclusive", "operator"),
+        ("switch.gate", "shared", "device"),
+        ("switch.gate", "exclusive", "linked"),
+    ],
+)
+async def test_cascade_confirmed_on_retains_original_edge_ownership(
+    monkeypatch, recovery, actor, mode, reply
+):
+    from custom_components.battery_manager.core.model import SocCoordinateSnapshot
+
+    now = datetime(2026, 2, 3, 12, tzinfo=UTC)
+    instant = now
+    monkeypatch.setattr(cascade_manager_module.dt_util, "utcnow", lambda: instant)
+    c = _Coordinator(now)
+    c.voltage_gate = SimpleNamespace(
+        coordinate_permission_valid=lambda snapshot, **kw: True
+    )
+    c.live_ac = SimpleNamespace(note_start_power=Mock())
+    manager = CascadeManager(c)
+    monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    monkeypatch.setattr(cascade_manager_module.ir, "async_create_issue", Mock())
+    mode_key = {
+        "switch.gate": CONF_LOAD_GATE_ACTOR_MODE,
+        "switch.input": CONF_LOAD_INPUT_ACTOR_MODE,
+        "switch.output": CONF_LOAD_OUTPUT_ACTOR_MODE,
+    }
+    if actor != "switch.leaf":
+        c.entry.subentries["b1"].data[mode_key[actor]] = mode
+    actors = ("switch.input", "switch.output", "switch.leaf", "switch.gate")
+    state = manager._state("chain")
+    state["enabled"] = True
+    state["phase"] = "root"
+    for entity in actors:
+        c.hass.states.values[entity].state = "off" if entity == actor else "on"
+        state["claims"][entity] = entity != actor
+
+    original = c._switch_entity
+    wait = manager._wait_actor_state
+    request_context = None
+
+    def publish():
+        nonlocal instant
+        edge_time = now + timedelta(seconds=31 if recovery else 1)
+        instant = edge_time
+        context = (
+            Context(user_id="operator")
+            if reply.endswith("operator")
+            else Context(parent_id=request_context.id)
+            if reply == "linked"
+            else Context()
+        )
+        edge = State(actor, "on", last_changed=edge_time, context=context)
+        manager.observe_actor_feedback(
+            SimpleNamespace(
+                data={"old_state": c.hass.states.values[actor], "new_state": edge}
+            )
+        )
+        if reply == "republished_operator":
+            instant += timedelta(microseconds=1)
+            edge = State(
+                actor,
+                "on",
+                {"power": 300},
+                last_changed=edge_time,
+                last_updated=instant,
+                context=Context(),
+            )
+        c.hass.states.values[actor] = SimpleNamespace(
+            state=edge.state,
+            attributes=edge.attributes,
+            context=edge.context,
+            last_changed=edge.last_changed,
+            last_updated=edge.last_updated,
+            last_reported=edge.last_updated,
+        )
+
+    async def command(entity, turn_on, **kwargs):
+        nonlocal request_context
+        if entity == actor and turn_on:
+            request_context = kwargs["context"]
+            c.calls.append((entity, True))
+            return True
+        return await original(entity, turn_on, **kwargs)
+
+    async def confirm(entity, target, **kwargs):
+        if entity == actor and target == "on" and kwargs["accept_assumed"]:
+            if recovery:
+                raise TimeoutError
+            publish()
+        return await wait(entity, target, **kwargs)
+
+    async def refresh(domain, service, data, *, blocking):
+        assert (domain, service, data, blocking) == (
+            "homeassistant",
+            "update_entity",
+            {"entity_id": actor},
+            True,
+        )
+        publish()
+
+    c._switch_entity = command
+    c.hass.services = SimpleNamespace(async_call=refresh)
+    monkeypatch.setattr(manager, "_wait_actor_state", confirm)
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    result = SimpleNamespace(
+        cascade_plans=(item,), soc_coordinate=SocCoordinateSnapshot(0, "tracking", 0)
+    )
+    config = SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),))
+
+    await manager.async_apply(config, result, (), now)
+    if actor == "switch.output":
+        # Root keeps its supply while this member waits for a fresh report.
+        assert state["phase"] == "waking_members"
+        instant = now + timedelta(seconds=1)
+        _publish_soc(c, "sensor.soc", "90", instant)
+        await manager.async_apply(config, result, (), instant)
+    assert c.calls[0] == (actor, True)
+    if reply.endswith("operator"):
+        assert not any(
+            event["event"] == "target_confirmed"
+            and event["entity_id"] == actor
+            and event["target"] == "on"
+            for event in state["actor_journal"]
+        )
+        assert not state["enabled"]
+    else:
+        assert state["claims"][actor]
+    await manager.async_apply(config, result, (), instant)
+    if not reply.endswith("operator"):
+        assert state["claims"][actor]
+        assert state["enabled"]
+        assert c.calls == [(actor, True)]
+        assert all(c._entity_is_on(entity) for entity in actors)
+    elif mode == "shared":
+        assert state["hands_off"] and not state["enabled"]
+        assert state["claims"] == {}
+        assert not state.get("fault")
+        assert c.calls == [(actor, True)]
+        assert all(c._entity_is_on(entity) for entity in actors)
+    else:
+        assert state["fault"] == "exclusive_actor_changed_externally"
+        assert state["fault_safe_off_complete"]
+        assert all(not c._entity_is_on(entity) for entity in actors)

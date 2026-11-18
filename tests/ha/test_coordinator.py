@@ -533,7 +533,7 @@ async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
     await hass.async_block_till_done()
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    m = coordinator._read_wh_period("sensor.pv_today")
+    m, _, _ = coordinator._get_pv_hourly(dt_util.now())
     assert all(math.isfinite(v) and v >= 0.0 for v in m.values())  # finite, non-neg
     assert (
         m[datetime(2026, 7, 10, 12, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 0.0
@@ -556,7 +556,7 @@ async def test_wh_period_skips_nonfinite_and_clamps_negative(hass):
 # ---------------------------------------------------------------------------
 
 
-async def test_pv_hourly_scales_dc_curve_toward_ac_state(hass):
+async def test_pv_hourly_scales_dc_curve_toward_ac_state(hass, freezer):
     """η scaling: the source publishes wh_period as a DC model curve while the
     entity state is the AC day energy (balcony_solar_forecast shape). The
     buckets are scaled by η = state(Wh)/Σ(curve) — median AND bands get the
@@ -566,6 +566,7 @@ async def test_pv_hourly_scales_dc_curve_toward_ac_state(hass):
     import homeassistant.util.dt as dt_util
     import pytest
 
+    freezer.move_to(datetime(2026, 7, 10, 6, tzinfo=UTC))
     await hass.config.async_set_time_zone("Europe/Berlin")
     entry = MockConfigEntry(
         domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
@@ -653,7 +654,7 @@ async def test_pv_hourly_consistent_source_stays_unscaled(hass):
     )
 
 
-async def test_pv_hourly_underivable_eta_stays_unscaled(hass):
+async def test_pv_hourly_underivable_eta_stays_unscaled(hass, freezer):
     """No derivable η — unparsable, non-positive or unit-less state — means
     the curve is taken as read (η = 1): guessing a factor (e.g. blindly
     assuming kWh) could halve a perfectly good curve."""
@@ -661,6 +662,7 @@ async def test_pv_hourly_underivable_eta_stays_unscaled(hass):
 
     import homeassistant.util.dt as dt_util
 
+    freezer.move_to(datetime(2026, 7, 10, 6, tzinfo=UTC))
     await hass.config.async_set_time_zone("Europe/Berlin")
     entry = MockConfigEntry(
         domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
@@ -698,17 +700,9 @@ async def test_pv_hourly_underivable_eta_stays_unscaled(hass):
     assert (
         median[datetime(2026, 7, 12, 12, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 500.0
     )
-    # Defensive branch: a vanished entity has no state to derive from at all.
-    assert (
-        coordinator._pv_curve_ac_factor(
-            "sensor.does_not_exist",
-            {datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 1000.0},
-        )
-        == 1.0
-    )
 
 
-async def test_pv_hourly_prefers_explicit_ac_curve(hass):
+async def test_pv_hourly_prefers_explicit_ac_curve(hass, freezer):
     """An entity exposing wh_period_ac (+ the p10/p90 variants) is trusted
     verbatim: those buckets are labelled already-AC, so the DC wh_period is
     ignored and no η scaling is applied on top. A garbage AC attribute falls
@@ -717,6 +711,7 @@ async def test_pv_hourly_prefers_explicit_ac_curve(hass):
 
     import homeassistant.util.dt as dt_util
 
+    freezer.move_to(datetime(2026, 7, 10, 6, tzinfo=UTC))
     await hass.config.async_set_time_zone("Europe/Berlin")
     entry = MockConfigEntry(
         domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
@@ -771,21 +766,13 @@ async def test_pv_hourly_prefers_explicit_ac_curve(hass):
     assert p90 == {
         datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 2600.0
     }
-    # Explicit AC present -> the factor helper never derives against it.
-    assert (
-        coordinator._pv_curve_ac_factor(
-            "sensor.pv_today",
-            {datetime(2026, 7, 10, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE): 2000.0},
-        )
-        == 1.0
-    )
     # Fallback path: garbage AC attr -> DC buckets with derived η = 0.8.
     assert (
         median[datetime(2026, 7, 11, 11, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)] == 800.0
     )
 
 
-async def test_pv_hourly_eta_is_clamped(hass):
+async def test_pv_hourly_eta_is_clamped(hass, freezer):
     """η is clamped to [0.5, 1.0]: a state ABOVE the curve sum is no
     efficiency effect (e.g. the attribute covers only part of the day) -> η=1,
     untouched; a ratio below 0.5 is no plausible inverter efficiency -> the
@@ -794,6 +781,7 @@ async def test_pv_hourly_eta_is_clamped(hass):
 
     import homeassistant.util.dt as dt_util
 
+    freezer.move_to(datetime(2026, 7, 10, 6, tzinfo=UTC))
     await hass.config.async_set_time_zone("Europe/Berlin")
     entry = MockConfigEntry(
         domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
@@ -840,7 +828,7 @@ async def test_pv_hourly_eta_is_clamped(hass):
     )  # η clamped to 0.5
 
 
-async def test_pv_hourly_cache_replay_does_not_rescale(hass):
+async def test_pv_hourly_cache_replay_does_not_rescale(hass, freezer):
     """The FIX-4 per-entity cache stores the ALREADY scaled maps: when the
     entity drops out, the replayed buckets are identical to the fresh read —
     a second η application would shrink them again (η²)."""
@@ -848,6 +836,7 @@ async def test_pv_hourly_cache_replay_does_not_rescale(hass):
 
     import homeassistant.util.dt as dt_util
 
+    freezer.move_to(datetime(2026, 7, 10, 6, tzinfo=UTC))
     await hass.config.async_set_time_zone("Europe/Berlin")
     entry = MockConfigEntry(
         domain=DOMAIN, data=ENTRY_DATA, title="Battery Manager", version=2
@@ -2173,12 +2162,14 @@ async def test_cascade_commands_refresh_only_after_manager_result():
 
 
 async def test_unknown_energy_unit_falls_back_once_and_zero_curve_is_unscaled(
-    hass, caplog
+    hass, caplog, freezer
 ):
     """F-REALIZED-SURPLUS warns once before assuming kWh; an empty hourly PV
     curve remains neutral because no physically meaningful ratio exists."""
     from datetime import datetime
 
+    now = datetime(2026, 9, 4, tzinfo=UTC)
+    freezer.move_to(now)
     entry = await _setup_entry(hass)
     coordinator = hass.data[DOMAIN][entry.entry_id]
     hass.states.async_set(
@@ -2187,9 +2178,9 @@ async def test_unknown_energy_unit_falls_back_once_and_zero_curve_is_unscaled(
         {"unit_of_measurement": "bananas"},
     )
     hass.states.async_set(
-        "sensor.pv_zero_curve",
-        "12",
-        {"unit_of_measurement": "kWh"},
+        "sensor.pv_today",
+        "10.0",
+        {"unit_of_measurement": "kWh", "wh_period": {"2026-09-04T10:00:00+00:00": 0}},
     )
 
     with caplog.at_level(logging.WARNING):
@@ -2198,12 +2189,8 @@ async def test_unknown_energy_unit_falls_back_once_and_zero_curve_is_unscaled(
 
     assert first == second == 1000.0
     assert caplog.text.count("reports an unknown unit") == 1
-    assert (
-        coordinator._pv_curve_ac_factor(
-            "sensor.pv_zero_curve", {datetime(2026, 9, 4): 0.0}
-        )
-        == 1.0
-    )
+    median, _, _ = coordinator._get_pv_hourly(now)
+    assert set(median.values()) == {0}
     coordinator._pv_forecast_mode = PV_FORECAST_MODE_DAILY
     assert coordinator._get_pv_hourly(datetime(2026, 9, 4)) == (None, None, None)
 
@@ -2295,7 +2282,7 @@ def test_power_units_and_invalid_numbers_at_input_boundary():
         assert _stored_wh(invalid) == 0
 
 
-async def test_hourly_pv_and_learning_share_dst_grid(hass):
+async def test_hourly_pv_and_learning_share_dst_grid(hass, freezer):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
@@ -2305,6 +2292,7 @@ async def test_hourly_pv_and_learning_share_dst_grid(hass):
     entry = await _setup_entry(hass)
     coordinator = hass.data[DOMAIN][entry.entry_id]
     now = datetime(2026, 10, 25, tzinfo=ZoneInfo("Europe/Berlin"))
+    freezer.move_to(now)
     hass.states.async_set(
         "sensor.pv_today",
         "0.9",
@@ -2316,7 +2304,7 @@ async def test_hourly_pv_and_learning_share_dst_grid(hass):
             },
         },
     )
-    curve = coordinator._read_wh_period("sensor.pv_today")
+    curve, _, _ = coordinator._get_pv_hourly(now)
     assert len(curve) == 2
     config = coordinator.build_system_config()
     ac, dc, band, _, _ = coordinator._learned_series(now, config, 1)

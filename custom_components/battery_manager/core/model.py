@@ -959,7 +959,7 @@ class ConsumptionUncertaintyInterval:
             "Consumption uncertainty requires aware timestamps",
         )
         _require(
-            self.end.timestamp() > self.start.timestamp(),
+            self.end.astimezone(UTC) > self.start.astimezone(UTC),
             "Invalid uncertainty interval",
         )
         _require(
@@ -981,7 +981,7 @@ class ConsumptionUncertaintySnapshot:
         )
         for before, after in zip(self.intervals, self.intervals[1:], strict=False):
             _require(
-                after.start.timestamp() >= before.end.timestamp(),
+                after.start.astimezone(UTC) >= before.end.astimezone(UTC),
                 "Consumption uncertainty intervals overlap",
             )
 

@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 import math
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -14,7 +14,7 @@ from statistics import median
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.core import HomeAssistant, State, callback
+from homeassistant.core import Context, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError, UnsupportedStorageVersionError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
@@ -266,7 +266,7 @@ from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
 from .core.psu_expectation import expected_soc_with_psu48
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
-from .daily_pv import DailyPVCache
+from .daily_pv import DailyPVCache, forecast_energy_wh
 from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
 from .live_ac import LiveACRuntime
@@ -274,15 +274,23 @@ from .load_actuation import (
     LOAD_RETRY_INTERVAL_S,
     ActorRequest,
     LoadAction,
+    LoadOnEdge,
     bind_coordinate_request,
     confirm_state,
+    confirms_load_on,
     coordinate_request_current,
     coordinate_request_revoked,
+    end_interrupted_load_run,
     execute_load_switching,
     input_diagnostics,
     input_off_allowed,
     reconcile_feedback,
+    reject_foreign_load_on,
+    remember_displaced_start,
+    restore_confirmed_load_runs,
     restore_coordinate_cleanup,
+    restore_load_booking,
+    restore_load_on_edges,
 )
 from .load_safety import LOAD_GRID_IMPORT_TOLERANCE_W, grid_import_w, start_blocked
 from .localization import message
@@ -382,15 +390,12 @@ def _stored_wh(value: Any) -> float:
     )
 
 
-# Explicit AC-side variants of the wh_period family: a forecast source that
-# labels its buckets as already-AC (inverter efficiency applied) is trusted
-# verbatim — the planner simulates AC-side, so no η derivation may touch them
-# (see _pv_curve_ac_factor). Generic contract, not tied to one forecaster.
-_WH_PERIOD_AC_ATTRS = {
-    "wh_period": "wh_period_ac",
-    "wh_period_p10": "wh_period_ac_p10",
-    "wh_period_p90": "wh_period_ac_p90",
-}
+# Each channel may independently provide its AC-side version of the curve.
+_WH_PERIOD_ATTRS = (
+    ("wh_period", "wh_period_ac"),
+    ("wh_period_p10", "wh_period_ac_p10"),
+    ("wh_period_p90", "wh_period_ac_p90"),
+)
 
 
 def ordered_load_subentries(entry: ConfigEntry) -> list[tuple[str, ConfigSubentry]]:
@@ -476,6 +481,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stale_shed_active = False
         self._stale_shed_pending: set[str] = set()
         self._load_actor_requests: dict[str, ActorRequest] = {}
+        self._load_on_edges: dict[str, LoadOnEdge] = {}
         self._pause_tasks: dict[str, asyncio.Task] = {}
         self._stale_shed_task: asyncio.Task | None = None
         # House-SOC stale watchdog (energy-based, banded sibling of the G2
@@ -719,6 +725,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_power_warning: dict[str, bool] = {}
         self._load_warning_diag: dict[str, dict[str, Any]] = {}
         self._load_switch_task: asyncio.Task | None = None
+        self._load_safety_tasks: dict[str, asyncio.Task[None]] = {}
         # F-SUBHOUR (approach A): the frozen sub-hour run deadline per controlled
         # non-energy-limited load, and the one-shot timer that force-switches it
         # OFF at that deadline so the planned partial-hour energy is delivered
@@ -947,7 +954,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if ts is not None:
                     self._load_run_deadline[k] = ts
             self._load_bm_enabled = {
-                k: bool(v) for k, v in data.get("load_bm_enabled", {}).items()
+                k: bool(v)
+                for k, v in data.get("load_bm_enabled", {}).items()
+                if (sub := self.entry.subentries.get(k)) is not None
+                and sub.subentry_type == SUBENTRY_TYPE_LOAD
             }
             generations = data.get("load_control_generation")
             self._load_control_generation = (
@@ -965,6 +975,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 str(key): [actor for actor in actors if isinstance(actor, str)]
                 for key, actors in data.get("load_released_actors", {}).items()
                 if isinstance(actors, list)
+                and (sub := self.entry.subentries.get(key)) is not None
+                and sub.subentry_type == SUBENTRY_TYPE_LOAD
             }
             cascade_state = data.get("cascade_state")
             if isinstance(cascade_state, dict):
@@ -1144,18 +1156,36 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._stale_shed_pending = set(data.get("stale_shed_pending", []))
             for entity, request in data.get("load_actor_requests", {}).items():
                 stamp = dt_util.parse_datetime(request.get("requested_at", ""))
+                owner = request.get("owner")
+                if isinstance(owner, str) and owner.startswith("load:"):
+                    sub = self.entry.subentries.get(owner.removeprefix("load:"))
+                    if (
+                        sub is None
+                        or sub.subentry_type != SUBENTRY_TYPE_LOAD
+                        or entity not in (sub.data.get(key) for key in LOAD_ACTOR_KEYS)
+                    ):
+                        continue
                 if stamp is not None:
-                    self._load_actor_requests[entity] = ActorRequest(
+                    restored = ActorRequest(
                         bool(request["desired"]),
                         stamp,
                         request.get("state", "pending"),
-                        request.get("owner"),
+                        owner,
                         request.get("sent") is True,
+                        context_id=request.get("context_id")
+                        if isinstance(request.get("context_id"), str)
+                        else None,
                     )
+                    if "booking" not in request or restore_load_booking(
+                        self, entity, restored, request["booking"]
+                    ):
+                        self._load_actor_requests[entity] = restored
             for load_id, enabled in self._load_bm_enabled.items():
                 if not enabled:
                     self._release_load_control(load_id)
+            restore_load_on_edges(self, data.get("load_on_edges"))
             restore_coordinate_cleanup(self, data.get("revoked_load_starts"))
+            restore_confirmed_load_runs(self)
             # F-FEEDIN: the runtime switch, the manual-mode deadline and our
             # last written setpoint survive restarts — after a reboot "setpoint
             # ≠ ours" must still be judgeable as an external override instead
@@ -2192,44 +2222,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 message(self.hass, "data_recovered"),
             )
 
+    @staticmethod
     def _read_wh_period(
-        self,
-        entity_id: str,
-        attr: str = "wh_period",
-        *,
-        problems: Counter[str] | None = None,
-    ) -> dict[datetime, float]:
-        """Parse an entity's hourly ``wh_period``-family attribute into a
-        offset-aware local hour -> Wh map (docs/F-PREDRAIN.md F1; the quantile
-        attributes ``wh_period_p10``/``wh_period_p90`` share the exact same
-        format and tolerance rules, F-QUANTILE-BANDS R1).
-
-        When the entity exposes the explicit AC variant of the requested
-        attribute (``wh_period_ac`` etc., see _WH_PERIOD_AC_ATTRS) THAT is
-        parsed instead: the source labels those buckets as already AC-side, so
-        they are used verbatim and excluded from the η scaling in
-        _pv_curve_ac_factor. A garbage/absent AC attribute falls back to the
-        plain one.
-
-        Keys are parsed with dt_util.parse_datetime: naive keys are treated as
-        LOCAL; aware keys retain the local UTC offset to distinguish DST folds. 15/30-min buckets
-        are summed per hour by aggregate_hours. Malformed keys/values are skipped;
-        non-finite (NaN/±inf) values are skipped and negative values clamped to 0
-        (FIX-9) so a bad forecast attribute can never poison the hourly map.
-        """
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in ("unknown", "unavailable"):
-            return {}
+        state: State, attr: str, problems: Counter[str]
+    ) -> list[tuple[datetime, float]]:
+        """Parse Wh buckets without discarding their sub-hour timestamps."""
         raw = state.attributes.get(attr)
-        ac_attr = _WH_PERIOD_AC_ATTRS.get(attr)
-        if ac_attr is not None:
-            ac_raw = state.attributes.get(ac_attr)
-            if isinstance(ac_raw, dict):
-                raw = ac_raw
         if not isinstance(raw, dict):
-            return {}
-        if problems is None:
-            problems = Counter()
+            return []
         entries: list[tuple[datetime, float]] = []
         for key, value in raw.items():
             try:
@@ -2255,64 +2255,101 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 wh = 0.0
                 problems["negative_value_clamped"] += 1
             entries.append((ts, wh))
-        return aggregate_hours(entries)
+        return entries
 
-    def _pv_curve_ac_factor(
-        self, entity_id: str, curve: dict[datetime, float]
-    ) -> float:
-        """AC-efficiency factor η for ONE forecast entity's hourly curve.
-
-        2026-08-07 live audit (7 days): a source may publish ``wh_period*`` as
-        a DC model curve while the entity STATE is the AC day energy
-        (balcony_solar_forecast: Σ buckets 6.129 kWh == its ``_today_dc``
-        sibling; the AC state 5.649 kWh = Σ × 0.9215 learned inverter η).
-        Feeding the DC curve into the AC-side simulation over-planned PV by
-        ~8.5 % (~1.1 kWh on a normal day) and contributed to an avoidable
-        0.7 kWh grid import on 2026-08-07. η = state(Wh) / Σ(curve), derived
-        from the SAME entity, corrects that generically: sources whose state
-        and curve are consistent get η ≈ 1 (a no-op), a DC-curve/AC-state
-        source is pulled down to its own AC reality.
-
-        The state is converted to Wh via its own unit_of_measurement
-        (REALIZED_ENERGY_UNIT_FACTORS_WH table reused); unlike
-        _energy_unit_factor an UNKNOWN unit does NOT fall back to kWh —
-        guessing 1000x either way could halve a perfectly good curve, so an
-        underivable η stays 1.0 (missing/invalid/non-positive state, unknown
-        unit, empty curve). η is clamped to [PV_CURVE_AC_ETA_MIN, 1.0]: > 1
-        means the curve sums BELOW the state (no efficiency effect — e.g. the
-        attribute covers only part of the day), below 0.5 is no plausible
-        inverter efficiency. An entity carrying the explicit AC curve
-        (``wh_period_ac``, preferred by _read_wh_period) is already AC-side
-        and is never rescaled.
-        """
-        state = self.hass.states.get(entity_id)
-        if state is None or isinstance(
-            state.attributes.get(_WH_PERIOD_AC_ATTRS["wh_period"]), dict
-        ):
-            return 1.0
-        total = sum(curve.values())
-        if total <= 0.0:
-            return 1.0
-        unit_factor = REALIZED_ENERGY_UNIT_FACTORS_WH.get(
-            state.attributes.get("unit_of_measurement") or ""
-        )
-        try:
-            state_value = float(state.state)
-        except TypeError, ValueError:
-            return 1.0
-        if unit_factor is None or not math.isfinite(state_value) or state_value <= 0.0:
-            return 1.0
-        eta = min(max(state_value * unit_factor / total, PV_CURVE_AC_ETA_MIN), 1.0)
-        if eta != 1.0:
-            _LOGGER.debug(
-                "battery_manager: %s hourly PV curve scaled by AC factor %.3f"
-                " (state %.1f Wh / curve sum %.1f Wh)",
-                entity_id,
-                eta,
-                state_value * unit_factor,
-                total,
+    def _pv_publication_curves(
+        self, state: State, target: date, problems: Counter[str]
+    ) -> tuple[dict[datetime, float], dict[datetime, float], dict[datetime, float]]:
+        """Normalize one publication without lending its daily total to other days."""
+        if state.state in ("unknown", "unavailable"):
+            return {}, {}, {}
+        curves = [
+            (
+                self._read_wh_period(state, plain, problems),
+                self._read_wh_period(state, ac, problems),
             )
-        return eta
+            for plain, ac in _WH_PERIOD_ATTRS
+        ]
+        plain_median, ac_median = curves[0]
+        plain_by_day: defaultdict[date, list[tuple[datetime, float]]] = defaultdict(
+            list
+        )
+        ac_by_day: defaultdict[date, list[tuple[datetime, float]]] = defaultdict(list)
+        for curve, days in ((plain_median, plain_by_day), (ac_median, ac_by_day)):
+            for when, wh in curve:
+                days[when.date()].append((when, wh))
+
+        state_wh = forecast_energy_wh(state)
+        factors: dict[date, float] = {}
+        for day, buckets in plain_by_day.items():
+            dc_wh = sum(wh for _, wh in buckets)
+            if dc_wh <= 0 or not math.isfinite(dc_wh):
+                continue
+            ac_buckets = ac_by_day.get(day)
+            if ac_buckets is not None and Counter(
+                when for when, _ in ac_buckets
+            ) == Counter(when for when, _ in buckets):
+                # Compare the actual published periods. Aggregation would
+                # make distinct quarter hours appear to cover the same time.
+                ac_wh = sum(wh for _, wh in ac_buckets)
+                if math.isfinite(ac_wh):
+                    factors[day] = min(ac_wh / dc_wh, 1.0)
+            elif day == target and state_wh is not None and state_wh > 0:
+                # Legacy DC curve / AC state (2026-08-07 audit). With only a
+                # daily aggregate, keep the existing plausible efficiency floor.
+                factors[day] = min(max(state_wh / dc_wh, PV_CURVE_AC_ETA_MIN), 1.0)
+        # Legacy providers can publish only plain curves that already describe
+        # AC. Once a source reveals a distinct AC basis, days without a usable
+        # conversion must fall back to the daily model, not treat DC as AC.
+        mixed_basis = any(ac for _, ac in curves) or any(
+            factor < 1.0 for factor in factors.values()
+        )
+
+        def periods_by_hour(
+            buckets: list[tuple[datetime, float]],
+        ) -> dict[datetime, Counter[datetime]]:
+            periods: defaultdict[datetime, Counter[datetime]] = defaultdict(Counter)
+            for when, _ in buckets:
+                hour = when.replace(minute=0, second=0, microsecond=0)
+                periods[hour][when] += 1
+            return periods
+
+        def normalized(
+            plain: list[tuple[datetime, float]],
+            ac: list[tuple[datetime, float]],
+        ) -> tuple[dict[datetime, float], dict[datetime, Counter[datetime]]]:
+            ac_days = {when.date() for when, _ in ac}
+            selected = list(ac)
+            for when, wh in plain:
+                day = when.date()
+                if day in ac_days:
+                    continue
+                factor = factors.get(day)
+                if factor is not None:
+                    selected.append((when, wh * factor))
+                elif not mixed_basis:
+                    selected.append((when, wh))
+            return aggregate_hours(selected), periods_by_hour(selected)
+
+        (median, median_periods), (p10, p10_periods), (p90, p90_periods) = (
+            normalized(*pair) for pair in curves
+        )
+        # A band is evidence only for the same periods as the chosen median.
+        # Comparing hourly totals alone can make a missing quarter look like
+        # an optimistic, fully covered hour to the planner's uncertainty model.
+        return (
+            median,
+            {
+                hour: wh
+                for hour, wh in p10.items()
+                if p10_periods[hour] == median_periods.get(hour) and wh <= median[hour]
+            },
+            {
+                hour: wh
+                for hour, wh in p90.items()
+                if p90_periods[hour] == median_periods.get(hour) and wh >= median[hour]
+            },
+        )
 
     def _get_pv_hourly(
         self, now: datetime
@@ -2321,105 +2358,64 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         dict[datetime, float] | None,
         dict[datetime, float] | None,
     ]:
-        """Merged offset-aware local hourly PV maps (median, p10, p90) from the three
-        forecast entities.
-
-        Stale-cache fallback is PER ENTITY (FIX-4): each cycle every entity uses
-        its fresh maps when the MEDIAN map is non-empty, else its own last-good
-        entry within the max-age window — so a single unavailable entity no
-        longer overwrites the cached full map with a partial read. The quantile
-        maps (F-QUANTILE-BANDS R1) are parsed from ``wh_period_p10``/
-        ``wh_period_p90`` on the SAME entities and travel in the same cache
-        entry, so median and bands always come from the same read. Each
-        entity's fresh maps are scaled by its AC factor η
-        (_pv_curve_ac_factor) BEFORE caching: median and bands get the SAME η
-        (they describe the same physical day) and the FIX-4 stale-cache replay
-        serves the already-scaled maps — never a second scaling.
-        Absent/empty/garbage quantile attributes simply yield empty maps (never
-        an error). The per-entity results merge in the existing (today,
-        tomorrow, day-after) order; overlapping days are last-writer-wins (the
-        Open-Meteo family entities carry identical overlapping data, so this is
-        harmless). In "daily" mode the hourly attributes are ignored (None
-        everywhere) so build_slots uses the two-window model and no slot ever
-        carries a band.
-        """
+        """Select one publication and its available quantiles for each local hour."""
         if self._pv_forecast_mode == PV_FORECAST_MODE_DAILY:
             return None, None, None
-        cfg = self.raw_config
         max_age = timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
         instant = dt_util.as_utc(now)
-        merged: dict[datetime, float] = {}
-        merged_p10: dict[datetime, float] = {}
-        merged_p90: dict[datetime, float] = {}
-        for key in (
-            CONF_PV_FORECAST_TODAY,
-            CONF_PV_FORECAST_TOMORROW,
-            CONF_PV_FORECAST_DAY_AFTER,
-        ):
-            conf_key = cfg[key]
-            state = self.hass.states.get(conf_key)
-            problems: Counter[str] = Counter()
-            fresh: dict[datetime, float] = {}
-            fresh_p10: dict[datetime, float] = {}
-            fresh_p90: dict[datetime, float] = {}
+        selected: dict[
+            datetime,
+            tuple[tuple[bool, datetime, bool, int], float, float | None, float | None],
+        ] = {}
+        for offset, entity in enumerate(self._pv_forecast_bindings()):
+            state = self.hass.states.get(entity)
+            fresh = False
             if (
                 state is not None
                 and not state.attributes.get("restored")
                 and timedelta(0) <= instant - state.last_reported <= max_age
             ):
-                fresh = self._read_wh_period(conf_key, problems=problems)
-                fresh_p10 = self._read_wh_period(
-                    conf_key, "wh_period_p10", problems=problems
+                target = dt_util.as_local(state.last_reported).date() + timedelta(
+                    days=offset
                 )
-                fresh_p90 = self._read_wh_period(
-                    conf_key, "wh_period_p90", problems=problems
-                )
+                problems: Counter[str] = Counter()
+                curves = self._pv_publication_curves(state, target, problems)
                 if (
                     problems
-                    and self._pv_hourly_reported_publications.get(conf_key)
+                    and self._pv_hourly_reported_publications.get(entity)
                     != state.last_reported
                 ):
-                    self._pv_hourly_reported_publications[conf_key] = (
-                        state.last_reported
-                    )
+                    self._pv_hourly_reported_publications[entity] = state.last_reported
                     _LOGGER.debug(
                         "Hourly PV bucket validation on %s: %s",
-                        conf_key,
+                        entity,
                         ", ".join(
                             f"{reason}={count}"
                             for reason, count in sorted(problems.items())
                         ),
                     )
-            if fresh and state is not None:
-                # One η per entity per read, applied to median AND bands
-                # alike, then frozen into the cache entry (no re-scale on
-                # replay — the cached maps are already AC-side).
-                eta = self._pv_curve_ac_factor(conf_key, fresh)
-                if eta != 1.0:
-                    fresh = {hour: wh * eta for hour, wh in fresh.items()}
-                    fresh_p10 = {hour: wh * eta for hour, wh in fresh_p10.items()}
-                    fresh_p90 = {hour: wh * eta for hour, wh in fresh_p90.items()}
-                self._pv_hourly_by_entity[conf_key] = (
-                    fresh,
-                    fresh_p10,
-                    fresh_p90,
-                    state.last_reported,
-                )
-                merged.update(fresh)
-                merged_p10.update(fresh_p10)
-                merged_p90.update(fresh_p90)
+                if curves[0]:
+                    fresh = True
+                    self._pv_hourly_by_entity[entity] = (*curves, state.last_reported)
+            candidate = self._pv_hourly_by_entity.get(entity)
+            if candidate is None:
                 continue
-            cached = self._pv_hourly_by_entity.get(conf_key)
-            if cached is not None and timedelta(0) <= instant - cached[3] <= max_age:
-                merged.update(cached[0])
-                merged_p10.update(cached[1])
-                merged_p90.update(cached[2])
-            # An entity that never provides wh_period simply contributes nothing.
-        self._maybe_warn_hourly_empty(bool(merged))
+            median, p10, p90, published = candidate
+            if not timedelta(0) <= instant - published <= max_age:
+                continue
+            target = dt_util.as_local(published).date() + timedelta(days=offset)
+            for hour, wh in median.items():
+                rank = (fresh, published, hour.date() == target, offset)
+                previous = selected.get(hour)
+                if previous is None or rank > previous[0]:
+                    selected[hour] = (rank, wh, p10.get(hour), p90.get(hour))
+        self._maybe_warn_hourly_empty(bool(selected))
         return (
-            merged if merged else None,
-            merged_p10 if merged_p10 else None,
-            merged_p90 if merged_p90 else None,
+            {hour: value[1] for hour, value in selected.items()} or None,
+            {hour: value[2] for hour, value in selected.items() if value[2] is not None}
+            or None,
+            {hour: value[3] for hour, value in selected.items() if value[3] is not None}
+            or None,
         )
 
     def _maybe_warn_hourly_empty(self, has_data: bool) -> None:
@@ -3099,14 +3095,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         actors: set[str] = set()
         for load_id, enabled in self._load_bm_enabled.items():
-            if enabled or (only_load_id is not None and load_id != only_load_id):
+            sub = self.entry.subentries.get(load_id)
+            if (
+                enabled
+                or sub is None
+                or sub.subentry_type != SUBENTRY_TYPE_LOAD
+                or (only_load_id is not None and load_id != only_load_id)
+            ):
                 continue
             actors.update(self._load_released_actors.get(load_id, ()))
-            sub = self.entry.subentries.get(load_id)
-            if sub is not None:
-                actors.update(
-                    sub.data[key] for key in LOAD_ACTOR_KEYS if sub.data.get(key)
-                )
+            actors.update(sub.data[key] for key in LOAD_ACTOR_KEYS if sub.data.get(key))
             for state in self._cascade_state.values():
                 topology = state.get("actor_topology") or {}
                 entries = list(topology.get("members", ()))
@@ -3149,8 +3147,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_learn_ok.pop(load_id, None)
         self._load_latch_hold.discard(load_id)
         self._stale_shed_pending.discard(load_id)
+        self.live_ac.revoked_load_starts.pop(load_id, None)
         for actor in actors:
             self._load_actor_requests.pop(actor, None)
+            self._load_on_edges.pop(actor, None)
         self._complete_power_calibration_release(load_id)
         if self._load_power_calibration_id == load_id:
             self._load_power_calibration_id = None
@@ -3181,11 +3181,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if entity_id in self.released_load_actors():
             return False
         state = self.hass.states.get(entity_id)
+        previous = self._load_actor_requests.get(entity_id)
         if state is not None and state.state == ("on" if desired else "off"):
+            if not desired:
+                remember_displaced_start(self, entity_id, previous)
             self._load_actor_requests.pop(entity_id, None)
             return True
         now = dt_util.now()
-        previous = self._load_actor_requests.get(entity_id)
         if (
             previous is not None
             and previous.desired == desired
@@ -3199,7 +3201,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if state is None or state.state not in ("on", "off"):
                 return False
         request = ActorRequest(desired, now, owner=actor_owner)
-        bind_coordinate_request(request)
+        bind_coordinate_request(self, request)
+        context = Context() if desired and request.command is not None else None
+        if context is not None:
+            request.context_id = context.id
+        remember_displaced_start(self, entity_id, previous)
         self._load_actor_requests[entity_id] = request
         self._save_persistent_state()
         if desired and not coordinate_request_current(self):
@@ -3207,9 +3213,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             coordinate_request_revoked(self, entity_id, request)
             return False
         request.sent = True
-        switched = await self._switch_entity(
-            entity_id, desired, actor_owner=actor_owner
-        )
+        if context is None:
+            switched = await self._switch_entity(
+                entity_id, desired, actor_owner=actor_owner
+            )
+        else:
+            switched = await self._switch_entity(
+                entity_id, desired, actor_owner=actor_owner, context=context
+            )
+        if (
+            self._load_actor_requests.get(entity_id) is not request
+            or request.state == "coordinate_changed"
+            or desired
+            and reject_foreign_load_on(self, entity_id)
+        ):
+            return False
         if desired and not coordinate_request_current(self):
             request.state = "coordinate_changed"
             coordinate_request_revoked(self, entity_id, request)
@@ -3218,14 +3236,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             request.state = "service_failed"
             return False
         confirmed = await confirm_state(self.hass, entity_id, desired)
+        if (
+            self._load_actor_requests.get(entity_id) is not request
+            or request.state == "coordinate_changed"
+            or desired
+            and reject_foreign_load_on(self, entity_id)
+        ):
+            return False
         if desired and not coordinate_request_current(self):
             request.state = "coordinate_changed"
             coordinate_request_revoked(self, entity_id, request)
             return False
-        if not confirmed:
+        if not confirmed or (
+            desired and not confirms_load_on(self, entity_id, request)
+        ):
             request.state = "confirmation_failed"
-            return False
-        if self._load_actor_requests.get(entity_id) is not request:
             return False
         request.state = "confirmed"
         return True
@@ -4416,39 +4441,51 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _consumption_uncertainty_snapshot(
         inputs: PlanInputs, predictions: Sequence[Mapping[str, Any]]
     ) -> ConsumptionUncertaintySnapshot | None:
-        """Only full measured AC/DC coverage provides a recovery proof."""
-        if not predictions or not all(
-            item[path]["p80_w"] is not None and item[path]["source"] == "learned"
-            for item in predictions
-            for path in ("ac", "dc")
-        ):
+        """Retain measured AC/DC coverage on the original hourly grid."""
+        if not inputs.slots:
             return None
+        horizon_start = dt_util.as_utc(inputs.slots[0].start)
+        last_slot = inputs.slots[-1]
+        horizon_end = dt_util.as_utc(last_slot.start) + timedelta(
+            hours=last_slot.duration
+        )
         by_start = {
-            dt_util.as_utc(stamp): item
+            dt_util.as_utc(stamp): (stamp, item)
             for item in predictions
             if (stamp := dt_util.parse_datetime(item["start"])) is not None
         }
         intervals = []
-        for slot in inputs.slots:
-            start = dt_util.as_utc(slot.start)
-            item = by_start.get(start)
-            if item is None:
-                return None
+        for source_start, (stamp, item) in sorted(by_start.items()):
+            if any(
+                item[path]["source"] != "learned" or item[path]["p80_w"] is None
+                for path in ("ac", "dc")
+            ):
+                continue
+            # Planning can split the original hour at a load release. Its
+            # measured band still covers the hour, including the split tail.
+            next_hour = stamp.replace(minute=0, second=0, microsecond=0) + timedelta(
+                hours=1
+            )
+            start = max(horizon_start, source_start)
+            end = min(horizon_end, dt_util.as_utc(next_hour))
+            if start >= end:
+                continue
+            hours = (end - start).total_seconds() / 3600.0
             intervals.append(
                 ConsumptionUncertaintyInterval(
                     start=start,
-                    end=start + timedelta(hours=slot.duration),
+                    end=end,
                     ac_p80_minus_p50_wh=max(
                         0.0, item["ac"]["p80_w"] - item["ac"]["p50_w"]
                     )
-                    * slot.duration,
+                    * hours,
                     dc_p80_minus_p50_wh=max(
                         0.0, item["dc"]["p80_w"] - item["dc"]["p50_w"]
                     )
-                    * slot.duration,
+                    * hours,
                 )
             )
-        return ConsumptionUncertaintySnapshot(tuple(intervals))
+        return ConsumptionUncertaintySnapshot(tuple(intervals)) if intervals else None
 
     def _learned_series(
         self, now: datetime, config: SystemConfig, num_days: int
@@ -6807,6 +6844,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         turn_on: bool,
         *,
         actor_owner: str | None = None,
+        context: Context | None = None,
     ) -> bool:
         # F-CASCADE-STORAGE final physical boundary (live 2026-09-01): the
         # normal load-ID guards correctly exclude cascade members, yet the
@@ -6898,7 +6936,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             # homeassistant.* works across domains (switch, input_boolean, ...)
             await self.hass.services.async_call(
-                "homeassistant", service, {"entity_id": entity_id}, blocking=True
+                "homeassistant",
+                service,
+                {"entity_id": entity_id},
+                blocking=True,
+                context=context,
             )
         except Exception as err:
             _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
@@ -8052,6 +8094,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             data = subentry.data
             plan = plans_by_id.get(subentry_id)
+            safety = self._load_safety_tasks.get(subentry_id)
+            if safety is not None and not safety.done():
+                continue
             if subentry_id in cascade_managed or (
                 plan is not None and getattr(plan, "managed_by_cascade", False)
             ):
@@ -8070,6 +8115,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     subentry_id, data, plan, now, slot_durations
                 )
                 continue
+            if end_interrupted_load_run(self, subentry_id, data):
+                self._save_persistent_state()
             current = self._charging_is_active(data)
             if current is None:
                 # Entity dropout: keep the last known charging state.
@@ -8982,6 +9029,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
+        if event is not None:
+            self.cascade_manager.observe_actor_feedback(event)
         reconcile_feedback(self, event)
         if event is not None:
             # Normal-load relay feedback only needs ownership/diagnostics.
@@ -9225,6 +9274,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._switch_task,
             self._dc48_ctrl_task,
             self._load_switch_task,
+            *self._load_safety_tasks.values(),
             self._dcdc_restore_task,
             self._stale_shed_task,
             self._feedin_task,

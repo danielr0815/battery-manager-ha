@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import TYPE_CHECKING, Any, cast
 
-from homeassistant.core import callback
+from homeassistant.core import Context, Event, EventStateChangedData, State, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_call_later
@@ -94,6 +94,66 @@ class _CoordinatePermissionPending(Exception):
 
 class _PvPlanPermissionPending(_CoordinatePermissionPending):
     """A Root start lost its forecast basis before confirmation."""
+
+
+class _ForeignActorOn(Exception):
+    """An observed ON edge belongs to an external actor."""
+
+    def __init__(self, entity_id: str) -> None:
+        super().__init__(entity_id)
+        self.entity_id = entity_id
+
+
+@dataclass
+class _ActorStart:
+    generation: int
+    sent_at: datetime
+    context: Context
+    was_off: bool
+    charge_gate: bool
+    prior_claim: bool | None
+    accepted: bool = False
+    expires: datetime | None = None
+    edge: State | None = None
+    stopping: bool = False
+
+    def _on_context(self, state: State) -> Context | None:
+        changed = getattr(state, "last_changed", None)
+        edge = (
+            self.edge
+            if self.edge is not None and self.edge.last_changed == changed
+            else state
+        )
+        return getattr(edge, "context", None)
+
+    def foreign_on(self, state: State) -> bool:
+        context = self._on_context(state)
+        return context is not None and bool(
+            context.user_id
+            or context.parent_id is not None
+            and context.parent_id != self.context.id
+        )
+
+    def owns_on(self, state: State, *, confirmed: bool = False) -> bool:
+        """Match the current ON edge to the command, even in a later cycle."""
+        if self.foreign_on(state):
+            return False
+        if confirmed and self.accepted:
+            return True
+        changed = getattr(state, "last_changed", None)
+        if (
+            changed is None
+            or self.expires is None
+            or not self.sent_at <= changed <= self.expires
+        ):
+            return False
+        context = self._on_context(state)
+        linked = context is not None and (
+            context.id == self.context.id or context.parent_id == self.context.id
+        )
+        # A plain report can be delayed by the gateway. Only a charge gate
+        # with a known OFF baseline and accepted request permits this fallback.
+        return linked or (self.charge_gate and self.was_off and self.accepted)
 
 
 @dataclass(frozen=True)
@@ -191,6 +251,7 @@ class CascadeManager:
     def __init__(self, coordinator: BatteryManagerCoordinator) -> None:
         self.coordinator = coordinator
         self._actor_tasks: set[asyncio.Task[Any]] = set()
+        self._actor_starts: dict[tuple[str, str], _ActorStart] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._proof: dict[str, dict[str, Any]] = {}
         self._proof_refresh_cancel: dict[str, Callable[[], None]] = {}
@@ -1842,23 +1903,22 @@ class CascadeManager:
             for _load_id, data in topology["members"][source_index:]
         )
 
-    def _foreign_override(
-        self, cascade_id: str, topology: dict[str, Any]
-    ) -> str | None:
-        """Return ownership mode when a claimed state changed externally."""
-        modes: dict[str, str] = {}
+    @staticmethod
+    def _actor_mode(topology: dict[str, Any], entity_id: str) -> str:
         for _load_id, data in topology["members"]:
             for actor_key, mode_key in (
                 (CONF_LOAD_CONTROL_SWITCH, CONF_LOAD_INPUT_ACTOR_MODE),
                 (CONF_LOAD_CHARGE_ENABLE, CONF_LOAD_GATE_ACTOR_MODE),
                 (CONF_LOAD_OUTPUT_SWITCH, CONF_LOAD_OUTPUT_ACTOR_MODE),
             ):
-                entity_id = data.get(actor_key)
-                if entity_id:
-                    modes[entity_id] = data.get(mode_key, ACTOR_MODE_EXCLUSIVE)
-        terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
-        if terminal_actor:
-            modes[terminal_actor] = ACTOR_MODE_EXCLUSIVE
+                if data.get(actor_key) == entity_id:
+                    return data.get(mode_key, ACTOR_MODE_EXCLUSIVE)
+        return ACTOR_MODE_EXCLUSIVE
+
+    def _foreign_override(
+        self, cascade_id: str, topology: dict[str, Any]
+    ) -> str | None:
+        """Return ownership mode when a claimed state changed externally."""
         for entity_id, claimed in self._state(cascade_id)["claims"].items():
             current = self.coordinator.hass.states.get(entity_id)
             if current is None or current.state in ("unknown", "unavailable"):
@@ -1867,8 +1927,20 @@ class CascadeManager:
                 continue
             actual = current.state == "on"
             if actual != bool(claimed):
-                return modes.get(entity_id, ACTOR_MODE_EXCLUSIVE)
+                return self._actor_mode(topology, entity_id)
         return None
+
+    async def _handle_foreign_override(self, cascade_id: str, mode: str) -> None:
+        if mode == ACTOR_MODE_SHARED:
+            state = self._state(cascade_id)
+            state["hands_off"] = True
+            state["enabled"] = False
+            state["phase"] = "hands_off"
+            state["claims"] = {}
+            self.coordinator._save_persistent_state()
+        if mode == ACTOR_MODE_EXCLUSIVE:
+            await self._fault(cascade_id, "exclusive_actor_changed_externally")
+            await self.async_safe_off(cascade_id, "exclusive actor override")
 
     def _adopt_shared_safe_off(
         self, cascade_id: str, topology: dict[str, Any], plan: Any
@@ -1995,6 +2067,8 @@ class CascadeManager:
         already_on = bool(
             turn_on and entity_id and self.coordinator._entity_is_on(entity_id)
         )
+        key = (cascade_id, entity_id) if entity_id else None
+        confirmed = False
         self._actor_tasks.add(task)
         try:
             if entity_id and turn_on:
@@ -2018,18 +2092,32 @@ class CascadeManager:
             if state.get("control_generation", 0) != generation:
                 raise asyncio.CancelledError
             return recovered
-        except _PvPlanPermissionPending:
+        except _CoordinatePermissionPending:
             if (
-                not already_on
-                and entity_id
-                and self.coordinator._entity_is_on(entity_id)
+                turn_on
+                and key is not None
+                and (intent := self._actor_starts.get(key)) is not None
             ):
-                # This edge belongs to this sequence. Withdraw it through the
-                # same owner before the abandoned plan can extend the path.
                 self._check_control_generation(cascade_id)
-                await self._actor(cascade_id, entity_id, False)
+                intent.expires = dt_util.utcnow() + timedelta(
+                    seconds=ACTOR_CONFIRM_TIMEOUT_S
+                )
+                if intent.prior_claim is not None or intent.was_off:
+                    # Confirming the target during our wait did not establish
+                    # ownership yet. Preserve OFF for the manual override check.
+                    state["claims"][key[1]] = bool(intent.prior_claim)
+                else:
+                    state["claims"].pop(key[1], None)
+                await self._stop_revoked_actor(key, intent, confirmed=confirmed)
             raise
         finally:
+            if (
+                turn_on
+                and key is not None
+                and (intent := self._actor_starts.get(key)) is not None
+                and intent.expires is None
+            ):
+                self._actor_starts.pop(key, None)
             self._actor_tasks.discard(task)
             runtime = getattr(self.coordinator, "live_ac", None)
             topology = self._topology(cascade_id)
@@ -2043,6 +2131,54 @@ class CascadeManager:
                 release = getattr(runtime, "release_pv_start", None)
                 if callable(release):
                     release("cascade:" + cascade_id)
+
+    @callback
+    def observe_actor_feedback(self, event: Event[EventStateChangedData]) -> None:
+        """Keep the context of the state edge through attribute republishing."""
+        old, new = event.data["old_state"], event.data["new_state"]
+        if new is None or new.state != "on" or old is not None and old.state == "on":
+            return
+        for (_, actor), intent in self._actor_starts.items():
+            if actor == new.entity_id and new.last_changed >= intent.sent_at:
+                intent.edge = new
+
+    def _check_foreign_on(
+        self, cascade_id: str, entity_id: str, current: State | None
+    ) -> None:
+        intent = self._actor_starts.get((cascade_id, entity_id))
+        if (
+            intent is not None
+            and current is not None
+            and current.state == "on"
+            and intent.foreign_on(current)
+        ):
+            raise _ForeignActorOn(entity_id)
+
+    async def _stop_revoked_actor(
+        self, key: tuple[str, str], intent: _ActorStart, *, confirmed: bool = False
+    ) -> bool:
+        """Rollback only our still-current edge. Return false while OFF is pending."""
+        cascade_id, actor = key
+        current = self.coordinator.hass.states.get(actor)
+        if current is not None and current.state == "on":
+            if not intent.owns_on(current, confirmed=confirmed):
+                self._actor_starts.pop(key, None)
+                return True
+            intent.stopping = True
+        elif not intent.stopping and not (
+            confirmed
+            and current is not None
+            and current.attributes.get("assumed_state")
+        ):
+            if intent.expires is not None and dt_util.utcnow() > intent.expires:
+                self._actor_starts.pop(key, None)
+            return True
+        # An OFF may have arrived during recovery. Adopting that edge is
+        # enough to complete the targeted cleanup without a new write.
+        if not await self._actor(cascade_id, actor, False):
+            return False
+        self._actor_starts.pop(key, None)
+        return True
 
     @_control_sequence
     async def _recover_actor(
@@ -2120,12 +2256,27 @@ class CascadeManager:
                     self._actor_event(
                         cascade_id, "actor_recovery_command_retry", entity_id, target
                     )
+                    intent = self._actor_starts.get((cascade_id, entity_id))
                     await self.coordinator._switch_entity(
-                        entity_id, turn_on, actor_owner=cascade_id
+                        entity_id,
+                        turn_on,
+                        actor_owner=cascade_id,
+                        context=intent.context
+                        if turn_on and intent is not None
+                        else None,
                     )
                 self._check_control_generation(cascade_id)
                 await self._wait_actor_state(entity_id, target, accept_assumed=False)
                 self._check_control_generation(cascade_id)
+                if turn_on:
+                    self._check_foreign_on(
+                        cascade_id,
+                        entity_id,
+                        self.coordinator.hass.states.get(entity_id),
+                    )
+        except _ForeignActorOn:
+            recovery["status"] = "foreign_override"
+            raise
         except _CoordinatePermissionPending:
             recovery["status"] = "coordinate_hold"
             raise
@@ -2292,7 +2443,9 @@ class CascadeManager:
             # Re-sending OFF on every inactive plan pass made both outputs
             # oscillate every ~12 s.  A confirmed target state is already a
             # successful, adoptable transition and must never be rewritten.
-            if not turn_on and state["claims"].get(entity_id) is True:
+            if turn_on:
+                self._check_foreign_on(cascade_id, entity_id, current)
+            elif state["claims"].get(entity_id) is True:
                 self._record_observed_off(cascade_id, entity_id, current)
             state["claims"][entity_id] = turn_on
             return True
@@ -2306,16 +2459,41 @@ class CascadeManager:
         try:
             async with asyncio.timeout(timeout_s):
                 self._check_coordinate_permission(cascade_id, entity_id, turn_on)
-                ok = await self.coordinator._switch_entity(
-                    entity_id, turn_on, actor_owner=cascade_id
-                )
-                self._check_coordinate_permission(
-                    cascade_id,
-                    entity_id,
-                    turn_on,
-                    retain_confirmed=False,
-                    check_forecast=False,
-                )
+                intent = None
+                if turn_on:
+                    key = (cascade_id, entity_id)
+                    self._actor_starts.pop(key, None)
+                    if (
+                        _COORDINATE_SNAPSHOT.get() is not None
+                        and getattr(self.coordinator, "voltage_gate", None) is not None
+                    ):
+                        topology = self._topology(cascade_id)
+                        intent = self._actor_starts[key] = _ActorStart(
+                            generation,
+                            dt_util.utcnow(),
+                            Context(),
+                            current is not None and current.state == "off",
+                            bool(
+                                topology
+                                and any(
+                                    data.get(CONF_LOAD_CHARGE_ENABLE) == entity_id
+                                    for _, data in topology["members"]
+                                )
+                            ),
+                            state["claims"].get(entity_id),
+                        )
+                if intent is not None:
+                    ok = await self.coordinator._switch_entity(
+                        entity_id,
+                        turn_on,
+                        actor_owner=cascade_id,
+                        context=intent.context,
+                    )
+                    intent.accepted = ok
+                else:
+                    ok = await self.coordinator._switch_entity(
+                        entity_id, turn_on, actor_owner=cascade_id
+                    )
                 if not ok:
                     self._actor_event(
                         cascade_id, "service_failed", entity_id, target_state
@@ -2360,6 +2538,10 @@ class CascadeManager:
             or entity_id in self.coordinator.released_load_actors()
         ):
             return False
+        if turn_on:
+            self._check_foreign_on(
+                cascade_id, entity_id, self.coordinator.hass.states.get(entity_id)
+            )
         self._actor_event(cascade_id, "target_confirmed", entity_id, target_state)
         if not turn_on:
             state.setdefault("actor_off_since", {})[entity_id] = (
@@ -3342,6 +3524,13 @@ class CascadeManager:
             await self._apply_one_ready(
                 cascade_id, plan, load_states, now, safety_reason
             )
+        except _ForeignActorOn as err:
+            topology = self._topology(cascade_id)
+            if topology is not None:
+                self._state(cascade_id).pop("last_actor_error", None)
+                await self._handle_foreign_override(
+                    cascade_id, self._actor_mode(topology, err.entity_id)
+                )
         except _PvPlanPermissionPending:
             self._state(cascade_id)["coordinate_reason"] = "pv_plan_evidence_lost"
         except _CoordinatePermissionPending:
@@ -3436,18 +3625,20 @@ class CascadeManager:
         if topology is None:
             await self.async_safe_off(cascade_id, "invalid topology")
             return
+        for key, intent in tuple(self._actor_starts.items()):
+            owner, actor = key
+            if owner != cascade_id or intent.expires is None:
+                continue
+            if intent.generation != state.get(
+                "control_generation", 0
+            ) or actor not in self._off_order(topology):
+                self._actor_starts.pop(key)
+            elif not await self._stop_revoked_actor(key, intent):
+                return
         self._adopt_shared_safe_off(cascade_id, topology, plan)
         foreign_mode = self._foreign_override(cascade_id, topology)
-        if foreign_mode == ACTOR_MODE_SHARED:
-            state["hands_off"] = True
-            state["enabled"] = False
-            state["phase"] = "hands_off"
-            state["claims"] = {}
-            self.coordinator._save_persistent_state()
-            return
-        if foreign_mode == ACTOR_MODE_EXCLUSIVE:
-            await self._fault(cascade_id, "exclusive_actor_changed_externally")
-            await self.async_safe_off(cascade_id, "exclusive actor override")
+        if foreign_mode is not None:
+            await self._handle_foreign_override(cascade_id, foreign_mode)
             return
         by_id = {item.load_id: item for item in load_states}
         if state.get("recovery_pending"):

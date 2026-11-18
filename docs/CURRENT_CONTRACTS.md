@@ -1,5 +1,34 @@
 # Aktuelle Verträge ab 0.46.0
 
+## Schutzstopps, Energiebilanz und Messdaten ab 0.66.2
+
+Bei hohem gemessenem Netzbezug erhält jede betroffene, vom Manager gesteuerte
+Last ihren Schutzstopp auch dann, wenn eine andere Last noch auf eine
+Schaltbestätigung wartet. Für eine gebuchte Laufzeit zählt das bestätigte ON.
+Manuell übernommene Lasten behalten ihren Besitzstatus. Nach dem Entfernen
+einer Last darf deren freigegebene Aktorbindung kein Ersatzgerät sperren.
+
+Bei mehreren ausstehenden Einschaltaufträgen unterscheidet der Manager die
+Schaltflanke von späteren Attributmeldungen. Eine Benutzerflanke gehört dem
+Benutzer. Eine eindeutig einem widerrufenen Auftrag zugeordnete Antwort löst
+den Schutzstopp aus. Bei uneindeutiger Herkunft kann der Manager vorsorglich
+stoppen. Dieser Stopp erledigt keinen älteren Auftrag, dessen passende
+Rückmeldung noch eintreffen kann. Eine bestätigte Laufzeit bleibt beim
+Neuladen an dieselbe Bindung und dieselbe physische ON-Flanke gebunden.
+
+Eine nicht erreichbare Kaskaden-Endlast erhält keine zusätzliche Arbeitsenergie
+im Plan. Für die frühe Einspeisung zählt der PV-Überschuss nach Hausverbrauch
+und AC-Aufnahme der Netzteile. Ein Rückladenachweis benötigt durchgehende
+AC- und DC-Verbrauchsdaten von der Entnahme bis zum festen Rückladetermin.
+Der Unsicherheitsbetrag eines angebrochenen Intervalls zählt anteilig.
+
+Die Tagesprognose verwendet die Energieeinheit des Sensors. Für bestehende
+Sensoren ohne Einheit gilt weiterhin kWh. Bei überlappenden Stundenprognosen
+stammen Median und verfügbare Quantile einer Stunde aus derselben Publikation.
+Explizit AC-seitige Werte gehen direkt in die Planung ein. Für das
+Verbrauchslernen bestimmt die absolute Zeit die Reihenfolge der Schaltflanken
+und die Laufdauer. Die Zuordnung zu Tag und Profilstunde erfolgt in Anlagenzeit.
+
 ## Netzrückkehr, Quellenverfügbarkeit und PV-Prognosen
 
 Kehrt bei niedrigem SOC das Netz während einer Abschaltung zurück, bewertet

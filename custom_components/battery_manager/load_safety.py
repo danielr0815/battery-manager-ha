@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from asyncio import Task
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -47,7 +48,7 @@ def grid_import_w(c: BatteryManagerCoordinator) -> float | None:
     entity = c.raw_config.get("live_ac_grid_power_entity") or c.raw_config.get(
         "operation_import_power_entity"
     )
-    return c._reserve_power(entity)
+    return c._reserve_power(entity) if entity else None
 
 
 def start_blocked(c: BatteryManagerCoordinator) -> bool:
@@ -60,7 +61,7 @@ def start_blocked(c: BatteryManagerCoordinator) -> bool:
     )
 
 
-async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
+async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> tuple[Task[None], ...]:
     """Stop only; the fast timer can neither allocate energy nor start a load.
 
     The July charging-path contract permits foreign passthrough inputs to stay
@@ -68,12 +69,12 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
     (October incident: an external number action rejected its 20 % target).
     """
     if c._actuation_shutdown:
-        return
+        return ()
     from .load_actuation import coordinate_cleanup_pending, reconcile_feedback
 
-    reconcile_feedback(c)
     imported = grid_import_w(c)
     guard = imported is not None and imported > LOAD_GRID_IMPORT_TOLERANCE_W
+    reconcile_feedback(c)
     diag = {"active": guard, "grid_import_w": imported}
     if c.data:
         changed = c.data.get("load_grid_guard") != diag
@@ -85,10 +86,8 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
             c._load_plan_active = {key: False for key in c._load_plan_active}
         if changed:
             c.async_update_listeners()
-    if c._load_switch_task is not None and not c._load_switch_task.done():
-        return
     managed = c.cascade_manager.managed_load_ids()
-    actions: list[LoadAction] = []
+    tasks: list[Task[None]] = []
     for load_id, entry in c.entry.subentries.items():
         data = entry.data
         plug = data.get(CONF_LOAD_CONTROL_SWITCH)
@@ -115,25 +114,35 @@ async def stop_unsafe_loads(c: BatteryManagerCoordinator) -> None:
             or revoked_start
         ):
             continue
-        actions.append(
-            LoadAction(
-                load_id,
-                dict(data),
-                False,
-                c._entity_is_on(plug),
-                reason="revoked SOC coordinate start"
-                if revoked_start
-                else "measured grid import"
-                if guard
-                else "unfinished input stop",
-                coordinate_cleanup=c.live_ac.revoked_load_starts[load_id].revision
-                if revoked_start
-                else None,
-            )
-        )
-    if actions:
-        c._load_switch_task = c.entry.async_create_background_task(
+        running = c._load_safety_tasks.get(load_id)
+        if running is not None and not running.done():
+            tasks.append(running)
+            continue
+        task = c.entry.async_create_background_task(
             c.hass,
-            c._execute_load_switching(actions, dt_util.now()),
+            c._execute_load_switching(
+                [
+                    LoadAction(
+                        load_id,
+                        dict(data),
+                        False,
+                        c._entity_is_on(plug),
+                        reason="revoked load start"
+                        if revoked_start
+                        else "measured grid import"
+                        if guard
+                        else "unfinished input stop",
+                        coordinate_cleanup=c.live_ac.revoked_load_starts[
+                            load_id
+                        ].revision
+                        if revoked_start
+                        else None,
+                    )
+                ],
+                dt_util.now(),
+            ),
             name="battery_manager_load_safety",
         )
+        c._load_safety_tasks[load_id] = task
+        tasks.append(task)
+    return tuple(tasks)

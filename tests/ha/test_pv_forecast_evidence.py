@@ -236,3 +236,23 @@ async def test_registered_single_entity_needs_new_report_to_reuse_unchanged_numb
     state = hass.states.get(entity.entity_id)
     assert state.last_updated == previous and state.last_reported == MIDNIGHT
     assert cache.read(hass, SOURCES, MIDNIGHT) == [1, None, None]
+
+
+async def test_pv_daily_energy_units_reach_planner_and_keep_unitless_legacy(
+    hass, freezer
+):
+    await hass.config.async_set_time_zone("UTC")
+    freezer.move_to(MIDNIGHT)
+    hass.states.async_set(SOURCES[0], "900", {"unit_of_measurement": "Wh"})
+    hass.states.async_set(SOURCES[1], "1.2")
+    hass.states.async_set(SOURCES[2], "900", {"unit_of_measurement": "W"})
+    coordinator = await setup(hass)
+    assert coordinator.data["input_forecasts_kwh"] == [0.9, 1.2, None]
+    _, inputs, _ = coordinator._last_planner_recording
+    assert sum(s.pv_wh for s in inputs.slots if s.start.day == 18) == pytest.approx(900)
+
+    later = MIDNIGHT + timedelta(minutes=5)
+    freezer.move_to(later)
+    hass.states.async_set(SOURCES[0], "1200", {"unit_of_measurement": "W"})
+    assert coordinator._get_forecasts(later) == [0.9, 1.2, None]
+    assert DailyPVCache().read(hass, SOURCES, later) is None

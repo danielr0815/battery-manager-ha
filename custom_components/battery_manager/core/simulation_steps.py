@@ -8,6 +8,9 @@ from functools import lru_cache
 from .model import HourFlows, HourSlot, SwitchingInterval
 
 SUPPORT_STEP_HOURS = 1 / 12
+# Below half a datetime tick there is no new timestamp to represent. Keep
+# every representable remainder while ignoring floating-point step drift.
+HALF_MICROSECOND_HOURS = 0.5 / 3_600_000_000
 # Eight three-day hourly horizons allow baseline, reserve and appliance probes
 # to share their validated grid. Cache keys contain all physical slot inputs.
 STEP_CACHE_SLOTS = 8 * 3 * 24
@@ -23,7 +26,7 @@ def _split_slot(slot: HourSlot, start_iso: str) -> tuple[tuple[HourSlot, float],
     """Retain exact arithmetic and partial-slot lengths of the original loop."""
     steps = []
     elapsed = 0.0
-    while elapsed < slot.duration - 1e-9:
+    while elapsed < slot.duration - HALF_MICROSECOND_HOURS:
         duration = min(SUPPORT_STEP_HOURS, slot.duration - elapsed)
         ratio = duration / slot.duration
         small = replace(

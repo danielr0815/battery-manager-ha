@@ -5,7 +5,9 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.core import Context
 from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed_exact
 
 from custom_components.battery_manager import load_actuation
 from custom_components.battery_manager.load_actuation import LoadAction
@@ -591,9 +593,7 @@ async def test_newer_charge_intent_wins_after_older_confirmation(
         # Our delayed ON still owns its input, even though a newer gate stop
         # overtook it. Independent cleanup must finish that obligation.
         assert coordinator._load_plug_owned[load_id]
-        await stop_unsafe_loads(coordinator)
-        if coordinator._load_switch_task is not None:
-            await coordinator._load_switch_task
+        await asyncio.gather(*await stop_unsafe_loads(coordinator))
     assert hass.states.is_state(PLUG, "off" if old_activate else "on")
 
 
@@ -670,3 +670,479 @@ async def test_pending_gate_start_prevents_stale_input_cleanup(hass):
     assert not input_off_allowed(coordinator, load_id)
     coordinator._load_actor_requests[ENABLE].state = "service_failed"
     assert input_off_allowed(coordinator, load_id)
+
+
+async def test_late_on_arms_booked_runtime_at_physical_edge(hass, freezer):
+    calls = []
+    c, load_id, data = await _setup(hass, calls, min_runtime_min=1, charge_enable=None)
+    _detach_listener(c)
+    c._load_actor_requests.clear()
+    c._load_run_deadline.clear()
+    c._floor_guard_active = False
+    hass.states.async_set(PLUG, "off")
+
+    async def accepted_without_feedback(call):
+        calls.append(("turn_on", call.data["entity_id"]))
+
+    hass.services.async_register("homeassistant", "turn_on", accepted_without_feedback)
+    with patch(
+        "custom_components.battery_manager.coordinator.confirm_state",
+        AsyncMock(return_value=False),
+    ):
+        await c._execute_load_switching(
+            [LoadAction(load_id, data, True, False, run_h=0.5)]
+        )
+    freezer.tick(timedelta(seconds=load_actuation.LOAD_CONFIRM_TIMEOUT_S + 5))
+    # A replan happens before the transport is eligible to retry. The
+    # original command still owns a delayed reply and its booking.
+    await c._execute_load_switching([LoadAction(load_id, data, True, False, run_h=1)])
+    assert calls.count(("turn_on", PLUG)) == 1
+    hass.states.async_set(PLUG, "on")
+    with patch.object(c, "_arm_off_timer", wraps=c._arm_off_timer) as arm:
+        load_actuation.reconcile_feedback(c)
+        edge = hass.states.get(PLUG).last_changed
+        deadline = edge + timedelta(minutes=30)
+        assert c._load_charging_active[load_id]
+        assert c._load_plug_owned[load_id]
+        assert c._last_load_switch[load_id] == edge
+        assert c._load_run_deadline.get(load_id) == deadline
+        arm.assert_called_once_with(load_id, deadline)
+    await c._apply_load_switching(_active_plan(load_id), edge, (1.0,))
+    assert hass.states.is_state(PLUG, "on")
+
+    async def apply_current_plan():
+        await c._apply_load_switching(_active_plan(load_id), dt_util.now(), (1.0,))
+
+    with (
+        patch.object(c, "async_request_refresh", side_effect=apply_current_plan),
+        patch.object(hass, "async_create_task", wraps=hass.async_create_task) as spawn,
+    ):
+        freezer.move_to(deadline - timedelta(seconds=1))
+        async_fire_time_changed_exact(hass, dt_util.utcnow())
+        await hass.async_block_till_done()
+        assert load_id in c._load_off_timer
+        assert hass.states.is_state(PLUG, "on")
+
+        freezer.move_to(deadline + timedelta(milliseconds=1))
+        async_fire_time_changed_exact(hass, dt_util.utcnow())
+        await hass.async_block_till_done()
+        # Other HA timers can independently request a refresh. Observe the
+        # actual task created by the point-in-time callback for this load.
+        assert (
+            sum(
+                len(call.args) > 1 and call.args[1] == "battery_manager_subhour_off"
+                for call in spawn.call_args_list
+            )
+            == 1
+        )
+        assert load_id not in c._load_off_timer
+        if c._load_switch_task is not None:
+            await c._load_switch_task
+    assert hass.states.is_state(PLUG, "off")
+
+
+@pytest.mark.parametrize(
+    "stored", ["current", "different_binding", "stale_pv", "moved_soc"]
+)
+async def test_booked_late_on_recovers_runtime_after_reload(hass, freezer, stored):
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    previous, load_id, data = await _setup(
+        hass, [], min_runtime_min=1, charge_enable=None
+    )
+    _detach_listener(previous)
+    previous._load_actor_requests.clear()
+    previous._load_run_deadline.clear()
+    previous._floor_guard_active = False
+    hass.states.async_set(PLUG, "off")
+
+    async def accepted_without_feedback(call):
+        pass
+
+    hass.services.async_register("homeassistant", "turn_on", accepted_without_feedback)
+    with patch(
+        "custom_components.battery_manager.coordinator.confirm_state",
+        AsyncMock(return_value=False),
+    ):
+        await previous._execute_load_switching(
+            [LoadAction(load_id, data, True, False, run_h=0.5)]
+        )
+    payload = previous._persistent_payload()
+    if stored != "current":
+        booking = payload["load_actor_requests"][PLUG]["booking"]
+        if stored == "different_binding":
+            booking["binding"]["plug"] = "switch.replacement"
+        elif stored == "stale_pv":
+            booking["requires_pv_revalidation"] = True
+        else:
+            booking["coordinate"] = {"epoch": 1, "generation": 3, "phase": "tracking"}
+    current = BatteryManagerCoordinator(hass, previous.entry)
+    try:
+        with patch.object(
+            current._store, "async_load", AsyncMock(return_value=payload)
+        ):
+            await current.async_load_persistent_state()
+        freezer.tick(timedelta(seconds=load_actuation.LOAD_CONFIRM_TIMEOUT_S + 5))
+        hass.states.async_set(PLUG, "on")
+        load_actuation.reconcile_feedback(current)
+        edge = hass.states.get(PLUG).last_changed
+        if stored != "current":
+            if current.live_ac.coordinate_cleanup_task is not None:
+                await current.live_ac.coordinate_cleanup_task
+            assert hass.states.is_state(
+                PLUG, "on" if stored == "different_binding" else "off"
+            )
+            assert not current._load_plug_owned.get(load_id, False)
+            assert not current._load_charging_active.get(load_id, False)
+            assert load_id not in current._load_run_deadline
+            return
+        assert current._load_plug_owned[load_id]
+        assert current._load_charging_active[load_id]
+        deadline = edge + timedelta(minutes=30)
+        assert current._load_run_deadline.get(load_id) == deadline
+        assert load_id in current._load_off_timer
+        freezer.tick(timedelta(minutes=30))
+        await current._apply_load_switching(_active_plan(load_id), deadline, (1.0,))
+        if current._load_switch_task is not None:
+            await current._load_switch_task
+        assert hass.states.is_state(PLUG, "off")
+    finally:
+        await current.async_cancel_actuation_tasks()
+        current.cleanup()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["confirmed", "rollback", "revoked", "reload", "revoked_reload", "republished"],
+)
+@pytest.mark.parametrize("origin_type", ["own", "operator", "other_service"])
+async def test_only_our_on_edge_can_acquire_load_input(
+    hass, freezer, scenario, origin_type
+):
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.load_safety import stop_unsafe_loads
+
+    calls = []
+    c, load_id, data = await _setup(hass, calls, min_runtime_min=1)
+    _detach_listener(c)
+    c._load_actor_requests.clear()
+    c._floor_guard_active = False
+    c.raw_config["operation_import_power_entity"] = "sensor.ownership_grid"
+    hass.states.async_set("sensor.ownership_grid", "0", {"unit_of_measurement": "W"})
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    calls.clear()
+
+    origin = None
+
+    def reply_context():
+        if origin_type == "operator":
+            return Context(user_id="operator")
+        if origin_type == "other_service":
+            return Context(parent_id=Context().id)
+        assert origin is not None
+        return Context(parent_id=origin.id)
+
+    async def accept(call):
+        nonlocal origin
+        entity = call.data["entity_id"]
+        calls.append((call.service, entity))
+        if entity == ENABLE:
+            hass.states.async_set(entity, "on", context=call.context)
+        else:
+            origin = call.context
+            if scenario == "confirmed":
+                hass.states.async_set(entity, "on", context=reply_context())
+
+    async def read_physical_state(_hass, entity, desired):
+        return _hass.states.is_state(entity, "on" if desired else "off")
+
+    hass.services.async_register("homeassistant", "turn_on", accept)
+    with patch(
+        "custom_components.battery_manager.coordinator.confirm_state",
+        read_physical_state,
+    ):
+        await c._execute_load_switching(
+            [LoadAction(load_id, data, True, False, run_h=0.5)]
+        )
+        if scenario in ("revoked", "revoked_reload", "republished"):
+            hass.states.async_set(
+                "sensor.ownership_grid", "2000", {"unit_of_measurement": "W"}
+            )
+            await asyncio.gather(*await stop_unsafe_loads(c))
+            hass.states.async_set(
+                "sensor.ownership_grid", "0", {"unit_of_measurement": "W"}
+            )
+        current = c
+        if scenario in ("reload", "revoked_reload"):
+            payload = c._persistent_payload()
+            current = BatteryManagerCoordinator(hass, c.entry)
+            with patch.object(
+                current._store, "async_load", AsyncMock(return_value=payload)
+            ):
+                await current.async_load_persistent_state()
+        try:
+            if scenario != "confirmed":
+                assert hass.states.is_state(ENABLE, "off")
+                freezer.tick(timedelta(seconds=35))
+                old_state = hass.states.get(PLUG)
+                hass.states.async_set(PLUG, "on", context=reply_context())
+                if scenario == "republished":
+                    edge = hass.states.get(PLUG)
+                    freezer.tick(timedelta(seconds=1))
+                    hass.states.async_set(PLUG, "on", {"updated": True})
+                    load_actuation.reconcile_feedback(
+                        current,
+                        SimpleNamespace(
+                            data={
+                                "entity_id": PLUG,
+                                "old_state": old_state,
+                                "new_state": edge,
+                            }
+                        ),
+                    )
+            await asyncio.gather(*await stop_unsafe_loads(current))
+            if current.live_ac.coordinate_cleanup_task is not None:
+                await current.live_ac.coordinate_cleanup_task
+            if origin_type != "own":
+                assert hass.states.is_state(PLUG, "on")
+                assert hass.states.is_state(ENABLE, "off")
+                assert ("turn_off", PLUG) not in calls
+                assert not current._load_plug_owned.get(load_id, False)
+                assert load_id not in current._load_run_deadline
+            elif scenario == "confirmed":
+                assert current._load_plug_owned[load_id]
+                assert current._load_charging_active[load_id]
+                assert load_id in current._load_run_deadline
+            else:
+                assert hass.states.is_state(PLUG, "off")
+                assert ("turn_off", PLUG) in calls
+                assert load_id not in current._load_run_deadline
+        finally:
+            if current is not c:
+                await current.async_cancel_actuation_tasks()
+                current.cleanup()
+
+
+@pytest.mark.parametrize("scenario", ["confirmed", "late", "revoked"])
+@pytest.mark.parametrize("reload", [False, True])
+async def test_user_attribute_update_preserves_the_own_on_edge(
+    hass, freezer, scenario, reload
+):
+    from types import SimpleNamespace
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.load_safety import stop_unsafe_loads
+
+    calls = []
+    c, load_id, data = await _setup(hass, calls, min_runtime_min=1)
+    _detach_listener(c)
+    c._load_actor_requests.clear()
+    c._floor_guard_active = False
+    c.raw_config["operation_import_power_entity"] = "sensor.ownership_grid"
+    hass.states.async_set("sensor.ownership_grid", "0", {"unit_of_measurement": "W"})
+    for entity in (ENABLE, PLUG):
+        hass.states.async_set(entity, "off")
+    origin = None
+
+    async def switch(call):
+        nonlocal origin
+        entity = call.data["entity_id"]
+        calls.append((call.service, entity))
+        if call.service == "turn_on":
+            if entity == PLUG:
+                origin = call.context
+                if scenario != "confirmed":
+                    return
+            hass.states.async_set(entity, "on", context=call.context)
+        else:
+            hass.states.async_set(entity, "off", context=call.context)
+
+    async def read_physical_state(_hass, entity, desired):
+        return _hass.states.is_state(entity, "on" if desired else "off")
+
+    for service in ("turn_on", "turn_off"):
+        hass.services.async_register("homeassistant", service, switch)
+
+    with patch(
+        "custom_components.battery_manager.coordinator.confirm_state",
+        read_physical_state,
+    ):
+        await c._execute_load_switching(
+            [LoadAction(load_id, data, True, False, run_h=0.5)]
+        )
+        if scenario == "revoked":
+            hass.states.async_set(
+                "sensor.ownership_grid", "2000", {"unit_of_measurement": "W"}
+            )
+            await asyncio.gather(*await stop_unsafe_loads(c))
+            hass.states.async_set(
+                "sensor.ownership_grid", "0", {"unit_of_measurement": "W"}
+            )
+        if scenario != "confirmed":
+            old = hass.states.get(PLUG)
+            freezer.tick(timedelta(seconds=35))
+            hass.states.async_set(PLUG, "on", context=Context(parent_id=origin.id))
+            on = hass.states.get(PLUG)
+        else:
+            old = on = hass.states.get(PLUG)
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(
+            PLUG, "on", {"updated": True}, context=Context(user_id="operator")
+        )
+        attr = hass.states.get(PLUG)
+        assert (
+            attr.last_changed == on.last_changed and attr.last_updated > on.last_updated
+        )
+        # Keep the revoked device ON until the new coordinator can use the
+        # stored edge. The state-machine snapshot now only has the attribute context.
+        with patch.object(load_actuation, "_schedule_coordinate_cleanup"):
+            if scenario != "confirmed":
+                load_actuation.reconcile_feedback(
+                    c,
+                    SimpleNamespace(
+                        data={"entity_id": PLUG, "old_state": old, "new_state": on}
+                    ),
+                )
+            load_actuation.reconcile_feedback(
+                c,
+                SimpleNamespace(
+                    data={"entity_id": PLUG, "old_state": on, "new_state": attr}
+                ),
+            )
+        current = c
+        try:
+            if reload:
+                current = BatteryManagerCoordinator(hass, c.entry)
+                with patch.object(
+                    current._store, "async_load", return_value=c._persistent_payload()
+                ):
+                    await current.async_load_persistent_state()
+            load_actuation.reconcile_feedback(current)
+            if scenario == "confirmed":
+                assert current._load_plug_owned[load_id]
+                await current._execute_load_switching(
+                    [LoadAction(load_id, data, False, True)]
+                )
+            else:
+                await asyncio.gather(*await stop_unsafe_loads(current))
+                if current.live_ac.coordinate_cleanup_task is not None:
+                    await current.live_ac.coordinate_cleanup_task
+        finally:
+            if current is not c:
+                await current.async_cancel_actuation_tasks()
+                current.cleanup()
+    assert ("turn_off", PLUG) in calls
+    assert hass.states.is_state(PLUG, "off")
+
+
+@pytest.mark.parametrize("storage", ["live", "before_flush", "after_flush", "legacy"])
+@pytest.mark.parametrize(
+    "changed_actor", ["plug", "gate", "passthrough_gate", "attributes"]
+)
+async def test_only_the_confirmed_run_can_use_its_deadline_after_manual_edges(
+    hass, freezer, storage, changed_actor
+):
+    import json
+
+    from homeassistant.helpers.event import async_track_state_change_event
+
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from tests.ha.test_load_switching import POWER_FEEDBACK
+
+    calls = []
+    passthrough = changed_actor == "passthrough_gate"
+    with_gate = changed_actor in ("gate", "passthrough_gate")
+    c, load_id, data = await _setup(
+        hass, calls, charge_enable=ENABLE if with_gate else None, min_runtime_min=1
+    )
+    _detach_listener(c)
+    c._load_actor_requests.clear()
+    c._floor_guard_active = False
+    hass.states.async_set(
+        PLUG,
+        "on" if passthrough else "off",
+        context=Context(user_id="operator") if passthrough else None,
+    )
+    if with_gate:
+        hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(POWER_FEEDBACK, "unavailable")
+    calls.clear()
+
+    async def switch(call):
+        entity = call.data["entity_id"]
+        calls.append((call.service, entity))
+        hass.states.async_set(
+            entity, "on" if call.service == "turn_on" else "off", context=call.context
+        )
+
+    for service in ("turn_on", "turn_off"):
+        hass.services.async_register("homeassistant", service, switch)
+    c._listeners_setup = True
+    c._unsub_state_listener = async_track_state_change_event(
+        hass, [PLUG, ENABLE], c._handle_entity_change
+    )
+    current = c
+    try:
+        await c._execute_load_switching(
+            [LoadAction(load_id, data, True, False, run_h=1.0)]
+        )
+        await hass.async_block_till_done()
+        assert c._load_plug_owned.get(load_id, False) is not passthrough
+        deadline = c._load_run_deadline[load_id]
+        assert load_id in c._load_off_timer
+        old_payload = json.loads(json.dumps(c._persistent_payload()))
+        if storage == "legacy":
+            old_payload.pop("load_on_edges", None)
+        freezer.tick(timedelta(seconds=5))
+        actor = ENABLE if with_gate else PLUG
+        operator = Context(user_id="operator")
+        if changed_actor == "attributes":
+            hass.states.async_set(actor, "on", {"updated": True}, context=operator)
+        else:
+            hass.states.async_set(actor, "off", context=operator)
+            freezer.tick(timedelta(seconds=1))
+            hass.states.async_set(actor, "on", context=operator)
+        await hass.async_block_till_done()
+        payload = (
+            old_payload
+            if storage in ("after_flush", "legacy")
+            else json.loads(json.dumps(c._persistent_payload()))
+        )
+        if storage != "live":
+            _detach_listener(c)
+            current = BatteryManagerCoordinator(hass, c.entry)
+            with patch.object(current._store, "async_load", return_value=payload):
+                await current.async_load_persistent_state()
+        if changed_actor == "attributes":
+            assert current._load_plug_owned[load_id]
+            assert current._load_run_deadline[load_id] == deadline
+        else:
+            assert load_id not in current._load_run_deadline
+            assert load_id not in current._load_off_timer
+            assert not current._load_charging_active.get(load_id, False)
+            if with_gate:
+                assert current._load_plug_owned.get(load_id, False) is not passthrough
+                assert hass.states.is_state(PLUG, "on")
+            else:
+                assert not current._load_plug_owned.get(load_id, False)
+
+        if storage != "legacy" or changed_actor != "attributes":
+            freezer.move_to(deadline + timedelta(seconds=1))
+            await current._apply_load_switching(
+                _active_plan(load_id), dt_util.now(), (1.0,)
+            )
+            if current._load_switch_task is not None:
+                await current._load_switch_task
+            assert hass.states.is_state(
+                actor, "off" if changed_actor == "attributes" else "on"
+            )
+            assert (("turn_off", actor) in calls) is (changed_actor == "attributes")
+    finally:
+        if current is not c:
+            await current.async_cancel_actuation_tasks()
+            current.cleanup()
+        if c._unsub_state_listener is not None:
+            _detach_listener(c)

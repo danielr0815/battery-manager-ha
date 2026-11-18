@@ -1728,3 +1728,26 @@ def test_a_second_credit_cannot_reintroduce_dc_outage_already_removed_by_the_fir
     assert actual.flows[0].unserved_dc_wh == 0
     assert not actual.flows[0].support_dc24
     assert actual.flows[1].support_dc24
+
+
+@pytest.mark.parametrize("gap_inside", [False, True])
+def test_microsecond_coverage_gap_cannot_fund_recharge_only_inside_proof(gap_inside):
+    config = configuration()
+    anchor = NOW + timedelta(minutes=30)
+    finish = NOW + timedelta(hours=1)
+    edge = anchor - timedelta(microseconds=int(gap_inside))
+    snapshot = ConsumptionUncertaintySnapshot(
+        (
+            ConsumptionUncertaintyInterval(NOW, edge, 20, 0),
+            ConsumptionUncertaintyInterval(
+                edge + timedelta(microseconds=1), finish, 20, 0
+            ),
+        )
+    )
+
+    integrated = uncertainty_wh(snapshot, NOW + timedelta(minutes=15), anchor, config)
+
+    if gap_inside:
+        assert integrated is None
+    else:
+        assert integrated == pytest.approx(10)

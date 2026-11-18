@@ -88,27 +88,36 @@ integration, 15-min buckets) are ignored.
 
 - New pure-core module `core/forecast_hours.py` (no HA imports):
   - `aggregate_hours(entries: Iterable[tuple[datetime, float]]) -> dict[datetime, float]`
-    Sums sub-hour buckets (15/30 min) into naive-local hour keys
-    (`datetime` truncated to the hour). Values are Wh per bucket (Open-Meteo
-    `wh_period` semantics). Multiple entities merge additively is NOT needed
-    (the three entities are day-disjoint); merging maps for different days:
-    last writer wins per hour, callers pass day-disjoint data.
+    Sums sub-hour buckets (15/30 min) into local hour keys with fixed offsets.
+    Each occurrence of a repeated DST hour keeps its own Wh buckets.
   - `coverage_and_residual(day_hours, daily_total_wh) -> (covered_wh, residual_wh)`
     residual = max(0, daily_total - covered); used for fallback spread.
 - Coordinator (WP1 part): when reading each of the three PV entities, also read
   the `wh_period` attribute (dict[str, number]); parse keys with
-  `homeassistant.util.dt.parse_datetime`; naive keys are LOCAL, aware keys are
-  converted to local then made naive. Malformed keys/values are skipped; NaN/±inf
-  values are skipped and negatives clamped to 0 (FIX-9) with a single debug log.
-  The stale-state cache is PER ENTITY (FIX-4): each entity keeps its own last-good
-  `(map, timestamp)`, and each cycle the merge uses the entity's fresh map when
-  non-empty else its cached map within `MAX_HISTORICAL_FORECAST_AGE_HOURS`. A
-  cycle where one entity is unavailable therefore contributes that entity's cached
-  buckets rather than dropping them — a partial read never overwrites the cached
-  full map (the earlier single merged-map cache treated a partial read as a good
-  read and clobbered it).
+  `homeassistant.util.dt.parse_datetime`. Naive keys use the installation time
+  zone. Aware keys are converted to that zone and retain their offsets.
+  Malformed and nonfinite buckets are skipped, and negative Wh clamp to zero
+  (FIX-9). The diagnostic counts rejected and clamped buckets per publication.
+  The stale-state cache is per entity (FIX-4). It holds the last usable median
+  and its quantiles with their original publication time and is usable within
+  `MAX_HISTORICAL_FORECAST_AGE_HOURS` when fresh data from that entity is missing.
+- The daily state accepts `Wh`, `kWh`, `MWh` and `GJ` and is converted to kWh for
+  the planner. Legacy states without an energy unit are read as kWh. An
+  incompatible declared unit supplies no new daily evidence.
+- Each hourly channel uses its valid `wh_period_ac*` buckets for a local date
+  when available. Otherwise it can use the corresponding `wh_period*` curve.
+  An AC bucket, including zero Wh, is used as published. When the source
+  publishes both bases, matching timestamps of the paired median buckets
+  before hourly aggregation establish the AC/DC ratio for that date. A valid
+  positive AC state on the same publication can calibrate its plain median
+  only for the local date of publication plus the configured role offset. That
+  legacy ratio retains its existing efficiency bounds. A plain-only source with
+  no evidence of a separate AC basis retains its legacy values. Plain curves
+  with evidence of a distinct AC basis and no matching conversion fall through
+  to the daily residual model. Other entities' totals cannot calibrate this
+  publication.
 - `series.build_slots` gains `pv_hourly: dict[datetime, float] | None = None`
-  (keys = naive local hour starts). Per slot: if the slot's hour is covered,
+  (keys = local hour starts retaining their offsets). Per slot: if the slot's hour is covered,
   `pv_wh = hourly_value * slot.duration_fraction_of_that_hour`; an uncovered hour
   of a day takes its two-window SHARE of that day's RESIDUAL:
   `residual_wh * pv_hour_share(hour) * duration`. There is NO renormalization over
@@ -281,12 +290,11 @@ Threshold search, grid-support escalation, appliance windows, executor
   2026-07-19). The import gate is now the absolute `IMPORT_ARTIFACT_SLACK_WH`
   (50 Wh over the whole horizon) — surplus loads must never cause grid import;
   the slack only prevents ~10 Wh modelling artifacts from vetoing a booking.
-- **Cross-entity `wh_period` merge.** The per-entity hourly maps merge in
-  (today, tomorrow, day-after) order with last-writer-wins over any overlapping
-  days (FIX-4). The three PV entities belong to the same Open-Meteo family and
-  carry identical data for the days they overlap, so last-writer-wins is harmless
-  (it never blends conflicting forecasts). Should genuinely disjoint providers be
-  wired later, this becomes a documented precedence rule rather than a merge bug.
+- **Cross-entity `wh_period` merge.** Select one publication per hour. A fresh
+  candidate wins over cache fallback, then the newer publication wins. Exact
+  timestamp ties prefer the candidate whose daily role matches the hour's
+  calendar date, then the later configured role. The winner supplies the median
+  together with its own available quantiles. A missing band stays missing.
 
 ## 4. Work-package boundaries (file ownership)
 

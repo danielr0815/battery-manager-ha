@@ -392,9 +392,7 @@ async def test_restore_does_not_claim_unproved_legacy_or_changed_manual_binding(
     with patch.object(c._store, "async_load", AsyncMock(return_value=payload)):
         await c.async_load_persistent_state()
     reconcile_feedback(c)
-    await stop_unsafe_loads(c)
-    if c._load_switch_task is not None:
-        await c._load_switch_task
+    await asyncio.gather(*await stop_unsafe_loads(c))
     assert lid not in c.live_ac.revoked_load_starts
     assert hass.states.is_state(PLUG, "on")
     assert calls == []
@@ -464,3 +462,48 @@ async def test_inflight_listener_never_adopts_revoked_input_as_minimum_dwell(has
     assert hass.states.is_state(PLUG, "off")
     assert not c._load_charging_active.get(lid, False)
     assert c._last_load_switch.get(lid) == before
+
+
+async def test_reload_releases_deleted_load_binding_for_replacement(hass):
+    from types import MappingProxyType
+
+    from homeassistant.config_entries import ConfigSubentry
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.battery_manager.const import SUBENTRY_TYPE_LOAD
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    calls = []
+    previous, old_id, data = await _setup(hass, calls)
+    previous.set_load_enabled(old_id, False)
+    prior = deepcopy(previous._persistent_payload())
+    assert PLUG in previous.released_load_actors()
+
+    replacement = ConfigSubentry(
+        data=MappingProxyType(data),
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        title="Replacement",
+        unique_id=None,
+    )
+    entry = MockConfigEntry(
+        domain="battery_manager",
+        data=previous.entry.data,
+        subentries_data=[replacement.as_dict()],
+    )
+    entry.add_to_hass(hass)
+    current = BatteryManagerCoordinator(hass, entry)
+    try:
+        with patch.object(current._store, "async_load", AsyncMock(return_value=prior)):
+            await current.async_load_persistent_state()
+        new_id = next(iter(entry.subentries))
+        assert new_id != old_id and old_id not in entry.subentries
+        assert current.load_bm_enabled(new_id)
+        assert PLUG not in current.released_load_actors()
+        assert old_id not in current._persistent_payload()["load_released_actors"]
+        calls.clear()
+        hass.states.async_set(PLUG, "off")
+        assert await current._switch_entity(PLUG, True, actor_owner="load:" + new_id)
+        assert calls == [("turn_on", PLUG)]
+    finally:
+        await current.async_cancel_actuation_tasks()
+        current.cleanup()

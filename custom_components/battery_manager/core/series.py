@@ -30,13 +30,8 @@ def _slot_duration_hours(index: int, slot_start: datetime) -> float:
     """
     if index != 0:
         return 1.0
-    remaining_s = (
-        3600.0
-        - slot_start.minute * 60.0
-        - slot_start.second
-        - slot_start.microsecond / 1e6
-    )
-    return remaining_s / 3600.0
+    hour_start = slot_start.replace(minute=0, second=0, microsecond=0)
+    return (hour_start + timedelta(hours=1) - slot_start).total_seconds() / 3600.0
 
 
 def _daily_forecast_wh(daily_kwh: float, day_offset: int) -> float:

@@ -529,3 +529,73 @@ async def test_malformed_exclusion_diagnostics_do_not_break_startup(hass, exclus
     with patch.object(learner._store, "async_load", new=AsyncMock(return_value=stored)):
         await learner.async_load()
     assert "excluded_hours" not in learner.diagnostics()
+
+
+async def test_recorder_fall_back_subtracts_twenty_minutes_from_folded_bin(
+    hass, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    from homeassistant.core import State
+
+    from custom_components.battery_manager.core.load_profile import on_fractions
+
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    learner = ProfileLearner(
+        hass, _entry(hass, **{CONF_AC_LOAD_ENTITY: "sensor.house"})
+    )
+    zone = dt_util.get_default_time_zone()
+    start = datetime(2026, 10, 25, tzinfo=zone)
+    end = start + timedelta(days=1)
+    day = start.date().isoformat()
+    entity = "switch.fold_load"
+    states = {
+        entity: [
+            State(entity, "off", last_updated=start.astimezone(UTC)),
+            State(entity, "on", last_updated=datetime(2026, 10, 25, 0, 50, tzinfo=UTC)),
+            State(
+                entity, "off", last_updated=datetime(2026, 10, 25, 1, 10, tzinfo=UTC)
+            ),
+        ]
+    }
+
+    async def recorder(callback):
+        if getattr(callback, "keywords", {}).get("entity_id") == entity:
+            return states
+        if not getattr(recorder, "metadata_sent", False):
+            recorder.metadata_sent = True
+            return [{"statistic_id": "sensor.house", "has_sum": False}]
+        return {
+            "sensor.house": [
+                {"start": datetime(2026, 10, 25, hour, tzinfo=UTC), "mean": 250}
+                for hour in range(3)
+            ]
+        }
+
+    monkeypatch.setattr(learner, "_recorder_job", recorder)
+    changes, first = await learner._state_changes(
+        entity, start, end, lambda value: value == "on"
+    )
+    fractions = on_fractions(changes, start, end)
+    assert first == start
+    assert fractions == {(day, 2): pytest.approx(1 / 3)}
+
+    cfg = learner._raw_config()
+    cfg["_epoch"] = {
+        "start": start.isoformat(),
+        "appliances": [],
+        "loads": [
+            {
+                "in_house": True,
+                "power_entity": None,
+                "control_switch": entity,
+                "nominal_power_w": 300,
+            },
+        ],
+    }
+    cfg["_epoch_end"] = None
+    await learner._fetch_days(cfg, learner._sources(), [day], {"ac": [day], "dc": []})
+    assert learner.data["daily_durations"][day]["ac"][2] == 2
+    values = learner.data["daily_hours"][day]["ac"]
+    assert 500 - values[2] == pytest.approx(100)
+    assert values[3] == pytest.approx(250)

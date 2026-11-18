@@ -70,10 +70,16 @@ coming days.
 
 - **R1** The hourly PV reader (F-PREDRAIN F1 path) additionally parses
   `wh_period_p10` and `wh_period_p90` attributes from each of the three PV
-  entities WHEN PRESENT: same timestamp normalisation, same slot aggregation,
-  same per-entity stale-cache pattern (FIX-4) — cached alongside the median
-  buckets in the same cache entry. Absent/empty/garbage attributes → no p10/
-  p90 series for that day (never an error). Daily/two-window mode → none.
+  entities, and prefers a usable explicit AC variant for each channel and
+  calendar date. All channels share timestamp normalisation, slot aggregation
+  and the per-entity median cache. An explicit AC quantile keeps its Wh values
+  alongside a converted median. A plain quantile with a known separate AC
+  basis needs the publication's matching AC/DC factor for the same date.
+  The winning median can carry only quantiles from the same publication.
+  Each quantile must have the same raw bucket timestamps within the hour as
+  that median and be consistent with its value. Missing, partially covered or
+  unconvertible quantiles preserve the scalar uncertainty fallback. Daily mode
+  has no bands.
 - **R2** Per-slot results are threaded like pv itself: `Slot` gains optional
   `pv_p10_wh: float | None = None` and `pv_p90_wh: float | None = None`
   (frozen dataclass, neutral defaults → every legacy constructor, all goldens

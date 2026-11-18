@@ -2304,7 +2304,9 @@ class ProfileLearner:
                     active = predicate(raw)
                 changes.append((dt_util.as_local(state.last_updated), active))
             cursor = chunk_end
-        changes.sort(key=lambda item: item[0])
+        # During the autumn fold a later instant can have an earlier local
+        # wall time. Keep local dates but order transitions by elapsed time.
+        changes.sort(key=lambda item: dt_util.as_utc(item[0]))
         return changes, (changes[0][0] if changes else None)
 
     def _report_missing_statistics(

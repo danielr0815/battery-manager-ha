@@ -2015,3 +2015,42 @@ def test_reserve_cascade_allocation_preserves_strict_surplus_contract():
     assert sum(p.planned_energy_wh for p in allocated.load_plans) > 0
     assert allocated.grid_export_kwh < baseline.grid_export_kwh
     assert allocated.trajectory.min_soc_percent >= config.battery.soc_min_percent
+
+
+@pytest.mark.parametrize("phase", ["idle", "running"])
+def test_unavailable_cascade_terminal_cannot_claim_aux_service(phase):
+    config, inputs = _system()
+    storage, terminal = inputs.load_states
+    inputs = replace(
+        inputs,
+        slots=_slots(0, 0),
+        load_states=(storage, replace(terminal, available=False)),
+        cascade_runtime_states=(
+            CascadeRuntimeState(
+                "chain", NOW.date(), phase, active_source_id="b1", aux_path_releases=()
+            ),
+        ),
+    )
+    unavailable = plan(config, inputs).cascade_plans[0]
+    assert unavailable.planned_aux_energy_wh == 0
+    assert unavailable.flows[-1].member_flows[0].soc_end_percent == 90
+
+    restored = plan(config, replace(inputs, load_states=(storage, terminal)))
+    assert restored.cascade_plans[0].planned_aux_energy_wh == pytest.approx(600)
+
+
+def test_unavailable_cascade_terminal_keeps_independent_member_recovery():
+    config, inputs = _system(socs=(20,))
+    inputs = replace(
+        inputs,
+        start_soc_percent=50,
+        slots=_slots(0, 1500, 1500, 1500, 700, 700, 700, 700),
+        load_states=(
+            inputs.load_states[0],
+            replace(inputs.load_states[1], available=False),
+        ),
+    )
+    result = plan(config, inputs)
+    assert result.cascade_plans[0].planned_aux_energy_wh == 0
+    assert result.load_plans[0].planned_energy_wh > 0
+    assert result.load_plans[1].planned_energy_wh == 0

@@ -39,6 +39,7 @@ from custom_components.battery_manager.const import (
     ENTITY_FEEDIN_SWITCH,
     FEEDIN_MANUAL_GRACE_S,
 )
+from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
 
 SETPOINT = "input_number.acpowersetpoint"
 BATT_POWER = "sensor.victron_system_battery_power"
@@ -69,7 +70,10 @@ async def _unload_entries_after_test(hass):
     """Unload whatever the test set up (lingering-timer guard, same reason
     as in test_config_flow.py)."""
     await hass.config.async_set_time_zone("UTC")
-    yield
+    # These tests drive the clock explicitly. A historical plan boundary
+    # would otherwise dispatch immediately on HA's real-time event loop.
+    with patch.object(BatteryManagerCoordinator, "_arm_plan_boundary"):
+        yield
     await hass.async_block_till_done()
     for entry in hass.config_entries.async_entries(DOMAIN):
         await hass.config_entries.async_unload(entry.entry_id)
@@ -1146,6 +1150,9 @@ async def test_runtime_switch_updates_forecast_for_all_days_and_resumes(hass):
     moment = MORNING.replace(hour=7, minute=30)
     await _refresh_at(hass, coordinator, moment)
     assert any(p.get("feedin", 0) > 0 for p in coordinator.data["soc_forecast"])
+    # The switch requests a refresh. Clear the HA cooldown so its replanning
+    # can finish inside this pinned pass even after a deferred startup refresh.
+    coordinator._debounced_refresh.async_cancel()
     registry = er.async_get(hass)
     switch_eid = registry.async_get_entity_id(
         "switch", DOMAIN, f"{entry.entry_id}_{ENTITY_FEEDIN_SWITCH}"
@@ -1195,3 +1202,41 @@ async def test_eager_own_write_cannot_enter_manual_before_task_assignment(hass):
     assert coordinator._feedin_last_written_w == 0
     assert not coordinator._feedin_write_pending
     assert not coordinator.feedin_manual()
+
+
+async def test_coordinated_feedin_does_not_issue_setpoint_for_pv_serving_psu(hass):
+    from datetime import UTC, datetime, timedelta
+
+    from custom_components.battery_manager.core.model import (
+        ConverterParams,
+        FeedInParams,
+        HourSlot,
+        PlanInputs,
+        SupportParams,
+        SystemConfig,
+    )
+    from custom_components.battery_manager.core.optimize import plan
+
+    calls: list[tuple[str, float]] = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    start = datetime(2026, 11, 18, 7, tzinfo=UTC)
+    config = SystemConfig(
+        inverter=ConverterParams(1000, 1, 0),
+        support=SupportParams(
+            configured=True,
+            coordinated=True,
+            dc24_forced_on=True,
+            dc48_available=False,
+        ),
+        feedin=FeedInParams(enabled=True, max_w=400),
+    )
+    slots = tuple(
+        HourSlot(i, start + timedelta(hours=i), 1, 7 + i, pv, 100, 400)
+        for i, pv in enumerate((500, 3500, 3500, 3500))
+    )
+    result = plan(config, PlanInputs(start, 55, slots))
+
+    await _executor_pass(hass, coordinator, result, moment=start)
+
+    assert result.trajectory.flows[0].feedin_wh == 0
+    assert calls == []

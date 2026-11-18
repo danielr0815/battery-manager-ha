@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from core.market import peak_weights, slot_weights
-from core.model import MarketPrice
+from core.model import HourSlot, MarketPrice
 from core.reserve import source_schedule_mode
 from core.simulate import simulate
 from test_reserve_priority import plant, series
@@ -121,6 +121,23 @@ def test_peak_preference_is_four_hours_not_four_rows(step_minutes):
     weights = peak_weights(prices)
     assert sum(step_minutes / 60 for w in weights if w > 1) == 4
     assert weights[-1] > weights[0]
+
+
+@pytest.mark.parametrize("peak_eur_mwh", [300, -100])
+def test_microsecond_price_overlap_weights_only_the_covered_time(peak_eur_mwh):
+    edge = START + timedelta(hours=15)
+    prices = (
+        MarketPrice(START, START + timedelta(hours=5), peak_eur_mwh - 200),
+        MarketPrice(edge - timedelta(hours=1), edge, peak_eur_mwh),
+    )
+    slots = tuple(
+        HourSlot(index, start, 2e-6 / 3600, start.hour, 0, 0, 0)
+        for index, start in enumerate(
+            (edge - timedelta(microseconds=2), edge - timedelta(microseconds=1), edge)
+        )
+    )
+
+    assert slot_weights(slots, prices) == [3.0, 2.0, None]
 
 
 def test_dst_fold_and_partial_price_coverage():

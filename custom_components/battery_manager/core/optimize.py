@@ -114,6 +114,7 @@ from .reserve import (
     simulate_fixed_dispatch,
     source_schedule_mode,
 )
+from .reserve_sources import psu_ac_input_wh
 from .series import insert_appliance_run
 from .simulate import simulate
 from .storage import (
@@ -608,7 +609,12 @@ def plan_feedin(
                 else 0.0
             )
             surplus_wh = (
-                slot.pv_wh - slot.ac_wh - extra_ac[i] - standby_wh - giveback_wh
+                slot.pv_wh
+                - slot.ac_wh
+                - extra_ac[i]
+                - standby_wh
+                - giveback_wh
+                - psu_ac_input_wh(config, trial.flows[i])
             )
             if surplus_wh <= _EPS:
                 reasons[i] = "no_power_surplus"
@@ -684,7 +690,7 @@ def plan_feedin(
                 "manual_setpoint" if manual_today else "loads_exhausted_to_maximum"
             )
             trial = candidate
-            remaining -= take_wh
+            remaining -= candidate.flows[i].feedin_wh
 
     # Z4 brake: the stress must not push the reserve through the ramped floors
     # — same per-slot P10/alpha vector the allocation gates use. The relief
@@ -785,13 +791,34 @@ def plan_feedin(
     elif stress_independent_days is not None and booked[0] > _EPS:
         stress_independent_days.add(today)
 
-    by_day: dict[str, float] = {}
-    for i, wh in enumerate(booked):
-        if wh > _EPS:
-            day = inputs.slots[i].start.date().isoformat()
-            by_day[day] = by_day.get(day, 0.0) + wh
     explain()
-    return tuple(booked), by_day
+    return tuple(booked), _feedin_totals(inputs, booked)
+
+
+def _feedin_totals(inputs: PlanInputs, energy_wh: Sequence[float]) -> dict[str, float]:
+    by_day: dict[str, float] = {}
+    for slot, wh in zip(inputs.slots, energy_wh, strict=True):
+        if wh > _EPS:
+            day = slot.start.date().isoformat()
+            by_day[day] = by_day.get(day, 0.0) + wh
+    return by_day
+
+
+def _served_feedin(
+    inputs: PlanInputs, trajectory: Trajectory, requested: Sequence[float]
+) -> tuple[tuple[float, ...], dict[str, float]]:
+    """Publish the energy delivered after the final AC and DC balance."""
+    # Preserve unchanged bookings across substep aggregation roundoff.
+    delivered = tuple(
+        request
+        if math.isclose(flow.feedin_wh, request, rel_tol=1e-12)
+        else flow.feedin_wh
+        for flow, request in zip(trajectory.flows, requested, strict=True)
+    )
+    power = tuple(
+        wh / slot.duration for slot, wh in zip(inputs.slots, delivered, strict=True)
+    )
+    return power, _feedin_totals(inputs, delivered)
 
 
 def appliance_windows(
@@ -1097,7 +1124,6 @@ def _plan_legacy(
     # (disabled or 0 W cap) short-circuits: no extra simulation, no schedule,
     # and the trajectory chain stays bit-identical to the pre-feature plan.
     feedin_wh: tuple[float, ...] | None = None
-    feedin_by_day_wh: dict[str, float] = {}
     feedin_decisions: list[tuple[int, str]] = []
     feedin_current_day_proven = False
     if config.feedin.enabled and config.feedin.max_w > _EPS:
@@ -1112,7 +1138,7 @@ def _plan_legacy(
             and not (config.support.configured or config.loads or config.cascades)
             else None
         )
-        feedin_wh, feedin_by_day_wh = plan_feedin(
+        feedin_wh, _ = plan_feedin(
             config,
             inputs,
             threshold,
@@ -1267,10 +1293,8 @@ def _plan_legacy(
         threshold_horizon_end = merge_slot.start + timedelta(hours=merge_slot.duration)
 
     # F-FEEDIN: the executor-facing per-slot power (W); empty when disabled.
-    feedin_schedule_w = (
-        tuple(feedin_wh[i] / inputs.slots[i].duration for i in range(len(inputs.slots)))
-        if feedin_wh is not None
-        else ()
+    feedin_schedule_w, feedin_by_day_wh = (
+        _served_feedin(inputs, traj, feedin_wh) if feedin_wh is not None else ((), {})
     )
 
     return PlanResult(
@@ -1383,9 +1407,14 @@ def _finalize_joint_plan(
     max_soc = (
         trajectory.max_soc_percent if trajectory.flows else inputs.start_soc_percent
     )
+    feedin_schedule_w, feedin_by_day_wh = (
+        _served_feedin(inputs, trajectory, feedin) if feedin is not None else ((), {})
+    )
     return replace(
         result,
         trajectory=trajectory,
+        feedin_schedule_w=feedin_schedule_w,
+        feedin_by_day_wh=feedin_by_day_wh,
         inverter_on=trajectory.flows[0].inverter_start if trajectory.flows else False,
         support_dc24_now=bool(dc24[0]) if dc24 else False,
         support_dc48_now=bool(dc48[0]) if dc48 else False,

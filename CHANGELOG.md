@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.2] - 2026-11-18
+
+### Fixed
+
+- Bei hohem Netzbezug kann der Manager eine laufende Last abschalten, während
+  eine andere Last noch auf ihre Gerätebestätigung wartet. Die gebuchte
+  Laufzeit beginnt mit dem bestätigten Einschalten.
+- Der Plan berücksichtigt die Erreichbarkeit der Kaskaden-Endlast, die
+  AC-Aufnahme der Netzteile bei früher Einspeisung und die tatsächliche Dauer
+  sehr kurzer Restslots.
+- Tagesprognosen in Wh und kWh werden einheitlich ausgewertet. Bei überlappenden
+  Stundenprognosen gehören Median und Quantile zur gewählten Publikation.
+- Das Verbrauchslernen berücksichtigt bei der Herbst-Zeitumstellung die
+  tatsächliche Einschaltdauer. Der Rückladenachweis prüft die Datenabdeckung
+  zwischen Entnahme und Rückladetermin.
+
 ## [0.66.1] - 2026-11-18
 
 ### Fixed

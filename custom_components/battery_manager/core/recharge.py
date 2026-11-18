@@ -54,18 +54,16 @@ def uncertainty_wh(
     config: SystemConfig,
 ) -> float | None:
     """Integrate once over P50; unknown AC OR DC coverage fails closed."""
-    cursor, finish = start.timestamp(), end.timestamp()
+    cursor, finish = start.astimezone(UTC), end.astimezone(UTC)
     result = 0.0
     for part in snapshot.intervals:
-        left, right = (
-            max(cursor, part.start.timestamp()),
-            min(finish, part.end.timestamp()),
-        )
+        part_start, part_end = part.start.astimezone(UTC), part.end.astimezone(UTC)
+        left, right = max(cursor, part_start), min(finish, part_end)
         if right <= left:
             continue
-        if left > cursor + 1e-6:
+        if left > cursor:
             return None
-        share = (right - left) / (part.end.timestamp() - part.start.timestamp())
+        share = (right - left) / (part_end - part_start)
         result += share * (
             part.ac_p80_minus_p50_wh
             / (config.battery.eta_discharge * config.inverter.eta)
@@ -73,9 +71,9 @@ def uncertainty_wh(
             / (config.battery.eta_discharge * config.support.dcdc_eta)
         )
         cursor = right
-        if cursor >= finish - 1e-6:
+        if cursor >= finish:
             return result
-    return result if cursor >= finish - 1e-6 else None
+    return result if cursor >= finish else None
 
 
 def certified_windows_failure(

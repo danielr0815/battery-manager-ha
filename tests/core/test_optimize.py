@@ -5492,3 +5492,112 @@ def test_published_result_mappings_are_defensive_and_read_only():
     assert result.appliance_windows["washer"] is True
     with pytest.raises(TypeError):
         result.appliance_windows["washer"] = False
+
+
+@pytest.mark.parametrize("reserve,manual", [(False, None), (False, 400), (True, 400)])
+@pytest.mark.parametrize("psu_ac_w", [0, 250, 400])
+def test_feedin_schedule_and_daily_energy_reserve_psu_ac_intake(
+    reserve, manual, psu_ac_w
+):
+    from datetime import UTC
+
+    from core.model import ReserveParams
+
+    now = datetime(2026, 11, 18, 7, tzinfo=UTC)
+    psu_eta = 0.8
+    config = SystemConfig(
+        inverter=ConverterParams(1000, 1, 0),
+        support=SupportParams(
+            configured=True,
+            coordinated=True,
+            dc24_forced_on=True,
+            dc48_available=False,
+            psu24_eta=psu_eta,
+        ),
+        reserve=ReserveParams(enabled=reserve),
+        feedin=FeedInParams(enabled=True, max_w=400, manual_w=manual),
+    )
+    slots = tuple(
+        HourSlot(i, now + timedelta(hours=i), 1, 7 + i, pv, 100, psu_ac_w * psu_eta)
+        for i, pv in enumerate((500, 3500, 3500, 3500))
+    )
+    result = plan(config, PlanInputs(now, 55, slots))
+
+    assert result.trajectory.flows[0].psu24_delivered_wh == pytest.approx(
+        psu_ac_w * psu_eta
+    )
+    assert result.feedin_schedule_w[0] == pytest.approx(400 - psu_ac_w)
+    served = [flow.feedin_wh for flow in result.trajectory.flows]
+    assert result.feedin_schedule_w == pytest.approx(served)
+    assert result.feedin_by_day_wh[now.date().isoformat()] == pytest.approx(sum(served))
+
+
+@pytest.mark.parametrize("reserve", [False, True])
+@pytest.mark.parametrize("remaining_us", [0, 1, 3, 4])
+@pytest.mark.parametrize("split", [False, True])
+def test_coordinated_microsecond_slots_keep_elapsed_coverage_and_energy(
+    reserve, remaining_us, split
+):
+    from datetime import UTC
+
+    from core.model import ReserveParams
+    from core.simulation_steps import split_slot
+
+    midnight = datetime(2026, 11, 19, tzinfo=UTC)
+    # Test both the first microsecond remainder in a forecast and a separate
+    # remainder after the last five-minute subdivision in a longer slot.
+    start = midnight - timedelta(minutes=5 if split else 0, microseconds=remaining_us)
+    config = SystemConfig(
+        battery=BatteryParams(5000, 5, 95, 1, 1),
+        charger=ConverterParams(1000, 1, 0),
+        inverter=ConverterParams(1000, 1, 0),
+        ac_profile=LoadProfile(base_w=100),
+        dc_profile=LoadProfile(base_w=40),
+        support=SupportParams(configured=True, coordinated=True, dcdc_eta=1),
+        reserve=ReserveParams(enabled=reserve),
+    )
+    inputs = build_slots(
+        config,
+        start,
+        70,
+        [0] if start < midnight else [],
+        pv_hourly={midnight - timedelta(hours=1): 160},
+    )
+    result = plan(config, inputs)
+    if start == midnight:
+        assert not inputs.slots
+        assert not result.trajectory.flows
+        return
+    (slot,) = inputs.slots
+    steps = split_slot(slot)
+    assert len(steps) == int(split) + int(remaining_us > 0)
+    assert sum(part.duration for part, _ in steps) == pytest.approx(
+        slot.duration, rel=1e-12, abs=0
+    )
+    assert sum(part.pv_wh for part, _ in steps) == pytest.approx(
+        slot.pv_wh, rel=1e-12, abs=0
+    )
+    assert sum(part.ac_wh for part, _ in steps) == pytest.approx(
+        slot.ac_wh, rel=1e-12, abs=0
+    )
+    assert sum(part.dc_wh for part, _ in steps) == pytest.approx(
+        slot.dc_wh, rel=1e-12, abs=0
+    )
+    (flow,) = result.trajectory.flows
+    assert flow.unserved_dc_wh == 0
+    assert (
+        slot.pv_wh + flow.grid_import_wh + flow.battery_discharge_wh
+        == pytest.approx(
+            slot.ac_wh + slot.dc_wh + flow.grid_export_wh + flow.battery_charge_wh,
+            rel=1e-10,
+            abs=1e-12,
+        )
+    )
+    intervals = flow.switching_schedule
+    assert intervals[0].start == start
+    assert intervals[-1].end == midnight
+    assert all(item.start < item.end for item in intervals)
+    assert all(
+        left.end == right.start
+        for left, right in zip(intervals, intervals[1:], strict=False)
+    )
