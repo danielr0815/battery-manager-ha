@@ -96,11 +96,22 @@ async def test_measured_multiday_and_dst_plant_preserves_dc_priority(
     plant = MeasuredPlant()
     import_w = 200
     seen_offsets = set()
+    forecast_date = dt_util.as_local(began).date()
     for hour in range(hours):
         now = began + timedelta(hours=hour)
         freezer.move_to(now)
         local = dt_util.as_local(now)
         seen_offsets.add(local.utcoffset())
+        if local.date() != forecast_date:
+            for entity in (
+                "sensor.pv_today",
+                "sensor.pv_tomorrow",
+                "sensor.pv_day_after",
+            ):
+                hass.states.async_set(
+                    entity, "8" if sun else "0", {"unit_of_measurement": "kWh"}
+                )
+            forecast_date = local.date()
         pv = 1000 if sun and 9 <= local.hour < 17 else 0
         house = 1400 if local.hour == 19 else 200  # unannounced AC spike
         for entity, value, unit in (

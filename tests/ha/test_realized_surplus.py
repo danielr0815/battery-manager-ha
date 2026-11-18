@@ -35,6 +35,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from test_config_flow import _no_change_options_payload
+from test_stale_failsafe import _publish_pv
 
 from custom_components.battery_manager.const import (
     CONF_EXPORT_METER_ENTITY,
@@ -92,7 +93,7 @@ FEEDIN_DATA = {
 }
 
 # A sunny summer late morning (local); refreshes step forward from here.
-T0 = dt_util.as_local(datetime(2026, 7, 19, 10, 0, tzinfo=UTC))
+T0 = datetime(2026, 7, 19, 10, 0, tzinfo=UTC)
 FIVE_MIN = timedelta(minutes=5)
 
 REALIZED_SENSOR_KEYS = (
@@ -114,6 +115,7 @@ LOAD_C = "Load C"
 async def _unload_entries_after_test(hass):
     """Unload whatever the test set up (lingering-timer guard, same reason
     as in test_config_flow.py / test_feedin.py)."""
+    await hass.config.async_set_time_zone("UTC")
     yield
     await hass.async_block_till_done()
     for entry in hass.config_entries.async_entries(DOMAIN):
@@ -127,18 +129,6 @@ def _cancel_debounce(coordinator):
     if coordinator._debounce_task:
         coordinator._debounce_task.cancel()
         coordinator._debounce_task = None
-
-
-def _set_input_states(hass, *, soc="55", pv=("10.0", "12.0", "8.0")):
-    hass.states.async_set(
-        SOC, soc, {"unit_of_measurement": "%", "device_class": "battery"}
-    )
-    for entity_id, value in zip(
-        ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"),
-        pv,
-        strict=True,
-    ):
-        hass.states.async_set(entity_id, value, {"unit_of_measurement": "kWh"})
 
 
 def _register_setpoint_service(hass):
@@ -169,7 +159,10 @@ async def _setup(
     must not see the real clock. `loads` are (title, data) pairs; `meter`/
     `feedin` toggle the config sections; `store_payload` is injected into the
     runtime store before setup (restart-restore scenarios)."""
-    _set_input_states(hass, pv=pv)
+    hass.states.async_set(
+        SOC, "55", {"unit_of_measurement": "%", "device_class": "battery"}
+    )
+    _publish_pv(hass, at, pv)
     if meter:
         hass.states.async_set(
             EXPORT,
@@ -608,6 +601,7 @@ async def test_midnight_rollover_resets_day_counters_keeps_total(hass):
     assert coordinator._realized["true_export_total_wh"] == pytest.approx(100.0)
 
     hass.states.async_set(EXPORT, "5000.2", KWH)  # +100 Wh on the new day
+    _publish_pv(hass, post_midnight)
     await _refresh_at(hass, coordinator, post_midnight, 55.2)
     realized = coordinator._realized
     # Exactly the new day's 100 Wh — not 200 (no carry-over) and not

@@ -353,7 +353,7 @@ Letztere aus dem Abstand zum nächsten Slot-Start).
 | `loads_today_kwh`, `loads_tomorrow_kwh` | Überschusslast-Energie heute/morgen (aus `daily[].loads_kwh`). **Appliances sind nicht enthalten** — sie gehen in die AC-Prognose, nie in `extra_ac_wh` |
 | `consumption_profile` | Lern-Diagnostik, siehe §3.4 |
 | `gate_calibration` | 48-V-Gate-Kalibrierbracket, siehe §3.5 |
-| `pv_source` | je Tag `"hourly"` oder `"two_window"` (`_pv_day_sources`): hatte die gemergte Stundenkarte für diesen Kalendertag mindestens einen Bucket? |
+| `pv_source` | Bei belegter Tagessumme `hourly` mit mindestens einem Stundenwert oder `two_window` aus dem Tagesmodell. Bei fehlender Tagessumme `hourly_only` mit Stundenwerten oder `unknown` bei vollständiger Lücke. |
 | `quantile_coverage` | je Tag `{coverage: 0…1, source: "scalar" \| "mixed" \| "p10/p90"}` (F-QUANTILE-BANDS R7). Nenner sind die **Tageslicht-Slots** (`pv_wh > 0`), Zähler die Slots mit **wirksamem** Band nach genau demselben Prädikat, mit dem der Planer gatet (`optimize.quantile_band_slots`) — ein kollabiertes Band `p10 == p90` zählt **nicht**. So kann man die Bänder buchstäblich reifen sehen |
 | `import_trade_used_wh` | der Import, den die Allokation über die Basis hinaus erzeugt hat. Seit F-STRICT-SURPLUS R1 **kein Trade mehr**, sondern durch den 50-Wh-Artefakt-Slack (`IMPORT_ARTIFACT_SLACK_WH`) begrenzt — ein Wert nahe 0 ist der Normalfall, ein größerer ein Alarmzeichen |
 | `stressed_min_soc` | der tiefste SOC im *gestressten* Szenario (untere Reserve der Pre-Drain-Rechnung), `None` wenn nicht berechnet |

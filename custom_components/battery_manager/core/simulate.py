@@ -444,6 +444,13 @@ def simulate(
             config, inputs, threshold_percent, extra_ac_wh, pv_scale, feedin_wh
         )
 
+    # Legacy schedules can also come from callers outside the planner.
+    # A request for an absent PSU must leave the physical supply path intact.
+    if not config.support.dc24_available:
+        dc24_schedule = None
+    if not config.support.dc48_available:
+        dc48_schedule = None
+
     soc = inputs.start_soc_percent
     flows: list[HourFlows] = []
     total_import = 0.0

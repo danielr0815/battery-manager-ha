@@ -222,6 +222,96 @@ def test_one_storage_aux_episode_starts_latest_and_targets_without_recovery() ->
     assert result.trajectory.flows[0].extra_ac_wh == 0.0
 
 
+@pytest.mark.parametrize("overhead_w", [0.0, 5.0])
+def test_zero_watt_cascade_terminal_does_not_start_aux(overhead_w):
+    config, inputs = _system()
+    chain = config.cascades[0]
+    config = replace(
+        config,
+        cascades=(
+            replace(
+                chain,
+                members=(replace(chain.members[0], output_overhead_w=overhead_w),),
+            ),
+        ),
+    )
+    member, terminal = inputs.load_states
+    slots = _slots(0, 0)
+    saturated = replace(
+        inputs,
+        slots=slots,
+        load_states=(member, replace(terminal, saturated_power_w=0)),
+    )
+
+    result = plan(config, saturated)
+    cascade = result.cascade_plans[0]
+    assert len(result.trajectory.flows) == len(cascade.flows) == len(slots)
+    assert cascade.schedule == (False, False)
+    assert cascade.planned_aux_energy_wh == cascade.planned_root_energy_wh == 0.0
+    assert cascade.proposed_runtime.active_source_id is None
+    assert not _aux_segments(cascade)
+    for flow in cascade.flows:
+        assert flow.aux_terminal_wh == flow.terminal_served_wh == 0.0
+        assert flow.member_flows[0].battery_discharge_wh == 0.0
+        assert flow.member_flows[0].soc_end_percent == 90.0
+
+    resumed_slots = _slots(0, 0, 0)[1:]
+    resumed = plan(
+        config,
+        replace(
+            saturated,
+            now=resumed_slots[0].start,
+            slots=resumed_slots,
+            load_states=(member, terminal),
+        ),
+    ).cascade_plans[0]
+    assert resumed.planned_aux_energy_wh == pytest.approx(600.0)
+    assert all(segment.source_load_id == "b1" for _, segment in _aux_segments(resumed))
+
+
+def test_zero_watt_cascade_terminal_keeps_charging_passthrough_and_independent_load():
+    config, inputs = _system(members=2, socs=(90.0, 40.0))
+    chain = config.cascades[0]
+    config = replace(
+        config,
+        loads=(*config.loads, SurplusLoad("independent", "Independent", 240.0)),
+        cascades=(
+            replace(
+                chain,
+                members=(
+                    replace(chain.members[0], output_overhead_w=5.0),
+                    chain.members[1],
+                ),
+            ),
+        ),
+    )
+    upstream, downstream, terminal = inputs.load_states
+    inputs = replace(
+        inputs,
+        start_soc_percent=95,
+        slots=_slots(1000, 0),
+        load_states=(
+            upstream,
+            replace(downstream, on=True, minimum_run_until=NOW + timedelta(hours=1)),
+            replace(terminal, saturated_power_w=0.0),
+            SurplusLoadState("independent"),
+        ),
+    )
+
+    result = plan(config, inputs)
+    cascade = result.cascade_plans[0]
+    first = cascade.flows[0]
+    assert cascade.planned_aux_energy_wh == first.terminal_served_wh == 0.0
+    assert not any(cascade.schedule)
+    assert first.member_flows[0].battery_charge_wh == 0.0
+    assert first.member_flows[1].battery_charge_wh == pytest.approx(300.0)
+    assert first.root_input_wh == pytest.approx(305.0)
+    independent = next(p for p in result.load_plans if p.load_id == "independent")
+    assert independent.active_now
+    assert independent.planned_energy_wh == pytest.approx(240.0)
+    assert result.trajectory.flows[0].extra_ac_wh == pytest.approx(545.0)
+
+
 def test_two_storage_skip_caps_efficiency_and_cache() -> None:
     config, inputs = _system(members=2, socs=(20.0, 90.0), cache=True, caps=True)
     config = replace(

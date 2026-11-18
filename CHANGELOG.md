@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.1] - 2026-11-18
+
+### Fixed
+
+- Bei Netzrückkehr während einer Abschaltung prüft der Manager den Schutzbedarf
+  erneut und bestätigt die 24-V-Übergabe, bevor er die bisherige Quelle trennt.
+- Bei Einzelnetzteilbetrieb plant und bilanziert er ausschließlich vorhandene
+  Quellen. Eine gesättigte Kaskaden-Endlast mit 0 W löst keinen Aux-Start aus.
+- Tages-PV gilt für das lokale Zieldatum und die zugehörige Quelle. Fehlende
+  Zukunftstage bleiben sichtbar. Verliert eine automatische Einspeisung ihren
+  PV-Beleg, prüft der Manager die Freigabe erneut.
+- Ungültige Zeitstempel in einer PV-Stundenkurve lassen gültige Nachbarwerte
+  und Quantilbänder weiter nutzbar.
+
 ## [0.66.0] - 2026-11-17
 
 ### Added

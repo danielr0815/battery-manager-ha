@@ -1,9 +1,18 @@
 # Risikomatrix und Testnachweise
 
-Stand: Zielversion 0.66.0. Die Matrix ergänzt einzelne Featuretests um kritische
+Stand: Zielversion 0.66.1. Die Matrix ergänzt einzelne Featuretests um kritische
 Wechselwirkungen. Coverage zeigt ungetestete Pfade; sie beweist keine fachliche
 Richtigkeit. Bestehende Zeilengates bleiben erhalten. CI liefert zusätzlich
 Branch-Coverage als Bericht ohne neues Prozentziel.
+
+## Netzrückkehr, Quellen und PV-Prognosen 0.66.1
+
+| Risiko | Beobachteter Vertrag | Ausführbarer Nachweis |
+| --- | --- | --- |
+| Netz kehrt während einer Schaltung zurück | Bestätigte 0-W-Sperre und versorgte 24-V-Schiene bis zur abgeschlossenen Übergabe | `ha/test_reserve_runtime.py`, `ha/test_week_review_regressions.py` |
+| Einzelnes Netzteil oder 0-W-Endlast | Nur ausführbare Quellen und nutzbare Endlastarbeit werden gebucht | `core/test_optimize.py`, `core/test_cascade.py`, `ha/test_support_switching.py`, `ha/test_cascade_manager.py` |
+| Tageswechsel, Quellenwechsel oder fehlende Zukunftsdaten | Datierte Energie, unabhängige Stundenwerte, persistenter Ausfalltimer und erneute Prüfung automatischer Einspeisung | `ha/test_pv_forecast_evidence.py`, `ha/test_pv_actuation_evidence.py` |
+| Kalenderfehler in Median oder Bändern | Gültige Nachbarn, beide Herbststunden und die vorgesehene Fallback-Reihenfolge bleiben erhalten | `ha/test_pv_bucket_validation.py` |
 
 ## SOC-Erwartung bei gemessener Netzteillieferung 0.66.0
 

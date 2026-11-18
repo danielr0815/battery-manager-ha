@@ -5,10 +5,13 @@ without a supply. Activation: PSU on -> delay -> DC/DC off. Deactivation:
 DC/DC on -> delay -> PSU off. An unconfirmed new supply aborts the sequence.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
@@ -22,6 +25,7 @@ from custom_components.battery_manager.const import (
     CONF_SUPPORT_SWITCH_DELAY_S,
     DOMAIN,
 )
+from custom_components.battery_manager.core import HourSlot, PlanInputs, plan
 from custom_components.battery_manager.switch import SupportManualSwitch
 
 DC48 = "switch.psu_48v"
@@ -102,6 +106,104 @@ async def _setup(hass, call_log, *, dead_entities=(), extra_data=None):
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return hass.data[DOMAIN][entry.entry_id]
+
+
+@pytest.mark.freeze_time(real_asyncio=True)
+@pytest.mark.parametrize("loss_at", [None, "overlap", "psu_off"])
+async def test_legacy_psu24_removal_rechecks_forecast(hass, freezer, loss_at):
+    calls = []
+    c = await _setup(hass, calls)
+    c._unsub_state_listener()
+    c._unsub_state_listener = None
+    c._listeners_setup = False
+    hass.states.async_set("sensor.test_soc", "9")
+    hass.states.async_set(PSU, "on")
+    hass.states.async_set(DCDC, "off")
+    c._support_state["dc24"] = True
+    c._last_support_switch = None
+    calls.clear()
+    now = dt_util.now()
+    config = c.build_system_config()
+    slots = tuple(
+        HourSlot(i, now + timedelta(hours=i), 1, (now.hour + i) % 24, 550, 100, 100)
+        for i in range(3)
+    )
+    inputs = PlanInputs(now, 9, slots, pv_daily_credit=((now.date(), 10.0),))
+    result = plan(config, inputs)
+    assert not result.support_dc24_now
+    assert plan(
+        config, replace(inputs, slots=tuple(replace(slot, pv_wh=0) for slot in slots))
+    ).support_dc24_now
+    c._last_planner_recording = config, inputs, result
+
+    def revoke():
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set("sensor.pv_today", "0")
+        assert not c.pv_plan_evidence_valid(config, inputs)
+
+    overlaps = []
+
+    async def sleep(seconds):
+        overlaps.append(seconds)
+        assert hass.states.is_state(PSU, "on") and hass.states.is_state(DCDC, "on")
+        if loss_at == "overlap" and len(overlaps) == 1:
+            revoke()
+
+    async def turn_off(call):
+        actor = call.data["entity_id"]
+        calls.append(("turn_off", actor))
+        hass.states.async_set(actor, "off")
+        if loss_at == "psu_off" and actor == PSU:
+            revoke()
+
+    hass.services.async_register("homeassistant", "turn_off", turn_off)
+    with patch("custom_components.battery_manager.coordinator.asyncio.sleep", sleep):
+        await c._apply_support_switching(result, config, now)
+        await c._switch_task
+    expected = [("turn_on", DCDC)]
+    if loss_at != "overlap":
+        expected.append(("turn_off", PSU))
+    if loss_at == "psu_off":
+        expected.append(("turn_on", PSU))
+    if loss_at is not None:
+        expected.append(("turn_off", DCDC))
+    assert calls == expected
+    assert overlaps == ([1] if loss_at is None else [1, 1])
+    assert hass.states.is_state(PSU, "off" if loss_at is None else "on")
+    assert hass.states.is_state(DCDC, "on" if loss_at is None else "off")
+
+
+async def test_single_48v_entry_recommends_only_the_configured_supply(hass):
+    calls: list[tuple[str, str]] = []
+    coordinator = await _setup(
+        hass,
+        calls,
+        extra_data={
+            CONF_SUPPORT_DC24_SWITCH: None,
+            CONF_DCDC_SWITCH: None,
+            CONF_SUPPORT_DC48_SWITCH: DC48,
+        },
+    )
+    hass.states.async_set(DC48, "off")
+    hass.states.async_set("sensor.test_soc", "5")
+    for entity_id in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
+        hass.states.async_set(entity_id, "0", {"unit_of_measurement": "kWh"})
+
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    config, inputs, result = coordinator._last_planner_recording
+    assert not config.support.coordinated
+    assert not config.support.dc24_available
+    assert config.support.dc48_available
+    assert inputs.start_soc_percent == 5.0
+    assert not result.support_dc24_now
+    assert result.support_dc48_now
+    assert all(
+        not flow.support_dc24 and flow.psu24_delivered_wh == 0.0
+        for flow in result.trajectory.flows
+    )
+    assert result.trajectory.flows[0].psu48_delivered_wh > 0.0
 
 
 async def test_activation_turns_psu_on_before_dcdc_off(hass):

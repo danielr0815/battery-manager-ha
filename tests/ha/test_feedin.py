@@ -21,6 +21,7 @@ import pytest
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from test_stale_failsafe import _publish_pv
 
 from custom_components.battery_manager.const import (
     CONF_FEEDIN_BATTERY_POWER_ENTITY,
@@ -59,14 +60,15 @@ FEEDIN_DATA = {
 }
 
 # Morning surplus (trim/anchor scenarios) and late evening (upward cap).
-MORNING = dt_util.as_local(datetime(2026, 7, 19, 7, 30, tzinfo=UTC))
-LATE = dt_util.as_local(datetime(2026, 7, 19, 23, 0, tzinfo=UTC))
+MORNING = datetime(2026, 7, 19, 7, 30, tzinfo=UTC)
+LATE = datetime(2026, 7, 19, 23, 0, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
 async def _unload_entries_after_test(hass):
     """Unload whatever the test set up (lingering-timer guard, same reason
     as in test_config_flow.py)."""
+    await hass.config.async_set_time_zone("UTC")
     yield
     await hass.async_block_till_done()
     for entry in hass.config_entries.async_entries(DOMAIN):
@@ -171,8 +173,7 @@ async def _setup(hass, call_log):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
-    for pv in ("sensor.pv_today", "sensor.pv_tomorrow", "sensor.pv_day_after"):
-        hass.states.async_set(pv, "10.0", {"unit_of_measurement": "kWh"})
+    _publish_pv(hass, MORNING.replace(hour=0, minute=0), ("10.0",) * 3)
     hass.states.async_set(SETPOINT, "0")
     hass.states.async_set(BATT_POWER, "0")
     _register_setpoint_service(hass, call_log)
@@ -184,8 +185,9 @@ async def _setup(hass, call_log):
         version=2,
     )
     entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    with patch.object(dt_util, "now", return_value=MORNING):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
     coordinator = hass.data[DOMAIN][entry.entry_id]
     # The tests drive every refresh explicitly (pinned in time). The live
     # tracked-entity listener would otherwise schedule a 5-s-debounced full
@@ -448,6 +450,7 @@ async def test_external_override_enters_manual_mode_until_midnight(hass):
     midnight = (MORNING + timedelta(days=1)).replace(
         hour=0, minute=0, second=5, microsecond=0
     )
+    _publish_pv(hass, midnight, ("10.0",) * 3)
     await _refresh_at(hass, coordinator, midnight)
     assert coordinator.feedin_manual() is False
     assert coordinator._feedin_manual_until is None
@@ -474,14 +477,23 @@ async def test_runtime_switch_rising_edge_exits_manual_mode(hass):
     assert coordinator._feedin_manual_until is not None
     assert calls == []  # hands off while the operator owns the setpoint
 
-    await hass.services.async_call(
-        "switch", "turn_off", {"entity_id": switch_eid}, blocking=True
+    # Switch during the same day's idle evening, while manual mode still owns
+    # the setpoint and the automatic plan would re-anchor it to zero.
+    idle = later.replace(hour=23)
+    hass.states.async_set(
+        "sensor.test_soc", "56", {"unit_of_measurement": "%", "device_class": "battery"}
     )
-    await hass.async_block_till_done()
-    await hass.services.async_call(
-        "switch", "turn_on", {"entity_id": switch_eid}, blocking=True
-    )
-    await hass.async_block_till_done()
+    with patch.object(dt_util, "now", return_value=idle):
+        await hass.services.async_call(
+            "switch", "turn_off", {"entity_id": switch_eid}, blocking=True
+        )
+        await hass.async_block_till_done()
+        # Advance past HA's refresh coalescing window without a wall-clock wait.
+        coordinator._debounced_refresh.async_cancel()
+        await hass.services.async_call(
+            "switch", "turn_on", {"entity_id": switch_eid}, blocking=True
+        )
+        await hass.async_block_till_done()
     _cancel_debounce(coordinator)
     assert coordinator._feedin_manual_until is None
     assert coordinator._persistent_payload()["feedin_manual_until"] is None
@@ -573,8 +585,9 @@ async def test_runtime_switch_off_survives_restart(hass):
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    with patch.object(dt_util, "now", return_value=MORNING + timedelta(minutes=5)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
     reloaded = hass.data[DOMAIN][entry.entry_id]
     assert reloaded is not coordinator
@@ -786,7 +799,6 @@ async def test_data_loss_forces_setpoint_to_zero_exactly_once(hass):
     # is when `_get_soc`/`_get_forecasts` return None and the cycle fails.
     hass.states.async_set("sensor.test_soc", "unavailable")
     coordinator._last_valid_soc = None
-    coordinator._last_valid_forecasts = None
     await _refresh_at(hass, coordinator, MORNING + timedelta(minutes=5))
     assert not coordinator.last_update_success
     assert calls[-1] == (SETPOINT, 0.0)
@@ -808,7 +820,6 @@ async def test_runtime_switch_off_writes_zero_while_inputs_are_stale(hass):
 
     hass.states.async_set("sensor.test_soc", "unavailable")
     coordinator._last_valid_soc = None
-    coordinator._last_valid_forecasts = None
     with patch.object(dt_util, "now", return_value=MORNING + timedelta(minutes=5)):
         await coordinator.async_set_feedin_enabled(False)
         await hass.async_block_till_done()

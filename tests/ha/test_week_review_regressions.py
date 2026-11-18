@@ -176,6 +176,30 @@ async def test_grid_return_during_overlap_cannot_remove_required_psu(rig, hass):
     assert c._coordinated_support_diag["reason"] == "grid_supply_changed"
 
 
+async def test_grid_return_during_overlap_respects_revoked_supply_plan(rig, hass):
+    c, calls, _, _ = rig
+    configure_reserve(c, hass, 80)
+    hass.states.async_set("binary_sensor.grid", "unknown")
+    hass.states.async_set(PSU24, "on")
+    hass.states.async_set(DCDC, "off")
+
+    async def overlap(_seconds):
+        c.live_ac.plan_revision += 1
+        hass.states.async_set("binary_sensor.grid", "on")
+
+    with patch(
+        "custom_components.battery_manager.coordinator.asyncio.sleep",
+        side_effect=overlap,
+    ) as delay:
+        await execute(c, dc24=True)
+
+    delay.assert_awaited_once()
+    assert (PSU24, False) not in calls
+    assert (DCDC, False) not in calls
+    assert hass.states.is_state(DCDC, "on")
+    assert c._coordinated_support_diag["reason"] == "plan_changed"
+
+
 async def test_immediate_owned_confirmation_does_not_request_full_planning(rig, hass):
     c, _, _, _ = rig
     configure_reserve(c, hass)

@@ -9,7 +9,13 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.battery_manager import load_actuation
 from custom_components.battery_manager.load_actuation import LoadAction
-from tests.ha.test_load_switching import ENABLE, PLUG, _setup
+from tests.ha.test_load_switching import (
+    ENABLE,
+    PLUG,
+    _active_plan,
+    _detach_listener,
+    _setup,
+)
 
 
 async def test_service_acknowledgement_does_not_start_dwell(hass):
@@ -246,6 +252,94 @@ async def test_gate_confirmation_followed_by_pause_never_starts_input(hass):
     await task
     assert hass.states.is_state(ENABLE, "on")
     assert hass.states.is_state(PLUG, "off")
+
+
+@pytest.mark.freeze_time(real_asyncio=True)
+@pytest.mark.parametrize(
+    ("delayed_actor", "remaining_authority"),
+    [(ENABLE, None), (PLUG, None), (ENABLE, "local_pv"), (PLUG, "manual")],
+)
+async def test_forecast_withdrawal_during_load_confirmation(
+    hass, freezer, delayed_actor, remaining_authority
+):
+    from custom_components.battery_manager.const import (
+        CONF_DC_LOAD_ENTITY,
+        CONF_RESERVE_GRID_ENTITY,
+    )
+
+    calls = []
+    c, load_id, _ = await _setup(hass, calls)
+    _detach_listener(c)
+    c._floor_guard_active = False
+    c._last_load_switch.clear()
+    c._load_actor_requests.clear()
+    c._load_charging_active[load_id] = False
+    hass.states.async_set(ENABLE, "off")
+    hass.states.async_set(PLUG, "off")
+    config, inputs, _ = c._last_planner_recording
+    result = _active_plan(load_id)
+    c._last_planner_recording = config, inputs, result
+    assert c.pv_plan_evidence_valid(config, inputs)
+    requested = asyncio.Event()
+
+    async def turn_on(call):
+        entity = call.data["entity_id"]
+        calls.append(("turn_on", entity))
+        if entity == delayed_actor:
+            requested.set()
+        else:
+            hass.states.async_set(entity, "on")
+
+    hass.services.async_register("homeassistant", "turn_on", turn_on)
+    calls.clear()
+    await c._apply_load_switching(
+        result, dt_util.now(), (1.0,), pv_plan=(config, inputs)
+    )
+    try:
+        await asyncio.wait_for(requested.wait(), timeout=5)
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(c.raw_config["pv_forecast_tomorrow_entity"], "0")
+        assert not c.pv_plan_evidence_valid(config, inputs)
+        c._last_planner_recording = None
+        c.live_ac.envelope = None
+        if remaining_authority == "local_pv":
+            c.raw_config.update(
+                {
+                    CONF_RESERVE_GRID_ENTITY: "binary_sensor.test_grid",
+                    CONF_DC_LOAD_ENTITY: "sensor.test_dc",
+                    "operation_pv_power_entity": "sensor.test_actual_pv",
+                    "operation_house_power_entity": "sensor.test_house_power",
+                }
+            )
+            hass.states.async_set("binary_sensor.test_grid", "on")
+            for entity, value in (
+                ("sensor.test_dc", "0"),
+                ("sensor.test_actual_pv", "3500"),
+                ("sensor.test_house_power", "100"),
+            ):
+                hass.states.async_set(entity, value, {"unit_of_measurement": "W"})
+            assert c.live_ac.load_pv_permission(500, config=config)
+        elif remaining_authority == "manual":
+            c.set_load_enabled(load_id, False)
+    finally:
+        hass.states.async_set(delayed_actor, "on")
+        await c._load_switch_task
+        await hass.async_block_till_done(wait_background_tasks=True)
+    if remaining_authority == "local_pv":
+        assert hass.states.is_state(ENABLE, "on")
+        assert hass.states.is_state(PLUG, "on")
+        assert load_id in c._load_run_deadline
+        return
+    if remaining_authority == "manual":
+        assert hass.states.is_state(PLUG, "on")
+        assert not any(service == "turn_off" for service, _ in calls)
+        assert load_id not in c._load_run_deadline
+        return
+    if delayed_actor == ENABLE:
+        assert ("turn_on", PLUG) not in calls
+    assert hass.states.is_state(ENABLE, "off")
+    assert hass.states.is_state(PLUG, "off")
+    assert load_id not in c._load_run_deadline
 
 
 async def test_failed_confirmation_remains_open_in_persistent_state(hass):

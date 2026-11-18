@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 
 from .allocation import (
     _allocate_recovery_after_continuous_loads as _allocate_recovery_after_continuous_loads,
@@ -376,6 +376,21 @@ def search_threshold(
     return _prefer_house_supply(config, inputs, best_threshold, best_traj)
 
 
+def _forced_support_schedules(
+    config: SystemConfig, slot_count: int
+) -> tuple[tuple[bool, ...] | None, tuple[bool, ...] | None]:
+    support = config.support
+    forced = (True,) * slot_count
+    return (
+        forced
+        if support.configured and support.dc24_available and support.dc24_forced_on
+        else None,
+        forced
+        if support.configured and support.dc48_available and support.dc48_forced_on
+        else None,
+    )
+
+
 def _prefer_house_supply(
     config: SystemConfig,
     inputs: PlanInputs,
@@ -394,10 +409,7 @@ def _prefer_house_supply(
     lo = _search_lo(config)
     if not inputs.slots or threshold <= lo:
         return threshold, baseline
-    forced = (True,) * len(inputs.slots)
-    support = config.support
-    dc24 = forced if support.configured and support.dc24_forced_on else None
-    dc48 = forced if support.configured and support.dc48_forced_on else None
+    dc24, dc48 = _forced_support_schedules(config, len(inputs.slots))
     reference = simulate(
         config, inputs, threshold, dc24_schedule=dc24, dc48_schedule=dc48
     )
@@ -460,6 +472,7 @@ def plan_feedin(
     *,
     load_plans: Sequence[LoadPlan] = (),
     decisions: list[tuple[int, str]] | None = None,
+    stress_independent_days: set[date] | None = None,
     dc24_schedule: tuple[bool, ...] | None = None,
     dc48_schedule: tuple[bool, ...] | None = None,
 ) -> tuple[tuple[float, ...], dict[str, float]]:
@@ -733,6 +746,25 @@ def plan_feedin(
                 None,
             )
             if bad is None:
+                if stress_independent_days is not None and booked[0] > _EPS:
+                    day_slots_today = day_slots[today]
+                    last = day_slots_today[-1]
+                    # The floor before today's recovery may itself depend on
+                    # a crossover tomorrow. Prove it against the full buffer.
+                    full_floor = (
+                        control.inverter_min_soc_percent + control.soc_buffer_percent
+                    )
+                    if stressed.flows[last].soc_end_percent == base_stress.flows[
+                        last
+                    ].soc_end_percent and not any(
+                        _z4_reject(
+                            stressed.flows[j].soc_end_percent,
+                            full_floor,
+                            base_stress.flows[j].soc_end_percent,
+                        )
+                        for j in day_slots_today
+                    ):
+                        stress_independent_days.add(today)
                 break
             # Only feed-in at slots <= `bad` can deepen slot `bad`; hand back
             # the latest of them (requirement 3: latest-first).
@@ -749,6 +781,9 @@ def plan_feedin(
                 if not preserves_dc_service(stressed, baseline=base_stress)
                 else "stress_reserve"
             )
+
+    elif stress_independent_days is not None and booked[0] > _EPS:
+        stress_independent_days.add(today)
 
     by_day: dict[str, float] = {}
     for i, wh in enumerate(booked):
@@ -891,10 +926,11 @@ def support_escalation(
     n = len(inputs.slots)
     dc24 = [False] * n
     dc48 = [False] * n
-    if not config.support.configured or n == 0:
+    support = config.support
+    if not support.configured or n == 0:
         return tuple(dc24), tuple(dc48), trajectory
 
-    if config.support.coordinated:
+    if support.coordinated:
         return (
             tuple(f.support_dc24_start for f in trajectory.flows),
             tuple(f.support_dc48_start for f in trajectory.flows),
@@ -915,10 +951,10 @@ def support_escalation(
 
     # A forced 48 V injection changes the whole SOC path — stage 1 must
     # judge the already-supported trajectory.
-    base = trajectory
-    if config.support.dc48_forced_on:
+    traj = trajectory
+    if support.dc48_available and support.dc48_forced_on:
         dc48 = [True] * n
-        base = simulate(
+        traj = simulate(
             config,
             inputs,
             threshold,
@@ -928,31 +964,35 @@ def support_escalation(
         )
 
     # Stage 1: 24 V PSU replaces the DC/DC while SOC sits below its activate SOC.
-    if config.support.dc24_forced_on:
-        dc24 = [True] * n
-    else:
-        active = False
-        for i, flow in enumerate(base.flows):
-            if flow.soc_end_percent < dc24_activate:
-                active = True
-            elif active and flow.soc_end_percent >= dc24_recovery:
-                active = False
-            dc24[i] = active
-    if not any(dc24):
-        return tuple(dc24), tuple(dc48), base
+    if support.dc24_available:
+        if support.dc24_forced_on:
+            dc24 = [True] * n
+        else:
+            active = False
+            for i, flow in enumerate(traj.flows):
+                if flow.soc_end_percent < dc24_activate:
+                    active = True
+                elif active and flow.soc_end_percent >= dc24_recovery:
+                    active = False
+                dc24[i] = active
+        if any(dc24):
+            traj = simulate(
+                config,
+                inputs,
+                threshold,
+                extra_ac_wh=extra_ac,
+                dc24_schedule=tuple(dc24),
+                dc48_schedule=tuple(dc48),
+                feedin_wh=feedin_wh,
+            )
 
-    traj = simulate(
-        config,
-        inputs,
-        threshold,
-        extra_ac_wh=extra_ac,
-        dc24_schedule=tuple(dc24),
-        dc48_schedule=tuple(dc48),
-        feedin_wh=feedin_wh,
-    )
-
-    # Stage 2: 48 V support PSU on top wherever SOC sits below its activate SOC.
-    if not config.support.dc48_forced_on and traj.min_soc_percent < dc48_activate:
+    # Stage 2 judges the trajectory with any available 24 V support already
+    # applied. A 48 V-only installation still has its own protection threshold.
+    if (
+        support.dc48_available
+        and not support.dc48_forced_on
+        and traj.min_soc_percent < dc48_activate
+    ):
         active = False
         for i, flow in enumerate(traj.flows):
             if flow.soc_end_percent < dc48_activate:
@@ -1010,17 +1050,7 @@ def _plan_legacy(
     # allocator so surplus created by their higher SOC path can be absorbed by
     # loads instead of appearing only after allocation as stranded export.
     n = len(inputs.slots)
-    forced_on = (True,) * n
-    forced_dc24 = (
-        forced_on
-        if config.support.configured and config.support.dc24_forced_on
-        else None
-    )
-    forced_dc48 = (
-        forced_on
-        if config.support.configured and config.support.dc48_forced_on
-        else None
-    )
+    forced_dc24, forced_dc48 = _forced_support_schedules(config, n)
     allocation_base = base_traj
     if forced_dc24 is not None or forced_dc48 is not None:
         allocation_base = simulate(
@@ -1069,7 +1099,19 @@ def _plan_legacy(
     feedin_wh: tuple[float, ...] | None = None
     feedin_by_day_wh: dict[str, float] = {}
     feedin_decisions: list[tuple[int, str]] = []
+    feedin_current_day_proven = False
     if config.feedin.enabled and config.feedin.max_w > _EPS:
+        # The legacy simulator carries only battery SOC across slots. With
+        # automatic support, loads or Aux dispatch, equality of SOC alone
+        # does not establish independence from the rest of the horizon.
+        stress_independent_days: set[date] | None = (
+            set()
+            if inputs.pv_daily_credit is not None
+            and all(day != inputs.now.date() for day, _kwh in inputs.pv_daily_credit)
+            and config.feedin.manual_w is None
+            and not (config.support.configured or config.loads or config.cascades)
+            else None
+        )
         feedin_wh, feedin_by_day_wh = plan_feedin(
             config,
             inputs,
@@ -1078,6 +1120,7 @@ def _plan_legacy(
             alloc_traj,
             load_plans=load_plans,
             decisions=feedin_decisions,
+            stress_independent_days=stress_independent_days,
             dc24_schedule=forced_dc24,
             dc48_schedule=forced_dc48,
         )
@@ -1093,6 +1136,16 @@ def _plan_legacy(
             dc48_schedule=forced_dc48,
             feedin_wh=feedin_wh,
         )
+        if stress_independent_days and feedin_wh[0] > _EPS:
+            last = max(
+                j
+                for j, slot in enumerate(inputs.slots)
+                if slot.start.date() in stress_independent_days
+            )
+            feedin_current_day_proven = (
+                traj.flows[last].soc_end_percent
+                == alloc_traj.flows[last].soc_end_percent
+            )
     dc24, dc48, traj = support_escalation(
         config, inputs, threshold, extra_ac, traj, feedin_wh=feedin_wh
     )
@@ -1245,6 +1298,7 @@ def _plan_legacy(
         prevented_export_by_day_wh=prevented_export_by_day,
         feedin_schedule_w=feedin_schedule_w,
         feedin_by_day_wh=feedin_by_day_wh,
+        feedin_current_day_proven=feedin_current_day_proven,
         feedin_decisions=tuple(feedin_decisions)
         if feedin_decisions
         else tuple(

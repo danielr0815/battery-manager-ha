@@ -1,5 +1,39 @@
 # Aktuelle Verträge ab 0.46.0
 
+## Netzrückkehr, Quellenverfügbarkeit und PV-Prognosen
+
+Kehrt bei niedrigem SOC das Netz während einer Abschaltung zurück, bewertet
+der Manager den aktuellen Schutzbedarf im selben Durchlauf. Er bestätigt die
+Entladesperre vor einem Netzteilstart. Für die Rückgabe der 24-V-Schiene an
+das Netzteil braucht er eine verifizierte Umschaltung, bestätigtes ON und die
+vollständige Überlappungszeit. Ein gesendetes OFF mit ausstehender Rückmeldung
+oder unklarem Transportergebnis hält die jeweils andere bestätigte Quelle in
+Betrieb, bis der tatsächliche Schaltzustand die Übergabe erlaubt.
+Im Einzelquellenbetrieb geht ausschließlich
+das vorhandene Netzteil mit seinem Schaltzustand und seiner Leistung in die
+Energiebilanz ein. Bei 0 W Endlast entfällt der zusätzliche Aux-Dienst.
+
+Ein Tages-PV-Wert gilt für das lokale Datum seiner HA-Publikation zuzüglich
+des konfigurierten Tagesversatzes. Er bleibt bei Quellenausfall bis zu 72
+verstrichene Stunden für dieses Zieldatum verwendbar. Ein Rollenwechsel setzt
+dieselbe Quelle voraus. Zusammengehörige registrierte Reihen erkennt der
+Manager an Integration, Eintrag, Gerät und gemeinsamer eindeutiger ID mit
+passender Tagesendung. Andere Entitäten bleiben getrennt. Der Cache ist
+flüchtig. Nach einem Neustart zählt der Zeitstempel des verfügbaren HA-Zustands.
+
+Fehlt heute ein Tagesanker, greift die bestehende Datenverlustsicherung.
+Ein fehlender Zukunftstag trägt ausschließlich die auf diesem Datum belegten
+Stunden. Die Tagesdiagnose unterscheidet eine Lücke und eine echte Null.
+Eine automatische Freigabe wird erneut geprüft, wenn eine zugrunde liegende
+Tagessumme sinkt oder ein verwendetes Stundenprofil revidiert wird. Das gilt
+auch zwischen Planung, Schaltauftrag und Gerätebestätigung. Für ein
+unabhängig belegtes Einspeisefenster am heutigen Tag kann der Manager die
+Tagesbindung auf heute begrenzen, wenn die Median- und Sicherheitsrechnung
+die Versorgung und die Speicherenergie bis Tagesende bestätigen.
+
+Ungültige Kalenderwerte verwerfen nur den betroffenen Stundenwert. Median und
+Quantilbänder behalten ihre gültigen Nachbarn.
+
 ## SOC-Nachführung und Quellenbelege ab 0.65.0
 
 [SOC-Nachführung und Netzteil-Evidenz](F-SOC-RECONCILIATION.md) behandelt eine

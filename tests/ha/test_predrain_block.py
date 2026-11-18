@@ -56,7 +56,12 @@ def _prime_block_scenario(hass, coordinator, entry, pinned=EARLY):
     test owns the plan count."""
     sub_id = next(iter(entry.subentries))
     _set_soc(hass, coordinator, "90")
-    hass.states.async_set("sensor.pv_today", "18.0", {"unit_of_measurement": "kWh"})
+    hass.states.async_set(
+        "sensor.pv_today",
+        "18.0",
+        {"unit_of_measurement": "kWh"},
+        timestamp=pinned.timestamp(),
+    )
     hass.states.async_set(PLUG, "off")
     hass.states.async_set(ENABLE, "off")
     coordinator._load_charging_active[sub_id] = False
@@ -115,8 +120,14 @@ async def test_block_disappearing_retracts_recommendation_with_dwell(hass):
     assert hass.states.get(PLUG).state == "on"  # stable block actuated
 
     # The clip day evaporates: no export today -> no block in the plan.
-    hass.states.async_set("sensor.pv_today", "0.5", {"unit_of_measurement": "kWh"})
-    await _refresh_at(hass, coordinator, t0 + timedelta(minutes=15))
+    clip_loss = t0 + timedelta(minutes=15)
+    hass.states.async_set(
+        "sensor.pv_today",
+        "0.5",
+        {"unit_of_measurement": "kWh"},
+        timestamp=clip_loss.timestamp(),
+    )
+    await _refresh_at(hass, coordinator, clip_loss)
     assert coordinator._predrain_block_evidence.get(sub_id) is None
     assert hass.states.get(PLUG).state == "on"  # min_runtime dwell still holds
 

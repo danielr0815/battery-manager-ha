@@ -473,9 +473,7 @@ async def test_timer_cannot_start_planned_permission_before_source_owner(live):
     assert calls == []
 
 
-async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
-    live, hass
-):
+def _publish_forecast_headroom(live, hass):
     from dataclasses import replace
 
     from custom_components.battery_manager.core import plan
@@ -495,6 +493,7 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
         support=replace(config.support, native48_base_w=0),
     )
     now = dt_util.now()
+    hass.states.async_set("sensor.pv_today", "0.9")
     inputs = PlanInputs(
         now,
         80,
@@ -502,13 +501,23 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
             HourSlot(0, now, 1, now.hour, 0, 600, 0),
             HourSlot(1, now + timedelta(hours=1), 1, (now.hour + 1) % 24, 900, 0, 0),
         ),
+        pv_daily_credit=((now.date(), 0.9),),
     )
     result = plan(config, inputs)
     assert result.inverter_on
     c.raw_config["inverter_max_power_w"] = 1000
     c._reserve_inverter_limit_w = result.trajectory.flows[0].inverter_limit_w
     hass.states.async_set("sensor.house", "unavailable")
+    c._last_planner_recording = (config, inputs, result)
     c.live_ac.set_plan(config, inputs, result)
+    c._last_planner_recording_revision = c.live_ac.plan_revision
+    return c, calls
+
+
+async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
+    live, hass
+):
+    c, calls = _publish_forecast_headroom(live, hass)
     assert c.live_ac.limit_w == 0
     assert c.live_ac.planned_limit() == 1000
     assert await c._confirm_inverter_limit(False, {})
@@ -519,6 +528,94 @@ async def test_real_forecast_headroom_funds_full_permission_without_live_meters(
     )
     await c.live_ac.run()
     assert calls == [(LIMIT, 1000), (LIMIT, 0)]
+
+
+async def test_timer_rechecks_forecast_after_waiting_for_source_lock(live, hass):
+    from unittest.mock import patch
+
+    c, calls = _publish_forecast_headroom(live, hass)
+    assert await c._confirm_inverter_limit(False, {})
+    assert calls == [(LIMIT, 1000)]
+    calls.clear()
+    # The timer owns the previous positive limit but still waits on another
+    # source owner before it can maintain that permission.
+    hass.states.async_set(LIMIT, "0")
+    hass.states.async_set(BLOCK, "on")
+    about_to_wait = asyncio.Event()
+    reconcile = c.live_ac._reconcile_pv_sources
+
+    async def before_lock():
+        await reconcile()
+        about_to_wait.set()
+
+    with patch.object(c.live_ac, "_reconcile_pv_sources", side_effect=before_lock):
+        async with c._switch_lock:
+            task = asyncio.create_task(c.live_ac.run())
+            await asyncio.wait_for(about_to_wait.wait(), timeout=5)
+            hass.states.async_set("sensor.pv_today", "0")
+            assert c.live_ac.planned_limit() == 0
+        await task
+
+    assert calls == []
+    assert not c.data["inverter_recommendation"]
+    assert c.live_ac.diagnostics["reason"] == "pv_forecast_evidence_lost"
+
+
+async def test_timer_withdraws_inverter_limit_when_pv_evidence_is_lost_during_write(
+    live,
+    hass,
+):
+    from unittest.mock import patch
+
+    c, calls = _publish_forecast_headroom(live, hass)
+    assert await c._confirm_inverter_limit(False, {})
+    calls.clear()
+    hass.states.async_set(LIMIT, "0")
+    hass.states.async_set(BLOCK, "on")
+    # Measured AC demand alone does not replace the forecast energy budget.
+    hass.states.async_set("sensor.house", "2000", {"unit_of_measurement": "W"})
+    write = c._set_number_value
+
+    async def withdraw_after_acceptance(entity, value, **kwargs):
+        accepted = await write(entity, value, **kwargs)
+        if value > 0:
+            hass.states.async_set("sensor.pv_today", "0")
+        return accepted
+
+    with patch.object(c, "_set_number_value", side_effect=withdraw_after_acceptance):
+        await c.live_ac.run()
+
+    assert calls == [(LIMIT, 1000), (LIMIT, 0)]
+    assert not c.data["inverter_recommendation"]
+    assert c.live_ac.diagnostics["reason"] == "pv_forecast_evidence_lost"
+
+
+async def test_meter_proven_dc_pv_transfer_does_not_spend_stale_inverter_budget(
+    live,
+    hass,
+):
+    from dataclasses import replace
+
+    from custom_components.battery_manager.const import CONF_DC_LOAD_ENTITY
+
+    c, calls = _publish_forecast_headroom(live, hass)
+    c.live_ac.envelope = replace(
+        c.live_ac.envelope, dc_sources=(True, True), support_required=True
+    )
+    for entity in (PSU24, PSU48):
+        hass.states.async_set(entity, "on")
+    hass.states.async_set(DCDC, "off")
+    c.raw_config[CONF_DC_LOAD_ENTITY] = "sensor.dc"
+    hass.states.async_set("sensor.dc", "100", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.house", "200", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.import", "0", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.pv_today", "0")
+
+    await c.live_ac.run()
+
+    assert calls == [(PSU48, False), (DCDC, True), (PSU24, False)]
+    assert c._coordinated_support_diag["pv_priority"]
+    assert float(hass.states.get(LIMIT).state) == 0
 
 
 @pytest.mark.parametrize("current_price", [100, None])

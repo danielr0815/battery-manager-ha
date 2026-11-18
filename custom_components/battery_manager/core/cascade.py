@@ -121,6 +121,10 @@ def _allocate_aux_now(
     terminal_power_w = _effective_power_w(
         cascade.terminal_load_id, cascade, config, inputs
     )
+    # A saturated terminal has no useful service to buy with an Aux start.
+    # Output overhead is a cost of delivering power, not a reason to start.
+    if terminal_power_w <= _EPS:
+        return None
     continuing = (
         runtime is not None
         and runtime.phase in ("running", "proving")

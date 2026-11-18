@@ -441,7 +441,7 @@ async def test_coordinator_reads_wh_period_hourly_forecast(hass):
 
     # Per-day source labelling for a horizon anchored on the fixture day.
     fixture_now = datetime(2026, 7, 10, 9, 0, tzinfo=dt_util.get_default_time_zone())
-    sources = coordinator._pv_day_sources(fixture_now, 3, pv_map)
+    sources = coordinator._pv_day_sources(fixture_now, [10, 12, 8], pv_map)
     assert sources == {
         "2026-07-10": "hourly",
         "2026-07-11": "hourly",
@@ -1513,22 +1513,22 @@ async def test_refresh_at_floor_soc_activates_guard_end_to_end(hass):
     # guarded False) in test_floor_guard_gates_appliance_advisory_end_to_end.
 
 
-async def test_floor_guard_gates_appliance_advisory_end_to_end(hass):
+async def test_floor_guard_gates_appliance_advisory_end_to_end(hass, freezer):
     """G4: the appliance start-window advisory flips to False under the
     guard — pinned load-bearingly against a baseline where the SAME
     appliance advisory is True (high SOC, strong PV). The planner's `now`
     is PINNED to an early morning with the whole 10 kWh PV day ahead: the
     plan is built from wall-clock `dt_util.now()`, and at some afternoon/
     evening times the baseline advisory is legitimately False (too little
-    PV left for an import-free appliance run) — unpinned, this test flaked
-    with the time of day. (A blanket freeze_time hangs the HA event loop —
-    it freezes the monotonic clock — so only dt_util.now is patched.)"""
+    PV left for an import-free appliance run). Sensor publication and planning
+    use the same local morning."""
     from datetime import datetime
 
     from homeassistant.config_entries import ConfigSubentryData
     from homeassistant.util import dt as dt_util
 
     pinned = dt_util.as_local(datetime(2026, 7, 19, 5, 30, tzinfo=UTC))
+    freezer.move_to(pinned)
 
     from custom_components.battery_manager.const import (
         CONF_APPLIANCE_NAME,

@@ -56,6 +56,7 @@ class LiveACEnvelope:
     dc_sources: tuple[bool, bool] = (False, False)
     accepted_budget_wh: float | None = None
     soc_coordinate: SocCoordinateSnapshot | None = None
+    plan_inputs: PlanInputs | None = None
 
 
 # Keep an energy buffer independent of a partial calendar-hour slot.
@@ -166,6 +167,7 @@ class LiveACRuntime:
                 not in ("missing_prices", "flat_prices", "market_off")
                 else None,
                 inputs.soc_coordinate,
+                inputs,
             )
             if config.reserve.enabled and decision is not None
             else None
@@ -206,13 +208,14 @@ class LiveACRuntime:
         *,
         exclude_load_id: str | None = None,
         reservation_owner: str | None = None,
+        config: SystemConfig | None = None,
     ) -> bool:
         """Fresh complete physical coverage, independent of any SOC headroom."""
         c = self.owner
         envelope = self.envelope
         record = c._last_planner_recording
         config = (
-            envelope.config if envelope is not None else record[0] if record else None
+            envelope.config if envelope is not None else record[0] if record else config
         )
         if (
             config is None
@@ -310,12 +313,16 @@ class LiveACRuntime:
         *,
         input_entity: str | None = None,
         exclude_load_id: str | None = None,
+        config: SystemConfig | None = None,
     ) -> bool:
         """Atomically claim shared PV before an optional actor can await."""
         previous = self._pv_start_reservations.get(owner)
         power_w = max(power_w, previous.power_w) if previous is not None else power_w
         if not self.load_pv_permission(
-            power_w, exclude_load_id=exclude_load_id, reservation_owner=owner
+            power_w,
+            exclude_load_id=exclude_load_id,
+            reservation_owner=owner,
+            config=config,
         ):
             return False
         if previous is None:
@@ -492,6 +499,12 @@ class LiveACRuntime:
         if c._coordinated_support_diag.get("reason") == "settled":
             self._pv_restore_pending = False
 
+    def _forecast_evidence_valid(self, envelope: LiveACEnvelope, now: datetime) -> bool:
+        inputs = envelope.plan_inputs
+        return inputs is None or self.owner.pv_plan_evidence_valid(
+            envelope.config, inputs, now
+        )
+
     def refresh(self) -> int:
         c, envelope = self.owner, self.envelope
         now = dt_util.utcnow()
@@ -502,6 +515,10 @@ class LiveACRuntime:
             reason = "inactive"
         elif envelope is None or now >= envelope.expires:
             reason = "plan_expired"
+        elif not self._forecast_evidence_valid(envelope, now):
+            # Measured demand proves a consumer is present. The envelope still
+            # funds its discharge from the forecast-derived battery budget.
+            reason = "pv_forecast_evidence_lost"
         elif not self.coordinate_permission():
             reason = "soc_coordinate_hold"
         else:
@@ -595,7 +612,13 @@ class LiveACRuntime:
         granularity, and the same 35-second full-power window covers freshness.
         """
         c, envelope = self.owner, self.envelope
-        if not c._reserve_inverter_limit_w or envelope is None:
+        now = dt_util.utcnow()
+        if (
+            not c._reserve_inverter_limit_w
+            or envelope is None
+            or now >= envelope.expires
+            or not self._forecast_evidence_valid(envelope, now)
+        ):
             return 0
         soc = c._read_float(c.raw_config[CONF_SOC_ENTITY])
         blocked = self.diagnostics["reason"]
@@ -627,7 +650,7 @@ class LiveACRuntime:
         available = config.battery.energy_wh(max(0.0, soc - floor))
         return live_ac_decision(
             LiveACState(),
-            dt_util.utcnow(),
+            now,
             config.inverter.max_power_w,
             available,
             config.inverter.max_power_w,
@@ -651,6 +674,7 @@ class LiveACRuntime:
             envelope is not None
             and envelope.config.support.adaptive_voltage_gate
             and dt_util.utcnow() < envelope.expires
+            and self._forecast_evidence_valid(envelope, dt_util.utcnow())
             and (c._switch_task is None or c._switch_task.done())
             and (envelope.dc_sources[1] or c._support_state["dc48"])
         ):

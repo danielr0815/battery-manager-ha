@@ -25,13 +25,16 @@ from custom_components.battery_manager.const import (
     CONF_CASCADE_ACTOR_TIMEOUT_S,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
+    CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_ENERGY_LIMITED,
     CONF_LOAD_INPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_ACTOR_MODE,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
     CONF_LOAD_OUTPUT_SWITCH,
     CONF_LOAD_POWER_ENTITY,
+    CONF_LOAD_POWER_W,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_WAKE_TIMEOUT_S,
     DOMAIN,
@@ -54,6 +57,82 @@ from custom_components.battery_manager.core import (
 )
 from custom_components.battery_manager.sensor import CascadeModeSensor
 from custom_components.battery_manager.switch import CascadeAutomationSwitch
+
+
+async def test_latched_cascade_terminal_without_power_reading_books_no_aux(
+    hass, freezer, request, monkeypatch
+):
+    now = datetime(2026, 11, 18, 5, tzinfo=UTC)
+    freezer.move_to(now)
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="Battery Manager", version=2)
+    entry.add_to_hass(hass)
+    for subentry_id, subentry_type, data in (
+        (
+            "storage",
+            SUBENTRY_TYPE_LOAD,
+            {
+                CONF_LOAD_ENERGY_LIMITED: True,
+                CONF_LOAD_CAPACITY_WH: 2000,
+                CONF_LOAD_POWER_W: 300.0,
+                CONF_LOAD_SOC_ENTITY: "sensor.storage_soc",
+            },
+        ),
+        (
+            "terminal",
+            SUBENTRY_TYPE_LOAD,
+            {
+                CONF_LOAD_POWER_W: 300.0,
+                CONF_LOAD_POWER_ENTITY: "sensor.terminal_power",
+            },
+        ),
+        (
+            "chain",
+            SUBENTRY_TYPE_CASCADE,
+            {
+                CONF_CASCADE_MEMBER_IDS: ["storage"],
+                CONF_CASCADE_TERMINAL_LOAD_ID: "terminal",
+            },
+        ),
+    ):
+        assert hass.config_entries.async_add_subentry(
+            entry,
+            ConfigSubentry(
+                subentry_id=subentry_id,
+                subentry_type=subentry_type,
+                title=subentry_id,
+                data=data,
+                unique_id=None,
+            ),
+        )
+    hass.states.async_set("sensor.storage_soc", "90")
+    hass.states.async_set("sensor.terminal_power", "unavailable")
+    coordinator = BatteryManagerCoordinator(hass, entry)
+    request.addfinalizer(coordinator.cleanup)
+    monkeypatch.setattr(coordinator, "_save_persistent_state", lambda: None)
+    coordinator._cascade_state["chain"] = {"enabled": True}
+    coordinator._load_power_warning["terminal"] = True
+    coordinator._load_learned_power_w["terminal"] = 300.0
+    config = coordinator.build_system_config()
+    states = coordinator._get_load_states(now)
+    terminal = next(state for state in states if state.load_id == "terminal")
+    assert terminal.available and terminal.saturated_power_w == 0.0
+    storage = next(state for state in states if state.load_id == "storage")
+    assert storage.available and storage.soc_percent == 90.0
+    local_now = storage.soc_observed_at
+    assert local_now is not None
+    slots = tuple(
+        HourSlot(
+            i, local_now + timedelta(hours=i), 1.0, local_now.hour + i, 0.0, 0.0, 0.0
+        )
+        for i in range(2)
+    )
+
+    (cascade,) = plan(config, PlanInputs(local_now, 5.0, slots, states)).cascade_plans
+
+    assert len(cascade.flows) == 2
+    assert cascade.planned_aux_energy_wh == 0.0
+    assert cascade.schedule == (False, False)
+    assert all(not flow.segments for flow in cascade.flows)
 
 
 class _States:
@@ -6440,6 +6519,66 @@ async def test_root_coordinate_changed_during_ack_does_not_start_charge_gate(
     assert ("switch.input", True) in c.calls
     assert ("switch.gate", True) not in c.calls
     assert not manager._state("chain").get("fault")
+
+
+async def test_root_late_confirmation_cannot_use_withdrawn_forecast(monkeypatch):
+    now = datetime(2026, 2, 3, 12)
+    c = _Coordinator(now)
+    evidence = True
+    c.voltage_gate = SimpleNamespace(
+        coordinate_permission_valid=lambda *args, **kw: True
+    )
+    c.pv_plan_evidence_valid = lambda *_: evidence
+    c.live_ac = SimpleNamespace(reserve_pv_start=lambda *args, **kw: False)
+    original = c._switch_entity
+
+    async def accept_on(entity, on, **kw):
+        if entity == "switch.input" and on:
+            c.calls.append((entity, on))
+            return True
+        return await original(entity, on, **kw)
+
+    async def confirm_actor(entity, target, **kw):
+        nonlocal evidence
+        if entity == "switch.input" and target == "on":
+            evidence = False
+            c.hass.states.values[entity] = SimpleNamespace(state="on", attributes={})
+
+    c._switch_entity = accept_on
+    manager = CascadeManager(c)
+    manager._state("chain")["enabled"] = True
+    monkeypatch.setattr(manager, "_wait_actor_state", confirm_actor)
+    monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    result = SimpleNamespace(cascade_plans=(item,))
+    config = SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),))
+    await manager.async_apply(config, result, (), now, pv_plan=(config, object()))
+
+    assert ("switch.input", True) in c.calls
+    assert ("switch.gate", True) not in c.calls
+    assert ("switch.input", False) in c.calls
+    assert not manager._state("chain").get("fault")
+
+
+async def test_forecast_withdrawal_preserves_paid_aux_actor_start():
+    now = datetime(2026, 2, 3, 12)
+    c = _Coordinator(now)
+    c.voltage_gate = SimpleNamespace(coordinate_permission_valid=lambda *a, **kw: True)
+    c.pv_plan_evidence_valid = lambda *_: False
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state.update(enabled=True, phase="aux", source="b1")
+    c.hass.states.values["switch.output"] = SimpleNamespace(state="on", attributes={})
+    plan_token = cascade_manager_module._PV_PLAN.set((object(), object()))
+    coordinate_token = cascade_manager_module._COORDINATE_SNAPSHOT.set((None,))
+    try:
+        assert c._entity_tristate("switch.input") is False
+        assert await manager._actor("chain", "switch.leaf", True)
+    finally:
+        cascade_manager_module._COORDINATE_SNAPSHOT.reset(coordinate_token)
+        cascade_manager_module._PV_PLAN.reset(plan_token)
+    assert c.calls == [("switch.leaf", True)]
 
 
 def _shared_pv_start_rig():

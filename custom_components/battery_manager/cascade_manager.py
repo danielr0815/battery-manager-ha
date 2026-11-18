@@ -62,7 +62,7 @@ from .core import (
     SurplusLoadState,
     SystemConfig,
 )
-from .core.model import SocCoordinateSnapshot
+from .core.model import PlanInputs, SocCoordinateSnapshot
 from .core.policy import CASCADE_SOURCE_PROOF_SECONDS
 from .core.series import fixed_local_time
 from .load_safety import effective_start_power_w
@@ -92,6 +92,10 @@ class _CoordinatePermissionPending(Exception):
     """A withdrawn optional budget is informational, never an actor fault."""
 
 
+class _PvPlanPermissionPending(_CoordinatePermissionPending):
+    """A Root start lost its forecast basis before confirmation."""
+
+
 @dataclass(frozen=True)
 class CascadeExecutionSnapshot:
     """Stable public diagnostic view, with no references to mutable actor state."""
@@ -113,6 +117,9 @@ _CONTROL_GENERATIONS: ContextVar[dict[str, int] | None] = ContextVar(
 
 _COORDINATE_SNAPSHOT: ContextVar[tuple[SocCoordinateSnapshot | None] | None] = (
     ContextVar("cascade_soc_coordinate", default=None)
+)
+_PV_PLAN: ContextVar[tuple[SystemConfig, PlanInputs] | None] = ContextVar(
+    "cascade_pv_plan", default=None
 )
 
 
@@ -157,11 +164,13 @@ def _control_sequences[ControlMethod: Callable[..., Any]](
         }
         token = _CONTROL_GENERATIONS.set({**inherited, **generations})
         coordinate_token = None
+        pv_plan_token = None
         if method.__name__ == "async_apply":
             result = args[1] if len(args) > 1 else kwargs.get("result")
             coordinate_token = _COORDINATE_SNAPSHOT.set(
                 (getattr(result, "soc_coordinate", None),)
             )
+            pv_plan_token = _PV_PLAN.set(kwargs.get("pv_plan"))
         try:
             for cid in generations:
                 self._check_control_generation(cid)
@@ -170,6 +179,8 @@ def _control_sequences[ControlMethod: Callable[..., Any]](
             _CONTROL_GENERATIONS.reset(token)
             if coordinate_token is not None:
                 _COORDINATE_SNAPSHOT.reset(coordinate_token)
+            if pv_plan_token is not None:
+                _PV_PLAN.reset(pv_plan_token)
 
     return cast(ControlMethod, guarded)
 
@@ -1906,6 +1917,7 @@ class CascadeManager:
         turn_on: bool,
         *,
         retain_confirmed: bool = True,
+        check_forecast: bool = True,
     ) -> None:
         captured = _COORDINATE_SNAPSHOT.get()
         if not turn_on or captured is None or not entity_id:
@@ -1939,7 +1951,9 @@ class CascadeManager:
             if all(value is not None for value in powers)
             else None
         )
-        if gate.coordinate_permission_valid(captured[0]):
+        plan = _PV_PLAN.get() if check_forecast else None
+        forecast_valid = plan is None or c.pv_plan_evidence_valid(*plan)
+        if gate.coordinate_permission_valid(captured[0]) and forecast_valid:
             if power is not None:
                 c.live_ac.note_start_power(
                     owner,
@@ -1951,10 +1965,15 @@ class CascadeManager:
             gate.coordinate_permission_valid(captured[0], direct_pv_proven=True)
             and power is not None
             and c.live_ac.reserve_pv_start(
-                owner, power, input_entity=root_data.get(CONF_LOAD_INPUT_POWER_ENTITY)
+                owner,
+                power,
+                input_entity=root_data.get(CONF_LOAD_INPUT_POWER_ENTITY),
+                config=plan[0] if plan is not None else None,
             )
         )
         if not direct_pv:
+            if not forecast_valid:
+                raise _PvPlanPermissionPending
             self._state(cascade_id)["coordinate_reason"] = "soc_coordinate_hold"
             raise _CoordinatePermissionPending
 
@@ -1973,13 +1992,20 @@ class CascadeManager:
             return False
         task = asyncio.current_task()
         assert task is not None
+        already_on = bool(
+            turn_on and entity_id and self.coordinator._entity_is_on(entity_id)
+        )
         self._actor_tasks.add(task)
         try:
             if entity_id and turn_on:
                 self._check_minimum_off(cascade_id, {entity_id: True})
             confirmed = await self._confirm_actor(cascade_id, entity_id, turn_on)
             self._check_coordinate_permission(
-                cascade_id, entity_id, turn_on, retain_confirmed=False
+                cascade_id,
+                entity_id,
+                turn_on,
+                retain_confirmed=False,
+                check_forecast=confirmed and not already_on,
             )
             if state.get("control_generation", 0) != generation:
                 raise asyncio.CancelledError
@@ -1992,6 +2018,17 @@ class CascadeManager:
             if state.get("control_generation", 0) != generation:
                 raise asyncio.CancelledError
             return recovered
+        except _PvPlanPermissionPending:
+            if (
+                not already_on
+                and entity_id
+                and self.coordinator._entity_is_on(entity_id)
+            ):
+                # This edge belongs to this sequence. Withdraw it through the
+                # same owner before the abandoned plan can extend the path.
+                self._check_control_generation(cascade_id)
+                await self._actor(cascade_id, entity_id, False)
+            raise
         finally:
             self._actor_tasks.discard(task)
             runtime = getattr(self.coordinator, "live_ac", None)
@@ -2273,7 +2310,11 @@ class CascadeManager:
                     entity_id, turn_on, actor_owner=cascade_id
                 )
                 self._check_coordinate_permission(
-                    cascade_id, entity_id, turn_on, retain_confirmed=False
+                    cascade_id,
+                    entity_id,
+                    turn_on,
+                    retain_confirmed=False,
+                    check_forecast=False,
                 )
                 if not ok:
                     self._actor_event(
@@ -3301,6 +3342,8 @@ class CascadeManager:
             await self._apply_one_ready(
                 cascade_id, plan, load_states, now, safety_reason
             )
+        except _PvPlanPermissionPending:
+            self._state(cascade_id)["coordinate_reason"] = "pv_plan_evidence_lost"
         except _CoordinatePermissionPending:
             # Preserve confirmed service/dwell and stop extending the old plan.
             self._state(cascade_id)["coordinate_reason"] = "soc_coordinate_hold"
@@ -3663,6 +3706,8 @@ class CascadeManager:
         load_states: tuple[SurplusLoadState, ...],
         now: datetime,
         safety_reason: str | None = None,
+        *,
+        pv_plan: tuple[SystemConfig, PlanInputs] | None = None,
     ) -> None:
         if self._stopping():
             return

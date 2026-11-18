@@ -31,9 +31,14 @@ def reconcile_supply_feedback(
     """Adopt our confirmed edges; service completion is never physical proof."""
     changed = False
     for entity, request in self._supply_actor_requests.items():
+        # A failed OFF service can still reach the relay. Only the physical
+        # OFF publication settles that uncertainty.
+        awaiting = request.state == "pending" or (
+            request.state == "service_failed" and not request.desired
+        )
         if (
             (entity_id is not None and entity != entity_id)
-            or request.state != "pending"
+            or not awaiting
             or self._entity_tristate(entity) is not request.desired
         ):
             continue
@@ -112,7 +117,11 @@ def protection_targets(
         False,
     )
     planned = (False, False)
-    if soc is not None and self._reserve_grid_available() is True:
+    if (
+        soc is not None
+        and self._reserve_grid_available() is True
+        and self.published_pv_authority_valid()
+    ):
         envelope = self.live_ac.envelope
         if envelope is not None:
             if dt_util.as_utc(now) < envelope.expires:
@@ -174,11 +183,19 @@ async def execute_coordinated_support(
     }
     try:
         async with self._switch_lock:
+            reconcile_supply_feedback(self)
             envelope = self.live_ac.envelope
-            if request.plan_revision != self.live_ac.plan_revision or (
-                request.expires is not None and dt_util.utcnow() >= request.expires
+            forecast_valid = self.published_pv_authority_valid()
+            if (
+                not forecast_valid
+                or request.plan_revision != self.live_ac.plan_revision
+                or (request.expires is not None and dt_util.utcnow() >= request.expires)
             ):
-                valid = envelope is not None and dt_util.utcnow() < envelope.expires
+                valid = (
+                    forecast_valid
+                    and envelope is not None
+                    and dt_util.utcnow() < envelope.expires
+                )
                 desired = dict(
                     zip(
                         ("dc24", "dc48"),
@@ -200,7 +217,11 @@ async def execute_coordinated_support(
                 ):
                     config, recorded_inputs, recorded_result = record
                     expires = _record_expiry(recorded_inputs)
-                    valid = not self._actuation_shutdown and dt_util.utcnow() < expires
+                    valid = (
+                        forecast_valid
+                        and not self._actuation_shutdown
+                        and dt_util.utcnow() < expires
+                    )
                     desired = {
                         "dc24": valid and recorded_result.support_dc24_now,
                         "dc48": valid and requested_dc48(recorded_result),
@@ -231,6 +252,7 @@ async def execute_coordinated_support(
                 "mode": "coordinated",
                 "reason": "settled",
                 "desired": dict(desired),
+                "grid_restore_pending": [],
             }
             self._coordinated_support_diag = diag
             sources_before_transition = {
@@ -248,6 +270,41 @@ async def execute_coordinated_support(
                     diag["reason"] = "awaiting_confirmation"
                     return False
                 return True
+
+            def inverter_blocked() -> bool:
+                if self._inverter_limit_confirmed(True):
+                    return True
+                self._inverter_recommendation = False
+                self._inverter_control["confirmed"] = False
+                diag["reason"] = "inverter_block_unconfirmed"
+                return False
+
+            def pending_off(entity: str) -> bool:
+                # An old ON report cannot authorize removing the other rail
+                # source while our OFF request is still catching up.
+                command = self._supply_actor_requests.get(entity)
+                return bool(
+                    command
+                    and not command.desired
+                    and command.state in ("pending", "service_failed")
+                )
+
+            def waiting_for_dcdc_off() -> bool:
+                if not dcdc or not pending_off(dcdc):
+                    return False
+                # A command to turn DC/DC back on would replace our pending
+                # OFF request and could adopt the old ON as its confirmation.
+                diag["reason"] = "awaiting_confirmation"
+                self._schedule_replan()
+                return True
+
+            def transfer_verified() -> bool:
+                if not config.reserve.enabled or self.raw_config.get(
+                    CONF_RESERVE_TRANSFER_VERIFIED
+                ):
+                    return True
+                diag["dc24_block_reason"] = "transfer_unverified"
+                return False
 
             manual_changed = (
                 config.support.dc24_forced_on != self._support_manual["dc24"]
@@ -369,6 +426,12 @@ async def execute_coordinated_support(
                     self._schedule_replan()
                 elif changed or expired:
                     diag["reason"] = "plan_changed" if changed else "plan_expired"
+                elif (
+                    not diag.get("pv_priority")
+                    and not self.published_pv_authority_valid()
+                ):
+                    diag["reason"] = "pv_forecast_evidence_lost"
+                    self._schedule_replan()
                 elif phase_changed():
                     diag["reason"] = "source_phase_changed"
                     self._schedule_replan()
@@ -423,13 +486,18 @@ async def execute_coordinated_support(
                 if self._reserve_grid_available() is not True:
                     return
                 current = self.live_ac.envelope
-                target = dict(planned_desired)
+                forecast_valid = self.published_pv_authority_valid()
+                target = (
+                    dict(planned_desired)
+                    if forecast_valid
+                    else {"dc24": False, "dc48": False}
+                )
                 if current is not None:
                     target = dict(
                         zip(
                             ("dc24", "dc48"),
                             current.dc_sources
-                            if dt_util.utcnow() < current.expires
+                            if forecast_valid and dt_util.utcnow() < current.expires
                             else (False, False),
                             strict=True,
                         )
@@ -443,7 +511,8 @@ async def execute_coordinated_support(
                 ):
                     restore_config, recorded_inputs, recorded_result = record
                     valid = (
-                        not self._actuation_shutdown
+                        forecast_valid
+                        and not self._actuation_shutdown
                         and dt_util.utcnow() < _record_expiry(recorded_inputs)
                     )
                     target = {
@@ -476,83 +545,259 @@ async def execute_coordinated_support(
                     }
                 diag["desired"] = target
                 diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
-                if target["dc24"] and psu24:
+                if any(target.values()):
+                    self._inverter_recommendation = False
+                    if not await self._confirm_inverter_limit(True, diag):
+                        return
+                if (
+                    target["dc24"]
+                    and psu24
+                    and transfer_verified()
+                    and self._reserve_grid_available() is True
+                ):
+
+                    def may_restore_rail() -> bool:
+                        return (
+                            self._reserve_grid_available() is True
+                            and transfer_verified()
+                            and inverter_blocked()
+                            and not pending_off(psu24)
+                        )
+
                     if dcdc:
                         restored = await self._sequence_dc24(
                             True,
                             psu24,
-                            may_remove=lambda: self._reserve_grid_available() is True,
+                            may_start=may_restore_rail,
+                            may_remove=may_restore_rail,
                         )
-                        if not restored:
+                        if not restored or self._entity_tristate(dcdc) is not False:
                             return
-                    elif not await confirmed(psu24, True):
+                    elif not may_restore_rail() or not await confirmed(psu24, True):
                         return
                     self._support_state["dc24"] = True
                 if (
                     psu48
                     and self._reserve_grid_available() is True
-                    and (target["dc48"] or may_remove())
+                    and (
+                        not pending_off(psu48) and inverter_blocked()
+                        if target["dc48"]
+                        else may_remove()
+                    )
                     and await confirmed(psu48, target["dc48"])
                 ):
                     self._support_state["dc48"] = target["dc48"]
+
+            def grid_unavailable() -> bool:
+                return self._reserve_grid_available() is not True
+
+            rail_off_requested = False
+
+            def may_shed_rail() -> bool:
+                nonlocal rail_off_requested
+                if grid_unavailable():
+                    rail_off_requested = True
+                    return True
+                return False
+
+            async def shed_grid_sources() -> bool:
+                """Stop using grid sources only while the outage still holds."""
+                if waiting_for_dcdc_off():
+                    return False
+                if (
+                    dcdc
+                    and psu24
+                    and (
+                        self._entity_tristate(dcdc) is not True
+                        or self._entity_tristate(psu24) is not False
+                    )
+                ):
+                    if not await self._sequence_dc24(
+                        False,
+                        psu24,
+                        may_start=grid_unavailable,
+                        may_remove=may_shed_rail,
+                    ):
+                        return False
+                    if self._entity_tristate(psu24) is not False:
+                        diag["reason"] = "awaiting_confirmation"
+                        return False
+                elif dcdc and not await confirmed(dcdc, True):
+                    return False
+                if not grid_unavailable():
+                    return False
+                if psu24 and not dcdc and not await confirmed(psu24, False):
+                    return False
+                self._support_state["dc24"] = False
+                if not grid_unavailable():
+                    return False
+                if dcdc and self._entity_tristate(dcdc) is not True:
+                    return False
+                if psu48 and not await confirmed(psu48, False):
+                    return False
+                self._support_state["dc48"] = False
+                return grid_unavailable() and (
+                    not dcdc or self._entity_tristate(dcdc) is True
+                )
+
+            def protection_after_grid_return(current: SystemConfig) -> dict[str, bool]:
+                now = dt_util.now()
+                soc = self._get_soc(now)
+                required = support_state(
+                    current,
+                    soc if soc is not None else current.battery.soc_min_percent,
+                    False,
+                    False,
+                    False,
+                )
+                target = dict(zip(("dc24", "dc48"), required, strict=True))
+                # Before the outage sequence sends PSU24-OFF, the existing
+                # source can still complete its authorized rail transfer.
+                # Once OFF is requested, only current protection can restart it.
+                if (
+                    not target["dc24"]
+                    and not rail_off_requested
+                    and desired["dc24"]
+                    and current.support.dc24_available
+                    and sources_before_transition["dc24"]
+                    and psu24
+                    and self._entity_tristate(psu24) is True
+                    and not pending_off(psu24)
+                    and not self._actuation_shutdown
+                    and (
+                        not config.support.dc24_forced_on
+                        or self._support_manual["dc24"]
+                    )
+                    and may_remove()
+                ):
+                    target["dc24"] = True
+                    if diag["reason"] == "grid_supply_restored":
+                        diag["reason"] = "grid_supply_changed"
+                diag["requested"] = dict(target)
+                target = self.voltage_gate.apply(current, target, now)
+                diag["voltage_gate"] = dict(self.voltage_gate.diagnostics)
+                return target
+
+            async def restore_grid_protection() -> None:
+                """Replace the interrupted outage sequence with current protection."""
+                diag["reason"] = "grid_supply_restored"
+                diag["pv_priority"] = False
+                current = self.build_system_config()
+
+                def may_restore(key: str) -> bool:
+                    return (
+                        not grid_unavailable()
+                        and protection_after_grid_return(current)[key]
+                        and inverter_blocked()
+                    )
+
+                def may_restore_rail() -> bool:
+                    return (
+                        transfer_verified()
+                        and psu24 is not None
+                        and not pending_off(psu24)
+                        and may_restore("dc24")
+                    )
+
+                if (
+                    psu24
+                    and dcdc
+                    and may_restore_rail()
+                    and (
+                        self._entity_tristate(psu24) is not True
+                        or self._entity_tristate(dcdc) is not False
+                    )
+                ):
+                    await self._sequence_dc24(
+                        True,
+                        psu24,
+                        may_start=may_restore_rail,
+                        may_remove=may_restore_rail,
+                    )
+                if psu48 and not pending_off(psu48) and may_restore("dc48"):
+                    await confirmed(psu48, True)
+                if grid_unavailable():
+                    return
+                target = protection_after_grid_return(current)
+                permitted = {
+                    **target,
+                    "dc24": target["dc24"] and transfer_verified(),
+                }
+                diag["desired"] = permitted
+                for key, entity in (("dc24", psu24), ("dc48", psu48)):
+                    self._support_state[key] = bool(
+                        entity
+                        and not pending_off(entity)
+                        and self._entity_tristate(entity) is True
+                        and (
+                            key != "dc24"
+                            or (dcdc and self._entity_tristate(dcdc) is False)
+                        )
+                    )
+                pending = [
+                    key
+                    for key, needed in permitted.items()
+                    if needed and not self._support_state[key]
+                ]
+                diag["grid_restore_pending"] = pending
+                blocked = not any(permitted.values()) or inverter_blocked()
+                if pending and diag["reason"] == "grid_supply_restored":
+                    diag["reason"] = "grid_restore_pending"
+                if pending or not blocked:
+                    self._schedule_replan()
 
             if self.live_ac.pv_source_permission(config):
                 desired = {"dc24": False, "dc48": False}
                 diag["desired"] = dict(desired)
                 diag["pv_priority"] = True
 
-            if config.reserve.enabled and self._reserve_grid_available() is not True:
+            if config.reserve.enabled and grid_unavailable():
                 self._inverter_recommendation = False
                 diag["reason"] = "grid_supply_unavailable"
-                rail_restored = (
-                    await self._sequence_dc24(
-                        False,
-                        psu24,
-                        may_remove=lambda: self._reserve_grid_available() is not True,
-                    )
-                    if dcdc and psu24
-                    else await confirmed(dcdc, True)
-                    if dcdc
-                    else True
-                )
-                if not rail_restored:
-                    # Preserve the existing rail source, but a failed transfer
-                    # cannot leave battery AC discharge enabled during outage.
-                    await self._confirm_inverter_limit(True, diag)
-                    if self._reserve_grid_available() is True:
-                        diag["reason"] = "grid_supply_changed"
-                        await restore_required()
-                    return
-                for key, entity in (("dc24", psu24), ("dc48", psu48)):
-                    if entity and not await confirmed(entity, False):
-                        await self._confirm_inverter_limit(True, diag)
-                        return
-                    self._support_state[key] = False
+                shed = await shed_grid_sources()
+                saw_grid_return = not grid_unavailable()
                 # A full-power reserve permission also needs fresh protection
                 # evidence. The final actuator guard can revoke an old proposal.
                 soc = self._get_soc(dt_util.now())
                 blocked = (
-                    self._reserve_grid_available() is False
+                    not shed
+                    or self._reserve_grid_available() is False
                     or not inverter
                     or soc is None
                     or soc <= config.control.inverter_min_soc_percent
                 )
                 confirmed_limit = await self._confirm_inverter_limit(blocked, diag)
+                if not grid_unavailable():
+                    saw_grid_return = True
+                    if not blocked:
+                        await self._confirm_inverter_limit(True, diag)
+                    if not grid_unavailable():
+                        await restore_grid_protection()
+                        if not grid_unavailable():
+                            return
+                if saw_grid_return:
+                    # Renewed loss during takeover: prefer the battery rail
+                    # again. Further flapping can settle in the normal retry.
+                    diag["reason"] = "grid_supply_unavailable"
+                    await shed_grid_sources()
+                    await self._confirm_inverter_limit(True, diag)
+                    self._schedule_replan()
+                    return
+                if not blocked and self._reserve_grid_available() is False:
+                    await self._confirm_inverter_limit(True, diag)
+                    return
                 self._inverter_recommendation = bool(
                     not blocked
                     and confirmed_limit
                     and diag.get("discharge_limit_target_w", 0) > 0
                 )
-                diag["reason"] = "grid_supply_unavailable"
-                self._save_persistent_state()
+                if shed:
+                    diag["reason"] = "grid_supply_unavailable"
                 return
 
-            if config.reserve.enabled and not self.raw_config.get(
-                CONF_RESERVE_TRANSFER_VERIFIED
-            ):
+            if not transfer_verified():
                 desired = {**desired, "dc24": False}
                 diag["desired"] = dict(desired)
-                diag["dc24_block_reason"] = "transfer_unverified"
 
             # Even an unexpected external PSU activation blocks AC immediately.
             # Release comes last, after all source confirmations below.
@@ -560,11 +805,19 @@ async def execute_coordinated_support(
                 entity and self._entity_tristate(entity) is not False
                 for entity in (psu24, psu48)
             )
-            if not inverter or any(desired.values()) or physical_support:
+            waiting_for_rail = not desired["dc24"] and waiting_for_dcdc_off()
+            if (
+                waiting_for_rail
+                or not inverter
+                or any(desired.values())
+                or physical_support
+            ):
                 self._inverter_recommendation = False
                 if not await self._confirm_inverter_limit(True, diag):
                     diag["reason"] = "inverter_block_unconfirmed"
                     return
+            if waiting_for_rail:
+                return
 
             # Blocking/confirmation above may have consumed real time.
             now = dt_util.now()
@@ -608,8 +861,20 @@ async def execute_coordinated_support(
                 if self._entity_tristate(
                     psu24
                 ) is not target24 or self._entity_tristate(dcdc) is not (not target24):
+
+                    def may_start_rail() -> bool:
+                        return (
+                            may_remove()
+                            and transfer_verified()
+                            and inverter_blocked()
+                            and not pending_off(psu24)
+                        )
+
                     if not await self._sequence_dc24(
-                        target24, psu24, may_remove=may_remove
+                        target24,
+                        psu24,
+                        may_start=may_start_rail if target24 else None,
+                        may_remove=may_start_rail if target24 else may_remove,
                     ):
                         if diag["reason"] != "settled":
                             await restore_required()
@@ -637,6 +902,8 @@ async def execute_coordinated_support(
             if psu48 and desired["dc48"]:
                 if not may_remove():
                     await restore_required()
+                    return
+                if pending_off(psu48) or not inverter_blocked():
                     return
                 if not await confirmed(psu48, True):
                     return

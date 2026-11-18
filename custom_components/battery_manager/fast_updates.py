@@ -9,6 +9,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .const import SUPPORT_MODE_AUTO, SUPPORT_MODE_MANUAL
+from .coordinator import PvPlanningEvidenceLost
 from .load_safety import stop_unsafe_loads
 
 if TYPE_CHECKING:
@@ -27,10 +28,20 @@ async def async_fast_update(c: BatteryManagerCoordinator, *, trim: bool = True) 
         c._feedin_tick(now)
     c._update_feedin_mode(now)
     c.appliances.update(dt_util.as_utc(now))
+    recorded = c._last_planner_recording is not None
+    full_evidence = await c._withdraw_invalid_pv_authority(now)
+    if recorded and not full_evidence and c._update_task is None:
+        c._schedule_replan()
     captured = c._last_planner_recording
     if (
         captured is None
-        or not c.last_update_success
+        or (
+            not c.last_update_success
+            and not (
+                isinstance(c.last_exception, PvPlanningEvidenceLost)
+                and captured[2].feedin_current_day_proven
+            )
+        )
         or not c.data
         or not c.data.get("valid")
     ):
@@ -53,9 +64,7 @@ async def async_fast_update(c: BatteryManagerCoordinator, *, trim: bool = True) 
         if c._update_task is None:
             c._schedule_replan()
         await c._feedin_force_zero("Planning inputs changed during telemetry update")
-    elif c._get_forecasts(now) is None:
-        await c._feedin_force_zero("PV forecasts unavailable during telemetry update")
-    elif trim:
+    elif trim or not full_evidence:
         soc = c._get_soc(now)
         # _ensure_planning_inputs proved a numeric SOC above. Re-read after
         # any protection work so a telemetry pass never fabricates a reading.
@@ -77,7 +86,7 @@ async def async_fast_update(c: BatteryManagerCoordinator, *, trim: bool = True) 
                 feedin_schedule_w=schedule,
                 feedin_by_day_wh={**result.feedin_by_day_wh, today: remaining},
             )
-            await c._apply_feedin(trimmed, config, soc, now)
+            await c._apply_feedin(trimmed, config, soc, now, inputs=inputs, trim=trim)
         else:
             await c._feedin_force_zero("SOC unavailable during telemetry trim")
     realized = c._update_realized_surplus(now, c.data.get("daily_surplus", []))

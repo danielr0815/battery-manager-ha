@@ -29,7 +29,7 @@ from .const import (
     INPUT_OFF_POLICY_KEEP,
     SUBENTRY_TYPE_LOAD,
 )
-from .core.model import SocCoordinateSnapshot
+from .core.model import PlanInputs, SocCoordinateSnapshot, SystemConfig
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -57,6 +57,7 @@ class LoadAction:
     soc_coordinate: SocCoordinateSnapshot | None = None
     coordinate_captured: bool = False
     coordinate_cleanup: int | None = None
+    pv_plan: tuple[SystemConfig, PlanInputs] | None = None
 
     @classmethod
     def from_legacy(cls, action: LoadAction | tuple[Any, ...]) -> LoadAction:
@@ -346,7 +347,11 @@ def _revoke_stale_feedback(
         and request.sent
         and request.state != "confirmed"
         and request.command is not None
-        and not c.voltage_gate.coordinate_matches(request.command.soc_coordinate)
+        and (
+            not c.voltage_gate.coordinate_matches(request.command.soc_coordinate)
+            or request.command.pv_plan is not None
+            and not _coordinate_action_allowed(c, request.command)
+        )
     ):
         request.state = "coordinate_changed"
         coordinate_request_revoked(c, entity, request)
@@ -695,7 +700,9 @@ def _coordinate_action_allowed(
     power = effective_start_power_w(c, command.load_id, command.data)
     owner = "load:" + command.load_id
     input_entity = command.data.get(CONF_LOAD_INPUT_POWER_ENTITY)
-    if gate.coordinate_permission_valid(command.soc_coordinate):
+    if gate.coordinate_permission_valid(command.soc_coordinate) and (
+        command.pv_plan is None or c.pv_plan_evidence_valid(*command.pv_plan)
+    ):
         c.live_ac.revoked_load_starts.pop(command.load_id, None)
         if power is not None:
             c.live_ac.note_start_power(owner, power, input_entity=input_entity)
@@ -705,7 +712,11 @@ def _coordinate_action_allowed(
     ):
         return False
     return power is not None and c.live_ac.reserve_pv_start(
-        owner, power, input_entity=input_entity, exclude_load_id=command.load_id
+        owner,
+        power,
+        input_entity=input_entity,
+        exclude_load_id=command.load_id,
+        config=command.pv_plan[0] if command.pv_plan is not None else None,
     )
 
 

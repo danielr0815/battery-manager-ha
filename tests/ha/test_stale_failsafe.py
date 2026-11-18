@@ -16,6 +16,7 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
@@ -65,12 +66,31 @@ BASE_DATA = {
 
 # Midday in the strong-PV morning window (the plan then expects a large
 # battery charge flow); deep night for the standby case.
-MIDDAY = dt_util.as_local(datetime(2026, 7, 19, 11, 0, tzinfo=UTC))
-NIGHT = dt_util.as_local(datetime(2026, 7, 19, 1, 30, tzinfo=UTC))
+MIDDAY = datetime(2026, 7, 19, 11, 0, tzinfo=UTC)
+NIGHT = datetime(2026, 7, 19, 1, 30, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+async def _utc_site(hass):
+    await hass.config.async_set_time_zone("UTC")
 
 
 def _at(moment):
     return patch.object(dt_util, "now", return_value=moment)
+
+
+def _publish_pv(hass, moment, values=("10.0", "12.0", "8.0")):
+    for key, value in zip(
+        (CONF_PV_FORECAST_TODAY, CONF_PV_FORECAST_TOMORROW, CONF_PV_FORECAST_DAY_AFTER),
+        values,
+        strict=True,
+    ):
+        hass.states.async_set(
+            BASE_DATA[key],
+            value,
+            {"unit_of_measurement": "kWh"},
+            timestamp=moment.timestamp(),
+        )
 
 
 def _register_switch_services(hass, call_log, *, dead_entities=()):
@@ -148,9 +168,7 @@ async def _setup(
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
-    hass.states.async_set("sensor.pv_today", "10.0", {"unit_of_measurement": "kWh"})
-    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
-    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    _publish_pv(hass, pinned)
     _register_switch_services(hass, call_log)
     _register_notify(hass, notifications)
 
@@ -868,9 +886,7 @@ async def _setup_support(hass, notifications, *, dead_entities=(), register=True
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
     )
-    hass.states.async_set("sensor.pv_today", "10.0", {"unit_of_measurement": "kWh"})
-    hass.states.async_set("sensor.pv_tomorrow", "12.0", {"unit_of_measurement": "kWh"})
-    hass.states.async_set("sensor.pv_day_after", "8.0", {"unit_of_measurement": "kWh"})
+    _publish_pv(hass, MIDDAY)
     call_log: list[tuple[str, str]] = []
     if register:
         _register_switch_services(hass, call_log, dead_entities=dead_entities)

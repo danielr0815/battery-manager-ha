@@ -1144,6 +1144,10 @@ class PlanInputs:
     recharge_required_ac_wh: tuple[float, ...] = ()
     soc_coordinate: SocCoordinateSnapshot | None = None
     psu_delivery: tuple[PsuDeliverySnapshot, ...] = ()
+    # Captured daily kWh whose positive synthetic PV contributed to this HA plan.
+    # None preserves replay of older records and stand-alone core callers.
+    pv_daily_credit: tuple[tuple[date, float], ...] | None = None
+    pv_hourly_used: bool = False
 
     def __post_init__(self) -> None:
         _require(
@@ -1524,6 +1528,8 @@ class PlanResult:
     # Additive explanation of appliance_windows; absent in older recordings.
     appliance_advisories: Mapping[str, ApplianceAdvisory] = field(default_factory=dict)
     soc_coordinate: SocCoordinateSnapshot | None = None
+    # The present legacy export window does not borrow from later days.
+    feedin_current_day_proven: bool = False
 
     def __post_init__(self) -> None:
         # Copy first: retained caller dictionaries cannot mutate a published plan.

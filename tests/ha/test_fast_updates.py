@@ -16,6 +16,7 @@ from test_realized_surplus import _setup as setup_realized
 
 from custom_components.battery_manager.const import DEBOUNCE_SECONDS, DOMAIN
 from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+from custom_components.battery_manager.daily_pv import DailyPVCache
 from custom_components.battery_manager.fast_updates import async_fast_update
 
 
@@ -142,7 +143,7 @@ async def test_unusable_plan_stops_export_and_never_uses_a_stale_schedule(
 async def test_pv_loss_stops_export_without_waiting_for_a_new_plan(hass, freezer):
     c, calls = await exporting(hass, freezer)
     hass.states.async_set("sensor.pv_today", "unavailable")
-    c._last_valid_forecasts = None
+    c._daily_pv = DailyPVCache()
     await async_fast_update(c)
     await hass.async_block_till_done(wait_background_tasks=True)
     assert calls[-1] == (SETPOINT, 0)

@@ -1,13 +1,15 @@
 """Historical reserve references, forecast control and confirmed source transfers."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
 from homeassistant.util import dt as dt_util
-from test_coordinated_actuation import DCDC, LIMIT, PSU24, PSU48, execute
+from test_coordinated_actuation import BLOCK, DCDC, LIMIT, PSU24, PSU48, execute
 from test_coordinated_actuation import rig as rig
 
+from custom_components.battery_manager.actor_ownership import SUPPLY_OWNER
 from custom_components.battery_manager.config_flow import _validate_support_entities
 from custom_components.battery_manager.const import (
     CONF_DCDC_SWITCH,
@@ -17,7 +19,12 @@ from custom_components.battery_manager.const import (
     CONF_RESERVE_TRANSFER_VERIFIED,
     CONF_SOC_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
+    CONF_SUPPORT_SWITCH_DELAY_S,
 )
+from custom_components.battery_manager.coordinated_supply import (
+    reconcile_supply_feedback,
+)
+from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
 from custom_components.battery_manager.reserve_runtime import (
     MAX_OBSERVATION_GAP_SECONDS,
     ReserveRuntime,
@@ -170,6 +177,515 @@ async def test_failed_dc_restore_keeps_existing_source(rig, hass):
     assert calls == [(DCDC, True), (LIMIT, 0)]
     assert hass.states.get(PSU24).state == "on"
     assert float(hass.states.get(LIMIT).state) == 0
+
+
+def _outage_with_support(rig, hass, *, soc=4, verified=True):
+    c, *_ = rig
+    c.raw_config.update(
+        {
+            CONF_SOC_ENTITY: "sensor.test_soc",
+            CONF_RESERVE_MODE: "active",
+            CONF_RESERVE_GRID_ENTITY: "binary_sensor.grid",
+            CONF_RESERVE_TRANSFER_VERIFIED: verified,
+        }
+    )
+    hass.states.async_set("sensor.test_soc", str(soc))
+    hass.states.async_set("binary_sensor.grid", "off")
+    hass.states.async_set(PSU24, "on")
+    hass.states.async_set(PSU48, "on")
+    hass.states.async_set(DCDC, "off")
+    c._support_state = {"dc24": True, "dc48": True}
+
+
+async def test_grid_returns_during_psu24_off_confirmation(rig, hass):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass)
+    c.raw_config[CONF_SUPPORT_SWITCH_DELAY_S] = 7.5
+    off_sent = asyncio.Event()
+    confirm_off = asyncio.Event()
+
+    async def switch(call):
+        entity = call.data["entity_id"]
+        on = call.service == "turn_on"
+        calls.append((entity, on))
+        if entity == PSU24 and not on:
+            off_sent.set()
+            await confirm_off.wait()
+        hass.states.async_set(entity, "on" if on else "off")
+        assert hass.states.is_state(PSU24, "on") or hass.states.is_state(DCDC, "on")
+
+    for service in ("turn_on", "turn_off"):
+        hass.services.async_register("homeassistant", service, switch)
+
+    async def overlap(seconds):
+        assert seconds == 7.5
+        assert hass.states.is_state(PSU24, "on") and hass.states.is_state(DCDC, "on")
+        calls.append(("overlap", seconds))
+
+    with (
+        patch.object(
+            c, "_switch_entity", BatteryManagerCoordinator._switch_entity.__get__(c)
+        ),
+        patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            side_effect=overlap,
+        ),
+    ):
+        task = asyncio.create_task(execute(c, dc24=True, dc48=True))
+        try:
+            await off_sent.wait()
+            assert c._supply_actor_requests[PSU24].state == "pending"
+            hass.states.async_set("binary_sensor.grid", "on")
+        finally:
+            confirm_off.set()
+            await task
+
+    assert calls == [
+        (DCDC, True),
+        ("overlap", 7.5),
+        (PSU24, False),
+        (LIMIT, 0),
+        (PSU24, True),
+        ("overlap", 7.5),
+        (DCDC, False),
+    ]
+    assert c._supply_actor_requests[PSU24].state == "confirmed"
+    assert c._supply_actor_requests[DCDC].state == "confirmed"
+    assert c._support_state == {"dc24": True, "dc48": True}
+    assert c.data["coordinated_support"]["reason"] == "grid_supply_restored"
+
+
+@pytest.mark.parametrize(
+    ("point", "expected", "recovered"),
+    [
+        (
+            "before_overlap",
+            [(DCDC, True), (LIMIT, 0), (PSU24, True), (DCDC, False)],
+            True,
+        ),
+        (
+            "during_overlap",
+            [(DCDC, True), (LIMIT, 0), (PSU24, True), (DCDC, False)],
+            True,
+        ),
+        (
+            "after_last_off",
+            [
+                (DCDC, True),
+                (PSU24, False),
+                (PSU48, False),
+                (LIMIT, 0),
+                (PSU24, True),
+                (DCDC, False),
+                (PSU48, True),
+            ],
+            True,
+        ),
+        ("normal_soc", [(DCDC, True), (PSU24, False), (LIMIT, 0)], False),
+        (
+            "stays_off",
+            [(DCDC, True), (PSU24, False), (PSU48, False), (LIMIT, 0)],
+            False,
+        ),
+        ("unknown", [(DCDC, True), (PSU24, False), (PSU48, False), (LIMIT, 0)], False),
+        (
+            "lost_while_blocking",
+            [(DCDC, True), (LIMIT, 0), (DCDC, True), (PSU24, False), (PSU48, False)],
+            False,
+        ),
+        (
+            "lost_again",
+            [
+                (DCDC, True),
+                (PSU24, False),
+                (LIMIT, 0),
+                (PSU24, True),
+                (DCDC, True),
+                (PSU24, False),
+                (PSU48, False),
+            ],
+            False,
+        ),
+        (
+            "lost_after_transfer",
+            [
+                (DCDC, True),
+                (PSU24, False),
+                (LIMIT, 0),
+                (PSU24, True),
+                (DCDC, False),
+                (DCDC, True),
+                (PSU24, False),
+                (PSU48, False),
+            ],
+            False,
+        ),
+    ],
+)
+async def test_grid_return_checkpoints(rig, hass, point, expected, recovered):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass)
+    switch = c._switch_entity
+    confirm_limit = c._confirm_inverter_limit
+    first_overlap = True
+
+    def grid(state):
+        hass.states.async_set("binary_sensor.grid", state)
+
+    async def overlap(seconds):
+        nonlocal first_overlap
+        assert seconds == 3
+        assert hass.states.is_state(PSU24, "on") and hass.states.is_state(DCDC, "on")
+        if first_overlap and point == "during_overlap":
+            grid("on")
+        elif not first_overlap and point == "lost_again":
+            grid("off")
+        first_overlap = False
+
+    async def change_grid(entity, on, **kwargs):
+        assert kwargs["actor_owner"] == SUPPLY_OWNER
+        result = await switch(entity, on, **kwargs)
+        if point in ("before_overlap", "lost_while_blocking") and calls == [
+            (DCDC, True)
+        ]:
+            grid("on")
+        elif (
+            point in ("lost_again", "lost_after_transfer", "normal_soc")
+            and (entity, on) == (PSU24, False)
+            and calls.count((PSU24, False)) == 1
+        ):
+            grid("on")
+            if point == "normal_soc":
+                hass.states.async_set("sensor.test_soc", "80")
+        elif point == "after_last_off" and (entity, on) == (PSU48, False):
+            grid("on")
+        elif point == "lost_after_transfer" and (entity, on) == (DCDC, False):
+            grid("off")
+        assert hass.states.is_state(PSU24, "on") or hass.states.is_state(DCDC, "on")
+        return result
+
+    async def change_grid_at_limit(blocked, diag):
+        confirmed = await confirm_limit(blocked, diag)
+        if point == "lost_while_blocking":
+            grid("off")
+        return confirmed
+
+    if point == "unknown":
+        grid("unknown")
+    with (
+        patch.object(c, "_switch_entity", change_grid),
+        patch.object(c, "_confirm_inverter_limit", change_grid_at_limit),
+        patch.object(c, "_schedule_replan"),
+        patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            side_effect=overlap,
+        ),
+    ):
+        await execute(c, dc24=True, dc48=True)
+
+    assert calls == expected
+    assert c._support_state["dc24"] is recovered
+    assert hass.states.is_state(DCDC, "off" if recovered else "on")
+    assert c._support_state["dc48"] is (recovered or point == "normal_soc")
+    assert c.data["coordinated_support"]["grid_restore_pending"] == []
+
+
+@pytest.mark.parametrize("next_grid", ["on", "off"])
+async def test_grid_update_revokes_release_from_initial_unknown_state(
+    rig, hass, next_grid
+):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass, soc=80)
+    hass.states.async_set("binary_sensor.grid", "unknown")
+    hass.states.async_set(LIMIT, "0")
+    hass.states.async_set(BLOCK, "on")
+    confirm_limit = c._confirm_inverter_limit
+
+    async def publish_grid(blocked, diag):
+        confirmed = await confirm_limit(blocked, diag)
+        if not blocked:
+            hass.states.async_set("binary_sensor.grid", next_grid)
+        return confirmed
+
+    with patch.object(c, "_confirm_inverter_limit", publish_grid):
+        await execute(c, inverter=True)
+
+    assert calls == [
+        (DCDC, True),
+        (PSU24, False),
+        (PSU48, False),
+        (LIMIT, 2300),
+        (LIMIT, 0),
+    ]
+    assert hass.states.is_state(DCDC, "on")
+    assert c.inverter_control_snapshot()["confirmed"]
+    assert not c._inverter_recommendation
+
+
+@pytest.mark.parametrize(
+    ("unconfirmed", "command_error"),
+    [
+        (LIMIT, False),
+        (BLOCK, False),
+        (PSU24, False),
+        (DCDC, False),
+        (LIMIT, True),
+        (PSU24, True),
+        (DCDC, True),
+    ],
+)
+async def test_grid_restore_pending_retries_without_breaking_rail(
+    rig, hass, unconfirmed, command_error
+):
+    c, calls, dead, failures = rig
+    _outage_with_support(rig, hass)
+    switch = c._switch_entity
+    problems = failures if command_error else dead
+
+    async def returned_grid(entity, on, **kwargs):
+        result = await switch(entity, on, **kwargs)
+        if (entity, on) == (PSU24, False):
+            problems.add(unconfirmed)
+            hass.states.async_set("binary_sensor.grid", "on")
+        return result
+
+    with (
+        patch.object(c, "_switch_entity", returned_grid),
+        patch.object(c, "_schedule_replan") as retry,
+    ):
+        await execute(c, dc24=True, dc48=True)
+        retry.assert_called_once()
+
+    assert (PSU48, False) not in calls
+    assert ((PSU24, True) in calls) is (unconfirmed in (PSU24, DCDC))
+    assert ((DCDC, False) in calls) is (unconfirmed == DCDC)
+    assert hass.states.is_state(DCDC, "on")
+    assert c._support_state == {"dc24": False, "dc48": True}
+    assert c.data["coordinated_support"]["grid_restore_pending"] == ["dc24"]
+    problems.clear()
+    if unconfirmed == BLOCK:
+        hass.states.async_set(BLOCK, "on")
+    await c._coordinated_data_loss(c._get_soc(dt_util.now()), dt_util.now())
+    await c._switch_task
+    assert c._support_state == {"dc24": True, "dc48": True}
+    assert c.data["coordinated_support"]["grid_restore_pending"] == []
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_late_psu24_off_cannot_authorize_dc_dc_shutdown(rig, hass, timeout):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass)
+
+    async def switch(call):
+        entity = call.data["entity_id"]
+        on = call.service == "turn_on"
+        calls.append((entity, on))
+        if (entity, on) == (PSU24, False):
+            hass.states.async_set("binary_sensor.grid", "on")
+            if timeout:
+                raise TimeoutError("PSU24 OFF accepted without response")
+            return
+        hass.states.async_set(entity, "on" if on else "off")
+
+    for service in ("turn_on", "turn_off"):
+        hass.services.async_register("homeassistant", service, switch)
+    with (
+        patch.object(
+            c, "_switch_entity", BatteryManagerCoordinator._switch_entity.__get__(c)
+        ),
+        patch.object(c, "_schedule_replan"),
+    ):
+        await execute(c, dc24=True, dc48=True)
+        assert c.data["coordinated_support"]["grid_restore_pending"] == ["dc24"]
+        assert c._supply_actor_requests[PSU24].state == (
+            "service_failed" if timeout else "pending"
+        )
+        await execute(c, dc24=True, dc48=True)
+        assert calls == [(DCDC, True), (PSU24, False), (LIMIT, 0)]
+        assert hass.states.is_state(DCDC, "on")
+
+        hass.states.async_set(PSU24, "off")
+        assert reconcile_supply_feedback(c, PSU24)
+        assert c._supply_actor_requests[PSU24].state == "confirmed"
+        await execute(c, dc24=True, dc48=True)
+        assert calls[-2:] == [(PSU24, True), (DCDC, False)]
+
+
+@pytest.mark.parametrize("renewed_outage", [False, True])
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_pending_dcdc_off_preserves_psu24_until_rail_is_confirmed(
+    rig, hass, renewed_outage, timeout
+):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass)
+    c.raw_config["min_switch_interval_s"] = 0
+
+    async def switch(call):
+        entity = call.data["entity_id"]
+        on = call.service == "turn_on"
+        calls.append((entity, on))
+        if (entity, on) == (DCDC, False):
+            if renewed_outage:
+                hass.states.async_set("binary_sensor.grid", "off")
+            if timeout:
+                raise TimeoutError("DC/DC OFF accepted without response")
+            return  # Accepted OFF without new feedback.
+        if (entity, on) == (PSU24, False) and calls.count((PSU24, False)) == 1:
+            hass.states.async_set("binary_sensor.grid", "on")
+        hass.states.async_set(entity, "on" if on else "off")
+        assert hass.states.is_state(PSU24, "on") or hass.states.is_state(DCDC, "on")
+
+    for service in ("turn_on", "turn_off"):
+        hass.services.async_register("homeassistant", service, switch)
+    with (
+        patch.object(
+            c, "_switch_entity", BatteryManagerCoordinator._switch_entity.__get__(c)
+        ),
+        patch.object(c, "_schedule_replan") as retry,
+    ):
+        await execute(c, dc24=True, dc48=True)
+        if not renewed_outage:
+            hass.states.async_set("sensor.test_soc", "80")
+            await execute(c)
+
+        dcdc_off = calls.index((DCDC, False))
+        assert (PSU24, False) not in calls[dcdc_off + 1 :]
+        assert (DCDC, True) not in calls[dcdc_off + 1 :]
+        assert hass.states.is_state(PSU24, "on")
+        pending = c._supply_actor_requests[DCDC]
+        assert pending.desired is False
+        assert pending.state == ("service_failed" if timeout else "pending")
+        before_retry = list(calls)
+        await execute(c)
+        assert calls == before_retry
+        retry.assert_called()
+
+        hass.states.async_set(DCDC, "off")
+        assert reconcile_supply_feedback(c, DCDC)
+        assert hass.states.is_state(PSU24, "on")
+        await execute(c)
+        assert calls.index((DCDC, True), dcdc_off + 1) < calls.index(
+            (PSU24, False), dcdc_off + 1
+        )
+        assert hass.states.is_state(DCDC, "on")
+        assert hass.states.is_state(PSU24, "off")
+
+
+async def test_failed_dcdc_off_can_retry_when_grid_again_supports_takeover(rig, hass):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass)
+    first_dcdc_off = True
+
+    async def switch(call):
+        nonlocal first_dcdc_off
+        entity = call.data["entity_id"]
+        on = call.service == "turn_on"
+        calls.append((entity, on))
+        if (entity, on) == (DCDC, False) and first_dcdc_off:
+            first_dcdc_off = False
+            hass.states.async_set("binary_sensor.grid", "off")
+            raise TimeoutError("DC/DC OFF never took effect")
+        if (entity, on) == (PSU24, False):
+            hass.states.async_set("binary_sensor.grid", "on")
+        hass.states.async_set(entity, "on" if on else "off")
+
+    for service in ("turn_on", "turn_off"):
+        hass.services.async_register("homeassistant", service, switch)
+    with (
+        patch.object(
+            c, "_switch_entity", BatteryManagerCoordinator._switch_entity.__get__(c)
+        ),
+        patch.object(c, "_schedule_replan"),
+    ):
+        await execute(c, dc24=True, dc48=True)
+        assert c._supply_actor_requests[DCDC].state == "service_failed"
+        assert hass.states.is_state(PSU24, "on")
+        assert hass.states.is_state(DCDC, "on")
+        initial = list(calls)
+        await execute(c)
+        assert calls == initial  # Pending OFF is still unresolved.
+
+        hass.states.async_set("binary_sensor.grid", "on")
+        await execute(c, dc24=True, dc48=True)
+        assert calls[len(initial) :] == [(PSU24, True), (DCDC, False)]
+        assert c._supply_actor_requests[DCDC].state == "confirmed"
+        assert hass.states.is_state(PSU24, "on")
+        assert hass.states.is_state(DCDC, "off")
+
+
+@pytest.mark.parametrize("returning", [False, True])
+@pytest.mark.parametrize("blocker", [None, LIMIT, BLOCK])
+async def test_unverified_transfer_allows_only_confirmed_48v_protection(
+    rig, hass, returning, blocker
+):
+    c, calls, dead, _ = rig
+    _outage_with_support(rig, hass, verified=False)
+    hass.states.async_set(PSU24, "off")
+    hass.states.async_set(PSU48, "off")
+    if blocker:
+        dead.add(blocker)
+    switch = c._switch_entity
+
+    async def returned_grid(entity, on, **kwargs):
+        result = await switch(entity, on, **kwargs)
+        if (entity, on) == (DCDC, True):
+            hass.states.async_set("binary_sensor.grid", "on")
+        return result
+
+    if not returning:
+        hass.states.async_set(DCDC, "on")
+        hass.states.async_set("binary_sensor.grid", "on")
+    with (
+        patch.object(c, "_switch_entity", returned_grid),
+        patch.object(c, "_schedule_replan"),
+    ):
+        await execute(c, dc24=True, dc48=True)
+    assert (PSU24, True) not in calls
+    assert (DCDC, False) not in calls
+    assert ((PSU48, True) in calls) is (blocker is None)
+    if blocker is None:
+        assert calls.index((LIMIT, 0)) < calls.index((PSU48, True))
+        assert c.inverter_control_snapshot()["confirmed"]
+    assert hass.states.is_state(DCDC, "on")
+
+
+@pytest.mark.parametrize("returning", [False, True])
+async def test_discharge_confirmation_revoked_during_takeover(rig, hass, returning):
+    c, calls, *_ = rig
+    _outage_with_support(rig, hass)
+    hass.states.async_set(PSU24, "off")
+    hass.states.async_set(PSU48, "off")
+    switch = c._switch_entity
+
+    async def returned_grid(entity, on, **kwargs):
+        result = await switch(entity, on, **kwargs)
+        if (entity, on) == (DCDC, True):
+            hass.states.async_set("binary_sensor.grid", "on")
+        return result
+
+    async def revoke_block(_seconds):
+        assert c.inverter_control_snapshot()["confirmed"]
+        assert hass.states.is_state(DCDC, "on")
+        hass.states.async_set(BLOCK, "off")
+
+    if not returning:
+        hass.states.async_set(DCDC, "on")
+        hass.states.async_set("binary_sensor.grid", "on")
+    with (
+        patch.object(c, "_switch_entity", returned_grid),
+        patch.object(c, "_schedule_replan"),
+        patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            side_effect=revoke_block,
+        ),
+    ):
+        await execute(c, dc24=True, dc48=True)
+
+    assert calls[-2:] == [(LIMIT, 0), (PSU24, True)]
+    assert hass.states.is_state(DCDC, "on")
+    assert not c.inverter_control_snapshot()["confirmed"]
+    if returning:
+        assert c.data["coordinated_support"]["grid_restore_pending"] == ["dc24", "dc48"]
 
 
 @pytest.mark.parametrize(

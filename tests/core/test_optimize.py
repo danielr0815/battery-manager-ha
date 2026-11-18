@@ -358,6 +358,146 @@ def _esc_slot(index, *, pv, dc, hour=0):
     )
 
 
+@pytest.mark.parametrize(
+    ("available24", "available48", "start_soc", "schedule24", "schedule48"),
+    [
+        (False, True, 9.0, (False, False, False), (False, True, True)),
+        (True, False, 5.0, (True, True, True), (False, False, False)),
+        (True, True, 5.0, (True, True, True), (True, True, True)),
+        (True, True, 9.0, (True, True, True), (False, False, False)),
+        (False, False, 5.0, (False, False, False), (False, False, False)),
+    ],
+)
+def test_legacy_support_plans_only_available_sources(
+    available24, available48, start_soc, schedule24, schedule48
+):
+    config = SystemConfig(
+        support=SupportParams(
+            configured=True, dc24_available=available24, dc48_available=available48
+        )
+    )
+    slots = tuple(_esc_slot(i, pv=0.0, dc=100.0, hour=i) for i in range(3))
+    inputs = PlanInputs(slots[0].start, start_soc, slots)
+
+    result = plan(config, inputs)
+
+    assert result.support_dc24_now is schedule24[0]
+    assert result.support_dc48_now is schedule48[0]
+    stored_wh = start_soc * 50.0
+    total_import = 0.0
+    for flow, use24, use48 in zip(
+        result.trajectory.flows, schedule24, schedule48, strict=True
+    ):
+        # Independent dark-hour balance for a 5 kWh house battery. The 24 V
+        # PSU replaces the DC/DC and the 48 V PSU first offsets the bus load.
+        rail_wh = 100.0 if use24 else 0.0
+        bus_wh = 60.0 if use48 else 0.0
+        residual = 100.0 - rail_wh - bus_wh
+        discharge = min(stored_wh - 250.0, max(residual, 0.0) / 0.97)
+        charge = max(-residual, 0.0) * 0.97
+        stored_wh += charge - discharge
+        psu_ac_wh = rail_wh + bus_wh
+        shortfall = max(residual, 0.0) - discharge * 0.97
+        # The standby draw applies only while the backup charger is serving DC.
+        grid_import = psu_ac_wh + (10.0 + shortfall / 0.92 if shortfall > 0 else 0)
+
+        assert (flow.support_dc24, flow.support_dc48) == (use24, use48)
+        assert flow.psu24_delivered_wh == pytest.approx(rail_wh)
+        assert flow.psu48_delivered_wh == pytest.approx(bus_wh)
+        assert flow.psu_grid_import_wh == pytest.approx(psu_ac_wh)
+        assert flow.grid_import_wh == pytest.approx(grid_import)
+        assert flow.grid_export_wh == flow.unserved_dc_wh == 0.0
+        assert flow.battery_charge_wh == pytest.approx(charge)
+        assert flow.battery_discharge_wh == pytest.approx(discharge)
+        assert flow.soc_end_percent == pytest.approx(stored_wh / 50.0)
+        total_import += grid_import
+    assert result.trajectory.end_soc_percent == pytest.approx(stored_wh / 50.0)
+    assert result.trajectory.total_import_wh == pytest.approx(total_import)
+
+
+@pytest.mark.parametrize(("available24", "available48"), [(True, False), (False, True)])
+def test_legacy_manual_support_still_requires_an_available_source(
+    available24, available48
+):
+    support = SupportParams(
+        configured=True, dc24_available=available24, dc48_available=available48
+    )
+    config = SystemConfig(support=support)
+    slots = tuple(
+        _esc_slot(i, pv=pv, dc=100.0, hour=i) for i, pv in enumerate((0, 6000, 0))
+    )
+    inputs = PlanInputs(slots[0].start, 15.0, slots)
+    manual = replace(
+        config, support=replace(support, dc24_forced_on=True, dc48_forced_on=True)
+    )
+    executable = replace(
+        config,
+        support=replace(
+            support, dc24_forced_on=available24, dc48_forced_on=available48
+        ),
+    )
+    result = plan(manual, inputs)
+    assert result == plan(executable, inputs)
+    assert (result.support_dc24_now, result.support_dc48_now) == (
+        available24,
+        available48,
+    )
+    assert simulate(
+        config,
+        inputs,
+        result.threshold_percent,
+        dc24_schedule=(True,) * 3,
+        dc48_schedule=(True,) * 3,
+    ) == simulate(
+        config,
+        inputs,
+        result.threshold_percent,
+        dc24_schedule=(available24,) * 3,
+        dc48_schedule=(available48,) * 3,
+    )
+
+
+@pytest.mark.parametrize(
+    ("available24", "available48", "threshold_wh"),
+    [(True, False, 100.0), (False, True, 60.0)],
+)
+def test_legacy_single_source_uses_its_own_activation_and_recovery(
+    available24, available48, threshold_wh
+):
+    config = SystemConfig(
+        battery=BatteryParams(capacity_wh=1000.0, eta_charge=1.0, eta_discharge=1.0),
+        charger=ConverterParams(eta=1.0),
+        support=SupportParams(
+            configured=True, dc24_available=available24, dc48_available=available48
+        ),
+        control=ControlParams(
+            support_dc48_activate_soc=6.0, support_dc48_recovery_soc=9.0
+        ),
+    )
+    for dc_wh, expected in ((10.0, False), (11.0, True)):
+        slots = (
+            _esc_slot(0, pv=0.0, dc=dc_wh),
+            _esc_slot(1, pv=1.0, dc=0.0, hour=1),
+            _esc_slot(2, pv=50.0, dc=0.0, hour=2),
+            _esc_slot(3, pv=0.0, dc=0.0, hour=3),
+        )
+        inputs = PlanInputs(slots[0].start, (threshold_wh + 10.0) / 10.0, slots)
+        result = plan(config, inputs)
+        flows = result.trajectory.flows
+        assert tuple(f.support_dc24 for f in flows) == (
+            available24 and expected,
+            available24 and expected,
+            False,
+            False,
+        )
+        assert tuple(f.support_dc48 for f in flows) == (
+            available48 and expected,
+            available48 and expected,
+            False,
+            False,
+        )
+
+
 def test_support_dc24_recovery_soc_latches():
     """A higher 24 V recover-SOC keeps the grid support latched on through a
     partial SOC recovery instead of releasing at the default 11 % — the fix for
@@ -5244,6 +5384,33 @@ def test_feedin_z4_brake_trims_latest_first():
         _z4_reject(flow.soc_end_percent, floors[j], base.flows[j].soc_end_percent)
         for j, flow in enumerate(stressed.flows)
     )
+
+
+@pytest.mark.parametrize("alpha", [0.5, 1.0])
+def test_same_day_feedin_proof_only_when_nominal_and_stressed_paths_reunite(alpha):
+    start = datetime(2026, 7, 4, 7, 30)
+    tomorrow = (start + timedelta(days=1)).date()
+    control = replace(ControlParams(), predrain_pv_confidence=alpha)
+    config = SystemConfig(feedin=FEEDIN_2KW, control=control)
+    hourly = {
+        start.replace(hour=hour, minute=0): 3200.0 if hour < 20 else 0.0
+        for hour in range(24)
+    }
+    inputs = build_slots(config, start, 55, [64.0, 8.0], pv_hourly=hourly)
+    legacy = plan(config, inputs)
+    recorded = plan(config, replace(inputs, pv_daily_credit=((tomorrow, 8.0),)))
+    reduced = plan(
+        config, build_slots(config, start, 55, [64.0, 0.01], pv_hourly=hourly)
+    )
+    assert recorded.feedin_current_day_proven
+    assert not legacy.feedin_current_day_proven
+    assert 0 < recorded.feedin_schedule_w[0] == legacy.feedin_schedule_w[0]
+    assert recorded.feedin_schedule_w[0] == reduced.feedin_schedule_w[0]
+
+    _, impaired_config, impaired_inputs = _feedin_z4_plan(alpha)
+    impaired = plan(impaired_config, replace(impaired_inputs, pv_daily_credit=()))
+    assert impaired.feedin_schedule_w[0] > 0
+    assert not impaired.feedin_current_day_proven
 
 
 def test_feedin_empty_horizon_books_nothing():

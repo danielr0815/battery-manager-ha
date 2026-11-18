@@ -219,13 +219,14 @@ async def test_band_shorter_than_slots_contributes_zero(hass):
     assert diag["buffer_uncertainty_wh"] == round(100.0 / (eta_dis * eta_inv), 0)
 
 
-async def test_refresh_reports_dynamic_source_with_learned_quantiles(hass):
+async def test_refresh_reports_dynamic_source_with_learned_quantiles(hass, freezer):
     """End-to-end: learned P50/P80 bins activate the dynamic buffer in a real
     refresh — the published diagnostics read source=dynamic and the effective
     buffer matches the uncertainty/clamp arithmetic. The planner's `now` is
     PINNED to an early morning (pattern: test_coordinator.py) so the window
     contains at least one deficit slot regardless of the wall clock."""
     pinned = dt_util.as_local(datetime(2026, 7, 19, 5, 30, tzinfo=UTC))
+    freezer.move_to(pinned)
     with patch.object(dt_util, "now", return_value=pinned):
         entry = await _setup_entry(hass)
         coordinator = hass.data[DOMAIN][entry.entry_id]

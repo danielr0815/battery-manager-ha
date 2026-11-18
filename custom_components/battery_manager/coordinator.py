@@ -6,15 +6,15 @@ import asyncio
 import contextlib
 import logging
 import math
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError, UnsupportedStorageVersionError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
@@ -266,6 +266,7 @@ from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
 from .core.psu_expectation import expected_soc_with_psu48
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
+from .daily_pv import DailyPVCache
 from .execution import execution_attributes, load_execution
 from .history_profile import ProfileLearner
 from .live_ac import LiveACRuntime
@@ -417,6 +418,22 @@ def ordered_load_subentries(entry: ConfigEntry) -> list[tuple[str, ConfigSubentr
     return [pair for _, pair in sorted(enumerate(loads), key=sort_key)]
 
 
+class PvPlanningEvidenceLost(UpdateFailed):
+    """A PV forecast used to authorize this calculation has become unavailable."""
+
+
+@dataclass(frozen=True)
+class _PvEvidenceCheck:
+    inputs: PlanInputs
+    pv: PVParams
+    mode: str
+    bindings: tuple[str, str, str]
+    publications: tuple[State | None, ...]
+    totals: tuple[float | None, ...]
+    checked_at: datetime
+    expires: datetime
+
+
 class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Reads inputs, runs the core planner, applies hysteresis and switching."""
 
@@ -449,8 +466,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Input caching for graceful degradation
         self._last_valid_soc: float | None = None
         self._last_soc_update: datetime | None = None
-        self._last_valid_forecasts: list[float] | None = None
-        self._last_forecast_update: datetime | None = None
+        self._daily_pv = DailyPVCache()
         # D-A8 stage 2 fail-safe (data-loss load shed): start of the current
         # continuous data loss (persisted — the 2 h budget must survive a
         # restart) and the shed latch (also persisted: the shed fires ONCE per
@@ -496,6 +512,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 datetime,
             ],
         ] = {}
+        self._pv_hourly_reported_publications: dict[str, datetime] = {}
+        self._pv_evidence_checks: dict[bool, _PvEvidenceCheck] = {}
         # FIX-10: state-change guard for the "hourly mode but no wh_period" warning.
         self._pv_hourly_empty_warned = False
         # Per-day PV source label ("hourly"/"two_window") for WP4 sensor exposure.
@@ -1928,26 +1946,150 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 drift_percent,
             )
 
-    def _get_forecasts(self, now: datetime) -> list[float] | None:
+    def _pv_forecast_bindings(self) -> tuple[str, str, str]:
         cfg = self.raw_config
-        values = [
-            self._read_float(cfg[CONF_PV_FORECAST_TODAY]),
-            self._read_float(cfg[CONF_PV_FORECAST_TOMORROW]),
-            self._read_float(cfg[CONF_PV_FORECAST_DAY_AFTER]),
-        ]
-        if all(v is not None for v in values):
-            forecasts = [max(0.0, v) for v in values if v is not None]
-            self._last_valid_forecasts = forecasts
-            self._last_forecast_update = now
-            return forecasts
+        return (
+            cfg[CONF_PV_FORECAST_TODAY],
+            cfg[CONF_PV_FORECAST_TOMORROW],
+            cfg[CONF_PV_FORECAST_DAY_AFTER],
+        )
+
+    def _get_forecasts(self, now: datetime) -> list[float | None] | None:
+        return self._daily_pv.read(self.hass, self._pv_forecast_bindings(), now)
+
+    def pv_evidence_valid(
+        self, credit: tuple[tuple[date, float], ...] | None, now: datetime | None = None
+    ) -> bool:
+        """Accept only forecasts that still cover each captured synthetic credit."""
+        if credit is None:
+            return True  # Legacy replay and isolated actuator calls.
+        now = now or dt_util.now()
+        totals = self._get_forecasts(now)
+        if totals is None:
+            return False
+        return self._pv_daily_credit_covered(
+            credit, totals, dt_util.as_local(now).date()
+        )
+
+    @staticmethod
+    def _pv_daily_credit_covered(
+        credit: tuple[tuple[date, float], ...],
+        totals: list[float | None],
+        today: date,
+    ) -> bool:
+        return all(
+            0 <= (i := (day - today).days) < len(totals)
+            and (totals[i] or 0.0) >= captured_kwh
+            for day, captured_kwh in credit
+        )
+
+    def pv_plan_evidence_valid(
+        self,
+        config: SystemConfig,
+        inputs: PlanInputs,
+        now: datetime | None = None,
+        *,
+        today_only: bool = False,
+    ) -> bool:
+        """Reconstruct the captured PV slots when hourly evidence may differ."""
+        credit = inputs.pv_daily_credit
+        if credit is None:
+            return True
+        now = now or dt_util.now()
+        capture = dt_util.as_local(inputs.now)
+        day = capture.date()
+        if today_only:
+            credit = tuple(item for item in credit if item[0] == day)
+        forecasts = self._get_forecasts(now)
+        if forecasts is None or day != dt_util.as_local(now).date():
+            return False
+        if not self._pv_daily_credit_covered(credit, forecasts, day):
+            return False
+        bindings = self._pv_forecast_bindings()
+        publications = tuple(self.hass.states.get(binding) for binding in bindings)
+        totals_signature = tuple(forecasts[:1] if today_only else forecasts)
+        instant = dt_util.as_utc(now)
+        checked = self._pv_evidence_checks.get(today_only)
         if (
-            self._last_valid_forecasts is not None
-            and self._last_forecast_update is not None
-            and now - self._last_forecast_update
-            <= timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
+            checked is not None
+            and checked.inputs is inputs
+            and checked.pv == config.pv
+            and checked.mode == self._pv_forecast_mode
+            and checked.bindings == bindings
+            and checked.totals == totals_signature
+            and checked.checked_at <= instant <= checked.expires
+            and all(
+                old is new
+                for old, new in zip(checked.publications, publications, strict=True)
+            )
         ):
-            return self._last_valid_forecasts
-        return None
+            return True
+        median, p10, p90 = self._get_pv_hourly(now)
+        valid = not inputs.pv_hourly_used and not (median or p10 or p90)
+        if not valid:
+            valid = self._pv_slots_match(
+                config, inputs, capture, totals_signature, median, p10, p90, today_only
+            )
+        if valid:
+            # A publication or any fallback may expire without a state event.
+            # Daily cache expiry is checked on every invocation above.
+            max_age = timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
+            expires = min(
+                (
+                    cached[3] + max_age
+                    for binding in bindings
+                    if (cached := self._pv_hourly_by_entity.get(binding)) is not None
+                    and instant <= cached[3] + max_age
+                ),
+                default=instant + max_age,
+            )
+            self._pv_evidence_checks[today_only] = _PvEvidenceCheck(
+                inputs,
+                config.pv,
+                self._pv_forecast_mode,
+                bindings,
+                publications,
+                totals_signature,
+                instant,
+                expires,
+            )
+        return valid
+
+    @staticmethod
+    def _pv_slots_match(
+        config: SystemConfig,
+        inputs: PlanInputs,
+        capture: datetime,
+        forecasts: tuple[float | None, ...],
+        median: dict[datetime, float] | None,
+        p10: dict[datetime, float] | None,
+        p90: dict[datetime, float] | None,
+        today_only: bool,
+    ) -> bool:
+        totals = [total or 0.0 for total in forecasts]
+        refreshed = build_slots(
+            config,
+            capture,
+            inputs.start_soc_percent,
+            totals,
+            load_states=inputs.load_states,
+            pv_hourly=median,
+            pv_hourly_p10=p10,
+            pv_hourly_p90=p90,
+            cascade_runtime_states=inputs.cascade_runtime_states,
+        ).slots
+        captured = (
+            tuple(slot for slot in inputs.slots if slot.start.date() == capture.date())
+            if today_only
+            else inputs.slots
+        )
+        # Quantile changes can alter whether the stress calculation uses the
+        # measured band or its scalar fallback, even if the median stays put.
+        return len(captured) == len(refreshed) and all(
+            (old.pv_wh, old.pv_p10_wh, old.pv_p90_wh)
+            == (new.pv_wh, new.pv_p10_wh, new.pv_p90_wh)
+            for old, new in zip(captured, refreshed, strict=True)
+        )
 
     # ------------------------------------------------------------------
     # D-A8 stage 2: fail-safe load shed after a sustained data loss
@@ -2051,7 +2193,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
     def _read_wh_period(
-        self, entity_id: str, attr: str = "wh_period"
+        self,
+        entity_id: str,
+        attr: str = "wh_period",
+        *,
+        problems: Counter[str] | None = None,
     ) -> dict[datetime, float]:
         """Parse an entity's hourly ``wh_period``-family attribute into a
         offset-aware local hour -> Wh map (docs/F-PREDRAIN.md F1; the quantile
@@ -2082,37 +2228,33 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raw = ac_raw
         if not isinstance(raw, dict):
             return {}
+        if problems is None:
+            problems = Counter()
         entries: list[tuple[datetime, float]] = []
-        skipped = 0
-        clamped = 0
         for key, value in raw.items():
-            ts = dt_util.parse_datetime(str(key))
-            if ts is None:
-                skipped += 1
+            try:
+                ts = dt_util.parse_datetime(str(key), raise_on_error=True)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+                ts = fixed_local_time(dt_util.as_local(ts))
+            except ValueError, OverflowError:
+                # An impossible calendar date or offset overflow belongs to
+                # this bucket. Preserve its neighbours and let an empty
+                # median map engage the existing cache/day fallback.
+                problems["invalid_timestamp"] += 1
                 continue
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
-            ts = fixed_local_time(dt_util.as_local(ts))
             try:
                 wh = float(value)
-            except TypeError, ValueError:
-                skipped += 1
+            except TypeError, ValueError, OverflowError:
+                problems["invalid_value"] += 1
                 continue
             if not math.isfinite(wh):  # NaN / ±inf
-                skipped += 1
+                problems["non_finite_value"] += 1
                 continue
             if wh < 0.0:  # a negative forecast bucket is physically meaningless
                 wh = 0.0
-                clamped += 1
+                problems["negative_value_clamped"] += 1
             entries.append((ts, wh))
-        if skipped or clamped:
-            _LOGGER.debug(
-                "battery_manager: %d skipped, %d clamped %s entries on %s",
-                skipped,
-                clamped,
-                attr,
-                entity_id,
-            )
         return aggregate_hours(entries)
 
     def _pv_curve_ac_factor(
@@ -2205,6 +2347,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None, None, None
         cfg = self.raw_config
         max_age = timedelta(hours=MAX_HISTORICAL_FORECAST_AGE_HOURS)
+        instant = dt_util.as_utc(now)
         merged: dict[datetime, float] = {}
         merged_p10: dict[datetime, float] = {}
         merged_p90: dict[datetime, float] = {}
@@ -2214,10 +2357,40 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             CONF_PV_FORECAST_DAY_AFTER,
         ):
             conf_key = cfg[key]
-            fresh = self._read_wh_period(conf_key)
-            if fresh:
-                fresh_p10 = self._read_wh_period(conf_key, "wh_period_p10")
-                fresh_p90 = self._read_wh_period(conf_key, "wh_period_p90")
+            state = self.hass.states.get(conf_key)
+            problems: Counter[str] = Counter()
+            fresh: dict[datetime, float] = {}
+            fresh_p10: dict[datetime, float] = {}
+            fresh_p90: dict[datetime, float] = {}
+            if (
+                state is not None
+                and not state.attributes.get("restored")
+                and timedelta(0) <= instant - state.last_reported <= max_age
+            ):
+                fresh = self._read_wh_period(conf_key, problems=problems)
+                fresh_p10 = self._read_wh_period(
+                    conf_key, "wh_period_p10", problems=problems
+                )
+                fresh_p90 = self._read_wh_period(
+                    conf_key, "wh_period_p90", problems=problems
+                )
+                if (
+                    problems
+                    and self._pv_hourly_reported_publications.get(conf_key)
+                    != state.last_reported
+                ):
+                    self._pv_hourly_reported_publications[conf_key] = (
+                        state.last_reported
+                    )
+                    _LOGGER.debug(
+                        "Hourly PV bucket validation on %s: %s",
+                        conf_key,
+                        ", ".join(
+                            f"{reason}={count}"
+                            for reason, count in sorted(problems.items())
+                        ),
+                    )
+            if fresh and state is not None:
                 # One η per entity per read, applied to median AND bands
                 # alike, then frozen into the cache entry (no re-scale on
                 # replay — the cached maps are already AC-side).
@@ -2230,14 +2403,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     fresh,
                     fresh_p10,
                     fresh_p90,
-                    now,
+                    state.last_reported,
                 )
                 merged.update(fresh)
                 merged_p10.update(fresh_p10)
                 merged_p90.update(fresh_p90)
                 continue
             cached = self._pv_hourly_by_entity.get(conf_key)
-            if cached is not None and now - cached[3] <= max_age:
+            if cached is not None and timedelta(0) <= instant - cached[3] <= max_age:
                 merged.update(cached[0])
                 merged_p10.update(cached[1])
                 merged_p90.update(cached[2])
@@ -2266,16 +2439,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._pv_hourly_empty_warned = False
 
     def _pv_day_sources(
-        self, now: datetime, num_days: int, pv_hourly: dict[datetime, float] | None
+        self,
+        now: datetime,
+        forecasts: list[float | None],
+        pv_hourly: dict[datetime, float] | None,
     ) -> dict[str, str]:
-        """Per-day PV source label for later sensor exposure (docs/F-PREDRAIN.md
-        F1 diagnostics). A day is "hourly" when the merged map carries at least
-        one bucket for that calendar day, else "two_window"."""
-        covered_days = {key.date() for key in pv_hourly} if pv_hourly else set()
+        """Identify the daily anchor and any independent hourly evidence."""
+        covered_days = {key.date() for key in (pv_hourly or {})}
         sources: dict[str, str] = {}
-        for offset in range(num_days):
+        for offset, total in enumerate(forecasts):
             day = now.date() + timedelta(days=offset)
-            sources[day.isoformat()] = "hourly" if day in covered_days else "two_window"
+            if total is None:
+                label = "hourly_only" if day in covered_days else "unknown"
+            else:
+                label = "hourly" if day in covered_days else "two_window"
+            sources[day.isoformat()] = label
         return sources
 
     def _quantile_coverage(self, inputs) -> dict[str, dict[str, Any]]:
@@ -4515,10 +4693,51 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             )
         )
+        if check_soc_drift:
+            self._ensure_pv_planning_evidence(config, inputs, now)
         if changed or now >= slot_end:
             raise UpdateFailed(
                 "Planning inputs changed during calculation; awaiting fresh plan"
             )
+
+    def _ensure_pv_planning_evidence(
+        self, config: SystemConfig, inputs: PlanInputs, now: datetime | None = None
+    ) -> None:
+        if not self.pv_plan_evidence_valid(config, inputs, now):
+            raise PvPlanningEvidenceLost("PV forecast evidence lost during planning")
+
+    def published_pv_authority_valid(self) -> bool:
+        recording = self._last_planner_recording
+        return recording is None or self.pv_plan_evidence_valid(
+            recording[0], recording[1]
+        )
+
+    async def _withdraw_invalid_pv_authority(self, now: datetime) -> bool:
+        recording = self._last_planner_recording
+        if recording is None:
+            return False
+        config, inputs, result = recording
+        if self.pv_plan_evidence_valid(config, inputs, now):
+            return True
+        # A late withdrawal must change revision before the source owner can
+        # continue a pending removal. Keep the independently proven export
+        # record only until its existing current-slot guards end it.
+        keep_feedin = result.feedin_current_day_proven and self.pv_plan_evidence_valid(
+            config, inputs, now, today_only=True
+        )
+        if not keep_feedin:
+            self._last_planner_recording = None
+        if self._last_planner_recording_revision == self.live_ac.plan_revision:
+            self.live_ac.plan_revision += 1
+            self.live_ac.envelope = None
+            self.live_ac.refresh()
+            self._reserve_inverter_limit_w = None
+            self._coordinated_inverter_target = False
+            self._inverter_recommendation = False
+            if self.data:
+                self.data["inverter_recommendation"] = False
+            await self._coordinated_data_loss(self._get_soc(now), now)
+        return False
 
     async def _async_planning_protection(self) -> None:
         """Evaluate protective actions without waiting for economic planning."""
@@ -4570,6 +4789,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if not data.get("valid"):
                     self.appliances.plan_failed()
                 return data
+            except PvPlanningEvidenceLost:
+                self.appliances.plan_failed()
+                now = dt_util.now()
+                await self._withdraw_invalid_pv_authority(now)
+                if self._last_planner_recording is None:
+                    await self._feedin_force_zero(
+                        "PV forecast evidence lost during planning"
+                    )
+                if self._get_forecasts(now) is None:
+                    await self._note_data_loss(now)
+                raise
             except CoordinatePlanChanged:
                 # A normal BMS coordinate reconciliation invalidates economic
                 # work, not the integration or necessary source supply.
@@ -4743,13 +4973,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # The p10/p90 quantile maps (F-QUANTILE-BANDS R1) ride along; without
         # them no slot carries a band and the planner stays on the scalar dials.
         pv_hourly, pv_hourly_p10, pv_hourly_p90 = self._get_pv_hourly(now)
-        self._pv_source_by_day = self._pv_day_sources(now, len(forecasts), pv_hourly)
+        self._pv_source_by_day = self._pv_day_sources(now, forecasts, pv_hourly)
 
         inputs = build_slots(
             config,
             now,
             soc,
-            forecasts,
+            [total or 0.0 for total in forecasts],
             appliance_runs=appliance_runs,
             load_states=load_states,
             ac_load_w=ac_series,
@@ -4763,8 +4993,24 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         )
         market_prices, market_diag = read_prices(self.hass, self.raw_config, now)
+        daily_credit_days = {
+            slot.start.date()
+            for slot in inputs.slots
+            if slot.pv_wh > 0
+            and slot.start.replace(minute=0, second=0, microsecond=0)
+            not in (pv_hourly or {})
+        }
         inputs = replace(
             inputs,
+            # Only positive synthetic energy depends on a daily total. A
+            # fully hourly day keeps its own independent evidence.
+            pv_daily_credit=tuple(
+                (day, total)
+                for offset, total in enumerate(forecasts)
+                if total is not None
+                and (day := now.date() + timedelta(days=offset)) in daily_credit_days
+            ),
+            pv_hourly_used=bool(pv_hourly or pv_hourly_p10 or pv_hourly_p90),
             market_prices=market_prices,
             soc_coordinate=self.voltage_gate.coordinate_snapshot(dt_util.now()),
             psu_delivery=self.voltage_gate.psu.capture(self, dt_util.now()),
@@ -4934,6 +5180,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._reserve_preparing = False
             self._reserve_inverter_limit_w = None
             result = await self._async_plan("standard", config, inputs)
+        self._ensure_planning_inputs(inputs)
         self._plan_metadata = {
             "captured_at": inputs.now.isoformat(),
             "activated_at": dt_util.utcnow().isoformat(),
@@ -5021,9 +5268,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         floor_guard = self._update_floor_guard(
             soc, config, pv_power_w, running_load_power_w, now
         )
-        # F11: only when a latched switchable load exists, replan with its F5
-        # saturated override cleared (shadow plan, never published) so the F10
-        # hold follows the normal planner's rules instead of a stricter PV gate.
+        # The shadow overlay is never published. The current revision and its
+        # complete command authority must already agree before this await.
         shadow_active = await self._latch_shadow_active(config, inputs, load_states)
         self._ensure_planning_inputs(inputs)
         await self._apply_support_switching(result, config, now)
@@ -5035,6 +5281,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tuple(s.duration for s in inputs.slots),
             pv_power_w,
             shadow_active,
+            pv_plan=(config, inputs),
         )
         cascade_safety_reason = (
             "G4 floor guard"
@@ -5049,17 +5296,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             load_states,
             now,
             safety_reason=cascade_safety_reason,
+            pv_plan=(config, inputs),
         )
         await self._update_power_warnings(result, now)
         # F-FEEDIN: the manual-override judgement already ran at the top of
         # the cycle (before build_system_config, so the plan books the
         # operator-owned setpoint in manual mode); the mode gates every write
         # of the two-phase setpoint executor incl. the event-driven trim.
-        await self._apply_feedin(result, config, soc, now)
+        await self._apply_feedin(result, config, soc, now, inputs=inputs)
         # V6 (F-TANK): after the power warnings settle (their latch edges drive
         # the tank learning/auto-reset), refresh the tank diagnostics and fire
         # the one-per-cycle "tank nearly full" push.
         await self._update_tank_forecast(result, now)
+        self._ensure_pv_planning_evidence(config, inputs)
         self._update_gate_calibration(config, soc)
         self.voltage_gate.observe(dt_util.now())
 
@@ -6653,7 +6902,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
-            if supply_request is not None:
+            if supply_request is not None and supply_request.state == "pending":
                 supply_request.state = "service_failed"
             if recorder:
                 recorder.event(
@@ -6667,7 +6916,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return False
         except asyncio.CancelledError:
-            if supply_request is not None:
+            if supply_request is not None and supply_request.state == "pending":
                 supply_request.state = "service_failed"
             if recorder:
                 recorder.event(
@@ -7056,12 +7305,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._support_pending_off[key] = not desired[key]
         self._switch_task = self.entry.async_create_background_task(
             self.hass,
-            self._execute_support_switching(desired),
+            self._execute_support_switching(
+                desired,
+                pv_plan=record[:2]
+                if (record := self._last_planner_recording) is not None
+                and record[2] is result
+                else None,
+            ),
             name="battery_manager_support_switching",
         )
 
     def _legacy_support_permitted(
-        self, key: str, activate: bool, coordinate: SocCoordinateSnapshot | None
+        self,
+        key: str,
+        activate: bool,
+        coordinate: SocCoordinateSnapshot | None,
+        pv_plan: tuple[SystemConfig, PlanInputs] | None,
     ) -> bool:
         """Economic source changes require their captured coordinate authority.
 
@@ -7069,7 +7328,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         economic SOC budget. Removal during reconciliation has no such proof.
         Manual source ownership is checked separately at every mutation.
         """
-        if self.voltage_gate.coordinate_permission_valid(coordinate):
+        if self.voltage_gate.coordinate_permission_valid(coordinate) and (
+            pv_plan is None or self.pv_plan_evidence_valid(*pv_plan)
+        ):
             return True
         if not activate:
             return False
@@ -7089,11 +7350,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return voltage is not None and voltage <= config.support.psu48_on_voltage_v
 
     def _execute_support_switching(
-        self, desired: dict[str, bool]
+        self,
+        desired: dict[str, bool],
+        *,
+        pv_plan: tuple[SystemConfig, PlanInputs] | None = None,
     ) -> Coroutine[Any, Any, None]:
         """Freeze legacy authority before scheduling, just like coordinated supply."""
         return self._async_execute_support_switching(
-            dict(desired), self.voltage_gate.published_coordinate
+            dict(desired), self.voltage_gate.published_coordinate, pv_plan
         )
 
     async def _restore_legacy_source(
@@ -7148,7 +7412,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._switch_entity(dcdc, False, actor_owner=SUPPLY_OWNER)
 
     async def _async_execute_support_switching(
-        self, desired: dict[str, bool], coordinate: SocCoordinateSnapshot | None
+        self,
+        desired: dict[str, bool],
+        coordinate: SocCoordinateSnapshot | None,
+        pv_plan: tuple[SystemConfig, PlanInputs] | None,
     ) -> None:
         """Carry out the switching sequences with final live coordinate checks."""
         async with self._switch_lock:
@@ -7157,14 +7424,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dc48_entity
                 and not self._support_manual["dc48"]
                 and desired["dc48"] != self._support_state["dc48"]
-                and self._legacy_support_permitted("dc48", desired["dc48"], coordinate)
+                and self._legacy_support_permitted(
+                    "dc48", desired["dc48"], coordinate, pv_plan
+                )
             ):
                 was_on = self._entity_tristate(dc48_entity) is True
                 switched = await self._switch_entity(
                     dc48_entity, desired["dc48"], actor_owner=SUPPLY_OWNER
                 )
                 if self._support_manual["dc48"] or not self._legacy_support_permitted(
-                    "dc48", desired["dc48"], coordinate
+                    "dc48", desired["dc48"], coordinate, pv_plan
                 ):
                     await self._restore_legacy_source(
                         "dc48", was_on, None, expected_bindings=(dc48_entity, None)
@@ -7187,7 +7456,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dc24_entity
                 and not self._support_manual["dc24"]
                 and desired["dc24"] != self._support_state["dc24"]
-                and self._legacy_support_permitted("dc24", desired["dc24"], coordinate)
+                and self._legacy_support_permitted(
+                    "dc24", desired["dc24"], coordinate, pv_plan
+                )
             ):
                 was_on = self._entity_tristate(dc24_entity) is True
                 dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
@@ -7197,7 +7468,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return not self._support_manual[
                         "dc24"
                     ] and self._legacy_support_permitted(
-                        "dc24", desired["dc24"], coordinate
+                        "dc24", desired["dc24"], coordinate, pv_plan
                     )
 
                 # _sequence_dc24's False covers BOTH failure classes the F7/U5
@@ -7735,6 +8006,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         slot_durations: tuple[float, ...] | None = None,
         pv_power_w: float = 0.0,
         shadow_active: dict[str, bool] | None = None,
+        *,
+        pv_plan: tuple[SystemConfig, PlanInputs] | None = None,
     ) -> None:
         """Evaluate controlled loads and start switching where needed.
 
@@ -8073,6 +8346,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     run_h,
                     flicker_eligible,
                     reason,
+                    pv_plan=pv_plan if desired else None,
                 )
             )
 
@@ -8373,7 +8647,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _apply_feedin(
-        self, result, config: SystemConfig, soc: float, now: datetime
+        self,
+        result,
+        config: SystemConfig,
+        soc: float,
+        now: datetime,
+        *,
+        inputs: PlanInputs | None = None,
+        trim: bool = True,
     ) -> None:
         """Decision phase of the feed-in executor (F-FEEDIN R9/R10; two-phase
         like _apply_load_switching).
@@ -8396,6 +8677,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if self.feedin_manual():
             return  # R7: the operator owns the setpoint — never write
+        today_only = inputs is not None and result.feedin_current_day_proven
+        if inputs is not None and not self.pv_plan_evidence_valid(
+            config, inputs, today_only=today_only
+        ):
+            await self._feedin_force_zero("PV forecast evidence lost before feed-in")
+            return
         params = config.feedin
         current = self._feedin_read_power_w()
         if current is None:
@@ -8453,7 +8740,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         desired = base_w
         trimmed = False
         battery_power_w = self._read_power_w(entities[1])
-        if active and base_w > 0.0 and battery_power_w is not None:
+        if trim and active and base_w > 0.0 and battery_power_w is not None:
             cur = current if current is not None else 0.0
             if battery_power_w < -FEEDIN_TRIM_DEADBAND_W:
                 # Downward trim (requirement 10): the battery is DISCHARGING —
@@ -8499,6 +8786,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         trimmed = True
                         self._feedin_last_upward_at = now
                         reason = f"trim up (battery +{battery_power_w:.0f} W)"
+
+        if not trim:
+            desired = min(base_w, current or 0.0)
+            trimmed = True  # A safety cap takes effect without re-anchor dwell.
+        if (
+            inputs is not None
+            and today_only
+            and max(desired, current or 0.0) > base_w
+            and not self.pv_plan_evidence_valid(config, inputs)
+        ):
+            desired = min(desired, base_w)
+            trimmed = True
+            reason = "cap at independently proven feed-in"
 
         reanchored = False
         if current is None:
@@ -8554,11 +8854,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._feedin_last_reanchor_at = now
         self._feedin_task = self.entry.async_create_background_task(
             self.hass,
-            self._execute_feedin(desired, reason),
+            self._execute_feedin(
+                desired,
+                reason,
+                plan=(config, inputs) if inputs is not None else None,
+                independent_limit_w=base_w if today_only else None,
+            ),
             name="battery_manager_feedin",
         )
 
-    async def _execute_feedin(self, desired_w: float, reason: str) -> None:
+    async def _execute_feedin(
+        self,
+        desired_w: float,
+        reason: str,
+        *,
+        plan: tuple[SystemConfig, PlanInputs] | None = None,
+        independent_limit_w: float | None = None,
+    ) -> None:
         """Actuation phase: write the setpoint under the switch lock, with the
         in-flight guard re-check (mirrors _execute_load_switching)."""
         entities = self._feedin_entities()
@@ -8584,30 +8896,69 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     desired_w,
                 )
                 return
-            # Sign convention: negative setpoint = export (const.py
-            # FEEDIN_SETPOINT_EXPORT_SIGN) — a 500 W feed-in is written as -500.
-            value = round(FEEDIN_SETPOINT_EXPORT_SIGN * desired_w, 1)
-            # A service may publish state before async_create_background_task
-            # returns. Task identity alone cannot distinguish that own write.
-            self._feedin_write_pending = True
-            try:
-                written = await self._set_number_value(
-                    entities[0], value, actor_owner="feedin"
+            permitted = self._permitted_feedin_power(
+                desired_w, plan, independent_limit_w
+            )
+            if permitted != desired_w:
+                current = self._feedin_read_power_w()
+                if current is None:
+                    current = self._feedin_last_written_w
+                if current is not None and abs(current - permitted) <= 0.5:
+                    return
+                desired_w = permitted
+                reason = "PV forecast evidence lost before feed-in write"
+            while True:
+                await self._write_feedin_setpoint(entities[0], desired_w, reason)
+                if self.feedin_manual():
+                    return
+                # A blocking service can confirm after either proof expires.
+                # A correction can only lower the request, first to the
+                # independently proven limit and then, if necessary, to zero.
+                permitted = self._permitted_feedin_power(
+                    desired_w, plan, independent_limit_w
                 )
-            finally:
-                self._feedin_write_pending = False
-            if not written:
-                return
-            self._feedin_prev_written_w = self._feedin_last_written_w
-            self._feedin_last_written_w = desired_w
-            self._feedin_last_write_at = dt_util.now()
-            # Remember WHICH entity currently carries a non-zero setpoint of
-            # ours, so a later unwiring can still zero it (see
-            # _feedin_release_orphan). Cleared as soon as we wrote 0.
-            self._feedin_owned_entity = entities[0] if desired_w > 0.0 else None
-            # V9a pattern: exactly one INFO line per confirmed write, carrying
-            # the reason derived at the decision point.
-            _LOGGER.info("Feed-in setpoint -> %.0f W (%s)", desired_w, reason)
+                if permitted == desired_w:
+                    return
+                desired_w = permitted
+                reason = "PV forecast evidence lost during feed-in write"
+
+    def _permitted_feedin_power(
+        self,
+        requested: float,
+        plan: tuple[SystemConfig, PlanInputs] | None,
+        independent_limit_w: float | None,
+    ) -> float:
+        if requested <= 0.0 or plan is None:
+            return requested
+        if independent_limit_w is None:
+            return requested if self.pv_plan_evidence_valid(*plan) else 0.0
+        if not self.pv_plan_evidence_valid(*plan, today_only=True):
+            return 0.0
+        if requested > independent_limit_w and not self.pv_plan_evidence_valid(*plan):
+            return independent_limit_w
+        return requested
+
+    async def _write_feedin_setpoint(
+        self, entity_id: str, desired_w: float, reason: str
+    ) -> None:
+        # A service may publish before async_create_background_task returns.
+        # Task identity alone cannot distinguish that own write.
+        value = round(FEEDIN_SETPOINT_EXPORT_SIGN * desired_w, 1)
+        self._feedin_write_pending = True
+        try:
+            written = await self._set_number_value(
+                entity_id, value, actor_owner="feedin"
+            )
+        finally:
+            self._feedin_write_pending = False
+        if not written:
+            return
+        self._feedin_prev_written_w = self._feedin_last_written_w
+        self._feedin_last_written_w = desired_w
+        self._feedin_last_write_at = dt_util.now()
+        # Keep ownership of a nonzero setpoint until a zero write or unwiring.
+        self._feedin_owned_entity = entity_id if desired_w > 0.0 else None
+        _LOGGER.info("Feed-in setpoint -> %.0f W (%s)", desired_w, reason)
         self._save_persistent_state()
 
     # ------------------------------------------------------------------
