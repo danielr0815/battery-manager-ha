@@ -227,6 +227,35 @@ Messvertrag, auch bei einem belegten Nullwert oder einer Messlücke.
 Schaltaufträge, Verbrauchsfreigaben und Reserveplanung verwenden den
 ursprünglichen Plan.
 
+### Kurzfristige SOC-Erwartung bei anhaltendem Netzbezug
+
+Bei AC-gekoppelter PV können die Verbraucher den Solarstrom vollständig nutzen,
+während beide Netzteile die DC-Last decken. Für diesen Fall lassen sich unter
+den Messquellen zwei Eingänge für die SOC-Erwartung zuordnen:
+
+- **Saldierte Netzleistung** am Netzanschluss, positiv bei Bezug, in W oder kW.
+- **Wirksamer Netzbezugs-Sollwert** einschließlich der Korrekturen der
+  Hausregelung. Ein positiver Wert bedeutet gewünschten Bezug. Unterstützt sind
+  Rückmeldungen in W oder kW und explizit als Watt zugeordnete
+  `number`-Entitäten ohne Einheit.
+
+Beide Zuordnungen dienen der Anzeige. Der Manager verlangt 30 Minuten
+kontinuierlichen Netzbezug mehr als 50 W über dem größeren Wert aus null und
+Sollwert. Die Batterieleistung muss dabei innerhalb von ±1 W liegen.
+Ein Wechsel des Sollwerts startet die Beobachtung neu. Für den periodisch
+gemeldeten Sollwert sind bis zu 65 Sekunden zwischen Originalmeldungen
+zulässig, für die übrigen beteiligten Messkanäle bis zu 30 Sekunden.
+Die Voraussetzungen für Topologie, Spannung und stabile SOC-Koordinate gelten
+auch für dieses Szenario.
+
+Die gestrichelte Linie beginnt beim aktuellen SOC und endet spätestens nach
+der belegten Messdauer oder einer Stunde. Schon ein kürzeres passendes
+Restintervall kann sichtbar sein. Im Plan muss die AC-Grundlast selbst bei
+der höheren verfügbaren PV-Schätzung den nötigen Netzbezug plausibel machen.
+Geplante Überschussladung oder ein Wechsel der Versorgung begrenzen die Linie.
+Die durchgezogene Planungs- und Sicherheitskurve bestimmt weiterhin Reserve
+und Schaltentscheidungen.
+
 ## Kompatibilität und Nachweise
 
 Alte Planner-Aufzeichnungen ohne Koordinaten- oder PSU-Snapshot behalten neutrale

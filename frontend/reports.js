@@ -83,6 +83,7 @@ export function loadGridGuardReport(hass, state) {
 export function socExpectationExplanation(hass, expectation, shown, overlap) {
   const t = (key) => localize(hass, key);
   const isNet = expectation.basis === "battery_net";
+  const fromGrid = expectation.evidence_mode === "grid_import";
   const prefix = isNet ? "soc_expected_net" : "soc_expected";
   const power = reportNumber(
     hass,
@@ -112,16 +113,30 @@ export function socExpectationExplanation(hass, expectation, shown, overlap) {
   const parts = [
     power === "—" ? "" : `${t(`${prefix}_measured`)} ${power} W.`,
     duration.length ? `${t("soc_expected_span")} ${duration.join(" ")}.` : "",
-    until === "—" ? "" : `${t("soc_expected_net_until")} ${until}.`,
+    until === "—" || fromGrid ? "" : `${t("soc_expected_net_until")} ${until}.`,
     !isNet &&
     expectation.status === "unqualified" &&
     expectation.relay_confirmed_on
       ? t("soc_expected_relay_on")
       : "",
   ];
-  if (isNet && !shown) parts.push(t("soc_expected_net_purpose"));
+  if (fromGrid) {
+    for (const [key, value] of [
+      ["soc_expected_grid_import", expectation.grid_import_w],
+      ["soc_expected_grid_setpoint", expectation.grid_setpoint_w],
+      ["soc_expected_grid_margin", expectation.grid_margin_w],
+    ]) {
+      if (Number.isFinite(value))
+        parts.push(`${t(key)} ${reportNumber(hass, value)} W.`);
+    }
+    if (shown && expectation.points?.length) {
+      const end = reportTime(hass, expectation.points.at(-1).t);
+      if (end !== "—") parts.push(`${t("soc_expected_grid_until")} ${end}.`);
+    }
+  }
+  if (isNet && !shown && !fromGrid) parts.push(t("soc_expected_net_purpose"));
   if (shown) {
-    parts.push(t(`${prefix}_basis`));
+    parts.push(t(fromGrid ? "soc_expected_grid_basis" : `${prefix}_basis`));
     if (overlap) parts.push(t("soc_expected_overlap"));
   } else if (reason !== reasonKey) {
     parts.push(reason);

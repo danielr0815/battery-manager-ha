@@ -1345,16 +1345,21 @@ async def test_reload_preserves_confirmed_or_unresolved_on_origins(
             assert c._load_run_deadline[load_id] == deadline
         if boundary == "disabled":
             c.set_load_enabled(load_id, False)
-        if boundary == "rebound":
-            sub = c.entry.subentries[load_id]
-            hass.config_entries.async_update_subentry(
-                c.entry, sub, data={**data, CONF_LOAD_CONTROL_SWITCH: "switch.rebound"}
-            )
         if boundary == "foreign":
             hass.states.async_set(PLUG, "off")
             freezer.tick(timedelta(seconds=1))
             hass.states.async_set(PLUG, "on", context=Context(user_id="operator"))
         payload = json.loads(json.dumps(c._persistent_payload()))
+        if boundary == "rebound":
+            # Restore the old actor journal against the new wiring. Rebinding
+            # a loaded entry would launch a second reload alongside this test.
+            assert await hass.config_entries.async_unload(c.entry.entry_id)
+            await hass.async_block_till_done()
+            hass.config_entries.async_update_subentry(
+                c.entry,
+                c.entry.subentries[load_id],
+                data={**data, CONF_LOAD_CONTROL_SWITCH: "switch.rebound"},
+            )
         if boundary == "legacy_observed":
             marker = payload["revoked_load_starts"]["items"][load_id]
             marker.pop("exact_observations")

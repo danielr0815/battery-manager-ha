@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from functools import cache, lru_cache
 from math import ceil, cos, floor, isclose, radians
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from astral import Observer
 from astral.sun import adjust_to_horizon, dawn, elevation, refraction_at_zenith
@@ -29,16 +29,23 @@ from .const import (
     CONF_DC_BALANCE_OUT,
     CONF_DC_LOAD_ENTITY,
     CONF_FEEDIN_BATTERY_POWER_ENTITY,
+    CONF_FEEDIN_SETPOINT_ENTITY,
     CONF_LOAD_INPUT_POWER_ENTITY,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
     CONF_LOAD_POWER_ENTITY,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_RESERVE_GRID_ENTITY,
     CONF_SOC_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
     CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY,
     LIVE_AC_POWER_KEYS,
 )
-from .core.psu_expectation import MAX_PROJECTION_SECONDS, MIN_OBSERVED_SECONDS
+from .core.psu_expectation import (
+    GRID_IMPORT_MARGIN_W,
+    MAX_PROJECTION_SECONDS,
+    MIN_OBSERVED_SECONDS,
+)
 from .psu_observation import (
     _MAX_AGE,
     _ON_ACTORS,
@@ -53,13 +60,19 @@ if TYPE_CHECKING:
     from .soc_consistency import SocConsistencyMonitor
 
 _PV_POWER = "operation_pv_power_entity"
-_, _AC_INPUT, _AC_OUTPUT = LIVE_AC_POWER_KEYS
+_AC_GRID, _AC_INPUT, _AC_OUTPUT = LIVE_AC_POWER_KEYS
+_GRID_POWER = CONF_SOC_EXPECTATION_GRID_POWER_ENTITY
+_GRID_SETPOINT = CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY
+# The Victron number reports about every 30 s (30.001180 s observed).
+# Allow one missed report and jitter without relaxing measured telemetry.
+_GRID_SETPOINT_MAX_AGE = 65
 BATTERY_COORDINATE_KEYS = (
     CONF_SOC_ENTITY,
     CONF_FEEDIN_BATTERY_POWER_ENTITY,
     CONF_BATTERY_VOLTAGE_ENTITY,
 )
 _OPTIONAL_INPUTS = (_PV_POWER, _AC_INPUT, _AC_OUTPUT, CONF_RESERVE_GRID_ENTITY)
+_GRID_SHARED_INPUTS = (*BATTERY_COORDINATE_KEYS, CONF_RESERVE_GRID_ENTITY)
 _GRID_SOURCES = {"on": 1, "ac_input_1": 2, "ac_input_2": 3}
 _BALANCE_KEYS = (
     CONF_AC_BALANCE_IN,
@@ -177,6 +190,18 @@ class NetDischargeDiagnostic(TypedDict, total=False):
     observed_seconds: float
     net_discharge_w: float
     valid_until: float
+    evidence_mode: Literal["grid_import"]
+    grid_import_w: float
+    grid_setpoint_w: float
+    grid_margin_w: float
+
+
+@dataclass(frozen=True)
+class _GridTopology:
+    power: str
+    setpoint: str
+    shared_inputs: tuple[tuple[str, str], ...]
+    power_input: str | None
 
 
 @dataclass(frozen=True)
@@ -185,6 +210,7 @@ class _Topology:
     inputs: tuple[tuple[str, str], ...]
     threshold_v: float
     site: _Site | None
+    grid: _GridTopology | str | None = field(default=None, compare=False)
 
     @classmethod
     def from_owner(cls, owner: BatteryManagerCoordinator) -> _Topology | str:
@@ -210,17 +236,31 @@ class _Topology:
         all_entities = tuple(entity for entity, _ in actors) + tuple(
             entity for _, entity in inputs
         )
-        other_entities = {
-            entity.lower()
+        other_roles = {
+            key: entity.lower()
             for key in _OTHER_POWER_ROLES
             if key not in (CONF_FEEDIN_BATTERY_POWER_ENTITY, *_OPTIONAL_INPUTS)
             and (entity := cfg.get(key))
         }
-        other_entities.update(
+        load_entities = {
             entity.lower()
             for key in (CONF_AC_LOAD_ENTITY, CONF_DC_LOAD_ENTITY)
             if (entity := cfg.get(key))
-        )
+        }
+        if entry := getattr(owner, "entry", None):
+            # Subentries use the same power binding for both appliance and
+            # surplus loads. The other two roles are cascade device ports.
+            load_entities.update(
+                entity.lower()
+                for subentry in entry.subentries.values()
+                for key in (
+                    CONF_LOAD_POWER_ENTITY,
+                    CONF_LOAD_INPUT_POWER_ENTITY,
+                    CONF_LOAD_OUTPUT_POWER_ENTITY,
+                )
+                if (entity := subentry.data.get(key))
+            )
+        other_entities = set(other_roles.values()) | load_entities
         balance_entities = {
             key: {entity.lower() for entity in (cfg.get(key) or ())}
             for key in _BALANCE_KEYS
@@ -239,19 +279,6 @@ class _Topology:
             if key == CONF_AC_BALANCE_IN and pv_entity is not None:
                 compatible = compatible | {pv_entity}
             other_entities.update(entities - compatible)
-        if entry := getattr(owner, "entry", None):
-            # Subentries use the same power binding for both appliance and
-            # surplus loads. The other two roles are cascade device ports.
-            other_entities.update(
-                entity.lower()
-                for subentry in entry.subentries.values()
-                for key in (
-                    CONF_LOAD_POWER_ENTITY,
-                    CONF_LOAD_INPUT_POWER_ENTITY,
-                    CONF_LOAD_OUTPUT_POWER_ENTITY,
-                )
-                if (entity := subentry.data.get(key))
-            )
         if len(set(all_entities)) != len(all_entities) or other_entities.intersection(
             all_entities
         ):
@@ -271,7 +298,65 @@ class _Topology:
                 -180.0 if longitude == 180 else longitude,
                 float(ha_config.elevation),
             )
-        return cls(actors, inputs, threshold, site)
+        grid = _grid_topology(
+            cfg, actors, inputs, other_roles, load_entities, balance_entities
+        )
+        return cls(actors, inputs, threshold, site, grid)
+
+
+def _grid_topology(
+    cfg: dict[str, Any],
+    actors: tuple[tuple[str, str], ...],
+    inputs: tuple[tuple[str, str], ...],
+    other_roles: dict[str, str],
+    load_entities: set[str],
+    balance_entities: dict[str, set[str]],
+) -> _GridTopology | str | None:
+    power = cfg.get(_GRID_POWER)
+    setpoint = cfg.get(_GRID_SETPOINT)
+    if not power and not setpoint:
+        return None
+    if not power:
+        return "net_grid_power_unavailable"
+    if not setpoint:
+        return "net_grid_setpoint_unavailable"
+    power, setpoint = power.lower(), setpoint.lower()
+    reserved = (
+        {entity for entity, _ in actors}
+        | {entity for key, entity in inputs if key not in (_AC_INPUT, _AC_OUTPUT)}
+        | load_entities
+        | balance_entities[CONF_DC_BALANCE_IN]
+        | balance_entities[CONF_DC_BALANCE_OUT]
+    )
+    if feedin_setpoint := cfg.get(CONF_FEEDIN_SETPOINT_ENTITY):
+        reserved.add(feedin_setpoint.lower())
+    # The same physical AC grid point can supply other import/balance views.
+    # A setting cannot double as any physical power measurement.
+    if (
+        power == setpoint
+        or power in reserved
+        or power in balance_entities[CONF_AC_BALANCE_IN]
+        and power in balance_entities[CONF_AC_BALANCE_OUT]
+        or any(
+            entity == power and key not in (_AC_GRID, "operation_import_power_entity")
+            for key, entity in other_roles.items()
+        )
+        or setpoint in reserved
+        or setpoint in other_roles.values()
+        or any(setpoint in entities for entities in balance_entities.values())
+        or any(setpoint == entity for _, entity in inputs)
+    ):
+        return "net_grid_topology_unavailable"
+    ports = tuple(
+        (key, entity) for key, entity in inputs if key in (_AC_INPUT, _AC_OUTPUT)
+    )
+    return _GridTopology(
+        power,
+        setpoint,
+        tuple((key, entity) for key, entity in inputs if key in _GRID_SHARED_INPUTS)
+        + ports,
+        next((key for key, entity in ports if entity == power), None),
+    )
 
 
 @dataclass(frozen=True)
@@ -297,7 +382,10 @@ def _reading(key: str, state: State | None, at: float) -> _Reading | None:
         valid = unit == "V" and 40 <= value <= 60
     else:
         value *= 1000 if unit == "kW" else 1
-        valid = unit in ("W", "kW") and abs(value) <= 100_000
+        valid = (
+            unit in ("W", "kW")
+            or (key == _GRID_SETPOINT and unit is None and state.domain == "number")
+        ) and abs(value) <= 100_000
     return _Reading(at, value) if valid else None
 
 
@@ -346,6 +434,15 @@ class _Episode:
                 self.pending.popleft()
 
 
+@dataclass
+class _GridEpisode:
+    generation: tuple[float, ...]
+    coordinate: tuple[int, int]
+    first_at: float
+    last_at: float
+    maximum_w: float
+
+
 class NetDischargeCapture:
     """Bound what the battery supplied without inferring source contribution.
 
@@ -365,10 +462,18 @@ class NetDischargeCapture:
         self._not_before = 0.0
         self._episode: _Episode | None = None
         self._pending_ac_at: float | None = None
+        self._grid_topology: _GridTopology | str | None = None
+        self._grid_unsub: list[Callable[[], None]] = []
+        self._grid_not_before = 0.0
+        self._grid_readings: dict[str, _Reading] = {}
+        self._grid_episode: _GridEpisode | None = None
+        self._grid_pending_ac_at: float | None = None
 
     def start(self) -> None:
         topology = _Topology.from_owner(self._owner)
         if topology == self._topology:
+            if isinstance(topology, _Topology):
+                self._bind_grid(topology.grid)
             return
         self.stop()
         self._topology = topology
@@ -400,6 +505,8 @@ class NetDischargeCapture:
                     self._episode = None
                     self._pending_ac_at = None
                     self._readings.clear()
+                    self._grid_episode = None
+                    self._grid_pending_ac_at = None
 
         @callback
         def input_published(event: Event[Any]) -> None:
@@ -419,8 +526,47 @@ class NetDischargeCapture:
                     ),
                 ]
             )
+        self._bind_grid(topology.grid)
+
+    def _bind_grid(self, grid: _GridTopology | str | None) -> None:
+        if grid == self._grid_topology:
+            return
+        for unsubscribe in self._grid_unsub:
+            unsubscribe()
+        self._grid_unsub.clear()
+        self._grid_readings.clear()
+        self._grid_episode = None
+        self._grid_pending_ac_at = None
+        self._grid_topology = grid
+        if not isinstance(grid, _GridTopology):
+            return
+        self._grid_not_before = dt_util.utcnow().timestamp()
+
+        @callback
+        def grid_published(event: Event[Any]) -> None:
+            if grid is self._grid_topology and isinstance(self._topology, _Topology):
+                key = (
+                    _GRID_POWER
+                    if event.data["entity_id"] == grid.power
+                    else _GRID_SETPOINT
+                )
+                self._grid_publication(self._topology, grid, key, event)
+
+        hass = self._owner.hass
+        # When the grid point also has a port role, one publication supplies
+        # both roles. Processing it twice could split a staged port pair.
+        entities = (
+            (grid.power, grid.setpoint)
+            if grid.power_input is None
+            else (grid.setpoint,)
+        )
+        self._grid_unsub = [
+            async_track_state_change_event(hass, entities, grid_published),
+            async_track_state_report_event(hass, entities, grid_published),
+        ]
 
     def stop(self) -> None:
+        self._bind_grid(None)
         for unsubscribe in self._unsub:
             unsubscribe()
         self._unsub.clear()
@@ -430,7 +576,7 @@ class NetDischargeCapture:
         self._pending_ac_at = None
         self._topology = "net_topology_unavailable"
 
-    def _ac_flow_reason(self, at: float) -> str | None:
+    def _ac_flow_reason(self, at: float, *, allow_reverse: bool = False) -> str | None:
         inlet = self._readings.get(_AC_INPUT)
         outlet = self._readings.get(_AC_OUTPUT)
         if inlet is None or outlet is None:
@@ -439,7 +585,7 @@ class NetDischargeCapture:
             if measured is not None and measured.value != 0:
                 return "net_ac_flow_incompatible"
             return None
-        if min(inlet.value, outlet.value) < 0:
+        if not allow_reverse and min(inlet.value, outlet.value) < 0:
             return "net_ac_flow_incompatible"
         if isclose(inlet.value, outlet.value, rel_tol=_AC_ROUNDOFF_REL):
             return None
@@ -449,27 +595,25 @@ class NetDischargeCapture:
             return "net_publication_unconfirmed"
         return "net_ac_flow_incompatible"
 
-    def _conditions(
-        self, topology: _Topology, now: datetime, *, check_live: bool = False
-    ) -> tuple[tuple[float, ...], float, float | None] | str:
-        at = now.timestamp()
+    def _actor_generation(self, topology: _Topology) -> tuple[float, ...] | str:
         if self._monitor.phase != "tracking":
             return "net_coordinate_unstable"
         generation = actor_generation(self._owner, topology.actors)
         if generation is None:
             return "net_mode_unconfirmed"
-        sample_at = at
-        if check_live and self._pending_ac_at is not None:
-            if at - self._pending_ac_at > _MAX_AGE:
-                return "net_telemetry_unavailable"
-            # The callback still has time to deliver the counterpart with the
-            # original timestamp. Wall time cannot invalidate the staged
-            # sample's continuity while that publication is still eligible.
-            sample_at = self._pending_ac_at
-        earliest = max(self._not_before, *generation)
+        return generation
+
+    def _input_values(
+        self,
+        inputs: tuple[tuple[str, str], ...],
+        sample_at: float,
+        earliest: float,
+        *,
+        check_live: bool,
+    ) -> tuple[dict[str, float], bool] | str:
         values: dict[str, float] = {}
         unpublished = False
-        for key, entity in topology.inputs:
+        for key, entity in inputs:
             reading = self._readings.get(key)
             if (
                 reading is None
@@ -482,14 +626,20 @@ class NetDischargeCapture:
                     else "net_telemetry_unavailable"
                 )
             if check_live:
-                state = self._owner.hass.states.get(entity)
-                live = (
-                    _reading(key, state, state.last_reported.timestamp())
-                    if state is not None
-                    else None
-                )
-                unpublished |= reading != live
+                unpublished |= reading != self._live_reading(key, entity)
             values[key] = reading.value
+        return values, unpublished
+
+    def _live_reading(self, key: str, entity: str) -> _Reading | None:
+        state = self._owner.hass.states.get(entity)
+        return (
+            _reading(key, state, state.last_reported.timestamp())
+            if state is not None
+            else None
+        )
+
+    @staticmethod
+    def _battery_reason(topology: _Topology, values: dict[str, float]) -> str | None:
         voltage = values[CONF_BATTERY_VOLTAGE_ENTITY]
         power = values[CONF_FEEDIN_BATTERY_POWER_ENTITY]
         if abs(power / voltage) >= 100:
@@ -498,6 +648,34 @@ class NetDischargeCapture:
             return "net_voltage_above_threshold"
         if power > _ZERO_NOISE_W:
             return "net_charging_detected"
+        return None
+
+    def _conditions(
+        self, topology: _Topology, now: datetime, *, check_live: bool = False
+    ) -> tuple[tuple[float, ...], float, float | None] | str:
+        generation = self._actor_generation(topology)
+        if isinstance(generation, str):
+            return generation
+        at = now.timestamp()
+        sample_at = at
+        if check_live and self._pending_ac_at is not None:
+            if at - self._pending_ac_at > _MAX_AGE:
+                return "net_telemetry_unavailable"
+            # The callback still has time to deliver the counterpart with the
+            # original timestamp. Wall time cannot invalidate the staged
+            # sample's continuity while that publication is still eligible.
+            sample_at = self._pending_ac_at
+        sample = self._input_values(
+            topology.inputs,
+            sample_at,
+            max(self._not_before, *generation),
+            check_live=check_live,
+        )
+        if isinstance(sample, str):
+            return sample
+        values, unpublished = sample
+        if reason := self._battery_reason(topology, values):
+            return reason
         night_until = None
         if topology.site is None:
             if values[_PV_POWER] != 0:
@@ -510,20 +688,16 @@ class NetDischargeCapture:
             return "net_publication_unconfirmed"
         if ac_reason := self._ac_flow_reason(sample_at):
             return ac_reason
-        return generation, max(0.0, -power), night_until
+        return (
+            generation,
+            max(0.0, -values[CONF_FEEDIN_BATTERY_POWER_ENTITY]),
+            night_until,
+        )
 
-    @callback
-    def publication(self, event: Event[Any]) -> None:
-        topology = self._topology
-        key = self._inputs.get(event.data["entity_id"])
-        if isinstance(topology, str) or key is None:
-            return
+    @staticmethod
+    def _event_reading(key: str, event: Event[Any]) -> _Reading | None:
         state = event.data["new_state"]
         now = event.time_fired
-        at = now.timestamp()
-        if self._pending_ac_at is not None and at != self._pending_ac_at:
-            self._episode = None  # A different timestamp cannot repair the pair.
-        self._pending_ac_at = None
         stamp = (
             event.data["last_reported"]
             if event.event_type == EVENT_STATE_REPORTED
@@ -531,24 +705,38 @@ class NetDischargeCapture:
             if state is not None
             else None
         )
-        reading = _reading(key, state, at)
+        max_age = _GRID_SETPOINT_MAX_AGE if key == _GRID_SETPOINT else _MAX_AGE
+        if stamp != now or not 0 <= (dt_util.utcnow() - now).total_seconds() <= max_age:
+            return None
+        return _reading(key, state, now.timestamp())
+
+    @callback
+    def publication(self, event: Event[Any]) -> None:
+        topology = self._topology
+        key = self._inputs.get(event.data["entity_id"])
+        if isinstance(topology, str) or key is None:
+            return
+        now = event.time_fired
+        at = now.timestamp()
+        if self._pending_ac_at is not None and at != self._pending_ac_at:
+            self._episode = None  # A different timestamp cannot repair the pair.
+        self._pending_ac_at = None
+        grid = self._grid_topology
+        used_by_grid = (
+            isinstance(grid, _GridTopology)
+            and (key, event.data["entity_id"]) in grid.shared_inputs
+        )
+        reading = self._event_reading(key, event)
         previous = self._readings.get(key)
-        if (
-            reading is None
-            or stamp is None
-            or stamp != now
-            or not 0 <= (dt_util.utcnow() - now).total_seconds() <= _MAX_AGE
-            or (previous is not None and at < previous.at)
-        ):
+        if reading is None or (previous is not None and at < previous.at):
             self._readings.pop(key, None)
             self._episode = None
+            if used_by_grid:
+                self._grid_episode = None
             return
         if previous is not None:
             changed = reading.value != previous.value
-            if (
-                key in (_AC_INPUT, _AC_OUTPUT)
-                and min(reading.value, previous.value) >= 0
-            ):
+            if key in (_AC_INPUT, _AC_OUTPUT):
                 changed = not isclose(
                     reading.value, previous.value, rel_tol=_AC_ROUNDOFF_REL
                 )
@@ -556,7 +744,12 @@ class NetDischargeCapture:
                 changed and (at == previous.at or key == CONF_RESERVE_GRID_ENTITY)
             ):
                 self._episode = None
+                if used_by_grid:
+                    self._grid_episode = None
         self._readings[key] = reading
+        if used_by_grid:
+            assert isinstance(grid, _GridTopology)
+            self._advance_grid(topology, grid, at)
 
         conditions = self._conditions(topology, now)
         if conditions == "net_publication_unconfirmed":
@@ -596,14 +789,194 @@ class NetDischargeCapture:
     def _covered_until(self) -> float:
         return min(reading.at for reading in self._readings.values())
 
-    def diagnostic(self, now: datetime) -> NetDischargeDiagnostic:
+    def _grid_conditions(
+        self,
+        topology: _Topology,
+        grid: _GridTopology,
+        at: float,
+        *,
+        check_live: bool = False,
+    ) -> tuple[tuple[float, ...], float, _Reading, _Reading] | str:
+        generation = self._actor_generation(topology)
+        if isinstance(generation, str):
+            return generation
+        sample_at = at
+        if check_live and self._grid_pending_ac_at is not None:
+            if at - self._grid_pending_ac_at > _MAX_AGE:
+                return "net_telemetry_unavailable"
+            sample_at = self._grid_pending_ac_at
+        earliest = max(self._not_before, self._grid_not_before, *generation)
+        sample = self._input_values(
+            grid.shared_inputs, sample_at, earliest, check_live=check_live
+        )
+        if isinstance(sample, str):
+            return sample
+        values, unpublished = sample
+        if reason := self._battery_reason(topology, values):
+            return reason
+        power = values[CONF_FEEDIN_BATTERY_POWER_ENTITY]
+        if power < -_ZERO_NOISE_W:
+            return "net_battery_not_idle"
+        measured = (
+            self._grid_readings.get(_GRID_POWER)
+            if grid.power_input is None
+            else self._readings.get(grid.power_input)
+        )
+        setpoint = self._grid_readings.get(_GRID_SETPOINT)
+        if (
+            measured is None
+            or measured.at <= earliest
+            or not 0 <= sample_at - measured.at <= _MAX_AGE
+        ):
+            return "net_grid_power_unavailable"
+        if (
+            setpoint is None
+            or setpoint.at <= earliest
+            or not 0 <= sample_at - setpoint.at <= _GRID_SETPOINT_MAX_AGE
+        ):
+            return "net_grid_setpoint_unavailable"
+        if check_live and (
+            unpublished
+            or (
+                grid.power_input is None
+                and measured != self._live_reading(_GRID_POWER, grid.power)
+            )
+            or setpoint != self._live_reading(_GRID_SETPOINT, grid.setpoint)
+        ):
+            return "net_publication_unconfirmed"
+        if measured.value <= 0:
+            return "net_grid_not_importing"
+        if measured.value <= max(0.0, setpoint.value) + GRID_IMPORT_MARGIN_W:
+            return "net_grid_margin_not_met"
+        if _AC_INPUT in values and _AC_OUTPUT in values:
+            # Equal reverse readings across the converter can be AC PV
+            # pass-through. The grid role must still prove positive import.
+            if reason := self._ac_flow_reason(sample_at, allow_reverse=True):
+                return reason
+        elif min(values.get(_AC_INPUT, 0.0), values.get(_AC_OUTPUT, 0.0)) < 0:
+            # One dedicated port cannot establish where reverse power goes.
+            return "net_ac_flow_incompatible"
+        return generation, max(0.0, -power), measured, setpoint
+
+    def _grid_publication(
+        self, topology: _Topology, grid: _GridTopology, key: str, event: Event[Any]
+    ) -> None:
+        at = event.time_fired.timestamp()
+        reading = self._event_reading(key, event)
+        previous = self._grid_readings.get(key)
+        if reading is None or (previous is not None and at < previous.at):
+            self._grid_readings.pop(key, None)
+            self._grid_episode = None
+            return
+        max_age = _GRID_SETPOINT_MAX_AGE if key == _GRID_SETPOINT else _MAX_AGE
+        if previous is not None and (
+            at - previous.at > max_age
+            or (key == _GRID_SETPOINT and previous.value != reading.value)
+        ):
+            self._grid_episode = None
+        self._grid_readings[key] = reading
+        self._advance_grid(topology, grid, at)
+
+    def _advance_grid(
+        self, topology: _Topology, grid: _GridTopology, at: float
+    ) -> None:
+        if self._grid_pending_ac_at is not None and at != self._grid_pending_ac_at:
+            self._grid_episode = None
+        self._grid_pending_ac_at = None
+        conditions = self._grid_conditions(topology, grid, at)
+        if conditions == "net_publication_unconfirmed":
+            self._grid_pending_ac_at = at
+            return
+        if isinstance(conditions, str):
+            self._grid_episode = None
+            return
+        generation, watts, _, _ = conditions
+        coordinate = self._monitor.epoch, self._monitor.generation
+        episode = self._grid_episode
+        if (
+            episode is None
+            or episode.generation != generation
+            or episode.coordinate != coordinate
+            or not 0 <= at - episode.last_at <= _MAX_AGE
+        ):
+            self._grid_episode = _GridEpisode(generation, coordinate, at, at, watts)
+        else:
+            episode.last_at = at
+            episode.maximum_w = max(episode.maximum_w, watts)
+
+    def _grid_diagnostic(
+        self, topology: _Topology, grid: _GridTopology, now: datetime
+    ) -> NetDischargeDiagnostic:
+        conditions = self._grid_conditions(
+            topology, grid, now.timestamp(), check_live=True
+        )
+        if isinstance(conditions, str):
+            if conditions != "net_publication_unconfirmed":
+                self._grid_episode = None
+                self._grid_pending_ac_at = None
+            return {"reason": conditions}
+        generation, _, measured, setpoint = conditions
+        episode = self._grid_episode
+        if (
+            episode is None
+            or episode.generation != generation
+            or episode.coordinate != (self._monitor.epoch, self._monitor.generation)
+        ):
+            self._grid_episode = None
+            return {"reason": "net_episode_too_short", "observed_seconds": 0.0}
+        covered_until = min(
+            measured.at,
+            setpoint.at,
+            *(self._readings[key].at for key, _ in grid.shared_inputs),
+        )
+        observed = max(0.0, covered_until - episode.first_at)
+        if observed < MIN_OBSERVED_SECONDS:
+            return {"reason": "net_episode_too_short", "observed_seconds": observed}
+        return {
+            "observed_seconds": observed,
+            "net_discharge_w": episode.maximum_w,
+            "evidence_mode": "grid_import",
+            "grid_import_w": measured.value,
+            "grid_setpoint_w": setpoint.value,
+            "grid_margin_w": GRID_IMPORT_MARGIN_W,
+        }
+
+    def diagnostic(
+        self, now: datetime, *, grid_only: bool = False
+    ) -> NetDischargeDiagnostic:
         topology = _Topology.from_owner(self._owner)
         if topology != self._topology:
             # Rebind even if the planner is first to notice a settings change.
             self.start()
         if isinstance(topology, str):
             return {"reason": topology}
+        self._bind_grid(topology.grid)
+        grid = topology.grid
+        if grid_only:
+            if isinstance(grid, _GridTopology):
+                return self._grid_diagnostic(topology, grid, now)
+            return {"reason": grid or "net_grid_topology_unavailable"}
+        result = self._night_diagnostic(topology, now)
+        if grid is None or "net_discharge_w" in result:
+            return result
+        if isinstance(grid, _GridTopology):
+            grid_result = self._grid_diagnostic(topology, grid, now)
+        else:
+            grid_result = {"reason": grid}
+        if "net_discharge_w" in grid_result:
+            return grid_result
+        if result["reason"] in (
+            "net_daylight",
+            "net_pv_detected",
+            "net_ac_flow_incompatible",
+            "net_telemetry_unavailable",
+        ):
+            return grid_result
+        return result
 
+    def _night_diagnostic(
+        self, topology: _Topology, now: datetime
+    ) -> NetDischargeDiagnostic:
         conditions = self._conditions(topology, now, check_live=True)
         if isinstance(conditions, str):
             # A queued event still needs to prove the new reading. State

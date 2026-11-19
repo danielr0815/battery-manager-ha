@@ -1,14 +1,19 @@
 """Display-only SOC scenarios for the confirmed 48 V support topology."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from math import isfinite
 
 from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
 from .reserve_energy import ENERGY_EPSILON_WH, dc_loads
 from .simulation_steps import switching_schedule
+from .uncertainty import effective_uncertainty
 
 MIN_OBSERVED_SECONDS = 1800.0
 MAX_PROJECTION_SECONDS = 48 * 3600.0
+# Leave room for regulation around the grid setpoint. Daytime AC loads and
+# solar production can change quickly, so reuse a short observed window only.
+GRID_IMPORT_MARGIN_W = 50.0
+_MAX_GRID_IMPORT_PROJECTION_SECONDS = 3600.0
 _TIME_EPSILON_SECONDS = 1e-5  # datetime rounding in substep/slot conversion
 
 
@@ -174,6 +179,127 @@ def _project_soc(
         horizon_reason = "net_window_ends_before_interval"
     points = []
     reason = "no_matching_plan_window"
+    for slot, flow, end in _matching_plan_slots(inputs, trajectory):
+        if end > until + _TIME_EPSILON_SECONDS:
+            reason = horizon_reason
+            break
+
+        point = project_point(slot, flow)
+        if isinstance(point, str):
+            reason = point
+            break
+        points.append(point)
+    return tuple(points), None if points else reason
+
+
+def project_soc_during_grid_import(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    trajectory: Trajectory,
+    net_battery_discharge_w: float,
+    observed_seconds: float,
+    *,
+    grid_import_w: float,
+    grid_setpoint_w: float,
+) -> tuple[tuple[tuple[float, float], ...], str | None]:
+    """Continue recent terminal discharge over a short comparable import window.
+
+    Points carry epoch seconds since the observation can end within a slot.
+    No observed AC power becomes delivery or battery charge in this scenario.
+    """
+    support = config.support
+    limit_w = support.psu48_max_power_w
+    if not (
+        support.adaptive_voltage_gate
+        and support.coordinated
+        and support.native48_base_w > 0
+        and isfinite(net_battery_discharge_w)
+        and net_battery_discharge_w >= 0
+        and isfinite(observed_seconds)
+        and observed_seconds >= MIN_OBSERVED_SECONDS
+        and isfinite(grid_import_w)
+        and isfinite(grid_setpoint_w)
+        and grid_import_w > max(0.0, grid_setpoint_w) + GRID_IMPORT_MARGIN_W
+    ):
+        return (), "projection_unsupported"
+
+    battery = config.battery
+    floor_wh = battery.energy_wh(battery.soc_min_percent)
+    ceiling_wh = battery.energy_wh(battery.soc_max_percent)
+    projected_wh = battery.energy_wh(inputs.start_soc_percent)
+    start = inputs.now.timestamp()
+    until = start + min(observed_seconds, _MAX_GRID_IMPORT_PROJECTION_SECONDS)
+    required_import_w = max(0.0, grid_setpoint_w) + GRID_IMPORT_MARGIN_W
+    upper_factor = (
+        config.reserve.upper_pv_factor
+        if config.reserve.enabled
+        else config.control.upper_pv_reserve
+    )
+    _, upper, _ = effective_uncertainty(
+        inputs, config.control.predrain_pv_confidence, upper_factor
+    )
+    points = []
+    reason = "no_matching_plan_window"
+    for index, (slot, flow, end) in enumerate(_matching_plan_slots(inputs, trajectory)):
+        # Require a deficit even under optimistic PV. Counting scheduled
+        # surplus loads or assumed grid delivery to the PSUs could create a
+        # matching window based on the very supply that is under observation.
+        # Keep any published P90 as a conservative check even where the
+        # planner falls back to a scalar, with the planner's physical cap.
+        pv_wh = max(
+            slot.pv_wh,
+            min(
+                config.pv.peak_power_w * slot.duration,
+                max(slot.pv_wh * upper[index], slot.pv_p90_wh or 0.0),
+            ),
+        )
+        if slot.ac_wh - pv_wh <= required_import_w * slot.duration:
+            reason = "net_grid_plan_margin_not_met"
+            break
+        native_wh, _ = dc_loads(config, slot)
+        observed_wh = net_battery_discharge_w * slot.duration
+        if (
+            abs(flow.battery_charge_wh - flow.psu48_battery_charge_wh)
+            > ENERGY_EPSILON_WH
+            or flow.inverter_output_wh > ENERGY_EPSILON_WH
+            or flow.grid_export_wh > ENERGY_EPSILON_WH
+            or abs(native_wh - support.native48_base_w * slot.duration)
+            > ENERGY_EPSILON_WH
+            or (
+                limit_w is not None
+                and native_wh - observed_wh
+                > limit_w * slot.duration + ENERGY_EPSILON_WH
+            )
+        ):
+            break
+        if observed_wh > native_wh + ENERGY_EPSILON_WH:
+            reason = "net_discharge_exceeds_native_load"
+            break
+
+        end = min(end, until)
+        hours = (end - start) / 3600.0
+        next_wh = projected_wh - net_battery_discharge_w * hours / battery.eta_discharge
+        if (
+            next_wh < floor_wh - ENERGY_EPSILON_WH
+            or projected_wh > ceiling_wh + ENERGY_EPSILON_WH
+        ):
+            reason = "net_storage_limit"
+            break
+        projected_wh = next_wh
+        points.append(
+            (end, battery.soc_percent(max(floor_wh, min(ceiling_wh, projected_wh))))
+        )
+        if end >= until - _TIME_EPSILON_SECONDS:
+            break
+        start = end
+    return tuple(points), None if points else reason
+
+
+def _matching_plan_slots(
+    inputs: PlanInputs, trajectory: Trajectory
+) -> Iterator[tuple[HourSlot, HourFlows, float]]:
+    """Find the contiguous initial slots with the observed isolated topology."""
+    at = inputs.now.timestamp()
     for slot, flow in zip(inputs.slots, trajectory.flows, strict=True):
         start = slot.start.timestamp()
         end = start + slot.duration * 3600
@@ -193,14 +319,5 @@ def _project_soc(
             or flow.unserved_dc_wh > 0
         ):
             break
-        if end > until + _TIME_EPSILON_SECONDS:
-            reason = horizon_reason
-            break
-
-        point = project_point(slot, flow)
-        if isinstance(point, str):
-            reason = point
-            break
-        points.append(point)
+        yield slot, flow, end
         at = end
-    return tuple(points), None if points else reason

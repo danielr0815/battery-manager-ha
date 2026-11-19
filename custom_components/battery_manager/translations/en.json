@@ -109,6 +109,8 @@
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional)",
               "operation_import_power_entity": "Grid import power for daily comparison (optional)",
               "operation_export_power_entity": "Grid export power for daily comparison (optional)",
+              "soc_expectation_grid_power_entity": "SOC expectation: net grid power",
+              "soc_expectation_grid_setpoint_entity": "SOC expectation: effective grid setpoint",
               "live_ac_grid_power_entity": "Live AC: signed grid power (optional)",
               "live_ac_input_power_entity": "Live AC: inverter AC input power (optional)",
               "live_ac_output_power_entity": "Live AC: inverter AC output power (optional)"
@@ -125,6 +127,8 @@
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_import_power_entity": "Grid import power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "soc_expectation_grid_power_entity": "For the short-term SOC expectation with AC-coupled PV. Use signed power at the site grid connection in W or kW, positive for import and negative for export. Configure together with the setpoint.",
+              "soc_expectation_grid_setpoint_entity": "Readback of the grid import target applied by the house controller. Positive means import. Use W or kW. A number entity without a unit explicitly represents watts. The manager reads this value.",
               "live_ac_grid_power_entity": "Positive import, negative export. Configure all three live AC sources together; current power in W/kW.",
               "live_ac_input_power_entity": "Positive toward the inverter from the AC grid; negative from the inverter toward the grid. Not battery power.",
               "live_ac_output_power_entity": "Positive toward AC loads; negative AC solar feeding the inverter. This AC balance excludes DC consumers."
@@ -747,6 +751,8 @@
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional)",
               "operation_import_power_entity": "Grid import power for daily comparison (optional)",
               "operation_export_power_entity": "Grid export power for daily comparison (optional)",
+              "soc_expectation_grid_power_entity": "SOC expectation: net grid power",
+              "soc_expectation_grid_setpoint_entity": "SOC expectation: effective grid setpoint",
               "live_ac_grid_power_entity": "Live AC: signed grid power (optional)",
               "live_ac_input_power_entity": "Live AC: inverter AC input power (optional)",
               "live_ac_output_power_entity": "Live AC: inverter AC output power (optional)"
@@ -768,6 +774,8 @@
               "operation_house_power_entity": "House power excluding BM loads for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_import_power_entity": "Grid import power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
+              "soc_expectation_grid_power_entity": "For the short-term SOC expectation with AC-coupled PV. Use signed power at the site grid connection in W or kW, positive for import and negative for export. Configure together with the setpoint.",
+              "soc_expectation_grid_setpoint_entity": "Readback of the grid import target applied by the house controller. Positive means import. Use W or kW. A number entity without a unit explicitly represents watts. The manager reads this value.",
               "live_ac_grid_power_entity": "Positive import, negative export. Configure all three live AC sources together; current power in W/kW.",
               "live_ac_input_power_entity": "Positive toward the inverter from the AC grid; negative from the inverter toward the grid. Not battery power.",
               "live_ac_output_power_entity": "Positive toward AC loads; negative AC solar feeding the inverter. This AC balance excludes DC consumers."

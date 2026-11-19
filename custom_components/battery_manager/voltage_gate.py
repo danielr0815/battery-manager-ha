@@ -245,12 +245,14 @@ class VoltageGateRuntime:
             now.timestamp(),
         )
 
-    def net_discharge_diagnostic(self, now: datetime) -> NetDischargeDiagnostic:
+    def net_discharge_diagnostic(
+        self, now: datetime, *, grid_only: bool = False
+    ) -> NetDischargeDiagnostic:
         """Read qualified battery terminal evidence for display projection."""
         if not self.ready:
             return {"reason": "net_telemetry_unavailable"}
         self._bind()
-        return self._net_discharge.diagnostic(now)
+        return self._net_discharge.diagnostic(now, grid_only=grid_only)
 
     def coordinate_matches(self, snapshot: SocCoordinateSnapshot | None) -> bool:
         if snapshot is None:

@@ -236,6 +236,19 @@ var STRINGS = {
     soc_expected_outside_display: "The displayed period contains too few points to draw the expectation curve.",
     soc_expected_overlap: "The curves overlap within the chart\u2019s resolution over the shared displayed period.",
     soc_expected_net_curve: "With continued net battery discharge",
+    soc_expected_grid_curve: "Short-term SOC at sustained grid import",
+    soc_expected_net_reason_grid_plan_margin_not_met: "With the higher PV forecast, the planned household load leaves too little grid import above the setpoint.",
+    soc_expected_grid_basis: "The dashed curve continues the observed battery power while grid import is expected to stay above the effective setpoint.",
+    soc_expected_grid_import: "Measured grid import",
+    soc_expected_grid_setpoint: "Effective grid setpoint",
+    soc_expected_grid_margin: "Required import margin",
+    soc_expected_grid_until: "Short-term expectation ends at",
+    soc_expected_net_reason_grid_topology_unavailable: "Check that the grid meter and setpoint are assigned to the correct electrical measurements.",
+    soc_expected_net_reason_grid_power_unavailable: "A fresh signed measurement at the grid connection is required.",
+    soc_expected_net_reason_grid_setpoint_unavailable: "A fresh readback of the effective grid setpoint is required.",
+    soc_expected_net_reason_grid_not_importing: "The meter shows zero grid import or export.",
+    soc_expected_net_reason_grid_margin_not_met: "Grid import is too close to zero or to the effective setpoint.",
+    soc_expected_net_reason_battery_not_idle: "The battery power is outside the \xB11 W idle range.",
     soc_expected_net_basis: "The dashed curve uses the measured net discharge rate from the current SOC in comparable plan intervals.",
     soc_expected_net_purpose: "This scenario uses the net discharge rate measured at the battery terminals.",
     soc_expected_net_measured: "Net battery discharge from terminal readings",
@@ -258,7 +271,7 @@ var STRINGS = {
     soc_expected_net_reason_voltage_above_threshold: "The battery voltage is above the configured threshold for comparable support conditions.",
     soc_expected_net_reason_charging_detected: "The battery readings show charging.",
     soc_expected_net_reason_pv_detected: "The PV readings show production.",
-    soc_expected_net_reason_daylight: "The night window is required when there is no live PV meter.",
+    soc_expected_net_reason_daylight: "During daylight, assign the signed grid meter and effective grid setpoint to use the short-term SOC expectation.",
     soc_expected_net_reason_episode_too_short: "Fewer than 30 minutes of stable net discharge readings are available in the confirmed supply mode.",
     soc_expected_net_reason_direct_meter_configured: "The configured 48 V DC output meter is used for the expectation scenario.",
     load_grid_guard_active: "Grid import guard active",
@@ -693,6 +706,19 @@ var STRINGS = {
     soc_expected_outside_display: "Im dargestellten Zeitraum liegen zu wenige Punkte f\xFCr die Erwartungskurve vor.",
     soc_expected_overlap: "Die Kurven liegen im gemeinsam dargestellten Zeitraum bis auf die Anzeigenaufl\xF6sung \xFCbereinander.",
     soc_expected_net_curve: "Bei anhaltender Netto-Entladung",
+    soc_expected_grid_curve: "Kurzfristiger SOC bei anhaltendem Netzbezug",
+    soc_expected_net_reason_grid_plan_margin_not_met: "Bei der h\xF6heren PV-Prognose l\xE4sst die geplante Hauslast zu wenig Netzbezug oberhalb des Sollwerts erwarten.",
+    soc_expected_grid_basis: "Die gestrichelte Kurve schreibt die gemessene Batterieleistung fort, solange der geplante Netzbezug \xFCber dem wirksamen Sollwert liegt.",
+    soc_expected_grid_import: "Gemessener Netzbezug",
+    soc_expected_grid_setpoint: "Wirksamer Netzbezugs-Sollwert",
+    soc_expected_grid_margin: "Erforderlicher Abstand",
+    soc_expected_grid_until: "Ende der kurzfristigen Erwartung um",
+    soc_expected_net_reason_grid_topology_unavailable: "Bitte die Zuordnung von Netzanschlusspunkt und Sollwert zu den Messstellen pr\xFCfen.",
+    soc_expected_net_reason_grid_power_unavailable: "Ein frischer vorzeichenrichtiger Messwert am Netzanschluss fehlt.",
+    soc_expected_net_reason_grid_setpoint_unavailable: "Eine frische R\xFCckmeldung des wirksamen Netzbezugs-Sollwerts fehlt.",
+    soc_expected_net_reason_grid_not_importing: "Der Z\xE4hler meldet 0 W Netzbezug oder Einspeisung.",
+    soc_expected_net_reason_grid_margin_not_met: "Der Netzbezug hat zu wenig Abstand zu null oder zum wirksamen Sollwert.",
+    soc_expected_net_reason_battery_not_idle: "Die Batterieleistung liegt au\xDFerhalb des Ruhebereichs von \xB11 W.",
     soc_expected_net_basis: "Die gestrichelte Kurve schreibt die gemessene Netto-Entladung ab dem aktuellen SOC f\xFCr vergleichbare Planintervalle fort.",
     soc_expected_net_purpose: "Das Szenario verwendet die an den Batterieklemmen gemessene Netto-Entladung.",
     soc_expected_net_measured: "Netto-Entladung aus Messwerten an den Batterieklemmen",
@@ -715,7 +741,7 @@ var STRINGS = {
     soc_expected_net_reason_voltage_above_threshold: "Die Batteriespannung liegt \xFCber dem eingestellten Grenzwert f\xFCr vergleichbare St\xFCtzungsbedingungen.",
     soc_expected_net_reason_charging_detected: "Die Batteriemesswerte zeigen eine Ladung an.",
     soc_expected_net_reason_pv_detected: "Die PV-Messwerte zeigen Erzeugung an.",
-    soc_expected_net_reason_daylight: "Ohne aktuellen PV-Leistungssensor ist ein Nachtfenster erforderlich.",
+    soc_expected_net_reason_daylight: "F\xFCr die kurzfristige SOC-Erwartung bei Tageslicht k\xF6nnen die saldierte Netzleistung und der wirksame Netzbezugs-Sollwert zugeordnet werden.",
     soc_expected_net_reason_episode_too_short: "Im best\xE4tigten Versorgungsmodus liegen weniger als 30 Minuten stabiler Messwerte zur Netto-Entladung vor.",
     soc_expected_net_reason_direct_meter_configured: "F\xFCr das Erwartungsszenario wird der konfigurierte Sensor f\xFCr die 48-V-DC-Abgabe verwendet.",
     load_grid_guard_active: "Netzbezugsschutz aktiv",
@@ -1650,6 +1676,7 @@ function loadGridGuardReport(hass, state) {
 function socExpectationExplanation(hass, expectation, shown, overlap) {
   const t = (key) => localize(hass, key);
   const isNet = expectation.basis === "battery_net";
+  const fromGrid = expectation.evidence_mode === "grid_import";
   const prefix = isNet ? "soc_expected_net" : "soc_expected";
   const power = reportNumber(
     hass,
@@ -1673,12 +1700,26 @@ function socExpectationExplanation(hass, expectation, shown, overlap) {
   const parts = [
     power === "\u2014" ? "" : `${t(`${prefix}_measured`)} ${power} W.`,
     duration.length ? `${t("soc_expected_span")} ${duration.join(" ")}.` : "",
-    until === "\u2014" ? "" : `${t("soc_expected_net_until")} ${until}.`,
+    until === "\u2014" || fromGrid ? "" : `${t("soc_expected_net_until")} ${until}.`,
     !isNet && expectation.status === "unqualified" && expectation.relay_confirmed_on ? t("soc_expected_relay_on") : ""
   ];
-  if (isNet && !shown) parts.push(t("soc_expected_net_purpose"));
+  if (fromGrid) {
+    for (const [key, value] of [
+      ["soc_expected_grid_import", expectation.grid_import_w],
+      ["soc_expected_grid_setpoint", expectation.grid_setpoint_w],
+      ["soc_expected_grid_margin", expectation.grid_margin_w]
+    ]) {
+      if (Number.isFinite(value))
+        parts.push(`${t(key)} ${reportNumber(hass, value)} W.`);
+    }
+    if (shown && expectation.points?.length) {
+      const end = reportTime(hass, expectation.points.at(-1).t);
+      if (end !== "\u2014") parts.push(`${t("soc_expected_grid_until")} ${end}.`);
+    }
+  }
+  if (isNet && !shown && !fromGrid) parts.push(t("soc_expected_net_purpose"));
   if (shown) {
-    parts.push(t(`${prefix}_basis`));
+    parts.push(t(fromGrid ? "soc_expected_grid_basis" : `${prefix}_basis`));
     if (overlap) parts.push(t("soc_expected_overlap"));
   } else if (reason !== reasonKey) {
     parts.push(reason);
@@ -2253,6 +2294,33 @@ function operationReport(hass, report) {
 }
 
 // frontend/forecast-card.js
+function expectationSamples(plan, expectation) {
+  if (expectation?.status !== "available") return [];
+  if (expectation.evidence_mode !== "grid_import") {
+    const end = plan.findIndex((p) => p.expectedSoc == null);
+    return plan.slice(0, end < 0 ? plan.length : end);
+  }
+  if (!Array.isArray(expectation.points)) return [];
+  const samples = [];
+  let right = 1;
+  for (const point of expectation.points.slice(0, MAX_POINTS)) {
+    const time = Date.parse(point?.t);
+    const expectedSoc = point?.expected_soc;
+    if (!Number.isFinite(time) || !Number.isFinite(expectedSoc) || expectedSoc < 0 || expectedSoc > 100 || (samples.length ? time <= samples.at(-1).time : time !== plan[0].time))
+      break;
+    while (right < plan.length && plan[right].time < time) right++;
+    if (right === plan.length) break;
+    const a = plan[right - 1];
+    const b = plan[right];
+    const fraction = (time - a.time) / (b.time - a.time);
+    samples.push({
+      time,
+      expectedSoc,
+      soc: a.soc + fraction * (b.soc - a.soc)
+    });
+  }
+  return samples;
+}
 var BatteryManagerForecastCard = class extends HTMLElement {
   constructor() {
     super();
@@ -2510,7 +2578,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     }
     const expectation = a.soc_expectation;
     const expectationStatus = expectation?.status;
-    const expectationCurveKey = expectation?.basis === "battery_net" ? "soc_expected_net_curve" : "soc_expected_curve";
+    const expectationCurveKey = expectation?.evidence_mode === "grid_import" ? "soc_expected_grid_curve" : expectation?.basis === "battery_net" ? "soc_expected_net_curve" : "soc_expected_curve";
     const horizonMs = Number(this._config.hours) * 3600 * 1e3;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -2697,8 +2765,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       `<polyline data-soc-curve="safety" points="${coords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
         stroke-width="2" stroke-linejoin="round"/>`
     );
-    const expectationEnd = points.findIndex((p) => p.expectedSoc == null);
-    const expected = expectationStatus === "available" ? points.slice(0, expectationEnd < 0 ? points.length : expectationEnd) : [];
+    const expected = expectationSamples(points, expectation);
     const expectedCoords = expected.map(
       (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`
     );
@@ -2754,6 +2821,15 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       `<g id="hover-marker"></g>`
     );
     const interactionPoints = new Map(points.map((p) => [p.time, p]));
+    if (showExpectation) {
+      for (const { time, expectedSoc } of expected) {
+        interactionPoints.set(time, {
+          ...interactionPoints.get(time),
+          time,
+          expectedSoc
+        });
+      }
+    }
     for (const lane of switchLanes) {
       for (const b of lane.schedule) {
         for (const time of [b.start, b.end]) {
@@ -3008,7 +3084,11 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       (lane) => lane.kind === "switching" || covering(lane)
     );
     const floorText = meta.inverterFloor === void 0 ? "" : ` \xB7 ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
-    const forecastText = nearest.soc == null ? "" : meta.expectationEndTime != null && nearest.time <= meta.expectationEndTime && nearest.expectedSoc != null ? ` \xB7 ${t("soc_safety_curve")} ${nearest.soc} % \xB7 ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %` : ` \xB7 ${nearest.soc} %`;
+    const hasExpectation = meta.expectationEndTime != null && nearest.time <= meta.expectationEndTime && nearest.expectedSoc != null;
+    const forecastText = [
+      nearest.soc == null ? "" : ` \xB7 ${hasExpectation ? t("soc_safety_curve") + " " : ""}${nearest.soc} %`,
+      hasExpectation ? ` \xB7 ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %` : ""
+    ].join("");
     const when = esc(
       `${selectionTime(
         this._hass,

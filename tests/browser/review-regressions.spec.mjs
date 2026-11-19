@@ -39,6 +39,67 @@ async function refresh(page, attrs) {
   }, attrs);
 }
 
+test("short grid-import expectation has its own sub-hour endpoint", async ({
+  page,
+}) => {
+  const at = "2026-09-26T10:30:00+02:00";
+  const attrs = {
+    ...attributes,
+    soc_expectation: {
+      basis: "battery_net",
+      evidence_mode: "grid_import",
+      status: "available",
+      observed_seconds: 1800,
+      net_discharge_w: 0,
+      grid_import_w: 288,
+      grid_setpoint_w: 0,
+      grid_margin_w: 50,
+      points: [
+        { t: attributes.forecast[0].t, expected_soc: 40 },
+        { t: at, expected_soc: 40 },
+      ],
+    },
+  };
+  await mount(page, "forecast", attrs);
+  const safety = page.locator('[data-soc-curve="safety"]');
+  const expected = page.locator('[data-soc-curve="expected"]');
+  const coords = async (el) =>
+    (await el.getAttribute("points"))
+      .split(" ")
+      .map((p) => p.split(",").map(Number));
+  const plan = await coords(safety);
+  const observed = await coords(expected);
+  expect(plan).toHaveLength(3);
+  expect(observed).toHaveLength(2);
+  expect(observed[1][0]).toBeCloseTo((plan[0][0] + plan[1][0]) / 2, 0);
+  expect(observed[1][1]).toBe(observed[0][1]);
+  const explanation = page.locator("[data-soc-curve-explanation]");
+  await expect(explanation).toContainText("Measured grid import 288 W");
+  await expect(explanation).toContainText("Effective grid setpoint 0 W");
+  await expect(explanation).toContainText("10:30:00");
+  const chart = page.locator("#chart");
+  await chart.focus();
+  await chart.press("Home");
+  await chart.press("ArrowRight");
+  const readout = page.locator("#readout");
+  await expect(readout).toContainText(
+    "Short-term SOC at sustained grid import 40 %",
+  );
+  await expect(readout).not.toContainText("safety");
+  await chart.press("ArrowRight");
+  await expect(readout).not.toContainText("Short-term SOC");
+  await refresh(page, {
+    ...attrs,
+    soc_expectation: {
+      ...attrs.soc_expectation,
+      status: "unqualified",
+      reason: "net_grid_margin_not_met",
+    },
+  });
+  await expect(expected).toHaveCount(0);
+  await expect(explanation).toContainText("too close");
+});
+
 test("normal SOC adjustment stays informative and preserves its open diagnostic on refresh", async ({
   page,
 }) => {

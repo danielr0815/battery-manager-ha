@@ -138,6 +138,8 @@ from .const import (
     CONF_RESERVE_TRANSFER_VERIFIED,
     CONF_RESERVE_UPPER_FACTOR,
     CONF_SOC_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
     CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
@@ -264,6 +266,7 @@ from .core.model import (
 )
 from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
 from .core.psu_expectation import (
+    project_soc_during_grid_import,
     project_soc_with_net_battery_discharge,
     project_soc_with_psu48,
 )
@@ -4957,6 +4960,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "status": "no_window",
                     "reason": "net_plan_outside_observation",
                 }
+            if details.get("evidence_mode") == "grid_import":
+                return (), self._forecast_grid_soc_expectation(
+                    config, inputs, result, details
+                )
             points, reason = project_soc_with_net_battery_discharge(
                 config,
                 inputs,
@@ -4965,6 +4972,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 details["observed_seconds"],
                 valid_until=details.get("valid_until"),
             )
+            if (
+                not points
+                and self.raw_config.get(CONF_SOC_EXPECTATION_GRID_POWER_ENTITY)
+                and self.raw_config.get(CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY)
+            ):
+                # A known zero-PV observation can coincide with the new
+                # evidence. Forecast PV can end that zero-PV window even
+                # when a conservative AC deficit remains over the next slot.
+                grid = self.voltage_gate.net_discharge_diagnostic(now, grid_only=True)
+                if "net_discharge_w" in grid and plan_age <= grid["observed_seconds"]:
+                    return (), self._forecast_grid_soc_expectation(
+                        config,
+                        inputs,
+                        result,
+                        {
+                            "basis": "battery_net",
+                            "relay_confirmed_on": details["relay_confirmed_on"],
+                            **grid,
+                        },
+                    )
         else:
             evidence = psu.expected48(now)
             if evidence is None:
@@ -4978,6 +5005,45 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if reason is not None:
             details["reason"] = reason
         return points, details
+
+    def _forecast_grid_soc_expectation(
+        self,
+        config: SystemConfig,
+        inputs: PlanInputs,
+        result: PlanResult,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        timed_points, reason = project_soc_during_grid_import(
+            config,
+            inputs,
+            result.trajectory,
+            details["net_discharge_w"],
+            details["observed_seconds"],
+            grid_import_w=details["grid_import_w"],
+            grid_setpoint_w=details["grid_setpoint_w"],
+        )
+        if not timed_points:
+            return {**details, "status": "no_window", "reason": reason}
+        # The terminal point can fall within an accepted plan slot.
+        return {
+            **details,
+            "status": "available",
+            "points": [
+                {
+                    "t": inputs.now.isoformat(),
+                    "expected_soc": round(inputs.start_soc_percent, 1),
+                },
+                *(
+                    {
+                        "t": dt_util.as_local(
+                            datetime.fromtimestamp(at, UTC)
+                        ).isoformat(),
+                        "expected_soc": round(value, 1),
+                    }
+                    for at, value in timed_points
+                ),
+            ],
+        }
 
     async def _async_update_data_serial(self) -> dict[str, Any]:
         if self._actuation_shutdown or self.hass.is_stopping:

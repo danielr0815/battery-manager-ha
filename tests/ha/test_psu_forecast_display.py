@@ -1,12 +1,13 @@
 """The forecast sensor renders display evidence without changing PlanResult."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from homeassistant.components.sensor import DATA_COMPONENT
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 from test_coordinated_actuation import BLOCK, DCDC, LIMIT, PSU24, PSU48
 from test_coordinated_actuation import rig as rig
 from test_voltage_gate_runtime import fresh
@@ -199,3 +200,100 @@ async def test_battery_net_expectation_is_limited_to_observed_night(
     attrs = hass.states.get(sensor.entity_id).attributes
     assert attrs["soc_expectation"]["status"] == "unqualified"
     assert all("expected_soc" not in p for p in attrs["forecast"])
+
+
+@pytest.mark.parametrize("measured_pv_w", [0, 200])
+async def test_grid_import_expectation_publishes_only_observed_partial_slot(
+    forecast_sensor, hass, freezer, monkeypatch, measured_pv_w
+):
+    c, sensor = forecast_sensor
+    hass.config.latitude = 52.5
+    hass.config.longitude = 13.4
+    freezer.move_to("2026-11-19T10:40:00Z")
+    grid_power = "sensor.synthetic_victron_grid_power"
+    grid_setpoint = "number.synthetic_victron_grid_setpoint"
+    pv_power = "sensor.synthetic_solar_power"
+    c.raw_config.update(
+        ac_base_load_w=600,
+        soc_expectation_grid_power_entity=grid_power,
+        soc_expectation_grid_setpoint_entity=grid_setpoint,
+        operation_pv_power_entity=pv_power,
+    )
+
+    def pv_series(now):
+        hour = now.replace(minute=0, second=0, microsecond=0)
+        return {hour: 200}, {hour: 150}, {hour: 300}
+
+    monkeypatch.setattr(c, "_get_pv_hourly", pv_series)
+    c.voltage_gate.start_observing()
+    for _ in range(62):
+        freezer.tick(timedelta(seconds=30))
+        hass.states.async_set("binary_sensor.synthetic_grid", "on")
+        hass.states.async_set(grid_power, "400", {"unit_of_measurement": "W"})
+        hass.states.async_set(grid_setpoint, "30", {"unit_of_measurement": "W"})
+        hass.states.async_set(
+            pv_power, str(measured_pv_w), {"unit_of_measurement": "W"}
+        )
+        fresh(hass, voltage=49.49, soc=69, power=0)
+        await hass.async_block_till_done()
+    for period in ("today", "tomorrow", "day_after"):
+        hass.states.async_set(
+            f"sensor.synthetic_pv_{period}",
+            "0",
+            {"unit_of_measurement": "kWh"},
+            force_update=True,
+        )
+    c.data = await c._async_update_data_serial()
+    c.async_update_listeners()
+
+    state = hass.states.get(sensor.entity_id)
+    diagnostic = state.attributes["soc_expectation"]
+    forecast = state.attributes["forecast"]
+    config, inputs, result = c._last_planner_recording
+    raw_evidence = c.voltage_gate.net_discharge_diagnostic(dt_util.now())
+    assert raw_evidence["net_discharge_w"] == 0
+    assert raw_evidence.get("evidence_mode") == (
+        "grid_import" if measured_pv_w else None
+    )
+    assert diagnostic["status"] == "available"
+    assert diagnostic["basis"] == "battery_net"
+    assert diagnostic["evidence_mode"] == "grid_import"
+    assert diagnostic["net_discharge_w"] == 0
+    assert diagnostic["grid_import_w"] == 400
+    assert diagnostic["grid_setpoint_w"] == 30
+    assert diagnostic["grid_margin_w"] == 50
+    assert "delivery_w" not in diagnostic
+    assert 1800 <= diagnostic["observed_seconds"] <= 1830
+    start, end = diagnostic["points"]
+    assert start == {"t": forecast[0]["t"], "expected_soc": 69}
+    end_at = datetime.fromisoformat(end["t"])
+    assert end_at == dt_util.now() + timedelta(seconds=diagnostic["observed_seconds"])
+    assert end_at < datetime.fromisoformat(forecast[1]["t"])
+    assert end["expected_soc"] == 69
+    assert [p["soc"] for p in forecast] == [
+        inputs.start_soc_percent,
+        *(round(f.soc_end_percent, 1) for f in result.trajectory.flows),
+    ]
+    assert float(state.state) == forecast[1]["soc"]
+    assert all("expected_soc" not in p for p in forecast)
+
+    # The same live evidence must be excluded when a compatible future grid
+    # deficit cannot be shown even though median PV still leaves a deficit.
+    first, *rest = inputs.slots
+    unmatched = replace(inputs, slots=(replace(first, pv_p90_wh=first.ac_wh), *rest))
+    points, details = c._forecast_soc_expectation(config, unmatched, result)
+    assert points == ()
+    assert details["status"] == "no_window"
+    assert details["reason"] == "net_grid_plan_margin_not_met"
+    assert "points" not in details
+
+    if measured_pv_w == 0:
+        # Once the alternative no longer qualifies, preserve the legacy
+        # explanation for why the zero-PV evidence cannot be projected.
+        hass.states.async_set(grid_power, "30", {"unit_of_measurement": "W"})
+        await hass.async_block_till_done()
+        points, details = c._forecast_soc_expectation(config, inputs, result)
+        assert points == ()
+        assert details["status"] == "no_window"
+        assert details["reason"] == "observation_shorter_than_plan_interval"
+        assert "points" not in details

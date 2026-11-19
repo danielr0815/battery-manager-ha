@@ -136,6 +136,8 @@ from .const import (
     CONF_RESERVE_TRANSFER_VERIFIED,
     CONF_RESERVE_UPPER_FACTOR,
     CONF_SOC_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
     CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
@@ -728,11 +730,20 @@ def _profile_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
 def _learning_schema_fields(current: dict[str, Any]) -> dict[Any, Any]:
     """Measurement-source fields (shared: consumers step + options)."""
     schema: dict[Any, Any] = {}
-    for key in (*_LEARNING_SINGLE_KEYS, *_OPERATION_POWER_KEYS, *LIVE_AC_POWER_KEYS):
+    for key in (
+        *_LEARNING_SINGLE_KEYS,
+        *_OPERATION_POWER_KEYS,
+        *LIVE_AC_POWER_KEYS,
+        CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+    ):
         # suggested_value (not default) keeps the field clearable in the UI.
         schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = (
             _entity("sensor")
         )
+    key = CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY
+    schema[vol.Optional(key, description={"suggested_value": current.get(key)})] = (
+        _entity(["sensor", "number"])
+    )
     for key in _LEARNING_MULTI_KEYS:
         schema[
             vol.Optional(key, description={"suggested_value": current.get(key) or []})
@@ -1121,6 +1132,8 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                     *_LEARNING_SINGLE_KEYS,
                     *_OPERATION_POWER_KEYS,
                     *LIVE_AC_POWER_KEYS,
+                    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+                    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
                     CONF_WORKDAY_ENTITY,
                 ):
                     data.setdefault(key, None)

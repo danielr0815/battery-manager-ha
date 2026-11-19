@@ -2350,18 +2350,24 @@ async def test_operation_measurement_sources_roundtrip_and_can_be_cleared(hass):
         key: f"sensor.observed_{metric}"
         for key, metric in OPERATION_POWER_SOURCES.items()
     }
+    values.update(
+        soc_expectation_grid_power_entity="sensor.site_grid",
+        soc_expectation_grid_setpoint_entity="number.effective_grid_setpoint",
+    )
     payload = _no_change_options_payload(form["data_schema"].schema)
     payload["consumption_learning"] = values
     result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
     assert result["type"] == "create_entry"
     assert all(result["data"][key] == value for key, value in values.items())
+    assert result["data"].get("live_ac_grid_power_entity") is None
+    assert result["data"].get("feedin_setpoint_entity") is None
     await hass.async_block_till_done()
     form = await hass.config_entries.options.async_init(entry.entry_id)
     payload = _no_change_options_payload(form["data_schema"].schema)
     payload["consumption_learning"] = {}
     result = await hass.config_entries.options.async_configure(form["flow_id"], payload)
     assert result["type"] == "create_entry"
-    assert all(result["data"][key] is None for key in OPERATION_POWER_SOURCES)
+    assert all(result["data"][key] is None for key in values)
 
 
 async def test_appliance_optional_sensors_can_be_saved_and_removed(hass):

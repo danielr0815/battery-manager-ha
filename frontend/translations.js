@@ -65,6 +65,27 @@ export const STRINGS = {
     soc_expected_overlap:
       "The curves overlap within the chart’s resolution over the shared displayed period.",
     soc_expected_net_curve: "With continued net battery discharge",
+    soc_expected_grid_curve: "Short-term SOC at sustained grid import",
+    soc_expected_net_reason_grid_plan_margin_not_met:
+      "With the higher PV forecast, the planned household load leaves too little grid import above the setpoint.",
+    soc_expected_grid_basis:
+      "The dashed curve continues the observed battery power while grid import is expected to stay above the effective setpoint.",
+    soc_expected_grid_import: "Measured grid import",
+    soc_expected_grid_setpoint: "Effective grid setpoint",
+    soc_expected_grid_margin: "Required import margin",
+    soc_expected_grid_until: "Short-term expectation ends at",
+    soc_expected_net_reason_grid_topology_unavailable:
+      "Check that the grid meter and setpoint are assigned to the correct electrical measurements.",
+    soc_expected_net_reason_grid_power_unavailable:
+      "A fresh signed measurement at the grid connection is required.",
+    soc_expected_net_reason_grid_setpoint_unavailable:
+      "A fresh readback of the effective grid setpoint is required.",
+    soc_expected_net_reason_grid_not_importing:
+      "The meter shows zero grid import or export.",
+    soc_expected_net_reason_grid_margin_not_met:
+      "Grid import is too close to zero or to the effective setpoint.",
+    soc_expected_net_reason_battery_not_idle:
+      "The battery power is outside the ±1 W idle range.",
     soc_expected_net_basis:
       "The dashed curve uses the measured net discharge rate from the current SOC in comparable plan intervals.",
     soc_expected_net_purpose:
@@ -107,7 +128,7 @@ export const STRINGS = {
       "The battery readings show charging.",
     soc_expected_net_reason_pv_detected: "The PV readings show production.",
     soc_expected_net_reason_daylight:
-      "The night window is required when there is no live PV meter.",
+      "During daylight, assign the signed grid meter and effective grid setpoint to use the short-term SOC expectation.",
     soc_expected_net_reason_episode_too_short:
       "Fewer than 30 minutes of stable net discharge readings are available in the confirmed supply mode.",
     soc_expected_net_reason_direct_meter_configured:
@@ -626,6 +647,27 @@ export const STRINGS = {
     soc_expected_overlap:
       "Die Kurven liegen im gemeinsam dargestellten Zeitraum bis auf die Anzeigenauflösung übereinander.",
     soc_expected_net_curve: "Bei anhaltender Netto-Entladung",
+    soc_expected_grid_curve: "Kurzfristiger SOC bei anhaltendem Netzbezug",
+    soc_expected_net_reason_grid_plan_margin_not_met:
+      "Bei der höheren PV-Prognose lässt die geplante Hauslast zu wenig Netzbezug oberhalb des Sollwerts erwarten.",
+    soc_expected_grid_basis:
+      "Die gestrichelte Kurve schreibt die gemessene Batterieleistung fort, solange der geplante Netzbezug über dem wirksamen Sollwert liegt.",
+    soc_expected_grid_import: "Gemessener Netzbezug",
+    soc_expected_grid_setpoint: "Wirksamer Netzbezugs-Sollwert",
+    soc_expected_grid_margin: "Erforderlicher Abstand",
+    soc_expected_grid_until: "Ende der kurzfristigen Erwartung um",
+    soc_expected_net_reason_grid_topology_unavailable:
+      "Bitte die Zuordnung von Netzanschlusspunkt und Sollwert zu den Messstellen prüfen.",
+    soc_expected_net_reason_grid_power_unavailable:
+      "Ein frischer vorzeichenrichtiger Messwert am Netzanschluss fehlt.",
+    soc_expected_net_reason_grid_setpoint_unavailable:
+      "Eine frische Rückmeldung des wirksamen Netzbezugs-Sollwerts fehlt.",
+    soc_expected_net_reason_grid_not_importing:
+      "Der Zähler meldet 0 W Netzbezug oder Einspeisung.",
+    soc_expected_net_reason_grid_margin_not_met:
+      "Der Netzbezug hat zu wenig Abstand zu null oder zum wirksamen Sollwert.",
+    soc_expected_net_reason_battery_not_idle:
+      "Die Batterieleistung liegt außerhalb des Ruhebereichs von ±1 W.",
     soc_expected_net_basis:
       "Die gestrichelte Kurve schreibt die gemessene Netto-Entladung ab dem aktuellen SOC für vergleichbare Planintervalle fort.",
     soc_expected_net_purpose:
@@ -670,7 +712,7 @@ export const STRINGS = {
     soc_expected_net_reason_pv_detected:
       "Die PV-Messwerte zeigen Erzeugung an.",
     soc_expected_net_reason_daylight:
-      "Ohne aktuellen PV-Leistungssensor ist ein Nachtfenster erforderlich.",
+      "Für die kurzfristige SOC-Erwartung bei Tageslicht können die saldierte Netzleistung und der wirksame Netzbezugs-Sollwert zugeordnet werden.",
     soc_expected_net_reason_episode_too_short:
       "Im bestätigten Versorgungsmodus liegen weniger als 30 Minuten stabiler Messwerte zur Netto-Entladung vor.",
     soc_expected_net_reason_direct_meter_configured:

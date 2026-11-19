@@ -904,6 +904,10 @@ CONF_INVERTER_BLOCK_SWITCH = "inverter_block_switch_entity"
 
 CONF_INVERTER_LIMIT_ENTITY = "inverter_discharge_limit_entity"
 
+# Read-only inputs for the SOC display, independent of live AC control.
+CONF_SOC_EXPECTATION_GRID_POWER_ENTITY = "soc_expectation_grid_power_entity"
+CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY = "soc_expectation_grid_setpoint_entity"
+
 # Optional direct AC balance: grid import positive, converter AC input positive
 # toward the inverter, AC output positive toward loads (negative for AC PV).
 LIVE_AC_POWER_KEYS = (

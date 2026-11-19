@@ -109,6 +109,8 @@
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional)",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional)",
               "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)",
+              "soc_expectation_grid_power_entity": "SOC-Erwartung: saldierte Netzleistung",
+              "soc_expectation_grid_setpoint_entity": "SOC-Erwartung: wirksamer Netzbezugs-Sollwert",
               "live_ac_grid_power_entity": "Live-AC: saldierte Netzleistung (optional)",
               "live_ac_input_power_entity": "Live-AC: Inverter AC-Eingangsleistung (optional)",
               "live_ac_output_power_entity": "Live-AC: Inverter AC-Ausgangsleistung (optional)"
@@ -125,6 +127,8 @@
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "soc_expectation_grid_power_entity": "Für die kurzfristige SOC-Erwartung bei AC-gekoppelter PV. Aktuelle Gesamtleistung am Netzanschluss in W oder kW. Bezug positiv, Einspeisung negativ. Zusammen mit dem Sollwert zuordnen.",
+              "soc_expectation_grid_setpoint_entity": "Rückmeldung des vom Hausregler wirksam gesetzten Netzbezugs-Sollwerts. Bezug positiv. W oder kW, bei einer number-Entität ohne Einheit ausdrücklich Watt. Der Manager liest diesen Wert.",
               "live_ac_grid_power_entity": "Netzbezug positiv, Export negativ. Alle drei Live-AC-Quellen gemeinsam zuordnen; aktuelle Leistung in W/kW.",
               "live_ac_input_power_entity": "Positiv: vom AC-Netz zum Inverter; negativ: vom Inverter ins AC-Netz. Keine Batterieleistung.",
               "live_ac_output_power_entity": "Positiv: vom Inverter zu AC-Verbrauchern; negativ: AC-Solarleistung zurück zum Inverter. Die AC-Bilanz enthält keine DC-Verbraucher."
@@ -747,6 +751,8 @@
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional)",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional)",
               "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional)",
+              "soc_expectation_grid_power_entity": "SOC-Erwartung: saldierte Netzleistung",
+              "soc_expectation_grid_setpoint_entity": "SOC-Erwartung: wirksamer Netzbezugs-Sollwert",
               "live_ac_grid_power_entity": "Live-AC: saldierte Netzleistung (optional)",
               "live_ac_input_power_entity": "Live-AC: Inverter AC-Eingangsleistung (optional)",
               "live_ac_output_power_entity": "Live-AC: Inverter AC-Ausgangsleistung (optional)"
@@ -768,6 +774,8 @@
               "operation_house_power_entity": "Wohnungsverbrauch ohne BM-Lasten für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_import_power_entity": "Netzbezugsleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
+              "soc_expectation_grid_power_entity": "Für die kurzfristige SOC-Erwartung bei AC-gekoppelter PV. Aktuelle Gesamtleistung am Netzanschluss in W oder kW. Bezug positiv, Einspeisung negativ. Zusammen mit dem Sollwert zuordnen.",
+              "soc_expectation_grid_setpoint_entity": "Rückmeldung des vom Hausregler wirksam gesetzten Netzbezugs-Sollwerts. Bezug positiv. W oder kW, bei einer number-Entität ohne Einheit ausdrücklich Watt. Der Manager liest diesen Wert.",
               "live_ac_grid_power_entity": "Netzbezug positiv, Export negativ. Alle drei Live-AC-Quellen gemeinsam zuordnen; aktuelle Leistung in W/kW.",
               "live_ac_input_power_entity": "Positiv: vom AC-Netz zum Inverter; negativ: vom Inverter ins AC-Netz. Keine Batterieleistung.",
               "live_ac_output_power_entity": "Positiv: vom Inverter zu AC-Verbrauchern; negativ: AC-Solarleistung zurück zum Inverter. Die AC-Bilanz enthält keine DC-Verbraucher."

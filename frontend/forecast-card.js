@@ -34,6 +34,42 @@ import {
   stateNotice,
 } from "./reports.js";
 
+// A short observation can end between two hourly safety samples. Interpolate
+// only for visual overlap. The tooltip reports actual published samples.
+function expectationSamples(plan, expectation) {
+  if (expectation?.status !== "available") return [];
+  if (expectation.evidence_mode !== "grid_import") {
+    const end = plan.findIndex((p) => p.expectedSoc == null);
+    return plan.slice(0, end < 0 ? plan.length : end);
+  }
+  if (!Array.isArray(expectation.points)) return [];
+  const samples = [];
+  let right = 1;
+  for (const point of expectation.points.slice(0, MAX_POINTS)) {
+    const time = Date.parse(point?.t);
+    const expectedSoc = point?.expected_soc;
+    if (
+      !Number.isFinite(time) ||
+      !Number.isFinite(expectedSoc) ||
+      expectedSoc < 0 ||
+      expectedSoc > 100 ||
+      (samples.length ? time <= samples.at(-1).time : time !== plan[0].time)
+    )
+      break;
+    while (right < plan.length && plan[right].time < time) right++;
+    if (right === plan.length) break;
+    const a = plan[right - 1];
+    const b = plan[right];
+    const fraction = (time - a.time) / (b.time - a.time);
+    samples.push({
+      time,
+      expectedSoc,
+      soc: a.soc + fraction * (b.soc - a.soc),
+    });
+  }
+  return samples;
+}
+
 export class BatteryManagerForecastCard extends HTMLElement {
   constructor() {
     super();
@@ -367,9 +403,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
     const expectation = a.soc_expectation;
     const expectationStatus = expectation?.status;
     const expectationCurveKey =
-      expectation?.basis === "battery_net"
-        ? "soc_expected_net_curve"
-        : "soc_expected_curve";
+      expectation?.evidence_mode === "grid_import"
+        ? "soc_expected_grid_curve"
+        : expectation?.basis === "battery_net"
+          ? "soc_expected_net_curve"
+          : "soc_expected_curve";
     const horizonMs = Number(this._config.hours) * 3600 * 1000;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -628,11 +666,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
         stroke-width="2" stroke-linejoin="round"/>`,
     );
 
-    const expectationEnd = points.findIndex((p) => p.expectedSoc == null);
-    const expected =
-      expectationStatus === "available"
-        ? points.slice(0, expectationEnd < 0 ? points.length : expectationEnd)
-        : [];
+    const expected = expectationSamples(points, expectation);
     const expectedCoords = expected.map(
       (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`,
     );
@@ -708,6 +742,15 @@ export class BatteryManagerForecastCard extends HTMLElement {
     // Keyboard and hover visit every switch edge without inventing SOC values
     // between the hourly samples. Energy curves retain their original samples.
     const interactionPoints = new Map(points.map((p) => [p.time, p]));
+    if (showExpectation) {
+      for (const { time, expectedSoc } of expected) {
+        interactionPoints.set(time, {
+          ...interactionPoints.get(time),
+          time,
+          expectedSoc,
+        });
+      }
+    }
     for (const lane of switchLanes) {
       for (const b of lane.schedule) {
         for (const time of [b.start, b.end]) {
@@ -1091,14 +1134,18 @@ export class BatteryManagerForecastCard extends HTMLElement {
       meta.inverterFloor === undefined
         ? ""
         : ` · ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
-    const forecastText =
+    const hasExpectation =
+      meta.expectationEndTime != null &&
+      nearest.time <= meta.expectationEndTime &&
+      nearest.expectedSoc != null;
+    const forecastText = [
       nearest.soc == null
         ? ""
-        : meta.expectationEndTime != null &&
-            nearest.time <= meta.expectationEndTime &&
-            nearest.expectedSoc != null
-          ? ` · ${t("soc_safety_curve")} ${nearest.soc} % · ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %`
-          : ` · ${nearest.soc} %`;
+        : ` · ${hasExpectation ? t("soc_safety_curve") + " " : ""}${nearest.soc} %`,
+      hasExpectation
+        ? ` · ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %`
+        : "",
+    ].join("");
     const when = esc(
       `${selectionTime(
         this._hass,
