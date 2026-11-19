@@ -6,12 +6,13 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from math import isfinite
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from homeassistant.const import ATTR_ASSUMED_STATE, ATTR_RESTORED
 from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
@@ -35,6 +36,7 @@ from .core.model import PlanInputs, SocCoordinateSnapshot, SystemConfig
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
+    from .load_safety import GridStopEvidence
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,6 +62,8 @@ class LoadAction:
     coordinate_captured: bool = False
     coordinate_cleanup: int | None = None
     pv_plan: tuple[SystemConfig, PlanInputs] | None = None
+    grid_stop: GridStopEvidence | None = None
+    report_only_changes: bool = False
 
     @classmethod
     def from_legacy(cls, action: LoadAction | tuple[Any, ...]) -> LoadAction:
@@ -101,6 +105,10 @@ class RevokedLoadStart:
     observed_on: bool = False
     contexts: tuple[tuple[str, str], ...] = ()
     observed: tuple[tuple[str, str | None], ...] = ()
+    # Only named, in-memory ON requests can provide a net-import observation.
+    grid_stops: dict[tuple[str, str], GridStopEvidence] = field(default_factory=dict)
+    # Keep known ambiguous replies while either of their origins is still open.
+    ambiguous_on_links: frozenset[tuple[str, frozenset[str]]] = frozenset()
 
 
 class OnOrigin(Enum):
@@ -127,6 +135,7 @@ class LoadOnEdge:
     parent_id: str | None
     user: bool
     confirmed: ConfirmedLoadOn | None = None
+    unconfirmed: bool = field(default=False, compare=False)
 
     def links(self, context_id: str | None) -> bool:
         return context_id is not None and context_id in (
@@ -655,7 +664,14 @@ def _restore_origins(
 def _edge_from_state(state: State) -> LoadOnEdge:
     context = state.context
     return LoadOnEdge(
-        state.last_changed, context.id, context.parent_id, context.user_id is not None
+        state.last_changed,
+        context.id,
+        context.parent_id,
+        context.user_id is not None,
+        unconfirmed=bool(
+            state.attributes.get(ATTR_RESTORED)
+            or state.attributes.get(ATTR_ASSUMED_STATE)
+        ),
     )
 
 
@@ -847,6 +863,7 @@ def coordinate_cleanup_pending(
     actors = set(marker.actors)
     contexts = set(marker.contexts)
     observed = set(marker.observed)
+    ambiguous_links = set(marker.ambiguous_on_links)
     own_cleanup = False
     for entity in marker.actors:
         if c._entity_tristate(entity) is False:
@@ -869,6 +886,13 @@ def coordinate_cleanup_pending(
             continue
         own_cleanup = True
         observed.add((entity, context))
+        links = frozenset(
+            candidate
+            for actor, candidate in contexts
+            if actor == entity and edge.links(candidate)
+        )
+        if len(links) > 1:
+            ambiguous_links.add((entity, links))
         if entity == marker.binding.plug:
             c._load_plug_owned[load_id] = True
             c._load_plug_owned_entities[load_id] = entity
@@ -879,6 +903,7 @@ def coordinate_cleanup_pending(
         actors != set(marker.actors)
         or contexts != set(marker.contexts)
         or observed != set(marker.observed)
+        or ambiguous_links != marker.ambiguous_on_links
     ):
         if actors:
             c.live_ac.revoked_load_starts[load_id] = replace(
@@ -892,11 +917,52 @@ def coordinate_cleanup_pending(
                     for a, context in observed
                     if a == actor
                 ),
+                grid_stops={
+                    origin: evidence
+                    for origin, evidence in marker.grid_stops.items()
+                    if origin in contexts
+                },
+                ambiguous_on_links=frozenset(
+                    (actor, links)
+                    for actor, links in ambiguous_links
+                    if any((actor, context) in contexts for context in links)
+                ),
             )
         else:
             c.live_ac.revoked_load_starts.pop(load_id, None)
         c._save_persistent_state()
     return own_cleanup
+
+
+def cleanup_grid_stop(
+    c: BatteryManagerCoordinator, load_id: str, actor: str
+) -> GridStopEvidence | None:
+    """Look up the exact live ON origin being cleaned at this OFF request."""
+    marker = c.live_ac.revoked_load_starts.get(load_id)
+    if marker is None or not marker.grid_stops:
+        return None
+    # Turning the gate OFF can be the necessary first step for a revoked
+    # input. A revoked gate's own origin takes precedence in that case.
+    for target in dict.fromkeys((actor, marker.binding.plug)):
+        edge = _reported_on(c, target)
+        if edge is None:
+            continue
+        origin, context = _on_origin(c, load_id, target, edge)
+        if origin is OnOrigin.AMBIGUOUS:
+            return None
+        if origin is not OnOrigin.REVOKED or context is None:
+            continue
+        if edge.unconfirmed:
+            return None
+        if (target, frozenset((edge.context_id, edge.parent_id))) in (
+            marker.ambiguous_on_links
+        ) or sum(
+            entity == target and edge.links(candidate)
+            for entity, candidate in marker.contexts
+        ) != 1:
+            return None
+        return marker.grid_stops.get((target, context))
+    return None
 
 
 def _schedule_coordinate_cleanup(c: BatteryManagerCoordinator) -> None:
@@ -935,7 +1001,9 @@ def bind_coordinate_request(
         )
 
 
-def revoke_guarded_starts(c: BatteryManagerCoordinator) -> None:
+def revoke_guarded_starts(
+    c: BatteryManagerCoordinator, grid_stop: GridStopEvidence
+) -> None:
     """Fence outstanding starts even when their actuator still reports OFF."""
     revoked: set[str] = set()
     for entity, request in c._load_actor_requests.items():
@@ -951,7 +1019,9 @@ def revoke_guarded_starts(c: BatteryManagerCoordinator) -> None:
         ):
             continue
         request.state = "coordinate_changed"
-        coordinate_request_revoked(c, entity, request, schedule=False)
+        coordinate_request_revoked(
+            c, entity, request, schedule=False, grid_stop=grid_stop
+        )
         revoked.add(command.load_id)
     for load_id in revoked:
         c._load_action_generation[load_id] += 1
@@ -985,6 +1055,7 @@ def coordinate_request_revoked(
     request: ActorRequest,
     *,
     schedule: bool = True,
+    grid_stop: GridStopEvidence | None = None,
 ) -> None:
     """Register a request that may become physically ON after its grant expired."""
     command = request.command or _CURRENT_LOAD_ACTION.get()
@@ -1014,7 +1085,7 @@ def coordinate_request_revoked(
         command.data.get(CONF_LOAD_CHARGE_ENABLE),
     ):
         return
-    _record_revoked_attempt(c, command.load_id, entity_id, request)
+    _record_revoked_attempt(c, command.load_id, entity_id, request, grid_stop=grid_stop)
     if schedule and coordinate_cleanup_pending(c, command.load_id):
         _schedule_coordinate_cleanup(c)
 
@@ -1041,6 +1112,8 @@ def _record_revoked_attempt(
     load_id: str,
     entity: str,
     request: ActorRequest,
+    *,
+    grid_stop: GridStopEvidence | None = None,
 ) -> None:
     sub = c.entry.subentries.get(load_id)
     if (
@@ -1069,13 +1142,18 @@ def _record_revoked_attempt(
             binding,
         )
     contexts = previous.contexts
+    grid_stops = previous.grid_stops
     if request.context_id is not None:
-        contexts = tuple(dict.fromkeys((*contexts, (entity, request.context_id))))
+        origin = (entity, request.context_id)
+        contexts = tuple(dict.fromkeys((*contexts, origin)))
+        if grid_stop is not None:
+            grid_stops = {**grid_stops, origin: grid_stop}
     marker = replace(
         previous,
         actors=tuple(dict.fromkeys((*previous.actors, entity))),
         contexts=contexts,
         requested_at=min(previous.requested_at, request.requested_at),
+        grid_stops=grid_stops,
     )
     if marker != previous:
         c.live_ac.revoked_load_starts[load_id] = marker
@@ -1213,7 +1291,7 @@ def reconcile_feedback(
     coordinator: BatteryManagerCoordinator, event: Any = None
 ) -> None:
     """Reconcile state and retain OFF evidence across queued OFF/ON events."""
-    from .load_safety import LOAD_GRID_IMPORT_TOLERANCE_W, grid_import_w
+    from .load_safety import confirmation_grid_stop
 
     changed = False
     event_entity = event.data.get("entity_id") if event is not None else None
@@ -1237,9 +1315,8 @@ def reconcile_feedback(
         _reported_on(coordinator, on_edge.entity_id, on_edge)
     for entity in tuple(coordinator._load_actor_requests):
         reject_foreign_load_on(coordinator, entity)
-    imported = grid_import_w(coordinator)
-    if imported is not None and imported > LOAD_GRID_IMPORT_TOLERANCE_W:
-        revoke_guarded_starts(coordinator)
+    if (grid_stop := confirmation_grid_stop(coordinator)) is not None:
+        revoke_guarded_starts(coordinator, grid_stop)
     interrupted: set[str] = set()
     settled: dict[str, ActorRequest] = {}
     managed = coordinator.cascade_manager.managed_load_ids()
@@ -1513,6 +1590,18 @@ async def execute_load_switching(
         _CURRENT_LOAD_ACTION.reset(action_token)
 
 
+def _confirmation_veto(
+    c: BatteryManagerCoordinator,
+) -> tuple[bool, GridStopEvidence | None]:
+    from .load_safety import confirmation_grid_stop
+
+    if c._floor_guard_active or c._stale_shed_active:
+        return True, None
+    if (grid_stop := confirmation_grid_stop(c)) is not None:
+        return True, grid_stop
+    return not coordinate_request_current(c), None
+
+
 async def _execute_load_switching(
     self: BatteryManagerCoordinator,
     actions: Sequence[LoadAction | tuple[Any, ...]],
@@ -1542,8 +1631,12 @@ async def _execute_load_switching(
     # Re-check at the final mutation boundary so a cascade always has
     # exactly one actor owner.
     cascade_managed = self.cascade_manager.managed_load_ids()
+    publish_unchanged = True
     for action in actions:
         command = LoadAction.from_legacy(action)
+        publish_unchanged = (
+            command.grid_stop is None and not command.report_only_changes
+        )
         subentry_id, data = command.load_id, command.data
         if command.coordinate_cleanup is not None:
             pending = self.live_ac.revoked_load_starts.get(subentry_id)
@@ -1630,12 +1723,16 @@ async def _execute_load_switching(
                 continue
             if not self.load_bm_enabled(subentry_id):
                 continue
-            if not bypass_guards and (
-                start_blocked(self) or not coordinate_request_current(self)
-            ):
+            blocked, grid_stop = (
+                (False, None) if bypass_guards else _confirmation_veto(self)
+            )
+            if blocked:
                 if enable:
                     await self._switch_load_entity(
-                        enable, False, actor_owner="load:" + subentry_id
+                        enable,
+                        False,
+                        actor_owner="load:" + subentry_id,
+                        **({"grid_stop": grid_stop} if grid_stop is not None else {}),
                     )
                 continue
             # The queue snapshot may predate an external input switch. Only a
@@ -1710,10 +1807,13 @@ async def _execute_load_switching(
             # Feedback can arrive after an operator pause or safety trip.
             # Ownership is recorded above so the compensating OFF obeys
             # the configured input policy, including auto-owned plugs.
-            if not self.load_bm_enabled(subentry_id) or (
-                not bypass_guards
-                and (start_blocked(self) or not coordinate_request_current(self))
-            ):
+            if not self.load_bm_enabled(subentry_id):
+                blocked, grid_stop = True, None
+            else:
+                blocked, grid_stop = (
+                    (False, None) if bypass_guards else _confirmation_veto(self)
+                )
+            if blocked:
                 await self._execute_load_switching(
                     [
                         LoadAction(
@@ -1722,6 +1822,7 @@ async def _execute_load_switching(
                             False,
                             True,
                             reason="permission withdrawn during confirmation",
+                            grid_stop=grid_stop,
                         )
                     ]
                 )
@@ -1835,11 +1936,20 @@ async def _execute_load_switching(
     self._save_persistent_state()
     if self.data:
         plans = self.data.get("load_plans") or {}
+        changed = False
         for load_id, active in self._load_charging_active.items():
             if load_id in plans:
-                plans[load_id]["charging_active"] = active
-                plans[load_id].update(input_diagnostics(self, load_id))
-        self.async_update_listeners()
+                diagnostics = {
+                    "charging_active": active,
+                    **input_diagnostics(self, load_id),
+                }
+                plan = plans[load_id]
+                changed = changed or any(
+                    plan.get(key) != value for key, value in diagnostics.items()
+                )
+                plan.update(diagnostics)
+        if publish_unchanged or changed:
+            self.async_update_listeners()
     if self._floor_guard_active:
         # G4, in-flight race (part 2): a refresh that tripped the guard
         # while this task was running returned early and could not queue

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.67.0] - 2026-11-19
+
+### Added
+
+- Die SOC-Prognosekarte zeigt den gemessenen Netzbezug, die Aktualität des
+  Messwerts und den Zustand des Netzbezugsschutzes. Sie erklärt, welcher
+  Nachweis für die 48-V-Erwartungskurve vorliegt oder noch fehlt.
+- Bei Anlagen ohne 48-V-Ausgangsleistungsmesser kann die Karte die erwartete
+  SOC-Entwicklung aus der beobachteten Batterieentladung anzeigen. Die Linie
+  endet, sobald Messdauer, Schaltplan oder Sonnenverhältnisse die Fortsetzung
+  nicht mehr tragen.
+
 ## [0.66.2] - 2026-11-18
 
 ### Fixed

@@ -29,13 +29,102 @@ export const STRINGS = {
       "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
     soc_phase_tracking: "Observing the current SOC coordinate",
     soc_safety_curve: "Planning and safety curve",
+    soc_safety_decisions:
+      "The solid curve governs planning and safety decisions.",
     soc_expected_curve: "With continued 48 V delivery",
     soc_expected_basis:
-      "The dashed curve assumes continued measured 48 V delivery under the same switching conditions. Planning uses the solid curve.",
+      "The dashed curve assumes continued 48 V delivery under the same switching conditions.",
     soc_expected_unqualified:
       "The expected curve needs at least 30 minutes of continuous 48 V DC output readings in the current supply mode.",
     soc_expected_no_window:
       "The observed 48 V delivery does not support an expected curve for the current schedule.",
+    soc_expected_measured: "Minimum measured 48 V DC output",
+    soc_expected_span: "Measurement span",
+    soc_expected_relay_on:
+      "Relay ON is confirmed. The relay state alone cannot establish DC output.",
+    soc_expected_reason_missing_dc_meter:
+      "No 48 V DC output meter is configured.",
+    soc_expected_reason_invalid_dc_topology:
+      "The configured measurement cannot isolate the 48 V power supply’s DC output.",
+    soc_expected_reason_missing_dc_power_limit:
+      "A positive, finite DC power limit is required to validate the readings. Check the configured output voltage and maximum current.",
+    soc_expected_reason_episode_unproven:
+      "Continuous DC output readings in the current 48 V supply mode are missing.",
+    soc_expected_reason_episode_too_short:
+      "Fewer than 30 minutes of continuous DC output readings are available in the current 48 V supply mode.",
+    soc_expected_reason_no_positive_delivery:
+      "The readings do not show sustained positive 48 V DC output.",
+    soc_expected_reason_projection_unsupported:
+      "The model cannot project this 48 V DC output in the current system configuration.",
+    soc_expected_reason_no_matching_plan_window:
+      "The measured delivery has no matching period in the current switching schedule.",
+    soc_expected_reason_observation_shorter_than_plan_interval:
+      "The DC readings do not cover the whole first matching plan interval.",
+    soc_expected_outside_display:
+      "The displayed period contains too few points to draw the expectation curve.",
+    soc_expected_overlap:
+      "The curves overlap within the chart’s resolution over the shared displayed period.",
+    soc_expected_net_curve: "With continued net battery discharge",
+    soc_expected_net_basis:
+      "The dashed curve uses the measured net discharge rate from the current SOC in comparable plan intervals.",
+    soc_expected_net_purpose:
+      "This scenario uses the net discharge rate measured at the battery terminals.",
+    soc_expected_net_measured: "Net battery discharge from terminal readings",
+    soc_expected_net_until: "Comparable night window ends at",
+    soc_expected_net_unqualified:
+      "The scenario needs at least 30 minutes of stable net discharge readings in the confirmed supply mode.",
+    soc_expected_net_no_window:
+      "No comparable plan interval is available for the observed net battery discharge.",
+    soc_expected_net_reason_no_matching_plan_window:
+      "The current plan has no interval with comparable native load, switching and energy flows.",
+    soc_expected_net_reason_observation_shorter_than_plan_interval:
+      "The measured net discharge span is shorter than the first matching plan interval.",
+    soc_expected_net_reason_projection_unsupported:
+      "The current system configuration or measurement cannot support this net discharge scenario.",
+    soc_expected_net_reason_discharge_exceeds_native_load:
+      "The observed net discharge exceeds the planned native 48 V load.",
+    soc_expected_net_reason_storage_limit:
+      "The first projected interval would exceed the configured battery SOC limits.",
+    soc_expected_net_reason_window_ends_before_interval:
+      "The comparable night window ends before the first matching plan interval is complete.",
+    soc_expected_net_reason_topology_unavailable:
+      "This scenario requires a supported 48 V topology and a battery-terminal power meter.",
+    soc_expected_net_reason_mode_unconfirmed:
+      "Feedback from the relays, inverter or configured grid source has yet to confirm the required supply mode.",
+    soc_expected_net_reason_ac_flow_incompatible:
+      "The AC readings do not confirm grid pass-through for this period.",
+    soc_expected_net_reason_coordinate_unstable:
+      "The battery SOC reference is still settling.",
+    soc_expected_net_reason_telemetry_unavailable:
+      "Current battery, switching or PV readings are missing or invalid.",
+    soc_expected_net_reason_publication_unconfirmed:
+      "The measurements for the current plan publication are not yet confirmed.",
+    soc_expected_net_reason_plan_outside_observation:
+      "The plan starts outside the period with a confirmed supply mode.",
+    soc_expected_net_reason_voltage_above_threshold:
+      "The battery voltage is above the configured threshold for comparable support conditions.",
+    soc_expected_net_reason_charging_detected:
+      "The battery readings show charging.",
+    soc_expected_net_reason_pv_detected: "The PV readings show production.",
+    soc_expected_net_reason_daylight:
+      "The night window is required when there is no live PV meter.",
+    soc_expected_net_reason_episode_too_short:
+      "Fewer than 30 minutes of stable net discharge readings are available in the confirmed supply mode.",
+    soc_expected_net_reason_direct_meter_configured:
+      "The configured 48 V DC output meter is used for the expectation scenario.",
+    load_grid_guard_active: "Grid import guard active",
+    load_grid_guard_inactive: "Grid import guard inactive",
+    load_grid_guard_fresh: "Fresh grid reading",
+    load_grid_guard_stale: "Stale grid reading",
+    load_grid_guard_unconfigured: "No grid meter configured",
+    load_grid_guard_unavailable: "Grid reading unavailable",
+    load_grid_guard_invalid: "Invalid grid reading",
+    load_grid_guard_unknown: "Reading status unknown",
+    load_grid_guard_age: "Age at check",
+    load_grid_guard_cutoff: "Cutoff above",
+    load_grid_guard_last_stop: "Last stop request by grid import guard",
+    load_grid_guard_decided_at: "Decision at",
+    load_grid_guard_decision_reading: "Grid reading at decision",
     soc_observation_unknown: "Unknown observation",
     soc_phase_reconciling: "SOC coordinate is being adjusted",
     soc_phase_settling: "Collecting stable observations after adjustment",
@@ -501,13 +590,105 @@ export const STRINGS = {
       "Konservative SOC-Prognose: Künftige 48-V-Stützung wird nur bei gültigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zukünftige Lieferleistung.",
     soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
     soc_safety_curve: "Planungs- und Sicherheitskurve",
+    soc_safety_decisions:
+      "Für Planung und Schutzentscheidungen gilt die durchgezogene Kurve.",
     soc_expected_curve: "Bei anhaltender 48-V-Lieferung",
     soc_expected_basis:
-      "Die gestrichelte Kurve setzt voraus, dass die gemessene 48-V-Lieferung bei gleicher Schaltung anhält. Für die Planung gilt die durchgezogene Kurve.",
+      "Die gestrichelte Kurve setzt voraus, dass die 48-V-Lieferung bei gleicher Schaltung anhält.",
     soc_expected_unqualified:
       "Die Erwartungskurve benötigt mindestens 30 Minuten durchgehende Messwerte der 48-V-DC-Abgabe im aktuellen Versorgungsmodus.",
     soc_expected_no_window:
       "Aus der beobachteten 48-V-Lieferung ergibt sich für den aktuellen Schaltplan keine Erwartungskurve.",
+    soc_expected_measured: "Kleinste gemessene 48-V-DC-Abgabe",
+    soc_expected_span: "Messspanne",
+    soc_expected_relay_on:
+      "Relais EIN ist bestätigt. Der Relaiszustand allein belegt keine DC-Abgabe.",
+    soc_expected_reason_missing_dc_meter:
+      "Für die 48-V-DC-Abgabe ist kein Sensor konfiguriert.",
+    soc_expected_reason_invalid_dc_topology:
+      "Die konfigurierte Messung kann die DC-Abgabe des 48-V-Netzteils nicht eindeutig erfassen.",
+    soc_expected_reason_missing_dc_power_limit:
+      "Zur Plausibilitätsprüfung ist eine positive, endliche DC-Leistungsgrenze erforderlich. Ausgangsspannung und Maximalstrom prüfen.",
+    soc_expected_reason_episode_unproven:
+      "Durchgehende Messwerte der DC-Abgabe im aktuellen 48-V-Versorgungsmodus fehlen.",
+    soc_expected_reason_episode_too_short:
+      "Im aktuellen 48-V-Versorgungsmodus liegen weniger als 30 Minuten durchgehender Messwerte der DC-Abgabe vor.",
+    soc_expected_reason_no_positive_delivery:
+      "Die Messwerte belegen keine anhaltende positive 48-V-DC-Abgabe.",
+    soc_expected_reason_projection_unsupported:
+      "Das Modell kann diese 48-V-DC-Abgabe mit der aktuellen Anlagenkonfiguration nicht fortschreiben.",
+    soc_expected_reason_no_matching_plan_window:
+      "Für die gemessene Lieferung gibt es im aktuellen Schaltplan kein passendes Zeitfenster.",
+    soc_expected_reason_observation_shorter_than_plan_interval:
+      "Die DC-Messwerte decken das erste passende Planintervall nur teilweise ab.",
+    soc_expected_outside_display:
+      "Im dargestellten Zeitraum liegen zu wenige Punkte für die Erwartungskurve vor.",
+    soc_expected_overlap:
+      "Die Kurven liegen im gemeinsam dargestellten Zeitraum bis auf die Anzeigenauflösung übereinander.",
+    soc_expected_net_curve: "Bei anhaltender Netto-Entladung",
+    soc_expected_net_basis:
+      "Die gestrichelte Kurve schreibt die gemessene Netto-Entladung ab dem aktuellen SOC für vergleichbare Planintervalle fort.",
+    soc_expected_net_purpose:
+      "Das Szenario verwendet die an den Batterieklemmen gemessene Netto-Entladung.",
+    soc_expected_net_measured:
+      "Netto-Entladung aus Messwerten an den Batterieklemmen",
+    soc_expected_net_until: "Ende des vergleichbaren Nachtfensters um",
+    soc_expected_net_unqualified:
+      "Für das Szenario sind mindestens 30 Minuten stabiler Messwerte zur Netto-Entladung im bestätigten Versorgungsmodus erforderlich.",
+    soc_expected_net_no_window:
+      "Für die beobachtete Netto-Entladung der Batterie gibt es kein vergleichbares Planintervall.",
+    soc_expected_net_reason_no_matching_plan_window:
+      "Der aktuelle Plan enthält kein Intervall mit vergleichbarer nativer Last, Schaltung und Energieflüssen.",
+    soc_expected_net_reason_observation_shorter_than_plan_interval:
+      "Die Messspanne der Netto-Entladung ist kürzer als das erste passende Planintervall.",
+    soc_expected_net_reason_projection_unsupported:
+      "Die aktuelle Anlagenkonfiguration oder Messung reicht für dieses Netto-Entladungsszenario nicht aus.",
+    soc_expected_net_reason_discharge_exceeds_native_load:
+      "Die beobachtete Netto-Entladung übersteigt die geplante native 48-V-Last.",
+    soc_expected_net_reason_storage_limit:
+      "Im ersten projizierten Intervall würde der SOC außerhalb der eingestellten Batteriegrenzen liegen.",
+    soc_expected_net_reason_window_ends_before_interval:
+      "Das vergleichbare Nachtfenster endet vor dem Ende des ersten passenden Planintervalls.",
+    soc_expected_net_reason_topology_unavailable:
+      "Dieses Szenario erfordert eine unterstützte 48-V-Topologie und eine Leistungsmessung an den Batterieklemmen.",
+    soc_expected_net_reason_mode_unconfirmed:
+      "Die Bestätigung des benötigten Versorgungsmodus durch Relais, Wechselrichter oder die konfigurierte Netzquellen-Rückmeldung fehlt.",
+    soc_expected_net_reason_ac_flow_incompatible:
+      "Die AC-Messwerte bestätigen für diesen Zeitraum keine reine Netzdurchleitung.",
+    soc_expected_net_reason_coordinate_unstable:
+      "Die SOC-Koordinate der Batterie ist noch in der Stabilisierungsphase.",
+    soc_expected_net_reason_telemetry_unavailable:
+      "Aktuelle Batterie-, Schalt- oder PV-Messwerte fehlen oder sind ungültig.",
+    soc_expected_net_reason_publication_unconfirmed:
+      "Die Messwerte zum aktuellen veröffentlichten Plan sind noch nicht bestätigt.",
+    soc_expected_net_reason_plan_outside_observation:
+      "Der Plan beginnt außerhalb des Zeitraums mit bestätigtem Versorgungsmodus.",
+    soc_expected_net_reason_voltage_above_threshold:
+      "Die Batteriespannung liegt über dem eingestellten Grenzwert für vergleichbare Stützungsbedingungen.",
+    soc_expected_net_reason_charging_detected:
+      "Die Batteriemesswerte zeigen eine Ladung an.",
+    soc_expected_net_reason_pv_detected:
+      "Die PV-Messwerte zeigen Erzeugung an.",
+    soc_expected_net_reason_daylight:
+      "Ohne aktuellen PV-Leistungssensor ist ein Nachtfenster erforderlich.",
+    soc_expected_net_reason_episode_too_short:
+      "Im bestätigten Versorgungsmodus liegen weniger als 30 Minuten stabiler Messwerte zur Netto-Entladung vor.",
+    soc_expected_net_reason_direct_meter_configured:
+      "Für das Erwartungsszenario wird der konfigurierte Sensor für die 48-V-DC-Abgabe verwendet.",
+    load_grid_guard_active: "Netzbezugsschutz aktiv",
+    load_grid_guard_inactive: "Netzbezugsschutz inaktiv",
+    load_grid_guard_fresh: "Aktueller Netzleistungswert",
+    load_grid_guard_stale: "Veralteter Netzleistungswert",
+    load_grid_guard_unconfigured: "Kein Netzleistungsmesser konfiguriert",
+    load_grid_guard_unavailable: "Netzleistungswert nicht verfügbar",
+    load_grid_guard_invalid: "Ungültiger Netzleistungswert",
+    load_grid_guard_unknown: "Status der Messung unbekannt",
+    load_grid_guard_age: "Alter bei Prüfung",
+    load_grid_guard_cutoff: "Schaltschwelle über",
+    load_grid_guard_last_stop:
+      "Letzte Abschaltanforderung des Netzbezugsschutzes",
+    load_grid_guard_decided_at: "Entscheidung um",
+    load_grid_guard_decision_reading: "Netzleistungswert bei Entscheidung",
     soc_observation_unknown: "Beobachtung unbekannt",
     soc_phase_reconciling: "SOC-Koordinate wird nachgeführt",
     soc_phase_settling: "Stabile Beobachtungen nach der Nachführung sammeln",

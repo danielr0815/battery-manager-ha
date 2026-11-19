@@ -81,10 +81,12 @@ class _OnTopology:
     efficiency: float
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> _OnTopology | None:
+    def from_config(cls, config: dict[str, Any]) -> _OnTopology | str:
         meter = config.get(CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY)
-        if not meter or not all(config.get(key) for key in _ON_REQUIRED_ACTORS):
-            return None
+        if not meter:
+            return "missing_dc_meter"
+        if not all(config.get(key) for key in _ON_REQUIRED_ACTORS):
+            return "invalid_dc_topology"
         meter = meter.lower()
         actors = tuple(
             (entity.lower(), expected)
@@ -95,18 +97,18 @@ class _OnTopology:
         # An entity shared with another electrical boundary cannot prove
         # independent delivery from this PSU.
         if len(actor_entities) != len(actors) or meter in actor_entities:
-            return None
+            return "invalid_dc_topology"
         if any(
             entity.lower() == meter
             for key in _OTHER_POWER_ROLES
             if (entity := config.get(key))
         ):
-            return None
+            return "invalid_dc_topology"
         volts = float(config.get("psu48_output_voltage_v", 0))
         amps = float(config.get("psu48_max_current_a", 0))
         limit = volts * amps
         if not (volts > 0 and amps > 0 and limit > 0 and isfinite(limit)):
-            return None
+            return "missing_dc_power_limit"
         return cls(
             meter,
             actors,
@@ -130,6 +132,27 @@ def _unconfirmed(state: State) -> bool:
     return bool(
         state.attributes.get(ATTR_ASSUMED_STATE) or state.attributes.get(ATTR_RESTORED)
     )
+
+
+def actor_generation(
+    owner: BatteryManagerCoordinator, actors: tuple[tuple[str, str], ...]
+) -> tuple[float, ...] | None:
+    generation = []
+    for entity, expected in actors:
+        state = owner.hass.states.get(entity)
+        if state is None or _unconfirmed(state):
+            return None
+        if expected == "0":
+            try:
+                blocked = float(state.state) == 0
+            except ValueError:
+                blocked = False
+            if not blocked:
+                return None
+        elif state.state != expected:
+            return None
+        generation.append(state.last_changed.timestamp())
+    return tuple(generation)
 
 
 def _meter_power(state: State, limit: float | None) -> tuple[float, str | None]:
@@ -162,10 +185,11 @@ class PsuObservationCapture:
         self._on_unsub: list[Callable[[], None]] = []
         self._on_subscribed_at = 0.0
         self._on_episode: _OnEpisode | None = None
-        self._on_expected: tuple[float, float, float] | None = None
+        self._validated_on_delivery: tuple[float, float, float] | None = None
 
     def start(self, owner: BatteryManagerCoordinator) -> None:
-        topology = _OnTopology.from_config(owner.raw_config)
+        candidate = _OnTopology.from_config(owner.raw_config)
+        topology = candidate if isinstance(candidate, _OnTopology) else None
         if topology == self._on_topology:
             return
         self.stop()
@@ -214,28 +238,7 @@ class PsuObservationCapture:
 
     def _invalidate_on(self) -> None:
         self._on_episode = None
-        self._on_expected = None
-
-    @staticmethod
-    def _on_generation(
-        owner: BatteryManagerCoordinator, topology: _OnTopology
-    ) -> tuple[float, ...] | None:
-        generation = []
-        for entity, expected in topology.actors:
-            state = owner.hass.states.get(entity)
-            if state is None or _unconfirmed(state):
-                return None
-            if expected == "0":
-                try:
-                    blocked = float(state.state) == 0
-                except ValueError:
-                    blocked = False
-                if not blocked:
-                    return None
-            elif state.state != expected:
-                return None
-            generation.append(state.last_changed.timestamp())
-        return tuple(generation)
+        self._validated_on_delivery = None
 
     @staticmethod
     def _on_reading(state: State | None, topology: _OnTopology) -> float | None:
@@ -247,11 +250,11 @@ class PsuObservationCapture:
     def _capture_on_publication(
         self, owner: BatteryManagerCoordinator, topology: _OnTopology, event: Event[Any]
     ) -> None:
-        self._on_expected = None
+        self._validated_on_delivery = None
         state = event.data["new_state"]
         at = event.time_fired.timestamp()
         now = dt_util.utcnow().timestamp()
-        generation = self._on_generation(owner, topology)
+        generation = actor_generation(owner, topology.actors)
         watts = self._on_reading(state, topology)
         # HA keeps an immutable publication time in a repeated-value event.
         # Its shared State.last_reported may already reflect a later report.
@@ -290,7 +293,7 @@ class PsuObservationCapture:
             episode.minimum_w = min(episode.minimum_w, watts)
 
     def _validate_on_capture(self, owner: BatteryManagerCoordinator, at: float) -> None:
-        self._on_expected = None
+        self._validated_on_delivery = None
         episode = self._on_episode
         topology = self._on_topology
         if episode is None or topology is None:
@@ -300,7 +303,7 @@ class PsuObservationCapture:
         published = meter.last_reported.timestamp() if meter is not None else None
         if (
             topology != _OnTopology.from_config(owner.raw_config)
-            or episode.actor_generation != self._on_generation(owner, topology)
+            or episode.actor_generation != actor_generation(owner, topology.actors)
             or watts is None
             or published is None
             or not 0 <= at - episode.last_at <= _MAX_AGE
@@ -313,16 +316,48 @@ class PsuObservationCapture:
         if watts != episode.last_w:
             self._invalidate_on()
             return
-        duration = min(episode.last_at - episode.first_at, MAX_PROJECTION_SECONDS)
-        if duration >= MIN_OBSERVED_SECONDS:
-            self._on_expected = at, episode.minimum_w, duration
+        self._validated_on_delivery = (
+            at,
+            episode.minimum_w,
+            episode.last_at - episode.first_at,
+        )
 
-    def expected48(self, now: datetime) -> tuple[float, float] | None:
-        """Return the lower watts and covered seconds validated for this capture."""
-        validated = self._on_expected
+    def _observed_on_delivery(self, now: datetime) -> tuple[float, float] | None:
+        validated = self._validated_on_delivery
         if validated is None or validated[0] != now.timestamp():
             return None
         return validated[1], validated[2]
+
+    def expected48(self, now: datetime) -> tuple[float, float] | None:
+        """Return the lower watts and covered seconds validated for this capture."""
+        observed = self._observed_on_delivery(now)
+        if observed is None or observed[1] < MIN_OBSERVED_SECONDS:
+            return None
+        return observed[0], min(observed[1], MAX_PROJECTION_SECONDS)
+
+    def expectation_explanation(
+        self, owner: BatteryManagerCoordinator, now: datetime
+    ) -> dict[str, Any]:
+        """Explain proof at the time of plan publication, including partial proof."""
+        cfg = owner.raw_config
+        relay = cfg.get(CONF_SUPPORT_DC48_SWITCH)
+        state = owner.hass.states.get(relay) if relay else None
+        explanation: dict[str, Any] = {
+            "relay_confirmed_on": state is not None
+            and state.state == "on"
+            and not _unconfirmed(state),
+        }
+        observed = self._observed_on_delivery(now)
+        if observed is None:
+            topology = _OnTopology.from_config(cfg)
+            explanation["reason"] = (
+                topology if isinstance(topology, str) else "episode_unproven"
+            )
+        else:
+            explanation["observed_seconds"] = observed[1]
+            if observed[1] < MIN_OBSERVED_SECONDS:
+                explanation["reason"] = "episode_too_short"
+        return explanation
 
     def expected48_diagnostic(self, now: datetime) -> dict[str, Any]:
         expected = self.expected48(now)

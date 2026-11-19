@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
+from test_frontend import _find_forecast_state
 from test_load_switching import (
     ENABLE,
     PLUG,
@@ -20,8 +21,12 @@ from test_load_switching import (
 from custom_components.battery_manager.const import (
     CONF_LOAD_CONTROL_SWITCH,
     CONF_LOAD_POWER_W,
+    INPUT_OFF_POLICY_KEEP,
 )
-from custom_components.battery_manager.load_actuation import LoadAction
+from custom_components.battery_manager.load_actuation import (
+    LoadAction,
+    reconcile_feedback,
+)
 from custom_components.battery_manager.load_safety import (
     grid_import_w,
     start_blocked,
@@ -120,7 +125,7 @@ async def test_normal_plan_also_finishes_owned_input_stop(hass):
 
 
 @pytest.mark.parametrize("after", ["gate", "input"])
-async def test_import_during_confirmation_revokes_start(hass, after):
+async def test_import_during_confirmation_revokes_start(hass, freezer, after):
     calls = []
     c, load_id, data = await rig(hass, calls)
     hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
@@ -132,9 +137,20 @@ async def test_import_during_confirmation_revokes_start(hass, after):
         calls.append(("turn_on", entity))
         hass.states.async_set(entity, "on")
         if entity == (ENABLE if after == "gate" else PLUG):
+            freezer.tick(timedelta(seconds=1))
             hass.states.async_set(GRID, "2000", {"unit_of_measurement": "W"})
+            freezer.tick(timedelta(seconds=2))
+
+    async def deactivate(call):
+        entity = call.data["entity_id"]
+        calls.append(("turn_off", entity))
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+        hass.states.async_set(entity, "off")
 
     hass.services.async_register("homeassistant", "turn_on", activate)
+    hass.services.async_register("homeassistant", "turn_off", deactivate)
+    started_at = dt_util.utcnow()
     await c._execute_load_switching([LoadAction(load_id, data, True, False)])
     assert hass.states.is_state(PLUG, "off")
     assert hass.states.is_state(ENABLE, "off")
@@ -142,6 +158,95 @@ async def test_import_during_confirmation_revokes_start(hass, after):
         ("turn_on", PLUG) in calls
         if after == "input"
         else ("turn_on", PLUG) not in calls
+    )
+    await stop_unsafe_loads(c)
+    guard = _find_forecast_state(hass).attributes["load_grid_guard"]
+    assert guard["measured_w"] == 0
+    stop = guard["last_action"]
+    assert stop["path"] == "confirmation"
+    assert stop["load_ids"] == [load_id]
+    assert stop["measured_w"] == 2000
+    assert stop["measured_at"] == (started_at + timedelta(seconds=1)).isoformat()
+    assert stop["age_seconds"] == 2
+    assert stop["decided_at"] == (started_at + timedelta(seconds=3)).isoformat()
+
+
+async def test_revoked_pending_on_keeps_grid_evidence_until_late_cleanup(hass, freezer):
+    c, load_id, data = await rig(hass, [])
+    hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    sent = asyncio.Event()
+    respond = asyncio.Event()
+
+    async def activate(call):
+        sent.set()
+        await respond.wait()
+        hass.states.async_set(call.data["entity_id"], "on", context=call.context)
+
+    hass.services.async_register("homeassistant", "turn_on", activate)
+    action = asyncio.create_task(
+        c._execute_load_switching([LoadAction(load_id, data, True, False)])
+    )
+    try:
+        await sent.wait()
+        hass.states.async_set(GRID, "2000", {"unit_of_measurement": "W"})
+        measured_at = dt_util.utcnow().isoformat()
+        reconcile_feedback(c)
+        assert "last_action" not in (
+            c.data.get("load_grid_guard") or {}
+        )  # No OFF has been issued yet.
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+    finally:
+        respond.set()
+        await action
+    await asyncio.gather(*await stop_unsafe_loads(c))
+    assert hass.states.is_state(ENABLE, "off")
+    guard = _find_forecast_state(hass).attributes["load_grid_guard"]
+    assert guard["measured_w"] == 0
+    assert guard["last_action"]["measured_w"] == 2000
+    assert guard["last_action"]["measured_at"] == measured_at
+
+
+async def test_keep_on_timer_rechecks_do_not_replace_dispatched_grid_stop(
+    hass, freezer
+):
+    calls = []
+    c, load_id, _ = await _setup(hass, calls, policy=INPUT_OFF_POLICY_KEEP)
+    _detach_listener(c)
+    c._floor_guard_active = False
+    c.raw_config["operation_import_power_entity"] = GRID
+    hass.states.async_set(GRID, "2000", {"unit_of_measurement": "W"})
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    c._load_plug_owned[load_id] = True
+    calls.clear()
+    await asyncio.gather(*await stop_unsafe_loads(c))
+    assert calls == [("turn_off", ENABLE)]
+    previous = _find_forecast_state(hass).attributes["load_grid_guard"]["last_action"]
+    with patch.object(
+        c, "async_update_listeners", wraps=c.async_update_listeners
+    ) as publish:
+        for _ in range(3):
+            freezer.tick(timedelta(seconds=5))
+            hass.states.async_set(GRID, "2000", {"unit_of_measurement": "W"})
+            await asyncio.gather(*await stop_unsafe_loads(c))
+        publish.assert_not_called()
+        hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+        await asyncio.gather(*await stop_unsafe_loads(c))
+        publish.assert_called_once()  # The current reading and guard changed.
+        publish.reset_mock()
+        for _ in range(3):
+            freezer.tick(timedelta(seconds=5))
+            await asyncio.gather(*await stop_unsafe_loads(c))
+        publish.assert_not_called()
+    assert calls == [("turn_off", ENABLE)]
+    assert hass.states.is_state(PLUG, "on")
+    assert c._load_plug_owned[load_id]
+    assert (
+        _find_forecast_state(hass).attributes["load_grid_guard"]["last_action"]
+        == previous
     )
 
 
@@ -175,6 +280,156 @@ async def test_stale_or_partial_measurements_do_not_fabricate_import(hass, freez
     assert grid_import_w(c) is None
 
 
+@pytest.mark.parametrize("path", ["plan", "fast"])
+@pytest.mark.parametrize(
+    ("binding", "value", "unit", "age", "status", "watts", "active"),
+    [
+        (None, None, None, 0, "unconfigured", None, False),
+        ("preferred", None, None, 0, "unavailable", None, False),
+        ("preferred", "unknown", "W", 0, "unavailable", None, False),
+        ("preferred", "51", "Wh", 0, "invalid", None, False),
+        ("preferred", "nan", "W", 0, "invalid", None, False),
+        ("preferred", "1e308", "kW", 0, "invalid", None, True),
+        ("preferred", "51", "W", -1, "invalid", None, False),
+        ("preferred", "51", "W", 31, "stale", 51, False),
+        ("preferred", "-12", "W", 31, "stale", -12, False),
+        ("preferred", "50", "W", 30, "fresh", 50, False),
+        ("fallback", "0.051", "kW", 0, "fresh", 51, True),
+    ],
+)
+async def test_grid_guard_forecast_sensor(
+    hass, freezer, path, binding, value, unit, age, status, watts, active
+):
+    c, load_id, _ = await rig(hass, [])
+    # These cases exercise the current measurement. Stop evidence is tested
+    # separately with a running load and an observed switch transition.
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(ENABLE, "off")
+    c._load_plug_owned.pop(load_id, None)
+    entity = None
+    if binding == "preferred":
+        # Even a missing preferred meter cannot borrow a fallback reading.
+        entity = "sensor.preferred_grid"
+        c.raw_config["live_ac_grid_power_entity"] = entity
+    elif binding == "fallback":
+        entity = GRID
+    else:
+        c.raw_config.pop("operation_import_power_entity")
+    measured_at = None
+    if value is not None:
+        if age < 0:
+            freezer.tick(timedelta(seconds=2))
+        hass.states.async_set(entity, value, {"unit_of_measurement": unit})
+        measured_at = hass.states.get(entity).last_reported.isoformat()
+    freezer.tick(timedelta(seconds=age))
+
+    if path == "plan":
+        await c.async_refresh()
+    else:
+        c.live_ac.envelope = None
+        with patch.object(c, "_async_plan", side_effect=AssertionError("CPU search")):
+            await c.live_ac.run()
+
+    state = _find_forecast_state(hass)
+    assert state.attributes["load_grid_guard"] == {
+        "status": status,
+        "active": active,
+        "grid_import_w": watts if status == "fresh" else None,
+        "measured_w": watts,
+        "entity_id": entity,
+        "measured_at": measured_at,
+        "age_seconds": age if measured_at else None,
+        "threshold_w": 50,
+        "max_age_seconds": 30,
+    }
+
+
+async def test_fast_guard_publishes_expiration_but_not_age_only(hass, freezer):
+    c, *_ = await rig(hass, [])
+    hass.states.async_set(GRID, "20", {"unit_of_measurement": "W"})
+    await stop_unsafe_loads(c)
+    entity_id = _find_forecast_state(hass).entity_id
+    with patch.object(
+        c, "async_update_listeners", wraps=c.async_update_listeners
+    ) as publish:
+        for _ in range(2):
+            freezer.tick(timedelta(seconds=5))
+            hass.states.async_set(GRID, "20", {"unit_of_measurement": "W"})
+            await stop_unsafe_loads(c)
+            publish.assert_not_called()
+        freezer.tick(timedelta(seconds=30))
+        await stop_unsafe_loads(c)
+        publish.assert_not_called()
+        freezer.tick(timedelta(seconds=1))
+        await stop_unsafe_loads(c)
+        publish.assert_called_once()
+    guard = hass.states.get(entity_id).attributes["load_grid_guard"]
+    assert guard["status"] == "stale"
+    assert guard["age_seconds"] == 31
+
+
+@pytest.mark.parametrize("path", ["plan", "fast"])
+async def test_grid_stop_keeps_the_decision_sample_after_a_zero_w_report(
+    hass, freezer, path
+):
+    c, load_id, _ = await rig(hass, [])
+    hass.states.async_set(PLUG, "on")
+    hass.states.async_set(ENABLE, "on")
+    c._load_plug_owned[load_id] = True
+    measured_at = hass.states.get(GRID).last_reported.isoformat()
+    freezer.tick(timedelta(seconds=2))
+    decided_at = dt_util.utcnow().isoformat()
+
+    def clear_import():
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+
+    if path == "plan":
+        apply = c.cascade_manager.async_apply
+
+        async def report_during_planning(*args, **kwargs):
+            clear_import()
+            await apply(*args, **kwargs)
+
+        with (
+            patch.object(c, "_update_floor_guard", return_value=False),
+            patch.object(c.cascade_manager, "async_apply", report_during_planning),
+        ):
+            await c.async_refresh()
+            await drain(c)
+    else:
+        await asyncio.gather(*await stop_unsafe_loads(c))
+        # An active guard with no second stop to request must retain the
+        # original observation even if the meter reports a different value.
+        hass.states.async_set(GRID, "2200", {"unit_of_measurement": "W"})
+        assert not await stop_unsafe_loads(c)
+        clear_import()
+        await stop_unsafe_loads(c)
+
+    assert hass.states.is_state(ENABLE, "off")
+    assert hass.states.is_state(PLUG, "off")
+    guard = _find_forecast_state(hass).attributes["load_grid_guard"]
+    assert guard["status"] == "fresh"
+    assert guard["measured_w"] == 0
+    assert guard["active"] is False
+    last = dict(guard["last_action"])
+    assert decided_at <= last.pop("requested_at") <= dt_util.utcnow().isoformat()
+    assert last == {
+        "action": "stop_requested",
+        "path": path,
+        "decided_at": decided_at,
+        "load_ids": [load_id],
+        "entity_id": GRID,
+        "measured_at": measured_at,
+        "measured_w": 2000,
+        "age_seconds": 2,
+        "status": "fresh",
+        "active": True,
+        "threshold_w": 50,
+        "max_age_seconds": 30,
+    }
+
+
 async def test_fast_timer_stops_without_cpu_plan_and_caps_recommendation(hass):
     calls = []
     c, load_id, _ = await rig(hass, calls)
@@ -188,7 +443,8 @@ async def test_fast_timer_stops_without_cpu_plan_and_caps_recommendation(hass):
         await drain(c)
     assert hass.states.is_state(PLUG, "off")
     assert not c.data["load_plans"][load_id]["active"]
-    assert c.data["load_grid_guard"] == {"active": True, "grid_import_w": 2000}
+    assert c.data["load_grid_guard"]["active"]
+    assert c.data["load_grid_guard"]["grid_import_w"] == 2000
 
 
 async def test_fast_guard_respects_cascade_and_calibration_owners(hass):
@@ -589,10 +845,8 @@ async def test_grid_guard_stops_independent_load_while_start_waits(
             if tasks:
                 await asyncio.gather(*tasks)
             assert not start.done()
-            assert c.data["load_grid_guard"] == {
-                "active": True,
-                "grid_import_w": 2000.0,
-            }
+            assert c.data["load_grid_guard"]["active"]
+            assert c.data["load_grid_guard"]["grid_import_w"] == 2000.0
             assert ("turn_off", other) in calls
             assert hass.states.is_state(other, "off")
 
@@ -684,6 +938,174 @@ async def test_revoked_start_requires_dispatched_replacement(
         assert hass.states.is_state(PLUG, "off")
         assert not c._load_plug_owned.get(load_id, False)
         assert load_id not in c._load_run_deadline
+
+
+async def _late_start_rig(hass, *, other=None):
+    calls = []
+    additional = (
+        [{CONF_LOAD_CONTROL_SWITCH: other, CONF_LOAD_POWER_W: 500}] if other else []
+    )
+    c, load_id, data = await _setup(
+        hass, calls, charge_enable=None, additional_load_data=additional
+    )
+    _detach_listener(c)
+    c._load_actor_requests.clear()
+    c._floor_guard_active = c._stale_shed_active = False
+    c.raw_config["operation_import_power_entity"] = GRID
+    hass.states.async_set(PLUG, "off")
+    hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+    origins = []
+
+    async def acknowledge(call):
+        origins.append(call.context)
+
+    hass.services.async_register("homeassistant", "turn_on", acknowledge)
+    calls.clear()
+    return c, load_id, data, calls, origins
+
+
+async def _reported_switch_state(hass, entity, desired):
+    return hass.states.is_state(entity, "on" if desired else "off")
+
+
+async def _stop_and_settle(c):
+    await asyncio.gather(*await stop_unsafe_loads(c))
+    if c.live_ac.coordinate_cleanup_task is not None:
+        await c.live_ac.coordinate_cleanup_task
+
+
+async def test_grid_stop_order_follows_dispatch_after_older_start_confirms(
+    hass, freezer
+):
+    from homeassistant.core import Context
+
+    other = "switch.independent"
+    c, load_id, data, calls, origins = await _late_start_rig(hass, other=other)
+    other_id = next(key for key in c.entry.subentries if key != load_id)
+    hass.states.async_set(other, "off")
+    with patch(
+        "custom_components.battery_manager.coordinator.confirm_state",
+        _reported_switch_state,
+    ):
+        await c._execute_load_switching([LoadAction(load_id, data, True, False)])
+        hass.states.async_set(GRID, "2000", {"unit_of_measurement": "W"})
+        early = dt_util.utcnow().isoformat()
+        await _stop_and_settle(c)
+
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(GRID, "500", {"unit_of_measurement": "W"})
+        hass.states.async_set(other, "on")
+        await _stop_and_settle(c)
+        interim = c.data["load_grid_guard"]["last_action"]
+        assert interim["load_ids"] == [other_id]
+        assert interim["measured_w"] == 500
+
+        freezer.tick(timedelta(seconds=1))
+        hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+        hass.states.async_set(PLUG, "on", context=Context(parent_id=origins[0].id))
+        await _stop_and_settle(c)
+
+    assert calls == [("turn_off", other), ("turn_off", PLUG)]
+    last = _find_forecast_state(hass).attributes["load_grid_guard"]["last_action"]
+    assert last["load_ids"] == [load_id]
+    assert last["measured_w"] == 2000
+    assert last["decided_at"] == early
+    assert last["requested_at"] == dt_util.utcnow().isoformat()
+    assert last["requested_at"] > interim["requested_at"]
+
+
+@pytest.mark.parametrize(
+    ("second_cause", "reply"),
+    [
+        ("grid", "first"),
+        ("grid", "second"),
+        ("soc", "second"),
+        ("grid", "neutral"),
+        ("grid", "two_links"),
+        ("grid", "two_links_then_unique"),
+        ("grid", "restored"),
+        ("grid", "restored_state"),
+        ("grid", "assumed_state"),
+    ],
+)
+async def test_grid_stop_uses_exact_revoked_on_context(
+    hass, freezer, second_cause, reply
+):
+    from homeassistant.core import Context
+
+    from custom_components.battery_manager.load_actuation import (
+        export_coordinate_cleanup,
+        restore_coordinate_cleanup,
+    )
+
+    c, load_id, data, calls, origins = await _late_start_rig(hass)
+    with patch(
+        "custom_components.battery_manager.coordinator.confirm_state",
+        _reported_switch_state,
+    ):
+        await c._execute_load_switching([LoadAction(load_id, data, True, False)])
+        hass.states.async_set(GRID, "2000", {"unit_of_measurement": "W"})
+        await _stop_and_settle(c)
+        hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+        freezer.tick(timedelta(seconds=65))
+
+        await c._execute_load_switching([LoadAction(load_id, data, True, False)])
+        assert len(origins) == 2
+        if second_cause == "grid":
+            hass.states.async_set(GRID, "500", {"unit_of_measurement": "W"})
+            await _stop_and_settle(c)
+            hass.states.async_set(GRID, "0", {"unit_of_measurement": "W"})
+        else:
+            with patch.object(c.voltage_gate, "coordinate_matches", return_value=False):
+                reconcile_feedback(c)
+
+        if reply == "restored":
+            restore_coordinate_cleanup(c, export_coordinate_cleanup(c))
+        parent = origins[0 if reply in ("first", "restored") else 1].id
+        if reply == "neutral":
+            context = Context()
+        elif reply in ("two_links", "two_links_then_unique"):
+            context = Context(id=origins[0].id, parent_id=origins[1].id)
+        else:
+            context = Context(parent_id=parent)
+        # A reused, matching context does not turn a restored/estimated
+        # switch state into evidence of a physical ON edge.
+        attrs = {
+            "restored_state": {"restored": True},
+            "assumed_state": {"assumed_state": True},
+        }.get(reply)
+        hass.states.async_set(PLUG, "on", attrs, context=context)
+        await _stop_and_settle(c)
+
+    assert calls == [("turn_off", PLUG)]
+    assert hass.states.is_state(PLUG, "off")
+    last = _find_forecast_state(hass).attributes["load_grid_guard"].get("last_action")
+    if reply == "first":
+        assert last["measured_w"] == 2000
+    elif reply == "second" and second_cause == "grid":
+        assert last["measured_w"] == 500
+    else:
+        assert last is None
+    if reply in ("first", "neutral", "two_links", "two_links_then_unique"):
+        # A second exact reply still carries its own measurement. Replaying
+        # the double-linked reply after one origin retired stays ambiguous.
+        freezer.tick(timedelta(seconds=1))
+        second_context = (
+            context if reply == "two_links" else Context(parent_id=origins[1].id)
+        )
+        hass.states.async_set(PLUG, "on", context=second_context)
+        with patch(
+            "custom_components.battery_manager.coordinator.confirm_state",
+            _reported_switch_state,
+        ):
+            await _stop_and_settle(c)
+        assert calls == [("turn_off", PLUG), ("turn_off", PLUG)]
+        assert hass.states.is_state(PLUG, "off")
+        last = c.data["load_grid_guard"].get("last_action")
+        if reply == "two_links":
+            assert last is None
+        else:
+            assert last["measured_w"] == 500
 
 
 @pytest.mark.parametrize("attempts", [2, 3])

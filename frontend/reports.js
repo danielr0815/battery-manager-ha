@@ -16,12 +16,125 @@ const reportTime = (hass, value) => {
       }).format(at)
     : "—";
 };
-const reportNumber = (hass, value) =>
+const reportNumber = (hass, value, options = { maximumFractionDigits: 1 }) =>
   typeof value === "number" && Number.isFinite(value)
-    ? new Intl.NumberFormat(hass?.language || "en", {
-        maximumFractionDigits: 1,
-      }).format(value)
+    ? new Intl.NumberFormat(hass?.language || "en", options).format(value)
     : "—";
+
+function gridGuardMeasurement(hass, snapshot, freshLabel) {
+  const t = (key) => localize(hass, key);
+  const watts = (value) =>
+    reportNumber(hass, value, { maximumSignificantDigits: 21 });
+  const statusKey =
+    snapshot.status === "fresh"
+      ? freshLabel
+      : `load_grid_guard_${snapshot.status}`;
+  const status = t(statusKey);
+  const reading = watts(snapshot.measured_w ?? snapshot.grid_import_w);
+  const details = [
+    status === statusKey ? t("load_grid_guard_unknown") : status,
+    reading === "—" ? "" : `${reading} W`,
+    typeof snapshot.entity_id === "string" ? `(${snapshot.entity_id})` : "",
+  ].filter(Boolean);
+  const age = reportNumber(hass, snapshot.age_seconds);
+  const maxAge = reportNumber(hass, snapshot.max_age_seconds);
+  // A reading just past the freshness boundary must not display as at it.
+  const ageLabel =
+    Number.isFinite(snapshot.max_age_seconds) &&
+    age === maxAge &&
+    snapshot.age_seconds > snapshot.max_age_seconds
+      ? `> ${maxAge}`
+      : age;
+  const threshold = watts(snapshot.threshold_w);
+  return [
+    details.join(" "),
+    age === "—" ? "" : `${t("load_grid_guard_age")} ${ageLabel} s`,
+    threshold === "—" ? "" : `${t("load_grid_guard_cutoff")} ${threshold} W`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+export function loadGridGuardReport(hass, state) {
+  const guard = state?.attributes?.load_grid_guard;
+  if (
+    typeof guard?.active !== "boolean" ||
+    ["unknown", "unavailable"].includes(state.state)
+  )
+    return "";
+  const t = (key) => localize(hass, key);
+  const current = gridGuardMeasurement(hass, guard, "load_grid_guard_fresh");
+  const last = guard.last_action;
+  let stop = "";
+  if (last?.action === "stop_requested") {
+    const decided = reportTime(hass, last.decided_at);
+    const requested = reportTime(hass, last.requested_at);
+    const parts = requested === "—" ? [] : [requested];
+    if (decided !== "—" && decided !== requested)
+      parts.push(`${t("load_grid_guard_decided_at")} ${decided}`);
+    parts.push(
+      gridGuardMeasurement(hass, last, "load_grid_guard_decision_reading"),
+    );
+    stop = `<div class="forecast-note" data-load-grid-last-action><strong>${esc(t("load_grid_guard_last_stop"))}</strong> · ${esc(parts.join(" · "))}</div>`;
+  }
+  return `<div class="forecast-note" data-load-grid-guard><strong>${esc(t(guard.active ? "load_grid_guard_active" : "load_grid_guard_inactive"))}</strong> · ${esc(current)}</div>${stop}`;
+}
+
+export function socExpectationExplanation(hass, expectation, shown, overlap) {
+  const t = (key) => localize(hass, key);
+  const isNet = expectation.basis === "battery_net";
+  const prefix = isNet ? "soc_expected_net" : "soc_expected";
+  const power = reportNumber(
+    hass,
+    isNet ? expectation.net_discharge_w : expectation.delivery_w,
+    {
+      maximumFractionDigits: 2,
+    },
+  );
+  const reasonCode = isNet
+    ? String(expectation.reason).replace(/^net_/, "")
+    : expectation.reason;
+  const reasonKey = `${prefix}_reason_${reasonCode}`;
+  const reason = t(reasonKey);
+  const until =
+    isNet && Number.isFinite(expectation.valid_until)
+      ? reportTime(hass, new Date(expectation.valid_until * 1000).toJSON())
+      : "—";
+  const span = expectation.observed_seconds;
+  const duration = [];
+  if (Number.isFinite(span) && span >= 0) {
+    // Do not round an almost-qualified episode up to 30 minutes.
+    const minutes = Math.floor(span / 60);
+    const seconds = Math.floor(span % 60);
+    if (minutes) duration.push(`${reportNumber(hass, minutes)} min`);
+    if (seconds || !minutes) duration.push(`${reportNumber(hass, seconds)} s`);
+  }
+  const parts = [
+    power === "—" ? "" : `${t(`${prefix}_measured`)} ${power} W.`,
+    duration.length ? `${t("soc_expected_span")} ${duration.join(" ")}.` : "",
+    until === "—" ? "" : `${t("soc_expected_net_until")} ${until}.`,
+    !isNet &&
+    expectation.status === "unqualified" &&
+    expectation.relay_confirmed_on
+      ? t("soc_expected_relay_on")
+      : "",
+  ];
+  if (isNet && !shown) parts.push(t("soc_expected_net_purpose"));
+  if (shown) {
+    parts.push(t(`${prefix}_basis`));
+    if (overlap) parts.push(t("soc_expected_overlap"));
+  } else if (reason !== reasonKey) {
+    parts.push(reason);
+  } else if (expectation.status === "unqualified") {
+    parts.push(t(`${prefix}_unqualified`));
+  } else if (expectation.status === "available") {
+    parts.push(t("soc_expected_outside_display"));
+  } else {
+    parts.push(t(`${prefix}_no_window`));
+  }
+  parts.push(t("soc_safety_decisions"));
+  return parts.filter(Boolean).join(" ");
+}
 
 export function inputControlReport(hass, input) {
   if (!input || typeof input !== "object") return "";

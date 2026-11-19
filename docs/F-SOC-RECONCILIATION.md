@@ -99,9 +99,9 @@ mehrtägige Versorgung. Fehlende oder unpassende Messungen bleiben unbekannt.
 Ein gesonderter langfristiger Liefervertrag benötigt eigene Mess- und
 Reviewnachweise, bevor er zusätzliche Prognosegutschriften erlauben kann.
 
-Die SOC-Kurve wird als konservativ gekennzeichnet, wenn zukünftige 48-V-Lieferung
-nicht verifiziert ist. Eine spätere zusätzliche Erwartungskurve benötigt ein
-qualifiziertes Modell; bedingte Szenarien ändern keine Schutz- oder Entnahmebudgets.
+Für Schutz und Entnahmebudgets verwendet der Manager die konservative
+SOC-Kurve. Die zusätzliche Erwartungskurve beschreibt die unten festgelegte
+Annahme zur 48-V-Lieferung.
 
 ## Erwartungskurve bei gemessener 48-V-Lieferung ab 0.66.0
 
@@ -122,8 +122,9 @@ DC-Messmeldungen. Jeder Abstand und das Alter der letzten Meldung dürfen
 höchstens 30 Sekunden betragen. Ein gemeldeter Nullwert zählt zum Minimum.
 Wechsel im bestätigten Versorgungsmodus, neue Messbindungen, Lücken und
 ungültige Messwerte trennen die Abschnitte. Nach einem Neustart beginnt die
-Beobachtung neu. Ohne qualifizierte Messungen zeigt die Karte die Planungs- und
-Sicherheitskurve mit einem Hinweis auf die fehlende Erwartungskurve.
+Beobachtung neu. Ist der Ausgangsmesser konfiguriert und fehlt der Messnachweis,
+zeigt die Karte die Planungs- und Sicherheitskurve und erklärt den fehlenden
+Nachweis.
 
 Die DC-Lieferannahme gilt höchstens über die beobachtete Zeitspanne und maximal
 48 Stunden. Die Projektion folgt zusammenhängenden, vollständig belegten
@@ -140,6 +141,91 @@ Zeitpunkten wie den Plan. Das Dashboard zeigt die Linie gestrichelt und macht
 die Annahme neben dem Diagramm sichtbar. Planner-Replay, Schaltungen,
 Freigaben und der skalare Forecast-Sensor verwenden weiterhin den akzeptierten
 Plan. Die neue Kurve ist keine statistische Unter- oder Obergrenze.
+
+### Diagnose in der Prognosekarte
+
+Der Netzbezugsschutz bewertet die gemessene Leistung am Netzanschluss.
+Eine gültige Meldung darf bei der Auswertung höchstens 30 Sekunden alt sein.
+Erst ein Bezug über 50 W aktiviert die Sperre für Überschusslasten. Der
+Forecast-Sensor gibt den Zustand der Sperre und die zugrunde liegende Messung
+mit ihrem Alter bei der Auswertung aus. So lässt sich auch ein alter Messwert
+von einem aktuellen Wert von 0 W unterscheiden. Hat der Schutz das Ausschalten
+einer Last angefordert, bleibt der auslösende Messwert sichtbar, auch wenn
+der Zähler inzwischen wieder 0 W meldet. Als letzte Anforderung zählt der
+zuletzt an Home Assistant gesendete netzbedingte AUS-Auftrag. Bei einer
+verspäteten Gerätebestätigung kann seine Entscheidungszeit früher liegen
+als die angezeigte Anforderungszeit.
+
+Für die 48-V-Erwartungskurve gilt der Messnachweis bei Veröffentlichung des
+Plans. Fehlt er, zeigt die Karte den Grund an, etwa eine fehlende
+DC-Ausgangsmessung, eine fehlende Stromgrenze zur Plausibilitätsprüfung oder
+eine zu kurze Messreihe. Ein bestätigtes Einschalten allein belegt keine
+Lieferung. Bei qualifizierter Messreihe nennt die Karte Mindestleistung und
+Beobachtungsdauer. Sie unterscheidet, ob der geplante Versorgungsmodus abweicht
+oder die belegte Messdauer schon vor dem Ende des ersten passenden Intervalls
+endet. Sind beide Kurven im dargestellten Abschnitt optisch deckungsgleich,
+weist die Karte darauf hin.
+
+### Erwartung aus der gemessenen Batterieentladung
+
+Fehlt die Zuordnung eines 48-V-Ausgangsleistungsmessers, kann die Karte die
+am Akku beobachtete Entladerate fortschreiben. Dafür müssen beide Netzteile
+bestätigt EIN, der DC/DC-Wandler AUS und das gemeldete Inverterlimit null
+sein. Eine konfigurierte Netzrückmeldung muss während des gesamten Fensters
+dieselbe verbundene Quelle bestätigen. Unterbrechungen und Quellenwechsel
+starten die Beobachtung neu. Eine konfigurierte Invertersperre muss den
+gesperrten Zustand bestätigen. Die Batteriespannung
+darf die konfigurierte Ausgangsspannung des 48-V-Netzteils nicht übersteigen.
+Ein unveränderter BMS-SOC allein genügt dafür nicht. Die Messung am Akku
+fasst alle wirksamen Quellen und Verbraucher zusammen. Auch ein
+ungemessener Lader zur beobachteten Entlastung beitragen.
+
+SOC, Klemmenspannung und vorzeichenrichtige Batterieleistung müssen über
+mindestens 30 Minuten mit frischen Originalmeldungen belegt sein. Das Fenster
+endet am letzten gemeinsam abgedeckten Zeitpunkt. Nur Intervalle bis
+30 Sekunden zählen. Pro Intervall wird die höhere der zwei benachbarten
+Entladeleistungen über dessen tatsächliche Dauer angesetzt. Für die
+Fortschreibung zählt mindestens die jüngste Entladeleistung. Bis zu 1 W
+positive Ladeanzeige zählt als null Entladung. Größere Ladung, ein Wechsel
+der Schaltung, eine BMS-Nachführung, Datenlücken oder eine Spannweite der
+Entladewerte über 10 W erfordern einen neuen Messabschnitt.
+
+Ein konfigurierter PV-Leistungsmesser muss für diesen Zeitraum null melden.
+Fehlt die Zuordnung, verwendet der Manager die astronomische Nacht am
+Anlagenstandort (Sonne mindestens 18° unter dem Horizont). In diesem Fall
+endet die Annahme spätestens mit der astronomischen Morgendämmerung am
+Standort. In hohen Breiten können einzelne Dämmerungsereignisse fehlen.
+Der Manager prüft die Sonnenhöhe auch zwischen den Meldungen und kürzt die
+Fortschreibung, sobald er durchgehende Dunkelheit nicht mehr belegen kann.
+Die Batterieleistung braucht einen von Lastmessern unterscheidbaren
+Messpunkt. Ein PV-Messer darf zugleich den PV-Zufluss der Verbrauchsbilanz
+liefern. Auch die AC-Anschlussmessungen können in die AC-Verbrauchsbilanz
+eingehen. Sind beide AC-Anschlüsse gemessen, müssen Ein- und Ausgang eine
+gleich große, nichtnegative Durchleitung zeigen. Bei zeitgleichen Änderungen
+wartet die Auswertung auf beide Originalmeldungen. Ist nur ein Anschluss
+gemessen, ist bei einem von null verschiedenen Wert die Durchleitung unklar
+und die Beobachtung endet.
+Die Schätzung gilt höchstens für die belegte Dauer und maximal 48 Stunden.
+Die belegte Versorgungsart muss bereits beim Start des Plans bestanden haben.
+Nur vollständige Planintervalle mit derselben Versorgung und der vergleichbaren
+nativen 48-V-Grundlast kommen infrage. Ausgehend vom Start-SOC sinkt die
+Erwartung je Intervall um die gemessene Entladeleistung mal Dauer, umgerechnet
+mit Entladewirkungsgrad und Speicherkapazität. Bei 0 W bleibt sie flach. Diese
+Nettobilanz ersetzt sowohl die modellierte Batterieentnahme als auch eine im
+selben Intervall modellierte 48-V-Netzteilladung. Die Erwartung kann daher
+oberhalb oder unterhalb des geplanten SOC liegen.
+
+Prognostizierte PV-Erzeugung, Ladung aus anderer Quelle, ein ungedeckter
+DC-Bedarf, ein Wechsel des Versorgungsmodus oder eine erreichte Grenze des
+Speichermodells begrenzen die Linie. Die beobachtete Entladung darf höchstens
+der nativen Last entsprechen. Eine konfigurierte Netzteil-Leistungsgrenze
+muss die dafür benötigte Stützung zulassen.
+
+Die Karte kennzeichnet diese Linie und ihren Wattwert als Batterieentladung.
+Bei konfiguriertem 48-V-Ausgangsmesser gilt weiterhin dessen eigener
+Messvertrag, auch bei einem belegten Nullwert oder einer Messlücke.
+Schaltaufträge, Verbrauchsfreigaben und Reserveplanung verwenden den
+ursprünglichen Plan.
 
 ## Kompatibilität und Nachweise
 

@@ -28,6 +28,11 @@ from .const import (
 from .core.model import PlanResult, SocCoordinateSnapshot, SystemConfig, VoltageGateBand
 from .core.voltage_gate import voltage_request
 from .gate_learning import GateLearner, GateSample
+from .net_discharge import (
+    BATTERY_COORDINATE_KEYS,
+    NetDischargeCapture,
+    NetDischargeDiagnostic,
+)
 from .psu_observation import PsuObservationCapture
 from .soc_consistency import SocConsistencyMonitor, SocObservation
 
@@ -60,6 +65,7 @@ class VoltageGateRuntime:
         self.learner = GateLearner()
         self.monitor = SocConsistencyMonitor()
         self.psu = PsuObservationCapture()
+        self._net_discharge = NetDischargeCapture(owner, self.monitor)
         self.published_coordinate: SocCoordinateSnapshot | None = None
         self._replan_after_task: Any = None
         self.ready = False
@@ -74,13 +80,11 @@ class VoltageGateRuntime:
     def start_observing(self) -> None:
         """Keep original publications before planner debounce / five-second ticks."""
         self.psu.start(self.owner)
+        if self.ready:
+            self._net_discharge.start()
         entities = tuple(
-            entity
-            for key in (
-                CONF_SOC_ENTITY,
-                CONF_FEEDIN_BATTERY_POWER_ENTITY,
-                CONF_BATTERY_VOLTAGE_ENTITY,
-            )
+            entity.lower()
+            for key in BATTERY_COORDINATE_KEYS
             if (entity := self.owner.raw_config.get(key))
         )
         if self._coordinate_unsub and entities == self._coordinate_entities:
@@ -102,6 +106,7 @@ class VoltageGateRuntime:
 
     def stop_observing(self) -> None:
         self.psu.stop()
+        self._net_discharge.stop()
         self._stop_coordinate_observing()
 
     def _stop_coordinate_observing(self) -> None:
@@ -137,24 +142,22 @@ class VoltageGateRuntime:
         before = self._coordinate_readings.get(entity)
         if before is not None and reading is not None and reading[2] < before[2]:
             self._coordinate_gap()
+            self._net_discharge.publication(event)
             return
         self._coordinate_readings[entity] = reading
         if not self.ready:
             return
         self._bind()
         self._sample_coordinate(at)
+        self._net_discharge.publication(event)
 
     def _sample_coordinate(self, at: float) -> None:
         cfg = self.owner.raw_config
         readings = [
-            self._coordinate_readings.get(entity)
+            self._coordinate_readings.get(entity.lower())
             if isinstance((entity := cfg.get(key)), str)
             else None
-            for key in (
-                CONF_SOC_ENTITY,
-                CONF_FEEDIN_BATTERY_POWER_ENTITY,
-                CONF_BATTERY_VOLTAGE_ENTITY,
-            )
+            for key in BATTERY_COORDINATE_KEYS
         ]
         sample = None
         if all(reading is not None for reading in readings):
@@ -241,6 +244,13 @@ class VoltageGateRuntime:
             self.monitor.generation,
             now.timestamp(),
         )
+
+    def net_discharge_diagnostic(self, now: datetime) -> NetDischargeDiagnostic:
+        """Read qualified battery terminal evidence for display projection."""
+        if not self.ready:
+            return {"reason": "net_telemetry_unavailable"}
+        self._bind()
+        return self._net_discharge.diagnostic(now)
 
     def coordinate_matches(self, snapshot: SocCoordinateSnapshot | None) -> bool:
         if snapshot is None:

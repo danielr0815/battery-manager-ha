@@ -1,8 +1,10 @@
-"""Display-only SOC scenario for sustained, measured 48 V PSU delivery."""
+"""Display-only SOC scenarios for the confirmed 48 V support topology."""
 
+from collections.abc import Callable
 from math import isfinite
 
-from .model import PlanInputs, SystemConfig, Trajectory
+from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
+from .reserve_energy import ENERGY_EPSILON_WH, dc_loads
 from .simulation_steps import switching_schedule
 
 MIN_OBSERVED_SECONDS = 1800.0
@@ -17,7 +19,21 @@ def expected_soc_with_psu48(
     delivery_w: float,
     observed_seconds: float,
 ) -> tuple[float, ...]:
-    """Project avoided discharge along the accepted schedule, up to each slot end.
+    """Return the projected SOC points for callers that need only the curve."""
+    points, _ = project_soc_with_psu48(
+        config, inputs, trajectory, delivery_w, observed_seconds
+    )
+    return points
+
+
+def project_soc_with_psu48(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    trajectory: Trajectory,
+    delivery_w: float,
+    observed_seconds: float,
+) -> tuple[tuple[float, ...], str | None]:
+    """Project avoided discharge and explain why an empty curve cannot start.
 
     The scenario assumes uninterrupted delivery in the same supply mode. It
     credits only native 48 V load already drawn from storage in that plan.
@@ -25,6 +41,8 @@ def expected_soc_with_psu48(
     """
     support = config.support
     limit_w = support.psu48_max_power_w
+    if delivery_w == 0:
+        return (), "no_positive_delivery"
     if not (
         support.adaptive_voltage_gate
         and support.coordinated
@@ -34,22 +52,132 @@ def expected_soc_with_psu48(
         and isfinite(observed_seconds)
         and observed_seconds >= MIN_OBSERVED_SECONDS
     ):
-        return ()
+        return (), "projection_unsupported"
 
     battery = config.battery
+    additional_wh = 0.0
+
+    def project_point(slot: HourSlot, flow: HourFlows) -> float:
+        nonlocal additional_wh
+        native_wh = min(slot.dc_wh, support.native48_base_w * slot.duration)
+        # Subtract delivery already credited by the planner even where the
+        # exact usage split is unknown. Only replace existing discharge.
+        offset_wh = max(
+            0.0,
+            min(native_wh, delivery_w * slot.duration) - flow.psu48_delivered_wh,
+        )
+        additional_wh += min(
+            flow.battery_discharge_wh, offset_wh / battery.eta_discharge
+        )
+        # Keep the accumulated difference within the accepted path's headroom.
+        headroom_wh = battery.energy_wh(
+            max(0.0, battery.soc_max_percent - flow.soc_end_percent)
+        )
+        additional_wh = min(headroom_wh, additional_wh)
+        return flow.soc_end_percent + battery.soc_percent(additional_wh)
+
+    return _project_soc(inputs, trajectory, observed_seconds, project_point)
+
+
+def project_soc_with_net_battery_discharge(
+    config: SystemConfig,
+    inputs: PlanInputs,
+    trajectory: Trajectory,
+    net_battery_discharge_w: float,
+    observed_seconds: float,
+    *,
+    valid_until: float | None = None,
+) -> tuple[tuple[float, ...], str | None]:
+    """Continue observed battery-terminal discharge for comparable intervals.
+
+    The caller supplies a conservative power from a stable discharge phase in
+    the same confirmed topology. The measurement quantifies residual discharge
+    at the battery terminals. It cannot identify any individual source output.
+    A supplied UTC timestamp bounds the projection to the comparable night.
+    """
+    support = config.support
+    if not (
+        support.adaptive_voltage_gate
+        and support.coordinated
+        and support.native48_base_w > 0
+        and isfinite(net_battery_discharge_w)
+        and net_battery_discharge_w >= 0
+        and isfinite(observed_seconds)
+        and observed_seconds >= MIN_OBSERVED_SECONDS
+        and (valid_until is None or isfinite(valid_until))
+    ):
+        return (), "projection_unsupported"
+
+    battery = config.battery
+    floor_wh = battery.energy_wh(battery.soc_min_percent)
+    ceiling_wh = battery.energy_wh(battery.soc_max_percent)
+    projected_wh = battery.energy_wh(inputs.start_soc_percent)
+
+    def project_point(slot: HourSlot, flow: HourFlows) -> float | str:
+        nonlocal projected_wh
+        native_wh, _ = dc_loads(config, slot)
+        if (
+            max(slot.pv_wh, slot.pv_p90_wh or 0.0) > ENERGY_EPSILON_WH
+            or abs(flow.battery_charge_wh - flow.psu48_battery_charge_wh)
+            > ENERGY_EPSILON_WH
+            or flow.inverter_output_wh > ENERGY_EPSILON_WH
+            # The stable period is transferable only to the fixed native load.
+            # AC and 24 V demand in this topology use their own grid supplies.
+            or abs(native_wh - support.native48_base_w * slot.duration)
+            > ENERGY_EPSILON_WH
+        ):
+            return "no_matching_plan_window"
+        observed_wh = net_battery_discharge_w * slot.duration
+        if observed_wh > native_wh + ENERGY_EPSILON_WH:
+            return "net_discharge_exceeds_native_load"
+        limit_w = support.psu48_max_power_w
+        if (
+            limit_w is not None
+            and native_wh - observed_wh > limit_w * slot.duration + ENERGY_EPSILON_WH
+        ):
+            return "no_matching_plan_window"
+        # The model can alternate charging and discharging within one slot.
+        # Both modelled flows are replaced by the terminal measurement, so
+        # the indirect curve cannot inherit the model's PSU battery charging.
+        next_wh = projected_wh - observed_wh / battery.eta_discharge
+        if (
+            next_wh < floor_wh - ENERGY_EPSILON_WH
+            or projected_wh > ceiling_wh + ENERGY_EPSILON_WH
+        ):
+            return "net_storage_limit"
+        projected_wh = next_wh
+        return battery.soc_percent(max(floor_wh, min(ceiling_wh, projected_wh)))
+
+    return _project_soc(
+        inputs,
+        trajectory,
+        observed_seconds,
+        project_point,
+        valid_until=valid_until,
+    )
+
+
+def _project_soc(
+    inputs: PlanInputs,
+    trajectory: Trajectory,
+    observed_seconds: float,
+    project_point: Callable[[HourSlot, HourFlows], float | str],
+    *,
+    valid_until: float | None = None,
+) -> tuple[tuple[float, ...], str | None]:
     horizon = min(observed_seconds, MAX_PROJECTION_SECONDS)
     at = inputs.now.timestamp()
     until = at + horizon
-    additional_wh = 0.0
+    horizon_reason = "observation_shorter_than_plan_interval"
+    if valid_until is not None and valid_until < until:
+        until = valid_until
+        horizon_reason = "net_window_ends_before_interval"
     points = []
+    reason = "no_matching_plan_window"
     for slot, flow in zip(inputs.slots, trajectory.flows, strict=True):
         start = slot.start.timestamp()
         end = start + slot.duration * 3600
-        if (
-            abs(start - at) > _TIME_EPSILON_SECONDS
-            or end > until + _TIME_EPSILON_SECONDS
-            or not flow.switching_schedule
-        ):
+        if abs(start - at) > _TIME_EPSILON_SECONDS or not flow.switching_schedule:
             break
         intervals = switching_schedule((slot,), (flow,))
         if len(intervals) != 1:
@@ -65,23 +193,14 @@ def expected_soc_with_psu48(
             or flow.unserved_dc_wh > 0
         ):
             break
+        if end > until + _TIME_EPSILON_SECONDS:
+            reason = horizon_reason
+            break
 
-        native_wh = min(slot.dc_wh, support.native48_base_w * slot.duration)
-        # Subtract delivery already credited by the planner even where the
-        # exact usage split is unknown. Only replace existing discharge.
-        offset_wh = max(
-            0.0,
-            min(native_wh, delivery_w * slot.duration) - flow.psu48_delivered_wh,
-        )
-        additional_wh += min(
-            flow.battery_discharge_wh, offset_wh / battery.eta_discharge
-        )
-        # Maintain the difference from the accepted SOC path, consuming that
-        # headroom if the plan charges to the battery's physical ceiling.
-        headroom_wh = battery.energy_wh(
-            max(0.0, battery.soc_max_percent - flow.soc_end_percent)
-        )
-        additional_wh = min(headroom_wh, additional_wh)
-        points.append(flow.soc_end_percent + battery.soc_percent(additional_wh))
+        point = project_point(slot, flow)
+        if isinstance(point, str):
+            reason = point
+            break
+        points.append(point)
         at = end
-    return tuple(points)
+    return tuple(points), None if points else reason

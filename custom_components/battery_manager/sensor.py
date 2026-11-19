@@ -617,6 +617,7 @@ class BatteryManagerSocForecastSensor(BatteryManagerEntity, SensorEntity):
         return {
             "forecast": data.get("soc_forecast") or [],
             "soc_expectation": data.get("soc_expectation"),
+            "load_grid_guard": data.get("load_grid_guard"),
             "switching_schedule": data.get("switching_schedule") or [],
             "soc_threshold_percent": data.get("soc_threshold_percent"),
             "grid_import_kwh": data.get("grid_import_kwh"),

@@ -263,7 +263,10 @@ from .core.model import (
     SocCoordinateSnapshot,
 )
 from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
-from .core.psu_expectation import expected_soc_with_psu48
+from .core.psu_expectation import (
+    project_soc_with_net_battery_discharge,
+    project_soc_with_psu48,
+)
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
 from .daily_pv import DailyPVCache, forecast_energy_wh
@@ -276,6 +279,7 @@ from .load_actuation import (
     LoadAction,
     LoadOnEdge,
     bind_coordinate_request,
+    cleanup_grid_stop,
     confirm_state,
     confirms_load_on,
     coordinate_request_current,
@@ -292,7 +296,13 @@ from .load_actuation import (
     restore_load_booking,
     restore_load_on_edges,
 )
-from .load_safety import LOAD_GRID_IMPORT_TOLERANCE_W, grid_import_w, start_blocked
+from .load_safety import (
+    POWER_MEASUREMENT_MAX_AGE_SECONDS,
+    GridStopEvidence,
+    grid_guard_diagnostic,
+    record_grid_stop,
+    start_blocked,
+)
 from .localization import message
 from .market import price_entity, read_prices
 from .operation_recorder import OperationRecorder
@@ -726,6 +736,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._load_warning_diag: dict[str, dict[str, Any]] = {}
         self._load_switch_task: asyncio.Task | None = None
         self._load_safety_tasks: dict[str, asyncio.Task[None]] = {}
+        self._last_load_grid_action: dict[str, Any] | None = None
         # F-SUBHOUR (approach A): the frozen sub-hour run deadline per controlled
         # non-energy-limited load, and the one-shot timer that force-switches it
         # OFF at that deadline so the planned partial-hour energy is delivered
@@ -3173,7 +3184,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._save_persistent_state()
 
     async def _switch_load_entity(
-        self, entity_id: str, desired: bool, *, actor_owner: str | None = None
+        self,
+        entity_id: str,
+        desired: bool,
+        *,
+        actor_owner: str | None = None,
+        grid_stop: GridStopEvidence | None = None,
     ) -> bool:
         """Confirm physical feedback and limit retries, including service failures."""
         if desired and not coordinate_request_current(self):
@@ -3213,7 +3229,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             coordinate_request_revoked(self, entity_id, request)
             return False
         request.sent = True
-        if context is None:
+        if not desired and request.command is not None:
+            command = request.command
+            if command.coordinate_cleanup is not None:
+                grid_stop = cleanup_grid_stop(self, command.load_id, entity_id)
+            else:
+                grid_stop = grid_stop or command.grid_stop
+        if grid_stop is not None:
+            switched = await self._switch_entity(
+                entity_id, desired, actor_owner=actor_owner, grid_stop=grid_stop
+            )
+        elif context is None:
             switched = await self._switch_entity(
                 entity_id, desired, actor_owner=actor_owner
             )
@@ -4900,6 +4926,59 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue)
 
+    def _forecast_soc_expectation(
+        self, config: SystemConfig, inputs: PlanInputs, result: PlanResult
+    ) -> tuple[tuple[float, ...], dict[str, Any]]:
+        """Read evidence after actuation awaits, against the accepted plan."""
+        now = dt_util.now()
+        psu = self.voltage_gate.psu
+        psu.capture(self, now)
+        details = psu.expectation_explanation(self, now)
+        if details.get("reason") == "missing_dc_meter":
+            details = {
+                "basis": "battery_net",
+                "relay_confirmed_on": details["relay_confirmed_on"],
+                **self.voltage_gate.net_discharge_diagnostic(now),
+            }
+            if "net_discharge_w" not in details:
+                return (), {**details, "status": "unqualified"}
+            if not self.voltage_gate.coordinate_matches(inputs.soc_coordinate):
+                return (), {
+                    **details,
+                    "status": "no_window",
+                    "reason": "net_coordinate_unstable",
+                }
+            # Actuation can yield while the plant changes mode. The evidence
+            # must reach back to the SOC from which this plan actually starts.
+            plan_age = now.timestamp() - inputs.now.timestamp()
+            if not 0 <= plan_age <= details["observed_seconds"]:
+                return (), {
+                    **details,
+                    "status": "no_window",
+                    "reason": "net_plan_outside_observation",
+                }
+            points, reason = project_soc_with_net_battery_discharge(
+                config,
+                inputs,
+                result.trajectory,
+                details["net_discharge_w"],
+                details["observed_seconds"],
+                valid_until=details.get("valid_until"),
+            )
+        else:
+            evidence = psu.expected48(now)
+            if evidence is None:
+                return (), {**details, "status": "unqualified"}
+            delivery_w, observed_seconds = evidence
+            details["delivery_w"] = delivery_w
+            points, reason = project_soc_with_psu48(
+                config, inputs, result.trajectory, delivery_w, observed_seconds
+            )
+        details["status"] = "available" if points else "no_window"
+        if reason is not None:
+            details["reason"] = reason
+        return points, details
+
     async def _async_update_data_serial(self) -> dict[str, Any]:
         if self._actuation_shutdown or self.hass.is_stopping:
             return self.data or {}
@@ -5545,23 +5624,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         soc_expectation: dict[str, Any] | None = None
         expected_soc: tuple[float, ...] = ()
         if config.support.adaptive_voltage_gate:
-            # Read proof after the actuation awaits. An old ON episode must
-            # not authorize a display projection after a source transition.
-            evidence_now = dt_util.now()
-            self.voltage_gate.psu.capture(self, evidence_now)
-            evidence = self.voltage_gate.psu.expected48(evidence_now)
-            soc_expectation = {"status": "unqualified"}
-            if evidence is not None:
-                delivery_w, observed_seconds = evidence
-                expected_soc = expected_soc_with_psu48(
-                    config, inputs, result.trajectory, delivery_w, observed_seconds
-                )
-                soc_expectation = {
-                    "status": "available" if expected_soc else "no_window",
-                    "delivery_w": delivery_w,
-                }
-                if expected_soc:
-                    soc_forecast[0]["expected_soc"] = round(soc, 1)
+            expected_soc, soc_expectation = self._forecast_soc_expectation(
+                config, inputs, result
+            )
+            if expected_soc:
+                soc_forecast[0]["expected_soc"] = round(soc, 1)
         # F-FEEDIN: the per-slot planned feed-in power rides on each forecast
         # point (only when the schedule is populated — the card renders its
         # lane purely on attribute presence, keeping old backends compatible).
@@ -5799,11 +5866,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "migration": dict(self._support_migration),
             },
             "live_ac": dict(self.live_ac.diagnostics),
-            "load_grid_guard": {
-                "active": (imported := grid_import_w(self)) is not None
-                and imported > LOAD_GRID_IMPORT_TOLERANCE_W,
-                "grid_import_w": imported,
-            },
+            "load_grid_guard": grid_guard_diagnostic(self),
             "consumption_profile": profile_diag,
             "gate_calibration": self._gate_calibration_diag(config),
             "hourly_details": hourly_details,
@@ -6845,6 +6908,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         *,
         actor_owner: str | None = None,
         context: Context | None = None,
+        grid_stop: GridStopEvidence | None = None,
     ) -> bool:
         # F-CASCADE-STORAGE final physical boundary (live 2026-09-01): the
         # normal load-ID guards correctly exclude cascade members, yet the
@@ -6933,6 +6997,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if recorder
             else None
         )
+        if (
+            grid_stop is not None
+            and not turn_on
+            and actor_owner is not None
+            and actor_owner.startswith("load:")
+        ):
+            record_grid_stop(self, grid_stop, actor_owner.removeprefix("load:"))
         try:
             # homeassistant.* works across domains (switch, input_boolean, ...)
             await self.hass.services.async_call(
@@ -7099,10 +7170,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         state = self.hass.states.get(entity) if entity else None
         if (
             state is None
-            or not 0 <= (dt_util.utcnow() - state.last_reported).total_seconds() <= 30
+            or not 0
+            <= (dt_util.utcnow() - state.last_reported).total_seconds()
+            <= POWER_MEASUREMENT_MAX_AGE_SECONDS
         ):
             return None
-        value = self._read_float(entity)
+        return self._reserve_power_value(state)
+
+    def _reserve_power_value(self, state: State) -> float | None:
+        value = self._read_float(state.entity_id)
         unit = state.attributes.get("unit_of_measurement")
         return (
             value * (1000 if unit == "kW" else 1)
@@ -8081,8 +8157,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # releases the latch BEFORE this runs — but a latch restored from
         # persistence or set after this cycle's data was read must never see
         # a re-ON without valid data.
-        imported = grid_import_w(self)
-        grid_guard = imported is not None and imported > LOAD_GRID_IMPORT_TOLERANCE_W
+        decided_at = dt_util.utcnow()
+        grid_observation = grid_guard_diagnostic(self, checked_at=decided_at)
+        grid_guard = grid_observation["active"]
+        grid_stop = (
+            GridStopEvidence(decided_at, "plan", grid_observation)
+            if grid_guard
+            else None
+        )
         force_off = floor_guard or self._stale_shed_active or grid_guard
         plans_by_id = {lp.load_id: lp for lp in result.load_plans}
         cascade_managed = self.cascade_manager.managed_load_ids()
@@ -8394,6 +8476,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     flicker_eligible,
                     reason,
                     pv_plan=pv_plan if desired else None,
+                    grid_stop=grid_stop if reason == "measured grid import" else None,
                 )
             )
 

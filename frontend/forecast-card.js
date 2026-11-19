@@ -28,6 +28,8 @@ import {
   feedinDecisions,
   executionLines,
   inverterControlReport,
+  loadGridGuardReport,
+  socExpectationExplanation,
   sourceHealthReport,
   stateNotice,
 } from "./reports.js";
@@ -237,7 +239,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
           <div class="title">${esc(header ?? "")}</div>
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
-        ${stateNotice(hass, stateObj)}${body}
+        ${stateNotice(hass, stateObj)}${loadGridGuardReport(hass, stateObj)}${body}
         ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
         ${reserveReport(this._hass, stateObj?.attributes?.reserve, stateObj?.attributes?.coordinated_support, stateObj?.attributes?.gate_calibration)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
@@ -362,7 +364,12 @@ export class BatteryManagerForecastCard extends HTMLElement {
     if (points.length < 2) {
       return this._message(t("no_data"));
     }
-    const expectationStatus = a.soc_expectation?.status;
+    const expectation = a.soc_expectation;
+    const expectationStatus = expectation?.status;
+    const expectationCurveKey =
+      expectation?.basis === "battery_net"
+        ? "soc_expected_net_curve"
+        : "soc_expected_curve";
     const horizonMs = Number(this._config.hours) * 3600 * 1000;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -626,10 +633,16 @@ export class BatteryManagerForecastCard extends HTMLElement {
       expectationStatus === "available"
         ? points.slice(0, expectationEnd < 0 ? points.length : expectationEnd)
         : [];
-    if (expected.length >= 2) {
-      const expectedCoords = expected.map(
-        (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`,
-      );
+    const expectedCoords = expected.map(
+      (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`,
+    );
+    const showExpectation = expectedCoords.length >= 2;
+    // Between shared timestamps the vertical difference is linear. Compare
+    // it at the endpoints over the displayed prefix, within one chart pixel.
+    const overlap =
+      showExpectation &&
+      expected.every((p) => Math.abs(y(p.expectedSoc) - y(p.soc)) < 1);
+    if (showExpectation) {
       svg.push(`<polyline data-soc-curve="expected" points="${expectedCoords.join(" ")}"
         fill="none" stroke="${expectationColor}" stroke-width="2" stroke-dasharray="5 3"/>`);
     }
@@ -715,7 +728,8 @@ export class BatteryManagerForecastCard extends HTMLElement {
       lang,
       lanes,
       inverterFloor: activeReserve && showInverterFloor ? invMin : undefined,
-      showExpectation: expected.length >= 2,
+      expectationCurveKey,
+      expectationEndTime: showExpectation ? expected.at(-1).time : undefined,
     };
 
     const whenFmt = dateTimeFormat(this._hass, {
@@ -875,11 +889,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
         expectationStatus
           ? `<div class="legend" data-soc-curve-legend style="color:var(--primary-text-color, inherit)">
         <span><span aria-hidden="true" style="color:${safetyColor}">━</span> ${esc(t("soc_safety_curve"))}</span>
-        ${expected.length >= 2 ? `<span><span aria-hidden="true" style="color:${expectationColor}">┄</span> ${esc(t("soc_expected_curve"))}</span>` : ""}
-      </div><div class="readout" data-soc-curve-explanation>${esc(t(expected.length >= 2 ? "soc_expected_basis" : expectationStatus === "unqualified" ? "soc_expected_unqualified" : "soc_expected_no_window"))}</div>`
+        ${showExpectation ? `<span><span aria-hidden="true" style="color:${expectationColor}">┄</span> ${esc(t(expectationCurveKey))}</span>` : ""}
+      </div><div class="forecast-note" id="soc-curve-explanation" data-soc-curve-explanation>${esc(socExpectationExplanation(this._hass, expectation, showExpectation, overlap))}</div>`
           : ""
       }
-      <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
+      <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}" ${expectationStatus ? 'aria-describedby="soc-curve-explanation"' : ""}
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
@@ -1080,8 +1094,10 @@ export class BatteryManagerForecastCard extends HTMLElement {
     const forecastText =
       nearest.soc == null
         ? ""
-        : meta.showExpectation && nearest.expectedSoc != null
-          ? ` · ${t("soc_safety_curve")} ${nearest.soc} % · ${t("soc_expected_curve")} ${nearest.expectedSoc} %`
+        : meta.expectationEndTime != null &&
+            nearest.time <= meta.expectationEndTime &&
+            nearest.expectedSoc != null
+          ? ` · ${t("soc_safety_curve")} ${nearest.soc} % · ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %`
           : ` · ${nearest.soc} %`;
     const when = esc(
       `${selectionTime(

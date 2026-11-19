@@ -1969,6 +1969,7 @@ async def test_live_root_rejects_generic_off_at_entity_boundary(
     coordinator._load_run_deadline = {}
     coordinator._load_power_calibration_release = set()
     coordinator._load_off_timer = {}
+    coordinator._last_load_grid_action = None
     coordinator.data = None
     coordinator.async_update_listeners = lambda: None
     coordinator._cancel_off_timer = lambda _load_id: None

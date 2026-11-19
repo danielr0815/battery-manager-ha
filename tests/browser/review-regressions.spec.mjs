@@ -418,6 +418,275 @@ for (const kind of ["cascade", "loads"]) {
   });
 }
 
+test("grid guard reports whether it has usable net connection measurements", async ({
+  page,
+}) => {
+  await mount(page, "forecast");
+  const guard = page.locator("[data-load-grid-guard]");
+  const publish = (load_grid_guard) =>
+    refresh(page, { ...attributes, load_grid_guard });
+  const baseline = {
+    active: false,
+    status: "unconfigured",
+    grid_import_w: null,
+    measured_w: null,
+    age_seconds: null,
+    threshold_w: 50,
+    entity_id: null,
+  };
+  await expect(guard).toHaveCount(0);
+  await publish(baseline);
+  await expect(guard).toContainText("Grid import guard inactive");
+  await expect(guard).toContainText("No grid meter configured");
+  await expect(guard).toContainText("Cutoff above 50 W");
+
+  const configured = { ...baseline, entity_id: "sensor.net_grid_power" };
+  await publish({ ...configured, status: "unavailable" });
+  await expect(guard).toContainText("Grid reading unavailable");
+  await expect(guard).toContainText("sensor.net_grid_power");
+  await expect(guard).not.toContainText("0 W ·");
+  await publish({ ...configured, status: "invalid", age_seconds: 2 });
+  await expect(guard).toContainText("Invalid grid reading");
+  await expect(guard).toContainText("Age at check 2 s");
+  await publish({
+    ...configured,
+    status: "stale",
+    measured_w: 2000,
+    age_seconds: 301,
+  });
+  await expect(guard).toContainText("Grid import guard inactive");
+  await expect(guard).toContainText("Stale grid reading 2,000 W");
+  await expect(guard).toContainText("Age at check 301 s");
+
+  for (const [watts, active] of [
+    [25, false],
+    [50, false],
+    [50.01, true],
+  ]) {
+    await publish({
+      ...configured,
+      status: "fresh",
+      active,
+      grid_import_w: watts,
+      measured_w: watts,
+      age_seconds: 0,
+    });
+    await expect(guard).toContainText(
+      `Grid import guard ${active ? "active" : "inactive"}`,
+    );
+    await expect(guard).toContainText(`Fresh grid reading ${watts} W`);
+    await expect(guard).toContainText("Age at check 0 s");
+  }
+
+  await page.evaluate(() => {
+    window.card.hass = { ...window.card._hass, language: "de" };
+  });
+  await expect(guard).toContainText("Netzbezugsschutz aktiv");
+  await expect(guard).toContainText("Aktueller Netzleistungswert 50,01 W");
+  await expect(guard).toContainText("Schaltschwelle über 50 W");
+  await page.evaluate(() => {
+    const hass = window.card._hass;
+    window.card.hass = {
+      ...hass,
+      states: { "sensor.plan": { state: "unavailable", attributes: {} } },
+    };
+  });
+  await expect(page.locator("#chart")).toBeVisible();
+  await expect(guard).toHaveCount(0);
+});
+
+for (const [language, message] of [
+  [
+    "en",
+    {
+      age: "Age at check",
+      fresh: "Fresh grid reading",
+      stale: "Stale grid reading",
+    },
+  ],
+  [
+    "de",
+    {
+      age: "Alter bei Prüfung",
+      fresh: "Aktueller Netzleistungswert",
+      stale: "Veralteter Netzleistungswert",
+    },
+  ],
+]) {
+  test(`grid guard shows the 30-second freshness boundary (${language})`, async ({
+    page,
+  }) => {
+    const guard = {
+      active: false,
+      status: "fresh",
+      grid_import_w: 20,
+      measured_w: 20,
+      age_seconds: 30,
+      max_age_seconds: 30,
+      threshold_w: 50,
+    };
+    await mount(page, "forecast", { ...attributes, load_grid_guard: guard });
+    await page.evaluate((language) => {
+      window.card.hass = { ...window.card._hass, language };
+    }, language);
+    const report = page.locator("[data-load-grid-guard]");
+    await expect(report).toContainText(message.fresh);
+    await expect(report).toContainText(`${message.age} 30 s`);
+    await refresh(page, {
+      ...attributes,
+      load_grid_guard: {
+        ...guard,
+        status: "stale",
+        grid_import_w: null,
+        age_seconds: 30.001,
+      },
+    });
+    await expect(report).toContainText(message.stale);
+    await expect(report).toContainText(`${message.age} > 30 s`);
+  });
+}
+
+for (const [language, copy] of [
+  [
+    "en",
+    {
+      inactive: "Grid import guard inactive",
+      current: "Fresh grid reading 0 W",
+      lastStop: "Last stop request by grid import guard",
+      decisionAt: "Decision at",
+      previous: "Grid reading at decision 2,000 W",
+      age: "Age at check 2 s",
+      short:
+        "The DC readings do not cover the whole first matching plan interval.",
+      limit:
+        "A positive, finite DC power limit is required to validate the readings. Check the configured output voltage and maximum current.",
+      topology:
+        "The configured measurement cannot isolate the 48 V power supply’s DC output.",
+    },
+  ],
+  [
+    "de",
+    {
+      inactive: "Netzbezugsschutz inaktiv",
+      current: "Aktueller Netzleistungswert 0 W",
+      lastStop: "Letzte Abschaltanforderung des Netzbezugsschutzes",
+      decisionAt: "Entscheidung um",
+      previous: "Netzleistungswert bei Entscheidung 2.000 W",
+      age: "Alter bei Prüfung 2 s",
+      short:
+        "Die DC-Messwerte decken das erste passende Planintervall nur teilweise ab.",
+      limit:
+        "Zur Plausibilitätsprüfung ist eine positive, endliche DC-Leistungsgrenze erforderlich. Ausgangsspannung und Maximalstrom prüfen.",
+      topology:
+        "Die konfigurierte Messung kann die DC-Abgabe des 48-V-Netzteils nicht eindeutig erfassen.",
+    },
+  ],
+]) {
+  test(`grid guard separates the stop request from the current reading (${language})`, async ({
+    page,
+  }) => {
+    const reading = {
+      active: false,
+      status: "fresh",
+      grid_import_w: 0,
+      measured_w: 0,
+      age_seconds: 0,
+      entity_id: "sensor.net_grid_power",
+      threshold_w: 50,
+      max_age_seconds: 30,
+    };
+    const decision = {
+      ...reading,
+      action: "stop_requested",
+      path: "plan",
+      active: true,
+      decided_at: "2026-09-26T08:00:02Z",
+      measured_at: "2026-09-26T08:00:00Z",
+      measured_w: 2000,
+      age_seconds: 2,
+      load_ids: ["load-a"],
+    };
+    await mount(page, "forecast", {
+      ...attributes,
+      load_grid_guard: {
+        ...reading,
+        last_action: {
+          ...decision,
+          requested_at: "2026-09-26T08:00:07Z",
+        },
+      },
+    });
+    await page.evaluate((language) => {
+      window.card.hass = { ...window.card._hass, language };
+    }, language);
+    const latest = page.locator("[data-load-grid-last-action]");
+    const current = page.locator("[data-load-grid-guard]");
+    await expect(current).toContainText(copy.inactive);
+    await expect(current).toContainText(copy.current);
+    await expect(current).not.toContainText(copy.previous);
+    await expect(latest).toContainText(
+      new RegExp(`${copy.lastStop}[^·]*·[^·]*10:00:07`),
+    );
+    await expect(latest).toContainText(copy.previous);
+    await expect(latest).toContainText(copy.age);
+    await expect(latest).toContainText(
+      new RegExp(`${copy.decisionAt}[^·]*10:00:02`),
+    );
+    // The earlier diagnostic payload carried only the decision timestamp.
+    await refresh(page, {
+      ...attributes,
+      load_grid_guard: { ...reading, last_action: decision },
+    });
+    await expect(latest).toContainText(
+      new RegExp(`${copy.lastStop}\\s*·\\s*${copy.decisionAt}[^·]*10:00:02`),
+    );
+    await refresh(page, { ...attributes, load_grid_guard: reading });
+    await expect(latest).toHaveCount(0);
+  });
+
+  test(`PSU explanation distinguishes insufficient projection and plausibility evidence (${language})`, async ({
+    page,
+  }) => {
+    await mount(page, "forecast", {
+      ...attributes,
+      soc_expectation: {
+        status: "no_window",
+        reason: "observation_shorter_than_plan_interval",
+        delivery_w: 35,
+        observed_seconds: 1800,
+      },
+    });
+    await page.evaluate((language) => {
+      window.card.hass = { ...window.card._hass, language };
+    }, language);
+    const explanation = page.locator("[data-soc-curve-explanation]");
+    await expect(explanation).toContainText(copy.short);
+    await expect(explanation).toContainText("35 W");
+    await expect(explanation).toContainText("30 min");
+    await expect(page.locator('[data-soc-curve="expected"]')).toHaveCount(0);
+    await refresh(page, {
+      ...attributes,
+      soc_expectation: {
+        status: "unqualified",
+        reason: "missing_dc_power_limit",
+        relay_confirmed_on: true,
+      },
+    });
+    await expect(explanation).toContainText(copy.limit);
+    await expect(explanation).not.toContainText(copy.topology);
+    await refresh(page, {
+      ...attributes,
+      soc_expectation: {
+        status: "unqualified",
+        reason: "invalid_dc_topology",
+        relay_confirmed_on: true,
+      },
+    });
+    await expect(explanation).toContainText(copy.topology);
+    await expect(explanation).not.toContainText(copy.limit);
+  });
+}
+
 test("measured PSU expectation ends separately from the safety curve", async ({
   page,
 }) => {
@@ -432,10 +701,18 @@ test("measured PSU expectation ends separately from the safety curve", async ({
   const card = page.locator("battery-manager-forecast-card");
   const safety = card.locator('[data-soc-curve="safety"]');
   const expected = card.locator('[data-soc-curve="expected"]');
+  const explanation = card.locator("[data-soc-curve-explanation]");
   await expect(card.locator("[data-soc-curve-legend]")).toContainText(
     "Planning and safety curve",
   );
   await expect(expected).toHaveAttribute("stroke-dasharray", "5 3");
+  await expect(explanation).toContainText(
+    "Minimum measured 48 V DC output 35 W",
+  );
+  await expect(explanation).toContainText(
+    "The solid curve governs planning and safety decisions.",
+  );
+  await expect(explanation).not.toContainText("curves overlap");
   expect((await safety.getAttribute("points")).split(" ")).toHaveLength(3);
   expect((await expected.getAttribute("points")).split(" ")).toHaveLength(2);
   await card.locator("#chart").focus();
@@ -453,10 +730,311 @@ test("measured PSU expectation ends separately from the safety curve", async ({
     soc_expectation: { status: "unqualified" },
   });
   await expect(expected).toHaveCount(0);
-  await expect(card.locator("[data-soc-curve-explanation]")).toContainText(
+  await expect(explanation).toContainText(
     "30 minutes of continuous 48 V DC output readings",
+  );
+  await refresh(page, {
+    ...attributes,
+    soc_expectation: {
+      status: "unqualified",
+      reason: "missing_dc_meter",
+      relay_confirmed_on: true,
+    },
+  });
+  await expect(expected).toHaveCount(0);
+  await expect(explanation).toContainText("Relay ON is confirmed");
+  await expect(explanation).toContainText(
+    "No 48 V DC output meter is configured.",
+  );
+  await expect(explanation).toContainText(
+    "The solid curve governs planning and safety decisions.",
+  );
+  await refresh(page, {
+    ...attributes,
+    soc_expectation: {
+      status: "unqualified",
+      reason: "episode_too_short",
+      relay_confirmed_on: true,
+      observed_seconds: 1799.9,
+    },
+  });
+  await expect(expected).toHaveCount(0);
+  await expect(explanation).toContainText("Measurement span 29 min 59 s");
+  await expect(explanation).toContainText("Fewer than 30 minutes");
+  await refresh(page, {
+    ...attributes,
+    soc_expectation: {
+      status: "no_window",
+      reason: "no_matching_plan_window",
+      delivery_w: 35,
+      observed_seconds: 1800,
+    },
+  });
+  await expect(expected).toHaveCount(0);
+  await expect(explanation).toContainText(
+    "Minimum measured 48 V DC output 35 W",
+  );
+  await expect(explanation).toContainText("Measurement span 30 min");
+  await expect(explanation).toContainText(
+    "no matching period in the current switching schedule",
   );
   await refresh(page, attributes);
   await expect(card.locator("[data-soc-curve-legend]")).toHaveCount(0);
   await expect(safety).toHaveCount(1);
 });
+
+for (const [language, copy] of [
+  [
+    "en",
+    {
+      netCurve: "With continued net battery discharge",
+      readout: "With continued net battery discharge 40 %",
+      netPower: "Net battery discharge from terminal readings 0 W",
+      span: "Measurement span 75 min",
+      until: "Comparable night window ends at",
+      overlap: "The curves overlap",
+      reasons: {
+        no_matching_plan_window: "no interval with comparable native load",
+        observation_shorter_than_plan_interval:
+          "measured net discharge span is shorter",
+        projection_unsupported: "cannot support this net discharge scenario",
+        net_discharge_exceeds_native_load:
+          "exceeds the planned native 48 V load",
+        net_storage_limit: "would exceed the configured battery SOC limits",
+        net_window_ends_before_interval:
+          "night window ends before the first matching plan interval",
+        net_episode_too_short:
+          "Fewer than 30 minutes of stable net discharge readings",
+        net_publication_unconfirmed:
+          "measurements for the current plan publication are not yet confirmed",
+        net_mode_unconfirmed: "inverter or configured grid source",
+        net_ac_flow_incompatible:
+          "The AC readings do not confirm grid pass-through for this period.",
+        net_plan_outside_observation:
+          "plan starts outside the period with a confirmed supply mode",
+      },
+      safety: "The solid curve governs planning and safety decisions.",
+      direct: "Minimum measured 48 V DC output 0 W",
+    },
+  ],
+  [
+    "de",
+    {
+      netCurve: "Bei anhaltender Netto-Entladung",
+      readout: "Bei anhaltender Netto-Entladung 40 %",
+      netPower: "Netto-Entladung aus Messwerten an den Batterieklemmen 0 W",
+      span: "Messspanne 75 min",
+      until: "Ende des vergleichbaren Nachtfensters um",
+      overlap: "Die Kurven liegen im gemeinsam dargestellten Zeitraum",
+      reasons: {
+        no_matching_plan_window:
+          "kein Intervall mit vergleichbarer nativer Last",
+        observation_shorter_than_plan_interval:
+          "Messspanne der Netto-Entladung ist kürzer",
+        projection_unsupported:
+          "reicht für dieses Netto-Entladungsszenario nicht aus",
+        net_discharge_exceeds_native_load:
+          "übersteigt die geplante native 48-V-Last",
+        net_storage_limit: "außerhalb der eingestellten Batteriegrenzen",
+        net_window_ends_before_interval:
+          "Nachtfenster endet vor dem Ende des ersten passenden Planintervalls",
+        net_episode_too_short:
+          "weniger als 30 Minuten stabiler Messwerte zur Netto-Entladung",
+        net_publication_unconfirmed:
+          "Messwerte zum aktuellen veröffentlichten Plan sind noch nicht bestätigt",
+        net_mode_unconfirmed:
+          "Wechselrichter oder die konfigurierte Netzquellen-Rückmeldung",
+        net_ac_flow_incompatible:
+          "Die AC-Messwerte bestätigen für diesen Zeitraum keine reine Netzdurchleitung.",
+        net_plan_outside_observation:
+          "Plan beginnt außerhalb des Zeitraums mit bestätigtem Versorgungsmodus",
+      },
+      safety:
+        "Für Planung und Schutzentscheidungen gilt die durchgezogene Kurve.",
+      direct: "Kleinste gemessene 48-V-DC-Abgabe 0 W",
+    },
+  ],
+]) {
+  test(`Net battery discharge labels, overlap and reasons (${language})`, async ({
+    page,
+  }) => {
+    const attrs = {
+      ...attributes,
+      forecast: [
+        { ...attributes.forecast[0], expected_soc: 40 },
+        { ...attributes.forecast[1], soc: 39, expected_soc: 40 },
+        { ...attributes.forecast[2], soc: 38 },
+      ],
+      soc_expectation: {
+        status: "available",
+        basis: "battery_net",
+        net_discharge_w: 0,
+        observed_seconds: 4500,
+        valid_until: Date.parse(attributes.forecast[2].t) / 1000,
+      },
+    };
+    await mount(page, "forecast", attrs);
+    await page.evaluate((language) => {
+      window.card.hass = { ...window.card._hass, language };
+    }, language);
+    const chart = page.locator("#chart");
+    const legend = page.locator("[data-soc-curve-legend]");
+    const explanation = page.locator("[data-soc-curve-explanation]");
+    const safety = page.locator('[data-soc-curve="safety"]');
+    const expected = page.locator('[data-soc-curve="expected"]');
+    const readout = page.locator("#readout");
+    await expect(legend).toContainText(copy.netCurve);
+    await expect(explanation).toContainText(copy.netPower);
+    await expect(explanation).toContainText(copy.span);
+    await expect(explanation).toContainText(copy.until);
+    await expect(explanation).toContainText("12:00:00");
+    await expect(explanation).toContainText(copy.safety);
+    await expect(explanation).not.toContainText(copy.direct);
+    await expect(explanation).not.toContainText(copy.overlap);
+    await expect(expected).toHaveAttribute("stroke-dasharray", "5 3");
+    expect((await expected.getAttribute("points")).split(" ")).toHaveLength(2);
+    expect((await safety.getAttribute("points")).split(" ")).toHaveLength(3);
+    const { x, y } = await pointAt(page, attributes.forecast[1].t);
+    await page.mouse.move(x, y);
+    await expect(readout).toContainText(copy.readout);
+    await chart.focus();
+    await chart.press("Home");
+    await chart.press("ArrowRight");
+    await expect(readout).toContainText(copy.readout);
+    await chart.press("End");
+    await expect(readout).not.toContainText(copy.netCurve);
+
+    await refresh(page, {
+      ...attrs,
+      forecast: [
+        attrs.forecast[0],
+        { ...attrs.forecast[1], soc: 40 },
+        attrs.forecast[2],
+      ],
+    });
+    await expect(expected).toHaveCount(1);
+    await expect(explanation).toContainText(copy.overlap);
+
+    // If the plan expects charging, a measured 0 W continuation lies below it.
+    await refresh(page, {
+      ...attrs,
+      forecast: [
+        attrs.forecast[0],
+        { ...attrs.forecast[1], soc: 41 },
+        attrs.forecast[2],
+      ],
+    });
+    await expect(expected).toHaveCount(1);
+    await expect(explanation).not.toContainText(copy.overlap);
+
+    for (const [reason, message] of Object.entries(copy.reasons)) {
+      const status = [
+        "net_episode_too_short",
+        "net_publication_unconfirmed",
+        "net_mode_unconfirmed",
+        "net_ac_flow_incompatible",
+      ].includes(reason)
+        ? "unqualified"
+        : "no_window";
+      await refresh(page, {
+        ...attrs,
+        soc_expectation: {
+          basis: "battery_net",
+          status,
+          reason,
+          observed_seconds: 1500,
+        },
+      });
+      await expect(expected).toHaveCount(0);
+      await expect(safety).toHaveCount(1);
+      await expect(explanation).toContainText(message);
+      await expect(explanation).toContainText("25 min");
+      await expect(explanation).toContainText(copy.safety);
+      await expect(legend).not.toContainText(copy.netCurve);
+    }
+
+    await refresh(page, {
+      ...attributes,
+      soc_expectation: {
+        status: "unqualified",
+        reason: "no_positive_delivery",
+        delivery_w: 0,
+      },
+    });
+    await expect(explanation).toContainText(copy.direct);
+    await expect(explanation).not.toContainText(copy.netPower);
+    await refresh(page, attributes);
+    await expect(legend).toHaveCount(0);
+    await expect(safety).toHaveCount(1);
+  });
+}
+
+for (const [language, message] of [
+  [
+    "en",
+    "The curves overlap within the chart’s resolution over the shared displayed period.",
+  ],
+  [
+    "de",
+    "Die Kurven liegen im gemeinsam dargestellten Zeitraum bis auf die Anzeigenauflösung übereinander.",
+  ],
+]) {
+  test(`SOC overlap uses the common displayed forecast window and subpixel tolerance (${language})`, async ({
+    page,
+  }) => {
+    const attrs = {
+      ...attributes,
+      forecast: [
+        { ...attributes.forecast[0], expected_soc: 40 },
+        { ...attributes.forecast[1], expected_soc: 60.1 },
+        { ...attributes.forecast[2], expected_soc: 55 },
+      ],
+      soc_expectation: {
+        status: "available",
+        delivery_w: 35,
+        observed_seconds: 1800,
+        relay_confirmed_on: true,
+      },
+    };
+    await mount(page, "forecast", attrs);
+    await page.evaluate((language) => {
+      window.card.hass = { ...window.card._hass, language };
+    }, language);
+    const explanation = page.locator("[data-soc-curve-explanation]");
+    await expect(explanation).not.toContainText(message);
+    await page.evaluate(() => {
+      window.card.setConfig({ entity: "sensor.plan", hours: 1 });
+    });
+    await expect(explanation).toContainText(message);
+    await expect(explanation).toContainText(
+      language === "de"
+        ? "Kleinste gemessene 48-V-DC-Abgabe 35 W"
+        : "Minimum measured 48 V DC output 35 W",
+    );
+    await expect(explanation).toContainText(
+      language === "de" ? "Messspanne 30 min" : "Measurement span 30 min",
+    );
+    await expect(explanation).not.toContainText(
+      language === "de" ? "Relais EIN ist bestätigt" : "Relay ON is confirmed",
+    );
+
+    await page.evaluate(() => {
+      window.card.setConfig({ entity: "sensor.plan", hours: 48 });
+    });
+    await refresh(page, {
+      ...attrs,
+      forecast: [attrs.forecast[0], attrs.forecast[1], attributes.forecast[2]],
+    });
+    await expect(explanation).toContainText(message);
+    await expect(page.locator('[data-soc-curve="expected"]')).toHaveCount(1);
+    await refresh(page, {
+      ...attrs,
+      forecast: [
+        attrs.forecast[0],
+        { ...attributes.forecast[1], expected_soc: 61 },
+        attributes.forecast[2],
+      ],
+    });
+    await expect(explanation).not.toContainText(message);
+  });
+}

@@ -185,7 +185,7 @@ function switchingDetails(lanes, hass, showSupplies, t) {
 
 // frontend/styles.js
 var forecast_card_style_0 = "<style>\n        ha-card { display: block; padding: 12px 16px; }\n        .error { color: var(--error-color, #db4437); }\n      </style>";
-var forecast_card_style_1 = "<style>\n        :host { display: block; }\n        ha-card { padding: 12px 12px 8px; }\n        .header {\n          display: flex; flex-wrap: wrap; align-items: baseline;\n          justify-content: space-between; gap: 4px 12px; padding: 0 4px 6px;\n        }\n        .title {\n          font-size: 1.1em; font-weight: 500;\n          color: var(--primary-text-color);\n        }\n        .stats {\n          font-size: 0.85em; color: var(--secondary-text-color);\n        }\n        .msg {\n          padding: 24px 8px; color: var(--secondary-text-color);\n        }\n        svg { display: block; }\n        svg:focus { outline: none; }\n        svg:focus-visible {\n          outline: 2px solid var(--primary-color, #03a9f4);\n          outline-offset: 2px; border-radius: 2px;\n        }\n        .visually-hidden {\n          position: absolute; width: 1px; height: 1px; margin: -1px;\n          padding: 0; overflow: hidden; clip: rect(0 0 0 0);\n          clip-path: inset(50%); white-space: nowrap; border: 0;\n        }\n        .legend {\n          display: flex; flex-wrap: wrap; gap: 2px 14px;\n          padding: 6px 4px 0; font-size: 0.8em;\n          color: var(--secondary-text-color);\n        }\n        .legend .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n        .legend .active {\n          color: var(--primary-color); font-weight: 500;\n        }\n        .legend .off {\n          font-style: italic; opacity: 0.8;\n        }\n        .readout {\n          font-size: 0.8em; color: var(--secondary-text-color);\n          text-align: right; min-height: 1.2em; padding: 2px 4px 0;\n        }\n        .readout .chip { margin-left: 8px; white-space: nowrap; }\n        .switching-controls { display:flex; flex-wrap:wrap; align-items:center; gap:4px 16px; padding:6px 4px; font-size:.8em; color:var(--secondary-text-color); }\n        .switching-controls label { display:flex; align-items:center; min-height:36px; cursor:pointer; }\n        .switching-details { padding:4px; font-size:.85em; color:var(--secondary-text-color); }\n        .switching-details summary { cursor:pointer; min-height:32px; }\n        .switching-details section { margin:8px 0; }\n        .switching-details ul { padding-left:20px; margin:4px 0 12px; }\n        .switching-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }\n        .readout .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n      </style>";
+var forecast_card_style_1 = "<style>\n        :host { display: block; }\n        ha-card { padding: 12px 12px 8px; }\n        .header {\n          display: flex; flex-wrap: wrap; align-items: baseline;\n          justify-content: space-between; gap: 4px 12px; padding: 0 4px 6px;\n        }\n        .title {\n          font-size: 1.1em; font-weight: 500;\n          color: var(--primary-text-color);\n        }\n        .stats {\n          font-size: 0.85em; color: var(--secondary-text-color);\n        }\n        .forecast-note { font-size: 0.8em; color: var(--secondary-text-color); padding: 2px 4px 4px; overflow-wrap: anywhere; }\n        .msg {\n          padding: 24px 8px; color: var(--secondary-text-color);\n        }\n        svg { display: block; }\n        svg:focus { outline: none; }\n        svg:focus-visible {\n          outline: 2px solid var(--primary-color, #03a9f4);\n          outline-offset: 2px; border-radius: 2px;\n        }\n        .visually-hidden {\n          position: absolute; width: 1px; height: 1px; margin: -1px;\n          padding: 0; overflow: hidden; clip: rect(0 0 0 0);\n          clip-path: inset(50%); white-space: nowrap; border: 0;\n        }\n        .legend {\n          display: flex; flex-wrap: wrap; gap: 2px 14px;\n          padding: 6px 4px 0; font-size: 0.8em;\n          color: var(--secondary-text-color);\n        }\n        .legend .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n        .legend .active {\n          color: var(--primary-color); font-weight: 500;\n        }\n        .legend .off {\n          font-style: italic; opacity: 0.8;\n        }\n        .readout {\n          font-size: 0.8em; color: var(--secondary-text-color);\n          text-align: right; min-height: 1.2em; padding: 2px 4px 0;\n        }\n        .readout .chip { margin-left: 8px; white-space: nowrap; }\n        .switching-controls { display:flex; flex-wrap:wrap; align-items:center; gap:4px 16px; padding:6px 4px; font-size:.8em; color:var(--secondary-text-color); }\n        .switching-controls label { display:flex; align-items:center; min-height:36px; cursor:pointer; }\n        .switching-details { padding:4px; font-size:.85em; color:var(--secondary-text-color); }\n        .switching-details summary { cursor:pointer; min-height:32px; }\n        .switching-details section { margin:8px 0; }\n        .switching-details ul { padding-left:20px; margin:4px 0 12px; }\n        .switching-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }\n        .readout .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n      </style>";
 var consumption_card_style_0 = "<style>\n        ha-card { display: block; padding: 12px 16px; }\n        .error { color: var(--error-color, #db4437); }\n        #consumption-learning { margin-top: 12px; color: var(--secondary-text-color); }\n        #consumption-learning summary { cursor: pointer; padding: 8px 0; }\n        #consumption-learning table { width: 100%; border-collapse: collapse; font-size: .85em; }\n        #consumption-learning td, #consumption-learning th { text-align: left; padding: 4px; border-bottom: 1px solid var(--divider-color); overflow-wrap: anywhere; }\n      </style>";
 var consumption_card_style_1 = "<style>\n        :host { display: block; }\n        ha-card { padding: 12px 12px 8px; }\n        .header {\n          display: flex; flex-wrap: wrap; align-items: baseline;\n          justify-content: space-between; gap: 4px 12px; padding: 0 4px 6px;\n        }\n        .title {\n          font-size: 1.1em; font-weight: 500;\n          color: var(--primary-text-color);\n        }\n        .stats {\n          font-size: 0.85em; color: var(--secondary-text-color);\n        }\n        .msg { padding: 24px 8px; color: var(--secondary-text-color); }\n        svg { display: block; }\n        svg:focus { outline: none; }\n        svg:focus-visible {\n          outline: 2px solid var(--primary-color, #03a9f4);\n          outline-offset: 2px; border-radius: 2px;\n        }\n        .visually-hidden {\n          position: absolute; width: 1px; height: 1px; margin: -1px;\n          padding: 0; overflow: hidden; clip: rect(0 0 0 0);\n          clip-path: inset(50%); white-space: nowrap; border: 0;\n        }\n        .legend {\n          display: flex; flex-wrap: wrap; gap: 2px 14px;\n          padding: 6px 4px 0; font-size: 0.8em;\n          color: var(--secondary-text-color);\n        }\n        .legend .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n        .readout {\n          font-size: 0.8em; color: var(--secondary-text-color);\n          text-align: right; min-height: 1.2em; padding: 2px 4px 0;\n        }\n        .readout .chip { margin-left: 8px; white-space: nowrap; }\n        .readout .dot {\n          display: inline-block; width: 8px; height: 8px;\n          border-radius: 50%; margin-right: 4px;\n        }\n      </style>";
 var cascade_card_style_0 = "<style>\n      :host{display:block;min-width:0}*{box-sizing:border-box}.wrap{container-type:inline-size;padding:0 16px 16px;color:var(--primary-text-color,#eee);font-size:14px;line-height:1.5;overflow-wrap:anywhere}\n      .cascade{border-top:1px solid var(--divider-color,#444);padding-top:16px}.cascade+.cascade{margin-top:24px}h2,h3,h4,p{margin:0}h2{font-size:1.4em}h3{font-size:1.1em}h4{margin-top:16px}.muted,.readout,small{color:var(--secondary-text-color,#aaa);font-size:.86em}.muted{margin:8px 0}.fault{color:var(--error-color,#f66)}\n      .section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}.section-heading>*{min-width:0}.badge{padding:3px 9px;border:1px solid var(--divider-color,#444);border-radius:12px;color:var(--secondary-text-color,#aaa);font-size:.85em}\n      button{font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:left;cursor:pointer;border:1px solid var(--divider-color,#444);border-radius:9px;background:var(--secondary-background-color,#222);color:var(--primary-text-color,#eee);padding:9px 12px;min-height:44px;max-width:100%}button:hover,button[aria-pressed=true]{border-color:var(--primary-color,#039be5);background:color-mix(in srgb,var(--primary-color,#039be5) 12%,transparent)}button:focus-visible,svg:focus-visible{outline:2px solid var(--primary-color,#039be5);outline-offset:2px}nav,.period{display:flex;gap:6px;flex-wrap:wrap}.period{margin:16px 0}\n      .topology{color:var(--secondary-text-color,#aaa);margin:8px 0 16px}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(145px,100%),1fr));gap:8px}.metric{display:grid;gap:5px;padding:10px;border:1px solid var(--divider-color,#444);border-radius:9px}.metric>button{font-size:.85em}.metrics strong{font-size:1.35em}.metrics span{color:var(--secondary-text-color,#aaa)}.members{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px;margin-top:16px}.member,.terminal,.details{padding:14px;border:1px solid var(--divider-color,#444);border-radius:12px;min-width:0}.terminal{margin-top:12px}.member-energy{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0;font-size:.85em}.member-energy span{flex:1;min-width:85px;color:var(--secondary-text-color,#aaa)}.member-energy b{display:block;color:var(--primary-text-color,#eee)}\n      .plot{overflow-x:auto;padding:3px}svg{display:block;width:100%;min-width:300px;height:auto;touch-action:pan-y}.axis{fill:var(--secondary-text-color,#aaa);font:12px sans-serif}.grid{stroke:var(--divider-color,#444)}.forecast-line{stroke-width:2.5;stroke-dasharray:6 3;stroke-linejoin:round}.soc-target{stroke:var(--warning-color,#ffb300);stroke-width:1;stroke-dasharray:3 5}.marker{stroke:var(--primary-text-color,#eee);stroke-width:1;stroke-dasharray:3 3}.readout{min-height:1.5em;margin-top:4px;white-space:normal;overflow-wrap:anywhere}.details{border-color:var(--primary-color,#039be5);margin:16px 0}.details:focus{outline:none}\n      .agenda{list-style:none;padding:0;margin:12px 0}.event{display:grid;grid-template-columns:minmax(110px,150px) minmax(0,1fr);gap:12px;margin-bottom:12px}.event time{font-size:.88em;color:var(--primary-color,#039be5);padding-top:12px}.event-body{border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.event-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}.flows{list-style:none;margin:8px 0;padding:0}.flows li{display:flex;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--divider-color,#444)}.flow-label{flex:1;min-width:min(180px,100%)}.flows strong{font-variant-numeric:tabular-nums}.flow-label i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px}\n      .history{display:inline;padding:0;min-height:0;border:0;background:none;text-decoration:underline;text-decoration-style:dotted}.history:hover{background:none}.activity-tracks{max-width:600px;margin:8px 0 12px}.activity-row{position:relative;margin:4px 0}.activity-row>span{display:block;min-height:18px;margin-bottom:2px;font-size:.8em;color:var(--secondary-text-color)}.activity-axis{position:relative;height:10px;margin-left:8%;margin-right:2.667%;background:var(--divider-color,#444);border-radius:3px}.activity-marker{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--primary-text-color,#eee);transform:translateX(-1px);z-index:1;pointer-events:none}.activity-axis:focus-visible{outline:2px solid var(--primary-color,#039be5);outline-offset:3px}.activity-bar{position:absolute;height:100%;border-radius:3px;min-width:2px}.activity-bar.estimated{background-image:repeating-linear-gradient(45deg,transparent,transparent 3px,#777 3px,#777 5px)}.activity-tip{display:none;position:absolute;bottom:calc(100% + 6px);left:0;right:0;z-index:2;padding:6px;background:var(--card-background-color,#222);border:1px solid var(--divider-color,#444);border-radius:4px;font-size:12px;white-space:normal;overflow-wrap:anywhere;pointer-events:none}.activity-bar:hover + .activity-tip,.activity-axis:not(:has(.activity-bar:hover)) .activity-bar:focus + .activity-tip{display:block}.balance-residual{font-size:.85em;color:var(--secondary-text-color)}.pause{color:var(--secondary-text-color);font-size:.85em}.pause>span{padding-top:12px}\n      .chart-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;margin-top:16px}.chart-grid>.members{display:contents}.chart-grid>.terminal,.chart-grid>.details{margin:0}.chart-grid>.details{grid-column:span 1}\n      @container(min-width:740px){.chart-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}\n      @container(min-width:1180px){.chart-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chart-grid>.details{grid-column:span 2}}\n      @container(min-width:1600px){.chart-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.chart-grid>.details{grid-column:span 1}}\n      /* Bound SVG scaling on wide dashboards; keep wrapping readouts outside scrolling. */\n      .plot,.readout{width:100%;max-width:600px}.details .plot,.details .readout,.details .activity-tracks{max-width:900px}\n      @media(max-width:480px){.event{grid-template-columns:1fr;gap:4px}.wrap{padding:0 12px 12px}.member,.terminal,.details{padding:10px}}\n    </style>";
@@ -216,10 +216,64 @@ var STRINGS = {
     report_soc_conservative_forecast: "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
     soc_phase_tracking: "Observing the current SOC coordinate",
     soc_safety_curve: "Planning and safety curve",
+    soc_safety_decisions: "The solid curve governs planning and safety decisions.",
     soc_expected_curve: "With continued 48 V delivery",
-    soc_expected_basis: "The dashed curve assumes continued measured 48 V delivery under the same switching conditions. Planning uses the solid curve.",
+    soc_expected_basis: "The dashed curve assumes continued 48 V delivery under the same switching conditions.",
     soc_expected_unqualified: "The expected curve needs at least 30 minutes of continuous 48 V DC output readings in the current supply mode.",
     soc_expected_no_window: "The observed 48 V delivery does not support an expected curve for the current schedule.",
+    soc_expected_measured: "Minimum measured 48 V DC output",
+    soc_expected_span: "Measurement span",
+    soc_expected_relay_on: "Relay ON is confirmed. The relay state alone cannot establish DC output.",
+    soc_expected_reason_missing_dc_meter: "No 48 V DC output meter is configured.",
+    soc_expected_reason_invalid_dc_topology: "The configured measurement cannot isolate the 48 V power supply\u2019s DC output.",
+    soc_expected_reason_missing_dc_power_limit: "A positive, finite DC power limit is required to validate the readings. Check the configured output voltage and maximum current.",
+    soc_expected_reason_episode_unproven: "Continuous DC output readings in the current 48 V supply mode are missing.",
+    soc_expected_reason_episode_too_short: "Fewer than 30 minutes of continuous DC output readings are available in the current 48 V supply mode.",
+    soc_expected_reason_no_positive_delivery: "The readings do not show sustained positive 48 V DC output.",
+    soc_expected_reason_projection_unsupported: "The model cannot project this 48 V DC output in the current system configuration.",
+    soc_expected_reason_no_matching_plan_window: "The measured delivery has no matching period in the current switching schedule.",
+    soc_expected_reason_observation_shorter_than_plan_interval: "The DC readings do not cover the whole first matching plan interval.",
+    soc_expected_outside_display: "The displayed period contains too few points to draw the expectation curve.",
+    soc_expected_overlap: "The curves overlap within the chart\u2019s resolution over the shared displayed period.",
+    soc_expected_net_curve: "With continued net battery discharge",
+    soc_expected_net_basis: "The dashed curve uses the measured net discharge rate from the current SOC in comparable plan intervals.",
+    soc_expected_net_purpose: "This scenario uses the net discharge rate measured at the battery terminals.",
+    soc_expected_net_measured: "Net battery discharge from terminal readings",
+    soc_expected_net_until: "Comparable night window ends at",
+    soc_expected_net_unqualified: "The scenario needs at least 30 minutes of stable net discharge readings in the confirmed supply mode.",
+    soc_expected_net_no_window: "No comparable plan interval is available for the observed net battery discharge.",
+    soc_expected_net_reason_no_matching_plan_window: "The current plan has no interval with comparable native load, switching and energy flows.",
+    soc_expected_net_reason_observation_shorter_than_plan_interval: "The measured net discharge span is shorter than the first matching plan interval.",
+    soc_expected_net_reason_projection_unsupported: "The current system configuration or measurement cannot support this net discharge scenario.",
+    soc_expected_net_reason_discharge_exceeds_native_load: "The observed net discharge exceeds the planned native 48 V load.",
+    soc_expected_net_reason_storage_limit: "The first projected interval would exceed the configured battery SOC limits.",
+    soc_expected_net_reason_window_ends_before_interval: "The comparable night window ends before the first matching plan interval is complete.",
+    soc_expected_net_reason_topology_unavailable: "This scenario requires a supported 48 V topology and a battery-terminal power meter.",
+    soc_expected_net_reason_mode_unconfirmed: "Feedback from the relays, inverter or configured grid source has yet to confirm the required supply mode.",
+    soc_expected_net_reason_ac_flow_incompatible: "The AC readings do not confirm grid pass-through for this period.",
+    soc_expected_net_reason_coordinate_unstable: "The battery SOC reference is still settling.",
+    soc_expected_net_reason_telemetry_unavailable: "Current battery, switching or PV readings are missing or invalid.",
+    soc_expected_net_reason_publication_unconfirmed: "The measurements for the current plan publication are not yet confirmed.",
+    soc_expected_net_reason_plan_outside_observation: "The plan starts outside the period with a confirmed supply mode.",
+    soc_expected_net_reason_voltage_above_threshold: "The battery voltage is above the configured threshold for comparable support conditions.",
+    soc_expected_net_reason_charging_detected: "The battery readings show charging.",
+    soc_expected_net_reason_pv_detected: "The PV readings show production.",
+    soc_expected_net_reason_daylight: "The night window is required when there is no live PV meter.",
+    soc_expected_net_reason_episode_too_short: "Fewer than 30 minutes of stable net discharge readings are available in the confirmed supply mode.",
+    soc_expected_net_reason_direct_meter_configured: "The configured 48 V DC output meter is used for the expectation scenario.",
+    load_grid_guard_active: "Grid import guard active",
+    load_grid_guard_inactive: "Grid import guard inactive",
+    load_grid_guard_fresh: "Fresh grid reading",
+    load_grid_guard_stale: "Stale grid reading",
+    load_grid_guard_unconfigured: "No grid meter configured",
+    load_grid_guard_unavailable: "Grid reading unavailable",
+    load_grid_guard_invalid: "Invalid grid reading",
+    load_grid_guard_unknown: "Reading status unknown",
+    load_grid_guard_age: "Age at check",
+    load_grid_guard_cutoff: "Cutoff above",
+    load_grid_guard_last_stop: "Last stop request by grid import guard",
+    load_grid_guard_decided_at: "Decision at",
+    load_grid_guard_decision_reading: "Grid reading at decision",
     soc_observation_unknown: "Unknown observation",
     soc_phase_reconciling: "SOC coordinate is being adjusted",
     soc_phase_settling: "Collecting stable observations after adjustment",
@@ -619,10 +673,64 @@ var STRINGS = {
     report_soc_conservative_forecast: "Konservative SOC-Prognose: K\xFCnftige 48-V-St\xFCtzung wird nur bei g\xFCltigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zuk\xFCnftige Lieferleistung.",
     soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
     soc_safety_curve: "Planungs- und Sicherheitskurve",
+    soc_safety_decisions: "F\xFCr Planung und Schutzentscheidungen gilt die durchgezogene Kurve.",
     soc_expected_curve: "Bei anhaltender 48-V-Lieferung",
-    soc_expected_basis: "Die gestrichelte Kurve setzt voraus, dass die gemessene 48-V-Lieferung bei gleicher Schaltung anh\xE4lt. F\xFCr die Planung gilt die durchgezogene Kurve.",
+    soc_expected_basis: "Die gestrichelte Kurve setzt voraus, dass die 48-V-Lieferung bei gleicher Schaltung anh\xE4lt.",
     soc_expected_unqualified: "Die Erwartungskurve ben\xF6tigt mindestens 30 Minuten durchgehende Messwerte der 48-V-DC-Abgabe im aktuellen Versorgungsmodus.",
     soc_expected_no_window: "Aus der beobachteten 48-V-Lieferung ergibt sich f\xFCr den aktuellen Schaltplan keine Erwartungskurve.",
+    soc_expected_measured: "Kleinste gemessene 48-V-DC-Abgabe",
+    soc_expected_span: "Messspanne",
+    soc_expected_relay_on: "Relais EIN ist best\xE4tigt. Der Relaiszustand allein belegt keine DC-Abgabe.",
+    soc_expected_reason_missing_dc_meter: "F\xFCr die 48-V-DC-Abgabe ist kein Sensor konfiguriert.",
+    soc_expected_reason_invalid_dc_topology: "Die konfigurierte Messung kann die DC-Abgabe des 48-V-Netzteils nicht eindeutig erfassen.",
+    soc_expected_reason_missing_dc_power_limit: "Zur Plausibilit\xE4tspr\xFCfung ist eine positive, endliche DC-Leistungsgrenze erforderlich. Ausgangsspannung und Maximalstrom pr\xFCfen.",
+    soc_expected_reason_episode_unproven: "Durchgehende Messwerte der DC-Abgabe im aktuellen 48-V-Versorgungsmodus fehlen.",
+    soc_expected_reason_episode_too_short: "Im aktuellen 48-V-Versorgungsmodus liegen weniger als 30 Minuten durchgehender Messwerte der DC-Abgabe vor.",
+    soc_expected_reason_no_positive_delivery: "Die Messwerte belegen keine anhaltende positive 48-V-DC-Abgabe.",
+    soc_expected_reason_projection_unsupported: "Das Modell kann diese 48-V-DC-Abgabe mit der aktuellen Anlagenkonfiguration nicht fortschreiben.",
+    soc_expected_reason_no_matching_plan_window: "F\xFCr die gemessene Lieferung gibt es im aktuellen Schaltplan kein passendes Zeitfenster.",
+    soc_expected_reason_observation_shorter_than_plan_interval: "Die DC-Messwerte decken das erste passende Planintervall nur teilweise ab.",
+    soc_expected_outside_display: "Im dargestellten Zeitraum liegen zu wenige Punkte f\xFCr die Erwartungskurve vor.",
+    soc_expected_overlap: "Die Kurven liegen im gemeinsam dargestellten Zeitraum bis auf die Anzeigenaufl\xF6sung \xFCbereinander.",
+    soc_expected_net_curve: "Bei anhaltender Netto-Entladung",
+    soc_expected_net_basis: "Die gestrichelte Kurve schreibt die gemessene Netto-Entladung ab dem aktuellen SOC f\xFCr vergleichbare Planintervalle fort.",
+    soc_expected_net_purpose: "Das Szenario verwendet die an den Batterieklemmen gemessene Netto-Entladung.",
+    soc_expected_net_measured: "Netto-Entladung aus Messwerten an den Batterieklemmen",
+    soc_expected_net_until: "Ende des vergleichbaren Nachtfensters um",
+    soc_expected_net_unqualified: "F\xFCr das Szenario sind mindestens 30 Minuten stabiler Messwerte zur Netto-Entladung im best\xE4tigten Versorgungsmodus erforderlich.",
+    soc_expected_net_no_window: "F\xFCr die beobachtete Netto-Entladung der Batterie gibt es kein vergleichbares Planintervall.",
+    soc_expected_net_reason_no_matching_plan_window: "Der aktuelle Plan enth\xE4lt kein Intervall mit vergleichbarer nativer Last, Schaltung und Energiefl\xFCssen.",
+    soc_expected_net_reason_observation_shorter_than_plan_interval: "Die Messspanne der Netto-Entladung ist k\xFCrzer als das erste passende Planintervall.",
+    soc_expected_net_reason_projection_unsupported: "Die aktuelle Anlagenkonfiguration oder Messung reicht f\xFCr dieses Netto-Entladungsszenario nicht aus.",
+    soc_expected_net_reason_discharge_exceeds_native_load: "Die beobachtete Netto-Entladung \xFCbersteigt die geplante native 48-V-Last.",
+    soc_expected_net_reason_storage_limit: "Im ersten projizierten Intervall w\xFCrde der SOC au\xDFerhalb der eingestellten Batteriegrenzen liegen.",
+    soc_expected_net_reason_window_ends_before_interval: "Das vergleichbare Nachtfenster endet vor dem Ende des ersten passenden Planintervalls.",
+    soc_expected_net_reason_topology_unavailable: "Dieses Szenario erfordert eine unterst\xFCtzte 48-V-Topologie und eine Leistungsmessung an den Batterieklemmen.",
+    soc_expected_net_reason_mode_unconfirmed: "Die Best\xE4tigung des ben\xF6tigten Versorgungsmodus durch Relais, Wechselrichter oder die konfigurierte Netzquellen-R\xFCckmeldung fehlt.",
+    soc_expected_net_reason_ac_flow_incompatible: "Die AC-Messwerte best\xE4tigen f\xFCr diesen Zeitraum keine reine Netzdurchleitung.",
+    soc_expected_net_reason_coordinate_unstable: "Die SOC-Koordinate der Batterie ist noch in der Stabilisierungsphase.",
+    soc_expected_net_reason_telemetry_unavailable: "Aktuelle Batterie-, Schalt- oder PV-Messwerte fehlen oder sind ung\xFCltig.",
+    soc_expected_net_reason_publication_unconfirmed: "Die Messwerte zum aktuellen ver\xF6ffentlichten Plan sind noch nicht best\xE4tigt.",
+    soc_expected_net_reason_plan_outside_observation: "Der Plan beginnt au\xDFerhalb des Zeitraums mit best\xE4tigtem Versorgungsmodus.",
+    soc_expected_net_reason_voltage_above_threshold: "Die Batteriespannung liegt \xFCber dem eingestellten Grenzwert f\xFCr vergleichbare St\xFCtzungsbedingungen.",
+    soc_expected_net_reason_charging_detected: "Die Batteriemesswerte zeigen eine Ladung an.",
+    soc_expected_net_reason_pv_detected: "Die PV-Messwerte zeigen Erzeugung an.",
+    soc_expected_net_reason_daylight: "Ohne aktuellen PV-Leistungssensor ist ein Nachtfenster erforderlich.",
+    soc_expected_net_reason_episode_too_short: "Im best\xE4tigten Versorgungsmodus liegen weniger als 30 Minuten stabiler Messwerte zur Netto-Entladung vor.",
+    soc_expected_net_reason_direct_meter_configured: "F\xFCr das Erwartungsszenario wird der konfigurierte Sensor f\xFCr die 48-V-DC-Abgabe verwendet.",
+    load_grid_guard_active: "Netzbezugsschutz aktiv",
+    load_grid_guard_inactive: "Netzbezugsschutz inaktiv",
+    load_grid_guard_fresh: "Aktueller Netzleistungswert",
+    load_grid_guard_stale: "Veralteter Netzleistungswert",
+    load_grid_guard_unconfigured: "Kein Netzleistungsmesser konfiguriert",
+    load_grid_guard_unavailable: "Netzleistungswert nicht verf\xFCgbar",
+    load_grid_guard_invalid: "Ung\xFCltiger Netzleistungswert",
+    load_grid_guard_unknown: "Status der Messung unbekannt",
+    load_grid_guard_age: "Alter bei Pr\xFCfung",
+    load_grid_guard_cutoff: "Schaltschwelle \xFCber",
+    load_grid_guard_last_stop: "Letzte Abschaltanforderung des Netzbezugsschutzes",
+    load_grid_guard_decided_at: "Entscheidung um",
+    load_grid_guard_decision_reading: "Netzleistungswert bei Entscheidung",
     soc_observation_unknown: "Beobachtung unbekannt",
     soc_phase_reconciling: "SOC-Koordinate wird nachgef\xFChrt",
     soc_phase_settling: "Stabile Beobachtungen nach der Nachf\xFChrung sammeln",
@@ -1496,9 +1604,94 @@ var reportTime = (hass, value) => {
     timeZoneName: "short"
   }).format(at) : "\u2014";
 };
-var reportNumber = (hass, value) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", {
-  maximumFractionDigits: 1
-}).format(value) : "\u2014";
+var reportNumber = (hass, value, options = { maximumFractionDigits: 1 }) => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(hass?.language || "en", options).format(value) : "\u2014";
+function gridGuardMeasurement(hass, snapshot, freshLabel) {
+  const t = (key) => localize(hass, key);
+  const watts = (value) => reportNumber(hass, value, { maximumSignificantDigits: 21 });
+  const statusKey = snapshot.status === "fresh" ? freshLabel : `load_grid_guard_${snapshot.status}`;
+  const status = t(statusKey);
+  const reading = watts(snapshot.measured_w ?? snapshot.grid_import_w);
+  const details = [
+    status === statusKey ? t("load_grid_guard_unknown") : status,
+    reading === "\u2014" ? "" : `${reading} W`,
+    typeof snapshot.entity_id === "string" ? `(${snapshot.entity_id})` : ""
+  ].filter(Boolean);
+  const age = reportNumber(hass, snapshot.age_seconds);
+  const maxAge = reportNumber(hass, snapshot.max_age_seconds);
+  const ageLabel = Number.isFinite(snapshot.max_age_seconds) && age === maxAge && snapshot.age_seconds > snapshot.max_age_seconds ? `> ${maxAge}` : age;
+  const threshold = watts(snapshot.threshold_w);
+  return [
+    details.join(" "),
+    age === "\u2014" ? "" : `${t("load_grid_guard_age")} ${ageLabel} s`,
+    threshold === "\u2014" ? "" : `${t("load_grid_guard_cutoff")} ${threshold} W`
+  ].filter(Boolean).join(" \xB7 ");
+}
+function loadGridGuardReport(hass, state) {
+  const guard = state?.attributes?.load_grid_guard;
+  if (typeof guard?.active !== "boolean" || ["unknown", "unavailable"].includes(state.state))
+    return "";
+  const t = (key) => localize(hass, key);
+  const current = gridGuardMeasurement(hass, guard, "load_grid_guard_fresh");
+  const last = guard.last_action;
+  let stop = "";
+  if (last?.action === "stop_requested") {
+    const decided = reportTime(hass, last.decided_at);
+    const requested = reportTime(hass, last.requested_at);
+    const parts = requested === "\u2014" ? [] : [requested];
+    if (decided !== "\u2014" && decided !== requested)
+      parts.push(`${t("load_grid_guard_decided_at")} ${decided}`);
+    parts.push(
+      gridGuardMeasurement(hass, last, "load_grid_guard_decision_reading")
+    );
+    stop = `<div class="forecast-note" data-load-grid-last-action><strong>${esc(t("load_grid_guard_last_stop"))}</strong> \xB7 ${esc(parts.join(" \xB7 "))}</div>`;
+  }
+  return `<div class="forecast-note" data-load-grid-guard><strong>${esc(t(guard.active ? "load_grid_guard_active" : "load_grid_guard_inactive"))}</strong> \xB7 ${esc(current)}</div>${stop}`;
+}
+function socExpectationExplanation(hass, expectation, shown, overlap) {
+  const t = (key) => localize(hass, key);
+  const isNet = expectation.basis === "battery_net";
+  const prefix = isNet ? "soc_expected_net" : "soc_expected";
+  const power = reportNumber(
+    hass,
+    isNet ? expectation.net_discharge_w : expectation.delivery_w,
+    {
+      maximumFractionDigits: 2
+    }
+  );
+  const reasonCode = isNet ? String(expectation.reason).replace(/^net_/, "") : expectation.reason;
+  const reasonKey = `${prefix}_reason_${reasonCode}`;
+  const reason = t(reasonKey);
+  const until = isNet && Number.isFinite(expectation.valid_until) ? reportTime(hass, new Date(expectation.valid_until * 1e3).toJSON()) : "\u2014";
+  const span = expectation.observed_seconds;
+  const duration = [];
+  if (Number.isFinite(span) && span >= 0) {
+    const minutes = Math.floor(span / 60);
+    const seconds = Math.floor(span % 60);
+    if (minutes) duration.push(`${reportNumber(hass, minutes)} min`);
+    if (seconds || !minutes) duration.push(`${reportNumber(hass, seconds)} s`);
+  }
+  const parts = [
+    power === "\u2014" ? "" : `${t(`${prefix}_measured`)} ${power} W.`,
+    duration.length ? `${t("soc_expected_span")} ${duration.join(" ")}.` : "",
+    until === "\u2014" ? "" : `${t("soc_expected_net_until")} ${until}.`,
+    !isNet && expectation.status === "unqualified" && expectation.relay_confirmed_on ? t("soc_expected_relay_on") : ""
+  ];
+  if (isNet && !shown) parts.push(t("soc_expected_net_purpose"));
+  if (shown) {
+    parts.push(t(`${prefix}_basis`));
+    if (overlap) parts.push(t("soc_expected_overlap"));
+  } else if (reason !== reasonKey) {
+    parts.push(reason);
+  } else if (expectation.status === "unqualified") {
+    parts.push(t(`${prefix}_unqualified`));
+  } else if (expectation.status === "available") {
+    parts.push(t("soc_expected_outside_display"));
+  } else {
+    parts.push(t(`${prefix}_no_window`));
+  }
+  parts.push(t("soc_safety_decisions"));
+  return parts.filter(Boolean).join(" ");
+}
 function inputControlReport(hass, input) {
   if (!input || typeof input !== "object") return "";
   const t = (key) => localize(hass, key);
@@ -2225,7 +2418,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
           <div class="title">${esc(header ?? "")}</div>
           <div class="stats">${this._statsLine(stateObj, t)}</div>
         </div>
-        ${stateNotice(hass, stateObj)}${body}
+        ${stateNotice(hass, stateObj)}${loadGridGuardReport(hass, stateObj)}${body}
         ${inverterControlReport(hass, stateObj?.attributes, stateObj?.state)}${sourceHealthReport(hass, stateObj?.attributes?.source_health)}
         ${reserveReport(this._hass, stateObj?.attributes?.reserve, stateObj?.attributes?.coordinated_support, stateObj?.attributes?.gate_calibration)}${operationReport(this._hass, stateObj?.attributes?.operation_report)}${feedinDecisions(this._hass, stateObj?.attributes?.feedin_decisions)}
       </ha-card>
@@ -2315,7 +2508,9 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     if (points.length < 2) {
       return this._message(t("no_data"));
     }
-    const expectationStatus = a.soc_expectation?.status;
+    const expectation = a.soc_expectation;
+    const expectationStatus = expectation?.status;
+    const expectationCurveKey = expectation?.basis === "battery_net" ? "soc_expected_net_curve" : "soc_expected_curve";
     const horizonMs = Number(this._config.hours) * 3600 * 1e3;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -2504,10 +2699,12 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     );
     const expectationEnd = points.findIndex((p) => p.expectedSoc == null);
     const expected = expectationStatus === "available" ? points.slice(0, expectationEnd < 0 ? points.length : expectationEnd) : [];
-    if (expected.length >= 2) {
-      const expectedCoords = expected.map(
-        (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`
-      );
+    const expectedCoords = expected.map(
+      (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`
+    );
+    const showExpectation = expectedCoords.length >= 2;
+    const overlap = showExpectation && expected.every((p) => Math.abs(y(p.expectedSoc) - y(p.soc)) < 1);
+    if (showExpectation) {
       svg.push(`<polyline data-soc-curve="expected" points="${expectedCoords.join(" ")}"
         fill="none" stroke="${expectationColor}" stroke-width="2" stroke-dasharray="5 3"/>`);
     }
@@ -2577,7 +2774,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       lang,
       lanes,
       inverterFloor: activeReserve && showInverterFloor ? invMin : void 0,
-      showExpectation: expected.length >= 2
+      expectationCurveKey,
+      expectationEndTime: showExpectation ? expected.at(-1).time : void 0
     };
     const whenFmt = dateTimeFormat(this._hass, {
       weekday: "short",
@@ -2656,9 +2854,9 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     return `
       ${expectationStatus ? `<div class="legend" data-soc-curve-legend style="color:var(--primary-text-color, inherit)">
         <span><span aria-hidden="true" style="color:${safetyColor}">\u2501</span> ${esc(t("soc_safety_curve"))}</span>
-        ${expected.length >= 2 ? `<span><span aria-hidden="true" style="color:${expectationColor}">\u2504</span> ${esc(t("soc_expected_curve"))}</span>` : ""}
-      </div><div class="readout" data-soc-curve-explanation>${esc(t(expected.length >= 2 ? "soc_expected_basis" : expectationStatus === "unqualified" ? "soc_expected_unqualified" : "soc_expected_no_window"))}</div>` : ""}
-      <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}"
+        ${showExpectation ? `<span><span aria-hidden="true" style="color:${expectationColor}">\u2504</span> ${esc(t(expectationCurveKey))}</span>` : ""}
+      </div><div class="forecast-note" id="soc-curve-explanation" data-soc-curve-explanation>${esc(socExpectationExplanation(this._hass, expectation, showExpectation, overlap))}</div>` : ""}
+      <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}" ${expectationStatus ? 'aria-describedby="soc-curve-explanation"' : ""}
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
         ${svg.join("\n")}
       </svg>
@@ -2810,7 +3008,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       (lane) => lane.kind === "switching" || covering(lane)
     );
     const floorText = meta.inverterFloor === void 0 ? "" : ` \xB7 ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
-    const forecastText = nearest.soc == null ? "" : meta.showExpectation && nearest.expectedSoc != null ? ` \xB7 ${t("soc_safety_curve")} ${nearest.soc} % \xB7 ${t("soc_expected_curve")} ${nearest.expectedSoc} %` : ` \xB7 ${nearest.soc} %`;
+    const forecastText = nearest.soc == null ? "" : meta.expectationEndTime != null && nearest.time <= meta.expectationEndTime && nearest.expectedSoc != null ? ` \xB7 ${t("soc_safety_curve")} ${nearest.soc} % \xB7 ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %` : ` \xB7 ${nearest.soc} %`;
     const when = esc(
       `${selectionTime(
         this._hass,
