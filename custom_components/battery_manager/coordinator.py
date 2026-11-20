@@ -138,8 +138,6 @@ from .const import (
     CONF_RESERVE_TRANSFER_VERIFIED,
     CONF_RESERVE_UPPER_FACTOR,
     CONF_SOC_ENTITY,
-    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
-    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
     CONF_STRONG_PV_CUTOFF_W,
     CONF_SUPPORT_DC24_ACTIVATE_SOC,
     CONF_SUPPORT_DC24_RECOVERY_SOC,
@@ -265,11 +263,6 @@ from .core.model import (
     SocCoordinateSnapshot,
 )
 from .core.policy import DC_SOURCE_START_MARGIN_PERCENT
-from .core.psu_expectation import (
-    project_soc_during_grid_import,
-    project_soc_with_net_battery_discharge,
-    project_soc_with_psu48,
-)
 from .core.series import fixed_local_time
 from .core.simulation_steps import switching_schedule
 from .daily_pv import DailyPVCache, forecast_energy_wh
@@ -308,6 +301,7 @@ from .load_safety import (
 )
 from .localization import message
 from .market import price_entity, read_prices
+from .net_discharge import grid_measurement_health
 from .operation_recorder import OperationRecorder
 from .plan_output import daily_surplus_breakdown
 from .planning import (
@@ -327,6 +321,7 @@ from .reserve_runtime import (
 from .runtime_persistence import persistent_payload
 from .source_health import source_health
 from .source_phases import SourcePhases
+from .supply_forecast import published_supply_forecast, read_supply_evidence
 from .voltage_gate import CoordinatePlanChanged, VoltageGateRuntime, requested_dc48
 
 _LOGGER = logging.getLogger(__name__)
@@ -1577,6 +1572,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if support_voltage is not None and not 40 <= support_voltage <= 60:
             support_voltage = None
+        adaptive_voltage, voltage_until = self.voltage_gate.voltage_snapshot()
         reserve_active = cfg.get(CONF_RESERVE_MODE) == "active" and bool(
             cfg.get(CONF_INVERTER_LIMIT_ENTITY)
         )
@@ -1677,7 +1673,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     not reserve_active
                     or "dc48" not in self._reserve_legacy_hold_sources
                 ),
-                psu48_bus_voltage_v=self.voltage_gate.voltage()
+                psu48_bus_voltage_v=adaptive_voltage
                 if cfg.get(CONF_INVERTER_LIMIT_ENTITY)
                 and cfg.get(CONF_BATTERY_VOLTAGE_ENTITY)
                 else support_voltage,
@@ -1687,7 +1683,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ),
                 psu48_on_voltage_v=float(cfg[CONF_PSU48_ON_VOLTAGE_V]),
                 psu48_off_voltage_v=float(cfg[CONF_PSU48_OFF_VOLTAGE_V]),
-                psu48_live_until=dt_util.utcnow().timestamp() + 300,
+                psu48_live_until=voltage_until,
                 psu48_gate_bands=self.voltage_gate.bands(dt_util.now()),
                 dc24_phase_until=phase24 if reserve_active else 0.0,
                 dc48_phase_until=phase48 if reserve_active else 0.0,
@@ -1803,6 +1799,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             boundaries={role: role for role in power_roles.values()},
         )
+        rows.extend(grid_measurement_health(self.hass, self.raw_config, now))
         for key, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
                 continue
@@ -4929,122 +4926,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue)
 
-    def _forecast_soc_expectation(
-        self, config: SystemConfig, inputs: PlanInputs, result: PlanResult
-    ) -> tuple[tuple[float, ...], dict[str, Any]]:
-        """Read evidence after actuation awaits, against the accepted plan."""
-        now = dt_util.now()
-        psu = self.voltage_gate.psu
-        psu.capture(self, now)
-        details = psu.expectation_explanation(self, now)
-        if details.get("reason") == "missing_dc_meter":
-            details = {
-                "basis": "battery_net",
-                "relay_confirmed_on": details["relay_confirmed_on"],
-                **self.voltage_gate.net_discharge_diagnostic(now),
-            }
-            if "net_discharge_w" not in details:
-                return (), {**details, "status": "unqualified"}
-            if not self.voltage_gate.coordinate_matches(inputs.soc_coordinate):
-                return (), {
-                    **details,
-                    "status": "no_window",
-                    "reason": "net_coordinate_unstable",
-                }
-            # Actuation can yield while the plant changes mode. The evidence
-            # must reach back to the SOC from which this plan actually starts.
-            plan_age = now.timestamp() - inputs.now.timestamp()
-            if not 0 <= plan_age <= details["observed_seconds"]:
-                return (), {
-                    **details,
-                    "status": "no_window",
-                    "reason": "net_plan_outside_observation",
-                }
-            if details.get("evidence_mode") == "grid_import":
-                return (), self._forecast_grid_soc_expectation(
-                    config, inputs, result, details
-                )
-            points, reason = project_soc_with_net_battery_discharge(
-                config,
-                inputs,
-                result.trajectory,
-                details["net_discharge_w"],
-                details["observed_seconds"],
-                valid_until=details.get("valid_until"),
-            )
-            if (
-                not points
-                and self.raw_config.get(CONF_SOC_EXPECTATION_GRID_POWER_ENTITY)
-                and self.raw_config.get(CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY)
-            ):
-                # A known zero-PV observation can coincide with the new
-                # evidence. Forecast PV can end that zero-PV window even
-                # when a conservative AC deficit remains over the next slot.
-                grid = self.voltage_gate.net_discharge_diagnostic(now, grid_only=True)
-                if "net_discharge_w" in grid and plan_age <= grid["observed_seconds"]:
-                    return (), self._forecast_grid_soc_expectation(
-                        config,
-                        inputs,
-                        result,
-                        {
-                            "basis": "battery_net",
-                            "relay_confirmed_on": details["relay_confirmed_on"],
-                            **grid,
-                        },
-                    )
-        else:
-            evidence = psu.expected48(now)
-            if evidence is None:
-                return (), {**details, "status": "unqualified"}
-            delivery_w, observed_seconds = evidence
-            details["delivery_w"] = delivery_w
-            points, reason = project_soc_with_psu48(
-                config, inputs, result.trajectory, delivery_w, observed_seconds
-            )
-        details["status"] = "available" if points else "no_window"
-        if reason is not None:
-            details["reason"] = reason
-        return points, details
-
-    def _forecast_grid_soc_expectation(
-        self,
-        config: SystemConfig,
-        inputs: PlanInputs,
-        result: PlanResult,
-        details: dict[str, Any],
-    ) -> dict[str, Any]:
-        timed_points, reason = project_soc_during_grid_import(
-            config,
-            inputs,
-            result.trajectory,
-            details["net_discharge_w"],
-            details["observed_seconds"],
-            grid_import_w=details["grid_import_w"],
-            grid_setpoint_w=details["grid_setpoint_w"],
-        )
-        if not timed_points:
-            return {**details, "status": "no_window", "reason": reason}
-        # The terminal point can fall within an accepted plan slot.
-        return {
-            **details,
-            "status": "available",
-            "points": [
-                {
-                    "t": inputs.now.isoformat(),
-                    "expected_soc": round(inputs.start_soc_percent, 1),
-                },
-                *(
-                    {
-                        "t": dt_util.as_local(
-                            datetime.fromtimestamp(at, UTC)
-                        ).isoformat(),
-                        "expected_soc": round(value, 1),
-                    }
-                    for at, value in timed_points
-                ),
-            ],
-        }
-
     async def _async_update_data_serial(self) -> dict[str, Any]:
         if self._actuation_shutdown or self.hass.is_stopping:
             return self.data or {}
@@ -5065,6 +4946,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # options flow. Runs BEFORE any early-out — the whole point is that it
         # must not depend on a successful cycle.
         await self._feedin_release_orphan()
+        now = dt_util.now()
         # Manual-override detection first: build_system_config feeds the
         # forced flags into the simulation (F-N2).
         self._update_support_modes()
@@ -5118,12 +5000,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # write exactly once.
             await self._feedin_force_zero(f"no valid input data ({missing})")
             raise UpdateFailed(f"No valid input data available ({missing})")
-
-        # Data is valid again: end any data-loss episode (release the shed
-        # latch, resolve the repair issue, push the recovery) BEFORE the
-        # normal switching paths run, so the recovered plan may re-enable
-        # loads in this very cycle.
-        await self._note_data_recovered()
 
         # The feed-in manual verdict must precede the config build: in manual
         # mode the planner books the operator-owned setpoint for the rest of
@@ -5194,12 +5070,18 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             pv_hourly_used=bool(pv_hourly or pv_hourly_p10 or pv_hourly_p90),
             market_prices=market_prices,
-            soc_coordinate=self.voltage_gate.coordinate_snapshot(dt_util.now()),
-            psu_delivery=self.voltage_gate.psu.capture(self, dt_util.now()),
+            soc_coordinate=self.voltage_gate.coordinate_snapshot(now),
+            psu_delivery=self.voltage_gate.psu.capture(self, now),
             consumption_uncertainty=self._consumption_uncertainty_snapshot(
                 inputs, forecast_predictions
             ),
         )
+        if config.support.adaptive_voltage_gate:
+            supply, _ = read_supply_evidence(self, inputs, now)
+            inputs = replace(inputs, psu48_supply=supply)
+        # Snapshot SOC, weather and supply evidence without yielding between
+        # the reads. A recovery notification may yield to newer HA reports.
+        await self._note_data_recovered()
         # Dynamic SOC buffer (D-C8): replaces the fixed planning buffer as
         # soon as any learned quantiles exist. Only soc_buffer_percent is
         # overridden here; the grid-support escalation reads its own absolute
@@ -5687,27 +5569,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         local_now = fixed_local_time(now)
         soc_forecast = [{"t": local_now.isoformat(), "soc": round(soc, 1)}]
-        soc_expectation: dict[str, Any] | None = None
-        expected_soc: tuple[float, ...] = ()
+        trajectory = result.trajectory
+        soc_expectation = None
         if config.support.adaptive_voltage_gate:
-            expected_soc, soc_expectation = self._forecast_soc_expectation(
-                config, inputs, result
+            trajectory, soc_expectation = published_supply_forecast(
+                self, inputs, result, dt_util.now()
             )
-            if expected_soc:
-                soc_forecast[0]["expected_soc"] = round(soc, 1)
+        operating = trajectory is not result.trajectory
+        if operating:
+            soc_forecast[0]["safety_soc"] = round(soc, 1)
         # F-FEEDIN: the per-slot planned feed-in power rides on each forecast
         # point (only when the schedule is populated — the card renders its
         # lane purely on attribute presence, keeping old backends compatible).
         feedin_schedule = result.feedin_schedule_w
         for i, (slot, flow) in enumerate(
-            zip(inputs.slots, result.trajectory.flows, strict=True)
+            zip(inputs.slots, trajectory.flows, strict=True)
         ):
             point = {
                 "t": (slot.start + timedelta(hours=slot.duration)).isoformat(),
                 "soc": round(flow.soc_end_percent, 1),
             }
-            if i < len(expected_soc):
-                point["expected_soc"] = round(expected_soc[i], 1)
+            if operating:
+                point["safety_soc"] = round(
+                    result.trajectory.flows[i].soc_end_percent, 1
+                )
             if config.support.coordinated:
                 point["support_mode"] = flow.support_mode
                 point["psu24_wh"] = round(flow.psu24_delivered_wh, 2)
@@ -5756,7 +5641,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     f"/{_series_source(dc_series, slot.index)}"
                 ),
             }
-            for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True)
+            for slot, flow in zip(inputs.slots, trajectory.flows, strict=True)
         ]
 
         # Consumption forecast for the bundled consumption card (operator
@@ -5769,7 +5654,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # measurement. src carries the L(earned)/S(tatic) origin per path so
         # the card can tint fallback slots.
         consumption_forecast = []
-        for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
+        for slot, flow in zip(inputs.slots, trajectory.flows, strict=True):
             dc_w = slot.dc_wh / slot.duration
             native48_base_w = min(dc_w, config.support.native48_base_w)
             rail_w = (dc_w - native48_base_w) * config.support.dc24_share
@@ -5786,7 +5671,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
 
-        daily_surplus = self._daily_surplus_breakdown(inputs, result)
+        daily_surplus = self._daily_surplus_breakdown(inputs, result, trajectory)
         # F-REALIZED-SURPLUS: advance the measured day counters (export meter,
         # per-load energy counters, feed-in integral) against the fresh
         # per-day forecast, so the `realized` block below can mix Ist +
@@ -5815,12 +5700,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "inverter_recommendation": recommendation,
             # G4 floor guard: surfaced for diagnostics and operator automations.
             "floor_guard_active": floor_guard,
-            "min_soc_forecast_percent": result.min_soc_percent,
-            "max_soc_forecast_percent": result.max_soc_percent,
-            "hours_to_max_soc": result.hours_to_max_soc,
-            "grid_import_kwh": round(result.grid_import_kwh, 3),
-            "grid_export_kwh": round(result.grid_export_kwh, 3),
-            "lost_surplus_kwh": round(result.lost_surplus_kwh, 3),
+            "min_soc_forecast_percent": trajectory.min_soc_percent,
+            "max_soc_forecast_percent": trajectory.max_soc_percent,
+            "hours_to_max_soc": (
+                max(
+                    range(len(trajectory.flows)),
+                    key=lambda i: trajectory.flows[i].soc_end_percent,
+                )
+                + 1
+                if operating
+                else result.hours_to_max_soc
+            ),
+            "grid_import_kwh": round(trajectory.total_import_wh / 1000, 3),
+            "grid_export_kwh": round(trajectory.total_export_wh / 1000, 3),
+            "lost_surplus_kwh": round(trajectory.total_export_wh / 1000, 3),
             # F-PERDAY-SURPLUS R1: per-calendar-day lost-surplus / import split
             # (single source for the today/tomorrow sensor attributes and the
             # dashboard cards); the sums equal the totals above (rounding aside).
@@ -5923,11 +5816,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "enabled": config.support.coordinated,
                 "forecast_mode": flows[0].support_mode if flows else "unknown",
                 "forecast_unserved_dc_wh": round(
-                    sum(f.unserved_dc_wh for f in flows), 2
+                    sum(f.unserved_dc_wh for f in trajectory.flows), 2
                 ),
-                "psu48_power_source": "voltage_estimate"
-                if config.support.psu48_bus_voltage_v is not None
-                else "unknown",
+                "psu48_power_source": (
+                    inputs.psu48_supply.kind
+                    if operating and inputs.psu48_supply
+                    else "unknown"
+                ),
                 "manual_requests": dict(self._support_manual),
                 "migration": dict(self._support_migration),
             },
@@ -5939,9 +5834,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "consumption_forecast": consumption_forecast,
         }
 
-    def _daily_surplus_breakdown(self, inputs, result) -> list[dict[str, Any]]:
+    def _daily_surplus_breakdown(
+        self, inputs, result, trajectory=None
+    ) -> list[dict[str, Any]]:
         """Project a completed plan without mutating planner or runtime state."""
-        return daily_surplus_breakdown(inputs, result)
+        return daily_surplus_breakdown(inputs, result, trajectory)
 
     # ------------------------------------------------------------------
     # F-REALIZED-SURPLUS realized surplus accounting

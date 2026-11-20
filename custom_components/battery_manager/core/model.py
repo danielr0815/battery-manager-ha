@@ -366,6 +366,7 @@ class VoltageGateBand:
     current_min_a: float
     current_max_a: float
     on_soc: float | None = None
+    # Kept for historical recordings and voltage-learning diagnostics.
     delivery_soc: float | None = None
     off_soc: float | None = None
     spread_percent: float = 0.0
@@ -398,7 +399,7 @@ class SupportParams:
 
     configured: bool = False
     # F-COORDINATED-DC-SUPPORT: opt in only when a confirmed inverter
-    # blocking actuator is configured; old recordings retain their semantics.
+    # blocking actuator is configured. The legacy flat path is uncoordinated.
     coordinated: bool = False
     dc24_available: bool = True
     dc48_available: bool = True
@@ -1127,6 +1128,36 @@ class PsuDeliverySnapshot:
 
 
 @dataclass(frozen=True)
+class Psu48SupplyEvidence:
+    """Qualified, continuous evidence for native DC supply in the active topology.
+
+    Power is either measured PSU DC output or residual battery-terminal
+    discharge. The latter is transferable only to the same fixed native load.
+    Times are epoch seconds so the evidence horizon uses elapsed time.
+    """
+
+    captured_at: float
+    observed_seconds: float
+    valid_until: float
+    kind: Literal["night", "grid_import", "direct"]
+    power_w: float
+    grid_import_w: float | None = None
+    grid_setpoint_w: float | None = None
+
+    def __post_init__(self) -> None:
+        _require(
+            self.kind in ("night", "grid_import", "direct"), "Invalid PSU evidence"
+        )
+        _require(
+            0 <= self.captured_at <= self.valid_until
+            and self.observed_seconds >= 0
+            and self.power_w >= 0,
+            "Invalid PSU evidence interval or power",
+        )
+        _finite_fields(self)
+
+
+@dataclass(frozen=True)
 class PlanInputs:
     """Everything a planning run needs, assembled by series.build_slots()."""
 
@@ -1148,6 +1179,7 @@ class PlanInputs:
     # None preserves replay of older records and stand-alone core callers.
     pv_daily_credit: tuple[tuple[date, float], ...] | None = None
     pv_hourly_used: bool = False
+    psu48_supply: Psu48SupplyEvidence | None = None
 
     def __post_init__(self) -> None:
         _require(
@@ -1162,6 +1194,11 @@ class PlanInputs:
                 for snapshot in self.psu_delivery
             ),
             "Invalid PSU delivery snapshots",
+        )
+        _require(
+            self.psu48_supply is None
+            or isinstance(self.psu48_supply, Psu48SupplyEvidence),
+            "Invalid PSU 48 V supply evidence",
         )
         _require(0 <= self.start_soc_percent <= 100, "Start SOC must be in [0, 100]")
         _require(
@@ -1247,7 +1284,7 @@ class HourFlows:
     dcdc_input_wh: float = 0.0  # bus energy the DC/DC drew to feed the rail
     dcdc_loss_wh: float = 0.0
     unserved_dc_wh: float = 0.0  # rail demand above the active source's cap
-    gate_open: bool = False  # 48 V PSU voltage gate open this slot
+    gate_open: bool = False  # 48 V supply permitted by the physical balance
     # F-FEEDIN: booked early feed-in actually served from this slot's PV
     # surplus (after clamping), so the export composition stays traceable
     # (natural vs. pre-shifted). 0 under neutral defaults.
@@ -1374,6 +1411,11 @@ class Trajectory:
     total_export_wh: float
     end_soc_percent: float
     reserve_decision: ReserveDecision | None = None
+    # Ephemeral exact transfer intervals for nominal settlement. They never
+    # affect acceptance comparisons, recharge fingerprints or recordings.
+    _dispatch: tuple[tuple[tuple[HourSlot, HourFlows, float], ...], ...] = field(
+        default=(), compare=False, repr=False, metadata={"record": False}
+    )
 
     @property
     def min_soc_percent(self) -> float:
@@ -1471,7 +1513,7 @@ class LoadPlan:
 
 @dataclass(frozen=True)
 class PlanResult:
-    """Complete output of one planning run (single consistent trajectory)."""
+    """Accepted dispatch and, when qualified, its nominal operating forecast."""
 
     threshold_percent: float
     inverter_on: bool  # raw policy for slot 0 (hysteresis applied by caller)
@@ -1530,6 +1572,12 @@ class PlanResult:
     soc_coordinate: SocCoordinateSnapshot | None = None
     # The present legacy export window does not borrow from later days.
     feedin_current_day_proven: bool = False
+    # Evidence can change the physical expectation along the accepted dispatch.
+    # Keep the guard budgets, actuator decisions and reference on trajectory.
+    operating_trajectory: Trajectory | None = None
+    psu48_supply_until: float | None = None
+    psu48_supply_end_soc: float | None = None
+    psu48_supply_stop_reason: str | None = None
 
     def __post_init__(self) -> None:
         # Copy first: retained caller dictionaries cannot mutate a published plan.

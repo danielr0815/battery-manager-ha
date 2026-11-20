@@ -108,6 +108,7 @@ from .planning_rules import (
     pv_windows as pv_windows,
 )
 from .policy import FULL_SOC_TOLERANCE_PERCENT
+from .psu_supply import operating_supply
 from .reserve import (
     recharge_preserved,
     reserve_planning_scope,
@@ -1444,18 +1445,17 @@ def plan(config: SystemConfig, inputs: PlanInputs) -> PlanResult:
     config = effective_storage_config(config)
     inputs = required_dwell_energy(config, inputs)
     if not config.reserve.enabled:
-        return replace(
-            storage_diagnostics(config, inputs, _plan_in_scope(config, inputs)),
-            soc_coordinate=inputs.soc_coordinate,
-        )
-    with (
-        reserve_planning_scope(config, inputs),
-        source_schedule_mode(not config.support.coordinated),
-    ):
-        return replace(
-            storage_diagnostics(config, inputs, _plan_in_scope(config, inputs)),
-            soc_coordinate=inputs.soc_coordinate,
-        )
+        result = _plan_in_scope(config, inputs)
+    else:
+        with (
+            reserve_planning_scope(config, inputs),
+            source_schedule_mode(not config.support.coordinated),
+        ):
+            result = _plan_in_scope(config, inputs)
+    result = storage_diagnostics(config, inputs, result)
+    return replace(
+        operating_supply(config, inputs, result), soc_coordinate=inputs.soc_coordinate
+    )
 
 
 def _plan_in_scope(config: SystemConfig, inputs: PlanInputs) -> PlanResult:

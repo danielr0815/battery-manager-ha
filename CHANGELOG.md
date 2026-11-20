@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.0] - 2026-11-20
+
+### Fixed
+
+- Die primäre SOC-Prognose bilanziert belegte 48-V-Stützung bis zum Ende des vergleichbaren Betriebs, auch mitten in einer Stunde. Sie berücksichtigt die erforderliche Netzenergie und rechnet anschließend ab dem erreichten SOC weiter. Reserve und Schaltfreigaben verwenden eine getrennte Sicherheitskurve.
+- Im koordinierten Betrieb bestimmen Batteriespannung und gelernte SOC-Schwellen die Bereitschaft des Netzteils. Seine Nennleistung wird dadurch weder als gelieferte Energie noch als Batterieladung verbucht. Ein BMS-Anzeigesprung bei durchgehender elektrischer Messung erfordert einen neuen stabilen SOC-Bezugspunkt.
+- Kurze, begrenzte Entladeimpulse bei Netzbezug gehen mit ihrem Energiebeitrag in die Erwartung ein. Die Karte nennt den beobachteten Zeitraum und den Grund für das Ende der Fortschreibung.
+
 ## [0.68.0] - 2026-11-19
 
 ### Added

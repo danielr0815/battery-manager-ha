@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 from homeassistant.core import State
+from homeassistant.util import dt as dt_util
 
+from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
 from custom_components.battery_manager.source_health import (
     normalized_measurement,
     publication_age_s,
@@ -132,3 +134,56 @@ async def test_role_statuses_and_counters_without_generic_expiry(hass, freezer):
         == before.isoformat()
     )
     assert hass.states.get("sensor.power").last_reported == before
+
+
+async def test_grid_expectation_source_health_matches_measurement_roles(hass, freezer):
+    freezer.move_to(NOW)
+    cfg = {
+        "live_ac_grid_power_entity": "SENSOR.SITE",
+        "soc_expectation_grid_setpoint_entity": "number.regulation_target",
+    }
+    owner = SimpleNamespace(
+        hass=hass, raw_config=cfg, entry=SimpleNamespace(subentries={})
+    )
+
+    def grid_rows():
+        rows = BatteryManagerCoordinator.source_health_snapshot(owner, dt_util.utcnow())
+        return tuple(
+            row for row in rows if row["role"].startswith("soc_expectation_grid_")
+        )
+
+    hass.states.async_set("sensor.site", "-0.151", {"unit_of_measurement": "kW"})
+    hass.states.async_set("number.regulation_target", "-20")
+    power, setpoint = grid_rows()
+    assert power["entity_id"] == "sensor.site"
+    assert power["fallback"] == "live_ac_grid"
+    assert power["value"] == -151
+    assert power["boundary"] == "site_grid_import_positive"
+    assert setpoint["value"] == -20
+    assert setpoint["unit"] == "W"
+    assert setpoint["native_unit"] is None
+    assert setpoint["boundary"] == "effective_grid_import_setpoint"
+    assert power["status"] == setpoint["status"] == "available"
+    freezer.tick(30)
+    assert grid_rows()[0]["status"] == "available"
+    freezer.tick(1)
+    assert grid_rows()[0]["status"] == "stale"
+    freezer.tick(34)
+    assert grid_rows()[1]["status"] == "available"
+    freezer.tick(1)
+    assert grid_rows()[1]["status"] == "stale"
+
+    cfg["soc_expectation_grid_power_entity"] = "sensor.explicit_grid"
+    cfg["soc_expectation_grid_setpoint_entity"] = "sensor.unitless_target"
+    hass.states.async_set("sensor.unitless_target", "0")
+    for value, attributes in (
+        ("150000", {"unit_of_measurement": "mW"}),
+        ("100.001", {"unit_of_measurement": "kW"}),
+        ("151", {"unit_of_measurement": "W", "restored": True}),
+    ):
+        hass.states.async_set("sensor.explicit_grid", value, attributes)
+        power, setpoint = grid_rows()
+        assert power["entity_id"] == "sensor.explicit_grid"
+        assert power["fallback"] is None
+        assert power["status"] == setpoint["status"] == "invalid"
+        assert power["value"] is setpoint["value"] is None

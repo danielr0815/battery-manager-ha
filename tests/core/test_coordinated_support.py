@@ -41,15 +41,16 @@ def test_dc_loads_remain_after_inverter_cutoff():
     assert f.grid_import_wh == pytest.approx(50)
 
 
-@pytest.mark.parametrize("v,power", [(48, 55.2), (49.56, 35), (52, 0), (None, 0)])
-def test_current_limit_and_voltage_gate(v, power):
-    c = config(psu48_bus_voltage_v=v)
+@pytest.mark.parametrize("voltage", [48, 49.56, 52, None])
+def test_bus_voltage_and_current_limit_do_not_establish_delivery(voltage):
+    c = config(psu48_bus_voltage_v=voltage)
     f = step_hour(
         c, 6, inputs(dc=100).slots[0], 20, dc24_from_grid=True, dc48_support=True
     )
-    assert f.psu48_delivered_wh == pytest.approx(power)
+    assert f.psu48_delivered_wh == 0
+    assert f.battery_charge_wh == 0
     assert f.psu24_delivered_wh == pytest.approx(65)
-    assert f.grid_import_wh == pytest.approx(50 + (65 + power) / 0.89)
+    assert f.grid_import_wh == pytest.approx(50 + 65 / 0.89)
     assert not f.inverter_on
 
 
@@ -65,8 +66,8 @@ def test_insufficient_support_reports_deficit_without_phantom_grid_charger():
     c = config(dc24_forced_on=True, dc48_forced_on=True, psu48_bus_voltage_v=48)
     c = replace(c, support=replace(c.support, native48_base_w=100))
     f = simulate(c, inputs(soc=5, dc=100), 20).flows[0]
-    assert f.unserved_dc_wh == pytest.approx(44.8)
-    assert f.grid_import_wh == pytest.approx(50 + 55.2 / 0.89)
+    assert f.unserved_dc_wh == pytest.approx(100)
+    assert f.grid_import_wh == pytest.approx(50)
     assert f.soc_end_percent == pytest.approx(5)
 
 
@@ -88,7 +89,7 @@ def test_low_soc_escalates_both_sources_and_blocks_inverter():
     assert f.support_dc24_start and f.support_dc48_start
     assert not f.inverter_start
     assert f.support_mode == "dc48"
-    assert f.battery_charge_wh > 0
+    assert f.battery_charge_wh == 0
 
 
 def test_grid_recovery_does_not_release_dc24_or_inverter():
@@ -125,9 +126,8 @@ def test_psu_power_is_not_guaranteed_in_stress_run():
     c = config(dc24_forced_on=True, dc48_forced_on=True, psu48_bus_voltage_v=48)
     expected = simulate(c, inputs(soc=6), 20).flows[0]
     stress = simulate(c, inputs(soc=6), 20, pv_scale=(0.8,)).flows[0]
-    assert expected.psu48_delivered_wh > 0
-    assert stress.psu48_delivered_wh == 0
-    assert stress.soc_end_percent < expected.soc_end_percent
+    assert expected.psu48_delivered_wh == stress.psu48_delivered_wh == 0
+    assert stress.soc_end_percent == expected.soc_end_percent
 
 
 def test_plan_exposes_slot_start_support_not_future_activation():

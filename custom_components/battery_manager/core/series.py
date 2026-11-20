@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
 
@@ -368,6 +369,16 @@ def _apply_appliance_runs(
     if not runs:
         return slots
 
+    extra_wh = appliance_run_energy(slots, runs)
+    # dataclasses.replace keeps every other slot field (incl. the optional
+    # P10/P90 band, F-QUANTILE-BANDS R2) instead of silently dropping it.
+    return [replace(s, ac_wh=s.ac_wh + extra_wh[i]) for i, s in enumerate(slots)]
+
+
+def appliance_run_energy(
+    slots: Sequence[HourSlot], runs: tuple[ApplianceRun, ...]
+) -> list[float]:
+    """Energy of detected appliance runs in each forecast slot."""
     extra_wh = [0.0] * len(slots)
     for run in runs:
         if run.remaining_energy_wh <= 0 or run.remaining_hours <= 0:
@@ -380,10 +391,7 @@ def _apply_appliance_runs(
             portion = min(power_w * slot.duration, budget)
             extra_wh[i] += portion
             budget -= portion
-
-    # dataclasses.replace keeps every other slot field (incl. the optional
-    # P10/P90 band, F-QUANTILE-BANDS R2) instead of silently dropping it.
-    return [replace(s, ac_wh=s.ac_wh + extra_wh[i]) for i, s in enumerate(slots)]
+    return extra_wh
 
 
 def insert_appliance_run(

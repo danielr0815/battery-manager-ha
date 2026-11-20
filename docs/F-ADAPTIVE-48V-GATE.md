@@ -57,13 +57,18 @@ gibt keine aktiven Messproben oder Testentladungen. Ein verdächtiger SOC-Sprung
 beginnt eine neue Epoche und entwertet bestehende wirtschaftliche Freigaben.
 Normale Drift wird spätestens mit der nächsten regulären Planung berücksichtigt.
 
-Ein Kaltstart oder fehlende Batterieleistungsmessung verwendet die konfigurierte
-SOC-Ersatzschwelle nur für die Bereitschaftsprognose. Ohne gültige Lernwerte wird
-keine zukünftige Stützenergie erfunden. Ein gelerntes offenes Gate erlaubt im
-nominalen Modell höchstens direkte Lastdeckung, begrenzt durch das Netzteil.
-Es begründet keine zusätzliche Netzladung. Pessimistische Szenarien erhalten
-weiterhin keine ungemessene PSU-Leistung. Live haben aktuelle Spannung und die
-bestehenden Schutz-/Manual-Regeln Vorrang vor jeder gelernten SOC-Schwelle.
+Ab 0.69.0 bestimmen die frische Klemmenspannung und danach die zur Last
+passende gelernte SOC-Schwelle die Schaltbereitschaft. Die Spannungsmessung
+verfällt bezogen auf ihre ursprüngliche Publikation. Allein daraus oder aus
+dem maximalen Netzteilstrom ergibt sich keine gelieferte Leistung.
+Die Sicherheitsrechnung deckt eine unbelegte native 48-V-Last aus dem Akku.
+Für die Betriebsprognose wird die gemessene DC-Abgabe oder eine qualifizierte
+Nettoentladung am Akku auf vergleichbare Teilschritte übertragen. Die
+Energiebilanz enthält die AC-Aufnahme und setzt nach dem Ende des
+Nachweises beim erreichten SOC fort. Die Schaltplanung mit ihren
+Reserve- und Freigabegrenzen bleibt unabhängig von dieser Fortschreibung.
+Einzelheiten und Messgrenzen stehen in der
+[Spezifikation der Betriebsprognose](F-SOC-RECONCILIATION.md#betriebsprognose-ab-0690).
 
 ## Nachweise und Golden-Diff
 
@@ -78,9 +83,7 @@ bestehenden Schutz-/Manual-Regeln Vorrang vor jeder gelernten SOC-Schwelle.
   verspätete Bestätigung, schneller Wiedereinstieg und Wiederherstellung.
 - Frontend-Test: Schaltgrund, Bereitschaft und gelernter SOC bleiben getrennt.
 
-Drei neue Golden-Szenarien ergänzen die 16 unveränderten Altszenarien. Für dieselbe
-Dunkelprognose bedeutet frühere gelernte Stützung mehr direkten DC-Netzbezug und
-weniger Batterieentladung: kalter Stand 6,871 kWh / 41,03 % minimaler SOC,
-gelernte 75-%-Grenze 8,720 kWh / 74,95 %, nach Verschiebung auf 78 %
-8,884 kWh / 77,96 %. Die zusätzliche Energie erhält SOC und ist beabsichtigt;
-sie finanziert keine gezielte Netzladung. Erzeugt mit `scripts/gen_golden.py`.
+Die Golden-Szenarien für Kaltstart, gelernte 75-%-Grenze und verschobene
+78-%-Grenze prüfen weiterhin die Schaltprognose. Ohne elektrischen
+Liefernachweis ergibt sich für alle drei derselbe konservative Energieverlauf
+mit 6,871 kWh Netzbezug und 41,03 % Mindest-SOC.

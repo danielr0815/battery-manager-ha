@@ -190,27 +190,18 @@ Quellenbindung überleben Neustarts; Stabilitäts- und Schaltentscheidungstimer
 beginnen neu. Konfigurationsänderungen an Quellen, Kapazität oder Grenzspannungen
 entwerten das Modell. Unter Netzteil-Spannungshaltung findet kein Training statt.
 
-Die nominale Prognose verwendet aktuelle Spannung für das erste kurze Zeitfenster,
-danach eine zur Last passende gelernte SOC-Grenze. Gelernte Lieferung bedeutet
-höchstens direkte Lastdeckung innerhalb der PSU-Leistungsgrenze, keine zusätzliche
-Netzladung. Bei unzureichender Evidenz bestimmt die konfigurierte SOC-Grenze nur
-eine gekennzeichnete Bereitschaftsprognose ohne gesicherte Lieferenergie.
-Pessimistische Läufe erhalten keine ungemessene Stützenergie. Eingeschaltet,
-angefordert und liefernd bleiben getrennte Diagnosen. Die Schaltspur zeigt den
-geplanten Schalterzustand, der Quellenbesitzer prüft Livewerte erneut.
-
-Dies ersetzt die pauschale wirtschaftliche Bereitschaft aus
-`F-COORDINATED-DC-SUPPORT` R4 und die zukünftige Momentanspannungsprojektion aus R6.
-Alte Planneraufzeichnungen ohne `adaptive_voltage_gate` bleiben im früheren
-Modell; neue Aufzeichnungen enthalten den unveränderlichen Lern-Snapshot.
-Die drei neuen Golden-Szenarien frieren Cold-Start, eine gelernte
-75-%-Grenze und ihre Verschiebung auf 78 % ein. Bei identischer Dunkelprognose
-steigen erwarteter Netzbezug und erhaltener SOC zusammen: 6,871 kWh / 41,03 %
-(ohne gelernte Lieferung), 8,720 kWh / 74,95 % und 8,884 kWh / 77,96 %.
-Das ist beabsichtigte direkte DC-Versorgung, keine Netzladung. Alle 16 bisherigen
-Szenarien bleiben unverändert.
-Nachweise: `test_voltage_gate.py`, `test_gate_learning.py`,
-`test_voltage_gate_runtime.py` und die bestehenden Quellen-/Reserveprüfungen.
+Ab 0.69.0 bestimmen die frische Klemmenspannung und danach die zur Last
+passende gelernte SOC-Schwelle die Schaltbereitschaft. Die Spannungsmessung
+verfällt bezogen auf ihre ursprüngliche Publikation. Allein daraus oder aus
+dem maximalen Netzteilstrom ergibt sich keine gelieferte Leistung.
+Die Sicherheitsrechnung deckt eine unbelegte native 48-V-Last aus dem Akku.
+Für die Betriebsprognose wird die gemessene DC-Abgabe oder eine qualifizierte
+Nettoentladung am Akku auf vergleichbare Teilschritte übertragen. Die
+Energiebilanz enthält die AC-Aufnahme und setzt nach dem Ende des
+Nachweises beim erreichten SOC fort. Die Schaltplanung mit ihren
+Reserve- und Freigabegrenzen bleibt unabhängig von dieser Fortschreibung.
+Einzelheiten und Messgrenzen stehen in der
+[Spezifikation der Betriebsprognose](F-SOC-RECONCILIATION.md#betriebsprognose-ab-0690).
 
 ## Installation und Migration
 

@@ -16,6 +16,7 @@ _PSU48 = "switch.psu48"
 _DCDC = "switch.dcdc"
 _LIMIT = "number.inverter_limit"
 _BLOCK = "switch.inverter_block"
+_GRID = "sensor.reserve_source"
 
 
 @pytest.fixture
@@ -52,8 +53,12 @@ async def delivery(hass, freezer):
     runtime.stop_observing()
 
 
-async def _report(hass, freezer, watts=40, seconds=30, *, unit="W", entity=_OUT):
+async def _report(
+    hass, freezer, watts=40, seconds=30, *, unit="W", entity=_OUT, grid=None
+):
     freezer.tick(seconds)
+    if grid is not None:
+        hass.states.async_set(_GRID, grid)
     hass.states.async_set(entity, str(watts), {"unit_of_measurement": unit})
     await hass.async_block_till_done()
 
@@ -85,6 +90,12 @@ async def test_elapsed_time_and_distinct_reports_including_unchanged_values(
         "minimum_w": 35,
         "observed_seconds": 1800,
     }
+    assert delivery.psu.expectation_explanation(delivery.owner, now) == {
+        "relay_confirmed_on": True,
+        "observed_from": now.timestamp() - 1800,
+        "observed_until": now.timestamp(),
+        "observed_seconds": 1800,
+    }
     assert delivery.psu.expected48(now + timedelta(seconds=1)) is None
     await _report(hass, freezer, watts=0)
     await _report(hass, freezer, watts=90)
@@ -105,6 +116,43 @@ async def test_fresh_capture_and_meter_gap_with_positive_reading(
     await _episode(hass, freezer, reports=60)
     assert _estimate(delivery) == (40, 1800)
     await _report(hass, freezer, seconds=31)
+    assert _estimate(delivery) is None
+
+
+async def test_full_dc_delivery_proof_is_independent_of_bms_coordinate(
+    delivery, hass, freezer
+):
+    await _episode(hass, freezer)
+    assert _estimate(delivery) == (40, 1800)
+    first_at = dt_util.utcnow().timestamp() - 1800
+    delivery.monitor.epoch += 1
+    delivery.monitor.generation += 1
+    delivery.monitor.phase = "reconciling"
+    await _report(hass, freezer, watts=41)
+    assert _estimate(delivery) == (40, 1830)
+    proof = delivery.psu.expectation_explanation(delivery.owner, dt_util.utcnow())
+    assert proof["observed_from"] == first_at
+    assert proof["observed_until"] == dt_util.utcnow().timestamp()
+
+
+async def test_direct_dc_delivery_uses_configured_ac_feedback(delivery, hass, freezer):
+    delivery.owner.raw_config["reserve_grid_available_entity"] = _GRID
+    delivery.start_observing()
+    await _episode(hass, freezer)
+    assert _estimate(delivery) is None
+    for _ in range(62):
+        await _report(hass, freezer, grid="AC_INPUT_1")
+    assert _estimate(delivery) == (40, 1800)
+    await _report(hass, freezer, seconds=1, grid="AC_INPUT_2")
+    assert _estimate(delivery) is None
+    for _ in range(61):
+        await _report(hass, freezer, grid="AC_INPUT_2")
+    assert _estimate(delivery) == (40, 1800)
+    await _report(hass, freezer, seconds=15)
+    assert _estimate(delivery) == (40, 1815)
+    # At this DC publication the grid state is fresh again. The original
+    # grid reports still have an uncovered interval.
+    await _report(hass, freezer, seconds=16, grid="AC_INPUT_2")
     assert _estimate(delivery) is None
 
 
@@ -193,6 +241,13 @@ async def test_unconfirmed_output_cannot_bridge_an_episode(
         ("operation_import_power_entity", _OUT),
         ("operation_export_power_entity", _OUT),
         ("live_ac_grid_power_entity", _OUT),
+        ("soc_expectation_grid_power_entity", _OUT.upper()),
+        ("soc_expectation_grid_setpoint_entity", _OUT),
+        ("export_meter_entity", _OUT),
+        ("ac_load_entity", _OUT),
+        ("dc_load_entity", _OUT.upper()),
+        ("ac_balance_in_entities", [_OUT.upper()]),
+        ("dc_balance_out_entities", [_OUT]),
     ],
 )
 async def test_ambiguous_or_incomplete_topology_must_requalify_after_rebinding(
@@ -204,6 +259,12 @@ async def test_ambiguous_or_incomplete_topology_must_requalify_after_rebinding(
     config = delivery.owner.raw_config
     valid_entity = config.get(role)
     config[role] = entity
+    now = dt_util.utcnow()
+    assert _estimate(delivery, now=now) is None
+    assert (
+        delivery.psu.expectation_explanation(delivery.owner, now)["reason"]
+        == "invalid_dc_topology"
+    )
     delivery.start_observing()
     await _episode(hass, freezer)
     now = dt_util.utcnow()
@@ -218,6 +279,51 @@ async def test_ambiguous_or_incomplete_topology_must_requalify_after_rebinding(
     assert _estimate(delivery) is None
     await _report(hass, freezer)
     assert _estimate(delivery) == (40, 1800)
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        "power_entity",
+        "energy_entity",
+        "input_power_entity",
+        "output_power_entity",
+        "detection_entity",
+    ],
+)
+async def test_subentry_meter_overlap_invalidates_delivery_before_rebinding(
+    delivery, hass, freezer, role
+):
+    await _episode(hass, freezer)
+    assert _estimate(delivery) == (40, 1800)
+
+    owner = delivery.owner
+    owner.entry = SimpleNamespace(
+        subentries={"secondary": SimpleNamespace(data={role: _OUT.upper()})}
+    )
+    # Existing subscriptions must discard the evidence even before the
+    # config update has reinitialized the observation adapters.
+    await _report(hass, freezer, seconds=5)
+    now = dt_util.utcnow()
+    assert _estimate(delivery, now=now) is None
+    assert delivery.psu.expectation_explanation(owner, now)["reason"] == (
+        "invalid_dc_topology"
+    )
+
+    owner.entry.subentries.clear()
+    await _episode(hass, freezer, reports=60)
+    assert _estimate(delivery) is None
+    await _report(hass, freezer)
+    assert _estimate(delivery) == (40, 1800)
+
+
+async def test_output_meter_can_also_measure_dc_bus_inflow(delivery, hass, freezer):
+    await _episode(hass, freezer)
+    assert _estimate(delivery) == (40, 1800)
+    delivery.owner.raw_config["dc_balance_in_entities"] = [_OUT]
+    delivery.start_observing()
+    await _report(hass, freezer)
+    assert _estimate(delivery) == (40, 1830)
 
 
 @pytest.mark.parametrize(

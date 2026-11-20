@@ -28,6 +28,40 @@ export const STRINGS = {
     report_soc_conservative_forecast:
       "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
     soc_phase_tracking: "Observing the current SOC coordinate",
+    soc_operating_curve: "Expected operating SOC",
+    soc_supply_until: "Measured support is projected until",
+    soc_supply_after:
+      "From then on, the forecast follows the planned supply from the SOC reached. Control decisions use the dashed safety curve.",
+    soc_supply_stop_supply_evidence_ends:
+      "The qualified observation ends here.",
+    soc_supply_stop_forecast_ends: "The plan ends here.",
+    soc_supply_stop_net_storage_limit:
+      "The battery reaches its discharge floor.",
+    soc_supply_stop_topology_changed: "The planned supply changes.",
+    soc_supply_stop_additional_load: "Additional demand is planned.",
+    soc_supply_stop_native_load_changed: "The native 48 V demand changes.",
+    soc_supply_stop_pv_window:
+      "The upper solar forecast changes the expected power flow.",
+    soc_supply_stop_supply_power_implausible:
+      "The observed support is outside the configured electrical limits.",
+    soc_supply_stop_supply_evidence_changed:
+      "Supply evidence changed during planning.",
+    soc_supply_stop_net_coordinate_unstable:
+      "The battery SOC is being reconciled. A fresh plan will use the settled reading.",
+    soc_supply_stop_net_plan_outside_observation:
+      "The measured supply period started after this plan.",
+    soc_supply_stop_supply_soc_anchor_changed:
+      "The starting SOC needs a fresh, confirmed battery reading.",
+    soc_supply_stop_supply_evidence_stale:
+      "Recent measurement evidence is required.",
+    soc_supply_stop_supply_evidence_short:
+      "The measured operating period is too short.",
+    soc_supply_stop_net_grid_plan_margin_not_met:
+      "The plan no longer supports sufficient grid import.",
+    soc_supply_stop_no_matching_plan_window:
+      "The plan has no comparable supply interval.",
+    soc_supply_stop_no_positive_delivery:
+      "The observation provides no positive 48 V support.",
     soc_safety_curve: "Planning and safety curve",
     soc_safety_decisions:
       "The solid curve governs planning and safety decisions.",
@@ -85,7 +119,7 @@ export const STRINGS = {
     soc_expected_net_reason_grid_margin_not_met:
       "Grid import is too close to zero or to the effective setpoint.",
     soc_expected_net_reason_battery_not_idle:
-      "The battery power is outside the ±1 W idle range.",
+      "The battery is drawing power or the latest discharge pulse has not yet settled.",
     soc_expected_net_basis:
       "The dashed curve uses the measured net discharge rate from the current SOC in comparable plan intervals.",
     soc_expected_net_purpose:
@@ -610,6 +644,39 @@ export const STRINGS = {
     report_soc_conservative_forecast:
       "Konservative SOC-Prognose: Künftige 48-V-Stützung wird nur bei gültigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zukünftige Lieferleistung.",
     soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
+    soc_operating_curve: "Erwarteter Betriebs-SOC",
+    soc_supply_until: "Beobachteter Betrieb fortgeschrieben bis",
+    soc_supply_after:
+      "Ab dann folgt die Prognose der geplanten Versorgung ab dem erreichten SOC. Für Schaltentscheidungen gilt die gestrichelte Sicherheitskurve.",
+    soc_supply_stop_supply_evidence_ends: "Hier endet der belegte Zeitraum.",
+    soc_supply_stop_forecast_ends: "Hier endet der Plan.",
+    soc_supply_stop_net_storage_limit:
+      "Die Batterie erreicht ihre Entladeuntergrenze.",
+    soc_supply_stop_topology_changed: "Die geplante Versorgung wechselt.",
+    soc_supply_stop_additional_load: "Zusätzlicher Verbrauch ist geplant.",
+    soc_supply_stop_native_load_changed: "Die native 48-V-Last ändert sich.",
+    soc_supply_stop_pv_window:
+      "Die obere PV-Prognose verändert den erwarteten Leistungsfluss.",
+    soc_supply_stop_supply_power_implausible:
+      "Die beobachtete Stützung liegt außerhalb der konfigurierten elektrischen Grenzen.",
+    soc_supply_stop_supply_evidence_changed:
+      "Die Versorgungsmessung änderte sich während der Planung.",
+    soc_supply_stop_net_coordinate_unstable:
+      "Der Batterie-SOC wird nachgeführt. Ein neuer Plan verwendet den stabilisierten Wert.",
+    soc_supply_stop_net_plan_outside_observation:
+      "Der belegte Versorgungsabschnitt begann nach diesem Plan.",
+    soc_supply_stop_supply_soc_anchor_changed:
+      "Für den Start-SOC fehlt eine passende, frische Batterierückmeldung.",
+    soc_supply_stop_supply_evidence_stale:
+      "Die Versorgungsmessung muss aktualisiert werden.",
+    soc_supply_stop_supply_evidence_short:
+      "Der gemessene Betriebsabschnitt ist zu kurz.",
+    soc_supply_stop_net_grid_plan_margin_not_met:
+      "Der Plan lässt künftig zu wenig Netzbezug erwarten.",
+    soc_supply_stop_no_matching_plan_window:
+      "Im Plan fehlt ein vergleichbarer Versorgungsabschnitt.",
+    soc_supply_stop_no_positive_delivery:
+      "Die Messung ergibt keine positive 48-V-Stützung.",
     soc_safety_curve: "Planungs- und Sicherheitskurve",
     soc_safety_decisions:
       "Für Planung und Schutzentscheidungen gilt die durchgezogene Kurve.",
@@ -667,7 +734,7 @@ export const STRINGS = {
     soc_expected_net_reason_grid_margin_not_met:
       "Der Netzbezug hat zu wenig Abstand zu null oder zum wirksamen Sollwert.",
     soc_expected_net_reason_battery_not_idle:
-      "Die Batterieleistung liegt außerhalb des Ruhebereichs von ±1 W.",
+      "Die Batterie liefert Leistung oder der jüngste Entladeimpuls ist noch nicht abgeklungen.",
     soc_expected_net_basis:
       "Die gestrichelte Kurve schreibt die gemessene Netto-Entladung ab dem aktuellen SOC für vergleichbare Planintervalle fort.",
     soc_expected_net_purpose:

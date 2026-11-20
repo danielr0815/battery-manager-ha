@@ -215,6 +215,26 @@ var STRINGS = {
     report_soc_coordinate_explanation: "The reported BMS SOC can drift and be recalibrated near the upper range. An adjustment is not itself a device fault. Measured energy change does not independently determine absolute SOC.",
     report_soc_conservative_forecast: "Conservative SOC forecast: future 48 V support is credited only where the model has valid evidence. A switched-on PSU does not guarantee future delivered power.",
     soc_phase_tracking: "Observing the current SOC coordinate",
+    soc_operating_curve: "Expected operating SOC",
+    soc_supply_until: "Measured support is projected until",
+    soc_supply_after: "From then on, the forecast follows the planned supply from the SOC reached. Control decisions use the dashed safety curve.",
+    soc_supply_stop_supply_evidence_ends: "The qualified observation ends here.",
+    soc_supply_stop_forecast_ends: "The plan ends here.",
+    soc_supply_stop_net_storage_limit: "The battery reaches its discharge floor.",
+    soc_supply_stop_topology_changed: "The planned supply changes.",
+    soc_supply_stop_additional_load: "Additional demand is planned.",
+    soc_supply_stop_native_load_changed: "The native 48 V demand changes.",
+    soc_supply_stop_pv_window: "The upper solar forecast changes the expected power flow.",
+    soc_supply_stop_supply_power_implausible: "The observed support is outside the configured electrical limits.",
+    soc_supply_stop_supply_evidence_changed: "Supply evidence changed during planning.",
+    soc_supply_stop_net_coordinate_unstable: "The battery SOC is being reconciled. A fresh plan will use the settled reading.",
+    soc_supply_stop_net_plan_outside_observation: "The measured supply period started after this plan.",
+    soc_supply_stop_supply_soc_anchor_changed: "The starting SOC needs a fresh, confirmed battery reading.",
+    soc_supply_stop_supply_evidence_stale: "Recent measurement evidence is required.",
+    soc_supply_stop_supply_evidence_short: "The measured operating period is too short.",
+    soc_supply_stop_net_grid_plan_margin_not_met: "The plan no longer supports sufficient grid import.",
+    soc_supply_stop_no_matching_plan_window: "The plan has no comparable supply interval.",
+    soc_supply_stop_no_positive_delivery: "The observation provides no positive 48 V support.",
     soc_safety_curve: "Planning and safety curve",
     soc_safety_decisions: "The solid curve governs planning and safety decisions.",
     soc_expected_curve: "With continued 48 V delivery",
@@ -248,7 +268,7 @@ var STRINGS = {
     soc_expected_net_reason_grid_setpoint_unavailable: "A fresh readback of the effective grid setpoint is required.",
     soc_expected_net_reason_grid_not_importing: "The meter shows zero grid import or export.",
     soc_expected_net_reason_grid_margin_not_met: "Grid import is too close to zero or to the effective setpoint.",
-    soc_expected_net_reason_battery_not_idle: "The battery power is outside the \xB11 W idle range.",
+    soc_expected_net_reason_battery_not_idle: "The battery is drawing power or the latest discharge pulse has not yet settled.",
     soc_expected_net_basis: "The dashed curve uses the measured net discharge rate from the current SOC in comparable plan intervals.",
     soc_expected_net_purpose: "This scenario uses the net discharge rate measured at the battery terminals.",
     soc_expected_net_measured: "Net battery discharge from terminal readings",
@@ -685,6 +705,26 @@ var STRINGS = {
     report_soc_coordinate_explanation: "Der gemeldete BMS-SOC kann driften und im oberen Bereich nachkalibriert werden. Eine Nachf\xFChrung ist f\xFCr sich kein Ger\xE4tefehler. Die gemessene Energie\xE4nderung bestimmt keinen unabh\xE4ngig bekannten absoluten SOC.",
     report_soc_conservative_forecast: "Konservative SOC-Prognose: K\xFCnftige 48-V-St\xFCtzung wird nur bei g\xFCltigem Modellnachweis angerechnet. Ein eingeschaltetes Netzteil garantiert keine zuk\xFCnftige Lieferleistung.",
     soc_phase_tracking: "Aktuelle SOC-Koordinate wird beobachtet",
+    soc_operating_curve: "Erwarteter Betriebs-SOC",
+    soc_supply_until: "Beobachteter Betrieb fortgeschrieben bis",
+    soc_supply_after: "Ab dann folgt die Prognose der geplanten Versorgung ab dem erreichten SOC. F\xFCr Schaltentscheidungen gilt die gestrichelte Sicherheitskurve.",
+    soc_supply_stop_supply_evidence_ends: "Hier endet der belegte Zeitraum.",
+    soc_supply_stop_forecast_ends: "Hier endet der Plan.",
+    soc_supply_stop_net_storage_limit: "Die Batterie erreicht ihre Entladeuntergrenze.",
+    soc_supply_stop_topology_changed: "Die geplante Versorgung wechselt.",
+    soc_supply_stop_additional_load: "Zus\xE4tzlicher Verbrauch ist geplant.",
+    soc_supply_stop_native_load_changed: "Die native 48-V-Last \xE4ndert sich.",
+    soc_supply_stop_pv_window: "Die obere PV-Prognose ver\xE4ndert den erwarteten Leistungsfluss.",
+    soc_supply_stop_supply_power_implausible: "Die beobachtete St\xFCtzung liegt au\xDFerhalb der konfigurierten elektrischen Grenzen.",
+    soc_supply_stop_supply_evidence_changed: "Die Versorgungsmessung \xE4nderte sich w\xE4hrend der Planung.",
+    soc_supply_stop_net_coordinate_unstable: "Der Batterie-SOC wird nachgef\xFChrt. Ein neuer Plan verwendet den stabilisierten Wert.",
+    soc_supply_stop_net_plan_outside_observation: "Der belegte Versorgungsabschnitt begann nach diesem Plan.",
+    soc_supply_stop_supply_soc_anchor_changed: "F\xFCr den Start-SOC fehlt eine passende, frische Batterier\xFCckmeldung.",
+    soc_supply_stop_supply_evidence_stale: "Die Versorgungsmessung muss aktualisiert werden.",
+    soc_supply_stop_supply_evidence_short: "Der gemessene Betriebsabschnitt ist zu kurz.",
+    soc_supply_stop_net_grid_plan_margin_not_met: "Der Plan l\xE4sst k\xFCnftig zu wenig Netzbezug erwarten.",
+    soc_supply_stop_no_matching_plan_window: "Im Plan fehlt ein vergleichbarer Versorgungsabschnitt.",
+    soc_supply_stop_no_positive_delivery: "Die Messung ergibt keine positive 48-V-St\xFCtzung.",
     soc_safety_curve: "Planungs- und Sicherheitskurve",
     soc_safety_decisions: "F\xFCr Planung und Schutzentscheidungen gilt die durchgezogene Kurve.",
     soc_expected_curve: "Bei anhaltender 48-V-Lieferung",
@@ -718,7 +758,7 @@ var STRINGS = {
     soc_expected_net_reason_grid_setpoint_unavailable: "Eine frische R\xFCckmeldung des wirksamen Netzbezugs-Sollwerts fehlt.",
     soc_expected_net_reason_grid_not_importing: "Der Z\xE4hler meldet 0 W Netzbezug oder Einspeisung.",
     soc_expected_net_reason_grid_margin_not_met: "Der Netzbezug hat zu wenig Abstand zu null oder zum wirksamen Sollwert.",
-    soc_expected_net_reason_battery_not_idle: "Die Batterieleistung liegt au\xDFerhalb des Ruhebereichs von \xB11 W.",
+    soc_expected_net_reason_battery_not_idle: "Die Batterie liefert Leistung oder der j\xFCngste Entladeimpuls ist noch nicht abgeklungen.",
     soc_expected_net_basis: "Die gestrichelte Kurve schreibt die gemessene Netto-Entladung ab dem aktuellen SOC f\xFCr vergleichbare Planintervalle fort.",
     soc_expected_net_purpose: "Das Szenario verwendet die an den Batterieklemmen gemessene Netto-Entladung.",
     soc_expected_net_measured: "Netto-Entladung aus Messwerten an den Batterieklemmen",
@@ -1717,12 +1757,23 @@ function socExpectationExplanation(hass, expectation, shown, overlap) {
       if (end !== "\u2014") parts.push(`${t("soc_expected_grid_until")} ${end}.`);
     }
   }
+  if (expectation.operating_forecast) {
+    const end = reportTime(hass, expectation.end_at);
+    const stop = t(`soc_supply_stop_${expectation.stop_reason}`);
+    parts.push(
+      `${t("soc_supply_until")} ${end}. ${stop} ${t("soc_supply_after")}`
+    );
+    return parts.filter(Boolean).join(" ");
+  }
+  const supplyReason = t(`soc_supply_stop_${expectation.reason}`);
   if (isNet && !shown && !fromGrid) parts.push(t("soc_expected_net_purpose"));
   if (shown) {
     parts.push(t(fromGrid ? "soc_expected_grid_basis" : `${prefix}_basis`));
     if (overlap) parts.push(t("soc_expected_overlap"));
   } else if (reason !== reasonKey) {
     parts.push(reason);
+  } else if (supplyReason !== `soc_supply_stop_${expectation.reason}`) {
+    parts.push(supplyReason);
   } else if (expectation.status === "unqualified") {
     parts.push(t(`${prefix}_unqualified`));
   } else if (expectation.status === "available") {
@@ -2296,6 +2347,17 @@ function operationReport(hass, report) {
 // frontend/forecast-card.js
 function expectationSamples(plan, expectation) {
   if (expectation?.status !== "available") return [];
+  if (expectation.operating_forecast) {
+    if (plan.some((p) => p.safetySoc == null)) return [];
+    const samples2 = plan.map((p) => ({ ...p, expectedSoc: p.soc }));
+    const time = Date.parse(expectation.end_at);
+    const expectedSoc = expectation.end_soc;
+    const i = samples2.findIndex((p) => p.time >= time);
+    if (i > 0 && time < samples2[i].time && Number.isFinite(expectedSoc) && expectedSoc >= 0 && expectedSoc <= 100) {
+      samples2.splice(i, 0, { time, expectedSoc });
+    }
+    return samples2;
+  }
   if (expectation.evidence_mode !== "grid_import") {
     const end = plan.findIndex((p) => p.expectedSoc == null);
     return plan.slice(0, end < 0 ? plan.length : end);
@@ -2570,6 +2632,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     let points = a.forecast.filter((p) => p && p.t != null && p.soc != null).map((p) => ({
       time: new Date(p.t).getTime(),
       soc: Number(p.soc),
+      safetySoc: typeof p.safety_soc === "number" && p.safety_soc >= 0 && p.safety_soc <= 100 ? p.safety_soc : void 0,
       expectedSoc: typeof p.expected_soc === "number" && p.expected_soc >= 0 && p.expected_soc <= 100 ? p.expected_soc : void 0,
       feedin: num(p.feedin) ?? 0
     })).filter((p) => Number.isFinite(p.time) && Number.isFinite(p.soc));
@@ -2578,7 +2641,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     }
     const expectation = a.soc_expectation;
     const expectationStatus = expectation?.status;
-    const expectationCurveKey = expectation?.evidence_mode === "grid_import" ? "soc_expected_grid_curve" : expectation?.basis === "battery_net" ? "soc_expected_net_curve" : "soc_expected_curve";
+    const operating = expectation?.operating_forecast === true && points.every((p) => p.safetySoc != null);
+    const expectationCurveKey = operating ? "soc_operating_curve" : expectation?.evidence_mode === "grid_import" ? "soc_expected_grid_curve" : expectation?.basis === "battery_net" ? "soc_expected_net_curve" : "soc_expected_curve";
     const horizonMs = Number(this._config.hours) * 3600 * 1e3;
     if (horizonMs > 0) {
       const cutoff = points[0].time + horizonMs;
@@ -2754,26 +2818,24 @@ var BatteryManagerForecastCard = class extends HTMLElement {
         )} %</text>`
       );
     }
-    const coords = points.map(
-      (p) => `${x(p.time).toFixed(1)},${y(p.soc).toFixed(1)}`
-    );
-    svg.push(
-      `<polygon points="${x(points[0].time).toFixed(1)},${y(0)} ${coords.join(
-        " "
-      )} ${x(points[points.length - 1].time).toFixed(1)},${y(0)}"
-        fill="${accent}" opacity="0.12"/>`,
-      `<polyline data-soc-curve="safety" points="${coords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
-        stroke-width="2" stroke-linejoin="round"/>`
-    );
     const expected = expectationSamples(points, expectation);
-    const expectedCoords = expected.map(
-      (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`
+    const showExpectation = expected.length >= 2;
+    const coord = (time, soc) => `${x(time).toFixed(1)},${y(soc).toFixed(1)}`;
+    const safetyCoords = points.map(
+      (p) => coord(p.time, operating ? p.safetySoc : p.soc)
     );
-    const showExpectation = expectedCoords.length >= 2;
-    const overlap = showExpectation && expected.every((p) => Math.abs(y(p.expectedSoc) - y(p.soc)) < 1);
+    const expectedCoords = expected.map((p) => coord(p.time, p.expectedSoc));
+    const primaryCoords = operating ? expectedCoords : safetyCoords;
+    svg.push(
+      `<polygon points="${x(t0)},${y(0)} ${primaryCoords.join(" ")} ${x(t1)},${y(0)}"
+        fill="${accent}" opacity="0.12"/>`,
+      `<polyline data-soc-curve="safety" points="${safetyCoords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
+        stroke-width="2" ${operating ? 'stroke-dasharray="5 3"' : ""} stroke-linejoin="round"/>`
+    );
+    const overlap = showExpectation && (operating ? points.every((p) => Math.abs(y(p.safetySoc) - y(p.soc)) < 1) : expected.every((p) => Math.abs(y(p.expectedSoc) - y(p.soc)) < 1));
     if (showExpectation) {
       svg.push(`<polyline data-soc-curve="expected" points="${expectedCoords.join(" ")}"
-        fill="none" stroke="${expectationColor}" stroke-width="2" stroke-dasharray="5 3"/>`);
+        fill="none" stroke="${expectationColor}" stroke-width="2" ${operating ? "" : 'stroke-dasharray="5 3"'}/>`);
     }
     svg.push(
       `<circle cx="${x(t0)}" cy="${y(points[0].soc)}" r="3.5"
@@ -2851,6 +2913,7 @@ var BatteryManagerForecastCard = class extends HTMLElement {
       lanes,
       inverterFloor: activeReserve && showInverterFloor ? invMin : void 0,
       expectationCurveKey,
+      operating,
       expectationEndTime: showExpectation ? expected.at(-1).time : void 0
     };
     const whenFmt = dateTimeFormat(this._hass, {
@@ -2929,8 +2992,8 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     }).join("");
     return `
       ${expectationStatus ? `<div class="legend" data-soc-curve-legend style="color:var(--primary-text-color, inherit)">
-        <span><span aria-hidden="true" style="color:${safetyColor}">\u2501</span> ${esc(t("soc_safety_curve"))}</span>
-        ${showExpectation ? `<span><span aria-hidden="true" style="color:${expectationColor}">\u2504</span> ${esc(t(expectationCurveKey))}</span>` : ""}
+        <span><span aria-hidden="true" style="color:${safetyColor}">${operating ? "\u2504" : "\u2501"}</span> ${esc(t("soc_safety_curve"))}</span>
+        ${showExpectation ? `<span><span aria-hidden="true" style="color:${expectationColor}">${operating ? "\u2501" : "\u2504"}</span> ${esc(t(expectationCurveKey))}</span>` : ""}
       </div><div class="forecast-note" id="soc-curve-explanation" data-soc-curve-explanation>${esc(socExpectationExplanation(this._hass, expectation, showExpectation, overlap))}</div>` : ""}
       <svg id="chart" role="img" tabindex="0" data-focus-key="forecast-chart" style="touch-action:pan-y" aria-label="${esc(summary)}" ${expectationStatus ? 'aria-describedby="soc-curve-explanation"' : ""}
         width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -3085,8 +3148,9 @@ var BatteryManagerForecastCard = class extends HTMLElement {
     );
     const floorText = meta.inverterFloor === void 0 ? "" : ` \xB7 ${t("inverter_floor")} ${Math.round(meta.inverterFloor)} %`;
     const hasExpectation = meta.expectationEndTime != null && nearest.time <= meta.expectationEndTime && nearest.expectedSoc != null;
+    const safetySoc = meta.operating ? nearest.safetySoc : nearest.soc;
     const forecastText = [
-      nearest.soc == null ? "" : ` \xB7 ${hasExpectation ? t("soc_safety_curve") + " " : ""}${nearest.soc} %`,
+      safetySoc == null ? "" : ` \xB7 ${hasExpectation ? t("soc_safety_curve") + " " : ""}${safetySoc} %`,
       hasExpectation ? ` \xB7 ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %` : ""
     ].join("");
     const when = esc(

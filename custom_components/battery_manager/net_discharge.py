@@ -6,7 +6,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from functools import cache, lru_cache
+from functools import cache, lru_cache, partial
 from math import ceil, cos, floor, isclose, radians
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -23,16 +23,11 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_AC_BALANCE_IN,
     CONF_AC_BALANCE_OUT,
-    CONF_AC_LOAD_ENTITY,
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_DC_BALANCE_IN,
     CONF_DC_BALANCE_OUT,
-    CONF_DC_LOAD_ENTITY,
     CONF_FEEDIN_BATTERY_POWER_ENTITY,
     CONF_FEEDIN_SETPOINT_ENTITY,
-    CONF_LOAD_INPUT_POWER_ENTITY,
-    CONF_LOAD_OUTPUT_POWER_ENTITY,
-    CONF_LOAD_POWER_ENTITY,
     CONF_PSU48_OUTPUT_VOLTAGE_V,
     CONF_RESERVE_GRID_ENTITY,
     CONF_SOC_ENTITY,
@@ -47,17 +42,22 @@ from .core.psu_expectation import (
     MIN_OBSERVED_SECONDS,
 )
 from .psu_observation import (
+    _BALANCE_KEYS,
+    _GRID_SOURCES,
     _MAX_AGE,
     _ON_ACTORS,
     _ON_REQUIRED_ACTORS,
     _OTHER_POWER_ROLES,
+    _load_meter_entities,
     _unconfirmed,
     actor_generation,
 )
+from .source_health import source_health
 
 if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
     from .coordinator import BatteryManagerCoordinator
-    from .soc_consistency import SocConsistencyMonitor
 
 _PV_POWER = "operation_pv_power_entity"
 _AC_GRID, _AC_INPUT, _AC_OUTPUT = LIVE_AC_POWER_KEYS
@@ -73,13 +73,6 @@ BATTERY_COORDINATE_KEYS = (
 )
 _OPTIONAL_INPUTS = (_PV_POWER, _AC_INPUT, _AC_OUTPUT, CONF_RESERVE_GRID_ENTITY)
 _GRID_SHARED_INPUTS = (*BATTERY_COORDINATE_KEYS, CONF_RESERVE_GRID_ENTITY)
-_GRID_SOURCES = {"on": 1, "ac_input_1": 2, "ac_input_2": 3}
-_BALANCE_KEYS = (
-    CONF_AC_BALANCE_IN,
-    CONF_AC_BALANCE_OUT,
-    CONF_DC_BALANCE_IN,
-    CONF_DC_BALANCE_OUT,
-)
 # Night without a measured PV channel: even twilight is excluded.
 _NIGHT_DEPRESSION = 18.0
 # Protect the transition itself against small differences between Astral's
@@ -89,6 +82,12 @@ _DAWN_GUARD_SECONDS = 300
 # Victron's integer-watt reports can move one count around zero. A wider
 # variation would mix distinct load conditions into the same projection.
 _ZERO_NOISE_W = 1.0
+# Brief 4 W draw was observed at an otherwise idle battery terminal. Require
+# the idle endpoint within one ordinary reporting interval. Bound the total
+# uncertainty of the adjacent intervals to a minute per minimum window.
+_MAX_GRID_PULSE_W = 4.0
+_MAX_GRID_PULSE_SECONDS = 30
+_MAX_GRID_PULSE_COVERAGE_SECONDS = 60
 _MAX_STABLE_SPREAD_W = 10.0
 _MAX_PENDING_INTERVALS = 4096
 _MAX_SKY_CHECKS = 2048
@@ -188,6 +187,8 @@ def _certified_dark_until(site: _Site, start: float, limit: float) -> float:
 class NetDischargeDiagnostic(TypedDict, total=False):
     reason: str
     observed_seconds: float
+    observed_from: float
+    observed_until: float
     net_discharge_w: float
     valid_until: float
     evidence_mode: Literal["grid_import"]
@@ -242,24 +243,7 @@ class _Topology:
             if key not in (CONF_FEEDIN_BATTERY_POWER_ENTITY, *_OPTIONAL_INPUTS)
             and (entity := cfg.get(key))
         }
-        load_entities = {
-            entity.lower()
-            for key in (CONF_AC_LOAD_ENTITY, CONF_DC_LOAD_ENTITY)
-            if (entity := cfg.get(key))
-        }
-        if entry := getattr(owner, "entry", None):
-            # Subentries use the same power binding for both appliance and
-            # surplus loads. The other two roles are cascade device ports.
-            load_entities.update(
-                entity.lower()
-                for subentry in entry.subentries.values()
-                for key in (
-                    CONF_LOAD_POWER_ENTITY,
-                    CONF_LOAD_INPUT_POWER_ENTITY,
-                    CONF_LOAD_OUTPUT_POWER_ENTITY,
-                )
-                if (entity := subentry.data.get(key))
-            )
+        load_entities = _load_meter_entities(owner)
         other_entities = set(other_roles.values()) | load_entities
         balance_entities = {
             key: {entity.lower() for entity in (cfg.get(key) or ())}
@@ -304,6 +288,16 @@ class _Topology:
         return cls(actors, inputs, threshold, site, grid)
 
 
+def _grid_bindings(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
+    power = cfg.get(_GRID_POWER)
+    setpoint = cfg.get(_GRID_SETPOINT)
+    # The signed site-grid channel is already assigned to the same boundary.
+    # The effective regulation target always needs an explicit binding.
+    if not power and setpoint:
+        power = cfg.get(_AC_GRID)
+    return power.lower() if power else None, setpoint.lower() if setpoint else None
+
+
 def _grid_topology(
     cfg: dict[str, Any],
     actors: tuple[tuple[str, str], ...],
@@ -312,15 +306,13 @@ def _grid_topology(
     load_entities: set[str],
     balance_entities: dict[str, set[str]],
 ) -> _GridTopology | str | None:
-    power = cfg.get(_GRID_POWER)
-    setpoint = cfg.get(_GRID_SETPOINT)
+    power, setpoint = _grid_bindings(cfg)
     if not power and not setpoint:
         return None
     if not power:
         return "net_grid_power_unavailable"
     if not setpoint:
         return "net_grid_setpoint_unavailable"
-    power, setpoint = power.lower(), setpoint.lower()
     reserved = (
         {entity for entity, _ in actors}
         | {entity for key, entity in inputs if key not in (_AC_INPUT, _AC_OUTPUT)}
@@ -389,6 +381,38 @@ def _reading(key: str, state: State | None, at: float) -> _Reading | None:
     return _Reading(at, value) if valid else None
 
 
+def _grid_source_watts(key: str, state: State) -> float | None:
+    reading = _reading(key, state, state.last_reported.timestamp())
+    return reading.value if reading is not None else None
+
+
+def grid_measurement_health(
+    hass: HomeAssistant, cfg: dict[str, Any], now: datetime
+) -> list[dict[str, Any]]:
+    """Use the expectation's effective binding, units and publication limits."""
+    power, setpoint = _grid_bindings(cfg)
+    power_role = _GRID_POWER.removesuffix("_entity")
+    setpoint_role = _GRID_SETPOINT.removesuffix("_entity")
+    return source_health(
+        hass,
+        {power_role: power, setpoint_role: setpoint},
+        now,
+        kinds={power_role: "power", setpoint_role: "power"},
+        max_ages_s={power_role: _MAX_AGE, setpoint_role: _GRID_SETPOINT_MAX_AGE},
+        fallbacks={power_role: "live_ac_grid"}
+        if power and not cfg.get(_GRID_POWER)
+        else None,
+        boundaries={
+            power_role: "site_grid_import_positive",
+            setpoint_role: "effective_grid_import_setpoint",
+        },
+        normalizers={
+            power_role: partial(_grid_source_watts, _GRID_POWER),
+            setpoint_role: partial(_grid_source_watts, _GRID_SETPOINT),
+        },
+    )
+
+
 @dataclass
 class _Interval:
     start: float
@@ -399,7 +423,6 @@ class _Interval:
 @dataclass
 class _Episode:
     generation: tuple[float, ...]
-    coordinate: tuple[int, int]
     first_at: float
     last_at: float
     power_at: float
@@ -435,12 +458,39 @@ class _Episode:
 
 
 @dataclass
-class _GridEpisode:
-    generation: tuple[float, ...]
-    coordinate: tuple[int, int]
-    first_at: float
-    last_at: float
-    maximum_w: float
+class _GridEpisode(_Episode):
+    pulse: tuple[float, float] | None = None
+    pulse_spans: deque[tuple[float, float]] = field(default_factory=deque)
+    pulse_seconds: float = 0.0
+
+    def advance_grid(
+        self, at: float, covered_until: float, power_at: float, watts: float
+    ) -> bool:
+        if power_at > self.power_at:
+            if self.pulse is not None:
+                start, first_high = self.pulse
+                if power_at - first_high > _MAX_GRID_PULSE_SECONDS:
+                    return False
+                if watts <= _ZERO_NOISE_W:
+                    # Include both flanks in the conservative time budget, as
+                    # they also contribute at the higher adjacent watt value.
+                    self.pulse_seconds += power_at - start
+                    self.pulse_spans.append((start, power_at))
+                    self.pulse = None
+            elif watts > _ZERO_NOISE_W:
+                self.pulse = self.power_at, power_at
+        since = power_at - MIN_OBSERVED_SECONDS
+        while self.pulse_spans and self.pulse_spans[0][1] <= since:
+            start, end = self.pulse_spans.popleft()
+            self.pulse_seconds -= end - start
+        if self.pulse_spans:
+            pulse_start = self.pulse_spans[0][0]
+            if self.pulse_seconds - max(0.0, since - pulse_start) > (
+                _MAX_GRID_PULSE_COVERAGE_SECONDS
+            ):
+                return False
+        self.advance(at, covered_until, power_at, watts)
+        return True
 
 
 class NetDischargeCapture:
@@ -450,11 +500,8 @@ class NetDischargeCapture:
     state-machine snapshots are also required when an estimate is published.
     """
 
-    def __init__(
-        self, owner: BatteryManagerCoordinator, monitor: SocConsistencyMonitor
-    ) -> None:
+    def __init__(self, owner: BatteryManagerCoordinator) -> None:
         self._owner = owner
-        self._monitor = monitor
         self._topology: _Topology | str = "net_topology_unavailable"
         self._unsub: list[Callable[[], None]] = []
         self._inputs: dict[str, str] = {}
@@ -595,14 +642,6 @@ class NetDischargeCapture:
             return "net_publication_unconfirmed"
         return "net_ac_flow_incompatible"
 
-    def _actor_generation(self, topology: _Topology) -> tuple[float, ...] | str:
-        if self._monitor.phase != "tracking":
-            return "net_coordinate_unstable"
-        generation = actor_generation(self._owner, topology.actors)
-        if generation is None:
-            return "net_mode_unconfirmed"
-        return generation
-
     def _input_values(
         self,
         inputs: tuple[tuple[str, str], ...],
@@ -653,9 +692,9 @@ class NetDischargeCapture:
     def _conditions(
         self, topology: _Topology, now: datetime, *, check_live: bool = False
     ) -> tuple[tuple[float, ...], float, float | None] | str:
-        generation = self._actor_generation(topology)
-        if isinstance(generation, str):
-            return generation
+        generation = actor_generation(self._owner, topology.actors)
+        if generation is None:
+            return "net_mode_unconfirmed"
         at = now.timestamp()
         sample_at = at
         if check_live and self._pending_ac_at is not None:
@@ -741,7 +780,11 @@ class NetDischargeCapture:
                     reading.value, previous.value, rel_tol=_AC_ROUNDOFF_REL
                 )
             if at - previous.at > _MAX_AGE or (
-                changed and (at == previous.at or key == CONF_RESERVE_GRID_ENTITY)
+                changed
+                and (
+                    key == CONF_RESERVE_GRID_ENTITY
+                    or (at == previous.at and key != CONF_SOC_ENTITY)
+                )
             ):
                 self._episode = None
                 if used_by_grid:
@@ -759,12 +802,10 @@ class NetDischargeCapture:
             self._episode = None
             return
         generation, watts, _ = conditions
-        coordinate = self._monitor.epoch, self._monitor.generation
         episode = self._episode
         if (
             episode is None
             or episode.generation != generation
-            or episode.coordinate != coordinate
             or not 0 <= at - episode.last_at <= _MAX_AGE
             or max(episode.maximum_w, watts) - min(episode.minimum_w, watts)
             > _MAX_STABLE_SPREAD_W
@@ -775,9 +816,7 @@ class NetDischargeCapture:
                 and _certified_dark_until(topology.site, episode.last_at, at) < at
             )
         ):
-            self._episode = _Episode(
-                generation, coordinate, at, at, at, watts, watts, watts
-            )
+            self._episode = _Episode(generation, at, at, at, watts, watts, watts)
         else:
             episode.advance(
                 at,
@@ -797,9 +836,9 @@ class NetDischargeCapture:
         *,
         check_live: bool = False,
     ) -> tuple[tuple[float, ...], float, _Reading, _Reading] | str:
-        generation = self._actor_generation(topology)
-        if isinstance(generation, str):
-            return generation
+        generation = actor_generation(self._owner, topology.actors)
+        if generation is None:
+            return "net_mode_unconfirmed"
         sample_at = at
         if check_live and self._grid_pending_ac_at is not None:
             if at - self._grid_pending_ac_at > _MAX_AGE:
@@ -815,7 +854,7 @@ class NetDischargeCapture:
         if reason := self._battery_reason(topology, values):
             return reason
         power = values[CONF_FEEDIN_BATTERY_POWER_ENTITY]
-        if power < -_ZERO_NOISE_W:
+        if power < -_MAX_GRID_PULSE_W:
             return "net_battery_not_idle"
         measured = (
             self._grid_readings.get(_GRID_POWER)
@@ -890,19 +929,37 @@ class NetDischargeCapture:
         if isinstance(conditions, str):
             self._grid_episode = None
             return
-        generation, watts, _, _ = conditions
-        coordinate = self._monitor.epoch, self._monitor.generation
+        generation, watts, measured, setpoint = conditions
         episode = self._grid_episode
         if (
-            episode is None
-            or episode.generation != generation
-            or episode.coordinate != coordinate
-            or not 0 <= at - episode.last_at <= _MAX_AGE
+            episode is not None
+            and episode.generation == generation
+            and 0 <= at - episode.last_at <= _MAX_AGE
+            and len(episode.pending) < _MAX_PENDING_INTERVALS
+            and len(episode.pulse_spans) < _MAX_PENDING_INTERVALS
+            and episode.advance_grid(
+                at,
+                self._grid_covered_until(grid, measured, setpoint),
+                self._readings[CONF_FEEDIN_BATTERY_POWER_ENTITY].at,
+                watts,
+            )
         ):
-            self._grid_episode = _GridEpisode(generation, coordinate, at, at, watts)
-        else:
-            episode.last_at = at
-            episode.maximum_w = max(episode.maximum_w, watts)
+            return
+        # Elevated readings alone cannot start an otherwise idle episode.
+        self._grid_episode = (
+            _GridEpisode(generation, at, at, at, watts, watts, watts)
+            if watts <= _ZERO_NOISE_W
+            else None
+        )
+
+    def _grid_covered_until(
+        self, grid: _GridTopology, measured: _Reading, setpoint: _Reading
+    ) -> float:
+        return min(
+            measured.at,
+            setpoint.at,
+            *(self._readings[key].at for key, _ in grid.shared_inputs),
+        )
 
     def _grid_diagnostic(
         self, topology: _Topology, grid: _GridTopology, now: datetime
@@ -915,26 +972,30 @@ class NetDischargeCapture:
                 self._grid_episode = None
                 self._grid_pending_ac_at = None
             return {"reason": conditions}
-        generation, _, measured, setpoint = conditions
+        generation, watts, measured, setpoint = conditions
         episode = self._grid_episode
-        if (
-            episode is None
-            or episode.generation != generation
-            or episode.coordinate != (self._monitor.epoch, self._monitor.generation)
-        ):
+        if watts > _ZERO_NOISE_W:
+            if (
+                episode is not None
+                and episode.pulse is not None
+                and now.timestamp() - episode.pulse[1] > _MAX_GRID_PULSE_SECONDS
+            ):
+                self._grid_episode = None
+            return {"reason": "net_battery_not_idle"}
+        if episode is None or episode.generation != generation:
             self._grid_episode = None
             return {"reason": "net_episode_too_short", "observed_seconds": 0.0}
-        covered_until = min(
-            measured.at,
-            setpoint.at,
-            *(self._readings[key].at for key, _ in grid.shared_inputs),
-        )
+        covered_until = self._grid_covered_until(grid, measured, setpoint)
+        if episode.pulse_spans and covered_until < episode.pulse_spans[-1][1]:
+            return {"reason": "net_publication_unconfirmed"}
         observed = max(0.0, covered_until - episode.first_at)
         if observed < MIN_OBSERVED_SECONDS:
             return {"reason": "net_episode_too_short", "observed_seconds": observed}
         return {
             "observed_seconds": observed,
-            "net_discharge_w": episode.maximum_w,
+            "observed_from": episode.first_at,
+            "observed_until": covered_until,
+            "net_discharge_w": max(watts, episode.covered_ws / observed),
             "evidence_mode": "grid_import",
             "grid_import_w": measured.value,
             "grid_setpoint_w": setpoint.value,
@@ -991,7 +1052,6 @@ class NetDischargeCapture:
         if (
             episode is None
             or episode.generation != generation
-            or episode.coordinate != (self._monitor.epoch, self._monitor.generation)
             or (
                 topology.site is not None
                 and at > episode.last_at
@@ -1002,11 +1062,14 @@ class NetDischargeCapture:
             return {"reason": "net_episode_too_short", "observed_seconds": 0.0}
         # Cut at the oldest latest publication. Additional reports on one
         # input cannot advance the covered endpoint of another input.
-        observed = max(0.0, self._covered_until() - episode.first_at)
+        covered_until = self._covered_until()
+        observed = max(0.0, covered_until - episode.first_at)
         if observed < MIN_OBSERVED_SECONDS:
             return {"reason": "net_episode_too_short", "observed_seconds": observed}
         result: NetDischargeDiagnostic = {
             "observed_seconds": observed,
+            "observed_from": episode.first_at,
+            "observed_until": covered_until,
             "net_discharge_w": max(watts, episode.covered_ws / observed),
         }
         if night_until is not None:

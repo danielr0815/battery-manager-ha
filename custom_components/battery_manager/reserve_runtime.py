@@ -258,9 +258,9 @@ def reserve_diagnostics(
         ),
         "psu48_delivered_wh": round(sum(f.psu48_delivered_wh for f in flows), 1),
         "psu_grid_import_wh": round(sum(grid_dc(config, f) for f in flows), 1),
-        "psu48_power_source": "voltage_estimate"
-        if config.support.psu48_bus_voltage_v is not None
-        else "unknown",
+        # This report describes the conservative control trajectory. Voltage
+        # qualifies readiness but supplies no measured DC output for its budget.
+        "psu48_power_source": "unknown",
         "hold_achievable": not flows
         or not (
             flows[0].reserve_dc_ceiling_percent >= inputs.start_soc_percent

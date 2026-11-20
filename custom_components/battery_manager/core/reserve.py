@@ -95,9 +95,7 @@ class _ReserveCache:
     budgets: dict[
         tuple[int, int, float, float, float], tuple[HourSlot, BatteryStep]
     ] = field(default_factory=dict)
-    variants: dict[tuple[int, bool, bool, bool], SystemConfig] = field(
-        default_factory=dict
-    )
+    variants: dict[tuple[int, bool, bool], SystemConfig] = field(default_factory=dict)
     trajectories: dict[tuple[object, ...], Trajectory] = field(default_factory=dict)
     expanded: dict[int, tuple[tuple[int, HourSlot, float], ...]] = field(
         default_factory=dict
@@ -472,6 +470,7 @@ def _same_recharge_inputs(left: PlanInputs, right: PlanInputs) -> bool:
         and left.recharge_required_ac_wh == right.recharge_required_ac_wh
         and left.soc_coordinate == right.soc_coordinate
         and left.psu_delivery == right.psu_delivery
+        and left.psu48_supply == right.psu48_supply
         and left.consumption_uncertainty == right.consumption_uncertainty
         and instants(left) == instants(right)
     )
@@ -1490,7 +1489,7 @@ def _simulate_reserve_policy(
     protect48 = support.dc48_active and soc < config.control.support_dc48_recovery_soc
     buckets: list[list[HourFlows]] = [[] for _ in inputs.slots]
     cache = _reserve_cache.get()
-    variants: dict[tuple[int, bool, bool, bool], SystemConfig] = (
+    variants: dict[tuple[int, bool, bool], SystemConfig] = (
         cache.variants if cache is not None else {}
     )
     raw_weights, weights = prepared.raw_weights, prepared.weights
@@ -1533,10 +1532,6 @@ def _simulate_reserve_policy(
         following_dc_ceiling = envelope.dc_ceiling[j]
         following_minimum = envelope.dc_minimum[j]
         scale = pv_scale if isinstance(pv_scale, (int, float)) else pv_scale[i]
-        voltage_credit = (
-            abs(soc - inputs.start_soc_percent) <= config.control.hysteresis_percent
-            and scale >= 1
-        )
         _, rail = dc_loads(config, slot)
         rail_available = support.dc24_available and not (
             support.psu24_max_power_w is not None
@@ -1547,7 +1542,7 @@ def _simulate_reserve_policy(
             if support.adaptive_voltage_gate
             else support.dc48_active
         )
-        key = id(config), voltage_credit, rail_available, active48
+        key = id(config), rail_available, active48
         if key not in variants:
             variants[key] = replace(
                 config,
@@ -1555,9 +1550,6 @@ def _simulate_reserve_policy(
                     support,
                     gate_soc_percent=support.gate_soc_percent
                     if support.adaptive_voltage_gate
-                    else None,
-                    psu48_bus_voltage_v=support.psu48_bus_voltage_v
-                    if voltage_credit or support.adaptive_voltage_gate
                     else None,
                     dc24_available=rail_available,
                     dc48_active=active48,
@@ -1924,11 +1916,19 @@ def _simulate_reserve_policy(
             ),
         )
     flows: list[HourFlows] = []
+    dispatch: list[tuple[tuple[HourSlot, HourFlows, float], ...]] = []
     energy_fields = [
         field.name for field in fields(HourFlows) if field.name.endswith("_wh")
     ]
     for slot, parts in zip(inputs.slots, buckets, strict=True):
         first = parts[0]
+        if inputs.psu48_supply is not None and pv_scale == 1.0:
+            dispatch.append(
+                tuple(
+                    (small, part, part.inverter_limit_w)
+                    for (small, _), part in zip(split_slot(slot), parts, strict=True)
+                )
+            )
         energies: dict[str, Any] = {
             name: sum(float(getattr(part, name) or 0.0) for part in parts)
             for name in energy_fields
@@ -1970,6 +1970,7 @@ def _simulate_reserve_policy(
         sum(flow.grid_export_wh for flow in flows),
         soc,
         reserve_decision=decision,
+        _dispatch=tuple(dispatch),
     )
     if traces is not None:
         traces[id(result.flows)] = tuple(source_steps)

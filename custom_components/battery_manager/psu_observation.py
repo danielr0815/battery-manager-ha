@@ -19,10 +19,28 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_AC_BALANCE_IN,
+    CONF_AC_BALANCE_OUT,
+    CONF_AC_LOAD_ENTITY,
+    CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_BATTERY_VOLTAGE_ENTITY,
+    CONF_DC_BALANCE_IN,
+    CONF_DC_BALANCE_OUT,
+    CONF_DC_LOAD_ENTITY,
     CONF_DCDC_SWITCH,
+    CONF_EXPORT_METER_ENTITY,
     CONF_FEEDIN_BATTERY_POWER_ENTITY,
+    CONF_FEEDIN_SETPOINT_ENTITY,
     CONF_INVERTER_BLOCK_SWITCH,
     CONF_INVERTER_LIMIT_ENTITY,
+    CONF_LOAD_ENERGY_ENTITY,
+    CONF_LOAD_INPUT_POWER_ENTITY,
+    CONF_LOAD_OUTPUT_POWER_ENTITY,
+    CONF_LOAD_POWER_ENTITY,
+    CONF_RESERVE_GRID_ENTITY,
+    CONF_SOC_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
     CONF_SUPPORT_DC24_OUTPUT_POWER_ENTITY,
     CONF_SUPPORT_DC24_POWER_ENTITY,
     CONF_SUPPORT_DC24_SWITCH,
@@ -40,6 +58,7 @@ if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
 
 _MAX_AGE = 30
+_GRID_SOURCES = {"on": 1, "ac_input_1": 2, "ac_input_2": 3}
 Source = Literal["dc24", "dc48"]
 _ON_ACTORS = {
     CONF_SUPPORT_DC24_SWITCH: "on",
@@ -62,6 +81,46 @@ _OTHER_POWER_ROLES = (
     *LIVE_AC_POWER_KEYS,
     *OPERATION_POWER_SOURCES,
 )
+_ON_EXCLUSIVE_METER_ROLES = (
+    *_OTHER_POWER_ROLES,
+    CONF_SOC_EXPECTATION_GRID_POWER_ENTITY,
+    CONF_SOC_EXPECTATION_GRID_SETPOINT_ENTITY,
+    CONF_EXPORT_METER_ENTITY,
+    CONF_FEEDIN_SETPOINT_ENTITY,
+    CONF_SOC_ENTITY,
+    CONF_BATTERY_VOLTAGE_ENTITY,
+)
+_BALANCE_KEYS = (
+    CONF_AC_BALANCE_IN,
+    CONF_AC_BALANCE_OUT,
+    CONF_DC_BALANCE_IN,
+    CONF_DC_BALANCE_OUT,
+)
+
+
+def _load_meter_entities(owner: BatteryManagerCoordinator) -> set[str]:
+    cfg = owner.raw_config
+    entities = {
+        entity.lower()
+        for key in (CONF_AC_LOAD_ENTITY, CONF_DC_LOAD_ENTITY)
+        if (entity := cfg.get(key))
+    }
+    if entry := getattr(owner, "entry", None):
+        # Surplus loads and appliances share the power and energy keys.
+        # Cascade devices also expose separate input and output boundaries.
+        entities.update(
+            entity.lower()
+            for subentry in entry.subentries.values()
+            for key in (
+                CONF_APPLIANCE_DETECTION_ENTITY,
+                CONF_LOAD_POWER_ENTITY,
+                CONF_LOAD_ENERGY_ENTITY,
+                CONF_LOAD_INPUT_POWER_ENTITY,
+                CONF_LOAD_OUTPUT_POWER_ENTITY,
+            )
+            if (entity := subentry.data.get(key))
+        )
+    return entities
 
 
 @dataclass
@@ -76,12 +135,14 @@ class _OnTopology:
     meter: str
     actors: tuple[tuple[str, str], ...]
     ac_meter: str | None
+    grid_feedback: str | None
     volts: float
     amps: float
     efficiency: float
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> _OnTopology | str:
+    def from_owner(cls, owner: BatteryManagerCoordinator) -> _OnTopology | str:
+        config = owner.raw_config
         meter = config.get(CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY)
         if not meter:
             return "missing_dc_meter"
@@ -94,14 +155,24 @@ class _OnTopology:
             if (entity := config.get(key))
         )
         actor_entities = {entity for entity, _ in actors}
-        # An entity shared with another electrical boundary cannot prove
-        # independent delivery from this PSU.
-        if len(actor_entities) != len(actors) or meter in actor_entities:
-            return "invalid_dc_topology"
-        if any(
-            entity.lower() == meter
-            for key in _OTHER_POWER_ROLES
-            if (entity := config.get(key))
+        # Only a dedicated DC output reading establishes source delivery.
+        # A plausible watt reading can also be a site or secondary meter.
+        if (
+            len(actor_entities) != len(actors)
+            or meter in actor_entities
+            or any(
+                entity.lower() == meter
+                for key in _ON_EXCLUSIVE_METER_ROLES
+                if (entity := config.get(key))
+            )
+            or any(
+                entity.lower() == meter
+                for key in _BALANCE_KEYS
+                # Output into the DC bus can also be recorded as its inflow.
+                if key != CONF_DC_BALANCE_IN
+                for entity in (config.get(key) or ())
+            )
+            or meter in _load_meter_entities(owner)
         ):
             return "invalid_dc_topology"
         volts = float(config.get("psu48_output_voltage_v", 0))
@@ -109,10 +180,20 @@ class _OnTopology:
         limit = volts * amps
         if not (volts > 0 and amps > 0 and limit > 0 and isfinite(limit)):
             return "missing_dc_power_limit"
+        grid = config.get(CONF_RESERVE_GRID_ENTITY)
+        grid = grid.lower() if grid else None
+        ac_meter = config.get(CONF_SUPPORT_DC48_POWER_ENTITY)
+        if grid is not None and (
+            grid in actor_entities
+            or grid == meter
+            or (ac_meter and grid == ac_meter.lower())
+        ):
+            return "invalid_dc_topology"
         return cls(
             meter,
             actors,
-            config.get(CONF_SUPPORT_DC48_POWER_ENTITY),
+            ac_meter,
+            grid,
             volts,
             amps,
             float(config.get("psu48_efficiency", 1)),
@@ -126,6 +207,18 @@ class _OnEpisode:
     last_at: float
     last_w: float
     minimum_w: float
+
+
+@dataclass(frozen=True)
+class _ObservedOnDelivery:
+    captured_at: float
+    minimum_w: float
+    first_at: float
+    last_at: float
+
+    @property
+    def seconds(self) -> float:
+        return self.last_at - self.first_at
 
 
 def _unconfirmed(state: State) -> bool:
@@ -153,6 +246,23 @@ def actor_generation(
             return None
         generation.append(state.last_changed.timestamp())
     return tuple(generation)
+
+
+def _on_generation(
+    owner: BatteryManagerCoordinator, topology: _OnTopology, now: float
+) -> tuple[float, ...] | None:
+    generation = actor_generation(owner, topology.actors)
+    if generation is None or topology.grid_feedback is None:
+        return generation
+    grid = owner.hass.states.get(topology.grid_feedback)
+    if (
+        grid is None
+        or _unconfirmed(grid)
+        or grid.state.lower() not in _GRID_SOURCES
+        or not 0 <= now - grid.last_reported.timestamp() <= _MAX_AGE
+    ):
+        return None
+    return (*generation, grid.last_changed.timestamp())
 
 
 def _meter_power(state: State, limit: float | None) -> tuple[float, str | None]:
@@ -184,11 +294,12 @@ class PsuObservationCapture:
         self._on_topology: _OnTopology | None = None
         self._on_unsub: list[Callable[[], None]] = []
         self._on_subscribed_at = 0.0
+        self._on_grid_at: float | None = None
         self._on_episode: _OnEpisode | None = None
-        self._validated_on_delivery: tuple[float, float, float] | None = None
+        self._validated_on_delivery: _ObservedOnDelivery | None = None
 
     def start(self, owner: BatteryManagerCoordinator) -> None:
-        candidate = _OnTopology.from_config(owner.raw_config)
+        candidate = _OnTopology.from_owner(owner)
         topology = candidate if isinstance(candidate, _OnTopology) else None
         if topology == self._on_topology:
             return
@@ -198,6 +309,8 @@ class PsuObservationCapture:
         self._on_topology = topology
         self._on_subscribed_at = dt_util.utcnow().timestamp()
         actors = tuple(entity for entity, _ in topology.actors)
+        if topology.grid_feedback is not None:
+            actors += (topology.grid_feedback,)
 
         @callback
         def actor_changed(event: Event[Any]) -> None:
@@ -228,12 +341,37 @@ class PsuObservationCapture:
                 owner.hass, topology.meter, output_published
             ),
         ]
+        if topology.grid_feedback is not None:
+
+            @callback
+            def grid_published(event: Event[Any]) -> None:
+                if topology is not self._on_topology:
+                    return
+                at = event.time_fired.timestamp()
+                previous = self._on_grid_at
+                self._on_grid_at = at
+                # The DC meter has its own cadence and might miss an interval
+                # between the last confirmed grid state and its next report.
+                if previous is not None and not 0 <= at - previous <= _MAX_AGE:
+                    self._invalidate_on()
+
+            self._on_unsub.extend(
+                [
+                    async_track_state_change_event(
+                        owner.hass, topology.grid_feedback, grid_published
+                    ),
+                    async_track_state_report_event(
+                        owner.hass, topology.grid_feedback, grid_published
+                    ),
+                ]
+            )
 
     def stop(self) -> None:
         for unsubscribe in self._on_unsub:
             unsubscribe()
         self._on_unsub.clear()
         self._on_topology = None
+        self._on_grid_at = None
         self._invalidate_on()
 
     def _invalidate_on(self) -> None:
@@ -254,7 +392,7 @@ class PsuObservationCapture:
         state = event.data["new_state"]
         at = event.time_fired.timestamp()
         now = dt_util.utcnow().timestamp()
-        generation = actor_generation(owner, topology.actors)
+        generation = _on_generation(owner, topology, now)
         watts = self._on_reading(state, topology)
         # HA keeps an immutable publication time in a repeated-value event.
         # Its shared State.last_reported may already reflect a later report.
@@ -266,7 +404,7 @@ class PsuObservationCapture:
             else None
         )
         if (
-            topology != _OnTopology.from_config(owner.raw_config)
+            topology != _OnTopology.from_owner(owner)
             or generation is None
             or watts is None
             or published is None
@@ -302,8 +440,8 @@ class PsuObservationCapture:
         watts = self._on_reading(meter, topology)
         published = meter.last_reported.timestamp() if meter is not None else None
         if (
-            topology != _OnTopology.from_config(owner.raw_config)
-            or episode.actor_generation != actor_generation(owner, topology.actors)
+            topology != _OnTopology.from_owner(owner)
+            or episode.actor_generation != _on_generation(owner, topology, at)
             or watts is None
             or published is None
             or not 0 <= at - episode.last_at <= _MAX_AGE
@@ -316,24 +454,25 @@ class PsuObservationCapture:
         if watts != episode.last_w:
             self._invalidate_on()
             return
-        self._validated_on_delivery = (
+        self._validated_on_delivery = _ObservedOnDelivery(
             at,
             episode.minimum_w,
-            episode.last_at - episode.first_at,
+            episode.first_at,
+            episode.last_at,
         )
 
-    def _observed_on_delivery(self, now: datetime) -> tuple[float, float] | None:
+    def _observed_on_delivery(self, now: datetime) -> _ObservedOnDelivery | None:
         validated = self._validated_on_delivery
-        if validated is None or validated[0] != now.timestamp():
+        if validated is None or validated.captured_at != now.timestamp():
             return None
-        return validated[1], validated[2]
+        return validated
 
     def expected48(self, now: datetime) -> tuple[float, float] | None:
         """Return the lower watts and covered seconds validated for this capture."""
         observed = self._observed_on_delivery(now)
-        if observed is None or observed[1] < MIN_OBSERVED_SECONDS:
+        if observed is None or observed.seconds < MIN_OBSERVED_SECONDS:
             return None
-        return observed[0], min(observed[1], MAX_PROJECTION_SECONDS)
+        return observed.minimum_w, min(observed.seconds, MAX_PROJECTION_SECONDS)
 
     def expectation_explanation(
         self, owner: BatteryManagerCoordinator, now: datetime
@@ -349,13 +488,17 @@ class PsuObservationCapture:
         }
         observed = self._observed_on_delivery(now)
         if observed is None:
-            topology = _OnTopology.from_config(cfg)
+            topology = _OnTopology.from_owner(owner)
             explanation["reason"] = (
                 topology if isinstance(topology, str) else "episode_unproven"
             )
         else:
-            explanation["observed_seconds"] = observed[1]
-            if observed[1] < MIN_OBSERVED_SECONDS:
+            explanation.update(
+                observed_from=observed.first_at,
+                observed_until=observed.last_at,
+                observed_seconds=observed.seconds,
+            )
+            if observed.seconds < MIN_OBSERVED_SECONDS:
                 explanation["reason"] = "episode_too_short"
         return explanation
 

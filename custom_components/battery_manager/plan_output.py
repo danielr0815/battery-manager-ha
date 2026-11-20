@@ -2,11 +2,11 @@
 
 from typing import Any
 
-from .core.model import PlanInputs, PlanResult
+from .core.model import PlanInputs, PlanResult, Trajectory
 
 
 def daily_surplus_breakdown(
-    inputs: PlanInputs, result: PlanResult
+    inputs: PlanInputs, result: PlanResult, trajectory: Trajectory | None = None
 ) -> list[dict[str, Any]]:
     """Per-calendar-day lost-surplus / grid-import / load-energy split
     (F-PERDAY-SURPLUS R1 + §5 v2).
@@ -37,7 +37,8 @@ def daily_surplus_breakdown(
     dc24_by_day: dict[str, float] = {}
     dc48_by_day: dict[str, float] = {}
     order: list[str] = []
-    for slot, flow in zip(inputs.slots, result.trajectory.flows, strict=True):
+    flows = (trajectory or result.trajectory).flows
+    for slot, flow in zip(inputs.slots, flows, strict=True):
         day = slot.start.date().isoformat()
         if day not in export_by_day:
             export_by_day[day] = 0.0

@@ -8,7 +8,7 @@ expiry; callers opt into a power hold bound for their particular role.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -51,6 +51,7 @@ def source_health(
     fallbacks: Mapping[str, str | None] | None = None,
     max_ages_s: Mapping[str, float | None] | None = None,
     boundaries: Mapping[str, str | None] | None = None,
+    normalizers: Mapping[str, Callable[[Any], float | None]] | None = None,
 ) -> list[dict[str, Any]]:
     """Describe explicitly wired roles without changing sources or HA state.
 
@@ -62,13 +63,15 @@ def source_health(
         state = hass.states.get(entity) if entity else None
         kind = (kinds or {}).get(role, "state")
         age = publication_age_s(state, now)
-        value = (
-            normalized_measurement(state, kind, signed=True)
-            if state is not None and kind in _UNITS
-            else state.state
-            if state is not None
-            else None
-        )
+        normalize = (normalizers or {}).get(role)
+        if state is None:
+            value = None
+        elif normalize is not None:
+            value = normalize(state)
+        elif kind in _UNITS:
+            value = normalized_measurement(state, kind, signed=True)
+        else:
+            value = state.state
         maximum = (max_ages_s or {}).get(
             role, POWER_SOURCE_MAX_AGE_S if kind == "power" else None
         )

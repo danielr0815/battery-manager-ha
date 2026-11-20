@@ -1,4 +1,4 @@
-"""The forecast sensor renders display evidence without changing PlanResult."""
+"""Qualified support reaches the primary HA forecast while dispatch stays conservative."""
 
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -15,6 +15,10 @@ from test_voltage_gate_runtime import gate as gate
 
 from custom_components.battery_manager.core.optimize import plan
 from custom_components.battery_manager.sensor import BatteryManagerSocForecastSensor
+from custom_components.battery_manager.supply_forecast import (
+    published_supply_forecast,
+    read_supply_evidence,
+)
 
 AC_INPUT = "sensor.synthetic_psu_48_ac"
 DC_OUTPUT = "sensor.synthetic_psu_48_dc"
@@ -79,8 +83,8 @@ async def forecast_sensor(gate, hass, monkeypatch):
             DC_OUTPUT,
             61,
             35,
-            "no_window",
-            "observation_shorter_than_plan_interval",
+            "available",
+            None,
             1800,
         ),
         (DC_OUTPUT, 90, 0, "no_window", "no_positive_delivery", 2670),
@@ -103,47 +107,77 @@ async def test_psu_evidence_is_explained_on_forecast_sensor(
         c.raw_config["support_dc48_output_power_entity"] = dc_meter
     if reason == "missing_dc_power_limit":
         c.raw_config["psu48_max_current_a"] = 0
-    if reason == "observation_shorter_than_plan_interval":
+    if reports == 61:
         # The real planner starts with a slot just under one hour.
         freezer.tick(timedelta(minutes=30))
     c.voltage_gate.start_observing()
     for i in range(reports):
         freezer.tick(timedelta(seconds=30))
+        hass.states.async_set("binary_sensor.synthetic_grid", "on")
         watts = lowest_w if i == 1 else 40
         hass.states.async_set(DC_OUTPUT, str(watts), {"unit_of_measurement": "W"})
         await hass.async_block_till_done()
     hass.states.async_set(AC_INPUT, "50", {"unit_of_measurement": "W"})
     hass.states.async_set("binary_sensor.synthetic_grid", "on")
-    fresh(hass, voltage=49.49, soc=69, power=0)
+    start_soc = c.build_system_config().battery.soc_min_percent if reports == 61 else 69
+    fresh(hass, voltage=49.49, soc=start_soc, power=0)
     c.data = await c._async_update_data_serial()
     c.async_update_listeners()
 
     state = hass.states.get(sensor.entity_id)
     attrs = state.attributes
     _, inputs, result = c._last_planner_recording
-    assert attrs["soc_expectation"] == {
-        "status": status,
-        "relay_confirmed_on": True,
-        **({"reason": reason} if reason else {}),
-        **({"observed_seconds": observed_seconds} if observed_seconds else {}),
-        **({"delivery_w": lowest_w} if status != "unqualified" else {}),
-    }
-    expected = [p for p in attrs["forecast"] if "expected_soc" in p]
+    diagnostic = attrs["soc_expectation"]
+    assert diagnostic["status"] == status
+    assert diagnostic["relay_confirmed_on"]
+    assert diagnostic.get("reason") == reason
+    assert diagnostic.get("observed_seconds") == observed_seconds
+    if status != "unqualified":
+        assert diagnostic["delivery_w"] == lowest_w
     if status == "available":
-        assert len(expected) > 2
-        assert expected[-1]["expected_soc"] > expected[-1]["soc"]
+        assert diagnostic["operating_forecast"]
+        assert diagnostic["end_soc"] == pytest.approx(start_soc)
+        assert result.operating_trajectory is not None
+        if reports == 61:
+            # At the battery floor both curves have the same SOC. The
+            # observed PSU still serves native demand during the safe window.
+            expected_deficit = sum(
+                f.unserved_dc_wh for f in result.operating_trajectory.flows
+            )
+            assert expected_deficit < sum(
+                f.unserved_dc_wh for f in result.trajectory.flows
+            )
+            assert c.data["coordinated_support"]["forecast_unserved_dc_wh"] == round(
+                expected_deficit, 2
+            )
+        else:
+            assert attrs["forecast"][1]["soc"] > attrs["forecast"][1]["safety_soc"]
+        assert c.data["coordinated_support"]["psu48_power_source"] == "direct"
+        assert c.data["reserve"]["psu48_power_source"] == "unknown"
+        assert (
+            datetime.fromisoformat(diagnostic["end_at"]).timestamp()
+            == result.psu48_supply_until
+        )
+        weaker = replace(
+            inputs, psu48_supply=replace(inputs.psu48_supply, power_w=lowest_w + 1)
+        )
+        fallback, stale = published_supply_forecast(c, weaker, result, dt_util.now())
+        assert fallback is result.trajectory
+        assert stale["reason"] == "supply_evidence_changed"
     else:
-        assert not expected
+        assert result.operating_trajectory is None
+        assert all("safety_soc" not in p for p in attrs["forecast"])
+    published = result.operating_trajectory or result.trajectory
     assert [p["soc"] for p in attrs["forecast"]] == [
         inputs.start_soc_percent,
-        *(round(f.soc_end_percent, 1) for f in result.trajectory.flows),
+        *(round(f.soc_end_percent, 1) for f in published.flows),
     ]
     assert float(state.state) == attrs["forecast"][1]["soc"]
     assert "soc_expectation" in sensor._unrecorded_attributes
 
 
 async def test_battery_net_expectation_is_limited_to_observed_night(
-    forecast_sensor, hass, freezer
+    forecast_sensor, hass, freezer, monkeypatch
 ):
     """Real HA publications, with no PSU output or solar power meter configured."""
     c, sensor = forecast_sensor
@@ -173,12 +207,17 @@ async def test_battery_net_expectation_is_limited_to_observed_night(
     assert diagnostic["observed_seconds"] == 7200
     assert "delivery_w" not in diagnostic
     forecast = state.attributes["forecast"]
-    covered = [p for p in forecast if "expected_soc" in p]
-    assert len(covered) >= 2
-    assert all(p["expected_soc"] == 69 for p in covered)
-    assert covered[-1]["soc"] < 69
-    assert "expected_soc" not in forecast[-1]
-    assert [p["soc"] for p in forecast] == [
+    assert result.operating_trajectory is not None
+    assert forecast[1]["soc"] == 69
+    assert forecast[1]["safety_soc"] < 69
+    assert diagnostic["end_soc"] == pytest.approx(69)
+    assert c.data["grid_import_kwh"] == round(
+        result.operating_trajectory.total_import_wh / 1000, 3
+    )
+    assert c.data["grid_import_kwh"] > round(
+        result.trajectory.total_import_wh / 1000, 3
+    )
+    assert [p["safety_soc"] for p in forecast] == [
         inputs.start_soc_percent,
         *(round(f.soc_end_percent, 1) for f in result.trajectory.flows),
     ]
@@ -187,9 +226,42 @@ async def test_battery_net_expectation_is_limited_to_observed_night(
     # A later qualified episode cannot retrospectively explain an older
     # plan, even if the BMS coordinate and all current readings still agree.
     older_inputs = replace(inputs, now=inputs.now - timedelta(hours=3))
-    points, evidence = c._forecast_soc_expectation(config, older_inputs, result)
-    assert points == ()
+    points, evidence = read_supply_evidence(c, older_inputs, dt_util.now())
+    assert points is None
     assert evidence["reason"] == "net_plan_outside_observation"
+
+    # A completed CPU run may already be past its first planned switch,
+    # even though the measured episode itself would last much longer.
+    expired_plan = replace(result, psu48_supply_until=dt_util.now().timestamp())
+    reference, rejected = published_supply_forecast(
+        c, inputs, expired_plan, dt_util.now()
+    )
+    assert reference is result.trajectory
+    assert rejected["reason"] == "supply_evidence_changed"
+    with monkeypatch.context() as m:
+        m.setattr(c.voltage_gate, "forecast_soc", lambda now: None)
+        reference, rejected = published_supply_forecast(
+            c, inputs, result, dt_util.now()
+        )
+        assert reference is result.trajectory
+        assert rejected["reason"] == "supply_soc_anchor_changed"
+    with monkeypatch.context() as m:
+        m.setattr(c.voltage_gate, "coordinate_matches", lambda snapshot: False)
+        reference, rejected = published_supply_forecast(
+            c, inputs, result, dt_util.now()
+        )
+        assert reference is result.trajectory
+        assert rejected["reason"] == "net_coordinate_unstable"
+    # An observation can end exactly at astronomical dawn.
+    expired = {
+        **c.voltage_gate.net_discharge_diagnostic(dt_util.now()),
+        "valid_until": dt_util.now().timestamp(),
+    }
+    with monkeypatch.context() as m:
+        m.setattr(c.voltage_gate, "net_discharge_diagnostic", lambda now: expired)
+        observation, rejected = read_supply_evidence(c, inputs, dt_util.now())
+        assert observation is None
+        assert rejected["reason"] == "supply_evidence_ends"
 
     # An old qualification cannot survive a source change at publication.
     hass.states.async_set(DCDC, "on")
@@ -199,7 +271,7 @@ async def test_battery_net_expectation_is_limited_to_observed_night(
     c.async_update_listeners()
     attrs = hass.states.get(sensor.entity_id).attributes
     assert attrs["soc_expectation"]["status"] == "unqualified"
-    assert all("expected_soc" not in p for p in attrs["forecast"])
+    assert all("safety_soc" not in p for p in attrs["forecast"])
 
 
 @pytest.mark.parametrize("measured_pv_w", [0, 200])
@@ -264,36 +336,45 @@ async def test_grid_import_expectation_publishes_only_observed_partial_slot(
     assert diagnostic["grid_margin_w"] == 50
     assert "delivery_w" not in diagnostic
     assert 1800 <= diagnostic["observed_seconds"] <= 1830
-    start, end = diagnostic["points"]
-    assert start == {"t": forecast[0]["t"], "expected_soc": 69}
-    end_at = datetime.fromisoformat(end["t"])
+    end_at = datetime.fromisoformat(diagnostic["end_at"])
     assert end_at == dt_util.now() + timedelta(seconds=diagnostic["observed_seconds"])
     assert end_at < datetime.fromisoformat(forecast[1]["t"])
-    assert end["expected_soc"] == 69
-    assert [p["soc"] for p in forecast] == [
-        inputs.start_soc_percent,
-        *(round(f.soc_end_percent, 1) for f in result.trajectory.flows),
-    ]
+    assert diagnostic["end_soc"] == 69
+    assert forecast[1]["safety_soc"] < forecast[1]["soc"] < 69
     assert float(state.state) == forecast[1]["soc"]
-    assert all("expected_soc" not in p for p in forecast)
+    assert result.operating_trajectory is not None
 
-    # The same live evidence must be excluded when a compatible future grid
-    # deficit cannot be shown even though median PV still leaves a deficit.
+    # The setpoint can report later than the other channels. Even a long
+    # qualifying episode cannot extend the hour from its actual last sample.
+    if measured_pv_w:
+        common_end = dt_util.now().timestamp() - 60
+        original_grid = {
+            **raw_evidence,
+            "observed_until": common_end,
+            "observed_from": common_end - 7200,
+            "observed_seconds": 7200,
+        }
+        with monkeypatch.context() as m:
+            m.setattr(
+                c.voltage_gate, "net_discharge_diagnostic", lambda now: original_grid
+            )
+            observation, _ = read_supply_evidence(c, inputs, dt_util.now())
+            assert observation.valid_until == common_end + 3600
+
     first, *rest = inputs.slots
     unmatched = replace(inputs, slots=(replace(first, pv_p90_wh=first.ac_wh), *rest))
-    points, details = c._forecast_soc_expectation(config, unmatched, result)
-    assert points == ()
-    assert details["status"] == "no_window"
+    rejected = plan(config, unmatched)
+    trajectory, details = published_supply_forecast(
+        c, unmatched, rejected, dt_util.now()
+    )
+    assert trajectory is rejected.trajectory
     assert details["reason"] == "net_grid_plan_margin_not_met"
-    assert "points" not in details
 
     if measured_pv_w == 0:
-        # Once the alternative no longer qualifies, preserve the legacy
-        # explanation for why the zero-PV evidence cannot be projected.
         hass.states.async_set(grid_power, "30", {"unit_of_measurement": "W"})
         await hass.async_block_till_done()
-        points, details = c._forecast_soc_expectation(config, inputs, result)
-        assert points == ()
-        assert details["status"] == "no_window"
-        assert details["reason"] == "observation_shorter_than_plan_interval"
-        assert "points" not in details
+        trajectory, details = published_supply_forecast(
+            c, inputs, result, dt_util.now()
+        )
+        assert trajectory is result.trajectory
+        assert details["reason"] == "supply_evidence_changed"

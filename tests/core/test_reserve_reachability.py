@@ -109,11 +109,11 @@ def test_legacy_hold_cannot_override_low_soc_support(hold):
     )
     flow = simulate(config, inputs, 20).flows[0]
     assert flow.support_dc48
-    assert flow.psu48_delivered_wh == pytest.approx(4.729374999999999)
-    assert flow.soc_end_percent > 5.4
+    assert flow.psu48_delivered_wh == 0
+    assert flow.soc_end_percent == pytest.approx(5.4 - 40 / 12 / 10)
 
 
-def test_high_soc_holding_reports_incidental_charge_separately():
+def test_high_soc_holding_does_not_infer_incidental_charge_from_voltage():
     config = plant()
     config = replace(
         config,
@@ -127,12 +127,10 @@ def test_high_soc_holding_reports_incidental_charge_separately():
     )
     result = simulate(config, series(80, [(0, 100, 60)]), 20)
     flow = result.flows[0]
-    assert flow.soc_end_percent > 80
+    assert flow.soc_end_percent == pytest.approx(80)
     assert flow.support_dc24 and flow.support_dc48
     assert flow.battery_discharge_wh == 0
-    assert flow.psu48_battery_charge_wh == pytest.approx(
-        (flow.soc_end_percent - 80) * 10
-    )
+    assert flow.psu48_battery_charge_wh == 0
     assert result.flows[0].inverter_output_wh == 0
 
 

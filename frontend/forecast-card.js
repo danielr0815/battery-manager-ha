@@ -38,6 +38,23 @@ import {
 // only for visual overlap. The tooltip reports actual published samples.
 function expectationSamples(plan, expectation) {
   if (expectation?.status !== "available") return [];
+  if (expectation.operating_forecast) {
+    if (plan.some((p) => p.safetySoc == null)) return [];
+    const samples = plan.map((p) => ({ ...p, expectedSoc: p.soc }));
+    const time = Date.parse(expectation.end_at);
+    const expectedSoc = expectation.end_soc;
+    const i = samples.findIndex((p) => p.time >= time);
+    if (
+      i > 0 &&
+      time < samples[i].time &&
+      Number.isFinite(expectedSoc) &&
+      expectedSoc >= 0 &&
+      expectedSoc <= 100
+    ) {
+      samples.splice(i, 0, { time, expectedSoc });
+    }
+    return samples;
+  }
   if (expectation.evidence_mode !== "grid_import") {
     const end = plan.findIndex((p) => p.expectedSoc == null);
     return plan.slice(0, end < 0 ? plan.length : end);
@@ -388,6 +405,12 @@ export class BatteryManagerForecastCard extends HTMLElement {
       .map((p) => ({
         time: new Date(p.t).getTime(),
         soc: Number(p.soc),
+        safetySoc:
+          typeof p.safety_soc === "number" &&
+          p.safety_soc >= 0 &&
+          p.safety_soc <= 100
+            ? p.safety_soc
+            : undefined,
         expectedSoc:
           typeof p.expected_soc === "number" &&
           p.expected_soc >= 0 &&
@@ -402,8 +425,12 @@ export class BatteryManagerForecastCard extends HTMLElement {
     }
     const expectation = a.soc_expectation;
     const expectationStatus = expectation?.status;
-    const expectationCurveKey =
-      expectation?.evidence_mode === "grid_import"
+    const operating =
+      expectation?.operating_forecast === true &&
+      points.every((p) => p.safetySoc != null);
+    const expectationCurveKey = operating
+      ? "soc_operating_curve"
+      : expectation?.evidence_mode === "grid_import"
         ? "soc_expected_grid_curve"
         : expectation?.basis === "battery_net"
           ? "soc_expected_net_curve"
@@ -653,32 +680,28 @@ export class BatteryManagerForecastCard extends HTMLElement {
       );
     }
 
-    // SOC curve: soft area fill + line
-    const coords = points.map(
-      (p) => `${x(p.time).toFixed(1)},${y(p.soc).toFixed(1)}`,
-    );
-    svg.push(
-      `<polygon points="${x(points[0].time).toFixed(1)},${y(0)} ${coords.join(
-        " ",
-      )} ${x(points[points.length - 1].time).toFixed(1)},${y(0)}"
-        fill="${accent}" opacity="0.12"/>`,
-      `<polyline data-soc-curve="safety" points="${coords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
-        stroke-width="2" stroke-linejoin="round"/>`,
-    );
-
     const expected = expectationSamples(points, expectation);
-    const expectedCoords = expected.map(
-      (p) => `${x(p.time).toFixed(1)},${y(p.expectedSoc).toFixed(1)}`,
+    const showExpectation = expected.length >= 2;
+    const coord = (time, soc) => `${x(time).toFixed(1)},${y(soc).toFixed(1)}`;
+    const safetyCoords = points.map((p) =>
+      coord(p.time, operating ? p.safetySoc : p.soc),
     );
-    const showExpectation = expectedCoords.length >= 2;
-    // Between shared timestamps the vertical difference is linear. Compare
-    // it at the endpoints over the displayed prefix, within one chart pixel.
+    const expectedCoords = expected.map((p) => coord(p.time, p.expectedSoc));
+    const primaryCoords = operating ? expectedCoords : safetyCoords;
+    svg.push(
+      `<polygon points="${x(t0)},${y(0)} ${primaryCoords.join(" ")} ${x(t1)},${y(0)}"
+        fill="${accent}" opacity="0.12"/>`,
+      `<polyline data-soc-curve="safety" points="${safetyCoords.join(" ")}" fill="none" stroke="${expectationStatus ? safetyColor : accent}"
+        stroke-width="2" ${operating ? 'stroke-dasharray="5 3"' : ""} stroke-linejoin="round"/>`,
+    );
     const overlap =
       showExpectation &&
-      expected.every((p) => Math.abs(y(p.expectedSoc) - y(p.soc)) < 1);
+      (operating
+        ? points.every((p) => Math.abs(y(p.safetySoc) - y(p.soc)) < 1)
+        : expected.every((p) => Math.abs(y(p.expectedSoc) - y(p.soc)) < 1));
     if (showExpectation) {
       svg.push(`<polyline data-soc-curve="expected" points="${expectedCoords.join(" ")}"
-        fill="none" stroke="${expectationColor}" stroke-width="2" stroke-dasharray="5 3"/>`);
+        fill="none" stroke="${expectationColor}" stroke-width="2" ${operating ? "" : 'stroke-dasharray="5 3"'}/>`);
     }
 
     // "now" marker: the curve starts at the current SOC
@@ -772,6 +795,7 @@ export class BatteryManagerForecastCard extends HTMLElement {
       lanes,
       inverterFloor: activeReserve && showInverterFloor ? invMin : undefined,
       expectationCurveKey,
+      operating,
       expectationEndTime: showExpectation ? expected.at(-1).time : undefined,
     };
 
@@ -931,8 +955,8 @@ export class BatteryManagerForecastCard extends HTMLElement {
       ${
         expectationStatus
           ? `<div class="legend" data-soc-curve-legend style="color:var(--primary-text-color, inherit)">
-        <span><span aria-hidden="true" style="color:${safetyColor}">━</span> ${esc(t("soc_safety_curve"))}</span>
-        ${showExpectation ? `<span><span aria-hidden="true" style="color:${expectationColor}">┄</span> ${esc(t(expectationCurveKey))}</span>` : ""}
+        <span><span aria-hidden="true" style="color:${safetyColor}">${operating ? "┄" : "━"}</span> ${esc(t("soc_safety_curve"))}</span>
+        ${showExpectation ? `<span><span aria-hidden="true" style="color:${expectationColor}">${operating ? "━" : "┄"}</span> ${esc(t(expectationCurveKey))}</span>` : ""}
       </div><div class="forecast-note" id="soc-curve-explanation" data-soc-curve-explanation>${esc(socExpectationExplanation(this._hass, expectation, showExpectation, overlap))}</div>`
           : ""
       }
@@ -1138,10 +1162,11 @@ export class BatteryManagerForecastCard extends HTMLElement {
       meta.expectationEndTime != null &&
       nearest.time <= meta.expectationEndTime &&
       nearest.expectedSoc != null;
+    const safetySoc = meta.operating ? nearest.safetySoc : nearest.soc;
     const forecastText = [
-      nearest.soc == null
+      safetySoc == null
         ? ""
-        : ` · ${hasExpectation ? t("soc_safety_curve") + " " : ""}${nearest.soc} %`,
+        : ` · ${hasExpectation ? t("soc_safety_curve") + " " : ""}${safetySoc} %`,
       hasExpectation
         ? ` · ${t(meta.expectationCurveKey)} ${nearest.expectedSoc} %`
         : "",

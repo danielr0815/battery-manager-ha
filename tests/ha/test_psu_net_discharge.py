@@ -109,6 +109,11 @@ def _reason(runtime):
     return _diagnostic(runtime)["reason"]
 
 
+def _coverage(seconds):
+    end = dt_util.utcnow().timestamp()
+    return {"observed_from": end - seconds, "observed_until": end}
+
+
 async def test_historical_topology_needs_no_optional_meter_or_feedback(
     runtime, hass, freezer
 ):
@@ -127,6 +132,7 @@ async def test_historical_topology_needs_no_optional_meter_or_feedback(
     proof = _diagnostic(runtime)
     assert proof["observed_seconds"] == 1800
     assert proof["net_discharge_w"] == 4
+    assert proof["observed_until"] - proof["observed_from"] == 1800
     assert (
         dt_util.parse_datetime("2026-11-18T04:00:00Z").timestamp()
         < proof["valid_until"]
@@ -236,7 +242,11 @@ async def test_daylight_veto_and_pv_override_with_ac_source_guards(
 
     inputs = {_PV: 0, _AC_IN: 100, _AC_OUT: 100}
     await _episode(hass, freezer, **inputs)
-    assert _diagnostic(runtime) == {"observed_seconds": 1800, "net_discharge_w": 4}
+    assert _diagnostic(runtime) == {
+        "observed_seconds": 1800,
+        "net_discharge_w": 4,
+        **_coverage(1800),
+    }
     freezer.tick(5)
     _set(hass, _PV, 20)
     _set(hass, _PV, 0)
@@ -788,11 +798,146 @@ async def test_grid_import_requires_thirty_minutes_of_common_coverage(
         "grid_import_w": 151,
         "grid_setpoint_w": 100,
         "grid_margin_w": 50,
+        **_coverage(1800),
     }
     await _grid_report(hass, freezer, seconds=30, skip=(_PCC,))
     assert _diagnostic(runtime)["observed_seconds"] == 1800
     await _grid_report(hass, freezer, seconds=1, skip=(_PCC,))
     assert _reason(runtime) == "net_grid_power_unavailable"
+
+
+async def test_short_discharge_pulse_preserves_the_grid_window_with_its_energy(
+    runtime, hass, freezer
+):
+    _bind_grid_observation(runtime, freezer)
+    await _episode(hass, freezer, watts=0, **_DAY_INPUTS)
+    first_at = _diagnostic(runtime)["observed_from"]
+
+    await _grid_report(hass, freezer, watts=-4, seconds=5)
+    assert _reason(runtime) == "net_battery_not_idle"
+    await _grid_report(hass, freezer, watts=1, seconds=2, skip=(_SETPOINT,))
+    assert _reason(runtime) == "net_publication_unconfirmed"
+    _set(hass, _SETPOINT, 100)
+    await hass.async_block_till_done()
+    proof = _diagnostic(runtime)
+    assert proof["evidence_mode"] == "grid_import"
+    assert proof["observed_from"] == first_at
+    assert proof["observed_seconds"] == 1807
+    assert proof["observed_until"] == dt_util.utcnow().timestamp()
+    # Upper endpoint method includes both adjoining intervals and does not
+    # let the small positive return reading offset the accumulated draw.
+    assert proof["net_discharge_w"] == pytest.approx(4 * (5 + 2) / 1807)
+
+
+async def test_sustained_small_discharge_requires_a_new_idle_window(
+    runtime, hass, freezer
+):
+    _bind_grid_observation(runtime, freezer)
+    await _episode(hass, freezer, watts=0, **_DAY_INPUTS)
+    await _grid_report(hass, freezer, watts=-4, seconds=5)
+    assert _reason(runtime) == "net_battery_not_idle"
+    await _grid_report(hass, freezer, watts=-4, seconds=30)
+    assert _reason(runtime) == "net_battery_not_idle"
+    await _grid_report(hass, freezer, watts=0, seconds=1)
+    assert _diagnostic(runtime) == {
+        "reason": "net_episode_too_short",
+        "observed_seconds": 0,
+    }
+
+
+async def test_repeated_discharge_pulses_must_fit_a_shared_time_budget(
+    runtime, hass, freezer
+):
+    _bind_grid_observation(runtime, freezer)
+    await _episode(hass, freezer, watts=0, **_DAY_INPUTS)
+    for index in range(3):
+        await _grid_report(hass, freezer, watts=-4, seconds=18)
+        await _grid_report(hass, freezer, watts=0, seconds=2)
+        assert _diagnostic(runtime)["observed_seconds"] == 1800 + (index + 1) * 20
+    await _grid_report(hass, freezer, watts=-4, seconds=1)
+    await _grid_report(hass, freezer, watts=0, seconds=1)
+    assert _diagnostic(runtime) == {
+        "reason": "net_episode_too_short",
+        "observed_seconds": 0,
+    }
+
+
+async def test_pulse_does_not_hide_a_grid_margin_break(runtime, hass, freezer):
+    _bind_grid_observation(runtime, freezer)
+    await _episode(hass, freezer, watts=0, **_DAY_INPUTS)
+    await _grid_report(hass, freezer, watts=-4, seconds=5, **{_PCC: 150})
+    await _grid_report(hass, freezer, watts=0, seconds=2)
+    assert _diagnostic(runtime)["observed_seconds"] == 0
+
+
+@pytest.mark.parametrize("daytime", [False, True])
+async def test_reconciliation_does_not_discard_continuous_electrical_evidence(
+    runtime, hass, freezer, daytime
+):
+    signals = {}
+    if daytime:
+        _bind_grid_observation(runtime, freezer)
+        signals = _DAY_INPUTS
+    await _episode(hass, freezer, watts=0, **signals)
+    first_at = _diagnostic(runtime)["observed_from"]
+    epoch = runtime.monitor.epoch
+    await _report(hass, freezer, soc=89, watts=0, **signals)
+    assert runtime.monitor.phase == "reconciling"
+    assert _reason(runtime) == "net_coordinate_unstable"
+    await _episode(hass, freezer, n=24, soc=89, watts=0, **signals)
+    assert runtime.monitor.phase == "tracking"
+    assert runtime.monitor.epoch == epoch + 1
+    proof = _diagnostic(runtime)
+    assert proof["observed_from"] == first_at
+    assert proof["observed_until"] == dt_util.utcnow().timestamp()
+    assert proof["net_discharge_w"] == 0
+
+
+async def test_explicit_setpoint_can_use_the_configured_signed_site_meter(
+    runtime, hass, freezer
+):
+    _bind_grid_observation(
+        runtime,
+        freezer,
+        live_ac_grid_power_entity=_PCC.upper(),
+        **{_GRID_POWER_KEY: None},
+    )
+    await _episode(hass, freezer, watts=0, **_DAY_INPUTS)
+    assert _diagnostic(runtime)["grid_import_w"] == 151
+    assert _diagnostic(runtime)["grid_setpoint_w"] == 100
+    runtime.owner.raw_config[_GRID_SETPOINT_KEY] = None
+    assert _reason(runtime) == "net_pv_detected"
+    runtime.owner.raw_config.update(
+        {
+            "live_ac_grid_power_entity": None,
+            "operation_import_power_entity": _PCC,
+            _GRID_SETPOINT_KEY: _SETPOINT,
+        },
+    )
+    assert _reason(runtime) == "net_grid_power_unavailable"
+
+
+async def test_switching_grid_ownership_from_site_meter_to_port_rebinds_once(
+    runtime, hass, freezer
+):
+    _bind_grid_observation(
+        runtime,
+        freezer,
+        live_ac_grid_power_entity=_PCC,
+        live_ac_input_power_entity=_AC_IN,
+        **{_GRID_POWER_KEY: None},
+    )
+    signals = _DAY_INPUTS | {_AC_IN: 185}
+    await _episode(hass, freezer, watts=0, **signals)
+    assert _diagnostic(runtime)["grid_import_w"] == 151
+
+    runtime.owner.raw_config[_GRID_POWER_KEY] = _AC_IN
+    runtime.start_observing()
+    assert _reason(runtime) == "net_telemetry_unavailable"
+    await _episode(hass, freezer, watts=0, **(signals | {_PCC: -200}))
+    proof = _diagnostic(runtime)
+    assert proof["grid_import_w"] == 185
+    assert proof["observed_seconds"] == 1800
 
 
 @pytest.mark.parametrize(
@@ -804,7 +949,7 @@ async def test_grid_import_requires_thirty_minutes_of_common_coverage(
         (50, -100, 0, "net_grid_margin_not_met"),
         (149, 100, 0, "net_grid_margin_not_met"),
         (150, 100, 0, "net_grid_margin_not_met"),
-        (151, 100, -1.01, "net_battery_not_idle"),
+        (151, 100, -4.01, "net_battery_not_idle"),
         (151, 100, 1.01, "net_charging_detected"),
     ],
 )
@@ -863,7 +1008,11 @@ async def test_bad_grid_roles_do_not_delay_independent_pv_zero_path(
     await _grid_report(hass, freezer)
     assert _reason(runtime) == reason
     await _episode(hass, freezer, n=61, watts=-4, **{_PV: 0})
-    assert _diagnostic(runtime) == {"net_discharge_w": 4, "observed_seconds": 1800}
+    assert _diagnostic(runtime) == {
+        "net_discharge_w": 4,
+        "observed_seconds": 1800,
+        **_coverage(1800),
+    }
 
 
 async def test_grid_binding_change_preserves_current_night_evidence(
@@ -1070,7 +1219,11 @@ async def test_grid_fallback_is_available_alongside_pv_zero_evidence(
 ):
     _bind_grid_observation(runtime, freezer)
     await _episode(hass, freezer, watts=0, **(_DAY_INPUTS | {_PV: 0}))
-    assert _diagnostic(runtime) == {"net_discharge_w": 0, "observed_seconds": 1800}
+    assert _diagnostic(runtime) == {
+        "net_discharge_w": 0,
+        "observed_seconds": 1800,
+        **_coverage(1800),
+    }
     fallback = runtime._net_discharge.diagnostic(dt_util.utcnow(), grid_only=True)
     assert fallback["evidence_mode"] == "grid_import"
     assert fallback["observed_seconds"] == 1800

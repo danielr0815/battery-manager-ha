@@ -44,6 +44,7 @@ def step_hour(
     feedin_wh: float = 0.0,
     *,
     inverter_limit_w: float | None = None,
+    psu48_native_delivery_wh: float = 0.0,
 ) -> HourFlows:
     """Simulate one slot; returns all flows. Never mutates anything."""
     # Reserve changes an operating limit, not the validated plant configuration.
@@ -150,17 +151,14 @@ def step_hour(
     bus_load = native48_wh + bus_draw24_wh
 
     # --- 48 V support PSU (F-N3 direct-offset model, docs/DC_TOPOLOGY.md §4) ---
-    # The PSU is a 48 V source: it first covers concurrent bus load DIRECTLY
-    # (no battery round-trip), then the remainder charges the battery through
-    # the charge efficiency. Grid billing follows the energy actually
-    # DELIVERED (a closed gate or a full battery bills ~0), divided by the
-    # PSU efficiency. Voltage gate (R1): an SOC proxy for the PSU's
-    # output-voltage threshold; gate_soc None = always open.
+    # For coordinated supply, relay permission and electrical delivery are
+    # separate. Voltage and BMS SOC describe the switch, and cannot establish
+    # output current. Only the nominal fixed-dispatch run supplies evidence.
+    # Uncoordinated schedules retain their explicitly configured flat supply.
     requested48 = dc48_support if support.adaptive_voltage_gate else None
-    voltage = support.psu48_bus_voltage_v
     gate_soc = support.gate_soc_percent
     if support.adaptive_voltage_gate:
-        allowed, voltage = forecast_gate(
+        allowed = forecast_gate(
             support,
             soc_percent,
             bus_load / slot.duration,
@@ -178,8 +176,6 @@ def step_hour(
         requested48 = dc48_support and (protected or bus_load > _EPS)
         dc48_support = requested48 and (protected or allowed)
         gate_soc = None
-        if pv_scale < 1:
-            voltage = None
     gate_open = (
         dc48_support
         and support.configured
@@ -187,33 +183,16 @@ def step_hour(
         and not net_charging
     )
     if support.coordinated:
-        gate_open = (
-            gate_open
-            and voltage is not None
-            and voltage <= support.psu48_output_voltage_v
-        )
+        gate_open = gate_open and dc24_from_grid and psu48_native_delivery_wh > 0.0
     psu48_delivered_wh = 0.0
     psu48_battery_charge_wh = 0.0
     psu48_ac_wh = 0.0
     if gate_open:
-        potential = support.dc48_power_w * slot.duration
-        if support.coordinated:
-            # A current-limited PSU supplies U_bus * I_max, not its nameplate
-            # power at every voltage. Unknown bus voltage receives no credit.
-            potential = (
-                min(voltage, support.psu48_output_voltage_v)
-                / support.psu48_output_voltage_v
-                * support.psu48_max_power_w
-                * slot.duration
-                if support.psu48_max_power_w is not None
-                and voltage is not None
-                and voltage <= support.psu48_output_voltage_v
-                else 0.0
-            )
-            if voltage == support.psu48_output_voltage_v:
-                # At the regulated voltage estimate direct load coverage only;
-                # extra charging current cannot be inferred from voltage.
-                potential = min(potential, bus_load)
+        potential = (
+            min(psu48_native_delivery_wh, native48_wh)
+            if support.coordinated
+            else support.dc48_power_w * slot.duration
+        )
         if support.psu48_max_power_w is not None:
             potential = min(potential, support.psu48_max_power_w * slot.duration)
         # (a) offset concurrent bus load 1:1 on the 48 V bus (no battery).

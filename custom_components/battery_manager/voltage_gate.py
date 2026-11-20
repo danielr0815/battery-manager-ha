@@ -33,7 +33,7 @@ from .net_discharge import (
     NetDischargeCapture,
     NetDischargeDiagnostic,
 )
-from .psu_observation import PsuObservationCapture
+from .psu_observation import PsuObservationCapture, _unconfirmed
 from .soc_consistency import SocConsistencyMonitor, SocObservation
 
 if TYPE_CHECKING:
@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 ON_DWELL_SECONDS = 60
 OFF_DWELL_SECONDS = 300
 MEASUREMENT_MAX_AGE_SECONDS = 30
+# The plan can carry a fresh voltage into its first substep. Replanning from
+# the same original report cannot extend the physical assumption.
+_VOLTAGE_FORECAST_HOLD_SECONDS = 300
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -65,7 +68,7 @@ class VoltageGateRuntime:
         self.learner = GateLearner()
         self.monitor = SocConsistencyMonitor()
         self.psu = PsuObservationCapture()
-        self._net_discharge = NetDischargeCapture(owner, self.monitor)
+        self._net_discharge = NetDischargeCapture(owner)
         self.published_coordinate: SocCoordinateSnapshot | None = None
         self._replan_after_task: Any = None
         self.ready = False
@@ -252,7 +255,12 @@ class VoltageGateRuntime:
         if not self.ready:
             return {"reason": "net_telemetry_unavailable"}
         self._bind()
-        return self._net_discharge.diagnostic(now, grid_only=grid_only)
+        result = self._net_discharge.diagnostic(now, grid_only=grid_only)
+        # Electrical coverage remains valid through a BMS percentage change.
+        # Display projections need a fresh plan on the settled coordinate.
+        if self.monitor.phase != "tracking":
+            return {"reason": "net_coordinate_unstable"}
+        return result
 
     def coordinate_matches(self, snapshot: SocCoordinateSnapshot | None) -> bool:
         if snapshot is None:
@@ -290,20 +298,29 @@ class VoltageGateRuntime:
         self.published_coordinate = None
 
     def voltage(self) -> float | None:
+        return self.voltage_snapshot()[0]
+
+    def voltage_snapshot(self) -> tuple[float | None, float]:
+        """Read confirmed bus voltage and its original forecast expiration."""
         c = self.owner
         entity = c.raw_config.get(CONF_BATTERY_VOLTAGE_ENTITY)
         state = c.hass.states.get(entity) if entity else None
         if (
-            not entity
-            or state is None
+            state is None
+            or _unconfirmed(state)
             or state.attributes.get("unit_of_measurement") != "V"
             or not 0
             <= (dt_util.utcnow() - state.last_reported).total_seconds()
             <= MEASUREMENT_MAX_AGE_SECONDS
         ):
-            return None
-        value = c._read_float(entity)
-        return value if value is not None and 40 <= value <= 60 else None
+            return None, 0.0
+        try:
+            value = float(state.state)
+        except ValueError:
+            return None, 0.0
+        if not 40 <= value <= 60:
+            return None, 0.0
+        return value, state.last_reported.timestamp() + _VOLTAGE_FORECAST_HOLD_SECONDS
 
     def _soc(self, now: datetime) -> float | None:
         entity = self.owner.raw_config.get(CONF_SOC_ENTITY)
@@ -321,6 +338,18 @@ class VoltageGateRuntime:
         # gate observation or permission to remove a protective source.
         value = self.owner._read_float(entity)
         return value if value is not None and 0 <= value <= 100 else None
+
+    def forecast_soc(self, now: datetime) -> float | None:
+        """Require a confirmed, fresh percentage to anchor measured supply."""
+        entity = self.owner.raw_config.get(CONF_SOC_ENTITY)
+        state = self.owner.hass.states.get(entity) if entity else None
+        if (
+            state is None
+            or _unconfirmed(state)
+            or state.attributes.get("unit_of_measurement") != "%"
+        ):
+            return None
+        return self._soc(now)
 
     def _bind(self) -> None:
         cfg = self.owner.raw_config

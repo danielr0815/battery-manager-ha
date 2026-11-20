@@ -266,6 +266,47 @@ async def test_invalid_voltage_allows_readiness_but_never_power_credit(
     assert c.voltage_gate.voltage() is None
 
 
+async def test_voltage_expiration_is_bound_to_confirmed_original_publication(
+    gate, hass, freezer
+):
+    c, *_ = gate
+    fresh(hass, 49.5)
+    observed_at = dt_util.utcnow().timestamp()
+    assert c.voltage_gate.voltage_snapshot() == (49.5, observed_at + 300)
+    freezer.tick(30)
+    assert c.voltage_gate.voltage_snapshot() == (49.5, observed_at + 300)
+    freezer.tick(1)
+    assert c.voltage_gate.voltage_snapshot() == (None, 0.0)
+    for flag in ("assumed_state", "restored"):
+        hass.states.async_set(
+            "sensor.voltage", "49.5", {"unit_of_measurement": "V", flag: True}
+        )
+        assert c.voltage_gate.voltage_snapshot() == (None, 0.0)
+    fresh(hass, 49.5)
+    assert c.voltage_gate.voltage_snapshot() == (
+        49.5,
+        dt_util.utcnow().timestamp() + 300,
+    )
+
+
+async def test_forecast_soc_requires_confirmed_fresh_percentage(gate, hass, freezer):
+    c, *_ = gate
+    fresh(hass, 49.5, 67)
+    assert c.voltage_gate.forecast_soc(dt_util.utcnow()) == 67
+    freezer.tick(31)
+    assert c.voltage_gate.forecast_soc(dt_util.utcnow()) is None
+    for attrs in (
+        {"unit_of_measurement": "%", "restored": True},
+        {"unit_of_measurement": "%", "assumed_state": True},
+        {"unit_of_measurement": "V"},
+    ):
+        hass.states.async_set("sensor.soc", "67", attrs)
+        assert c.voltage_gate.forecast_soc(dt_util.utcnow()) is None
+    fresh(hass, 49.5, 67)
+    c._house_soc_stale = {}
+    assert c.voltage_gate.forecast_soc(dt_util.utcnow()) is None
+
+
 async def test_live_timer_rechecks_deferred_need_without_new_plan(gate, hass, freezer):
     c, calls, *_ = gate
     # The plan's need remains true even though its switch timeline starts OFF.

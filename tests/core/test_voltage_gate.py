@@ -61,11 +61,11 @@ def test_high_voltage_disables_idle_psu_but_retains_need_and_dc24():
     assert not flow.inverter_on
 
 
-def test_future_threshold_uses_current_soc_scale_not_present_voltage():
+def test_future_threshold_uses_current_soc_scale_for_switching_only():
     flow = step_hour(config(), 74, slot(1), 100, dc24_from_grid=True, dc48_support=True)
-    assert flow.support_dc48 and flow.psu48_delivered_wh == 35
-    assert flow.battery_discharge_wh == 0
-    assert flow.battery_charge_wh == 0  # learning a gate cannot prove charging current
+    assert flow.support_dc48 and flow.psu48_delivered_wh == 0
+    assert flow.battery_discharge_wh == pytest.approx(35 / 0.97)
+    assert flow.battery_charge_wh == 0
     stress = step_hour(
         config(), 74, slot(1), 100, dc24_from_grid=True, dc48_support=True, pv_scale=0.8
     )
@@ -76,13 +76,13 @@ def test_future_threshold_uses_current_soc_scale_not_present_voltage():
 
 def test_forecast_hysteresis_fallback_and_no_load_extrapolation():
     s = config().support
-    assert forecast_gate(s, 78, 35, AT + 3600, True) == (True, None)
-    assert forecast_gate(s, 81, 35, AT + 3600, True) == (False, None)
-    assert forecast_gate(s, 74, 200, AT + 3600, False) == (False, None)
-    assert forecast_gate(s, 30, 200, AT + 3600, False) == (True, None)
+    assert forecast_gate(s, 78, 35, AT + 3600, True)
+    assert not forecast_gate(s, 81, 35, AT + 3600, True)
+    assert not forecast_gate(s, 74, 200, AT + 3600, False)
+    assert forecast_gate(s, 30, 200, AT + 3600, False)
     assert gate_band(s, 0.7, AT + 86401) is None
     missing = replace(s, gate_soc_percent=None, psu48_gate_bands=())
-    assert forecast_gate(missing, 30, 35, AT + 3600, False) == (False, None)
+    assert not forecast_gate(missing, 30, 35, AT + 3600, False)
     assert forecast_gate(
         replace(
             s, psu48_gate_bands=(VoltageGateBand(0.25, 1, valid_until=AT + 86400),)
@@ -91,7 +91,7 @@ def test_forecast_hysteresis_fallback_and_no_load_extrapolation():
         35,
         AT + 3600,
         False,
-    ) == (True, None)
+    )
 
 
 @pytest.mark.parametrize("soc,manual", [(5, False), (82, True)])
@@ -107,20 +107,15 @@ def test_protection_and_manual_keep_readiness_without_credit(soc, manual):
     assert flow.support_dc48 and flow.psu48_delivered_wh == 0
 
 
-def test_low_current_measurement_does_not_survive_entire_horizon():
+def test_instantaneous_voltage_allows_relay_without_delivery_or_charge():
     c = config(psu48_bus_voltage_v=49, psu48_gate_bands=())
-    assert (
-        step_hour(
-            c, 82, slot(), 100, dc24_from_grid=True, dc48_support=True
-        ).psu48_delivered_wh
-        > 0
+    live, future = (
+        step_hour(c, 82, slot(offset), 100, dc24_from_grid=True, dc48_support=True)
+        for offset in range(2)
     )
-    assert (
-        step_hour(
-            c, 82, slot(1), 100, dc24_from_grid=True, dc48_support=True
-        ).psu48_delivered_wh
-        == 0
-    )
+    assert live.support_dc48 and not future.support_dc48
+    assert live.psu48_delivered_wh == future.psu48_delivered_wh == 0
+    assert live.battery_charge_wh == future.battery_charge_wh == 0
 
 
 @pytest.mark.parametrize("reserve", [False, True])

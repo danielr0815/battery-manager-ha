@@ -230,6 +230,46 @@ def test_source_loss_does_not_purchase_a_larger_reference_budget():
     assert source_windows((charged, step)) == (range(0, 2),)
 
 
+def test_dc_market_reprices_remaining_choices_after_partial_transfer():
+    from core.reserve_sources import SourceStep, market_sources
+    from core.simulate import step_hour
+
+    c = dc_plant()
+    c = replace(
+        c,
+        support=replace(
+            c.support,
+            native48_base_w=40,
+            dc48_available=True,
+            gate_soc_percent=None,
+            psu48_eta=0.5,
+        ),
+    )
+    high, low = priced([(0, 0, 100), (0, 0, 100)], [300, 100]).slots
+    both = step_hour(
+        c,
+        80,
+        high,
+        100,
+        dc24_from_grid=True,
+        dc48_support=True,
+        psu48_native_delivery_wh=40,
+    )
+    rail = step_hour(c, 80, high, 100, dc24_from_grid=True)
+    neither = step_hour(c, 80, high, 100)
+    # Dropping 48 V saves 80 Wh per 40 Wh drawn. Dropping both saves 140 Wh
+    # per 100 Wh initially. The second move must be evaluated from rail-only
+    # after the first one, while the cheaper slot repays the complete draw.
+    assert market_sources(
+        c,
+        (
+            SourceStep(high, both, (both, rail, neither), 20),
+            SourceStep(low, neither, (both, neither), 20),
+        ),
+        [3, 1],
+    ) == ((False, False), (True, True))
+
+
 @pytest.mark.parametrize("time_case", ["quarter", "dst"])
 def test_dc_market_placement_uses_real_price_intervals(time_case):
     from datetime import timedelta
@@ -273,7 +313,7 @@ def test_dc_market_placement_uses_real_price_intervals(time_case):
     assert result.end_soc_percent == pytest.approx(95)
 
 
-def test_native_48v_peak_shift_uses_only_proven_psu_output():
+def test_native_48v_peak_shift_does_not_use_unmeasured_output():
     c = dc_plant()
     c = replace(
         c,
@@ -290,9 +330,9 @@ def test_native_48v_peak_shift_uses_only_proven_psu_output():
     i = priced([(0, 0, 20), (0, 0, 20), (780, 0, 0)], [300, 100, 100])
     reference = simulate(c, replace(i, market_prices=()), 20)
     result = simulate(c, i, 20)
-    assert [f.psu48_delivered_wh for f in reference.flows[:2]] == pytest.approx([10, 0])
-    assert [f.psu48_delivered_wh for f in result.flows[:2]] == pytest.approx([0, 10])
-    assert result.reserve_decision.dc_shifted_wh == pytest.approx(10)
+    assert sum(f.psu48_delivered_wh for f in reference.flows) == 0
+    assert sum(f.psu48_delivered_wh for f in result.flows) == 0
+    assert result.reserve_decision.dc_shifted_wh == 0
     assert result.end_soc_percent == pytest.approx(reference.end_soc_percent)
     assert result.total_import_wh == pytest.approx(reference.total_import_wh)
     unknown = simulate(
@@ -313,14 +353,8 @@ def test_partial_pv_can_use_battery_only_if_reference_permits_it(later_pv, sourc
         assert result.flows[0].soc_end_percent == pytest.approx(76.5)
 
 
-def test_peak_shift_accounts_for_forgone_incidental_psu_charge():
-    """F-DC-PV-MARKET: a smaller shift preserves stored energy after PSU-off.
-
-    The October 12 peak remained grid-fed because allocation spent the whole
-    DC budget, lost incidental 48 V charging, then failed the end-SOC check.
-    This synthetic night has the same charging/holding interaction without
-    any private forecast, entity IDs or learned household consumption.
-    """
+def test_peak_shift_preserves_budget_without_assuming_incidental_psu_charge():
+    """Move the same 24 V service while charging remains entirely solar."""
     c = dc_plant()
     c = replace(
         c,
@@ -343,7 +377,7 @@ def test_peak_shift_accounts_for_forgone_incidental_psu_charge():
     baseline = simulate(c, replace(i, market_prices=()), 20)
     result = simulate(c, i, 20)
 
-    assert baseline.flows[0].psu48_battery_charge_wh > 0
+    assert baseline.flows[0].psu48_battery_charge_wh == 0
     assert baseline.flows[0].psu24_delivered_wh > 0
     assert result.flows[0].psu24_delivered_wh == 0
     assert result.flows[0].psu48_delivered_wh == 0
@@ -355,15 +389,17 @@ def test_peak_shift_accounts_for_forgone_incidental_psu_charge():
     assert sum(f.psu24_delivered_wh for f in result.flows[1:4]) > sum(
         f.psu24_delivered_wh for f in baseline.flows[1:4]
     )
-    assert result.total_import_wh < baseline.total_import_wh
+    assert result.total_import_wh == pytest.approx(baseline.total_import_wh)
     assert result.total_export_wh <= baseline.total_export_wh + 1e-6
-    assert result.end_soc_percent >= baseline.end_soc_percent
+    assert result.end_soc_percent == pytest.approx(baseline.end_soc_percent)
     assert sum(f.unserved_dc_wh for f in result.flows) == 0
     assert sum(f.inverter_output_wh for f in result.flows) == 0
     assert sum(
         max(0, f.battery_discharge_wh - f.battery_charge_wh) for f in result.flows
-    ) <= sum(
-        max(0, f.battery_discharge_wh - f.battery_charge_wh) for f in baseline.flows
+    ) == pytest.approx(
+        sum(
+            max(0, f.battery_discharge_wh - f.battery_charge_wh) for f in baseline.flows
+        )
     )
     assert all(
         after.psu48_battery_charge_wh <= before.psu48_battery_charge_wh + 1e-6

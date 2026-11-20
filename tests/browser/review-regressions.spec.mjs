@@ -39,6 +39,54 @@ async function refresh(page, attrs) {
   }, attrs);
 }
 
+test("the operating forecast stays flat to the measured endpoint and labels the safety curve", async ({
+  page,
+}) => {
+  const at = "2026-09-26T10:30:00+02:00";
+  await mount(page, "forecast", {
+    ...attributes,
+    forecast: attributes.forecast.map((point, i) => ({
+      ...point,
+      soc: [68, 67.65, 66.95][i],
+      safety_soc: [68, 67.3, 66.6][i],
+    })),
+    soc_expectation: {
+      operating_forecast: true,
+      status: "available",
+      basis: "battery_net",
+      net_discharge_w: 0,
+      observed_seconds: 1800,
+      end_at: at,
+      end_soc: 68,
+      stop_reason: "supply_evidence_ends",
+    },
+  });
+  const safety = page.locator('[data-soc-curve="safety"]');
+  const operating = page.locator('[data-soc-curve="expected"]');
+  await expect(safety).toHaveAttribute("stroke-dasharray", "5 3");
+  expect(await operating.getAttribute("stroke-dasharray")).toBeNull();
+  const op = (await operating.getAttribute("points"))
+    .split(" ")
+    .map((p) => p.split(",").map(Number));
+  expect(op).toHaveLength(4);
+  expect(op[0][1]).toBe(op[1][1]);
+  expect(op[2][1]).toBeGreaterThan(op[1][1]);
+  await expect(page.locator("[data-soc-curve-explanation]")).toContainText(
+    "10:30:00",
+  );
+  const chart = page.locator("#chart");
+  await chart.focus();
+  await chart.press("Home");
+  await chart.press("ArrowRight");
+  await chart.press("ArrowRight");
+  await expect(page.locator("#readout")).toContainText(
+    "Expected operating SOC 67.65 %",
+  );
+  await expect(page.locator("#readout")).toContainText(
+    "Planning and safety curve 67.3 %",
+  );
+});
+
 test("short grid-import expectation has its own sub-hour endpoint", async ({
   page,
 }) => {

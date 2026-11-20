@@ -341,18 +341,8 @@ def test_uncertainty_proof_sees_subhour_dip_even_when_pv_recovers_hour_end():
 
 def test_uncertainty_proof_preserves_dc_service_and_total_import():
     c = plant()
-    c = replace(
-        c,
-        support=replace(
-            c.support,
-            dc48_available=True,
-            native48_base_w=100,
-            psu48_bus_voltage_v=49.56,
-            psu48_max_power_w=100,
-        ),
-    )
     slot = HourSlot(0, NOW, 1, 0, 0, 0, 50)
-    supplied = step_hour(c, 5, slot, 100, dc48_support=True)
+    supplied = step_hour(c, 5, slot, 100, dc24_from_grid=True)
     outage = step_hour(c, 5, slot, 100)
     reference = Trajectory(
         (supplied,), supplied.grid_import_wh, 0, supplied.soc_end_percent

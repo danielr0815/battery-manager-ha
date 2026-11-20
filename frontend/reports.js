@@ -134,12 +134,23 @@ export function socExpectationExplanation(hass, expectation, shown, overlap) {
       if (end !== "—") parts.push(`${t("soc_expected_grid_until")} ${end}.`);
     }
   }
+  if (expectation.operating_forecast) {
+    const end = reportTime(hass, expectation.end_at);
+    const stop = t(`soc_supply_stop_${expectation.stop_reason}`);
+    parts.push(
+      `${t("soc_supply_until")} ${end}. ${stop} ${t("soc_supply_after")}`,
+    );
+    return parts.filter(Boolean).join(" ");
+  }
+  const supplyReason = t(`soc_supply_stop_${expectation.reason}`);
   if (isNet && !shown && !fromGrid) parts.push(t("soc_expected_net_purpose"));
   if (shown) {
     parts.push(t(fromGrid ? "soc_expected_grid_basis" : `${prefix}_basis`));
     if (overlap) parts.push(t("soc_expected_overlap"));
   } else if (reason !== reasonKey) {
     parts.push(reason);
+  } else if (supplyReason !== `soc_supply_stop_${expectation.reason}`) {
+    parts.push(supplyReason);
   } else if (expectation.status === "unqualified") {
     parts.push(t(`${prefix}_unqualified`));
   } else if (expectation.status === "available") {

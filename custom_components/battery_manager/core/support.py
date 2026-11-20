@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import fields, replace
 from typing import Any
 
-from .model import HourFlows, PlanInputs, SystemConfig, Trajectory
+from .model import HourFlows, HourSlot, PlanInputs, SystemConfig, Trajectory
 from .simulate import step_hour
 from .simulation_steps import SUPPORT_STEP_HOURS as SUPPORT_STEP_HOURS
 from .simulation_steps import split_slot, switching_schedule
@@ -49,15 +49,13 @@ def simulate_support(
     soc = inputs.start_soc_percent
     dc24, dc48 = config.support.dc24_active, config.support.dc48_active
     flows: list[HourFlows] = []
+    dispatch: list[tuple[tuple[HourSlot, HourFlows, float], ...]] = []
     energy_fields = [f.name for f in fields(HourFlows) if f.name.endswith("_wh")]
     for i, slot in enumerate(inputs.slots):
         scale = pv_scale if isinstance(pv_scale, (float, int)) else pv_scale[i]
         extra = extra_ac[i] if extra_ac else 0.0
         export = feedin[i] if feedin else 0.0
-        # A stress run never treats an unmeasured PSU current as guaranteed.
         support = config.support
-        if scale < 1:
-            support = replace(support, psu48_bus_voltage_v=None)
         rail_wh = (
             max(0.0, slot.dc_wh - support.native48_base_w * slot.duration)
             * support.dc24_share
@@ -120,6 +118,17 @@ def simulate_support(
             dc48 = flow.support_dc48
             soc = flow.soc_end_percent
         first = parts[0]
+        if inputs.psu48_supply is not None and pv_scale == 1.0:
+            dispatch.append(
+                tuple(
+                    (
+                        small,
+                        part,
+                        config.inverter.max_power_w if part.inverter_on else 0.0,
+                    )
+                    for (small, _), part in zip(split_slot(slot), parts, strict=True)
+                )
+            )
         energies: dict[str, Any] = {
             name: sum(float(getattr(p, name) or 0.0) for p in parts)
             for name in energy_fields
@@ -160,4 +169,5 @@ def simulate_support(
         sum(f.grid_import_wh for f in flows),
         sum(f.grid_export_wh for f in flows),
         soc,
+        _dispatch=tuple(dispatch),
     )

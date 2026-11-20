@@ -209,25 +209,25 @@ def test_latest_preparation_time_excludes_involuntary_native_discharge():
     assert dark.flows[0].reserve_preparation_start is None
 
 
-def test_measured_48v_support_preserves_soc_without_grid_recharging():
+def test_on_relay_and_regulated_voltage_protect_without_claiming_delivery():
     c = config(psu48_max_power_w=57)
     c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49.56))
     r = simulate(c, inputs(80, [(0, 100, 60)] * 12), 20)
-    assert r.flows[0].soc_end_percent == pytest.approx(80)
-    assert r.end_soc_percent == pytest.approx(80)
-    assert all(f.psu48_delivered_wh == pytest.approx(20) for f in r.flows)
+    assert r.flows[0].soc_end_percent == pytest.approx(78)
+    assert r.end_soc_percent == pytest.approx(56)
+    assert all(f.psu48_delivered_wh == 0 for f in r.flows)
     assert r.reserve_decision.reason == "dc_reserve_holding"
     assert all(f.psu48_battery_charge_wh == 0 for f in r.flows)
     assert all(f.inverter_output_wh == 0 for f in r.flows)
 
 
-def test_incidental_grid_charge_never_releases_ac_discharge_in_darkness():
+def test_supply_voltage_does_not_fund_battery_or_ac_discharge_in_darkness():
     c = config(psu48_max_power_w=57, dc24_forced_on=True, dc48_forced_on=True)
     c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49))
     r = simulate(c, inputs(80, [(0, 100, 60)] * 8), 20)
-    assert sum(f.psu48_battery_charge_wh for f in r.flows) > 0
+    assert sum(f.psu48_battery_charge_wh for f in r.flows) == 0
     assert sum(f.inverter_output_wh for f in r.flows) == 0
-    assert r.end_soc_percent <= 80 + c.control.hysteresis_percent + 1
+    assert r.end_soc_percent == pytest.approx(64)
 
 
 @pytest.mark.parametrize("sun", [0, 1500])
@@ -274,7 +274,9 @@ def test_legacy_grid_charge_record_keeps_additive_diagnostics_neutral():
 
     c = config(psu48_max_power_w=57, dc48_forced_on=True)
     c = replace(
-        c, reserve=ReserveParams(), support=replace(c.support, psu48_bus_voltage_v=49)
+        c,
+        reserve=ReserveParams(),
+        support=replace(c.support, coordinated=False, gate_soc_percent=None),
     )
     i = inputs(10, [(0, 100, 0)])
     result = plan(c, i)
@@ -291,8 +293,8 @@ def test_dark_reserve_starts_both_psus_above_protection_thresholds(soc):
     c = replace(c, support=replace(c.support, psu48_bus_voltage_v=49.56))
     r = simulate(c, inputs(soc, [(0, 100, 60)] * 12), 20)
     assert r.flows[0].support_dc24_start and r.flows[0].support_dc48_start
-    assert r.min_soc_percent == pytest.approx(soc)
-    assert r.end_soc_percent == pytest.approx(soc)
+    assert r.min_soc_percent == pytest.approx(max(5, soc - 24))
+    assert r.end_soc_percent == pytest.approx(max(5, soc - 24))
     assert r.reserve_decision.reason == "dc_reserve_holding"
     assert all(f.inverter_output_wh == 0 for f in r.flows)
 

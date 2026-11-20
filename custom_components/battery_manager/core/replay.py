@@ -29,6 +29,7 @@ def encode(value: Any) -> Any:
             "fields": {
                 field.name: encode(getattr(value, field.name))
                 for field in fields(value)
+                if field.metadata.get("record", True)
             },
         }
     if isinstance(value, datetime):

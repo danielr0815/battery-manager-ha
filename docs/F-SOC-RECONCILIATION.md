@@ -1,6 +1,6 @@
 # SOC-Nachführung und Netzteil-Evidenz
 
-Zielversion 0.65.0. Ergänzt [adaptive 48-V-Stützung](F-ADAPTIVE-48V-GATE.md).
+Eingeführt mit 0.65.0, Betriebsprognose aktualisiert mit 0.69.0. Ergänzt [adaptive 48-V-Stützung](F-ADAPTIVE-48V-GATE.md).
 Der gemeldete BMS-SOC kann gegenüber dem tatsächlichen Energieinhalt driften.
 Eine Nachkalibrierung im oberen Bereich darf deshalb schneller verlaufen, als
 die gleichzeitig gemessene Ladeenergie im linearen Modell erwarten lässt.
@@ -114,7 +114,9 @@ geprüft. Die Messung nutzt die bestehende optionale Zuordnung
 `support_dc48_output_power_entity` und verarbeitet originale HA-Publikationen
 einschließlich erneut gemeldeter unveränderter Werte. Eine konfigurierte
 48-V-Stromgrenze liefert die Obergrenze für plausible Messwerte. Dafür ist eine
-eindeutig als DC-Ausgang gebundene Messstelle erforderlich. Als angenommen
+eindeutig als DC-Ausgang gebundene Messstelle erforderlich. Eine gleichzeitige
+Zuordnung als Standortzähler, Sollwert oder unabhängiger Verbrauchsmesspunkt
+verwirft den direkten Beleg. Als angenommen
 oder wiederhergestellt markierte Zustände gelten als unbelegt.
 
 Die Leistung ist das Minimum aus mindestens 30 Minuten zusammenhängenden
@@ -126,21 +128,31 @@ Beobachtung neu. Ist der Ausgangsmesser konfiguriert und fehlt der Messnachweis,
 zeigt die Karte die Planungs- und Sicherheitskurve und erklärt den fehlenden
 Nachweis.
 
-Die DC-Lieferannahme gilt höchstens über die beobachtete Zeitspanne und maximal
-48 Stunden. Die Projektion folgt zusammenhängenden, vollständig belegten
-Planintervallen im beobachteten Modus. Eine geplante Abschaltung, eine andere
-Versorgungsart oder ein ungedeckter DC-Bedarf beenden die Linie. Der berechnete
-SOC-Vorteil ersetzt ausschließlich geplante Batterieentnahme für die native
-48-V-Grundlast und zieht bereits angesetzte 48-V-Lieferung ab. Zusätzliche
-Netzladung, Entladebudget und Schaltentscheidungen folgen daraus nicht.
-Die übrigen Energieflüsse stammen aus demselben angenommenen Plan. Das Modell
-schätzt daher weder zusätzlichen Netzbezug noch einen neuen optimalen Plan.
+### Betriebsprognose ab 0.69.0
 
-Der Forecast-Sensor veröffentlicht die optionalen Erwartungswerte an denselben
-Zeitpunkten wie den Plan. Das Dashboard zeigt die Linie gestrichelt und macht
-die Annahme neben dem Diagramm sichtbar. Planner-Replay, Schaltungen,
-Freigaben und der skalare Forecast-Sensor verwenden weiterhin den akzeptierten
-Plan. Die neue Kurve ist keine statistische Unter- oder Obergrenze.
+Der akzeptierte Schaltplan wird ein zweites Mal energetisch durchgerechnet,
+wenn bei Planbeginn eine qualifizierte Beobachtung vorliegt. Die Betriebsprognose
+übernimmt die Schaltzeitpunkte, Leistungsgrenzen und Zusatzlasten dieses Plans.
+Innerhalb des vergleichbaren Betriebs versorgt die belegte Stützung höchstens
+die native 48-V-Last. Die dazu benötigte AC-Energie geht mit dem konfigurierten
+Wirkungsgrad in die Netzbilanz ein. Ein Überschuss der gemessenen DC-Leistung
+über die native Last berechtigt zu keiner prognostizierten Netzteilladung.
+
+Das Fenster endet am ersten unpassenden Teilschritt oder an der zeitlichen
+Gültigkeitsgrenze, auch mitten im Stundenintervall. Die übrigen Schritte
+beginnen beim dann erreichten SOC. Spätere PV-Ladung, Speichergrenzen,
+Batterieentnahme, Import und Export werden neu bilanziert. Der Sensor, seine
+Stundenwerte, Tagesenergien und die durchgezogene Kurve zeigen diesen
+Betriebsverlauf. Die gestrichelte Sicherheitskurve bleibt Grundlage für
+Schaltungen, Reserve und Freigaben. Fehlt der Beleg bei Planung oder
+Veröffentlichung, zeigt die Karte ausschließlich den konservativen Plan und
+erläutert die Ursache.
+
+Spannung und gelernte SOC-Schwellen beeinflussen die Bereitschaft des Netzteils.
+Für die Lieferleistung zählt der belegte elektrische Betrieb. Bei einer
+BMS-Nachführung pausiert die Veröffentlichung. Nach Stabilisierung kann ein
+neuer Plan die lückenlos weiter beobachtete Versorgung am aktuellen gemeldeten
+SOC verankern. Eine neue Kalibrierung liefert keine zusätzliche Energie.
 
 ### Diagnose in der Prognosekarte
 
@@ -162,8 +174,7 @@ DC-Ausgangsmessung, eine fehlende Stromgrenze zur Plausibilitätsprüfung oder
 eine zu kurze Messreihe. Ein bestätigtes Einschalten allein belegt keine
 Lieferung. Bei qualifizierter Messreihe nennt die Karte Mindestleistung und
 Beobachtungsdauer. Sie unterscheidet, ob der geplante Versorgungsmodus abweicht
-oder die belegte Messdauer schon vor dem Ende des ersten passenden Intervalls
-endet. Sind beide Kurven im dargestellten Abschnitt optisch deckungsgleich,
+oder die Messreihe aufgrund geänderter Bedingungen endet. Sind beide Kurven im dargestellten Abschnitt optisch deckungsgleich,
 weist die Karte darauf hin.
 
 ### Erwartung aus der gemessenen Batterieentladung
@@ -178,7 +189,7 @@ gesperrten Zustand bestätigen. Die Batteriespannung
 darf die konfigurierte Ausgangsspannung des 48-V-Netzteils nicht übersteigen.
 Ein unveränderter BMS-SOC allein genügt dafür nicht. Die Messung am Akku
 fasst alle wirksamen Quellen und Verbraucher zusammen. Auch ein
-ungemessener Lader zur beobachteten Entlastung beitragen.
+ungemessener Lader kann zur beobachteten Entlastung beitragen.
 
 SOC, Klemmenspannung und vorzeichenrichtige Batterieleistung müssen über
 mindestens 30 Minuten mit frischen Originalmeldungen belegt sein. Das Fenster
@@ -187,7 +198,7 @@ endet am letzten gemeinsam abgedeckten Zeitpunkt. Nur Intervalle bis
 Entladeleistungen über dessen tatsächliche Dauer angesetzt. Für die
 Fortschreibung zählt mindestens die jüngste Entladeleistung. Bis zu 1 W
 positive Ladeanzeige zählt als null Entladung. Größere Ladung, ein Wechsel
-der Schaltung, eine BMS-Nachführung, Datenlücken oder eine Spannweite der
+der Schaltung, Datenlücken oder eine Spannweite der
 Entladewerte über 10 W erfordern einen neuen Messabschnitt.
 
 Ein konfigurierter PV-Leistungsmesser muss für diesen Zeitraum null melden.
@@ -207,13 +218,15 @@ gemessen, ist bei einem von null verschiedenen Wert die Durchleitung unklar
 und die Beobachtung endet.
 Die Schätzung gilt höchstens für die belegte Dauer und maximal 48 Stunden.
 Die belegte Versorgungsart muss bereits beim Start des Plans bestanden haben.
-Nur vollständige Planintervalle mit derselben Versorgung und der vergleichbaren
-nativen 48-V-Grundlast kommen infrage. Ausgehend vom Start-SOC sinkt die
+Die Fortschreibung gilt für Teilschritte mit derselben Versorgung und derselben
+nativen 48-V-Grundlast. Ausgehend vom Start-SOC sinkt die
 Erwartung je Intervall um die gemessene Entladeleistung mal Dauer, umgerechnet
 mit Entladewirkungsgrad und Speicherkapazität. Bei 0 W bleibt sie flach. Diese
-Nettobilanz ersetzt sowohl die modellierte Batterieentnahme als auch eine im
-selben Intervall modellierte 48-V-Netzteilladung. Die Erwartung kann daher
-oberhalb oder unterhalb des geplanten SOC liegen.
+Nettobilanz bestimmt die Batterieentnahme im vergleichbaren Betrieb. Den
+Rest der nativen Last bucht die Betriebsprognose als Stützung. Erreicht der
+Speicher während einer positiven Restentladung die Untergrenze, endet das
+Messfenster genau dort. Bei 0 W Restentladung kann die Versorgung auch am
+Speicherboden fortbestehen.
 
 Prognostizierte PV-Erzeugung, Ladung aus anderer Quelle, ein ungedeckter
 DC-Bedarf, ein Wechsel des Versorgungsmodus oder eine erreichte Grenze des
@@ -239,22 +252,27 @@ den Messquellen zwei Eingänge für die SOC-Erwartung zuordnen:
   Rückmeldungen in W oder kW und explizit als Watt zugeordnete
   `number`-Entitäten ohne Einheit.
 
-Beide Zuordnungen dienen der Anzeige. Der Manager verlangt 30 Minuten
+Die Zuordnungen belegen den Tagesbetrieb. Ist bereits ein saldierter Zähler für
+die Live-AC-Regelung zugeordnet, kann dieser mit dem explizit gebundenen
+wirksamen Sollwert verwendet werden. Der Manager verlangt 30 Minuten
 kontinuierlichen Netzbezug mehr als 50 W über dem größeren Wert aus null und
-Sollwert. Die Batterieleistung muss dabei innerhalb von ±1 W liegen.
+Sollwert. Im Ruhezustand liegt die Batterieleistung innerhalb von ±1 W. Einzelne Entladeimpulse
+bis 4 W dürfen höchstens 30 Sekunden dauern. Die für solche Impulse angesetzten
+Intervalle dürfen in einem 30-Minuten-Fenster zusammen höchstens 60 Sekunden
+ausmachen. Ihr Energiebeitrag wird mitgerechnet. Während eines offenen
+Impulses pausiert die Fortschreibung.
 Ein Wechsel des Sollwerts startet die Beobachtung neu. Für den periodisch
 gemeldeten Sollwert sind bis zu 65 Sekunden zwischen Originalmeldungen
 zulässig, für die übrigen beteiligten Messkanäle bis zu 30 Sekunden.
 Die Voraussetzungen für Topologie, Spannung und stabile SOC-Koordinate gelten
 auch für dieses Szenario.
 
-Die gestrichelte Linie beginnt beim aktuellen SOC und endet spätestens nach
-der belegten Messdauer oder einer Stunde. Schon ein kürzeres passendes
-Restintervall kann sichtbar sein. Im Plan muss die AC-Grundlast selbst bei
-der höheren verfügbaren PV-Schätzung den nötigen Netzbezug plausibel machen.
-Geplante Überschussladung oder ein Wechsel der Versorgung begrenzen die Linie.
-Die durchgezogene Planungs- und Sicherheitskurve bestimmt weiterhin Reserve
-und Schaltentscheidungen.
+Die Fortschreibung mit Netzbezugsnachweis endet spätestens nach der belegten
+Messdauer oder einer Stunde ab dem letzten gemeinsam belegten Zeitpunkt. Im
+Plan muss die AC-Grundlast selbst bei der höheren verfügbaren PV-Schätzung
+den nötigen Netzbezug plausibel machen. Über eine Stunde verteilte Restenergie
+eines gerade laufenden Geräts darf diesen Nachweis nicht verlängern.
+Geplante Überschussladung oder ein Wechsel der Versorgung beenden das Fenster.
 
 ## Kompatibilität und Nachweise
 

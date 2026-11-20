@@ -205,17 +205,14 @@ Die DC-Verbrauchsprognose bleibt unabhängig von der gewählten Quelle.
 Anzeige zusätzlich: Batterieanteil, Netzteilanteil, Verluste, begrenzte
 48-V-Unterstützung sowie freigegeben/tatsächlich eingeschaltet/liefernd.
 
-Ohne Ausgangsstrommessung ist die Leistung im Spannungsregelbereich unsicher.
-Der implementierte Erwartungswert nutzt die zuletzt eingelesene plausible
-Busspannung, den konfigurierten Maximalstrom und das bestehende SOC-Gate als
-Näherung für den Horizont. Das ist keine gemessene Ausgangsleistung und keine
-vollständige zukünftige Spannungskennlinie. Diagnose: `voltage_estimate`.
-Ohne plausible Spannung oder bekannte Stromgrenze erhält das Netzteil keine
-Leistungsgutschrift. Pessimistische PV-Stressläufe rechnen ohne diese
-unbestätigte Netzteilleistung. Ohne belastbare Untergrenze
-kann diese null sein. Gemessene Netzteilaufnahme, Ausgangsstrom oder eine
-validierte Kennlinie verbessert die Schätzung. Ein einzelnes SOC-Gate ersetzt
-kein physikalisches Modell und darf keine garantierten 57 W erzeugen.
+Die Busspannung bestimmt, ob das 48-V-Netzteil bei der gegebenen Last
+liefern kann. Der konfigurierte Maximalstrom begrenzt seine Leistung.
+Seit 0.69.0 bilanziert die koordinierte Betriebsprognose die übertragbare
+DC-Abgabe aus einer qualifizierten Ausgangsmessung oder den aus einer
+qualifizierten Batteriebilanz ableitbaren Beitrag zur nativen Last. Die
+Sicherheitsrechnung nimmt für diesen Beitrag null an. Zeitgrenzen und
+Energiefluss sind im [Vertrag zur Betriebsprognose](F-SOC-RECONCILIATION.md#betriebsprognose-ab-0690)
+beschrieben.
 
 Auch Verbrauchslernen muss diese Unterscheidung verwenden: Keine pauschale
 Leistungskorrektur allein aufgrund eines eingeschalteten Netzteils.
