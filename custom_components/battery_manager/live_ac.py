@@ -20,8 +20,6 @@ from .const import (
     CONF_LOAD_CONTROL_SWITCH,
     CONF_RESERVE_MODE,
     CONF_SOC_ENTITY,
-    CONF_SUPPORT_DC24_SWITCH,
-    CONF_SUPPORT_DC48_SWITCH,
     LIVE_AC_POWER_KEYS,
     SUBENTRY_TYPE_LOAD,
 )
@@ -412,7 +410,6 @@ class LiveACRuntime:
             <= (now - soc_state.last_reported).total_seconds()
             <= LIVE_AC_SAMPLE_MAX_AGE_S
             or c._reserve_grid_available() is not True
-            or any(c._support_manual.values())
             or soc
             <= max(
                 config.control.support_dc24_recovery_soc,
@@ -460,10 +457,7 @@ class LiveACRuntime:
             return
         previous = self.pv_active
         permission = self.pv_source_permission(envelope.config)
-        actual_support = any(
-            c.raw_config.get(key) and c._entity_tristate(c.raw_config[key]) is not False
-            for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
-        )
+        actual_support = c.automatic_support_active_or_unknown()
         self._pv_restore_pending |= previous and not permission
         if not ((permission and actual_support) or self._pv_restore_pending):
             return
@@ -539,15 +533,19 @@ class LiveACRuntime:
             elif c._reserve_grid_available() is not True:
                 reason = "grid_unavailable"
             elif (
-                envelope.support_required
-                or any(c._support_manual.values())
-                or any(
-                    c.raw_config.get(key)
-                    and c._entity_tristate(c.raw_config[key]) is not False
-                    for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
+                (
+                    envelope.support_required
+                    and any(
+                        required and not c.support_handed_over(key)
+                        for key, required in zip(
+                            ("dc24", "dc48"), envelope.dc_sources, strict=True
+                        )
+                    )
                 )
+                or c.automatic_support_active_or_unknown()
                 or (
-                    c.raw_config.get(CONF_DCDC_SWITCH)
+                    not c.support_handed_over("dc24")
+                    and c.raw_config.get(CONF_DCDC_SWITCH)
                     and c._entity_tristate(c.raw_config[CONF_DCDC_SWITCH]) is not True
                 )
             ):

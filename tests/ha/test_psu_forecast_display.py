@@ -36,6 +36,10 @@ async def forecast_sensor(gate, hass, monkeypatch):
         reserve_grid_available_entity="binary_sensor.synthetic_grid",
         psu48_max_current_a=1.15,
         support_dc48_power_entity=AC_INPUT,
+        # Keep the already confirmed automatic sources in their recovery band
+        # while the tests collect measured forecast evidence at 69% SOC.
+        support_dc24_recovery_soc=75,
+        support_dc48_recovery_soc=75,
     )
     hass.states.async_set("binary_sensor.synthetic_grid", "on")
     for entity, value in (
@@ -47,7 +51,6 @@ async def forecast_sensor(gate, hass, monkeypatch):
     ):
         hass.states.async_set(entity, value)
     c._support_state.update(dc24=True, dc48=True)
-    c._support_manual.update(dc24=True, dc48=True)
     for period in ("today", "tomorrow", "day_after"):
         entity = f"sensor.synthetic_pv_{period}"
         c.raw_config[f"pv_forecast_{period}_entity"] = entity

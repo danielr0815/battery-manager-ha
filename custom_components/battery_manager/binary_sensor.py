@@ -340,10 +340,10 @@ class SupportPathSensor(BatteryManagerEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        # Reflects persisted support state — known and in sync with the always-
-        # available manual switch even while an update is failing (review #15).
+        # The automatic path retains its persisted state. Manual relay
+        # feedback can become unknown while ownership remains available.
         return True
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         return self.coordinator.support_active(self._psu_key)

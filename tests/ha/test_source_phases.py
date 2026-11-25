@@ -54,8 +54,6 @@ async def test_confirmed_psu_phases_are_independent_and_not_renewed_by_replannin
         assert config.support.dc48_phase_until == phase48
     freezer.tick(timedelta(minutes=26))
     assert c.source_phases.deadlines(dt_util.utcnow()) == (0, phase48)
-    c._support_manual["dc48"] = True
-    assert c.source_phases.deadlines(dt_util.utcnow()) == (0, 0)
 
 
 async def test_late_confirmation_starts_phase_only_after_observed_edge(
@@ -226,7 +224,7 @@ async def test_another_psus_new_phase_cannot_delay_low_soc_protection(rig, hass)
     assert not c._inverter_recommendation
 
 
-@pytest.mark.parametrize("release", ["voltage", "pv", "manual"])
+@pytest.mark.parametrize("release", ["voltage", "pv"])
 async def test_non_economic_release_cannot_delay_voltage_or_cloud_recovery(
     rig, hass, release
 ):
@@ -241,8 +239,23 @@ async def test_non_economic_release_cannot_delay_voltage_or_cloud_recovery(
             "requested": {"dc48": False},
             "pv_priority": True,
         }
-    elif release == "manual":
-        c._support_manual["dc48"] = True
     await c._switch_entity(PSU48, False, actor_owner=SUPPLY_OWNER)
+    assert c.source_phases.deadlines(dt_util.utcnow()) == (0, 0)
+    assert c.source_phases.export()["sources"] == {}
+
+
+async def test_manual_handover_ends_economic_phase_without_switching_psu(rig, hass):
+    c, _, _, _ = rig
+    configure_reserve(c, hass, 80)
+    use_real_switch(c, hass)
+    await c._switch_entity(PSU48, True, actor_owner=SUPPLY_OWNER)
+    assert c.source_phases.deadlines(dt_util.utcnow())[1] > 0
+    c._switch_entity = AsyncMock(wraps=c._switch_entity)
+    c.async_request_refresh = AsyncMock()
+
+    await c.async_set_support_manual("dc48", True)
+
+    assert hass.states.is_state(PSU48, "on")
+    c._switch_entity.assert_not_awaited()
     assert c.source_phases.deadlines(dt_util.utcnow()) == (0, 0)
     assert c.source_phases.export()["sources"] == {}

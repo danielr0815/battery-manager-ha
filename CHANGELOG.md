@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0] - 2026-11-25
+
+### Changed
+
+- Im koordinierten Betrieb geben die Schalter „24-V-Stützung manuell“ und
+  „48-V-Stützung manuell“ das jeweilige Netzteilrelais zur Bedienung am
+  vorhandenen Schalter frei. Bei 24 V übernimmt der Bediener auch den
+  DC/DC-Wandler und bestätigt die neue Quelle vor dem Trennen der bisherigen.
+  Der Wechselrichter folgt dabei seinen eigenen Freigaberegeln. Paralleler
+  Betrieb mit dem manuell geschalteten Netzteil ist möglich. Ausschalten
+  des manuellen Modus gibt die Schalter an die Automatik zurück.
+- Beim Upgrade werden gespeicherte Einschaltanforderungen im koordinierten
+  Betrieb einmalig auf Automatik zurückgesetzt. Neue manuelle Übergaben
+  bleiben über Neustarts erhalten. Anlagen ohne direktes Entladelimit
+  verwenden weiterhin den manuellen Einschaltbefehl.
+
 ## [0.69.0] - 2026-11-20
 
 ### Fixed

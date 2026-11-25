@@ -2,9 +2,10 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from test_coordinated_actuation import BLOCK, DCDC, LIMIT, PSU24, PSU48, execute
 from test_coordinated_actuation import rig as rig
@@ -571,20 +572,23 @@ async def test_pending_dcdc_off_preserves_psu24_until_rail_is_confirmed(
         assert hass.states.is_state(PSU24, "off")
 
 
-async def test_failed_dcdc_off_can_retry_when_grid_again_supports_takeover(rig, hass):
+@pytest.mark.parametrize("first_ack", [0, 1])
+async def test_failed_dcdc_off_can_retry_when_grid_again_supports_takeover(
+    rig, hass, first_ack
+):
     c, calls, *_ = rig
     _outage_with_support(rig, hass)
-    first_dcdc_off = True
+    off_contexts = []
 
     async def switch(call):
-        nonlocal first_dcdc_off
         entity = call.data["entity_id"]
         on = call.service == "turn_on"
         calls.append((entity, on))
-        if (entity, on) == (DCDC, False) and first_dcdc_off:
-            first_dcdc_off = False
-            hass.states.async_set("binary_sensor.grid", "off")
-            raise TimeoutError("DC/DC OFF never took effect")
+        if (entity, on) == (DCDC, False):
+            off_contexts.append(call.context)
+            if len(off_contexts) == 1:
+                hass.states.async_set("binary_sensor.grid", "off")
+                raise TimeoutError("DC/DC OFF never took effect")
         if (entity, on) == (PSU24, False):
             hass.states.async_set("binary_sensor.grid", "on")
         hass.states.async_set(entity, "on" if on else "off")
@@ -607,10 +611,33 @@ async def test_failed_dcdc_off_can_retry_when_grid_again_supports_takeover(rig, 
 
         hass.states.async_set("binary_sensor.grid", "on")
         await execute(c, dc24=True, dc48=True)
-        assert calls[len(initial) :] == [(PSU24, True), (DCDC, False)]
+        assert calls[len(initial) :] == [(DCDC, False)]
         assert c._supply_actor_requests[DCDC].state == "confirmed"
         assert hass.states.is_state(PSU24, "on")
         assert hass.states.is_state(DCDC, "off")
+        c.async_request_refresh = AsyncMock()
+        with pytest.raises(HomeAssistantError, match="previous automatic command"):
+            await c.async_set_support_manual("dc24", True)
+
+        # Neither of the two distinct acknowledgements can discharge both
+        # writes. While one remains, restore DC/DC without removing the PSU.
+        hass.states.async_set(
+            DCDC, "off", force_update=True, context=off_contexts[first_ack]
+        )
+        with pytest.raises(HomeAssistantError, match="previous automatic command"):
+            await c.async_set_support_manual("dc24", True)
+        hass.states.async_set("sensor.test_soc", "80")
+        before_recovery = len(calls)
+        await execute(c)
+        assert (PSU24, False) not in calls[before_recovery:]
+        assert hass.states.is_state(PSU24, "on")
+        assert hass.states.is_state(DCDC, "on")
+
+        hass.states.async_set(
+            DCDC, "off", force_update=True, context=off_contexts[1 - first_ack]
+        )
+        await c.async_set_support_manual("dc24", True)
+        assert c.support_handed_over("dc24")
 
 
 @pytest.mark.parametrize("returning", [False, True])

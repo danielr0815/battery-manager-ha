@@ -48,6 +48,7 @@ from .const import (
     SERVICE_TEST_CASCADE_TERMINAL,
     STORAGE_VERSION,
     SUBENTRY_TYPE_CASCADE,
+    SUPPORT_HANDOVER_STORE_KEY,
 )
 from .coordinator import BatteryManagerCoordinator
 from .debug_utils import format_hourly_details_table, format_learned_profiles_table
@@ -414,6 +415,9 @@ async def async_remove_entry(
 ) -> None:
     """Clean up the per-entry storage (SOC cache, learned profiles)."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    await Store(
+        hass, 1, f"{DOMAIN}.{SUPPORT_HANDOVER_STORE_KEY}.{entry.entry_id}"
+    ).async_remove()
     from .archive_storage import ArchiveStorage
 
     await ArchiveStorage(hass, entry.entry_id).async_remove()

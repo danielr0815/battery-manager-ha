@@ -436,7 +436,7 @@ class VoltageGateRuntime:
     def apply(
         self, config: SystemConfig, desired: dict[str, bool], now: datetime
     ) -> dict[str, bool]:
-        """Filter economic intent, retaining manual/protection readiness."""
+        """Filter economic intent and preserve automatic protection readiness."""
         if not config.support.adaptive_voltage_gate:
             return desired
         c = self.owner
@@ -449,20 +449,19 @@ class VoltageGateRuntime:
             or soc <= config.control.support_dc48_activate_soc
             or (active and soc < config.control.support_dc48_recovery_soc)
         )
-        manual = c._support_manual["dc48"]
-        wanted = desired["dc48"] or manual or protection
+        manual = c.support_handed_over("dc48")
+        wanted = not manual and (desired["dc48"] or protection)
         allowed, reason = voltage_request(
             voltage,
             active,
             config.support.psu48_on_voltage_v,
             config.support.psu48_off_voltage_v,
         )
-        if manual or protection:
-            allowed, reason = (
-                True,
-                "manual_readiness" if manual else "protection_readiness",
-            )
-        if not wanted:
+        if manual:
+            allowed, reason = False, "manual_control"
+        elif protection:
+            allowed, reason = True, "protection_readiness"
+        elif not wanted:
             allowed, reason = False, "no_request"
         target = allowed and wanted
         if target == active or manual or protection or not wanted or voltage is None:

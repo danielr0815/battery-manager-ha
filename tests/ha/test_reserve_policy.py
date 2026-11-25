@@ -169,24 +169,30 @@ async def test_stale_ac_proposal_cannot_override_live_battery_protection(
     assert not c._inverter_recommendation
 
 
-async def test_legacy_manual_support_remains_owned_by_the_explicit_request(
+async def test_legacy_holding_reconciliation_respects_manual_handover(
     rig, hass, freezer
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
+    c.async_request_refresh = AsyncMock()
     configure(c, hass, 80)
     c._reserve_runtime.restore({"hold_soc": 0})
     c._support_state["dc24"] = True
-    c._support_manual["dc24"] = True
     hass.states.async_set(PSU24, "on")
     hass.states.async_set(DCDC, "off")
+    await c.async_set_support_manual("dc24", True)
+    assert not calls
+
     result = await update(c)
-    assert result["support_dc24"]
-    assert result["reserve"]["decision_reason"] == "manual_support"
+    assert c.support_manual("dc24") and c.support_active("dc24")
+    assert not c.build_system_config().support.dc24_available
+    assert result["support_dc24"] is True
+    assert result["hourly_details"]
+    assert all(point["psu24_delivered_wh"] == 0 for point in result["hourly_details"])
+    assert result["reserve"]["decision_reason"] != "manual_support"
     assert c._reserve_runtime.policy_version == 2
-    assert (PSU24, False) not in calls
-    assert (DCDC, True) not in calls
-    assert not result["inverter_recommendation"]
+    assert all(actor not in (PSU24, DCDC) for actor, _ in calls)
+    assert hass.states.get(DCDC).state == "off"
 
 
 async def test_legacy_holding_waits_for_soc_and_does_not_fake_physical_state(
@@ -351,78 +357,108 @@ async def test_actual_off_during_restart_clears_stale_on_latch_without_reactivat
     assert not any(entity in (PSU24, PSU48) and value for entity, value in calls)
 
 
-async def test_real_off_confirmation_does_not_clear_a_new_manual_request(
+async def test_real_off_confirmation_does_not_clear_a_manual_handover(
     rig, hass, freezer
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
-    c, _, *_ = rig
+    c, calls, *_ = rig
+    c.async_request_refresh = AsyncMock()
     configure(c, hass, 80)
     c._reserve_runtime.restore({"hold_soc": 0})
+    await c.async_set_support_manual("dc24", True)
+    # A stale legacy latch can still be present in recovered observations.
     c._support_state["dc24"] = True
-    c._support_manual["dc24"] = True
     assert hass.states.get(PSU24).state == "off"
     c._reserve_reconcile_legacy_hold(80)
     assert not c._support_state["dc24"]
-    assert c._support_manual["dc24"]
-    assert c.build_system_config().support.dc24_forced_on
+    assert c.support_manual("dc24")
+    assert not c.support_active("dc24")
+    assert not c.build_system_config().support.dc24_forced_on
+    assert not calls
     assert c._reserve_runtime.policy_version == 2
 
 
-@pytest.mark.parametrize("key", ["dc24", "dc48"])
-async def test_new_manual_on_overrides_an_older_off_plan(rig, hass, freezer, key):
-    freezer.move_to("2026-09-27T12:00:00+00:00")
-    c, calls, *_ = rig
-    configure(c, hass, 80)
-    old_config = c.build_system_config()
-    c._support_manual[key] = True
-    await c._execute_coordinated_support(
-        {"dc24": False, "dc48": False}, True, old_config, dt_util.now()
-    )
-    assert hass.states.get(PSU24).state == "on"
-    assert (hass.states.get(PSU48).state == "on") is (key == "dc48")
-    assert hass.states.get(DCDC).state == "off"
-    assert not c._inverter_recommendation
-    assert float(hass.states.get(LIMIT).state) == 0
-    assert not any(entity == LIMIT and value > 0 for entity, value in calls)
-
-
-@pytest.mark.parametrize("key", ["dc24", "dc48"])
-@pytest.mark.parametrize("already_on", [False, True])
-async def test_cancelled_manual_on_cannot_be_restored_by_an_older_plan(
-    rig, hass, freezer, key, already_on
+@pytest.mark.parametrize("key,psu", [("dc24", PSU24), ("dc48", PSU48)])
+async def test_manual_handover_overrides_an_older_off_plan(
+    rig, hass, freezer, key, psu
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
+    c.async_request_refresh = AsyncMock()
     configure(c, hass, 80)
-    c._support_manual[key] = True
-    old_targets = {"dc24": True, "dc48": key == "dc48"}
-    if already_on:
-        c._support_state = dict(old_targets)
-        hass.states.async_set(PSU24, "on")
+    await c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, True, c.build_system_config(), dt_util.now()
+    )
+    assert c._inverter_recommendation
+    calls.clear()
+    queued = c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, True, c.build_system_config(), dt_util.now()
+    )
+    await c.async_set_support_manual(key, True)
+    hass.states.async_set(psu, "on")  # The physical switch belongs to the operator.
+    if key == "dc24":
         hass.states.async_set(DCDC, "off")
-        if key == "dc48":
-            hass.states.async_set(PSU48, "on")
-    old_config = c.build_system_config()
-    c._support_manual[key] = False
-    await c._execute_coordinated_support(old_targets, True, old_config, dt_util.now())
-    preserved24 = already_on and key == "dc48"
-    assert (hass.states.get(PSU24).state == "on") is preserved24
-    assert hass.states.get(PSU48).state == "off"
-    assert (hass.states.get(DCDC).state == "off") is preserved24
-    assert not any(entity in (PSU24, PSU48) and on for entity, on in calls)
+
+    await queued
+
+    assert hass.states.get(psu).state == "on"
+    assert hass.states.get(DCDC).state == ("off" if key == "dc24" else "on")
+    assert all(actor not in (psu, LIMIT) for actor, _ in calls)
+    if key == "dc24":
+        assert all(actor != DCDC for actor, _ in calls)
+    assert c._inverter_recommendation
+    assert float(hass.states.get(LIMIT).state) == 2300
+
+
+@pytest.mark.parametrize("key,psu", [("dc24", PSU24), ("dc48", PSU48)])
+@pytest.mark.parametrize("already_on", [False, True])
+async def test_handback_invalidates_queued_source_permission(
+    rig, hass, freezer, key, psu, already_on
+):
+    freezer.move_to("2026-09-27T12:00:00+00:00")
+    c, calls, *_ = rig
+    c.async_request_refresh = AsyncMock()
+    configure(c, hass, 80)
+    await c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, True, c.build_system_config(), dt_util.now()
+    )
+    assert c._inverter_recommendation
+    calls.clear()
+    await c.async_set_support_manual(key, True)
+    if already_on:
+        hass.states.async_set(psu, "on")
+    queued = c._execute_coordinated_support(
+        {"dc24": key == "dc24", "dc48": key == "dc48"},
+        True,
+        c.build_system_config(),
+        dt_util.now(),
+    )
+    await c.async_set_support_manual(key, False)
+    assert not calls
+    assert c._inverter_recommendation
     if already_on and key == "dc24":
-        assert calls.index((DCDC, True)) < calls.index((PSU24, False))
-    if preserved24:
-        # The automatic 24 V latch was not the revoked manual request. Its
-        # normal release still requires PV recovery in a fresh plan.
-        assert (PSU48, False) in calls
-        assert (PSU24, False) not in calls
-        assert (DCDC, True) not in calls
-    # The changed manual input invalidates the economic decision too. AC can
-    # only resume after a new plan, even with a healthy battery.
-    assert not c._inverter_recommendation
-    assert float(hass.states.get(LIMIT).state) == 0
-    assert not any(entity == LIMIT and value > 0 for entity, value in calls)
+        # A converter that goes offline after handback must be restored
+        # before the now-automatic relay is shut down.
+        hass.states.async_set(DCDC, "off")
+    await queued
+
+    assert not any(entity in (PSU24, PSU48) and on for entity, on in calls)
+    if already_on:
+        await c._execute_coordinated_support(
+            {"dc24": False, "dc48": False},
+            True,
+            c.build_system_config(),
+            dt_util.now(),
+        )
+        assert (psu, False) in calls
+        if key == "dc24":
+            assert calls.index((DCDC, True)) < calls.index((PSU24, False))
+    else:
+        assert not any(actor == LIMIT for actor, _ in calls)
+    assert hass.states.get(psu).state == "off"
+    assert hass.states.get(DCDC).state == "on"
+    assert c._inverter_recommendation
+    assert float(hass.states.get(LIMIT).state) == 2300
 
 
 @pytest.mark.parametrize("soc", [6, "unknown"])
@@ -431,13 +467,17 @@ async def test_manual_off_cannot_cancel_current_low_or_unknown_soc_protection(
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
-    configure(c, hass, soc)
-    c._support_manual["dc48"] = True
-    old_config = c.build_system_config()
-    c._support_manual["dc48"] = False
-    await c._execute_coordinated_support(
-        {"dc24": False, "dc48": False}, True, old_config, dt_util.now()
+    c.async_request_refresh = AsyncMock()
+    configure(c, hass, 80)
+    await c.async_set_support_manual("dc48", True)
+    queued = c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, True, c.build_system_config(), dt_util.now()
     )
+    hass.states.async_set("sensor.test_soc", str(soc))
+    await c.async_set_support_manual("dc48", False)
+
+    await queued
+
     assert hass.states.get(PSU24).state == "on"
     assert hass.states.get(PSU48).state == "on"
     assert calls.index((LIMIT, 0)) < calls.index((PSU48, True))
@@ -450,17 +490,22 @@ async def test_manual_change_preserves_only_current_protection_latches(
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
+    c.async_request_refresh = AsyncMock()
     configure(c, hass, 8)  # Above 48 V activation, below its recovery threshold.
     c._support_state = {"dc24": True, "dc48": True}
     hass.states.async_set(PSU24, "on")
     hass.states.async_set(PSU48, feedback)
     hass.states.async_set(DCDC, "off")
-    old_config = c.build_system_config()
-    c._support_manual["dc24"] = True
-    await c._execute_coordinated_support(
-        {"dc24": False, "dc48": False}, True, old_config, dt_util.now()
+    queued = c._execute_coordinated_support(
+        {"dc24": False, "dc48": False}, True, c.build_system_config(), dt_util.now()
     )
+    await c.async_set_support_manual("dc24", True)
+
+    await queued
+
     assert hass.states.get(PSU24).state == "on"
+    assert hass.states.get(DCDC).state == "off"
+    assert all(actor not in (PSU24, DCDC) for actor, _ in calls)
     assert (hass.states.get(PSU48).state == "on") is (feedback != "off")
     if feedback != "off":
         assert (PSU48, False) not in calls
@@ -478,7 +523,7 @@ async def test_manual_request_waits_for_actuation_lock_and_refreshes_after_relea
 
     def saved():
         assert c._switch_lock.locked()
-        assert c._support_manual["dc48"]
+        assert c.support_manual("dc48")
 
     c.async_request_refresh = AsyncMock(side_effect=refresh)
     c._save_persistent_state = Mock(side_effect=saved)
@@ -491,16 +536,17 @@ async def test_manual_request_waits_for_actuation_lock_and_refreshes_after_relea
     task = asyncio.create_task(request())
     try:
         await entered.wait()
-        assert not c._support_manual["dc48"]
+        assert not c.support_manual("dc48")
+        assert not calls
         c._save_persistent_state.assert_not_called()
         c.async_request_refresh.assert_not_called()
     finally:
         c._switch_lock.release()
         await task
-    assert c._support_manual["dc48"]
+    assert c.support_manual("dc48")
     c._save_persistent_state.assert_called_once()
     c.async_request_refresh.assert_awaited_once()
-    assert not calls  # This path requests a fresh plan rather than actuating.
+    assert not calls
 
 
 async def test_cancelled_48v_manual_preserves_unmodified_24v_protection(
@@ -508,17 +554,21 @@ async def test_cancelled_48v_manual_preserves_unmodified_24v_protection(
 ):
     freezer.move_to("2026-09-27T12:00:00+00:00")
     c, calls, *_ = rig
+    c.async_request_refresh = AsyncMock()
     configure(c, hass, 13)
     c._support_state["dc24"] = True
     hass.states.async_set(PSU24, "on")
     hass.states.async_set(DCDC, "off")
-    c._support_manual["dc48"] = True
+    await c.async_set_support_manual("dc48", True)
     old_config = c.build_system_config()
     assert old_config.control.support_dc24_recovery_soc < 13
-    c._support_manual["dc48"] = False
-    await c._execute_coordinated_support(
+    queued = c._execute_coordinated_support(
         {"dc24": True, "dc48": True}, True, old_config, dt_util.now()
     )
+    await c.async_set_support_manual("dc48", False)
+
+    await queued
+
     # Releasing a different manual request cannot impersonate the PV recovery
     # required by the unchanged automatic 24 V hysteresis contract.
     assert hass.states.get(PSU24).state == "on"

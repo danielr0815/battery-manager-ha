@@ -30,15 +30,27 @@ def reconcile_supply_feedback(
 ) -> bool:
     """Adopt our confirmed edges; service completion is never physical proof."""
     changed = False
+    dcdc_entity = self.raw_config.get(CONF_DCDC_SWITCH)
+    if self._unconfirmed_dcdc_off and dcdc_entity and entity_id in (None, dcdc_entity):
+        feedback = self.hass.states.get(dcdc_entity)
+        if (
+            feedback is not None
+            and feedback.state == "off"
+            and not feedback.attributes.get("assumed_state")
+            and feedback.context.id in self._unconfirmed_dcdc_off
+        ):
+            self._unconfirmed_dcdc_off.remove(feedback.context.id)
+            changed = True
     for entity, request in self._supply_actor_requests.items():
-        # A failed OFF service can still reach the relay. Only the physical
-        # OFF publication settles that uncertainty.
-        awaiting = request.state == "pending" or (
-            request.state == "service_failed" and not request.desired
-        )
+        # Even a failed service can have reached the relay. Only fresh
+        # physical feedback settles a request and permits the next write.
+        awaiting = request.state in ("pending", "service_failed")
+        state = self.hass.states.get(entity) if awaiting else None
         if (
             (entity_id is not None and entity != entity_id)
-            or not awaiting
+            or state is None
+            or state.attributes.get("assumed_state")
+            or state.last_reported < request.requested_at
             or self._entity_tristate(entity) is not request.desired
         ):
             continue
@@ -82,6 +94,7 @@ class SupplyRequest:
     sources: tuple[bool, bool]
     inverter: bool
     plan_revision: int
+    handover_revision: int
     expires: datetime | None
     soc_coordinate: SocCoordinateSnapshot | None = None
 
@@ -151,6 +164,9 @@ def capture_supply_request(
         (desired["dc24"], desired["dc48"]),
         inverter,
         self.live_ac.plan_revision,
+        self._published_support_handover_revision
+        if envelope is not None or record is not None
+        else self._support_handover_revision,
         envelope.expires
         if envelope is not None
         else _record_expiry(record[1])
@@ -237,6 +253,9 @@ async def execute_coordinated_support(
                     (desired["dc24"], desired["dc48"]),
                     inverter,
                     self.live_ac.plan_revision,
+                    self._published_support_handover_revision
+                    if valid
+                    else request.handover_revision,
                     expires if valid else None,
                     envelope.soc_coordinate
                     if envelope is not None
@@ -245,9 +264,49 @@ async def execute_coordinated_support(
                     else None,
                 )
             now = dt_util.now()
-            psu24 = self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
-            psu48 = self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
-            dcdc = self.raw_config.get(CONF_DCDC_SWITCH)
+            manual24 = self.support_handed_over("dc24")
+            manual48 = self.support_handed_over("dc48")
+            # All automatic switching paths, including recovery, share these
+            # actor IDs. Manual ownership also excludes the rail transfer.
+            psu24 = None if manual24 else self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
+            psu48 = None if manual48 else self.raw_config.get(CONF_SUPPORT_DC48_SWITCH)
+            dcdc = None if manual24 else self.raw_config.get(CONF_DCDC_SWITCH)
+            changed_paths = {
+                key
+                for key, revision in self._support_handover_changes.items()
+                if request.handover_revision < revision
+            }
+            if changed_paths:
+                config = self.build_system_config()
+                soc = self._get_soc(now)
+                protected24, protected48 = support_state(
+                    config,
+                    soc if soc is not None else config.battery.soc_min_percent,
+                    config.support.dc24_active
+                    and psu24 is not None
+                    and self._entity_tristate(psu24) is not False,
+                    config.support.dc48_active
+                    and psu48 is not None
+                    and self._entity_tristate(psu48) is not False,
+                    False,
+                )
+                for key, protected in (("dc24", protected24), ("dc48", protected48)):
+                    desired[key] = protected or (
+                        key not in changed_paths and desired[key]
+                    )
+            if manual24 or manual48:
+                desired = {
+                    "dc24": desired["dc24"] and not manual24,
+                    "dc48": desired["dc48"] and not manual48,
+                }
+                config = replace(
+                    config,
+                    support=replace(
+                        config.support,
+                        dc24_available=config.support.dc24_available and not manual24,
+                        dc48_available=config.support.dc48_available and not manual48,
+                    ),
+                )
             diag: dict[str, Any] = {
                 "mode": "coordinated",
                 "reason": "settled",
@@ -290,13 +349,17 @@ async def execute_coordinated_support(
                 )
 
             def waiting_for_dcdc_off() -> bool:
-                if not dcdc or not pending_off(dcdc):
+                if not dcdc or not (pending_off(dcdc) or self._unconfirmed_dcdc_off):
                     return False
                 # A command to turn DC/DC back on would replace our pending
                 # OFF request and could adopt the old ON as its confirmation.
                 diag["reason"] = "awaiting_confirmation"
                 self._schedule_replan()
                 return True
+
+            async def restore_dcdc_without_shedding() -> None:
+                if dcdc and self._unconfirmed_dcdc_off and not pending_off(dcdc):
+                    await confirmed(dcdc, True)
 
             def transfer_verified() -> bool:
                 if not config.reserve.enabled or self.raw_config.get(
@@ -306,50 +369,29 @@ async def execute_coordinated_support(
                 diag["dc24_block_reason"] = "transfer_unverified"
                 return False
 
-            manual_changed = (
-                config.support.dc24_forced_on != self._support_manual["dc24"]
-                or config.support.dc48_forced_on != self._support_manual["dc48"]
-            )
-            if manual_changed or config.reserve.enabled:
-                # Planning may have waited while either SOC or a manual request
-                # changed. The ownership lock protects this final input check.
+            if (
+                psu24
+                and dcdc
+                and self._entity_tristate(psu24) is False
+                and self._entity_tristate(dcdc) is False
+                and (
+                    not config.reserve.enabled or self._reserve_grid_available() is True
+                )
+                and not waiting_for_dcdc_off()
+            ):
+                # Handback may leave both sources off. Restoring the battery
+                # path is safe before any inverter or grid-source transition.
+                await confirmed(dcdc, True)
+
+            if config.reserve.enabled:
+                # Planning may have waited while SOC changed. The ownership
+                # lock protects this final check of the latest measurement.
                 soc = self._get_soc(dt_util.now())
-                latched = {"dc24": False, "dc48": False}
-                if manual_changed:
-                    cancelled = {
-                        "dc24": config.support.dc24_forced_on
-                        and not self._support_manual["dc24"],
-                        "dc48": config.support.dc48_forced_on
-                        and not self._support_manual["dc48"],
-                    }
-                    config = replace(
-                        config,
-                        support=replace(
-                            config.support,
-                            dc24_forced_on=self._support_manual["dc24"],
-                            dc48_forced_on=self._support_manual["dc48"],
-                        ),
-                    )
-                    for key, entity, recovery in (
-                        ("dc24", psu24, config.control.support_dc24_recovery_soc),
-                        ("dc48", psu48, config.control.support_dc48_recovery_soc),
-                    ):
-                        actual = self._entity_tristate(entity) if entity else False
-                        # Only the cancelled manual path loses its old hold.
-                        # Other protection latches retain their core release
-                        # rules, including PV recovery for the 24 V rail.
-                        latched[key] = (
-                            self._support_state[key] if actual is None else actual
-                        ) and (not cancelled[key] or soc is None or soc < recovery)
-                    # A cancelled manual ON cannot survive in the old targets.
-                    # Retain only current protection until a fresh economic plan.
-                    desired = {"dc24": False, "dc48": False}
-                    inverter = False
                 protect24, protect48 = support_state(
                     config,
                     soc if soc is not None else config.battery.soc_min_percent,
-                    latched["dc24"],
-                    latched["dc48"],
+                    False,
+                    False,
                     False,
                 )
                 desired = {
@@ -530,7 +572,15 @@ async def execute_coordinated_support(
                     False,
                 )
                 target = {
-                    key: target[key] or required or self._support_manual[key]
+                    key: not self.support_handed_over(key)
+                    and (
+                        required
+                        or (
+                            target[key]
+                            and self._published_support_handover_revision
+                            >= self._support_handover_changes[key]
+                        )
+                    )
                     for key, required in zip(("dc24", "dc48"), protect, strict=True)
                 }
                 diag["requested"] = dict(target)
@@ -603,6 +653,7 @@ async def execute_coordinated_support(
             async def shed_grid_sources() -> bool:
                 """Stop using grid sources only while the outage still holds."""
                 if waiting_for_dcdc_off():
+                    await restore_dcdc_without_shedding()
                     return False
                 if (
                     dcdc
@@ -664,10 +715,7 @@ async def execute_coordinated_support(
                     and self._entity_tristate(psu24) is True
                     and not pending_off(psu24)
                     and not self._actuation_shutdown
-                    and (
-                        not config.support.dc24_forced_on
-                        or self._support_manual["dc24"]
-                    )
+                    and (not config.support.dc24_forced_on)
                     and may_remove()
                 ):
                     target["dc24"] = True
@@ -801,11 +849,10 @@ async def execute_coordinated_support(
 
             # Even an unexpected external PSU activation blocks AC immediately.
             # Release comes last, after all source confirmations below.
-            physical_support = any(
-                entity and self._entity_tristate(entity) is not False
-                for entity in (psu24, psu48)
+            physical_support = self.automatic_support_active_or_unknown()
+            waiting_for_rail = (
+                not manual24 and not desired["dc24"] and waiting_for_dcdc_off()
             )
-            waiting_for_rail = not desired["dc24"] and waiting_for_dcdc_off()
             if (
                 waiting_for_rail
                 or not inverter
@@ -817,6 +864,7 @@ async def execute_coordinated_support(
                     diag["reason"] = "inverter_block_unconfirmed"
                     return
             if waiting_for_rail:
+                await restore_dcdc_without_shedding()
                 return
 
             # Blocking/confirmation above may have consumed real time.
@@ -911,7 +959,11 @@ async def execute_coordinated_support(
                 if not may_remove():
                     await restore_required()
                     return
-            if inverter and not any(desired.values()):
+            if (
+                inverter
+                and not any(desired.values())
+                and not self.automatic_support_active_or_unknown()
+            ):
                 if dcdc and not await confirmed(dcdc, True):
                     return
                 if config.reserve.enabled:
@@ -955,6 +1007,6 @@ async def execute_coordinated_support(
                 **self.data.get("coordinated_support", {}),
                 **self._coordinated_support_diag,
             }
-            self.data["support_dc24"] = self._support_state["dc24"]
-            self.data["support_dc48"] = self._support_state["dc48"]
+            self.data["support_dc24"] = self.support_active("dc24")
+            self.data["support_dc48"] = self.support_active("dc48")
             self.async_update_listeners()

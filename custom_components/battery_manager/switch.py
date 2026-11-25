@@ -116,12 +116,7 @@ class BatteryManagerVacationSwitch(BatteryManagerEntity, SwitchEntity):
 
 
 class SupportManualSwitch(BatteryManagerEntity, SwitchEntity):
-    """Operator manual override for a support PSU (F-N2/R3, docs/DC_TOPOLOGY §7).
-
-    On = force the PSU on and pause the automatic control for it (winter
-    operation); off = restore automatic control. Actuation and mode both go
-    through the coordinator's single entry point.
-    """
+    """Release a coordinated support path or request legacy force-on operation."""
 
     _attr_icon = "mdi:hand-back-right"
 

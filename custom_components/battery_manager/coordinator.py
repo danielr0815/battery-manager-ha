@@ -15,7 +15,11 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.core import Context, HomeAssistant, State, callback
-from homeassistant.exceptions import HomeAssistantError, UnsupportedStorageVersionError
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceNotFound,
+    UnsupportedStorageVersionError,
+)
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -214,6 +218,7 @@ from .const import (
     SUBENTRY_TYPE_APPLIANCE,
     SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
+    SUPPORT_HANDOVER_STORE_KEY,
     SUPPORT_MODE_AUTO,
     SUPPORT_MODE_MANUAL,
     SUPPORT_SWITCH_FAIL_ALERT,
@@ -554,15 +559,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._reserve_preparing = False
         self._reserve_inverter_limit_w: int | None = None
         self._support_state = {"dc24": False, "dc48": False}
-        # Manual override per PSU (F-N2): entered when the switch turns on
-        # externally, left when it is switched off externally; persisted
-        # across restarts together with _support_state (the latter is what
-        # distinguishes "BM had it on before the restart" from "someone
-        # switched it on while HA was down").
+        # Coordinated entries release the relay. Legacy entries retain the
+        # force-on override and track external changes in _update_support_modes.
         self._support_manual = {"dc24": False, "dc48": False}
+        self._support_handover_revision = 0
+        self._support_handover_changes = {"dc24": 0, "dc48": 0}
+        self._published_support_handover_revision = 0
         self._support_migration: dict[str, Any] = {}
         self._last_support_switch: datetime | None = None
         self._supply_actor_requests: dict[str, ActorRequest] = {}
+        self._unconfirmed_dcdc_off: set[str] = set()
         self.source_phases = SourcePhases(self)
         # Last commanded direction per PSU (for the late-confirmation
         # grace), pending unconfirmed activations, the level-triggered
@@ -685,6 +691,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # configurable input-off policy.
         self._store: Store = _RuntimeStore(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
+        )
+        self._support_handover_store = Store[dict[str, list[str | None]]](
+            hass,
+            1,
+            f"{DOMAIN}.{SUPPORT_HANDOVER_STORE_KEY}.{entry.entry_id}",
+            atomic_writes=True,
         )
         self._load_soc_cache: dict[str, dict[str, Any]] = {}
         self._load_soc_observations: dict[str, dict[str, Any]] = {}
@@ -1117,6 +1129,29 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     data.get("support_state", {}).get(key, False)
                 )
             self._support_migration = dict(data.get("support_migration") or {})
+            pending = data.get("support_commands_pending", {})
+            if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
+                for actor_key in (
+                    CONF_SUPPORT_DC24_SWITCH,
+                    CONF_SUPPORT_DC48_SWITCH,
+                    CONF_DCDC_SWITCH,
+                ):
+                    entity = self.raw_config.get(actor_key)
+                    command = pending.get(entity)
+                    if (
+                        entity
+                        and command
+                        and (requested := dt_util.parse_datetime(command["at"]))
+                    ):
+                        self._supply_actor_requests[entity] = ActorRequest(
+                            command["on"],
+                            requested,
+                            command.get("state", "pending"),
+                            context_id=command.get("context_id"),
+                        )
+                retry = data.get("unconfirmed_dcdc_off", {})
+                if retry.get("entity") == self.raw_config.get(CONF_DCDC_SWITCH):
+                    self._unconfirmed_dcdc_off = set(retry.get("contexts", ()))
             self.source_phases.restore(data.get("source_phases"), dt_util.utcnow())
             if (
                 self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
@@ -1131,6 +1166,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.info(
                     "Coordinated DC control enabled; legacy manual requests cleared"
                 )
+            elif self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
+                if any(self._support_manual.values()):
+                    self._support_migration["forced_on_requests_cleared"] = dict(
+                        self._support_manual
+                    )
+                self._support_manual = {"dc24": False, "dc48": False}
             # R2 controller-caused-off flag survives the reload that a config
             # change (e.g. log_only) triggers — only meaningful while the 48 V
             # switch is configured and the path is in manual mode.
@@ -1261,6 +1302,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # diagnostic archive is restored away from HA's event loop.
         self.voltage_gate.ready = True
         self.voltage_gate.start_observing()
+        if (
+            self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+            and (handovers := await self._support_handover_store.async_load())
+            is not None
+        ):
+            for key in self._support_manual:
+                binding = self.support_handover_binding(key)
+                self._support_manual[key] = bool(
+                    binding[0] and handovers.get(key) == binding
+                )
+                if self._support_manual[key]:
+                    self._support_state[key] = False
+                    for entity in binding:
+                        if entity:
+                            self._supply_actor_requests.pop(entity, None)
+                    if key == "dc24":
+                        self._unconfirmed_dcdc_off.clear()
         await self.operation_recorder.async_restore(
             data.get("operation_history") if data else None
         )
@@ -1573,9 +1631,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if support_voltage is not None and not 40 <= support_voltage <= 60:
             support_voltage = None
         adaptive_voltage, voltage_until = self.voltage_gate.voltage_snapshot()
-        reserve_active = cfg.get(CONF_RESERVE_MODE) == "active" and bool(
-            cfg.get(CONF_INVERTER_LIMIT_ENTITY)
-        )
+        coordinated = bool(cfg.get(CONF_INVERTER_LIMIT_ENTITY))
+        manual24 = coordinated and self._support_manual["dc24"]
+        manual48 = coordinated and self._support_manual["dc48"]
+        reserve_active = cfg.get(CONF_RESERVE_MODE) == "active" and coordinated
         return SystemConfig(
             reserve=ReserveParams(
                 enabled=reserve_active,
@@ -1658,17 +1717,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             support=SupportParams(
                 configured=support_configured,
-                coordinated=bool(cfg.get(CONF_INVERTER_LIMIT_ENTITY)),
+                coordinated=coordinated,
                 dc24_available=bool(
                     cfg.get(CONF_SUPPORT_DC24_SWITCH) and cfg.get(CONF_DCDC_SWITCH)
-                ),
-                dc48_available=bool(cfg.get(CONF_SUPPORT_DC48_SWITCH)),
-                dc24_active=self._support_state["dc24"]
+                )
+                and not manual24,
+                dc48_available=bool(cfg.get(CONF_SUPPORT_DC48_SWITCH)) and not manual48,
+                dc24_active=not manual24
+                and self._support_state["dc24"]
                 and (
                     not reserve_active
                     or "dc24" not in self._reserve_legacy_hold_sources
                 ),
-                dc48_active=self._support_state["dc48"]
+                dc48_active=not manual48
+                and self._support_state["dc48"]
                 and (
                     not reserve_active
                     or "dc48" not in self._reserve_legacy_hold_sources
@@ -1688,11 +1750,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dc24_phase_until=phase24 if reserve_active else 0.0,
                 dc48_phase_until=phase48 if reserve_active else 0.0,
                 dc48_power_w=float(cfg.get(CONF_SUPPORT_DC48_POWER_W, 60.0)),
-                # Manual override (F-N2): a manually activated PSU is
-                # simulated as permanently on so the SOC forecast matches
-                # the real winter operation.
-                dc24_forced_on=self._support_manual["dc24"],
-                dc48_forced_on=self._support_manual["dc48"],
+                # Only the legacy override guarantees a planner target. A
+                # released relay has no guaranteed contribution to the plan.
+                dc24_forced_on=not coordinated and self._support_manual["dc24"],
+                dc48_forced_on=not coordinated and self._support_manual["dc48"],
                 # F-N3 two-bus device parameters (docs/DC_TOPOLOGY.md). A
                 # 0 A current means "uncapped" (None); the rail-side power
                 # cap is V_out x I_max.
@@ -4710,7 +4771,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return result
 
     def _ensure_planning_inputs(
-        self, inputs: PlanInputs, *, check_soc_drift: bool = True
+        self,
+        inputs: PlanInputs,
+        *,
+        check_soc_drift: bool = True,
+        handover_revision: int | None = None,
     ) -> None:
         """Reject unsafe inputs; SOC drift invalidates unfinished calculations.
 
@@ -4720,6 +4785,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if self._actuation_shutdown:
             raise asyncio.CancelledError
+        if (
+            handover_revision is not None
+            and handover_revision != self._support_handover_revision
+        ):
+            raise UpdateFailed(
+                "Supply control changed during calculation; awaiting fresh plan"
+            )
         if not self.voltage_gate.coordinate_matches(inputs.soc_coordinate):
             raise CoordinatePlanChanged
         now = dt_util.now()
@@ -4813,14 +4885,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         config = self.build_system_config()
         low = soc is not None and soc <= config.control.inverter_min_soc_percent
         grid = self._reserve_grid_available() if config.reserve.enabled else True
-        physical_support = any(
-            self.raw_config.get(key)
-            and self._entity_tristate(self.raw_config[key]) is not False
-            for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
-        )
         # Unknown grid blocks PSU use, not already-authorized battery discharge.
         # Only an active/unknown PSU or known grid loss needs an immediate block.
-        grid_block = grid is False or (grid is None and physical_support)
+        grid_block = grid is False or (
+            grid is None and self.automatic_support_active_or_unknown()
+        )
         if soc is None or low or grid_block:
             await self._coordinated_data_loss(soc, now)
         if soc is None:
@@ -5007,6 +5076,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # cycle stale if the judgement ran after it.
         self._update_feedin_mode(now)
 
+        handover_revision = self._support_handover_revision
         config = self.build_system_config()
         load_states = self._get_load_states(now)
         soc_observations = dict(self._load_soc_observations)
@@ -5244,7 +5314,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._reserve_preparing = False
             self._reserve_inverter_limit_w = None
             result = await self._async_plan("standard", config, inputs)
-        self._ensure_planning_inputs(inputs)
+        self._ensure_planning_inputs(inputs, handover_revision=handover_revision)
         self._plan_metadata = {
             "captured_at": inputs.now.isoformat(),
             "activated_at": dt_util.utcnow().isoformat(),
@@ -5253,6 +5323,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the revision and before any shadow/source/load await. A new revision
         # must never finance source removal with the preceding plan's record.
         self._last_planner_recording = (config, inputs, result)
+        self._published_support_handover_revision = handover_revision
         self.voltage_gate.published_coordinate = inputs.soc_coordinate
         self.live_ac.set_plan(config, inputs, result)
         self._last_planner_recording_revision = self.live_ac.plan_revision
@@ -5309,11 +5380,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             recommendation = (
                 recommendation
                 and self._inverter_limit_confirmed(False)
-                and all(
-                    not self.raw_config.get(key)
-                    or self._entity_tristate(self.raw_config[key]) is False
-                    for key in (CONF_SUPPORT_DC24_SWITCH, CONF_SUPPORT_DC48_SWITCH)
-                )
+                and not self.automatic_support_active_or_unknown()
             )
             self._inverter_recommendation = recommendation
         # G4 floor guard: needs the just-updated recommendation; must run
@@ -5335,7 +5402,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # The shadow overlay is never published. The current revision and its
         # complete command authority must already agree before this await.
         shadow_active = await self._latch_shadow_active(config, inputs, load_states)
-        self._ensure_planning_inputs(inputs)
+        self._ensure_planning_inputs(inputs, handover_revision=handover_revision)
         await self._apply_support_switching(result, config, now)
         if not config.support.coordinated:
             self._run_dc48_controller(now)
@@ -5800,8 +5867,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 k: (bool(v) and not floor_guard)
                 for k, v in result.appliance_windows.items()
             },
-            "support_dc24": self._support_state["dc24"],
-            "support_dc48": self._support_state["dc48"],
+            "support_dc24": self.support_active("dc24"),
+            "support_dc48": self.support_active("dc48"),
             "support_dc24_mode": "manual" if self._support_manual["dc24"] else "auto",
             "support_dc48_mode": "manual" if self._support_manual["dc48"] else "auto",
             # F-FEEDIN R7: executor mode for the feed-in mode sensor (mirrors
@@ -6714,32 +6781,108 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
         }
 
-    def support_active(self, key: str) -> bool:
-        """Public accessor for a support PSU's current on/off state.
-
-        Reflects the persisted BM support state, known independently of a plan —
-        so the support entities stay available (and in sync with the always-
-        available manual switch) even while an update is failing (review #15)."""
+    def support_active(self, key: str) -> bool | None:
+        """Observe an operator-owned relay or return the confirmed auto state."""
+        if self.support_handed_over(key):
+            psu = self.support_handover_binding(key)[0]
+            return self._entity_tristate(psu) if psu else None
         return self._support_state.get(key, False)
 
-    async def async_set_support_manual(self, key: str, on: bool) -> None:
-        """Operator manual override for a support PSU (F-N2/R3, F-N3 §7).
+    def support_handed_over(self, key: str) -> bool:
+        return bool(
+            self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+        ) and self.support_manual(key)
 
-        Turning it on enters manual mode and actuates the PSU (24 V via
-        make-before-break so the rail is never sourceless); turning it off
-        exits manual mode and restores automatic control. The single entry
-        point for the manual-mode switches; serialised with the planner's
-        own switching via the switch lock. The simulation then treats the
-        path as permanently active (forced_on) so the SOC forecast matches
-        the real winter operation.
+    def automatic_support_active_or_unknown(self) -> bool:
+        return any(
+            not self.support_handed_over(key)
+            and (entity := self.support_handover_binding(key)[0])
+            and (
+                self._entity_tristate(entity) is not False
+                or (
+                    (request := self._supply_actor_requests.get(entity)) is not None
+                    and request.desired
+                    and request.state != "confirmed"
+                )
+            )
+            for key in self._support_manual
+        )
+
+    def support_handover_binding(self, key: str) -> list[str | None]:
+        config = self.raw_config
+        return [
+            config.get(
+                CONF_SUPPORT_DC24_SWITCH if key == "dc24" else CONF_SUPPORT_DC48_SWITCH
+            ),
+            config.get(CONF_DCDC_SWITCH) if key == "dc24" else None,
+        ]
+
+    def _ensure_support_commands_settled(self, actors: list[str | None]) -> None:
+        """An outstanding automatic command must settle before ownership changes."""
+        reconcile_supply_feedback(self)
+        for entity in actors:
+            command = self._supply_actor_requests.get(entity) if entity else None
+            if (command is not None and command.state != "confirmed") or (
+                entity
+                and entity == self.raw_config.get(CONF_DCDC_SWITCH)
+                and self._unconfirmed_dcdc_off
+            ):
+                raise HomeAssistantError(
+                    f"Wait for the previous automatic command to {entity} to settle"
+                )
+
+    async def _async_set_support_handover(self, key: str, on: bool) -> None:
+        actors = self.support_handover_binding(key)
+        if not actors[0]:
+            return
+        async with self._switch_lock:
+            if self._actuation_shutdown or self._support_manual[key] == on:
+                return
+            if on:
+                self._ensure_support_commands_settled(actors)
+            # Write the ownership edge before its switch can acknowledge it.
+            # The usual delayed save would lose the operator's authority on
+            # an unexpected restart immediately after a successful handover.
+            previous = {
+                path: self.support_handover_binding(path)
+                for path in self._support_manual
+                if self.support_handed_over(path)
+            }
+            handovers = dict(previous)
+            if on:
+                handovers[key] = self.support_handover_binding(key)
+            else:
+                handovers.pop(key, None)
+            await self._support_handover_store.async_save(handovers)
+            if await self._support_handover_store.async_load() != handovers:
+                raise HomeAssistantError(
+                    "Manual power supply ownership could not be saved"
+                )
+            if bool(self._actuation_shutdown):
+                await self._support_handover_store.async_save(previous)
+                raise HomeAssistantError("Battery Manager stopped during the handover")
+            self._support_manual[key] = on
+            self._support_state[key] = False
+            for entity in actors:
+                if entity:
+                    self._supply_actor_requests.pop(entity, None)
+                    self.source_phases.clear(key, entity)
+            # A queued decision can predate either edge of the transfer.
+            self._support_handover_revision += 1
+            self._support_handover_changes[key] = self._support_handover_revision
+            self._save_persistent_state()
+        self.async_update_listeners()
+        await self.async_request_refresh()
+
+    async def async_set_support_manual(self, key: str, on: bool) -> None:
+        """Transfer a coordinated PSU relay or apply the legacy force-on override.
+
+        In legacy mode turning it on actuates the PSU and forecasts a fixed
+        source. Coordinated manual mode releases the relay and, on the 24 V
+        path, the converter. Both modes restore automatic control on OFF.
         """
         if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
-            # Keep the executor's manual snapshot stable through confirmations.
-            # Refresh outside the lock: its actuation must acquire it again.
-            async with self._switch_lock:
-                self._support_manual[key] = on
-                self._save_persistent_state()
-            await self.async_request_refresh()
+            await self._async_set_support_handover(key, on)
             return
         conf_key = (
             CONF_SUPPORT_DC24_SWITCH if key == "dc24" else CONF_SUPPORT_DC48_SWITCH
@@ -6881,6 +7024,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # call, and require CascadeManager to present the owning cascade ID.
         # This also fail-closes support/calibration/stale detached paths if a
         # future refactor accidentally points them at a cascade actor.
+        if any(
+            self.support_handed_over(key)
+            and entity_id in self.support_handover_binding(key)
+            for key in self._support_manual
+        ):
+            return False
         if entity_id in self.released_load_actors():
             return False
         if (
@@ -6943,8 +7092,53 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if actor_owner == SUPPLY_OWNER and self.raw_config.get(
             CONF_INVERTER_LIMIT_ENTITY
         ):
-            supply_request = ActorRequest(turn_on, dt_util.now())
+            if (
+                not turn_on
+                and entity_id == self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
+                and self._unconfirmed_dcdc_off
+            ):
+                reconcile_supply_feedback(self, self.raw_config.get(CONF_DCDC_SWITCH))
+                if self._unconfirmed_dcdc_off:
+                    return False
+            reconcile_supply_feedback(self, entity_id)
+            if (
+                not turn_on
+                and entity_id == self.raw_config.get(CONF_DCDC_SWITCH)
+                and self._unconfirmed_dcdc_off
+            ):
+                return self._entity_tristate(entity_id) is False
+            previous = self._supply_actor_requests.get(entity_id)
+            retry_dcdc_off = False
+            if previous is not None and previous.state != "confirmed":
+                # An accepted request can reach a relay after HA returns.
+                # Never let one confirmation discharge two issued commands.
+                if not (
+                    previous.state == "service_failed"
+                    and not previous.desired
+                    and not turn_on
+                    and entity_id == self.raw_config.get(CONF_DCDC_SWITCH)
+                    and self._reserve_grid_available() is True
+                    and not self._unconfirmed_dcdc_off
+                ):
+                    return previous.state == "pending" and previous.desired is turn_on
+                # The verified grid-return path can retry a failed DC/DC OFF
+                # with the PSU still supplying the rail. A later handover
+                # still requires separate feedback for both attempts.
+                self._unconfirmed_dcdc_off.add(previous.context_id or "")
+                retry_dcdc_off = True
+            state = self.hass.states.get(entity_id)
+            if (
+                state is not None
+                and not state.attributes.get("assumed_state")
+                and self._entity_tristate(entity_id) is turn_on
+            ):
+                return True
+            context = context or Context()
+            if retry_dcdc_off:
+                self._unconfirmed_dcdc_off.add(context.id)
+            supply_request = ActorRequest(turn_on, dt_util.now(), context_id=context.id)
             self._supply_actor_requests[entity_id] = supply_request
+            self._save_persistent_state()
             self.source_phases.requested(entity_id, turn_on)
         recorder = getattr(self, "operation_recorder", None)
         request = (
@@ -6979,7 +7173,15 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
             if supply_request is not None and supply_request.state == "pending":
-                supply_request.state = "service_failed"
+                if isinstance(err, ServiceNotFound):
+                    # The service registry rejected the dispatch before a
+                    # relay could receive it. A later cycle may try again.
+                    self._supply_actor_requests.pop(entity_id, None)
+                    if supply_request.context_id:
+                        self._unconfirmed_dcdc_off.discard(supply_request.context_id)
+                    self.source_phases.cancel_request(entity_id)
+                else:
+                    supply_request.state = "service_failed"
             if recorder:
                 recorder.event(
                     "command_result",

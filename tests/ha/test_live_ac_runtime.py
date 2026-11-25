@@ -101,7 +101,6 @@ async def test_pause_has_ten_minute_hysteresis_across_fresh_plans(live, hass, fr
         "psu24",
         "psu48",
         "dcdc",
-        "manual",
         "required",
         "budget",
         "house",
@@ -124,8 +123,6 @@ async def test_protection_bypasses_hold(live, hass, freezer, fault):
             {"psu24": PSU24, "psu48": PSU48, "dcdc": DCDC}[fault],
             "off" if fault == "dcdc" else "on",
         )
-    elif fault == "manual":
-        c._support_manual["dc24"] = True
     elif fault in ("required", "budget"):
         old = c.live_ac.envelope
         c.live_ac.envelope = LiveACEnvelope(
@@ -133,6 +130,7 @@ async def test_protection_bypasses_hold(live, hass, freezer, fault):
             old.expires,
             80 if fault == "budget" else 50,
             fault == "required",
+            dc_sources=(fault == "required", False),
         )
     elif fault in ("house", "pv"):
         hass.states.async_set("sensor." + fault, "unavailable")
@@ -146,6 +144,23 @@ async def test_protection_bypasses_hold(live, hass, freezer, fault):
     assert not c.data["inverter_recommendation"]
     assert not c.live_ac.state.active
     assert calls[-1] == (LIMIT, 0)
+
+
+async def test_manual_relays_and_converter_do_not_revoke_live_ac(live, hass):
+    c, calls, *_ = live
+    await c.live_ac.run()
+    c.async_request_refresh = AsyncMock()
+    await c.async_set_support_manual("dc24", True)
+    await c.async_set_support_manual("dc48", True)
+    hass.states.async_set(PSU24, "on")
+    hass.states.async_set(DCDC, "off")
+    hass.states.async_set(PSU48, "on")
+
+    await c.live_ac.run()
+
+    assert c.data["inverter_recommendation"]
+    assert float(hass.states.get(LIMIT).state) == 2300
+    assert calls == [(LIMIT, 2300)]
 
 
 async def test_no_signal_reports_means_timer_revokes_stale_permission(
@@ -203,7 +218,7 @@ async def test_delayed_release_cannot_survive_new_psu_request(live, hass):
     async def change_source(entity, value, **kwargs):
         result = await original(entity, value, **kwargs)
         if value:
-            c._support_manual["dc48"] = True
+            hass.states.async_set(PSU48, "on")
         return result
 
     c._set_number_value = change_source

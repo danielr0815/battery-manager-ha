@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.util import dt as dt_util
@@ -40,6 +40,22 @@ async def test_solar_returns_to_dc_converter_without_ac_discharge(solar, hass):
     assert not c.data["inverter_recommendation"]
 
 
+async def test_solar_can_return_automatic_24v_while_48v_is_manual(solar, hass):
+    c, calls, *_ = solar
+    envelope = c.live_ac.envelope
+    c.async_request_refresh = AsyncMock()
+    await c.async_set_support_manual("dc48", True)
+    c.live_ac.envelope = replace(
+        envelope, config=c.build_system_config(), dc_sources=(True, False)
+    )
+    before = len(calls)
+    await c.live_ac.run()
+    assert calls[before:] == [(DCDC, True), (PSU24, False)]
+    assert hass.states.is_state(PSU48, "on")
+    assert float(hass.states.get(LIMIT).state) == 0
+    assert c._coordinated_support_diag["pv_priority"]
+
+
 async def test_cloud_return_retries_after_existing_switch_dwell(solar, hass, freezer):
     c, calls, *_ = solar
     await c.live_ac.run()
@@ -59,7 +75,6 @@ async def test_cloud_return_retries_after_existing_switch_dwell(solar, hass, fre
 @pytest.mark.parametrize(
     "fault",
     [
-        "manual",
         "soc",
         "unknown_soc",
         "invalid_soc",
@@ -74,9 +89,7 @@ async def test_no_pv_override_without_full_fresh_permission(
     solar, hass, freezer, fault
 ):
     c, calls, *_ = solar
-    if fault == "manual":
-        c._support_manual["dc24"] = True
-    elif fault == "soc":
+    if fault == "soc":
         hass.states.async_set("sensor.test_soc", "6")
     elif fault in ("unknown_soc", "invalid_soc"):
         hass.states.async_set(

@@ -229,19 +229,36 @@ async def test_no_request_does_not_start_on_low_voltage(gate, hass):
     assert c.voltage_gate.diagnostics["reason"] == "no_request"
 
 
-@pytest.mark.parametrize(
-    "manual,soc,reason",
-    [(True, 82, "manual_readiness"), (False, 5, "protection_readiness")],
-)
-async def test_manual_and_protection_override_economic_gate(
-    gate, hass, manual, soc, reason
-):
+async def test_protection_overrides_economic_voltage_gate(gate, hass):
     c, *_ = gate
-    fresh(hass, 50, soc)
-    c._support_manual["dc48"] = manual
+    fresh(hass, 50, soc=5)
     await execute(c, True, True)
     assert hass.states.get(PSU48).state == "on"
-    assert c.voltage_gate.diagnostics["reason"] == reason
+    assert c.voltage_gate.diagnostics["reason"] == "protection_readiness"
+    assert c.voltage_gate.diagnostics["target"] is True
+
+
+@pytest.mark.parametrize(
+    "relay_state,soc,inverter,limit", [("on", 82, True, 2300), ("off", 5, False, 0)]
+)
+async def test_manual_handover_excludes_psu_from_voltage_gate(
+    gate, hass, relay_state, soc, inverter, limit
+):
+    c, calls, *_ = gate
+    c.async_request_refresh = AsyncMock()
+    await c.async_set_support_manual("dc48", True)
+    assert not calls
+    hass.states.async_set(PSU48, relay_state)
+    fresh(hass, 50, soc=soc)
+
+    await execute(c, False, True, inverter)
+
+    assert hass.states.get(PSU48).state == relay_state
+    assert all(actor != PSU48 for actor, _ in calls)
+    assert c.voltage_gate.diagnostics["reason"] == "manual_control"
+    assert c.voltage_gate.diagnostics["target"] is False
+    assert c._inverter_recommendation is inverter
+    assert float(hass.states.get(LIMIT).state) == limit
 
 
 async def test_invalid_voltage_allows_readiness_but_never_power_credit(

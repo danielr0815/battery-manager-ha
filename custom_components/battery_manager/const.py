@@ -855,6 +855,7 @@ ENTITY_SUPPORT_DC24_MANUAL = "support_dc24_manual"
 ENTITY_SUPPORT_DC48_MANUAL = "support_dc48_manual"
 SUPPORT_MODE_AUTO = "auto"
 SUPPORT_MODE_MANUAL = "manual"
+SUPPORT_HANDOVER_STORE_KEY = "support_handover"
 ENTITY_VACATION_MODE = "vacation_mode"
 # F-FEEDIN: runtime on/off switch and auto/manual mode sensor.
 ENTITY_FEEDIN_SWITCH = "early_feed_in"

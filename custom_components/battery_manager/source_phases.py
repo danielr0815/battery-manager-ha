@@ -75,6 +75,14 @@ class SourcePhases:
         else:
             self._pending.pop(entity, None)
 
+    def clear(self, key: str, entity: str) -> None:
+        """Retire the previous owner's dwell and confirmation evidence."""
+        self._phases.pop(key, None)
+        self.cancel_request(entity)
+
+    def cancel_request(self, entity: str) -> None:
+        self._pending.pop(entity, None)
+
     def confirmed(self, entity: str, target: bool, now: datetime) -> bool:
         if entity not in self._pending:
             return False

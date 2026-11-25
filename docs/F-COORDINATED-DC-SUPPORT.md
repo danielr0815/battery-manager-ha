@@ -104,8 +104,8 @@ Die direkte 24-V-Versorgung ist die bevorzugte erste Stufe: Sie entfernt
 verlässlich die gesamte 24-V-Last vom knappen 48-V-Bus. Das ist eine robuste
 Standardstrategie, kein universeller Wirkungsgradbeweis. Wenn Parameter oder
 fehlende Geräte andere Pfade sinnvoll machen, darf die Planung erlaubte
-Kombinationen anhand ihrer realen Verluste und Grenzen vergleichen; gleichzeitige
-AC-Batterieentladung und Netzstützung bleibt ausgeschlossen.
+Kombinationen anhand ihrer realen Verluste und Grenzen vergleichen. Während
+automatischer Netzstützung bleibt die AC-Batterieentladung gesperrt.
 
 ## R3 — Reserve aus Energie und Reaktionsfähigkeit
 
@@ -164,10 +164,10 @@ schreibt niemals auf diesen Rückmeldeschalter. Bestehende unabhängige Netzteil
 werden bei Einführung gezielt abgelöst. Empfehlungen und reale Zustände
 bleiben getrennt; HA-Serviceerfolg ist noch keine bestätigte Versorgung.
 
-Eintritt in Netzstützung: zuerst AC-Batterieentladung sperren und bestätigen,
-dann erforderliche DC-Quellen umschalten. Bei Ausfall dieser Sperre keinen
-normalen Parallelbetrieb freigeben; Schutzpfad und Diagnose behandeln den
-Fehler ausdrücklich. Akuter Batterieschutz sperrt AC-Entladung vorrangig.
+Bei automatischer Netzstützung sperrt und bestätigt der BM zuerst die
+AC-Batterieentladung und schaltet danach die erforderlichen DC-Quellen um.
+Bei fehlender Bestätigung greifen der Schutzpfad und die Diagnose. Akuter
+Batterieschutz sperrt die AC-Entladung vorrangig.
 
 24-V-Übernahme: Netzteil einschalten und bestätigen, Übergangszeit beachten,
 danach DC/DC ausschalten und den erreichten Versorgungszustand prüfen.
@@ -178,17 +178,49 @@ bei anderer Hardware ist die Umschaltart ein eigener Parameter/Vertrag.
 Mit 24,3 V am DC/DC und 24,05 V am Netzteil übernimmt das Netzteil nicht
 schon deshalb, weil sein Schalter „an“ ist: Der DC/DC muss aus sein.
 
-Vor Inverterfreigabe: Netzstützung beenden und bestätigen, DC/DC-Versorgung
-herstellen, Erholungsbedingungen prüfen. Kann ein Netzteil nicht ausgeschaltet
-werden, bleibt die Inverterfreigabe blockiert und der Konflikt sichtbar.
+Vor Inverterfreigabe beendet der BM die automatische Netzstützung, bestätigt
+die Schaltzustände der automatisch geführten Netzteile, stellt die
+DC/DC-Versorgung her und prüft die Erholungsbedingungen. Ein automatisch
+geführtes Netzteil, dessen Abschaltung unbestätigt ist, blockiert die
+Inverterfreigabe und erscheint als Konflikt in der Diagnose.
 
-Manual wird zu einer ausdrücklichen Anforderung „DC-Netzbetrieb“ innerhalb
-dieser Regeln. Externe Schaltabweichungen werden unter gesperrtem Inverter korrigiert und
-starten keinen stillen permanenten Manual-Modus. Für Wartung muss die
-Integration deaktiviert werden; ein zusätzlicher Wartungsmodus ist nicht Teil
-dieser Version. Bei Erstübernahme werden alte implizite Manual-Flags gelöscht
-und unter `migration.legacy_manual_requests_cleared` dokumentiert. Neue
-explizite Netzanforderungen bleiben über Neustarts erhalten.
+### Manuelle Übergabe ab 0.70.0
+
+„24-V-Stützung manuell“ und „48-V-Stützung manuell“ übergeben im koordinierten
+Betrieb jeweils das zugehörige Netzteilrelais. Bei 24 V übernimmt der Bediener
+zusätzlich den DC/DC-Wandler. Zum Übernehmen den betreffenden BM-Schalter
+einschalten und die Bestätigung des manuellen Modus abwarten. Ausstehende
+automatische Schaltaufträge für die betroffenen Relais müssen erst bestätigt
+sein. Im Handbetrieb führt der Bediener die übernommenen Relais über die
+vorhandenen Schalter und ist für die Umschaltfolge verantwortlich. Den
+BM-Schalter ausschalten, um die betreffenden Relais an die Automatik
+zurückzugeben.
+
+Für die manuelle 24-V-Quellenumschaltung gilt diese Reihenfolge:
+
+1. Zum Wechsel auf DC/DC den Wandler einschalten und seinen eingeschalteten
+   Zustand bestätigen. Danach das 24-V-Netzteil ausschalten.
+2. Zum Wechsel auf das Netzteil zuerst das 24-V-Netzteil einschalten, seinen
+   eingeschalteten Zustand bestätigen und die Umschaltzeit abwarten. Danach
+   den DC/DC-Wandler ausschalten.
+
+Die Relaisübergabe und die Inverterfreigabe sind voneinander unabhängig.
+Für den Inverter gelten seine eigenen Freigabe- und Schutzbedingungen. Er
+darf parallel zum manuell geschalteten Netzteil entladen, auch wenn die
+Haus-AC-Versorgung dieses Netzteil und damit den DC-Kreis speist. Automatisch
+geführte Netzteile unterliegen weiterhin der koordinierten Schutz- und
+Schaltfolge.
+
+Beim Upgrade auf 0.70.0 setzt der BM gespeicherte manuelle
+Einschaltanforderungen koordinierter Einträge einmalig auf Automatik zurück.
+Manuelle Übergaben nach dem Upgrade bleiben über Neustarts erhalten. Externe
+Schaltabweichungen im Automatikbetrieb behandelt der koordinierte Regler
+weiterhin als Abweichungen vom Sollzustand.
+
+Bei Anlagen ohne direktes numerisches Entladelimit gilt der bisherige
+Handbetrieb. Einschalten des BM-Schalters erzwingt das Einschalten des
+Netzteils und pausiert dessen Automatik. Ausschalten stellt die Automatik
+wieder her.
 
 ## R6 — Prognose und Messung
 

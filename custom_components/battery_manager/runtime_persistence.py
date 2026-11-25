@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_INVERTER_LIMIT_ENTITY
+from .const import CONF_DCDC_SWITCH, CONF_INVERTER_LIMIT_ENTITY
 from .load_actuation import (
     export_coordinate_cleanup,
     export_load_booking,
@@ -72,12 +72,28 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
             k: v.isoformat() for k, v in self._appliance_started.items()
         },
         "voltage_gate": self.voltage_gate.export(),
-        "support_manual": dict(self._support_manual),
+        "support_manual": dict(self._support_manual)
+        if not self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+        else {},
         "support_control_mode": "coordinated"
         if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
         else "legacy",
         "support_migration": dict(self._support_migration),
         "support_state": dict(self._support_state),
+        "support_commands_pending": {
+            entity: {
+                "on": request.desired,
+                "at": request.requested_at.isoformat(),
+                "state": request.state,
+                "context_id": request.context_id,
+            }
+            for entity, request in self._supply_actor_requests.items()
+            if request.state != "confirmed"
+        },
+        "unconfirmed_dcdc_off": {
+            "entity": self.raw_config.get(CONF_DCDC_SWITCH),
+            "contexts": sorted(self._unconfirmed_dcdc_off),
+        },
         "source_phases": self.source_phases.export(),
         "dc48_ctrl_caused_off": self._dc48_ctrl_caused_off,
         # F-L7: the latched power warning survives reloads/restarts so an
