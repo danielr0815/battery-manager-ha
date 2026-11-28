@@ -177,6 +177,7 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
         ),
         "feedin_last_written_w": self._feedin_last_written_w,
         "feedin_owned_entity": self._feedin_owned_entity,
+        "feedin_stop": self._persistent_feedin_stop(),
         # F-REALIZED-SURPLUS: measured day counters + monotone true-export
         # total + last counter readings (decision 8; rationale in
         # async_load_persistent_state).

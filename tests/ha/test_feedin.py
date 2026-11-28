@@ -13,11 +13,13 @@ driven directly with a SimpleNamespace plan result (pattern: the
 _apply_support_switching tests in test_support_switching.py).
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from homeassistant.core import Context
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -88,7 +90,7 @@ def _register_setpoint_service(hass, call_log):
         entity_id = call.data["entity_id"]
         value = float(call.data["value"])
         call_log.append((entity_id, value))
-        hass.states.async_set(entity_id, str(value))
+        hass.states.async_set(entity_id, str(value), context=call.context)
 
     hass.services.async_register("input_number", "set_value", set_value)
 
@@ -137,6 +139,8 @@ async def _executor_pass(
         coordinator._feedin_plan_trace.append((moment, plan_w))
     with patch.object(dt_util, "now", return_value=moment):
         await coordinator._apply_feedin(result, config, soc, moment)
+        if coordinator._feedin_task is not None:
+            await coordinator._feedin_task
         await hass.async_block_till_done()
     _cancel_debounce(coordinator)
 
@@ -192,7 +196,9 @@ async def _setup(hass, call_log):
     with patch.object(dt_util, "now", return_value=MORNING):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+        coordinator = hass.data[DOMAIN][entry.entry_id]
+        if coordinator._feedin_task is not None:
+            await coordinator._feedin_task
     # The tests drive every refresh explicitly (pinned in time). The live
     # tracked-entity listener would otherwise schedule a 5-s-debounced full
     # replan on every setpoint/battery-power state change, stamping real-time
@@ -742,6 +748,40 @@ async def test_startup_adoption_matching_value_stays_auto(hass, hass_storage):
     assert coordinator.feedin_manual() is False
 
 
+@pytest.mark.parametrize("former_helper_pending", [False, True])
+@pytest.mark.parametrize("offline_change", [False, True])
+async def test_restart_zeros_acknowledged_auto_export_after_adoption(
+    hass, offline_change, former_helper_pending
+):
+    calls = []
+    coordinator, entry = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500))
+    assert calls == [(SETPOINT, -500)]
+    if former_helper_pending:
+        former = "input_number.former"
+        coordinator._latch_feedin_stop(former, "earlier export")
+        coordinator._feedin_other_manual[former] = MORNING.date() + timedelta(days=1)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    if offline_change:
+        hass.states.async_set(SETPOINT, "-900")
+    calls.clear()
+
+    with patch.object(dt_util, "now", return_value=MORNING + timedelta(minutes=5)):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        reloaded = hass.data[DOMAIN][entry.entry_id]
+        if reloaded._feedin_task is not None:
+            await reloaded._feedin_task
+        assert reloaded.feedin_manual() is offline_change
+    if offline_change:
+        assert calls == []
+        assert float(hass.states.get(SETPOINT).state) == -900.0
+    else:
+        assert calls[0] == (SETPOINT, 0)
+        assert SETPOINT not in reloaded._feedin_stops
+    if former_helper_pending:
+        assert former in reloaded._feedin_other_manual
+
+
 # ---------------------------------------------------------------------------
 # Entity gating: switch + mode sensor only with the config toggle
 # ---------------------------------------------------------------------------
@@ -1111,35 +1151,18 @@ async def test_downward_trim_stays_immediate_during_plan_flap(hass):
     assert float(hass.states.get(SETPOINT).state) == 0.0
 
 
-async def test_removing_battery_sensor_releases_owned_export_setpoint():
-    import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from custom_components.battery_manager import const as c
-    from custom_components.battery_manager.coordinator import (
-        BatteryManagerCoordinator as Coordinator,
-    )
-
-    writes = AsyncMock(return_value=True)
-    coordinator = SimpleNamespace(
-        raw_config={
-            c.CONF_FEEDIN_ENABLED: False,
-            c.CONF_FEEDIN_SETPOINT_ENTITY: "input_number.export",
-            c.CONF_FEEDIN_BATTERY_POWER_ENTITY: None,
-        },
-        _feedin_owned_entity="input_number.export",
-        _feedin_last_written_w=500,
-        feedin_manual=lambda: False,
-        hass=SimpleNamespace(states=SimpleNamespace(get=lambda _: object())),
-        _switch_lock=asyncio.Lock(),
-        _set_number_value=writes,
-        _save_persistent_state=lambda: None,
-    )
-    coordinator._feedin_entities = lambda: Coordinator._feedin_entities(coordinator)
-    await Coordinator._feedin_release_orphan(coordinator)
-    assert writes.await_count == 1
-    assert writes.call_args.args[:2] == ("input_number.export", 0.0)
+async def test_removing_battery_sensor_releases_owned_export_setpoint(hass):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500))
+    with patch.object(
+        coordinator,
+        "raw_config",
+        {**coordinator.raw_config, CONF_FEEDIN_BATTERY_POWER_ENTITY: None},
+    ):
+        await coordinator._feedin_release_orphan()
+        await coordinator._feedin_task
+    assert calls == [(SETPOINT, -500), (SETPOINT, 0)]
     assert coordinator._feedin_owned_entity is None
 
 
@@ -1202,6 +1225,218 @@ async def test_eager_own_write_cannot_enter_manual_before_task_assignment(hass):
     assert coordinator._feedin_last_written_w == 0
     assert not coordinator._feedin_write_pending
     assert not coordinator.feedin_manual()
+
+
+@pytest.mark.parametrize("service_fails", [False, True])
+async def test_short_soc_stop_withdraws_inflight_export(hass, service_fails):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    sent = []
+
+    async def delayed_set_value(call):
+        value = float(call.data["value"])
+        calls.append((call.data["entity_id"], value))
+        if value == -500 and not sent:
+            sent.append(call.context)
+            entered.set()
+            await resume.wait()
+            if service_fails:
+                raise RuntimeError("transport failed after dispatch")
+        hass.states.async_set(SETPOINT, str(value), context=call.context)
+
+    hass.services.async_register("input_number", "set_value", delayed_set_value)
+    config = coordinator.build_system_config()
+    with patch.object(dt_util, "now", return_value=MORNING):
+        await coordinator._apply_feedin(_result(500), config, 55, MORNING)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            await coordinator._apply_feedin(_result(500), config, 25, MORNING)
+            await coordinator._apply_feedin(_result(500), config, 55, MORNING)
+            assert coordinator.feedin_stop_diagnostic()["stop"] is not None
+            assert hass.states.get(SETPOINT).state == "0"
+            assert calls == [(SETPOINT, -500)]
+        finally:
+            resume.set()
+        await coordinator._feedin_task
+        assert calls == [(SETPOINT, -500), (SETPOINT, 0)]
+        if service_fails:
+            await coordinator._apply_feedin(_result(500), config, 55, MORNING)
+            await coordinator._feedin_task
+            assert coordinator.feedin_stop_diagnostic()["open_exports"]
+            assert calls == [(SETPOINT, -500), (SETPOINT, 0)]
+            hass.states.async_set(SETPOINT, "-500", context=sent[0])
+            coordinator._observe_feedin_feedback(SETPOINT, hass.states.get(SETPOINT))
+            await coordinator._feedin_task
+            assert calls[-1] == (SETPOINT, 0)
+        assert coordinator.feedin_stop_diagnostic()["stop"] is None
+        assert float(hass.states.get(SETPOINT).state) == 0.0
+
+        await coordinator._apply_feedin(_result(500), config, 55, MORNING)
+        await coordinator._feedin_task
+        assert calls[-1] == (SETPOINT, -500)
+
+
+async def test_old_current_export_reopens_stop_but_historical_event_does_not(hass):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    issued = {}
+
+    async def set_value(call):
+        value = float(call.data["value"])
+        calls.append(value)
+        issued[value] = call.context
+        hass.states.async_set(SETPOINT, str(value), context=call.context)
+
+    hass.services.async_register("input_number", "set_value", set_value)
+    await _executor_pass(hass, coordinator, _result(500))
+    old = hass.states.get(SETPOINT)
+    await _executor_pass(hass, coordinator, _result(600))
+    await _executor_pass(hass, coordinator, _result(600), soc=25)
+    await _executor_pass(hass, coordinator, _result(700))
+    assert calls == [-500, -600, 0, -700]
+    coordinator._observe_feedin_feedback(SETPOINT, old)
+    assert coordinator.feedin_stop_diagnostic()["stop"] is None
+    assert calls == [-500, -600, 0, -700]
+
+    hass.states.async_set(SETPOINT, "-500", context=issued[-500])
+    coordinator._observe_feedin_feedback(SETPOINT, hass.states.get(SETPOINT))
+    await coordinator._feedin_task
+    assert calls == [-500, -600, 0, -700, 0]
+    assert not coordinator.feedin_manual()
+
+
+async def test_operator_takes_over_while_old_export_is_unconfirmed(hass):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    entered, resume = asyncio.Event(), asyncio.Event()
+
+    async def set_value(call):
+        value = float(call.data["value"])
+        calls.append(value)
+        entered.set()
+        await resume.wait()
+
+    hass.services.async_register("input_number", "set_value", set_value)
+    with patch.object(dt_util, "now", return_value=MORNING):
+        config = coordinator.build_system_config()
+        await coordinator._apply_feedin(_result(500), config, 55, MORNING)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            await coordinator._feedin_force_zero("test SOC stop")
+            hass.states.async_set(SETPOINT, "-700", context=Context(user_id="operator"))
+            coordinator._observe_feedin_feedback(SETPOINT, hass.states.get(SETPOINT))
+        finally:
+            resume.set()
+        await coordinator._feedin_task
+        assert coordinator.feedin_manual()
+        assert coordinator.feedin_stop_diagnostic()["open_exports"]
+        assert calls == [-500]
+
+
+async def test_stop_during_durable_booking_keeps_existing_zero(hass):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    book = coordinator._store.async_book_feedin
+
+    async def delayed_booking(context_id, payload):
+        durable = await book(context_id, payload)
+        assert durable
+        entered.set()
+        await resume.wait()
+        return durable
+
+    with (
+        patch.object(coordinator._store, "async_book_feedin", delayed_booking),
+        patch.object(dt_util, "now", return_value=MORNING),
+    ):
+        config = coordinator.build_system_config()
+        await coordinator._apply_feedin(_result(500), config, 55, MORNING)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            await coordinator._feedin_force_zero("brief stop before dispatch")
+            assert not calls
+        finally:
+            resume.set()
+        await coordinator._feedin_task
+        assert not calls
+        assert coordinator.feedin_stop_diagnostic()["stop"] is None
+
+
+async def test_contextless_same_export_leaves_order_unconfirmed(hass):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    await _executor_pass(hass, coordinator, _result(500))
+    await _executor_pass(hass, coordinator, _result(500), soc=25)
+
+    async def set_value(call):
+        value = float(call.data["value"])
+        calls.append((SETPOINT, value))
+        hass.states.async_set(
+            SETPOINT, str(value), context=None if value else call.context
+        )
+
+    hass.services.async_register("input_number", "set_value", set_value)
+    await _executor_pass(hass, coordinator, _result(500))
+    assert calls == [(SETPOINT, -500), (SETPOINT, 0), (SETPOINT, -500), (SETPOINT, 0)]
+    diagnostic = coordinator.feedin_stop_diagnostic()
+    assert diagnostic["stop"]["reason"] == "obsolete export order unclear"
+    assert diagnostic["open_exports"]
+
+
+@pytest.mark.parametrize("old_manual", [False, True])
+async def test_rewired_old_helper_can_stop_while_replacement_has_own_stop(
+    hass, old_manual
+):
+    calls = []
+    coordinator, _ = await _setup_feedin(hass, calls)
+    replacement = "input_number.replacement"
+    hass.states.async_set(replacement, "0")
+    old_export = None
+    entered, resume = asyncio.Event(), asyncio.Event()
+
+    async def set_value(call):
+        nonlocal old_export
+        entity_id = call.data["entity_id"]
+        value = float(call.data["value"])
+        calls.append((entity_id, value))
+        if entity_id == SETPOINT and value == -500:
+            old_export = call.context
+        if entity_id == replacement and value == 0:
+            entered.set()
+            await resume.wait()
+        hass.states.async_set(entity_id, str(value), context=call.context)
+
+    hass.services.async_register("input_number", "set_value", set_value)
+    await _executor_pass(hass, coordinator, _result(500))
+    await _executor_pass(hass, coordinator, _result(500), soc=25)
+    coordinator.raw_config[CONF_FEEDIN_SETPOINT_ENTITY] = replacement
+    await _executor_pass(hass, coordinator, _result(700))
+    with patch.object(dt_util, "now", return_value=MORNING):
+        await coordinator._feedin_force_zero("replacement protection")
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            hass.states.async_set(SETPOINT, "-500", context=old_export)
+            coordinator._observe_feedin_feedback(SETPOINT, hass.states.get(SETPOINT))
+            assert len(coordinator.feedin_stop_diagnostic()["stops"]) == 2
+            if old_manual:
+                hass.states.async_set(
+                    SETPOINT, "-550", context=Context(user_id="operator")
+                )
+                coordinator._observe_feedin_feedback(
+                    SETPOINT, hass.states.get(SETPOINT)
+                )
+        finally:
+            resume.set()
+        await coordinator._feedin_task
+    assert calls[:4] == [
+        (SETPOINT, -500),
+        (SETPOINT, 0),
+        (replacement, -700),
+        (replacement, 0),
+    ]
+    assert calls[4:] == ([] if old_manual else [(SETPOINT, 0)])
 
 
 async def test_coordinated_feedin_does_not_issue_setpoint_for_pv_serving_psu(hass):

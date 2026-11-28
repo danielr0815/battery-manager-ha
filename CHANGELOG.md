@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.0] - 2026-11-28
+
+### Added
+
+- Für die beiden 24-V-Schaltaktoren lassen sich getrennte KNX-Statusmeldungen
+  mit festem Absender oder unabhängige binäre Rückmeldungen konfigurieren.
+
+### Fixed
+
+- Beide automatischen 24-V-Umschaltpfade warten auf die bestätigte Zielquelle,
+  die vollständige Überlappung und das bestätigte Abschalten der alten Quelle.
+- Nach einem Schutzstopp der vorgezogenen Einspeisung verlangt die Automatik
+  ein bestätigtes Nullziel und eine neue Freigabe. Ein verspäteter eigener
+  Exportauftrag kann den Stopp erneut zur Korrektur öffnen.
+
 ## [0.71.0] - 2026-11-27
 
 ### Added

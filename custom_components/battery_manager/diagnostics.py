@@ -141,6 +141,7 @@ async def async_get_config_entry_diagnostics(
         dt_util.now()
     )
     diagnostics["planning"] = coordinator._planning.snapshot()
+    diagnostics["feedin_stop"] = coordinator.feedin_stop_diagnostic()
     diagnostics["appliances"] = coordinator.appliances.payload()
     diagnostics["last_plan_metrics"] = _last_plan_metrics(coordinator)
     # Capture synchronous context before the owned archive copy yields.

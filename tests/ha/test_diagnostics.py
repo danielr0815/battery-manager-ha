@@ -140,6 +140,7 @@ async def test_diagnostics_replays_captured_effective_config_not_current_options
         integration_version="0.38.0",
         build_system_config=lambda: changed,
         learned_state_snapshot=lambda: {},
+        feedin_stop_diagnostic=lambda: {},
         voltage_gate=SimpleNamespace(
             private_diagnostic=lambda _now: {"natural_voltage": {"samples": []}}
         ),

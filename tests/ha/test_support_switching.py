@@ -217,7 +217,7 @@ async def test_activation_turns_psu_on_before_dcdc_off(hass):
         assert await coordinator._sequence_dc24(True, PSU) is True
 
     assert calls == [("turn_on", PSU), ("turn_off", DCDC)]
-    delay.assert_awaited_once_with(1.0)
+    assert sum(call.args == (1.0,) for call in delay.await_args_list) == 1
 
 
 async def test_deactivation_turns_dcdc_on_before_psu_off(hass):
@@ -231,7 +231,7 @@ async def test_deactivation_turns_dcdc_on_before_psu_off(hass):
         assert await coordinator._sequence_dc24(False, PSU) is True
 
     assert calls == [("turn_on", DCDC), ("turn_off", PSU)]
-    delay.assert_awaited_once_with(1.0)
+    assert sum(call.args == (1.0,) for call in delay.await_args_list) == 1
 
 
 async def test_unconfirmed_new_supply_aborts_switchover(hass):
@@ -729,3 +729,192 @@ async def test_manual_dc48_on_service_error_stays_auto(hass):
 
     assert coordinator._support_manual["dc48"] is False
     assert coordinator._support_state["dc48"] is False
+
+
+@pytest.mark.parametrize("coordinated", [False, True])
+@pytest.mark.parametrize("activate", [False, True])
+async def test_dc24_waits_for_qualified_knx_status(hass, coordinated, activate):
+    """D1/D2: no optimistic switch echo can complete either direction."""
+    from asyncio import sleep as yield_loop
+
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    from custom_components.battery_manager.const import CONF_INVERTER_LIMIT_ENTITY
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **ENTRY_DATA,
+            "support_dc24_feedback": "2/1/31@1.1.14",
+            "support_dcdc_feedback": "2/1/32@1.1.14",
+            **({CONF_INVERTER_LIMIT_ENTITY: "number.limit"} if coordinated else {}),
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = BatteryManagerCoordinator(hass, entry)
+    coordinator._save_persistent_state = Mock()
+    coordinator._schedule_replan = Mock()
+    coordinator.rail_feedback.start()
+    calls = []
+    _register_switch_services(hass, calls)
+    target, old = (PSU, DCDC) if activate else (DCDC, PSU)
+    groups = {PSU: "2/1/31", DCDC: "2/1/32"}
+
+    def status(actor, on, source="1.1.14", direction="Incoming"):
+        async_dispatcher_send(
+            hass,
+            "knx_telegram",
+            None,
+            {
+                "direction": direction,
+                "source": source,
+                "destination": groups[actor],
+                "telegramtype": "GroupValueWrite",
+                "payload": int(on),
+            },
+        )
+
+    try:
+        hass.states.async_set(target, "off")
+        hass.states.async_set(old, "on")
+        status(old, True)
+        status(target, False)
+        with patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            new=AsyncMock(),
+        ) as delay:
+            assert not await coordinator._sequence_dc24(activate, PSU)
+            assert hass.states.is_state(target, "on")
+            assert calls == [("turn_on", target)]
+            status(target, True, source="1.1.99")
+            status(target, True, direction="Outgoing")
+            assert not await coordinator._sequence_dc24(activate, PSU)
+            delay.assert_not_called()
+
+            status(target, True)
+
+            async def interrupted_overlap(_seconds):
+                status(target, False)
+                status(target, True)
+
+            delay.side_effect = interrupted_overlap
+            assert not await coordinator._sequence_dc24(activate, PSU)
+            assert calls == [("turn_on", target)]
+
+            async def bus_gap(_seconds):
+                hass.states.async_set(target, "unavailable")
+                hass.states.async_set(target, "on")
+                await yield_loop(0)
+
+            delay.side_effect = bus_gap
+            assert not await coordinator._sequence_dc24(activate, PSU)
+            assert coordinator.rail_feedback.report(target) is None
+            assert coordinator.rail_feedback.report(old) is None
+            assert calls == [("turn_on", target)]
+            status(target, True)
+            status(old, True)
+            delay.side_effect = None
+
+            assert not await coordinator._sequence_dc24(activate, PSU)
+            assert calls == [("turn_on", target), ("turn_off", old)]
+            assert hass.states.is_state(old, "off")
+            assert coordinator._entity_tristate(old) is None
+            status(old, False)
+            assert await coordinator._sequence_dc24(activate, PSU)
+            assert calls == [("turn_on", target), ("turn_off", old)]
+    finally:
+        await coordinator.async_cancel_actuation_tasks()
+
+
+async def test_dc24_does_not_confirm_undispatched_shutdown(hass):
+    """A valid-looking OFF during persistence must not settle an unsent edge."""
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **ENTRY_DATA,
+            "support_dcdc_feedback": "binary_sensor.dcdc",
+            "support_dc24_feedback": "binary_sensor.psu",
+        },
+    )
+    entry.add_to_hass(hass)
+    c = BatteryManagerCoordinator(hass, entry)
+    c._save_persistent_state = Mock()
+    c._schedule_replan = Mock()
+    calls = []
+    _register_switch_services(hass, calls)
+    hass.states.async_set(PSU, "on")
+    hass.states.async_set("binary_sensor.psu", "on")
+    hass.states.async_set("binary_sensor.dcdc", "on")
+
+    async def save(_entity, _context, _snapshot):
+        hass.states.async_set("binary_sensor.dcdc", "off")
+        c._rail_feedback_updated(DCDC, True)
+        assert c._supply_actor_requests[DCDC].state == "booked"
+        hass.states.async_set("binary_sensor.dcdc", "on")
+        return True
+
+    try:
+        with (
+            patch.object(c._store, "async_book_rail_off", side_effect=save),
+            patch(
+                "custom_components.battery_manager.coordinator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            assert not await c._sequence_dc24(True, PSU)
+        assert calls == [("turn_off", DCDC)]
+        assert c._supply_actor_requests[DCDC].state == "pending"
+        assert c._entity_tristate(DCDC) is None
+    finally:
+        await c.async_cancel_actuation_tasks()
+
+
+@pytest.mark.parametrize(
+    ("binding", "valid"),
+    [
+        ("binary_sensor.dcdc", True),
+        ("switch.dcdc", True),
+        ("2/1/31@1.1.14", True),
+        ("32/1/31@1.1.14", False),
+        ("2/8/31@1.1.14", False),
+        ("02/1/31@1.1.14", False),
+        ("2/1/31@1.1.999", False),
+        ("2/1/31", False),
+    ],
+)
+def test_rail_feedback_binding_format(binding, valid):
+    from custom_components.battery_manager.rail_feedback import valid_binding
+
+    assert valid_binding(binding) is valid
+
+
+async def test_rail_feedback_requires_qualified_switch(hass, freezer):
+    from homeassistant.helpers import entity_registry
+
+    from custom_components.battery_manager.rail_feedback import RailFeedback
+
+    registry = entity_registry.async_get(hass)
+    entity = registry.async_get_or_create(
+        "switch", "knx", "source", suggested_object_id="rail"
+    )
+    actor = entity.entity_id
+    cfg = {CONF_DCDC_SWITCH: actor}
+    feedback = RailFeedback(SimpleNamespace(hass=hass, raw_config=cfg))
+    hass.states.async_set(actor, "on")
+    assert feedback.report(actor) is None
+    cfg["support_dcdc_feedback"] = actor
+    assert feedback.report(actor) is None
+    cfg["support_dcdc_feedback"] = "switch.other"
+    assert feedback.report(actor) is None
+
+    qualified = registry.async_get_or_create(
+        "switch", "test", "target", suggested_object_id="target"
+    )
+    cfg[CONF_DCDC_SWITCH] = cfg["support_dcdc_feedback"] = qualified.entity_id
+    hass.states.async_set(qualified.entity_id, "on")
+    assert feedback.report(qualified.entity_id)[0] is True
+    freezer.tick(timedelta(minutes=66))
+    assert feedback.report(qualified.entity_id) is None

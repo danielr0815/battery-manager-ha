@@ -38,6 +38,7 @@ def reconcile_supply_feedback(
             and feedback.state == "off"
             and not feedback.attributes.get("assumed_state")
             and feedback.context.id in self._unconfirmed_dcdc_off
+            and not self.rail_feedback.binding(dcdc_entity)
         ):
             self._unconfirmed_dcdc_off.remove(feedback.context.id)
             changed = True
@@ -45,15 +46,26 @@ def reconcile_supply_feedback(
         # Even a failed service can have reached the relay. Only fresh
         # physical feedback settles a request and permits the next write.
         awaiting = request.state in ("pending", "service_failed")
-        state = self.hass.states.get(entity) if awaiting else None
-        if (
-            (entity_id is not None and entity != entity_id)
-            or state is None
-            or state.attributes.get("assumed_state")
-            or state.last_reported < request.requested_at
-            or self._entity_tristate(entity) is not request.desired
-        ):
+        if not awaiting or (entity_id is not None and entity != entity_id):
             continue
+        if self.rail_feedback.is_rail_actor(entity):
+            report = self.rail_feedback.report(entity)
+            if (
+                report is None
+                or report[1] < request.requested_at
+                or report[0] != request.desired
+            ):
+                continue
+        else:
+            state = self.hass.states.get(entity)
+            if (
+                state is None
+                or state.attributes.get("assumed_state")
+                or state.attributes.get("restored")
+                or state.last_reported < request.requested_at
+                or self._entity_tristate(entity) is not request.desired
+            ):
+                continue
         request.state = "confirmed"
         self.source_phases.confirmed(entity, request.desired, dt_util.utcnow())
         changed = True

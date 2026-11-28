@@ -3,7 +3,8 @@
 Fachspezifikation zur Fassung 1.1 vom 28. November 2026 mit den
 freigegebenen Betreiberentscheidungen D1 bis D3 aus der Vorfassung 1.0.
 Die Anforderungen beschreiben das beobachtbare Sollverhalten und die
-Abnahme. Design und Implementierung folgen als eigene Arbeitsschritte.
+Abnahme. Design und Implementierung folgen als eigene Arbeitsschritte. Die zugehörigen Entwürfe sind verlinkt.
+[24-V-Rückmeldung](DESIGN-24V-FEEDBACK.md) · [Einspeisestopp](DESIGN-FEEDIN-STOP.md)
 
 ## 24-V-Quellenwechsel
 

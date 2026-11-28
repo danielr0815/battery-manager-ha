@@ -14,7 +14,14 @@ from statistics import median
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.core import Context, HomeAssistant, State, callback
+from homeassistant.core import (
+    Context,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    State,
+    callback,
+)
 from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceNotFound,
@@ -326,6 +333,7 @@ from .planning import (
     PLANNING_SOC_TOLERANCE_PERCENT,
     PlanningRunner,
 )
+from .rail_feedback import RAIL_FEEDBACK_KEYS, RailFeedback
 from .reserve_runtime import (
     RESERVE_POLICY_VERSION,
     ReserveRuntime,
@@ -339,6 +347,20 @@ from .supply_forecast import published_supply_forecast, read_supply_evidence
 from .voltage_gate import CoordinatePlanChanged, VoltageGateRuntime, requested_dc48
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _FeedInWrite:
+    entity_id: str
+    power_w: float
+    context_id: str
+
+
+@dataclass
+class _FeedInStop:
+    entity_id: str
+    reason: str
+    needs_zero_report: bool = False
 
 
 class _RuntimeStore(Store):
@@ -355,6 +377,56 @@ class _RuntimeStore(Store):
     runtime counters), so any combination we do not explicitly migrate is
     discarded with a warning instead of raising.
     """
+
+    _pending_booking: tuple[str, Callable[[dict[str, Any]], bool]] | None = None
+    _written_booking: str | None = None
+
+    async def async_book_feedin(self, context_id: str, data: dict[str, Any]) -> bool:
+        """Require a successful Store write with this export before dispatch."""
+        return await self._async_book(
+            context_id,
+            data,
+            lambda payload: any(
+                write["context_id"] == context_id
+                for write in payload.get("feedin_stop", {}).get("open_exports", ())
+            ),
+        )
+
+    async def async_book_rail_off(
+        self, entity_id: str, context_id: str, data: dict[str, Any]
+    ) -> bool:
+        """Require the same actuator and exact OFF command in the write."""
+
+        def contains_command(payload: dict[str, Any]) -> bool:
+            command = payload.get("support_commands_pending", {}).get(entity_id, {})
+            return (
+                command.get("context_id") == context_id and command.get("on") is False
+            )
+
+        return await self._async_book(context_id, data, contains_command)
+
+    async def _async_book(
+        self,
+        context_id: str,
+        data: dict[str, Any],
+        contains_command: Callable[[dict[str, Any]], bool],
+    ) -> bool:
+        self._pending_booking = (context_id, contains_command)
+        try:
+            await self.async_save(data)
+            return self._written_booking == context_id
+        finally:
+            self._pending_booking = None
+
+    async def _async_write_data(self, data: dict) -> None:
+        booking = self._pending_booking
+        if booking is not None and "data_func" in data:
+            data["data"] = data.pop("data_func")()
+        await super()._async_write_data(data)
+        if booking is not None:
+            context_id, contains_command = booking
+            if contains_command(data["data"]):
+                self._written_booking = context_id
 
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: Any
@@ -579,6 +651,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._supply_actor_requests: dict[str, ActorRequest] = {}
         self._unconfirmed_dcdc_off: set[str] = set()
         self.source_phases = SourcePhases(self)
+        self.rail_feedback = RailFeedback(self)
         # Last commanded direction per PSU (for the late-confirmation
         # grace), pending unconfirmed activations, the level-triggered
         # DC/DC restore task, and the one-shot pre-0.6.5 adoption flag.
@@ -698,8 +771,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Charging-path control (docs/LOAD_CONTROL.md): SOC cache survives
         # sleeping devices and restarts; plug ownership implements the
         # configurable input-off policy.
-        self._store: Store = _RuntimeStore(
-            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
+        self._store = _RuntimeStore(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}", atomic_writes=True
         )
         self._support_handover_store = Store[dict[str, list[str | None]]](
             hass,
@@ -822,6 +895,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # actual entity value (and flags manual when it drifted from the
         # persisted own value while HA was down).
         self._feedin_adopted = False
+        self._feedin_startup_recovery = False
         self._feedin_task: asyncio.Task | None = None
         # Delivered-energy bookkeeping for the upward-trim cap: (day, Wh
         # delivered today, last tick). Restored from the persisted `realized`
@@ -850,6 +924,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Persisted: it is the only way to still zero an entity the operator
         # unwired in the options flow (_feedin_release_orphan).
         self._feedin_owned_entity: str | None = None
+        self._feedin_stops: dict[str, _FeedInStop] = {}
+        self._feedin_last_export: _FeedInWrite | None = None
+        self._feedin_permission: (
+            tuple[SystemConfig, PlanInputs, float | None] | None
+        ) = None
+        self._feedin_open_exports: dict[str, _FeedInWrite] = {}
+        self._feedin_booked_context: str | None = None
+        self._feedin_export_history: dict[str, _FeedInWrite] = {}
+        self._feedin_revoked_exports: dict[str, _FeedInWrite] = {}
+        self._feedin_zero_contexts: dict[str, str] = {}
+        self._feedin_zero_history: set[str] = set()
+        self._feedin_manual_entity: str | None = None
+        self._feedin_other_manual: dict[str, date] = {}
+        self._feedin_orphan_listener: Callable[[], None] | None = None
 
         # F-REALIZED-SURPLUS realized surplus accounting
         # (docs/F-REALIZED-SURPLUS.md): the measured day counters (lost /
@@ -1139,28 +1227,31 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             self._support_migration = dict(data.get("support_migration") or {})
             pending = data.get("support_commands_pending", {})
-            if self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY):
-                for actor_key in (
-                    CONF_SUPPORT_DC24_SWITCH,
-                    CONF_SUPPORT_DC48_SWITCH,
-                    CONF_DCDC_SWITCH,
+            coordinated = bool(self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY))
+            for actor_key in (
+                CONF_SUPPORT_DC24_SWITCH,
+                CONF_SUPPORT_DC48_SWITCH,
+                CONF_DCDC_SWITCH,
+            ):
+                entity = self.raw_config.get(actor_key)
+                command = pending.get(entity)
+                if (
+                    entity
+                    and (coordinated or self.rail_feedback.is_rail_actor(entity))
+                    and command
+                    and (requested := dt_util.parse_datetime(command["at"]))
                 ):
-                    entity = self.raw_config.get(actor_key)
-                    command = pending.get(entity)
-                    if (
-                        entity
-                        and command
-                        and (requested := dt_util.parse_datetime(command["at"]))
-                    ):
-                        self._supply_actor_requests[entity] = ActorRequest(
-                            command["on"],
-                            requested,
-                            command.get("state", "pending"),
-                            context_id=command.get("context_id"),
-                        )
-                retry = data.get("unconfirmed_dcdc_off", {})
-                if retry.get("entity") == self.raw_config.get(CONF_DCDC_SWITCH):
-                    self._unconfirmed_dcdc_off = set(retry.get("contexts", ()))
+                    self._supply_actor_requests[entity] = ActorRequest(
+                        command["on"],
+                        requested,
+                        "service_failed"
+                        if command.get("state") == "service_failed"
+                        else "pending",
+                        context_id=command.get("context_id"),
+                    )
+            retry = data.get("unconfirmed_dcdc_off", {})
+            if retry.get("entity") == self.raw_config.get(CONF_DCDC_SWITCH):
+                self._unconfirmed_dcdc_off = set(retry.get("contexts", ()))
             self.source_phases.restore(data.get("source_phases"), dt_util.utcnow())
             if (
                 self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
@@ -1261,6 +1352,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             owned = data.get("feedin_owned_entity")
             if isinstance(owned, str) and owned:
                 self._feedin_owned_entity = owned
+            self._restore_feedin_stop(data.get("feedin_stop"))
+            self._track_feedin_orphans()
             # F-REALIZED-SURPLUS: the measured day counters, the monotone
             # true-export total and the last counter readings survive
             # restarts (decision 8); a missing/corrupt block starts neutral.
@@ -1382,6 +1475,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             if cfg.get(key):
                 entities.append(cfg[key])
+        if not planning_only:
+            for key in RAIL_FEEDBACK_KEYS.values():
+                if (binding := cfg.get(key)) and binding.startswith("binary_sensor."):
+                    entities.append(binding)
         # The R2 48 V controller (v0.7.7) reads battery_voltage_entity but it
         # is deliberately NOT tracked: an analog voltage sags/rises every few
         # seconds, so a debounced full replan per change would be constant and
@@ -4908,6 +5005,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = dt_util.now()
         self._update_house_soc_watchdog(now)
         soc = self._get_soc(now)
+        self._check_live_feedin_stop(soc)
         self._reserve_reconcile_legacy_hold(soc)
         config = self.build_system_config()
         low = soc is not None and soc <= config.control.inverter_min_soc_percent
@@ -4921,7 +5019,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._coordinated_data_loss(soc, now)
         if soc is None:
             await self._note_data_loss(now)
-            await self._feedin_force_zero("SOC unavailable during planning")
         elif low:
             self._inverter_recommendation = False
             self._update_floor_guard(soc, config, now=now)
@@ -6337,6 +6434,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "24 V" if key == "dc24" else "48 V",
                     )
             elif real and not self._support_state[key]:
+                if (
+                    key == "dc24"
+                    and (pending := self._supply_actor_requests.get(entity_id))
+                    and pending.desired
+                ):
+                    # The target can confirm before the old source is OFF.
+                    # Only the shared sequence can complete this transition.
+                    continue
                 if self._support_pending_confirm[key]:
                     # Our own activation whose confirmation timed out —
                     # the device just reported late. Adopt, don't pause.
@@ -6694,10 +6799,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Public accessor for the feed-in manual-override state (F-FEEDIN R7):
         True while the operator owns the setpoint — from the external change
         until the next midnight (the stored date is exclusive)."""
-        return (
-            self._feedin_manual_until is not None
-            and dt_util.now().date() < self._feedin_manual_until
-        )
+        entity_id = self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY)
+        return isinstance(entity_id, str) and self._feedin_manual_owns(entity_id)
 
     def _feedin_manual_plan_w(self) -> float | None:
         """The operator-owned setpoint for the planner (F-FEEDIN R9).
@@ -6733,6 +6836,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # NOW instead of at midnight. The operator's last value is
             # adopted as the baseline so it is not re-judged as an override.
             self._feedin_manual_until = None
+            self._feedin_manual_entity = None
             self._feedin_last_written_w = self._feedin_read_power_w()
             self._feedin_last_write_at = None
             _LOGGER.info(
@@ -6808,6 +6912,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "state": dict(self._support_state),
                 "manual": dict(self._support_manual),
                 "dc48_controller": dict(self._dc48_ctrl_diag),
+                "dc24_confirmation": {
+                    role: (
+                        f"awaiting_{'on' if request.desired else 'off'}"
+                        if (request := self._supply_actor_requests.get(entity))
+                        and request.state != "confirmed"
+                        else (
+                            "unknown"
+                            if self._entity_tristate(entity) is None
+                            else "reported"
+                        )
+                    )
+                    for role in RAIL_FEEDBACK_KEYS
+                    if (entity := self.raw_config.get(role))
+                },
             },
         }
 
@@ -7045,6 +7163,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         actor_owner: str | None = None,
         context: Context | None = None,
         grid_stop: GridStopEvidence | None = None,
+        may_dispatch: Callable[[], bool] | None = None,
     ) -> bool:
         # F-CASCADE-STORAGE final physical boundary (live 2026-09-01): the
         # normal load-ID guards correctly exclude cascade members, yet the
@@ -7119,8 +7238,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return False
         service = "turn_on" if turn_on else "turn_off"
         supply_request = None
-        if actor_owner == SUPPLY_OWNER and self.raw_config.get(
-            CONF_INVERTER_LIMIT_ENTITY
+        rail_actor = actor_owner == SUPPLY_OWNER and self.rail_feedback.is_rail_actor(
+            entity_id
+        )
+        if actor_owner == SUPPLY_OWNER and (
+            self.raw_config.get(CONF_INVERTER_LIMIT_ENTITY)
+            or (
+                rail_actor
+                and self.raw_config.get(CONF_DCDC_SWITCH)
+                and self.raw_config.get(CONF_SUPPORT_DC24_SWITCH)
+            )
         ):
             if (
                 not turn_on
@@ -7137,6 +7264,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and self._unconfirmed_dcdc_off
             ):
                 return self._entity_tristate(entity_id) is False
+            if (
+                turn_on
+                and entity_id == self.raw_config.get(CONF_DCDC_SWITCH)
+                and self._unconfirmed_dcdc_off
+                and self.rail_feedback.binding(entity_id)
+            ):
+                return False
             previous = self._supply_actor_requests.get(entity_id)
             retry_dcdc_off = False
             if previous is not None and previous.state != "confirmed":
@@ -7149,6 +7283,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and entity_id == self.raw_config.get(CONF_DCDC_SWITCH)
                     and self._reserve_grid_available() is True
                     and not self._unconfirmed_dcdc_off
+                    and not self.rail_feedback.binding(entity_id)
                 ):
                     return previous.state == "pending" and previous.desired is turn_on
                 # The verified grid-return path can retry a failed DC/DC OFF
@@ -7170,6 +7305,26 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._supply_actor_requests[entity_id] = supply_request
             self._save_persistent_state()
             self.source_phases.requested(entity_id, turn_on)
+            if not turn_on and rail_actor and self.rail_feedback.binding(entity_id):
+                supply_request.state = "booked"
+                # Book OFF durably before dispatch. Otherwise a hard restart
+                # could reuse an ON report while the old OFF is still in transit.
+                try:
+                    snapshot = self._persistent_payload()
+                    snapshot["support_commands_pending"][entity_id]["state"] = "pending"
+                    durable = await self._store.async_book_rail_off(
+                        entity_id, context.id, snapshot
+                    )
+                except Exception:
+                    _LOGGER.exception("Could not persist the pending 24 V OFF")
+                    durable = False
+                if not durable or (may_dispatch is not None and not may_dispatch()):
+                    self._supply_actor_requests.pop(entity_id, None)
+                    self.source_phases.cancel_request(entity_id)
+                    self._save_persistent_state()
+                    return False
+                supply_request.state = "pending"
+                supply_request.requested_at = dt_util.now()
         recorder = getattr(self, "operation_recorder", None)
         request = (
             recorder.event(
@@ -7241,7 +7396,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return True
 
     async def _set_number_value(
-        self, entity_id: str, value: float, *, actor_owner: str | None = None
+        self,
+        entity_id: str,
+        value: float,
+        *,
+        actor_owner: str | None = None,
+        context: Context | None = None,
     ) -> bool:
         """Write a setpoint only after rechecking its current owner."""
         if entity_id in self.released_load_actors():
@@ -7274,6 +7434,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "set_value",
                 {"entity_id": entity_id, "value": value},
                 blocking=True,
+                context=context,
             )
         except Exception as err:
             _LOGGER.error("set_value failed for %s: %s", entity_id, err)
@@ -7339,7 +7500,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         if may_start is not None and not may_start():
             return False
-        if not self._entity_is_on(first_on):
+        proof = self.rail_feedback.report(first_on)
+        pending = self._supply_actor_requests.get(first_on)
+        if proof is None or not proof[0] or (pending and pending.state != "confirmed"):
             _LOGGER.error(
                 "New 24 V supply %s did not report 'on'; aborting switchover,"
                 " %s stays on",
@@ -7354,12 +7517,103 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         # Overlap starts with physical ON, not with an accepted service. A late
         # publication retries through the same owner and receives the full delay.
-        await asyncio.sleep(delay_s)
-        if not self._entity_is_on(first_on):
-            return False
-        if may_remove is not None and not may_remove():
-            return False
-        return await self._switch_entity(then_off, False, actor_owner=SUPPLY_OWNER)
+        soc_entity = self.raw_config.get(CONF_SOC_ENTITY)
+        soc_limits = tuple(
+            float(self.raw_config[key])
+            for key in (
+                "battery_min_soc_percent",
+                "inverter_min_soc_percent",
+                CONF_SUPPORT_DC24_ACTIVATE_SOC,
+                CONF_SUPPORT_DC24_RECOVERY_SOC,
+            )
+            if self.raw_config.get(key) is not None
+        )
+
+        def soc_region(state: State) -> tuple[bool, ...] | None:
+            try:
+                value = float(state.state)
+            except ValueError:
+                return None
+            return (
+                tuple(value <= bound for bound in soc_limits)
+                if 0 <= value <= 100
+                else None
+            )
+
+        guard_entities = {
+            entity
+            for entity in (
+                self.rail_feedback.binding(first_on) or first_on,
+                self.raw_config.get(CONF_RESERVE_GRID_ENTITY),
+                self.raw_config.get(CONF_SOC_ENTITY),
+            )
+            if entity and "@" not in entity
+        }
+        guard_entities.add(first_on)
+        interrupted = False
+
+        @callback
+        def observe_guard(event: Event[EventStateChangedData]) -> None:
+            nonlocal interrupted
+            old = event.data["old_state"]
+            new = event.data["new_state"]
+            if event.data["entity_id"] == first_on and "@" in (
+                self.rail_feedback.binding(first_on) or ""
+            ):
+                if new is None or new.state not in ("on", "off"):
+                    interrupted = True
+                    self.rail_feedback.invalidate_connection(first_on)
+                return
+            if (
+                event.data["entity_id"] == soc_entity
+                and old is not None
+                and new is not None
+            ):
+                interrupted |= soc_region(old) != soc_region(new) or (
+                    may_remove is not None and not may_remove()
+                )
+                return
+            interrupted |= (
+                old is None
+                or new is None
+                or old.state != new.state
+                or bool(old.attributes.get("assumed_state"))
+                != bool(new.attributes.get("assumed_state"))
+                or bool(old.attributes.get("restored"))
+                != bool(new.attributes.get("restored"))
+            )
+
+        def may_dispatch() -> bool:
+            current = self.rail_feedback.report(first_on)
+            return (
+                not interrupted
+                and current is not None
+                and current[0]
+                and current[2] == proof[2]
+                and (may_remove is None or may_remove())
+            )
+
+        unsub = async_track_state_change_event(self.hass, guard_entities, observe_guard)
+        try:
+            await asyncio.sleep(delay_s)
+            if not may_dispatch():
+                return False
+            if not await self._switch_entity(
+                then_off,
+                False,
+                actor_owner=SUPPLY_OWNER,
+                may_dispatch=may_dispatch,
+            ):
+                return False
+        finally:
+            unsub()
+        pending_off = self._supply_actor_requests.get(then_off)
+        return (
+            self._entity_tristate(first_on) is True
+            and self._entity_tristate(then_off) is False
+            and (pending_off is None or pending_off.state == "confirmed")
+            and (may_remove is None or may_remove())
+        )
 
     def _reserve_power(self, entity) -> float | None:
         state = self.hass.states.get(entity) if entity else None
@@ -7708,21 +7962,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not owned() or self._entity_tristate(entity) is not True:
             return
         self._support_state[key] = True
-        if key == "dc24" and dcdc_was_on is False and dcdc:
-            # A revoked OFF may already have reached the PSU. Its restoration
-            # is a NEW make-before-break handover: confirmed ON plus a full new
-            # overlap, never the delay spent before that OFF acknowledgement.
-            if self._entity_tristate(dcdc) is not True:
-                return
-            await asyncio.sleep(
-                float(self.raw_config.get(CONF_SUPPORT_SWITCH_DELAY_S, 3))
-            )
-            if (
-                owned()
-                and self._entity_tristate(entity) is True
-                and self._entity_tristate(dcdc) is True
-            ):
-                await self._switch_entity(dcdc, False, actor_owner=SUPPLY_OWNER)
+        if (
+            key == "dc24"
+            and dcdc_was_on is False
+            and dcdc
+            and self._entity_tristate(dcdc) is True
+        ):
+            await self._sequence_dc24(True, entity, may_start=owned, may_remove=owned)
 
     async def _async_execute_support_switching(
         self,
@@ -7875,6 +8121,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _entity_tristate(self, entity_id: str) -> bool | None:
         """on/off as bool; None while unavailable/unknown (not 'off')."""
+        feedback = getattr(self, "rail_feedback", None)
+        if feedback is not None and feedback.is_rail_actor(entity_id):
+            pending = self._supply_actor_requests.get(entity_id)
+            if (
+                pending
+                and pending.state != "confirmed"
+                and self.rail_feedback.binding(entity_id)
+            ):
+                return None
+            report = self.rail_feedback.report(entity_id)
+            return report[0] if report else None
         state = self.hass.states.get(entity_id)
         if state is None or state.state not in ("on", "off"):
             return None
@@ -8807,10 +9064,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entities = self._feedin_entities()
         if entities is None:
             return None
-        state = self.hass.states.get(entities[0])
-        if state is None or state.state in ("unavailable", "unknown"):
+        return self._feedin_actual_power_w(self.hass.states.get(entities[0]))
+
+    def _feedin_actual_power_w(self, state: State | None) -> float | None:
+        if (
+            state is None
+            or state.attributes.get("assumed_state")
+            or state.attributes.get("restored")
+        ):
             return None
-        value = self._read_power_w(entities[0])
+        value = self._read_power_w(state.entity_id)
         return FEEDIN_SETPOINT_EXPORT_SIGN * value if value is not None else None
 
     def _feedin_tick(self, now: datetime) -> float:
@@ -8852,8 +9115,14 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         was down and counts as an override too — after a reboot "changed, but
         not by us" must stay distinguishable from "unchanged since our write".
         """
-        if self._feedin_entities() is None:
+        entities = self._feedin_entities()
+        if entities is None:
             return
+        entity_id = entities[0]
+        if entity_id in self._feedin_stops or self._feedin_entity_export_open(
+            entity_id
+        ):
+            return  # Feedback provenance is handled before legacy value adoption.
         if self._feedin_write_pending or (
             self._feedin_task is not None and not self._feedin_task.done()
         ):
@@ -8914,6 +9183,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Enter manual mode until the next midnight (F-FEEDIN R7): the stored
         date is EXCLUSIVE, so automatic control resumes at 00:00 tomorrow."""
         self._feedin_manual_until = now.date() + timedelta(days=1)
+        self._feedin_manual_entity = self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY)
         self._save_persistent_state()
         _LOGGER.info(
             "Feed-in setpoint was changed externally (%s) — manual mode until"
@@ -8922,76 +9192,177 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def _feedin_release_orphan(self) -> None:
-        """Zero a setpoint entity we still own but no longer control.
-
-        Clearing `feedin_setpoint_entity` (or the battery-power entity, which
-        `_feedin_entities` also requires) in the options flow used to strand the
-        last exported value: after the reload `_apply_feedin` returned before
-        it could write the documented one-shot 0, so the external controller
-        kept exporting forever — with the entity untracked and no entity of
-        ours left to reveal it (review 2026-08-03). The entity we last wrote a
-        non-zero setpoint to is therefore persisted, and released here as soon
-        as it is no longer the configured one.
-        """
+        """Continue the persisted stop or release a previously wired helper."""
         owned = self._feedin_owned_entity
         entities = self._feedin_entities()
-        if owned is None or (entities is not None and owned == entities[0]):
+        if owned is not None and (entities is None or owned != entities[0]):
+            self._latch_feedin_stop(owned, "setpoint no longer wired")
+        self._recover_feedin_startup_binding(dt_util.now())
+        self._queue_feedin_stop()
+
+    def _recover_feedin_startup_binding(self, now: datetime) -> bool:
+        """Adopt the persisted helper before re-establishing automatic zero."""
+        if not self._feedin_startup_recovery:
+            return False
+        entity_id = self._feedin_owned_entity
+        if (
+            entity_id is None
+            or self._feedin_entities() is None
+            or self._feedin_manual_owns(entity_id)
+        ):
+            self._feedin_startup_recovery = False
+            return False
+        self._update_feedin_mode(now)
+        if not self._feedin_adopted:
+            return True
+        self._feedin_startup_recovery = False
+        self._latch_feedin_stop(entity_id, "restore acknowledged export from prior run")
+        self._queue_feedin_stop()
+        return False
+
+    def _feedin_manual_owns(self, entity_id: str) -> bool:
+        if (until := self._feedin_other_manual.get(entity_id)) is not None:
+            return dt_util.now().date() < until
+        return (
+            self._feedin_manual_until is not None
+            and dt_util.now().date() < self._feedin_manual_until
+            and self._feedin_manual_entity in (None, entity_id)
+        )
+
+    def _latch_feedin_stop(self, entity_id: str, reason: str) -> None:
+        """Book the stop before yielding, including while a write owns the lock."""
+        if entity_id in self._feedin_stops or self._feedin_manual_owns(entity_id):
             return
-        if self.feedin_manual():
-            # The operator took the setpoint over before the unwiring — it is
-            # theirs, exactly as in the normal path.
-            self._feedin_owned_entity = None
-            self._save_persistent_state()
-            return
-        if self.hass.states.get(owned) is None:
-            # Entity gone with the integration that provided it: nothing to
-            # write, just drop the claim.
-            self._feedin_owned_entity = None
-            self._save_persistent_state()
-            return
-        async with self._switch_lock:
-            if not await self._set_number_value(owned, 0.0, actor_owner="feedin"):
-                return
-            _LOGGER.info(
-                "Feed-in setpoint -> 0 W (%s no longer wired to the feed-in"
-                " feature — releasing it)",
-                owned,
-            )
-        self._feedin_owned_entity = None
-        self._feedin_last_written_w = 0.0
+        self._feedin_revoked_exports.update(
+            (context_id, write)
+            for context_id, write in self._feedin_export_history.items()
+            if write.entity_id == entity_id
+        )
+        self._feedin_stops[entity_id] = _FeedInStop(
+            entity_id,
+            reason,
+            needs_zero_report=self._feedin_entity_export_open(entity_id),
+        )
         self._save_persistent_state()
 
-    async def _feedin_force_zero(self, reason: str) -> None:
-        """Force the setpoint to 0 outside the planning path (F-FEEDIN R12).
+    def _feedin_entity_export_open(self, entity_id: str) -> bool:
+        return any(
+            write.entity_id == entity_id
+            and write.context_id != self._feedin_booked_context
+            for write in self._feedin_open_exports.values()
+        )
 
-        `_apply_feedin` only runs on a SUCCESSFUL cycle, so the fail-safes it
-        implements were unreachable exactly when they matter: a SOC/forecast
-        dropout raises `UpdateFailed` before it, and the export kept running
-        unsupervised for the whole outage — draining the battery once PV fell
-        below the setpoint (review 2026-08-03). This is the same shutdown, but
-        reachable from the failure path and from the runtime switch, which
-        cannot rely on a refresh that raises.
+    def _pending_feedin_stops(self) -> tuple[_FeedInStop, ...]:
+        return tuple(
+            stop
+            for stop in self._feedin_stops.values()
+            if not self._feedin_manual_owns(stop.entity_id)
+        )
 
-        Idempotent: once 0 is written, `_feedin_last_written_w` keeps every
-        later failing cycle from writing again.
-        """
-        entities = self._feedin_entities()
-        if entities is None:
+    def _queue_feedin_stop(self) -> None:
+        stops = self._pending_feedin_stops()
+        if (
+            not stops
+            or self._actuation_shutdown
+            or self._feedin_write_pending
+            or (self._feedin_task is not None and not self._feedin_task.done())
+        ):
             return
-        if self.feedin_manual():
-            return  # R7: the operator owns the setpoint — never write
-        if self._feedin_task is not None and not self._feedin_task.done():
-            return
-        current = self._feedin_read_power_w()
-        if current is None:
-            current = self._feedin_last_written_w
-        if current is not None and abs(current) <= 0.5:
-            return  # already at 0 — nothing to shut down
         self._feedin_task = self.entry.async_create_background_task(
             self.hass,
-            self._execute_feedin(0.0, reason),
+            self._execute_feedin(0.0, stops[0].reason),
             name="battery_manager_feedin_failsafe",
+            eager_start=False,
         )
+
+    async def _feedin_force_zero(self, reason: str) -> None:
+        """Keep an automatic zero pending until the affected helper confirms."""
+        self._request_feedin_stop(reason)
+
+    def _request_feedin_stop(self, reason: str) -> None:
+        entities = self._feedin_entities()
+        if entities is not None and not self._recover_feedin_startup_binding(
+            dt_util.now()
+        ):
+            entity_id = entities[0]
+            state = self.hass.states.get(entity_id)
+            actual = self._feedin_actual_power_w(state)
+            if (
+                actual is None
+                or abs(actual) > 0.5
+                or self._feedin_open_exports
+                or self._feedin_write_pending
+                or (self._feedin_task is not None and not self._feedin_task.done())
+            ):
+                self._latch_feedin_stop(entity_id, reason)
+        self._queue_feedin_stop()
+
+    def _check_live_feedin_stop(self, soc: float | None) -> None:
+        if self._feedin_entities() is not None and (
+            reason := self._feedin_protection_reason(soc)
+        ):
+            self._request_feedin_stop(reason)
+        else:
+            self._queue_feedin_stop()
+
+    async def _settle_feedin_stop(self) -> bool:
+        """Called under the switch lock, after the older service returns."""
+        tried: set[str] = set()
+        while stop := next(
+            (
+                stop
+                for stop in self._pending_feedin_stops()
+                if stop.entity_id not in tried
+            ),
+            None,
+        ):
+            tried.add(stop.entity_id)
+            await self._settle_feedin_helper(stop)
+        return bool(tried)
+
+    async def _settle_feedin_helper(self, stop: _FeedInStop) -> None:
+        entity_id = stop.entity_id
+        if self._feedin_manual_owns(entity_id):
+            return
+        state = self.hass.states.get(entity_id)
+        actual = self._feedin_actual_power_w(state)
+        if actual is None:
+            return
+        if state is not None and any(
+            key is not None and key in self._feedin_open_exports
+            for key in (state.context.id, state.context.parent_id)
+        ):
+            self._observe_feedin_feedback(entity_id, state)
+        pending = self._feedin_entity_export_open(entity_id)
+        if abs(actual) > 0.5 or (
+            stop.needs_zero_report
+            and (not pending or entity_id not in self._feedin_zero_contexts)
+        ):
+            await self._write_feedin_setpoint(entity_id, 0.0, stop.reason)
+        self._complete_feedin_stop(stop)
+
+    def _complete_feedin_stop(self, stop: _FeedInStop) -> None:
+        if (
+            stop.needs_zero_report
+            or self._feedin_manual_owns(stop.entity_id)
+            or self._feedin_entity_export_open(stop.entity_id)
+        ):
+            return
+        actual = self._feedin_actual_power_w(self.hass.states.get(stop.entity_id))
+        if actual is None or abs(actual) > 0.5:
+            return
+        was_owned = self._feedin_owned_entity == stop.entity_id
+        if was_owned:
+            self._feedin_owned_entity = None
+        if stop.entity_id == self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY):
+            self._feedin_last_written_w = 0.0
+            self._feedin_permission = None
+        elif was_owned:
+            self._feedin_last_written_w = None
+            self._feedin_adopted = False
+        self._feedin_stops.pop(stop.entity_id, None)
+        self._feedin_zero_contexts.pop(stop.entity_id, None)
+        self._save_persistent_state()
 
     async def _apply_feedin(
         self,
@@ -9020,7 +9391,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entities = self._feedin_entities()
         if entities is None:
             return
-        if self._feedin_task is not None and not self._feedin_task.done():
+        if self._recover_feedin_startup_binding(now):
             return
         if self.feedin_manual():
             return  # R7: the operator owns the setpoint — never write
@@ -9031,6 +9402,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._feedin_force_zero("PV forecast evidence lost before feed-in")
             return
         params = config.feedin
+        if reason := self._feedin_protection_reason(soc):
+            await self._feedin_force_zero(reason)
+            return
+        if self._pending_feedin_stops():
+            self._queue_feedin_stop()
+            return
+        plan_w = result.feedin_schedule_w[0] if result.feedin_schedule_w else 0.0
+        if plan_w <= 0.0 and (
+            self._feedin_open_exports
+            or (self._feedin_task is not None and not self._feedin_task.done())
+        ):
+            await self._feedin_force_zero("plan slot")
+            return
+        if self._feedin_entity_export_open(entities[0]):
+            return
+        if self._feedin_task is not None and not self._feedin_task.done():
+            return
         current = self._feedin_read_power_w()
         if current is None:
             # Entity dropout: steer against the last value we wrote.
@@ -9039,15 +9427,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # sensor 7 read it). Its value is deliberately NOT used as a trim cap —
         # see the upward-trim branch.
         self._feedin_tick(now)
-        fail = bool(self._floor_guard_active) or self._stale_shed_active
-        enabled = bool(self.raw_config.get(CONF_FEEDIN_ENABLED))
-        active = (
-            enabled
-            and self._feedin_switch_on
-            and not fail
-            and soc > params.min_soc_percent
-        )
-        plan_w = result.feedin_schedule_w[0] if result.feedin_schedule_w else 0.0
         # R16 stability trace: one sample of the plan's slot-0 value per pass,
         # pruned to the sliding window (cadence-free: debounced battery-power
         # events and the 5-min poll both just append).
@@ -9065,29 +9444,13 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 plan_spread,
                 FEEDIN_STABLE_WINDOW_S,
             )
-        if active:
-            base_w = min(plan_w, params.max_w)
-            reason = "plan slot"
-        else:
-            base_w = 0.0
-            if fail:
-                reason = (
-                    "G4 floor guard" if self._floor_guard_active else "stale-data shed"
-                )
-            elif not enabled:
-                reason = "feature disabled"
-            elif not self._feedin_switch_on:
-                reason = "runtime switch off"
-            else:
-                reason = (
-                    f"SOC {soc:.1f} % at/below the"
-                    f" {params.min_soc_percent:.0f} % feed-in floor"
-                )
+        base_w = min(plan_w, params.max_w)
+        reason = "plan slot"
 
         desired = base_w
         trimmed = False
         battery_power_w = self._read_power_w(entities[1])
-        if trim and active and base_w > 0.0 and battery_power_w is not None:
+        if trim and base_w > 0.0 and battery_power_w is not None:
             cur = current if current is not None else 0.0
             if battery_power_w < -FEEDIN_TRIM_DEADBAND_W:
                 # Downward trim (requirement 10): the battery is DISCHARGING —
@@ -9176,6 +9539,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reanchored = write
         if not write:
             return
+        if desired <= 0.0:
+            await self._feedin_force_zero(reason)
+            return
         # R16 stability brake: an UPWARD write (plan slot, 0->>0 transition,
         # upward trim or re-anchor — any source) follows the plan anchor only
         # once the plan held within FEEDIN_STABLE_SPREAD_W across the sliding
@@ -9199,6 +9565,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if reanchored:
             self._feedin_last_reanchor_at = now
+        if inputs is not None:
+            self._feedin_permission = (config, inputs, base_w if today_only else None)
         self._feedin_task = self.entry.async_create_background_task(
             self.hass,
             self._execute_feedin(
@@ -9206,8 +9574,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 reason,
                 plan=(config, inputs) if inputs is not None else None,
                 independent_limit_w=base_w if today_only else None,
+                booked_entity=entities[0],
             ),
             name="battery_manager_feedin",
+            eager_start=False,
         )
 
     async def _execute_feedin(
@@ -9217,57 +9587,95 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         *,
         plan: tuple[SystemConfig, PlanInputs] | None = None,
         independent_limit_w: float | None = None,
+        booked_entity: str | None = None,
     ) -> None:
         """Actuation phase: write the setpoint under the switch lock, with the
         in-flight guard re-check (mirrors _execute_load_switching)."""
-        entities = self._feedin_entities()
-        if entities is None:
-            return
         async with self._switch_lock:
-            if self.feedin_manual():
-                # Manual mode entered after this write was queued (F-N2 race):
-                # the operator owns the setpoint now — hands off.
-                _LOGGER.info(
-                    "Feed-in manual mode active: dropping queued setpoint write %.0f W",
-                    desired_w,
-                )
+            if await self._settle_feedin_stop():
                 return
-            if desired_w > 0.0 and (
-                self._floor_guard_active or self._stale_shed_active
-            ):
-                # G4 / D-A8 in-flight race (mirror of the load-switching drop):
-                # a queued export must never fire into an active fail-safe.
-                _LOGGER.info(
-                    "Floor guard or stale shed active: dropping queued feed-in"
-                    " write %.0f W",
-                    desired_w,
-                )
+            entities = self._feedin_entities()
+            if entities is None or booked_entity not in (None, entities[0]):
                 return
-            permitted = self._permitted_feedin_power(
-                desired_w, plan, independent_limit_w
-            )
-            if permitted != desired_w:
-                current = self._feedin_read_power_w()
-                if current is None:
-                    current = self._feedin_last_written_w
-                if current is not None and abs(current - permitted) <= 0.5:
-                    return
-                desired_w = permitted
-                reason = "PV forecast evidence lost before feed-in write"
+            entity_id = entities[0]
+            if self._feedin_manual_owns(entity_id):
+                return
             while True:
-                await self._write_feedin_setpoint(entities[0], desired_w, reason)
-                if self.feedin_manual():
-                    return
-                # A blocking service can confirm after either proof expires.
-                # A correction can only lower the request, first to the
-                # independently proven limit and then, if necessary, to zero.
+                if protection := self._feedin_actuation_protection(plan):
+                    desired_w, reason = 0.0, protection
                 permitted = self._permitted_feedin_power(
                     desired_w, plan, independent_limit_w
                 )
-                if permitted == desired_w:
+                if permitted <= 0.0:
+                    self._latch_feedin_stop(
+                        entity_id,
+                        reason
+                        if desired_w <= 0.0
+                        else ("PV forecast evidence lost before feed-in write"),
+                    )
+                    await self._settle_feedin_stop()
                     return
-                desired_w = permitted
+
+                def authorized(requested: float = permitted) -> bool:
+                    return (
+                        self._feedin_entities() == entities
+                        and self._feedin_actuation_protection(plan) is None
+                        and self._permitted_feedin_power(
+                            requested, plan, independent_limit_w
+                        )
+                        == requested
+                    )
+
+                await self._write_feedin_setpoint(
+                    entity_id, permitted, reason, positive_authorized=authorized
+                )
+                if self._feedin_manual_owns(entity_id):
+                    return
+                if protection := self._feedin_actuation_protection(plan):
+                    self._latch_feedin_stop(entity_id, protection)
+                elif self._feedin_entities() != entities:
+                    self._latch_feedin_stop(entity_id, "setpoint no longer wired")
+                elif (
+                    self._permitted_feedin_power(permitted, plan, independent_limit_w)
+                    <= 0.0
+                ):
+                    self._latch_feedin_stop(
+                        entity_id, "PV forecast evidence lost during feed-in write"
+                    )
+                if await self._settle_feedin_stop():
+                    return
+                desired_w = self._permitted_feedin_power(
+                    permitted, plan, independent_limit_w
+                )
+                if desired_w == permitted:
+                    return
                 reason = "PV forecast evidence lost during feed-in write"
+
+    def _feedin_protection_reason(self, soc: float | None) -> str | None:
+        if not self.raw_config.get(CONF_FEEDIN_ENABLED):
+            return "feature disabled"
+        if not self._feedin_switch_on:
+            return "runtime switch off"
+        if self._floor_guard_active:
+            return "G4 floor guard"
+        if self._stale_shed_active:
+            return "stale-data shed"
+        if soc is None:
+            return "SOC unavailable"
+        if soc <= float(self.raw_config["inverter_min_soc_percent"]):
+            return "G4 floor guard"
+        floor = float(self.raw_config.get(CONF_FEEDIN_MIN_SOC, 30.0))
+        if soc <= floor:
+            return f"SOC {soc:.1f} % at/below the {floor:.0f} % feed-in floor"
+        return None
+
+    def _feedin_actuation_protection(
+        self, plan: tuple[SystemConfig, PlanInputs] | None
+    ) -> str | None:
+        # Passes without captured inputs are also used by the deterministic
+        # executor tests. The decision phase already checked their explicit SOC.
+        soc = self._get_soc(dt_util.now()) if plan is not None else math.inf
+        return self._feedin_protection_reason(soc)
 
     def _permitted_feedin_power(
         self,
@@ -9286,31 +9694,368 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return requested
 
     async def _write_feedin_setpoint(
-        self, entity_id: str, desired_w: float, reason: str
+        self,
+        entity_id: str,
+        desired_w: float,
+        reason: str,
+        *,
+        positive_authorized: Callable[[], bool] | None = None,
     ) -> None:
         # A service may publish before async_create_background_task returns.
         # Task identity alone cannot distinguish that own write.
-        value = round(FEEDIN_SETPOINT_EXPORT_SIGN * desired_w, 1)
+        if entity_id in self.released_load_actors() or not command_allowed(
+            actor_claims(self.raw_config, self.entry.subentries),
+            entity_id,
+            desired_w > 0.0,
+            "feedin",
+        ):
+            return
+        context = Context()
+        value = round(FEEDIN_SETPOINT_EXPORT_SIGN * desired_w, 1) if desired_w else 0.0
         self._feedin_write_pending = True
         try:
+            if desired_w > 0.0:
+                request = _FeedInWrite(entity_id, abs(value), context.id)
+                self._feedin_booked_context = context.id
+                self._feedin_open_exports[context.id] = request
+                self._feedin_export_history[context.id] = request
+                durable = await self._store.async_book_feedin(
+                    context.id, self._persistent_payload()
+                )
+                if (
+                    not durable
+                    or self._actuation_shutdown
+                    or self._feedin_manual_owns(entity_id)
+                    or self._pending_feedin_stops()
+                    or (positive_authorized is not None and not positive_authorized())
+                ):
+                    self._feedin_open_exports.pop(context.id, None)
+                    self._feedin_export_history.pop(context.id, None)
+                    self._feedin_revoked_exports.pop(context.id, None)
+                    self._save_persistent_state()
+                    return
+                self._feedin_last_export = request
+                self._feedin_owned_entity = entity_id
+                self._feedin_booked_context = None
+            else:
+                self._feedin_zero_contexts[entity_id] = context.id
+                self._feedin_zero_history.add(context.id)
+            before = self.hass.states.get(entity_id)
+            reported_before = before.last_reported if before is not None else None
             written = await self._set_number_value(
-                entity_id, value, actor_owner="feedin"
+                entity_id, value, actor_owner="feedin", context=context
             )
         finally:
             self._feedin_write_pending = False
-        if not written:
+            self._feedin_booked_context = None
+        state = self.hass.states.get(entity_id)
+        actual = self._feedin_actual_power_w(state)
+        own_context = state is not None and context.id in (
+            state.context.id,
+            state.context.parent_id,
+        )
+        unambiguous_report = (
+            state is not None
+            and state.context.user_id is None
+            and not self._known_feedin_context(state.context)
+            and (state is not before or state.last_reported != reported_before)
+            and not self._feedin_revoked_matches(entity_id, desired_w, context.id)
+        )
+        confirmed = (
+            (own_context or unambiguous_report)
+            and actual is not None
+            and abs(actual - desired_w) <= 0.5
+        )
+        if (
+            desired_w > 0.0
+            and not confirmed
+            and actual is not None
+            and abs(actual - desired_w) <= 0.5
+            and self._feedin_revoked_matches(entity_id, desired_w, context.id)
+        ):
+            self._latch_feedin_stop(entity_id, "obsolete export order unclear")
+        if confirmed and desired_w > 0.0:
+            self._feedin_open_exports.pop(context.id, None)
+        if desired_w <= 0.0 and (stop := self._feedin_stops.get(entity_id)) is not None:
+            stop.needs_zero_report = not confirmed or self._feedin_entity_export_open(
+                entity_id
+            )
+        if not written and not confirmed:
+            if desired_w > 0.0:
+                self._latch_feedin_stop(entity_id, "unconfirmed export service failure")
             return
-        self._feedin_prev_written_w = self._feedin_last_written_w
-        self._feedin_last_written_w = desired_w
-        self._feedin_last_write_at = dt_util.now()
-        # Keep ownership of a nonzero setpoint until a zero write or unwiring.
-        self._feedin_owned_entity = entity_id if desired_w > 0.0 else None
+        if self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY) == entity_id and (
+            desired_w > 0.0 or confirmed
+        ):
+            self._feedin_prev_written_w = self._feedin_last_written_w
+            self._feedin_last_written_w = desired_w
+            self._feedin_last_write_at = dt_util.now()
         _LOGGER.info("Feed-in setpoint -> %.0f W (%s)", desired_w, reason)
         self._save_persistent_state()
+
+    def _known_feedin_context(self, context: Context) -> bool:
+        return any(
+            key is not None
+            and (key in self._feedin_export_history or key in self._feedin_zero_history)
+            for key in (context.id, context.parent_id)
+        )
+
+    def _feedin_revoked_matches(
+        self, entity_id: str, power_w: float, exclude_context: str
+    ) -> bool:
+        return any(
+            write.entity_id == entity_id
+            and write.context_id != exclude_context
+            and abs(write.power_w - power_w) <= 0.5
+            for write in self._feedin_revoked_exports.values()
+        )
+
+    def _observe_feedin_feedback(self, entity_id: str, state: State | None) -> None:
+        """Apply only current, attributable setpoint feedback to the stop."""
+        if state is not self.hass.states.get(entity_id):
+            return  # A newer report already replaced this queued event.
+        stop = self._feedin_stops.get(entity_id)
+        watched = (
+            entity_id == self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY)
+            or (stop is not None and stop.entity_id == entity_id)
+            or any(
+                w.entity_id == entity_id for w in self._feedin_revoked_exports.values()
+            )
+        )
+        if not watched:
+            return
+        actual = self._feedin_actual_power_w(state)
+        if state is None or actual is None:
+            return
+        context = state.context
+        if context.user_id is not None and not self._feedin_manual_owns(entity_id):
+            now = dt_util.now()
+            if entity_id == self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY):
+                self._feedin_enter_manual(
+                    now, f"setpoint externally set to {actual:.0f} W"
+                )
+            else:
+                self._feedin_other_manual[entity_id] = now.date() + timedelta(days=1)
+                self._save_persistent_state()
+            return
+        if self._feedin_startup_recovery and entity_id == self._feedin_owned_entity:
+            self._recover_feedin_startup_binding(dt_util.now())
+        old = self._feedin_revoked_exports.get(context.id) or (
+            self._feedin_revoked_exports.get(context.parent_id)
+            if context.parent_id is not None
+            else None
+        )
+        reported = self._feedin_open_exports.get(context.id) or (
+            self._feedin_open_exports.get(context.parent_id)
+            if context.parent_id is not None
+            else None
+        )
+        if (
+            reported is None
+            and old is None
+            and context.user_id is None
+            and not self._known_feedin_context(context)
+        ):
+            candidates = [
+                write
+                for write in self._feedin_open_exports.values()
+                if write.entity_id == entity_id
+                and write.context_id != self._feedin_booked_context
+                and abs(write.power_w - actual) <= 0.5
+            ]
+            if len(candidates) == 1 and not self._feedin_revoked_matches(
+                entity_id, actual, candidates[0].context_id
+            ):
+                reported = candidates[0]
+                old = self._feedin_revoked_exports.get(reported.context_id)
+            elif candidates:
+                old = next(
+                    (
+                        write
+                        for write in self._feedin_revoked_exports.values()
+                        if write.entity_id == entity_id
+                        and abs(write.power_w - actual) <= 0.5
+                    ),
+                    None,
+                )
+        if (
+            old is None
+            and reported is None
+            and actual > 0.0
+            and not self._feedin_manual_owns(entity_id)
+            and not self._known_feedin_context(context)
+        ):
+            # Some number providers publish without the initiating context.
+            # Their current value can identify an old write only if it does
+            # not match the current intent.
+            last = self._feedin_last_export
+            if (
+                stop is not None
+                or last is None
+                or last.entity_id != entity_id
+                or abs(last.power_w - actual) > 0.5
+            ):
+                candidates = [
+                    write
+                    for write in self._feedin_revoked_exports.values()
+                    if write.entity_id == entity_id
+                    and abs(write.power_w - actual) <= 0.5
+                ]
+                if candidates:
+                    old = candidates[0]
+        if (
+            reported is not None
+            and reported.entity_id == entity_id
+            and abs(reported.power_w - actual) <= 0.5
+        ):
+            self._feedin_open_exports.pop(reported.context_id, None)
+            self._save_persistent_state()
+        if (
+            old is not None
+            and old.entity_id == entity_id
+            and abs(old.power_w - actual) <= 0.5
+        ):
+            self._latch_feedin_stop(entity_id, "obsolete export setpoint reported")
+            if (stop := self._feedin_stops.get(entity_id)) is not None:
+                stop.needs_zero_report = True
+                self._save_persistent_state()
+        elif (
+            stop is not None
+            and stop.entity_id == entity_id
+            and abs(actual) <= 0.5
+            and self._feedin_zero_contexts.get(entity_id)
+            in (context.id, context.parent_id)
+            and entity_id in self._feedin_zero_contexts
+            and not self._feedin_entity_export_open(entity_id)
+        ):
+            stop.needs_zero_report = False
+            if not self._feedin_write_pending:
+                self._complete_feedin_stop(stop)
+        self._queue_feedin_stop()
+
+    def feedin_stop_diagnostic(self) -> dict[str, Any]:
+        stops = [asdict(stop) for stop in self._feedin_stops.values()]
+        return {
+            "stop": stops[0] if stops else None,
+            "stops": stops,
+            "open_exports": [
+                asdict(write) for write in self._feedin_open_exports.values()
+            ],
+            "manual_entity": self._feedin_manual_entity,
+        }
+
+    def _persistent_feedin_stop(self) -> dict[str, Any]:
+        return {
+            **self.feedin_stop_diagnostic(),
+            "export_history": [
+                asdict(write) for write in self._feedin_export_history.values()
+            ],
+            "revoked_exports": [
+                asdict(write) for write in self._feedin_revoked_exports.values()
+            ],
+            "zero_history": sorted(self._feedin_zero_history),
+            "other_manual": {
+                entity: until.isoformat()
+                for entity, until in self._feedin_other_manual.items()
+            },
+        }
+
+    def _restore_feedin_stop(self, data: object) -> None:
+        if not isinstance(data, dict):
+            return
+        manual = data.get("manual_entity")
+        if isinstance(manual, str):
+            self._feedin_manual_entity = manual
+        if isinstance(other := data.get("other_manual"), dict):
+            for entity_id, until in other.items():
+                if isinstance(entity_id, str) and isinstance(until, str):
+                    with contextlib.suppress(ValueError):
+                        self._feedin_other_manual[entity_id] = date.fromisoformat(until)
+        if isinstance(zeros := data.get("zero_history"), list):
+            self._feedin_zero_history.update(
+                key for key in zeros if isinstance(key, str)
+            )
+        for key, target in (
+            ("open_exports", self._feedin_open_exports),
+            ("export_history", self._feedin_export_history),
+            ("revoked_exports", self._feedin_revoked_exports),
+        ):
+            writes = data.get(key)
+            if not isinstance(writes, list):
+                continue
+            for write in writes:
+                if not isinstance(write, dict):
+                    continue
+                entity_id = write.get("entity_id")
+                power_w = write.get("power_w")
+                context_id = write.get("context_id")
+                if (
+                    isinstance(entity_id, str)
+                    and isinstance(power_w, int | float)
+                    and isinstance(context_id, str)
+                ):
+                    target[context_id] = _FeedInWrite(entity_id, power_w, context_id)
+        self._feedin_export_history.update(self._feedin_revoked_exports)
+        self._feedin_export_history.update(self._feedin_open_exports)
+        stops = data.get("stops", [data.get("stop")])
+        if isinstance(stops, list):
+            for stop in stops:
+                if (
+                    isinstance(stop, dict)
+                    and isinstance(stop.get("entity_id"), str)
+                    and isinstance(stop.get("reason"), str)
+                ):
+                    self._feedin_stops[stop["entity_id"]] = _FeedInStop(
+                        stop["entity_id"],
+                        stop["reason"],
+                        stop.get("needs_zero_report") is True,
+                    )
+        for write in self._feedin_open_exports.values():
+            self._feedin_revoked_exports[write.context_id] = write
+            self._feedin_stops.setdefault(
+                write.entity_id,
+                _FeedInStop(write.entity_id, "unconfirmed export after restart", True),
+            )
+        owned = self._feedin_owned_entity
+        last = self._feedin_last_written_w
+        entities = self._feedin_entities()
+        self._feedin_startup_recovery = (
+            entities is not None
+            and owned == entities[0]
+            and owned not in self._feedin_stops
+            and self._feedin_manual_until is None
+            and last is not None
+            and last > 0.5
+            and any(
+                write.entity_id == owned
+                and abs(write.power_w - last) <= 0.5
+                and write.context_id not in self._feedin_revoked_exports
+                for write in self._feedin_export_history.values()
+            )
+        )
 
     # ------------------------------------------------------------------
     # Entity listeners
     # ------------------------------------------------------------------
+
+    def _track_feedin_orphans(self) -> None:
+        configured = self.raw_config.get(CONF_FEEDIN_SETPOINT_ENTITY)
+        entities = {write.entity_id for write in self._feedin_revoked_exports.values()}
+        entities.update(self._feedin_stops)
+        if self._feedin_owned_entity is not None:
+            entities.add(self._feedin_owned_entity)
+        if configured and not self.raw_config.get(CONF_FEEDIN_ENABLED):
+            entities.add(configured)
+        else:
+            entities.discard(configured)
+        if entities:
+            self._feedin_orphan_listener = async_track_state_change_event(
+                self.hass, entities, self._handle_feedin_orphan_feedback
+            )
+
+    @callback
+    def _handle_feedin_orphan_feedback(self, event) -> None:
+        self._observe_feedin_feedback(event.data["entity_id"], event.data["new_state"])
 
     def _setup_entity_listeners(self) -> None:
         try:
@@ -9319,6 +10064,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             self._listeners_setup = True
             self.voltage_gate.start_observing()
+            self.rail_feedback.start()
             self.live_ac.start()
         except Exception as err:
             _LOGGER.warning(
@@ -9359,11 +10105,22 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_update_listeners()
 
     @callback
+    def _rail_feedback_updated(self, entity: str, changed: bool) -> None:
+        if reconcile_supply_feedback(self, entity) or changed:
+            self._schedule_replan()
+
+    @callback
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
             return
         if event is not None:
             self.cascade_manager.observe_actor_feedback(event)
+            if event.data["entity_id"] == self.raw_config.get(
+                CONF_FEEDIN_SETPOINT_ENTITY
+            ):
+                self._observe_feedin_feedback(
+                    event.data["entity_id"], event.data["new_state"]
+                )
         reconcile_feedback(self, event)
         if event is not None:
             self._observe_load_availability(event)
@@ -9372,6 +10129,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # writes adds no observation and races counter resets. Output
             # events still wake the independent cleanup path below.
             entity = event.data["entity_id"]
+            new = event.data["new_state"]
+            if (new is None or new.state not in ("on", "off")) and (
+                self.rail_feedback.invalidate_connection(entity)
+            ):
+                self._schedule_replan()
+            for actor_key in RAIL_FEEDBACK_KEYS:
+                if (
+                    actor := self.raw_config.get(actor_key)
+                ) and self.rail_feedback.binding(actor) == entity:
+                    self._rail_feedback_updated(actor, True)
             managed = self.cascade_manager.managed_load_ids()
             if any(
                 load_id not in managed
@@ -9395,6 +10162,27 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             event is not None
             and event.data["entity_id"] == self.raw_config[CONF_SOC_ENTITY]
         )
+        if soc_event:
+            # Record even brief SOC protection while another protective path
+            # awaits feedback under the shared actuator lock.
+            self._check_live_feedin_stop(self._get_soc(dt_util.now()))
+        permission = self._feedin_permission
+        if (
+            event is not None
+            and permission is not None
+            and event.data["entity_id"]
+            in (
+                self.raw_config[CONF_PV_FORECAST_TODAY],
+                self.raw_config[CONF_PV_FORECAST_TOMORROW],
+                self.raw_config[CONF_PV_FORECAST_DAY_AFTER],
+            )
+        ):
+            config, inputs, independent_limit = permission
+            if (
+                self._permitted_feedin_power(1.0, (config, inputs), independent_limit)
+                <= 0.0
+            ):
+                self._request_feedin_stop("PV forecast evidence lost")
         if (self._planning.phase is not None or soc_event) and (
             self._planning_protection_task is None
             or self._planning_protection_task.done()
@@ -9590,6 +10378,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.operation_recorder.stop()
         self._actuation_shutdown = True
         self.voltage_gate.stop_observing()
+        self.rail_feedback.stop()
         self.live_ac.stop()
         if self._plan_boundary_cancel is not None:
             self._plan_boundary_cancel()
@@ -9641,6 +10430,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._unsub_state_listener is not None:
             self._unsub_state_listener()
             self._unsub_state_listener = None
+        if self._feedin_orphan_listener is not None:
+            self._feedin_orphan_listener()
+            self._feedin_orphan_listener = None
         self._listeners_setup = False
         if self._debounce_task:
             self._debounce_task.cancel()

@@ -172,6 +172,7 @@ from .const import (
 )
 from .coordinator import ordered_load_subentries
 from .market import CONF_MARKET_ENABLED, CONF_MARKET_ENTITY
+from .rail_feedback import RAIL_FEEDBACK_KEYS, valid_binding
 
 # Collapsible section groups for the options flow (visual grouping only;
 # their fields are nested under the section key in the submitted data and
@@ -779,12 +780,26 @@ def _validate_load_control(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _rail_feedback_fields(current: dict[str, Any]) -> dict[Any, Any]:
+    return {
+        vol.Optional(
+            key, description={"suggested_value": current.get(key)}
+        ): selector.TextSelector()
+        for key in RAIL_FEEDBACK_KEYS.values()
+    }
+
+
 def _validate_support_entities(data: dict[str, Any]) -> str | None:
     """The three support switches must point to distinct entities.
 
     A shared entity would make the make-before-break sequence switch the
     rail's only supply off (review finding, docs/ALGORITHM.md D-A9).
     """
+    feedback = [data[key] for key in RAIL_FEEDBACK_KEYS.values() if data.get(key)]
+    if any(not valid_binding(value) for value in feedback) or len(feedback) != len(
+        set(feedback)
+    ):
+        return "invalid_rail_feedback"
     chosen = [data.get(key) for key in SUPPLY_ACTOR_KEYS if data.get(key)]
     if len(chosen) != len(set(chosen)):
         return "support_entities_not_distinct"
@@ -1055,6 +1070,7 @@ class BatteryManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 default=_d(d, CONF_SUPPORT_DC48_RECOVERY_SOC),
             ): _number(0, 100, 0.5, "%"),
         }
+        support.update(_rail_feedback_fields(d))
         support.update(
             {vol.Optional(key): _entity("sensor") for key in SUPPORT_POWER_ENTITY_KEYS}
         )
@@ -1088,6 +1104,12 @@ class BatteryManagerOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             data = _flatten_sections(user_input)
+            current = {**self.config_entry.data, **self.config_entry.options}
+            for actor_key, feedback_key in RAIL_FEEDBACK_KEYS.items():
+                if data.get(actor_key) != current.get(actor_key) and data.get(
+                    feedback_key
+                ) == current.get(feedback_key):
+                    data.pop(feedback_key, None)
             error = (
                 _validate_soc_bounds(data)
                 or _validate_pv_windows(data)
@@ -1118,6 +1140,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 # present in entry.data (raw_config merges data + options).
                 for key in (
                     *_SUPPORT_SWITCH_KEYS,
+                    *RAIL_FEEDBACK_KEYS.values(),
                     *SUPPORT_POWER_ENTITY_KEYS,
                     CONF_BATTERY_VOLTAGE_ENTITY,
                     # F-FEEDIN: cleared = feature unwired (the executor writes
@@ -1195,6 +1218,7 @@ class BatteryManagerOptionsFlow(OptionsFlow):
                 default=_d(current, CONF_SUPPORT_DC48_RECOVERY_SOC),
             ): _number(0, 100, 0.5, "%"),
         }
+        support.update(_rail_feedback_fields(current))
         for key in _SUPPORT_SWITCH_KEYS:
             # suggested_value (not default) keeps the field clearable in the UI.
             support[
