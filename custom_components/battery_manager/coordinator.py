@@ -7496,11 +7496,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         first_on, then_off = (
             (psu_entity, dcdc_entity) if activate else (dcdc_entity, psu_entity)
         )
-        if self._entity_tristate(
-            first_on
-        ) is not True and not await self._switch_entity(
-            first_on, True, actor_owner=SUPPLY_OWNER
-        ):
+        if not await self._switch_entity(first_on, True, actor_owner=SUPPLY_OWNER):
             return False
         if may_start is not None and not may_start():
             return False
@@ -7959,20 +7955,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not was_on or not entity or not owned():
             return
-        if self._entity_tristate(entity) is not True and not await self._switch_entity(
-            entity, True, actor_owner=SUPPLY_OWNER
-        ):
-            return
-        if not owned() or self._entity_tristate(entity) is not True:
-            return
-        self._support_state[key] = True
         if (
             key == "dc24"
             and dcdc_was_on is False
             and dcdc
             and self._entity_tristate(dcdc) is True
         ):
-            await self._sequence_dc24(True, entity, may_start=owned, may_remove=owned)
+            if await self._sequence_dc24(
+                True, entity, may_start=owned, may_remove=owned
+            ):
+                self._support_state[key] = True
+            return
+        if self._entity_tristate(entity) is not True and not await self._switch_entity(
+            entity, True, actor_owner=SUPPLY_OWNER
+        ):
+            return
+        if owned() and self._entity_tristate(entity) is True:
+            self._support_state[key] = True
 
     async def _async_execute_support_switching(
         self,
