@@ -133,9 +133,14 @@ async def test_unusable_plan_stops_export_and_never_uses_a_stale_schedule(
     else:
         hass.states.async_set("sensor.test_soc", "unavailable")
         c._last_valid_soc = None
-    with patch.object(c, "_schedule_replan") as schedule:
+    # A boundary or interval refresh may build a fresh plan independently.
+    # This test observes only the telemetry path against the existing recording.
+    with (
+        patch.object(c, "_schedule_replan") as schedule,
+        patch.object(c, "_async_update_data", return_value=c.data),
+    ):
         await async_fast_update(c)
-    await hass.async_block_till_done(wait_background_tasks=True)
+        await hass.async_block_till_done(wait_background_tasks=True)
     assert calls[-1] == (SETPOINT, 0)
     assert schedule.call_count == int(invalid in {"expired", "soc"})
 

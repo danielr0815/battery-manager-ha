@@ -7496,7 +7496,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         first_on, then_off = (
             (psu_entity, dcdc_entity) if activate else (dcdc_entity, psu_entity)
         )
-        if not await self._switch_entity(first_on, True, actor_owner=SUPPLY_OWNER):
+        if self._entity_tristate(
+            first_on
+        ) is not True and not await self._switch_entity(
+            first_on, True, actor_owner=SUPPLY_OWNER
+        ):
             return False
         if may_start is not None and not may_start():
             return False
