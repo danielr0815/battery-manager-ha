@@ -1258,16 +1258,19 @@ Die Herkunft jeder Alt-ID ergibt sich aus der jeweiligen Datei. Eine Regel kann 
 
 | Alt-ID oder Abschnitt | Heutiger Vertrag oder Einordnung |
 |---|---|
-| 24V-01 | [BM-ENER-001](04-energie.md#bm-ener-001) |
+| 24V-01 | [BM-ENER-001](04-energie.md#bm-ener-001), [BM-ENER-321](04-energie.md#bm-ener-321), [BM-ENER-322](04-energie.md#bm-ener-322) |
 | 24V-02 | [BM-ENER-002](04-energie.md#bm-ener-002), [BM-ENER-301](04-energie.md#bm-ener-301), [BM-ENER-302](04-energie.md#bm-ener-302) |
 | 24V-03 | [BM-ENER-003](04-energie.md#bm-ener-003), [BM-ENER-303](04-energie.md#bm-ener-303) |
-| 24V-04 | [BM-ENER-004](04-energie.md#bm-ener-004), [BM-ENER-304](04-energie.md#bm-ener-304), [BM-ENER-305](04-energie.md#bm-ener-305), [BM-ENER-306](04-energie.md#bm-ener-306), [BM-ENER-315](04-energie.md#bm-ener-315) |
+| 24V-04 | [BM-ENER-004](04-energie.md#bm-ener-004), [BM-ENER-304](04-energie.md#bm-ener-304), [BM-ENER-305](04-energie.md#bm-ener-305), [BM-ENER-306](04-energie.md#bm-ener-306), [BM-ENER-315](04-energie.md#bm-ener-315), [BM-ENER-321](04-energie.md#bm-ener-321), [BM-ENER-322](04-energie.md#bm-ener-322) |
 | 24V-05 | [BM-ENER-005](04-energie.md#bm-ener-005), [BM-ENER-307](04-energie.md#bm-ener-307) |
 | NULL-01 | [BM-ENER-006](04-energie.md#bm-ener-006) |
-| NULL-02 | [BM-ENER-007](04-energie.md#bm-ener-007), [BM-ENER-308](04-energie.md#bm-ener-308), [BM-ENER-309](04-energie.md#bm-ener-309) |
+| NULL-02 | [BM-ENER-007](04-energie.md#bm-ener-007), [BM-ENER-308](04-energie.md#bm-ener-308), [BM-ENER-309](04-energie.md#bm-ener-309), [BM-ENER-323](04-energie.md#bm-ener-323) |
 | NULL-03 | [BM-ENER-008](04-energie.md#bm-ener-008), [BM-ENER-310](04-energie.md#bm-ener-310) |
-| NULL-04 | [BM-ENER-009](04-energie.md#bm-ener-009), [BM-ENER-311](04-energie.md#bm-ener-311), [BM-ENER-312](04-energie.md#bm-ener-312), [BM-ENER-313](04-energie.md#bm-ener-313) |
+| NULL-04 | [BM-ENER-009](04-energie.md#bm-ener-009), [BM-ENER-311](04-energie.md#bm-ener-311), [BM-ENER-312](04-energie.md#bm-ener-312), [BM-ENER-313](04-energie.md#bm-ener-313), [BM-ENER-323](04-energie.md#bm-ener-323) |
 | NULL-05 | [BM-ENER-010](04-energie.md#bm-ener-010), [BM-ENER-314](04-energie.md#bm-ener-314) |
+| D1 · Gleicher Nachweisvertrag in beiden automatischen Pfaden | [BM-ENER-001](04-energie.md#bm-ener-001), [BM-ENER-002](04-energie.md#bm-ener-002), [BM-ENER-004](04-energie.md#bm-ener-004), [BM-ENER-321](04-energie.md#bm-ener-321), [BM-ENER-301](04-energie.md#bm-ener-301), [BM-ENER-302](04-energie.md#bm-ener-302) |
+| D2 · Belastbarer Kanalzustand je Aktor | [BM-ENER-001](04-energie.md#bm-ener-001), [BM-ENER-002](04-energie.md#bm-ener-002), [BM-ENER-004](04-energie.md#bm-ener-004), [BM-ENER-301](04-energie.md#bm-ener-301), [BM-ENER-305](04-energie.md#bm-ener-305), [BM-ENER-322](04-energie.md#bm-ener-322) |
+| D3 · Geordnete Null vor erneuter Exportfreigabe | [BM-ENER-008](04-energie.md#bm-ener-008), [BM-ENER-009](04-energie.md#bm-ener-009), [BM-ENER-309](04-energie.md#bm-ener-309), [BM-ENER-310](04-energie.md#bm-ener-310), [BM-ENER-311](04-energie.md#bm-ener-311), [BM-ENER-323](04-energie.md#bm-ener-323), [BM-ENER-308](04-energie.md#bm-ener-308) |
 
 <a id="quelle-f-seamless-runs"></a>
 

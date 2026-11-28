@@ -1,6 +1,6 @@
 # Battery Manager · Anforderungsspezifikation
 
-**Fassung 1.0 zur fachlichen Freigabe · 28. November 2026.** Bezugsrelease ist `v0.70.0` (`4bc96b1`). Zusätzlich erfasst sind die beim Beginn der Redaktion lokal vorliegenden Änderungen bis zur Manifestversion `0.71.0` sowie die vorgeschlagenen Schutzverträge. Die Freigabe dieser Gesamtausgabe durch den Betreiber steht aus.
+**Fassung 1.1 · 28. November 2026.** Der Betreiber hat die drei Entscheidungen zum 24-V-Quellenwechsel, zur Herkunft der Aktorrückmeldung und zum erneuten Export nach einem Schutzstopp verbindlich freigegeben. Die fachliche Freigabe der übrigen Gesamtausgabe steht aus. Bezugsstände der Umsetzung sind weiterhin `v0.70.0` (`4bc96b1`) und der gesicherte lokale Stand mit Manifestversion `0.71.0`. [Freigaben und Standortnachweis](abnahme.md#entscheidungen-für-den-betreiber)
 
 ## Zweck, Beteiligte und Grenzen
 
@@ -63,7 +63,7 @@ Ein automatischer Auftrag ist nur für einen vorhandenen, zugeordneten und vom M
 
 - **Empfehlung.** Der Manager veröffentlicht eine geplante Aktion. Ohne zugehörigen automatisch geführten Aktor liegt die physische Umsetzung beim Betreiber oder seiner HA-Automation.
 - **Automatische Laststeuerung.** Bei zugeordneten Aktoren und aktiver Gerätesteuerung prüft der Manager Bedarf, Geräteverfügbarkeit, Besitz und Schutzbedingungen vor der Ausführung. Kaskaden haben einen gemeinsamen Controller für ihren elektrischen Pfad.
-- **Koordinierte Versorgung.** Der Manager stimmt Inverter-Entladelimit, DC/DC-Wandler und vorhandene Netzteile ab. Bei Netzrückkehr, ungeklärten Zuständen und Wiederanlauf gelten die jeweiligen Übergabebedingungen. Für ältere Anlagen ohne koordinierten Inverteraktor sind abweichende Verträge im Energiekapitel gekennzeichnet.
+- **Koordinierte Versorgung.** Der Manager stimmt Inverter-Entladelimit, DC/DC-Wandler und vorhandene Netzteile ab. Bei Netzrückkehr, ungeklärten Zuständen und Wiederanlauf gelten die jeweiligen Übergabebedingungen. Auch bei älteren Anlagen ohne koordinierten Inverteraktor gelten für den automatischen Wechsel zwischen zwei schaltbaren 24-V-Quellen dieselben Bestätigungs- und Überlappungsregeln.
 - **Reservemodus.** `off`, `shadow` und `active` wählen die Wirkung der Reservepolitik. Im Schattenbetrieb ist die Reserveberechnung beobachtbar, der Vergleichsbetrieb bestimmt die Ausführung. Die Wahl gilt für die Reservepolitik. Andere aktive Steuerpfade haben ihre eigenen Freigaben. [Reservevertrag](../F-YEAR-ROUND-RESERVE.md)
 - **Manuelle Übernahme.** Eine bestätigte Übergabe betrifft die bezeichneten Aktoren. Bei koordinierter 24-V-Übergabe umfasst sie Netzteil und DC/DC-Wandler. Die manuelle 48-V-Übergabe betrifft das 48-V-Netzteil. Der Modus und die Übergabe zurück an die Automatik sind getrennte Vorgänge. [Versorgungsvertrag](../F-COORDINATED-DC-SUPPORT.md)
 
@@ -94,7 +94,7 @@ Jede Tabellenzeile enthält eine dauerhafte ID, einen fachlichen Satz, ein beoba
 
 | Feld | Bedeutung |
 |---|---|
-| **F · Fachlicher Ursprung/Freigabe** | **B** = aus einem bestehenden verbindlichen Fachvertrag übernommen. **I** = aus beobachtbarem Verhalten rekonstruiert, fachliche Validierung ausstehend. **E** = vorgeschlagener oder in Klärung befindlicher Vertrag. B bezeichnet die bestehende Quellregel. Die formale Freigabe der neuen Gesamtfassung wird im Abnahmedokument geführt. |
+| **F · Fachlicher Ursprung/Freigabe** | **B** = aus einem verbindlichen Fachvertrag übernommen oder vom Betreiber ausdrücklich freigegeben. **I** = aus beobachtbarem Verhalten rekonstruiert, fachliche Validierung ausstehend. **E** = vorgeschlagener oder in Klärung befindlicher Vertrag. Für eine neu erteilte Freigabe nennt das Entscheidungsprotokoll Anlass und Umfang. Die formale Freigabe der neuen Gesamtfassung wird im Abnahmedokument geführt. |
 | **U · Umsetzung** | **R** = Umsetzung dem Bezugsrelease zugeordnet. **L** = im lokalen Nachfolgestand vorhanden. **T** = bekannte Teilumsetzung oder Abweichung. **?** = Umsetzung noch offen oder nicht festgestellt. R und L benennen einen Stand, kein erfolgreiches Prüfergebnis. |
 | **Nachweis** | Benannter Test = vorhandener Prüffall für die genannte Aussage. „Teilnachweis“ bzw. „Prüffall offen“ grenzt die belegte Aussage ein. Bei Inspektion ist die zu prüfende Fundstelle angegeben. Tatsächlich durchgeführte Prüfungen und deren Stand stehen in der Abnahme. |
 

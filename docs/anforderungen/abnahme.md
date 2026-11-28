@@ -2,15 +2,25 @@
 
 [Zur Gesamtspezifikation](README.md) · [Zum Quellenregister](quellen.md)
 
-**Freigabestand der Fassung 1.0: bei der fachlichen Abnahme.** Die bestehende Schutzregel gilt im dokumentierten Geltungsbereich. Eine neue Regel wird durch Aufnahme in diese Fassung oder durch einen erfolgreichen Regressionstest allein nicht freigegeben. Der Betreiber entscheidet über die offenen Auslegungen. Die unabhängigen Reviews prüfen Fachinhalt, Konsistenz und Nachweisführung. Die Prüfergebnisse unten betreffen den bezeichneten Arbeitsstand.
+**Freigabestand der Fassung 1.1 am 28. November 2026.** Der Betreiber hat D1 bis D3 ausdrücklich angenommen. Diese Entscheidungen gelten ab dieser Fassung. Für die übrige Gesamtausgabe steht die Betreiberfreigabe weiterhin aus. Die Statusfelder in den Fachkapiteln weisen die Umsetzung und die vorhandenen Tests separat aus.
 
-## Entscheidungen für den Betreiber
+<a id="entscheidungen-für-den-betreiber"></a>
 
-| Nr. | Situation | Welche Entscheidung steht an? | Was wäre für den Betreiber beobachtbar? |
-|---|---|---|---|
-| D1 | Eine ältere Installation betreibt die automatische 24-V-Quellenumschaltung ohne koordinierten Inverteraktor. Der neue Vertrag benennt den koordinierten Betrieb. | Den strengeren Rückmeldungsnachweis auch für den automatischen Altpfad verbindlich übernehmen oder seinen bisher separat vereinbarten Nachweis beibehalten. | Bei einer lediglich angenommenen EIN-Meldung bliebe die bisherige Quelle unter der erweiterten Pflicht weiterhin eingeschaltet. Bei getrenntem Geltungsbereich ist der Altpfad eigenständig abzunehmen. Die bereits geltende Pflicht zur unterbrechungsarmen Übergabe bleibt bestehen. [Übergangsvertrag](04-energie.md#bm-ener-001) |
-| D2 | Die neue Quelle ist bestätigt EIN. Für die vorige Quelle erscheint nach dem AUS-Auftrag eine Zustandsanzeige, deren Herkunft unklar ist. | Je unterstütztem Aktor festlegen, welche frische, dem tatsächlichen Vorgang zuordenbare Meldung als bestätigtes AUS gilt. Denkbar sind die qualifizierte Gerätepublikation oder ein gesonderter Rückmeldekontakt bei Geräten mit ausschließlich geschätztem Status. | Ohne den vereinbarten Beleg bleibt die Umschaltung als offen sichtbar. Mit gültigem Beleg kann sie abgeschlossen werden. Eine fehlende elektrische Leistung allein weist bei Leerlauf keinen ausgeschalteten Aktor nach. [Abschluss](04-energie.md#bm-ener-004) |
-| D3 | Ein automatischer Export von 500 W ist unterwegs. Der SOC-Schutz wird für einen Augenblick aktiv. Er entfällt, bevor der korrigierende Nullbefehl bestätigt ist. | Entweder bestätigte Null und geklärte Reihenfolge als zwingende Schranke für jeden neuen Export verlangen oder einen nachweislich neuen, gültigen Auftrag nach vollständig aufgelöster Altreihenfolge zulassen. | Bei der ersten Variante ist der Nullzustand am richtigen Sollwert vor einem neuen Export beobachtbar. Bei der zweiten könnte der neue Sollwert früher eintreffen. In beiden Fällen bleibt der alte 500-W-Auftrag widerrufen und eine bestätigte manuelle Übernahme hat Vorrang. [Neufreigabe](04-energie.md#bm-ener-309) · [Nullnachweis](04-energie.md#bm-ener-008) |
+## Verbindliche Betreiberentscheidungen
+
+| Entscheidung | Verbindliche Regel | Beobachtbare Folge |
+|---|---|---|
+| D1 · Geltungsbereich des 24-V-Quellenwechsels | Für automatische Wechsel zwischen zwei schaltbaren 24-V-Quellen gelten in beiden Richtungen dieselben Bestätigungs- und Überlappungsregeln. Dies schließt den Betrieb ohne koordinierten Inverteraktor ein. | Die bisherige Quelle bleibt bei nur angenommenem Ziel-EIN eingeschaltet. Die volle konfigurierte Überlappung beginnt mit belastbarem Ziel-EIN und nach einer Unterbrechung von vorn. Bestätigte manuelle Übernahme und bestehender Netzausfallschutz behalten Vorrang. [Zielbestätigung](04-energie.md#bm-ener-001) · [Überlappung](04-energie.md#bm-ener-302) |
+| D2 · Herkunft der Schaltbestätigung | Die aktuelle, zur Umschaltung gehörende Meldung des tatsächlichen Aktorkanals gilt als Bestätigung. Liefert der Aktor lediglich ein Befehlsecho oder einen geschätzten Wert, ist für den Nachweis eine unabhängige Zustandsrückmeldung erforderlich. | Beim Ziel-EIN wartet die Abschaltung der alten Quelle auf den belegten Zustand und die volle Überlappung. Beim AUS der alten Quelle bleiben der Abschluss und davon abhängige Schritte bis zum Nachweis offen. Eine zwischendurch angezeigte Übereinstimmung mit dem Befehl und gemessene 0 W reichen jeweils für sich allein nicht aus. [Abschluss](04-energie.md#bm-ener-004) |
+| D3 · Erneuter automatischer Export nach einem Schutzimpuls | Ein neuer Export erfordert bestätigte Null am betroffenen, weiterhin automatisch geführten Sollwert, geklärte Reihenfolge der alten Aufträge und eine neue gültige Freigabe nach Wegfall aller Schutzgründe. | Kann ein altes −500 W noch eintreffen, steht der Stopp weiter aus. Wird ein alter Export später erneut wirksam oder wird seine Reihenfolge wieder unklar, ist die geordnete Null neu nachzuweisen. Eine nachweislich historische Meldung lässt einen weiterhin gültigen aktuellen Sollwert unberührt. Eine bereits belastbare Null ohne offenen Export erfordert kein erneutes Schreiben. Nach erfüllten Bedingungen darf ein neuer Auftrag ohne zusätzliche Wartefrist erfolgen. Bei bestätigter manueller Übernahme gilt die Bedienerhoheit. [Neufreigabe](04-energie.md#bm-ener-309) · [Nullnachweis](04-energie.md#bm-ener-008) |
+
+## KNX-Rückmeldung am Standort
+
+**Für beide 24-V-Schaltkanäle ist die Herkunft der Rückmeldung belegt.** Die HA-Konfiguration ordnet jedem Kanal eine eigene Schalt- und eine eigene Statusadresse zu. Das in HA geladene ETS-Projekt weist die Rückmeldung jeweils als Statusobjekt desselben Aktorkanals aus. Im Zehntagesfenster vom 18. bis 28. November 2026 stammten alle 194 eingegangenen Wertmeldungen der Netzteil-Statusgruppe und alle 1.467 der Wandler-Statusgruppe von diesem Aktor. Für beide Kanäle waren EIN und AUS belegt.
+
+Im Abgleich mit dem HA-Verlauf lagen die Schalteranzeigen in vier beobachteten Schaltvorgängen 99 bis 142 Millisekunden vor dem Eingang des passenden Statustelegramms. Die frühere Anzeige kann daher keinen dieser vier Nachweise liefern. Abnahmekriterium für die Ausführung ist die passend zugeordnete Rückmeldung. Die beobachtete Verzögerung ist keine Wartezeitvorgabe. Ein Gerätestatus belegt den gemeldeten Ausgangszustand. Die tatsächliche Lastübernahme erfordert einen gesonderten elektrischen Nachweis.
+
+Die privaten Einzelbelege, Zeitstempel, Prüfsummen und das Auswerteskript sind lokal unter `.codex-artifacts/knx-freigabe/` gesichert. Die Prüfung nutzte vorhandene Telegramme und Recorder-Einträge.
 
 **Separat offen ist ein Messnachweis.** Für die Standortabnahme einer zusätzlichen Inverterfreigabe fehlt ein aufgezeichnetes, gültiges positives Energiebudget über das gesamte Schutzfenster mit vollständigen Quellen- und Aktorrückmeldungen. Die vorliegenden Standortpläne hatten durchgehend 0 Wh zusätzliches Budget. Der synthetische Mehrtagestest prüft die Logik unter kontrollierten Bedingungen. Er ersetzt den noch ausstehenden Standortfall nicht. [Budgetprüfung](04-energie.md#bm-ener-038) · [Mehrtagestest](../../tests/ha/test_reserve_closed_loop.py)
 
@@ -47,6 +57,8 @@ Die lokale Belegablage dieser Fassung ist `.codex-artifacts/srs/`. Sie enthält 
 
 ### Ergebnisse am 28. November 2026
 
+Die folgende Tabelle dokumentiert die Prüfung der Vorfassung 1.0.
+
 | Prüfung | Beobachtetes Ergebnis |
 |---|---|
 | Struktur und Herkunft | 427 eindeutige Anforderungen in sechs Fachkapiteln. Alle 427 sind im Quellenregister auffindbar. 806 Zuordnungszeilen erschließen 96 Quellen. Die Prüfung der lokalen Dateiziele, der Anker und der benannten Testfunktionen ergab keine Fehler. |
@@ -56,4 +68,6 @@ Die lokale Belegablage dieser Fassung ist `.codex-artifacts/srs/`. Sie enthält 
 | Statische Projektprüfung | Das Projektprofil `static` bestand mit Ruff, Formatprüfung und mypy. |
 | Unabhängiges fachliches Review | Sol / Medium prüfte Verständlichkeit, Altzuordnung und Prüfnachweise. Astra / High prüfte Versorgung, Schalthoheit, Einspeisung, Reserve, Nebenläufigkeit und Datenschutz anhand von Gegenbeispielen. Sol präzisierte unter anderem die Zuständigkeit für den alten Einspeisehelfer und den Neustart während eines Zählerausfalls. Astra bestätigte den korrigierten Stand ohne verbleibenden kritischen Redaktionsbefund. |
 
-Die drei Entscheidungen D1 bis D3 und die je Anforderung ausgewiesenen Nachweislücken bleiben für die Betreiberabnahme sichtbar.
+### Prüfung der Fassung 1.1
+
+Die Strukturprüfung der 430 Anforderungen bestätigte eindeutige IDs, gültige Verweise und Rückverfolgbarkeit im Quellenregister. Die tatsächlichen Quellen der beiden KNX-Rückmeldungen und die Reihenfolge gegenüber der HA-Schalteranzeige wurden anhand der oben beschriebenen Aufzeichnungen geprüft. Die bestehenden Regressionen zu ausbleibender Zielbestätigung in beiden Betriebsarten, gesperrter Inverterfreigabe, verspätetem eigenem Export und dessen Abgrenzung von einer manuellen Übernahme ergaben 13 bestandene Testfälle. Vier weitere bestandene Fälle prüfen ein bereits gesendetes DC/DC-AUS mit ungewissem Ergebnis bei erneuter Ausführungsprüfung. Die neu verlangten Gegenproben zur Herkunft und zur erneuten Freigabe nach einem Schutzimpuls bleiben bis zu ihrem eigenen Ausführungsnachweis offen.
