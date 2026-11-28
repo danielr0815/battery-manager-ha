@@ -1,5 +1,7 @@
 # Battery Manager — Requirements Analysis and Rework
 
+[Zur deutschsprachigen Gesamtspezifikation und zur Zuordnung historischer Regeln](anforderungen/README.md)
+
 > Status: historical design record. It captures the original requirements and intent; some file/line references describe the pre-refactor layout (see docs/ARCHITECTURE.md for the current code map).
 >
 > **Supersession note (v0.15.0, 2026-07-19):** the objective catalogue of

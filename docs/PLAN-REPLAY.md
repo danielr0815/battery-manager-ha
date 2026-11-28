@@ -96,8 +96,9 @@ Messgrößen, jeweils mit
 beiden Abdeckungen; das ist keine automatische Bewertung verschiedener Haushalte
 oder Wetterlagen. Die beobachtete Messreihe simuliert keine alternative Physik.
 
-Detailereignisse und komprimierte Pläne bleiben höchstens sieben Tage,
-50.000 Ereignisse und 32 MiB erhalten. Tagesberichte bleiben 30 Kalendertage.
+Für die aktuellen Grenzen von Detailarchiv, Datenblöcken und Tagesberichten gilt
+der [Aufbewahrungsvertrag ab 0.54.0](F-OCTOBER-OPTIMIZATIONS.md). Die früheren
+Grenzen von 50.000 Ereignissen und 32 MiB gehören zum ursprünglichen Archivformat.
 Leistungen werden höchstens fünf Minuten fortgeschrieben; veraltete Werte,
 fehlende Quellen und Neustartlücken werden nicht zu Nullenergie umgedeutet.
 Für eine empirische Toleranzkalibrierung müssen zuerst vollständige reale Tage

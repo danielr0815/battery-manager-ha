@@ -1,5 +1,7 @@
 # Aktuelle Verträge ab 0.46.0
 
+[Gesamtspezifikation zur fachlichen Freigabe](anforderungen/README.md) · [Zuordnung der bisherigen Fachverträge](anforderungen/quellen.md)
+
 ## AC-Messgrenzen und Sensorversorgung ab 0.70.1 und 0.71.0
 
 | Anforderung | Verbindliches Verhalten | Regressionstest |
