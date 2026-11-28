@@ -19,6 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ACTOR_CONFIRM_TIMEOUT_S,
+    CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
     CONF_LOAD_CONTROL_SWITCH,
@@ -27,6 +28,7 @@ from .const import (
     CONF_LOAD_MIN_RUNTIME_MIN,
     CONF_LOAD_OUTPUT_POWER_ENTITY,
     CONF_LOAD_OUTPUT_SWITCH,
+    CONF_LOAD_REQUIRE_POWER_FEEDBACK,
     INPUT_OFF_POLICY_ALWAYS,
     INPUT_OFF_POLICY_AUTO,
     INPUT_OFF_POLICY_KEEP,
@@ -64,6 +66,7 @@ class LoadAction:
     pv_plan: tuple[SystemConfig, PlanInputs] | None = None
     grid_stop: GridStopEvidence | None = None
     report_only_changes: bool = False
+    availability_stop: bool = False
 
     @classmethod
     def from_legacy(cls, action: LoadAction | tuple[Any, ...]) -> LoadAction:
@@ -581,6 +584,21 @@ def _has_confirmed_load_on(
     return False
 
 
+def confirmed_load_actor_on(
+    c: BatteryManagerCoordinator, load_id: str, actor: str
+) -> bool:
+    """Only a reachable actor on the same BM-confirmed ON edge may be stopped."""
+    edge = _reported_on(c, actor)
+    state = c.hass.states.get(actor)
+    return (
+        edge is not None
+        and state is not None
+        and not state.attributes.get(ATTR_RESTORED)
+        and not state.attributes.get(ATTR_ASSUMED_STATE)
+        and _confirmed_edge_current(c, load_id, actor, edge)
+    )
+
+
 def end_interrupted_load_run(
     c: BatteryManagerCoordinator,
     load_id: str,
@@ -1032,6 +1050,8 @@ def revoke_guarded_starts(
 def _revoke_stale_feedback(
     c: BatteryManagerCoordinator, entity: str, request: ActorRequest | None
 ) -> None:
+    from .load_safety import load_sources_available
+
     if (
         request is not None
         and request.desired
@@ -1040,6 +1060,8 @@ def _revoke_stale_feedback(
         and request.command is not None
         and (
             request.requires_pv_revalidation
+            or not request.command.bypass_guards
+            and not load_sources_available(c, request.command.data)
             or not c.voltage_gate.coordinate_matches(request.command.soc_coordinate)
             or request.command.pv_plan is not None
             and not _coordinate_action_allowed(c, request.command)
@@ -1542,11 +1564,13 @@ def _coordinate_action_allowed(
 ) -> bool:
     if not command.activate or command.bypass_guards:
         return True
+    from .load_safety import effective_start_power_w, load_sources_available
+
+    if not load_sources_available(c, command.data):
+        return False
     gate = getattr(c, "voltage_gate", None)
     if gate is None:
         return True  # Isolated legacy actor adapters have no SOC observer.
-    from .load_safety import effective_start_power_w
-
     power = effective_start_power_w(c, command.load_id, command.data)
     owner = "load:" + command.load_id
     input_entity = command.data.get(CONF_LOAD_INPUT_POWER_ENTITY)
@@ -1602,13 +1626,45 @@ def _confirmation_veto(
     return not coordinate_request_current(c), None
 
 
+async def _switch_input_on(
+    c: BatteryManagerCoordinator, load_id: str, plug: str, owned_gate: str | None
+) -> bool:
+    if owned_gate is None:
+        return await c._switch_load_entity(plug, True, actor_owner="load:" + load_id)
+    # Keep the gate check in the existing ON permission right through the
+    # actor service boundary. A human/automation can replace the edge after
+    # the gate's confirmation, including while the input call is entering.
+    parent_permission = _COORDINATE_PERMISSION.get()
+    token = _COORDINATE_PERMISSION.set(
+        lambda: (
+            confirmed_load_actor_on(c, load_id, owned_gate)
+            and (parent_permission is None or parent_permission())
+        )
+    )
+    try:
+        return await c._switch_load_entity(plug, True, actor_owner="load:" + load_id)
+    finally:
+        _COORDINATE_PERMISSION.reset(token)
+
+
+def _owns_start_gate(c: BatteryManagerCoordinator, load_id: str, gate: str) -> bool:
+    if confirmed_load_actor_on(c, load_id, gate):
+        return True
+    edge = _reported_on(c, gate)
+    return (
+        edge is not None
+        and not edge.unconfirmed
+        and _on_origin(c, load_id, gate, edge)[0] is OnOrigin.REVOKED
+    )
+
+
 async def _execute_load_switching(
     self: BatteryManagerCoordinator,
     actions: Sequence[LoadAction | tuple[Any, ...]],
     now: datetime | None = None,
 ) -> None:
     # Local import avoids a cycle: load_safety builds typed LoadAction requests.
-    from .load_safety import start_blocked
+    from .load_safety import load_sources_available, start_blocked
 
     reconcile_feedback(self)
     if now is None:
@@ -1670,6 +1726,20 @@ async def _execute_load_switching(
             continue
         plug = data[CONF_LOAD_CONTROL_SWITCH]
         enable = data.get(CONF_LOAD_CHARGE_ENABLE)
+        owned_gate = (
+            enable
+            if not bypass_guards
+            and (
+                data.get(CONF_LOAD_AVAILABILITY_ENTITY)
+                or data.get(CONF_LOAD_REQUIRE_POWER_FEEDBACK)
+            )
+            else None
+        )
+        if command.availability_stop and (
+            load_sources_available(self, data)
+            or not confirmed_load_actor_on(self, subentry_id, enable or plug)
+        ):
+            continue
         subentry = self.entry.subentries.get(subentry_id)
         label = subentry.title if subentry else subentry_id
         if (
@@ -1683,6 +1753,11 @@ async def _execute_load_switching(
                 )
                 or coordinate_cleanup_pending(self, subentry_id)
                 or not coordinate_request_current(self)
+                or (
+                    owned_gate
+                    and self._entity_is_on(owned_gate)
+                    and not confirmed_load_actor_on(self, subentry_id, owned_gate)
+                )
             )
         ):
             # G4 floor guard / D-A8 stale shed, in-flight race: the
@@ -1714,6 +1789,10 @@ async def _execute_load_switching(
                     and request.desired
                     and request.action_generation == generation
                     and self._entity_is_on(enable)
+                    and (
+                        not owned_gate
+                        or _owns_start_gate(self, subentry_id, owned_gate)
+                    )
                 ):
                     await self._switch_load_entity(
                         enable, False, actor_owner="load:" + subentry_id
@@ -1722,6 +1801,10 @@ async def _execute_load_switching(
             if self._load_action_generation.get(subentry_id) != generation:
                 continue
             if not self.load_bm_enabled(subentry_id):
+                continue
+            if owned_gate and not confirmed_load_actor_on(
+                self, subentry_id, owned_gate
+            ):
                 continue
             blocked, grid_stop = (
                 (False, None) if bypass_guards else _confirmation_veto(self)
@@ -1739,9 +1822,7 @@ async def _execute_load_switching(
             # command issued while the input is not ON can acquire ownership.
             plug_was_on = self._entity_is_on(plug)
             if not plug_was_on:
-                if not await self._switch_load_entity(
-                    plug, True, actor_owner="load:" + subentry_id
-                ):
+                if not await _switch_input_on(self, subentry_id, plug, owned_gate):
                     if self._load_action_generation.get(subentry_id) != generation:
                         continue
                     if not coordinate_request_current(
@@ -1760,7 +1841,10 @@ async def _execute_load_switching(
                     # be on while charging. The G4/shed guard drop
                     # above runs BEFORE the enable ON, so it never
                     # needs this rollback.
-                    if enable:
+                    if enable and (
+                        not owned_gate
+                        or confirmed_load_actor_on(self, subentry_id, owned_gate)
+                    ):
                         if await self._switch_load_entity(
                             enable, False, actor_owner="load:" + subentry_id
                         ):
@@ -1814,6 +1898,10 @@ async def _execute_load_switching(
                     (False, None) if bypass_guards else _confirmation_veto(self)
                 )
             if blocked:
+                if owned_gate and not confirmed_load_actor_on(
+                    self, subentry_id, owned_gate
+                ):
+                    continue
                 await self._execute_load_switching(
                     [
                         LoadAction(
@@ -1822,6 +1910,11 @@ async def _execute_load_switching(
                             False,
                             True,
                             reason="permission withdrawn during confirmation",
+                            availability_stop=(
+                                grid_stop is None
+                                and not bypass_guards
+                                and not load_sources_available(self, data)
+                            ),
                             grid_stop=grid_stop,
                         )
                     ]
@@ -1868,6 +1961,13 @@ async def _execute_load_switching(
                     label,
                 )
                 continue
+            if (
+                command.coordinate_cleanup is not None
+                and owned_gate
+                and self._entity_tristate(owned_gate) is not False
+                and not _owns_start_gate(self, subentry_id, owned_gate)
+            ):
+                continue
             if enable and not await self._switch_load_entity(
                 enable, False, actor_owner="load:" + subentry_id
             ):
@@ -1892,9 +1992,16 @@ async def _execute_load_switching(
             confirmed_stop_at = dt_util.now()
             if enable:
                 self._load_charging_active[subentry_id] = False
-            turn_plug_off = input_off_allowed(self, subentry_id) and (
-                command.coordinate_cleanup is None
-                or coordinate_cleanup_pending(self, subentry_id)
+            turn_plug_off = (
+                input_off_allowed(self, subentry_id)
+                and (
+                    command.coordinate_cleanup is None
+                    or coordinate_cleanup_pending(self, subentry_id)
+                )
+                and (
+                    not command.availability_stop
+                    or confirmed_load_actor_on(self, subentry_id, plug)
+                )
             )
             input_confirmed = False
             if turn_plug_off:

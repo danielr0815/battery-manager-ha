@@ -7,15 +7,23 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import TYPE_CHECKING, Any, Literal
 
+from homeassistant.const import ATTR_ASSUMED_STATE, ATTR_RESTORED
+from homeassistant.core import State
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_CASCADE_MEMBER_IDS,
+    CONF_CASCADE_TERMINAL_LOAD_ID,
+    CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CONTROL_SWITCH,
+    CONF_LOAD_POWER_ENTITY,
     CONF_LOAD_POWER_W,
+    CONF_LOAD_REQUIRE_POWER_FEEDBACK,
+    SUBENTRY_TYPE_CASCADE,
     SUBENTRY_TYPE_LOAD,
 )
-from .load_actuation import LoadAction
+from .load_actuation import LoadAction, confirmed_load_actor_on
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -33,6 +41,73 @@ class GridStopEvidence:
     decided_at: datetime
     path: Literal["plan", "fast", "confirmation"]
     observation: dict[str, Any]
+
+
+def availability_reported(state: State | None) -> bool:
+    return (
+        state is not None
+        and state.state not in ("off", "unknown", "unavailable")
+        and not state.attributes.get(ATTR_RESTORED)
+        and not state.attributes.get(ATTR_ASSUMED_STATE)
+    )
+
+
+def load_sources_available(c: BatteryManagerCoordinator, data: Any) -> bool:
+    """An explicit gate and an optional required watt reading are independent."""
+    witness = data.get(CONF_LOAD_AVAILABILITY_ENTITY)
+    if witness and not availability_reported(c.hass.states.get(witness)):
+        return False
+    if data.get(CONF_LOAD_REQUIRE_POWER_FEEDBACK):
+        power = data.get(CONF_LOAD_POWER_ENTITY)
+        if not power or not availability_reported(c.hass.states.get(power)):
+            return False
+        watts = c._read_power_w(power)
+        return watts is not None and watts >= 0
+    return True
+
+
+def queue_unavailable_load_stop(
+    c: BatteryManagerCoordinator, load_id: str, data: Any
+) -> None:
+    """An availability loss only withdraws a confirmed, BM-owned charging path."""
+    plug = data.get(CONF_LOAD_CONTROL_SWITCH)
+    running = c._load_safety_tasks.get(load_id)
+    if (
+        c._actuation_shutdown
+        or load_id == c._load_power_calibration_id
+        or running is not None
+        and not running.done()
+    ):
+        return
+    for cascade_id, sub in c.entry.subentries.items():
+        if sub.subentry_type == SUBENTRY_TYPE_CASCADE and (
+            load_id in sub.data.get(CONF_CASCADE_MEMBER_IDS, ())
+            or load_id == sub.data.get(CONF_CASCADE_TERMINAL_LOAD_ID)
+        ):
+            c._load_safety_tasks[load_id] = c.entry.async_create_background_task(
+                c.hass,
+                c.cascade_manager.async_stop_if_unavailable(cascade_id),
+                name="battery_manager_unavailable_cascade",
+            )
+            return
+    if not plug or not confirmed_load_actor_on(
+        c, load_id, data.get(CONF_LOAD_CHARGE_ENABLE) or plug
+    ):
+        return
+    action = LoadAction(
+        load_id,
+        dict(data),
+        False,
+        c._entity_is_on(plug),
+        reason="load unavailable",
+        availability_stop=True,
+        report_only_changes=True,
+    )
+    c._load_safety_tasks[load_id] = c.entry.async_create_background_task(
+        c.hass,
+        c._execute_load_switching([action]),
+        name="battery_manager_unavailable_load",
+    )
 
 
 def effective_start_power_w(

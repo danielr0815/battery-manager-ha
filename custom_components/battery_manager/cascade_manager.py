@@ -65,7 +65,7 @@ from .core import (
 from .core.model import PlanInputs, SocCoordinateSnapshot
 from .core.policy import CASCADE_SOURCE_PROOF_SECONDS
 from .core.series import fixed_local_time
-from .load_safety import effective_start_power_w
+from .load_safety import effective_start_power_w, load_sources_available
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -94,6 +94,10 @@ class _CoordinatePermissionPending(Exception):
 
 class _PvPlanPermissionPending(_CoordinatePermissionPending):
     """A Root start lost its forecast basis before confirmation."""
+
+
+class _LoadUnavailable(_CoordinatePermissionPending):
+    """A configured member or terminal availability source withdrew permission."""
 
 
 class _ForeignActorOn(Exception):
@@ -180,6 +184,9 @@ _COORDINATE_SNAPSHOT: ContextVar[tuple[SocCoordinateSnapshot | None] | None] = (
 )
 _PV_PLAN: ContextVar[tuple[SystemConfig, PlanInputs] | None] = ContextVar(
     "cascade_pv_plan", default=None
+)
+_ROOT_ACTOR_TARGETS: ContextVar[dict[str, bool] | None] = ContextVar(
+    "cascade_root_actor_targets", default=None
 )
 
 
@@ -669,6 +676,7 @@ class CascadeManager:
         snapshot = deepcopy(self.coordinator._cascade_state)
         wake_keys = {
             "wake_mode",
+            "wake_root_targets",
             "wake_member_index",
             "wake_telemetry_reported_at",
             "wake_soc_reported_at",
@@ -1660,6 +1668,7 @@ class CascadeManager:
         state = self._state(cascade_id)
         for key in (
             "wake_mode",
+            "wake_root_targets",
             "wake_member_index",
             "wake_telemetry_reported_at",
             "wake_soc_reported_at",
@@ -1992,15 +2001,22 @@ class CascadeManager:
         check_forecast: bool = True,
     ) -> None:
         captured = _COORDINATE_SNAPSHOT.get()
-        if not turn_on or captured is None or not entity_id:
+        root_targets = _ROOT_ACTOR_TARGETS.get()
+        if not turn_on or not entity_id or captured is None and root_targets is None:
             return
         c = self.coordinator
+        topology = self._topology(cascade_id)
+        if topology is not None and not self._load_sources_available(
+            topology, root_targets
+        ):
+            raise _LoadUnavailable
+        if captured is None:
+            return
         if retain_confirmed and c._entity_is_on(entity_id):
             return  # Observing an existing dwell never creates a new start.
         gate = getattr(c, "voltage_gate", None)
         if gate is None:
             return
-        topology = self._topology(cascade_id)
         if topology is None:
             raise _CoordinatePermissionPending
         root_data = topology["members"][0][1]
@@ -2048,6 +2064,18 @@ class CascadeManager:
                 raise _PvPlanPermissionPending
             self._state(cascade_id)["coordinate_reason"] = "soc_coordinate_hold"
             raise _CoordinatePermissionPending
+
+    async def _root_actor(
+        self,
+        cascade_id: str,
+        entity_id: str | None,
+        targets: dict[str, bool],
+    ) -> bool:
+        token = _ROOT_ACTOR_TARGETS.set(targets)
+        try:
+            return await self._actor(cascade_id, entity_id, True)
+        finally:
+            _ROOT_ACTOR_TARGETS.reset(token)
 
     @_control_sequence
     async def _actor(
@@ -2843,6 +2871,8 @@ class CascadeManager:
         topology = self._topology(cascade_id)
         if topology is None:
             return False
+        if not self._load_sources_available(topology):
+            raise _LoadUnavailable
         self._check_minimum_off(cascade_id, self._aux_targets(topology, source_id))
         root_data = topology["members"][0][1]
         terminal_actor = topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH)
@@ -2883,6 +2913,8 @@ class CascadeManager:
         if topology is None:
             await self._fault(cascade_id, "invalid_topology")
             return False
+        if not self._load_sources_available(topology):
+            raise _LoadUnavailable
         state = self._state(cascade_id)
         targets = self._aux_targets(topology, source_id)
         for _, data in topology["members"]:
@@ -2944,6 +2976,8 @@ class CascadeManager:
     ) -> bool:
         """Resume an observed Root-fed Aux wake without cycling the chain."""
         self._begin_actor_sequence(cascade_id)
+        if not self._load_sources_available(topology):
+            raise _LoadUnavailable
         targets = self._aux_targets(topology, source_id)
         for _, data in topology["members"]:
             self._set_actor_target(targets, data.get(CONF_LOAD_OUTPUT_SWITCH), True)
@@ -3027,6 +3061,12 @@ class CascadeManager:
         # Claims from before HA stopped cannot establish current ownership.
         # Rebuild them only from the now-confirmed physical vector.
         state["claims"] = dict(live)
+        if any(live.values()):
+            root = topology["members"][0][1].get(CONF_LOAD_CONTROL_SWITCH)
+            if not self._load_sources_available(
+                topology, live if live.get(root) else None
+            ):
+                raise _LoadUnavailable
         safe_off = dict.fromkeys(live, False)
         flow = plan.flows[0] if plan.flows else None
         desired_source = (
@@ -3141,6 +3181,8 @@ class CascadeManager:
     ) -> bool:
         """Apply only changed Root consumers after the ordered wake."""
         targets = self._permitted_root_targets(cascade_id, topology, plan)
+        if not self._load_sources_available(topology, targets):
+            raise _LoadUnavailable
         if not await self._turn_off_unneeded(cascade_id, topology, targets):
             return False
         # ON order is supply-to-load; OFF order above is deliberately reversed.
@@ -3150,7 +3192,9 @@ class CascadeManager:
         on_order.append(topology["terminal"].get(CONF_LOAD_CONTROL_SWITCH))
         on_order.extend(data.get(CONF_LOAD_CHARGE_ENABLE) for _, data in members)
         for actor in on_order:
-            if targets.get(actor) and not await self._actor(cascade_id, actor, True):
+            if targets.get(actor) and not await self._root_actor(
+                cascade_id, actor, targets
+            ):
                 return False
         self._clear_member_wake(cascade_id)
         self._aux_tick.pop(cascade_id, None)
@@ -3177,6 +3221,8 @@ class CascadeManager:
         if topology is None or not plan.flows:
             return False
         targets = self._permitted_root_targets(cascade_id, topology, plan)
+        if not self._load_sources_available(topology, targets):
+            raise _LoadUnavailable
         # Do not create an OFF clock for an actor that is still needed. This
         # same delta rule applies to gate-only changes and path extensions.
         if not await self._turn_off_unneeded(cascade_id, topology, targets):
@@ -3190,7 +3236,7 @@ class CascadeManager:
         baseline = (
             self._member_telemetry_reported_at(root)[0] if not root_was_on else None
         )
-        if not await self._actor(cascade_id, root_actor, True):
+        if not await self._root_actor(cascade_id, root_actor, targets):
             return False
         # A confirmed Root supply ends the old Aux episode even if additional
         # members still need waking. Never integrate its power over this gap.
@@ -3219,6 +3265,7 @@ class CascadeManager:
             baseline = self._member_telemetry_reported_at(
                 topology["members"][first_missing][1]
             )[0]
+        state["wake_root_targets"] = targets
         self._wait_for_member_wake(
             cascade_id, topology, first_missing, baseline, now, "root"
         )
@@ -3275,9 +3322,11 @@ class CascadeManager:
             output_count = len(topology["members"])
             wake_count = output_count
         elif mode == "root":
-            output_count, wake_count = self._root_target_counts(
-                topology, self._permitted_root_targets(cascade_id, topology, plan)
-            )
+            targets = self._permitted_root_targets(cascade_id, topology, plan)
+            if not self._load_sources_available(topology, targets):
+                raise _LoadUnavailable
+            output_count, wake_count = self._root_target_counts(topology, targets)
+            state["wake_root_targets"] = targets
         else:
             return False
 
@@ -3306,7 +3355,11 @@ class CascadeManager:
                 state["wake_actor_attempts"] = 0
                 state.pop("wake_actor_last_error", None)
             state["wake_actor_attempts"] = int(state["wake_actor_attempts"]) + 1
-            if not await self._actor(cascade_id, output_entity, True):
+            if mode == "root":
+                confirmed = await self._root_actor(cascade_id, output_entity, targets)
+            else:
+                confirmed = await self._actor(cascade_id, output_entity, True)
+            if not confirmed:
                 last_error = deepcopy(state.get("last_actor_error"))
                 state["wake_actor_last_error"] = last_error
                 try:
@@ -3531,6 +3584,8 @@ class CascadeManager:
                 await self._handle_foreign_override(
                     cascade_id, self._actor_mode(topology, err.entity_id)
                 )
+        except _LoadUnavailable:
+            await self._stop_unavailable_path(cascade_id, now)
         except _PvPlanPermissionPending:
             self._state(cascade_id)["coordinate_reason"] = "pv_plan_evidence_lost"
         except _CoordinatePermissionPending:
@@ -3540,6 +3595,87 @@ class CascadeManager:
             # A partially built path must not remain energised while waiting.
             # Already OFF actors are not rewritten and their clocks stay fixed.
             await self.async_safe_off(cascade_id, "minimum off interval")
+
+    def _load_sources_available(
+        self, topology: dict[str, Any], root_targets: dict[str, bool] | None = None
+    ) -> bool:
+        members = topology["members"]
+        terminal = topology["terminal"]
+        terminal_required = True
+        if root_targets is not None:
+            # A member's output supplies the next member's input. An upstream
+            # witness is required even when only a downstream battery charges.
+            terminal_actor = terminal.get(CONF_LOAD_CONTROL_SWITCH)
+            terminal_required = bool(
+                root_targets.get(
+                    terminal_actor or members[-1][1].get(CONF_LOAD_OUTPUT_SWITCH)
+                )
+            )
+            required_count = (
+                len(members)
+                if terminal_required
+                else int(
+                    bool(root_targets.get(members[0][1].get(CONF_LOAD_CONTROL_SWITCH)))
+                )
+            )
+            for index, (_, data) in enumerate(members):
+                if root_targets.get(data.get(CONF_LOAD_OUTPUT_SWITCH)):
+                    required_count = max(required_count, index + 2)
+                elif root_targets.get(data.get(CONF_LOAD_CHARGE_ENABLE)):
+                    required_count = max(required_count, index + 1)
+            members = members[:required_count]
+        return (
+            not terminal_required or load_sources_available(self.coordinator, terminal)
+        ) and all(load_sources_available(self.coordinator, data) for _, data in members)
+
+    def _active_load_sources_available(
+        self, cascade_id: str, topology: dict[str, Any]
+    ) -> bool:
+        state = self._state(cascade_id)
+        phase = state.get("phase")
+        if phase in ("waking", "waking_socs", "proving", "running") or (
+            phase == "waking_members" and state.get("wake_mode") == "aux"
+        ):
+            return self._load_sources_available(topology)
+        # Confirmed actors may still belong to an older path during wake.
+        targets = {
+            **state.get("wake_root_targets", {}),
+            **{actor: True for actor, on in state["claims"].items() if on},
+        }
+        return self._load_sources_available(topology, targets)
+
+    async def _stop_unavailable_path(self, cascade_id: str, now: datetime) -> None:
+        state = self._state(cascade_id)
+        if state.get("phase") in (*_TRANSIENT_PHASES, "running", "root") or any(
+            state["claims"].values()
+        ):
+            await self.async_safety_off(cascade_id, "load unavailable", now)
+
+    @_control_sequence
+    async def async_stop_if_unavailable(self, cascade_id: str) -> None:
+        """Recheck a witness event under the same lock as the wake sequence."""
+        async with self._locks.setdefault(cascade_id, asyncio.Lock()):
+            self._check_control_generation(cascade_id)
+            state = self._state(cascade_id)
+            if (
+                self._stopping()
+                or not state["enabled"]
+                or state.get("hands_off")
+                or state.get("fault")
+                or self.member_control_released(cascade_id)
+                or state.get("restart_reconcile_pending")
+            ):
+                return
+            topology = self._topology(cascade_id)
+            if topology is None or self._active_load_sources_available(
+                cascade_id, topology
+            ):
+                return
+            foreign = self._foreign_override(cascade_id, topology)
+            if foreign is not None:
+                await self._handle_foreign_override(cascade_id, foreign)
+                return
+            await self._stop_unavailable_path(cascade_id, dt_util.now())
 
     async def _apply_one_ready(
         self,
@@ -3639,6 +3775,9 @@ class CascadeManager:
         foreign_mode = self._foreign_override(cascade_id, topology)
         if foreign_mode is not None:
             await self._handle_foreign_override(cascade_id, foreign_mode)
+            return
+        if not self._active_load_sources_available(cascade_id, topology):
+            await self._stop_unavailable_path(cascade_id, now)
             return
         by_id = {item.load_id: item for item in load_states}
         if state.get("recovery_pending"):

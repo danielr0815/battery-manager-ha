@@ -339,12 +339,27 @@ test("source roles retain unavailable, stale and unconfigured distinctions witho
     },
     { role: "pv", entity_id: null, status: "not_configured" },
     { role: "market", entity_id: "sensor.missing", status: "not_found" },
+    {
+      role: "washer_power",
+      entity_id: "sensor.washer",
+      status: "supply_conflict",
+      value: 30,
+      unit: "W",
+    },
+    {
+      role: "dryer_power",
+      entity_id: "sensor.dryer",
+      status: "expected_offline",
+    },
     { role: "<img>", status: "invalid", error: "<script>" },
   ]);
   assert.match(html, /Stale publication/);
   assert.match(html, /0 W/);
   assert.match(html, /Not configured/);
   assert.match(html, /Entity not found/);
+  assert.match(html, /Power reported while the supply is off/);
+  assert.match(html, /30 W/);
+  assert.match(html, /Offline while supply is off/);
   assert.match(html, /&lt;img&gt;/);
   assert.doesNotMatch(html, /<img>|<script>|>null</);
 });

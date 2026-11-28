@@ -1,4 +1,7 @@
 name: Release validation and preparation
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' && format('Prepare release {0} {1}', inputs.tag, inputs.target_ref)
+    || format('Validate published release {0}', github.event.release.tag_name) }}
 
 on:
   release:
@@ -6,32 +9,79 @@ on:
   workflow_dispatch:
     inputs:
       target_ref:
-        description: Exact commit or tag to validate before publishing
+        description: Exact commit SHA for reusable evidence, or tag to validate
         required: true
       tag:
         description: Intended release tag (vX.Y.Z)
         required: true
 
+concurrency:
+  group: release-validation-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
 permissions:
+  actions: read
   contents: read
 
 jobs:
   version:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
+      reused_run: ${{ steps.reuse.outputs.run_id }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.target_ref || github.event.release.tag_name }}
+          ref: ${{ inputs.target_ref || github.sha }}
+          path: release-target
+          persist-credentials: false
       - id: commit
+        working-directory: release-target
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v9.0.0
-      - run: uv run --no-project python scripts/check_release.py --tag "$RELEASE_TAG"
+      - name: Check release metadata using trusted workflow tooling
+        run: uv run --no-project python release-tools/scripts/check_release.py --root release-target --tag "$RELEASE_TAG"
         env:
           RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      - name: Reuse validation for the exact commit
+        id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          WORKFLOW_SOURCE: ${{ github.workflow_sha }}
+        run: |
+          quality_path=HEAD:.github/workflows/validate.yml
+          quality_blob=$(git -C release-tools rev-parse --verify "$quality_path")
+          target_quality_blob=$(git -C release-target rev-parse --verify "$quality_path" 2>/dev/null || true)
+          run_id=$(uv run --no-project python release-tools/scripts/release_quality.py \
+            --repository "$GITHUB_REPOSITORY" --default-branch "$DEFAULT_BRANCH" \
+            --commit "$TARGET_SHA" --tag "$RELEASE_TAG" --workflow-source "$WORKFLOW_SOURCE" \
+            --quality-blob "$quality_blob" --target-quality-blob "$target_quality_blob")
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
   quality:
     needs: version
+    if: needs.version.outputs.reused_run == ''
     uses: ./.github/workflows/validate.yml
     with:
       target_ref: ${{ needs.version.outputs.commit }}
+
+  record-quality:
+    name: Fresh quality validated
+    needs: [version, quality]
+    if: >-
+      needs.quality.result == 'success' && github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Fresh quality checks passed for $TARGET_SHA"
+        env:
+          TARGET_SHA: ${{ needs.version.outputs.commit }}

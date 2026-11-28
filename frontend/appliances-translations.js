@@ -83,6 +83,11 @@ const TEXT = {
     ready: "Profile available",
     insufficient: "Not enough observations",
     disabled: "Disabled",
+    supply_off: "Supply off",
+    supply_conflict: "Power reported while the supply is off",
+    supply_switch: "Supply switch",
+    observation_suspended:
+      "Observation suspended because a configured sensor is missing",
     detection: "Run detection",
     selected_program: "Selected program",
     active_program: "Active program",
@@ -173,6 +178,11 @@ const TEXT = {
     ready: "Profil vorhanden",
     insufficient: "Noch nicht genügend Beobachtungen",
     disabled: "Deaktiviert",
+    supply_off: "Versorgung aus",
+    supply_conflict: "Leistung bei ausgeschalteter Versorgung gemeldet",
+    supply_switch: "Versorgungsschalter",
+    observation_suspended:
+      "Beobachtung ausgesetzt, weil ein zugeordneter Sensor fehlt",
     detection: "Lauferkennung",
     selected_program: "Ausgewähltes Programm",
     active_program: "Aktives Programm",

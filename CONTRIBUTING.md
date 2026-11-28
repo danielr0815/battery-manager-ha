@@ -160,10 +160,15 @@ Explain the diff in your PR.
 ## Versioning & releases
 
 - Prepare the release by running the **Release validation and preparation**
-  workflow with the exact target commit and intended `vX.Y.Z` tag. The workflow
-  resolves the commit once and runs the same quality gates against that SHA.
-  Publish the tag only after it passes. Published releases are checked again
-  against their actual tag commit; no release job rewrites `main`.
+  workflow from the default branch with the exact target commit and intended
+  `vX.Y.Z` tag. It checks the tag against the target commit and reuses
+  successful quality checks for that SHA and the same validation workflow.
+  It waits for a matching push run in progress and runs the full suite when
+  no matching validation exists. Publish the tag only after preparation passes.
+- On publication, the workflow checks the actual tag commit and can reuse
+  validation from the push or release preparation. Tag pushes do not trigger
+  the general validation suite. A failed or timed-out push validation blocks
+  preparation until the same commit has a successful run.
 - HACS uses immutable release tags, not an undocumented moving branch SHA.
 - For every user-visible change, bump
   `custom_components/battery_manager/manifest.json` **and** `pyproject.toml` to

@@ -231,6 +231,7 @@ CONF_LOAD_CAPACITY_WH = "capacity_wh"
 CONF_LOAD_TARGET_SOC = "target_soc_percent"
 CONF_LOAD_SOC_ENTITY = "soc_entity"
 CONF_LOAD_POWER_ENTITY = "power_entity"
+CONF_LOAD_REQUIRE_POWER_FEEDBACK = "require_power_feedback"
 # Optional kWh energy counter of the load itself (e.g. a Fritz!Powerline
 # energy sensor). Feeds the realized surplus accounting (F-REALIZED-SURPLUS):
 # measured consumption replaces the runtime x power estimate for "prevented
@@ -492,6 +493,8 @@ STORAGE_VERSION = 2
 # --- Appliance subentry keys ---
 SUBENTRY_TYPE_APPLIANCE = "appliance"
 CONF_APPLIANCE_NAME = "name"
+CONF_APPLIANCE_SUPPLY_SWITCH = "supply_switch"
+CONF_APPLIANCE_SUSPEND_ON_MISSING = "suspend_on_missing"
 CONF_APPLIANCE_POWER_ENTITY = "power_entity"
 CONF_APPLIANCE_ENERGY_ENTITY = "energy_entity"
 CONF_APPLIANCE_PROGRAM_ENTITY = "program_entity"
@@ -800,6 +803,7 @@ LOAD_RUNTIME_TICK_MAX_S = 900.0
 
 DEFAULT_LOAD_CONFIG = {
     CONF_LOAD_POWER_W: 300.0,
+    CONF_LOAD_REQUIRE_POWER_FEEDBACK: False,
     CONF_LOAD_BATTERY_TOLERANCE: 15.0,
     CONF_LOAD_MIN_RUNTIME_MIN: 30,
     CONF_LOAD_MIN_OFF_MIN: 30,

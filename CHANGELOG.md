@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/0.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.0] - 2026-11-27
+
+### Added
+
+- Überschusslasten und beobachtete Haushaltsgeräte lassen sich einzeln auf
+  den Ausfall ihrer Messung einstellen. Haushaltsgeräte können den Zustand
+  ihrer vorgeschalteten Steckdose für die Lauferkennung und das Lernen des
+  Verbrauchsprofils verwenden.
+
+### Fixed
+
+- Der Gerätespeicher-Cache verwendet die tatsächliche HA-Meldezeit des
+  Ladezustands. Eine alte oder wiederhergestellte Meldung kann eine laufende
+  Ladung über ihre gebuchte Frist hinaus nicht mehr freigeben.
+
+## [0.70.1] - 2026-11-27
+
+### Fixed
+
+- AC-Eingang und AC-Ausgang des Wechselrichters können für die schnelle
+  Restlastregelung zugeordnet werden. Unterschiedliche Portleistungen oder
+  zeitversetzte Meldungen unterbrechen die aus der Batteriemessung abgeleitete
+  48-V-SOC-Prognose dabei nicht mehr.
+
 ## [0.70.0] - 2026-11-25
 
 ### Changed

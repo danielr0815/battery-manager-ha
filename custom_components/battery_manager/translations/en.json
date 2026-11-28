@@ -129,9 +129,9 @@
               "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "soc_expectation_grid_power_entity": "For the short-term SOC expectation with AC-coupled PV. Use signed power at the site grid connection in W or kW, positive for import and negative for export. Configure together with the setpoint.",
               "soc_expectation_grid_setpoint_entity": "Readback of the grid import target applied by the house controller. Positive means import. Use W or kW. A number entity without a unit explicitly represents watts. The manager reads this value.",
-              "live_ac_grid_power_entity": "Positive import, negative export. Configure all three live AC sources together; current power in W/kW.",
-              "live_ac_input_power_entity": "Positive toward the inverter from the AC grid; negative from the inverter toward the grid. Not battery power.",
-              "live_ac_output_power_entity": "Positive toward AC loads; negative AC solar feeding the inverter. This AC balance excludes DC consumers."
+              "live_ac_grid_power_entity": "Signed site grid power in W or kW, positive for import. Configure all three live AC sources for residual demand. The SOC forecast can use the grid meter together with the effective grid setpoint.",
+              "live_ac_input_power_entity": "Used for AC residual demand. Power from the grid to the inverter is positive. Power flowing back to the grid is negative.",
+              "live_ac_output_power_entity": "Used for AC residual demand. Power to AC loads is positive. AC solar power flowing back to the inverter is negative."
             }
           }
         }
@@ -313,6 +313,7 @@
       "entry_type": "Surplus load",
       "error": {
         "keep_on_requires_enable": "The 'keep on' policy requires a charge-enable entity — otherwise charging could never be stopped.",
+        "required_power_feedback_missing": "Select a power feedback sensor for this load.",
         "control_entities_not_distinct": "Charging input switch and charge-enable entity must be different.",
         "name_required": "Please enter a name for the cascade.",
         "cascade_members_required": "Select at least one storage.",
@@ -348,6 +349,7 @@
             "power_entity": "Power feedback sensor (optional)",
             "energy_entity": "Energy counter (optional)",
             "availability_entity": "Availability entity (optional)",
+            "require_power_feedback": "Require power feedback for this load",
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)",
             "control_switch_entity": "Control switch / plug (optional — BM switches it directly)",
@@ -365,7 +367,8 @@
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "energy_entity": "kWh counter of this load (e.g. a Fritz!Powerline energy sensor). Its measured consumption feeds the realized surplus accounting — and corrects the export meter for loads supplied outside the house measuring point (in-house flag off). Implausible counter jumps are ignored.",
-            "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
+            "availability_entity": "Optional independent permission for this load. Choose a manual enable switch or an independently powered device sensor. A missing, off, unknown or unavailable state blocks the load. A numeric reading of 0 W permits planning.",
+            "require_power_feedback": "Enable this for an independently powered meter. A missing or invalid power reading blocks the load. A reading of 0 W permits planning. Leave disabled for devices whose meter sleeps when the device is off.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it, whether via a feed-in setpoint OR simply on a circuit the grid meter does not see (e.g. a cellar dehumidifier whose supply shows up 1:1 as export on an EM540): otherwise it would be subtracted twice and bias the learned baseline low.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
             "control_switch_entity": "Switchable plug/relay that powers the load; if set, BM turns the load on and off itself and a separate switching automation becomes redundant. For a powerstation this is the charging input. BM control OFF immediately releases input, charge gate and output without switching them; OFF survives restart. Already dispatched commands may still arrive. ON permits fresh planning without claiming an already-on input.",
@@ -387,6 +390,7 @@
             "power_entity": "Power feedback sensor (optional)",
             "energy_entity": "Energy counter (optional)",
             "availability_entity": "Availability entity (optional)",
+            "require_power_feedback": "Require power feedback for this load",
             "in_house_measurement": "Included in house-load measurement",
             "power_warning_percent": "Power deviation warning (%)",
             "control_switch_entity": "Control switch / plug (optional — BM switches it directly)",
@@ -404,7 +408,8 @@
             "energy_limited": "Enable if the load is a storage that becomes full (e.g. a powerstation). Off = continuous consumer such as a dehumidifier.",
             "power_entity": "Sensor with the actually measured power draw. Replaces (smoothed) the nominal power in planning once readings are available.",
             "energy_entity": "kWh counter of this load (e.g. a Fritz!Powerline energy sensor). Its measured consumption feeds the realized surplus accounting — and corrects the export meter for loads supplied outside the house measuring point (in-house flag off). Implausible counter jumps are ignored.",
-            "availability_entity": "The load is only scheduled while this entity is on/available — e.g. an input_boolean as a manual enable switch. off/unavailable/unknown = the load is ignored.",
+            "availability_entity": "Optional independent permission for this load. Choose a manual enable switch or an independently powered device sensor. A missing, off, unknown or unavailable state blocks the load. A numeric reading of 0 W permits planning.",
+            "require_power_feedback": "Enable this for an independently powered meter. A missing or invalid power reading blocks the load. A reading of 0 W permits planning. Leave disabled for devices whose meter sleeps when the device is off.",
             "in_house_measurement": "Keep enabled if this load sits behind the configured consumption measuring point — it is then subtracted while learning the baseline. Disable if the load is supplied outside of it, whether via a feed-in setpoint OR simply on a circuit the grid meter does not see (e.g. a cellar dehumidifier whose supply shows up 1:1 as export on an EM540): otherwise it would be subtracted twice and bias the learned baseline low.",
             "power_warning_percent": "Warning threshold for the deviation between real draw and the configured power while the load runs at the integration's request. If the deviation persists longer than the dwell below (e.g. full water tank: near 0 W), the load's warning sensor turns on and stays on until the load runs at its configured power again. 0 = disabled (the default for new loads). Short defrost pauses reset the timer and do not trigger.",
             "control_switch_entity": "Switchable plug/relay that powers the load; if set, BM turns the load on and off itself and a separate switching automation becomes redundant. For a powerstation this is the charging input. BM control OFF immediately releases input, charge gate and output without switching them; OFF survives restart. Already dispatched commands may still arrive. ON permits fresh planning without claiming an already-on input.",
@@ -514,6 +519,8 @@
           "description": "Washer/dishwasher: a detected run adds its remaining consumption to the forecast; optionally a start-window advisor entity is created.",
           "data": {
             "name": "Name",
+            "supply_switch": "Supply switch (optional)",
+            "suspend_on_missing": "Suspend observation when sensors are missing",
             "detection_entity": "Detection entity (power sensor or state)",
             "power_threshold_w": "Running power threshold (W)",
             "off_threshold_w": "Stop power threshold (W)",
@@ -529,6 +536,8 @@
           },
           "data_description": {
             "name": "Display name of the appliance.",
+            "supply_switch": "Upstream switch supplying the appliance and its meter. When confirmed off, offline sources are expected.",
+            "suspend_on_missing": "Suspend observation and start advice when configured detection, power or energy sources are missing. By default a brief detection gap retains the previous running estimate.",
             "detection_entity": "Entity that indicates a running program: either a power sensor (W) or a state sensor (e.g. \"running\").",
             "power_threshold_w": "Only relevant for power sensors: above this power the appliance counts as running.",
             "off_threshold_w": "Only relevant for power sensors: a running appliance stays detected until the power drops below this — a brief dip (e.g. a dishwasher soak between heater bursts) does not reset the run. Keep at or below the running threshold.",
@@ -547,6 +556,8 @@
           "title": "Appliance",
           "data": {
             "name": "Name",
+            "supply_switch": "Supply switch (optional)",
+            "suspend_on_missing": "Suspend observation when sensors are missing",
             "detection_entity": "Detection entity (power sensor or state)",
             "power_threshold_w": "Running power threshold (W)",
             "off_threshold_w": "Stop power threshold (W)",
@@ -562,6 +573,8 @@
           },
           "data_description": {
             "name": "Display name of the appliance.",
+            "supply_switch": "Upstream switch supplying the appliance and its meter. When confirmed off, offline sources are expected.",
+            "suspend_on_missing": "Suspend observation and start advice when configured detection, power or energy sources are missing. By default a brief detection gap retains the previous running estimate.",
             "detection_entity": "Entity that indicates a running program: either a power sensor (W) or a state sensor (e.g. \"running\").",
             "power_threshold_w": "Only relevant for power sensors: above this power the appliance counts as running.",
             "off_threshold_w": "Only relevant for power sensors: a running appliance stays detected until the power drops below this — a brief dip (e.g. a dishwasher soak between heater bursts) does not reset the run. Keep at or below the running threshold.",
@@ -776,9 +789,9 @@
               "operation_export_power_entity": "Grid export power for daily comparison (optional) Power in W or kW; missing or stale values remain unknown. No kWh counters or signed net power.",
               "soc_expectation_grid_power_entity": "For the short-term SOC expectation with AC-coupled PV. Use signed power at the site grid connection in W or kW, positive for import and negative for export. Configure together with the setpoint.",
               "soc_expectation_grid_setpoint_entity": "Readback of the grid import target applied by the house controller. Positive means import. Use W or kW. A number entity without a unit explicitly represents watts. The manager reads this value.",
-              "live_ac_grid_power_entity": "Positive import, negative export. Configure all three live AC sources together; current power in W/kW.",
-              "live_ac_input_power_entity": "Positive toward the inverter from the AC grid; negative from the inverter toward the grid. Not battery power.",
-              "live_ac_output_power_entity": "Positive toward AC loads; negative AC solar feeding the inverter. This AC balance excludes DC consumers."
+              "live_ac_grid_power_entity": "Signed site grid power in W or kW, positive for import. Configure all three live AC sources for residual demand. The SOC forecast can use the grid meter together with the effective grid setpoint.",
+              "live_ac_input_power_entity": "Used for AC residual demand. Power from the grid to the inverter is positive. Power flowing back to the grid is negative.",
+              "live_ac_output_power_entity": "Used for AC residual demand. Power to AC loads is positive. AC solar power flowing back to the inverter is negative."
             }
           },
           "support_paths": {
@@ -1034,6 +1047,7 @@
         "state": {
           "idle": "Inactive",
           "running": "Running",
+          "supply_off": "Supply off",
           "paused": "Paused",
           "finished": "Finished",
           "error": "Error"

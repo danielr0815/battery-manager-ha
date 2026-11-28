@@ -1,5 +1,21 @@
 # Aktuelle Verträge ab 0.46.0
 
+## AC-Messgrenzen und Sensorversorgung ab 0.70.1 und 0.71.0
+
+| Anforderung | Verbindliches Verhalten | Regressionstest |
+|---|---|---|
+| AC-Restlast | AC-In, AC-Out und saldierte Standortleistung dürfen die schnelle AC-Restlast bestimmen. Die drei direkt zugeordneten Werte müssen für diese Regelung geeignet und aktuell sein. | [Live-AC-Regelung](../tests/ha/test_live_ac_runtime.py) |
+| 48-V-Nachweis | AC-Port-Differenzen, Rückfluss und Port-Meldelücken entziehen der unabhängigen Batterie-Entladungsbeobachtung keinen Nachweis. Ein separat verwendetes Netzbezugssignal muss den Standort und seinen aktuellen wirksamen Sollwert belegen. | [SOC- und Port-Gegenproben](../tests/ha/test_psu_net_discharge.py) |
+| Last mit eigener Messpflicht | Zwei unabhängige Geräteoptionen gelten. Eine zugeordnete Verfügbarkeits-Entität ist bindend. Die Pflichtmessung am eigenen Leistungssensor ist standardmäßig aus. Bestätigte 0 W sind gültig. Fehlende, geschätzte, wiederhergestellte oder negative Pflichtmessungen sperren Planung und Start. | [Konfiguration](../tests/ha/test_config_flow.py) und [Lastfreigabe](../tests/ha/test_load_availability.py) |
+| Stopp bei Ausfall | BM zieht die Empfehlung und noch ausstehende Startfreigaben zurück. Ein nachweislich BM-geführter, erreichbarer Pfad wird unter Beachtung von Eingangsbesitz und Passthrough gestoppt. Ein fremd eingeschalteter Ladehelfer erteilt keine Startfreigabe für den messpflichtigen Pfad. Der Manager darf dem Bediener dessen Schalthoheit nicht entziehen. | [Start- und Stoppfolgen](../tests/ha/test_load_availability.py) |
+| Kaskade | Eine explizite Sperre erfasst das betroffene Mitglied und alle nachgelagerten Verbraucher. Eigenständige Ladepfade davor bleiben nutzbar. Der Kaskadencontroller muss die zum angeforderten elektrischen Pfad gehörende Sperre auch während des Aufweckens und vor Schaltaufträgen beachten. | [Planner-Eingang](../tests/ha/test_load_availability.py) und [Kaskadenausführung](../tests/ha/test_cascade_manager.py) |
+| Geschaltetes Haushaltsgerät | Ein optionaler vorgeschalteter Schalter liefert die Versorgungsevidenz. Bei bestätigt Aus dürfen nachgeschaltete Sensoren erwartbar ausfallen. Eine Unterbrechung zählt nicht als abgeschlossener Lauf. Meldungen aus der Zeit vor dem Einschalten dürfen den neuen Lauf nicht belegen. Optional pausiert BM auch Beobachtung und Startempfehlung bei fehlenden konfigurierten Signalen. Im Standard bleiben manuell nutzbare Startvorschläge möglich. | [Lauferkennung und Startvorschlag](../tests/ha/test_appliance_views.py) |
+| Verbrauchslernen | Für konfigurierte Versorgungsnachweise kann eine vollständig und bestätigt stromlose Stunde 0 Wh Gerätebeitrag liefern. Fehlende Messung bei eingeschalteter oder unklarer Versorgung beziehungsweise widersprüchliche Meldungen bleiben im Geräteabzug ungeklärt. AC-Gerätelücken sperren keinen unabhängigen DC-Pfad. Die Zuordnung gilt innerhalb ihrer Konfigurationsepoche. Bestehende Einträge ohne neue Optionen behalten die bisherige Behandlung ihrer Geräte-Statistik. | [Recorder-Gegenproben](../tests/ha/test_history_recorder.py) |
+| Schlafender Gerätespeicher | Fehlende optionale Telemetrie sperrt die Ladeplanung nicht. Der letzte gültig gemeldete SOC derselben Entität gilt in der Planung bis zu sieben Tage. Ein erneutes Lesen verlängert seine Gültigkeit nicht. Eine Ladung über die gebuchte Frist erfordert aktuellen bestätigten SOC und Leistung aus dem letzten Planungsintervall. | [Cache und Laufzeit](../tests/ha/test_load_switching.py) |
+
+Details stehen in [Live-AC-Restlast](F-LIVE-AC-DEMAND.md),
+[SOC-Nachweis](F-SOC-RECONCILIATION.md) und [Laststeuerung](LOAD_CONTROL.md).
+
 ## Schutzstopps, Energiebilanz und Messdaten ab 0.66.2
 
 Bei hohem gemessenem Netzbezug erhält jede betroffene, vom Manager gesteuerte

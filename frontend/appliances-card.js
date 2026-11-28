@@ -254,6 +254,7 @@ export class BatteryManagerAppliancesCard extends HTMLElement {
       "idle",
       "running",
       "paused",
+      "supply_off",
       "finished",
       "error",
       "unknown",

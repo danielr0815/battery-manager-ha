@@ -45,7 +45,14 @@ class ApplianceSensor(BatteryManagerEntity, SensorEntity):
             "mdi:dishwasher" if key == "status" else "mdi:information-outline"
         )
         if key == "status":
-            self._attr_options = ["idle", "running", "paused", "finished", "error"]
+            self._attr_options = [
+                "idle",
+                "running",
+                "paused",
+                "finished",
+                "error",
+                "supply_off",
+            ]
         elif key == "learning":
             self._attr_options = ["no_data", "measuring", "learned", "invalid"]
 

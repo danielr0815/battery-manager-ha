@@ -42,6 +42,8 @@ from .const import (
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
     CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
+    CONF_APPLIANCE_SUPPLY_SWITCH,
+    CONF_APPLIANCE_SUSPEND_ON_MISSING,
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
@@ -110,6 +112,7 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
     CONF_LOAD_RECOVERY_SOC,
+    CONF_LOAD_REQUIRE_POWER_FEEDBACK,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
@@ -1407,6 +1410,12 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
             schema[
                 vol.Optional(key, description={"suggested_value": data.get(key)})
             ] = _entity(domain)
+        schema[
+            vol.Required(
+                CONF_LOAD_REQUIRE_POWER_FEEDBACK,
+                default=dv(CONF_LOAD_REQUIRE_POWER_FEEDBACK),
+            )
+        ] = selector.BooleanSelector()
         # F-REALIZED-SURPLUS: optional kWh energy counter of the load (e.g. a
         # Fritz!Powerline energy sensor) — measured consumption for the
         # realized surplus accounting and the export-meter correction.
@@ -1666,6 +1675,14 @@ class SurplusLoadSubentryFlow(ConfigSubentryFlow):
                     data_schema=self._basic_schema(user_input),
                     errors={CONF_LOAD_NAME: "name_required"},
                 )
+            if user_input.get(CONF_LOAD_REQUIRE_POWER_FEEDBACK) and not user_input.get(
+                CONF_LOAD_POWER_ENTITY
+            ):
+                return self.async_show_form(
+                    step_id=step_id,
+                    data_schema=self._basic_schema(user_input),
+                    errors={CONF_LOAD_POWER_ENTITY: "required_power_feedback_missing"},
+                )
             self._basic = user_input
             if user_input.get(CONF_LOAD_ENERGY_LIMITED):
                 # charge-enable is captured on the storage step -> validate there.
@@ -1767,6 +1784,22 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
                 },
             )
         ] = _entity()
+        schema[
+            vol.Optional(
+                CONF_APPLIANCE_SUPPLY_SWITCH,
+                description={"suggested_value": data.get(CONF_APPLIANCE_SUPPLY_SWITCH)},
+            )
+        ] = _entity("switch")
+        schema[
+            vol.Optional(
+                CONF_APPLIANCE_SUSPEND_ON_MISSING,
+                description={
+                    "suggested_value": data.get(
+                        CONF_APPLIANCE_SUSPEND_ON_MISSING, False
+                    )
+                },
+            )
+        ] = selector.BooleanSelector()
         for key in (
             CONF_APPLIANCE_POWER_ENTITY,
             CONF_APPLIANCE_ENERGY_ENTITY,

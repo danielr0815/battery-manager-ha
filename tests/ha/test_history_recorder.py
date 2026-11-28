@@ -1033,3 +1033,111 @@ async def test_gap_retry_is_bounded_to_seven_local_days(hass):
     assert learner.data["daily_hours"][DAYS[0]]["ac"][8] is None
     assert learner.data["daily_hours"][DAYS[1]]["ac"][8] == 90.0
     assert DAYS[0] not in learner.diagnostics()["excluded_hours"]
+
+
+async def test_meter_behind_switched_supply_only_cleans_proven_hours(hass):
+    day = DAYS[1]
+    learner = _learner(
+        hass,
+        subentries=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.phase",
+                    "power_entity": "sensor.plug",
+                    "supply_switch": "switch.supply",
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Washer",
+                unique_id=None,
+            )
+        ],
+        **{CONF_AC_LOAD_ENTITY: "sensor.ac", CONF_DC_LOAD_ENTITY: "sensor.dc"},
+    )
+    for entity, value in (("sensor.ac", 500.0), ("sensor.dc", 125.0)):
+        await _import(hass, _power_meta(entity), _power_rows(_all_hours(value)))
+    # Row in hour 0 contradicts confirmed off. Hour 4 contains only a partial
+    # meter report. Neither can be extrapolated across its full hour.
+    await _import(
+        hass,
+        _power_meta("sensor.plug"),
+        _power_rows({(day, 0): 5, (day, 4): 40, (day, 5): 40}),
+    )
+    for hour, minute, entity, state in (
+        (0, 0, "switch.supply", "off"),
+        (0, 0, "sensor.plug", "unavailable"),
+        (2, 15, "switch.supply", "on"),
+        (4, 15, "sensor.plug", "40"),
+        (6, 0, "switch.supply", "unknown"),
+        (6, 0, "sensor.plug", "unavailable"),
+        # A positive value published before the off edge is held in HA.
+        # Only the fresh post-edge report contradicts the respective off hour.
+        (6, 50, "sensor.plug", "40"),
+        (7, 0, "switch.supply", "off"),
+        (8, 5, "sensor.plug", "2"),
+        (8, 7, "sensor.plug", "unavailable"),
+    ):
+        with freeze_time(_at(day, hour, minute)):
+            attrs = {"unit_of_measurement": "W"} if entity == "sensor.plug" else {}
+            hass.states.async_set(entity, state, attrs)
+            await async_wait_recording_done(hass)
+    await _run_pinned(learner)
+    daily = learner.data["daily_hours"]
+    assert daily[DAYS[0]]["ac"] == [None] * 24
+    assert daily[day]["ac"][:10] == [
+        None,
+        500,
+        None,
+        None,
+        None,
+        460,
+        None,
+        500,
+        None,
+        500,
+    ]
+    assert daily[day]["dc"] == [125] * 24
+    assert daily[DAYS[0]]["dc"] == [125] * 24
+    reasons = learner.data["diagnostics"]["excluded_hours"][day]
+    assert reasons["ac"]["3"] == ["appliance_unresolved"]
+    assert not reasons["dc"]
+
+
+@pytest.mark.parametrize("strict", [False, True])
+async def test_meter_gap_preserves_legacy_or_explicit_suspension(hass, strict):
+    learner = _learner(
+        hass,
+        subentries=[
+            ConfigSubentryData(
+                data={
+                    CONF_APPLIANCE_DETECTION_ENTITY: "sensor.program_status",
+                    "power_entity": "sensor.appliance_power",
+                    **({"suspend_on_missing": True} if strict else {}),
+                },
+                subentry_type=SUBENTRY_TYPE_APPLIANCE,
+                title="Dishwasher",
+                unique_id=None,
+            )
+        ],
+        **{CONF_AC_LOAD_ENTITY: "sensor.ac", CONF_DC_LOAD_ENTITY: "sensor.dc"},
+    )
+    for entity, value in (("sensor.ac", 400), ("sensor.dc", 150)):
+        await _import(hass, _power_meta(entity), _power_rows(_all_hours(value)))
+    await _import(
+        hass, _power_meta("sensor.appliance_power"), _power_rows({(DAYS[0], 0): 50})
+    )
+    # Reuse an existing configuration epoch in the pre-supply-switch format.
+    # Its accepted attribution must survive an upgrade with unchanged bindings.
+    if not strict:
+        with patch.object(dt_util, "now", return_value=PINNED_NOW):
+            learner._capture_configuration(learner._raw_config())
+            epoch = learner.data["configuration_epochs"][0]
+            epoch["appliances"] = [
+                {"detection_entity": "sensor.appliance_power", "power_threshold_w": 10}
+            ]
+            epoch["fingerprint"] = "previous schema"
+    await _run_pinned(learner)
+    hour = learner.data["daily_hours"][DAYS[0]]
+    assert hour["ac"][:2] == [350, None if strict else 400]
+    assert hour["dc"][:2] == [150, 150]
+    epoch = learner.data["configuration_epochs"][-1]
+    assert epoch["appliances"][0]["suspend_on_missing"] is strict

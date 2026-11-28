@@ -25,7 +25,14 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .appliance_learning import duration_hours, measurement
+from .appliance_learning import (
+    appliance_source,
+    apply_appliance_source_health,
+    duration_hours,
+    measurement,
+    observation_block,
+    start_advice_block,
+)
 from .const import (
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_ENERGY_ENTITY,
@@ -36,6 +43,7 @@ from .const import (
     CONF_APPLIANCE_RUN_DURATION_H,
     CONF_APPLIANCE_RUN_ENERGY_WH,
     CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
+    CONF_APPLIANCE_SUPPLY_SWITCH,
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     SUBENTRY_TYPE_APPLIANCE,
 )
@@ -53,6 +61,7 @@ APPLIANCE_VIEW_INTERVAL = timedelta(minutes=1)
 APPLIANCE_PERSIST_INTERVAL = timedelta(minutes=1)
 SOURCE_KEYS = {
     "detection": CONF_APPLIANCE_DETECTION_ENTITY,
+    "supply_switch": CONF_APPLIANCE_SUPPLY_SWITCH,
     "power": CONF_APPLIANCE_POWER_ENTITY,
     "energy": CONF_APPLIANCE_ENERGY_ENTITY,
     "active_program": CONF_APPLIANCE_PROGRAM_ENTITY,
@@ -109,6 +118,7 @@ class PlanningSignature:
     duration_minutes: float
     duration_source: str
     running: bool
+    advice_block: str | None
 
 
 class ApplianceRuntime:
@@ -133,8 +143,9 @@ class ApplianceRuntime:
         self, data: Mapping[str, Any], now: datetime, key: str
     ) -> tuple[float, str]:
         c = self.coordinator
-        entity = data.get(CONF_APPLIANCE_TOTAL_TIME_ENTITY)
-        total = duration_hours(c.hass.states.get(entity) if entity else None, now)
+        total = duration_hours(
+            appliance_source(c.hass, data, CONF_APPLIANCE_TOTAL_TIME_ENTITY), now
+        )
         program = c._appliance_program(key, data)
         if program is not None and not c._appliance_is_running(
             data, key in c._appliance_started
@@ -190,16 +201,21 @@ class ApplianceRuntime:
             self._unsub.append(
                 async_track_state_change_event(c.hass, entities, self._changed)
             )
-        meters = {
+        report_sources = {
             entity
             for sub in c.entry.subentries.values()
             if sub.subentry_type == SUBENTRY_TYPE_APPLIANCE
-            for key in (CONF_APPLIANCE_POWER_ENTITY, CONF_APPLIANCE_ENERGY_ENTITY)
+            for key in SOURCE_KEYS.values()
+            if key in (CONF_APPLIANCE_POWER_ENTITY, CONF_APPLIANCE_ENERGY_ENTITY)
+            or (
+                sub.data.get(CONF_APPLIANCE_SUPPLY_SWITCH)
+                and key != CONF_APPLIANCE_SUPPLY_SWITCH
+            )
             if (entity := sub.data.get(key))
         }
-        if meters:
+        if report_sources:
             self._unsub.append(
-                async_track_state_report_event(c.hass, meters, self._reported)
+                async_track_state_report_event(c.hass, report_sources, self._reported)
             )
         if any(
             sub.subentry_type == SUBENTRY_TYPE_APPLIANCE
@@ -272,6 +288,7 @@ class ApplianceRuntime:
                 program=c._appliance_program(key, sub.data),
                 **self.planning_values(key, sub.data, now),
                 running=key in c._appliance_started,
+                advice_block=start_advice_block(c.hass, sub.data, now),
             )
             for key, sub in c.entry.subentries.items()
             if sub.subentry_type == SUBENTRY_TYPE_APPLIANCE
@@ -325,6 +342,9 @@ class ApplianceRuntime:
     ) -> Recommendation:
         if not data.get(CONF_APPLIANCE_OPPORTUNISTIC):
             return {"allowed": None, "reasons": ["disabled"]}
+        block = start_advice_block(self.coordinator.hass, data, now)
+        if block:
+            return {"allowed": None, "reasons": [block]}
         if self._floor_guard:
             return {"allowed": False, "reasons": ["safety_block"]}
         if (
@@ -345,10 +365,13 @@ class ApplianceRuntime:
             entity = data.get(conf)
             return c.hass.states.get(entity) if entity else None
 
-        detection = state(CONF_APPLIANCE_DETECTION_ENTITY)
+        detection = appliance_source(c.hass, data, CONF_APPLIANCE_DETECTION_ENTITY)
+        block = observation_block(c.hass, data, now)
         raw = detection.state.lower() if detection else "unknown"
         running = key in c._appliance_started
-        if raw in {"unknown", "unavailable", ""}:
+        if block == "supply_off":
+            status = "supply_off"
+        elif block or raw in {"unknown", "unavailable", ""}:
             status = "unknown"
         elif raw in {"error", "fault", "aborted", "cancelled", "failure"}:
             status = "error"
@@ -391,7 +414,9 @@ class ApplianceRuntime:
         remaining_source = None
         if running:
             remaining = duration_hours(
-                state(CONF_APPLIANCE_REMAINING_TIME_ENTITY), now, remaining=True
+                appliance_source(c.hass, data, CONF_APPLIANCE_REMAINING_TIME_ENTITY),
+                now,
+                remaining=True,
             )
             remaining_source = "reported"
             if remaining is None and started is not None:
@@ -408,7 +433,12 @@ class ApplianceRuntime:
         )
         observation: Observation = {
             "power_w": measurement(
-                state(CONF_APPLIANCE_POWER_ENTITY), "power", now=now
+                state(CONF_APPLIANCE_POWER_ENTITY)
+                or state(CONF_APPLIANCE_DETECTION_ENTITY)
+                if block == "supply_conflict"
+                else appliance_source(c.hass, data, CONF_APPLIANCE_POWER_ENTITY),
+                "power",
+                now=now,
             ),
             "remaining_minutes": remaining * 60 if remaining is not None else None,
             "remaining_source": remaining_source,
@@ -418,30 +448,27 @@ class ApplianceRuntime:
             "complete": bool(measured and measured["complete"]),
             "started_at": started.isoformat() if started else None,
         }
-        sources = []
-        for kind, conf in SOURCE_KEYS.items():
-            source = state(conf)
-            sources.append(
-                {
-                    "kind": kind,
-                    "entity_id": data.get(conf),
-                    "state": source.state if source else None,
-                    "available": bool(
-                        source and source.state not in {"unknown", "unavailable"}
-                    ),
-                    "last_reported": source.last_reported.isoformat()
-                    if source
-                    else None,
-                }
-            )
-        health = source_health(
+        sources = source_health(
             c.hass,
             {kind: data.get(conf) for kind, conf in SOURCE_KEYS.items()},
             now,
             kinds={"power": "power", "energy": "energy"},
         )
-        for source, quality in zip(sources, health, strict=True):
-            source.update(quality)
+        for source in sources:
+            kind = source["role"]
+            conf = SOURCE_KEYS[kind]
+            raw_source = state(conf)
+            apply_appliance_source_health(source, c.hass, data, conf, block)
+            source.update(
+                kind=kind,
+                state=raw_source.state if raw_source else None,
+                available=bool(
+                    raw_source
+                    and raw_source.state not in {"unknown", "unavailable"}
+                    and source["status"] not in {"expected_offline", "awaiting_report"}
+                ),
+                last_reported=source["reported_at"],
+            )
         return {
             "id": key,
             "name": sub.title,

@@ -129,9 +129,9 @@
               "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "soc_expectation_grid_power_entity": "Für die kurzfristige SOC-Erwartung bei AC-gekoppelter PV. Aktuelle Gesamtleistung am Netzanschluss in W oder kW. Bezug positiv, Einspeisung negativ. Zusammen mit dem Sollwert zuordnen.",
               "soc_expectation_grid_setpoint_entity": "Rückmeldung des vom Hausregler wirksam gesetzten Netzbezugs-Sollwerts. Bezug positiv. W oder kW, bei einer number-Entität ohne Einheit ausdrücklich Watt. Der Manager liest diesen Wert.",
-              "live_ac_grid_power_entity": "Netzbezug positiv, Export negativ. Alle drei Live-AC-Quellen gemeinsam zuordnen; aktuelle Leistung in W/kW.",
-              "live_ac_input_power_entity": "Positiv: vom AC-Netz zum Inverter; negativ: vom Inverter ins AC-Netz. Keine Batterieleistung.",
-              "live_ac_output_power_entity": "Positiv: vom Inverter zu AC-Verbrauchern; negativ: AC-Solarleistung zurück zum Inverter. Die AC-Bilanz enthält keine DC-Verbraucher."
+              "live_ac_grid_power_entity": "Aktuelle saldierte Netzleistung in W/kW, bei Bezug positiv. Für die Restlast alle drei Live-AC-Quellen zuordnen. Die SOC-Erwartung kann den Netzmesser zusammen mit dem wirksamen Sollwert verwenden.",
+              "live_ac_input_power_entity": "Für die AC-Restlast. Leistung vom Netz zum Inverter ist positiv, Rückfluss ins Netz negativ.",
+              "live_ac_output_power_entity": "Für die AC-Restlast. Leistung vom Inverter zu AC-Verbrauchern ist positiv, AC-Solarleistung zurück zum Inverter negativ."
             }
           }
         }
@@ -313,6 +313,7 @@
       "entry_type": "Überschusslast",
       "error": {
         "keep_on_requires_enable": "Die Politik „Anlassen“ erfordert eine Lade-Freigabe-Entität — sonst könnte das Laden nie gestoppt werden.",
+        "required_power_feedback_missing": "Bitte den Leistungssensor für diese Last auswählen.",
         "control_entities_not_distinct": "Ladeeingang-Schalter und Lade-Freigabe müssen unterschiedliche Entitäten sein.",
         "name_required": "Bitte gib einen Namen für die Kaskade ein.",
         "cascade_members_required": "Wähle mindestens einen Speicher.",
@@ -348,6 +349,7 @@
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
             "energy_entity": "Energiezähler (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
+            "require_power_feedback": "Last bei Ausfall des Leistungssensors sperren",
             "in_house_measurement": "In Hauslast-Messung enthalten",
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
             "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
@@ -365,7 +367,8 @@
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "energy_entity": "kWh-Zähler dieser Last (z. B. der Energiezähler einer Fritz!Powerline). Der gemessene Verbrauch fließt in die Überschuss-Bilanz (Ist-Werte) — und korrigiert den Exportzähler bei Lasten, die außerhalb des Haus-Messpunkts versorgt werden (Hauslast-Flag aus). Unplausible Zählersprünge werden ignoriert.",
-            "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
+            "availability_entity": "Zusätzliche Freigabe für diese Last, z. B. ein manueller Freigabeschalter oder ein unabhängig versorgter Gerätesensor. Fehlt die Entität oder meldet sie off, unknown oder unavailable, wird die Last gesperrt. Ein Messwert von 0 W erlaubt die Planung.",
+            "require_power_feedback": "Für einen unabhängig versorgten Leistungssensor aktivieren. Fehlt eine gültige Leistungsmessung, wird die Last gesperrt. 0 W erlauben die Planung. Bei einem Sensor, der mit dem Gerät einschläft, ausgeschaltet lassen.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang. BM-Steuerung OFF übergibt Eingang, Lade-Gate und Ausgang sofort ohne Schalten an die manuelle Steuerung; OFF übersteht Neustarts. Bereits versendete Befehle können noch eintreffen. ON erlaubt neue Planung, übernimmt aber keinen bereits eingeschalteten Eingang.",
@@ -387,6 +390,7 @@
             "power_entity": "Leistungs-Feedback-Sensor (optional)",
             "energy_entity": "Energiezähler (optional)",
             "availability_entity": "Verfügbarkeits-Entität (optional)",
+            "require_power_feedback": "Last bei Ausfall des Leistungssensors sperren",
             "in_house_measurement": "In Hauslast-Messung enthalten",
             "power_warning_percent": "Leistungsabweichungs-Warnung (%)",
             "control_switch_entity": "Steuerschalter / Steckdose (optional — BM schaltet direkt)",
@@ -404,7 +408,8 @@
             "energy_limited": "Einschalten, wenn die Last ein Speicher ist, der voll wird (z. B. Powerstation). Ausgeschaltet = Dauerverbraucher wie ein Entfeuchter.",
             "power_entity": "Sensor mit der real gemessenen Aufnahmeleistung. Ersetzt (geglättet) die Nennleistung in der Planung, sobald Messwerte vorliegen.",
             "energy_entity": "kWh-Zähler dieser Last (z. B. der Energiezähler einer Fritz!Powerline). Der gemessene Verbrauch fließt in die Überschuss-Bilanz (Ist-Werte) — und korrigiert den Exportzähler bei Lasten, die außerhalb des Haus-Messpunkts versorgt werden (Hauslast-Flag aus). Unplausible Zählersprünge werden ignoriert.",
-            "availability_entity": "Die Last wird nur eingeplant, wenn diese Entität an/verfügbar ist — z. B. ein input_boolean als manueller Freigabeschalter. Bei off/unavailable/unknown wird die Last ignoriert.",
+            "availability_entity": "Zusätzliche Freigabe für diese Last, z. B. ein manueller Freigabeschalter oder ein unabhängig versorgter Gerätesensor. Fehlt die Entität oder meldet sie off, unknown oder unavailable, wird die Last gesperrt. Ein Messwert von 0 W erlaubt die Planung.",
+            "require_power_feedback": "Für einen unabhängig versorgten Leistungssensor aktivieren. Fehlt eine gültige Leistungsmessung, wird die Last gesperrt. 0 W erlauben die Planung. Bei einem Sensor, der mit dem Gerät einschläft, ausgeschaltet lassen.",
             "in_house_measurement": "Eingeschaltet lassen, wenn diese Last hinter dem konfigurierten Verbrauchs-Messpunkt hängt — sie wird dann beim Lernen der Grundlast herausgerechnet. Ausschalten, wenn die Last außerhalb versorgt wird — sei es über einen Einspeise-Sollwert ODER schlicht auf einem Stromkreis, den der Netzzähler nicht sieht (z. B. ein Keller-Entfeuchter, dessen Versorgung an einem EM540 1:1 als Export erscheint): Sonst würde sie doppelt abgezogen und die gelernte Grundlast zu niedrig verschoben.",
             "power_warning_percent": "Warnschwelle für die Abweichung zwischen realer Leistung und Nennleistung, während die Last auf Empfehlung/Ansteuerung der Integration läuft. Hält die Abweichung länger als die Verzögerung unten an (z. B. Wassertank voll: nahe 0 W), geht der Warnsensor der Last auf „Problem“ und bleibt an, bis die Last wieder mit ihrer Nennleistung läuft. 0 = deaktiviert (Standard für neue Lasten). Kurze Abtau-Pausen setzen den Timer zurück und lösen nicht aus.",
             "control_switch_entity": "Schaltbare Steckdose/Relais, die die Last mit Strom versorgt; wenn gesetzt, schaltet BM die Last selbst ein und aus, und eine eigene Schalt-Automation wird überflüssig. Bei einer Powerstation ist das der Ladeeingang. BM-Steuerung OFF übergibt Eingang, Lade-Gate und Ausgang sofort ohne Schalten an die manuelle Steuerung; OFF übersteht Neustarts. Bereits versendete Befehle können noch eintreffen. ON erlaubt neue Planung, übernimmt aber keinen bereits eingeschalteten Eingang.",
@@ -514,6 +519,8 @@
           "description": "Waschmaschine/Geschirrspüler: Ein erkannter Lauf rechnet den Restverbrauch in die Prognose ein; optional wird eine Startfenster-Entität angelegt.",
           "data": {
             "name": "Name",
+            "supply_switch": "Versorgungsschalter (optional)",
+            "suspend_on_missing": "Beobachtung bei fehlenden Sensoren aussetzen",
             "detection_entity": "Erkennungs-Entität (Leistungssensor oder Status)",
             "power_threshold_w": "Leistungsschwelle „läuft“ (W)",
             "off_threshold_w": "Leistungsschwelle „aus“ (W)",
@@ -529,6 +536,8 @@
           },
           "data_description": {
             "name": "Anzeigename des Geräts.",
+            "supply_switch": "Schalter vor Gerät und Messsteckdose. Bei bestätigtem Aus sind offline gemeldete Quellen erwartbar.",
+            "suspend_on_missing": "Bei fehlender Lauferkennung, Leistung oder Energie dieses Geräts die Beobachtung und Startempfehlung aussetzen. Es zählen nur zugeordnete Quellen. Standardmäßig bleibt bei kurzer Erkennungslücke die bisherige Laufannahme erhalten.",
             "detection_entity": "Entität, an der ein laufendes Programm erkennbar ist: entweder ein Leistungssensor (W) oder ein Status-Sensor (z. B. „running“/„In Betrieb“).",
             "power_threshold_w": "Nur bei Leistungssensoren relevant: Ab dieser Leistung gilt das Gerät als laufend.",
             "off_threshold_w": "Nur bei Leistungssensoren relevant: Ein laufendes Gerät bleibt erkannt, bis die Leistung darunter fällt — ein kurzer Einbruch (z. B. Geschirrspüler-Pause zwischen Heizstößen) setzt den Lauf nicht zurück. Gleich der oder unter der „läuft“-Schwelle halten.",
@@ -547,6 +556,8 @@
           "title": "Haushaltsgerät",
           "data": {
             "name": "Name",
+            "supply_switch": "Versorgungsschalter (optional)",
+            "suspend_on_missing": "Beobachtung bei fehlenden Sensoren aussetzen",
             "detection_entity": "Erkennungs-Entität (Leistungssensor oder Status)",
             "power_threshold_w": "Leistungsschwelle „läuft“ (W)",
             "off_threshold_w": "Leistungsschwelle „aus“ (W)",
@@ -562,6 +573,8 @@
           },
           "data_description": {
             "name": "Anzeigename des Geräts.",
+            "supply_switch": "Schalter vor Gerät und Messsteckdose. Bei bestätigtem Aus sind offline gemeldete Quellen erwartbar.",
+            "suspend_on_missing": "Bei fehlender Lauferkennung, Leistung oder Energie dieses Geräts die Beobachtung und Startempfehlung aussetzen. Es zählen nur zugeordnete Quellen. Standardmäßig bleibt bei kurzer Erkennungslücke die bisherige Laufannahme erhalten.",
             "detection_entity": "Entität, an der ein laufendes Programm erkennbar ist: entweder ein Leistungssensor (W) oder ein Status-Sensor (z. B. „running“/„In Betrieb“).",
             "power_threshold_w": "Nur bei Leistungssensoren relevant: Ab dieser Leistung gilt das Gerät als laufend.",
             "off_threshold_w": "Nur bei Leistungssensoren relevant: Ein laufendes Gerät bleibt erkannt, bis die Leistung darunter fällt — ein kurzer Einbruch (z. B. Geschirrspüler-Pause zwischen Heizstößen) setzt den Lauf nicht zurück. Gleich der oder unter der „läuft“-Schwelle halten.",
@@ -776,9 +789,9 @@
               "operation_export_power_entity": "Netzeinspeiseleistung für Tagesvergleich (optional) Leistung in W oder kW; fehlende oder veraltete Werte bleiben unbekannt. Keine kWh-Zähler und keine negativen Nettoleistungen.",
               "soc_expectation_grid_power_entity": "Für die kurzfristige SOC-Erwartung bei AC-gekoppelter PV. Aktuelle Gesamtleistung am Netzanschluss in W oder kW. Bezug positiv, Einspeisung negativ. Zusammen mit dem Sollwert zuordnen.",
               "soc_expectation_grid_setpoint_entity": "Rückmeldung des vom Hausregler wirksam gesetzten Netzbezugs-Sollwerts. Bezug positiv. W oder kW, bei einer number-Entität ohne Einheit ausdrücklich Watt. Der Manager liest diesen Wert.",
-              "live_ac_grid_power_entity": "Netzbezug positiv, Export negativ. Alle drei Live-AC-Quellen gemeinsam zuordnen; aktuelle Leistung in W/kW.",
-              "live_ac_input_power_entity": "Positiv: vom AC-Netz zum Inverter; negativ: vom Inverter ins AC-Netz. Keine Batterieleistung.",
-              "live_ac_output_power_entity": "Positiv: vom Inverter zu AC-Verbrauchern; negativ: AC-Solarleistung zurück zum Inverter. Die AC-Bilanz enthält keine DC-Verbraucher."
+              "live_ac_grid_power_entity": "Aktuelle saldierte Netzleistung in W/kW, bei Bezug positiv. Für die Restlast alle drei Live-AC-Quellen zuordnen. Die SOC-Erwartung kann den Netzmesser zusammen mit dem wirksamen Sollwert verwenden.",
+              "live_ac_input_power_entity": "Für die AC-Restlast. Leistung vom Netz zum Inverter ist positiv, Rückfluss ins Netz negativ.",
+              "live_ac_output_power_entity": "Für die AC-Restlast. Leistung vom Inverter zu AC-Verbrauchern ist positiv, AC-Solarleistung zurück zum Inverter negativ."
             }
           },
           "support_paths": {
@@ -1034,6 +1047,7 @@
         "state": {
           "idle": "Inaktiv",
           "running": "Läuft",
+          "supply_off": "Versorgung aus",
           "paused": "Pausiert",
           "finished": "Beendet",
           "error": "Fehler"

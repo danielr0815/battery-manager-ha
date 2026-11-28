@@ -4,6 +4,33 @@
 > Extends REQUIREMENTS.md (L requirements) and ALGORITHM.md with direct
 > actuation of powerstation charging paths by the integration.
 
+## Verfügbarkeit einer Überschusslast
+
+Unter **Einstellungen → Geräte & Dienste → Battery Manager → Überschusslast
+→ Neu konfigurieren** stehen im ersten Schritt zwei unabhängige Möglichkeiten.
+
+- **Verfügbarkeits-Entität** eignet sich als Freigabeschalter oder als
+  separater, unabhängig versorgter Sensor. Beispielsweise kann der
+  Fritz-Leistungssensor am Kelleranschluss die Anwesenheit des Entfeuchters
+  anzeigen, während ein anderer Sensor die Leistung für die Planung liefert.
+  Ein fehlender Zustand, `unavailable`, `unknown` oder `off` sperrt die Last.
+  Ein numerischer Messwert von 0 W erlaubt die Planung.
+- **Last bei Ausfall des Leistungssensors sperren** bezieht sich auf das Feld
+  **Leistungssensor** dieser Last. Eingeschaltet verlangt es eine gültige
+  Leistungsmessung ab 0 W. Wiederhergestellte oder geschätzte Zustände sperren
+  die Last. Ein bestätigter, gleichbleibender Wert bleibt ohne feste Altersgrenze
+  gültig, bis Home Assistant eine Änderung meldet. Die Voreinstellung Aus eignet sich für einen
+  Sensor, dessen Versorgung zusammen mit der Last abschaltet. Die separate
+  Verfügbarkeits-Entität gilt bei beiden Einstellungen.
+
+Ein Ausfall zieht eine aktive Empfehlung zurück. Bei eigenständig gesteuerten
+Lasten kann BM einen erreichbaren, nachweislich von BM gestarteten Lauf stoppen.
+Dabei bleiben die Eingangsregel und der Schutz für Passthrough wirksam.
+Bei einer laufenden Kaskade beendet ihr eigener Controller den betroffenen
+Pfad in der vorgesehenen Abschaltreihenfolge. Er prüft die Freigabe auch
+während eines Aufweckvorgangs.
+Die Rückkehr des Sensors löst eine neue Planung aus.
+
 ## Eingangssteuerung ab 0.63.0
 
 Aktueller Vertrag: [Hausversorgung und Eingangssteuerung](F-HOUSE-RECHARGE-STORAGE.md).
@@ -138,7 +165,7 @@ produce ping-pong.
 Previously: an energy-limited load with an unreadable SOC ⇒ unavailable.
 **New:**
 
-- The SOC value is **cached** on every valid reading and **reused** on
+- The SOC is cached with the original HA publication time and reused on
   `unavailable`/`unknown` (last valid value for up to seven days;
   older values become unknown, with correction at the next wake-up).
 - The cache is **persisted** (HA storage) so it survives an HA restart with
@@ -154,6 +181,9 @@ Previously: an energy-limited load with an unreadable SOC ⇒ unavailable.
 
 Since 0.59.1, a persisted F4 false positive based on standby power also clears
 while SOC and power are unavailable, provided the external socket confirms OFF.
+A confirmed SOC and a power report from the last planning interval are
+required to extend a storage charging run past its booked deadline.
+
 A socket that is itself unavailable is not proof of OFF. Existing positive-power
 freeze evidence and G2 latches are not discarded solely because telemetry is
 missing. A confirmed OFF input never accumulates new F4 evidence from cached

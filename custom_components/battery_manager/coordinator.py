@@ -40,9 +40,13 @@ from .actor_ownership import (
 )
 from .appliance_learning import (
     ApplianceLearning,
+    appliance_source,
+    apply_appliance_source_health,
     duration_hours,
     measurement,
+    observation_block,
     program_name,
+    start_advice_block,
 )
 from .appliance_runtime import ApplianceRuntime, PlanningSignature
 from .cascade_manager import CascadeManager
@@ -62,6 +66,7 @@ from .const import (
     CONF_APPLIANCE_REMAINING_TIME_ENTITY,
     CONF_APPLIANCE_RUN_ENERGY_WH,
     CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
+    CONF_APPLIANCE_SUPPLY_SWITCH,
     CONF_APPLIANCE_TOTAL_TIME_ENTITY,
     CONF_BATTERY_CELLS_SERIES,
     CONF_BATTERY_VOLTAGE_ENTITY,
@@ -117,6 +122,7 @@ from .const import (
     CONF_LOAD_POWER_WARNING_PCT,
     CONF_LOAD_PRIORITY,
     CONF_LOAD_RECOVERY_SOC,
+    CONF_LOAD_REQUIRE_POWER_FEEDBACK,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
@@ -300,7 +306,10 @@ from .load_actuation import (
 from .load_safety import (
     POWER_MEASUREMENT_MAX_AGE_SECONDS,
     GridStopEvidence,
+    availability_reported,
     grid_guard_diagnostic,
+    load_sources_available,
+    queue_unavailable_load_stop,
     record_grid_stop,
     start_blocked,
 )
@@ -1407,7 +1416,6 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 keys = [
                     CONF_LOAD_SOC_ENTITY,
                     CONF_LOAD_POWER_ENTITY,
-                    CONF_LOAD_AVAILABILITY_ENTITY,
                     # F-REALIZED-SURPLUS: the per-load kWh counter (when wired)
                     # feeds the realized accounting on every state change.
                     CONF_LOAD_ENERGY_ENTITY,
@@ -1415,6 +1423,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if not planning_only:
                     keys.extend(
                         (
+                            CONF_LOAD_AVAILABILITY_ENTITY,
                             CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
                             CONF_LOAD_INPUT_POWER_ENTITY,
                         )
@@ -1434,6 +1443,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif subentry.subentry_type == SUBENTRY_TYPE_APPLIANCE:
                 for key in (
                     CONF_APPLIANCE_DETECTION_ENTITY,
+                    CONF_APPLIANCE_SUPPLY_SWITCH,
                     CONF_APPLIANCE_POWER_ENTITY,
                     CONF_APPLIANCE_ENERGY_ENTITY,
                     CONF_APPLIANCE_PROGRAM_ENTITY,
@@ -1527,6 +1537,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         ),
                         opportunistic_start=bool(
                             data.get(CONF_APPLIANCE_OPPORTUNISTIC, False)
+                            and start_advice_block(self.hass, data, dt_util.utcnow())
+                            is None
                         ),
                     )
                 )
@@ -1864,24 +1876,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for key, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
                 continue
-            rows.extend(
-                source_health(
-                    self.hass,
-                    {
-                        f"{key}_power": subentry.data.get(CONF_APPLIANCE_POWER_ENTITY),
-                        f"{key}_energy": subentry.data.get(
-                            CONF_APPLIANCE_ENERGY_ENTITY
-                        ),
-                    },
-                    now,
-                    kinds={f"{key}_power": "power", f"{key}_energy": "energy"},
-                    fallbacks={f"{key}_power": "cycle_energy_or_configured_model"},
-                    boundaries={
-                        f"{key}_power": "appliance_input",
-                        f"{key}_energy": "appliance_input",
-                    },
-                )
+            appliance_rows = source_health(
+                self.hass,
+                {
+                    f"{key}_power": subentry.data.get(CONF_APPLIANCE_POWER_ENTITY),
+                    f"{key}_energy": subentry.data.get(CONF_APPLIANCE_ENERGY_ENTITY),
+                },
+                now,
+                kinds={f"{key}_power": "power", f"{key}_energy": "energy"},
+                fallbacks={f"{key}_power": "cycle_energy_or_configured_model"},
+                boundaries={
+                    f"{key}_power": "appliance_input",
+                    f"{key}_energy": "appliance_input",
+                },
             )
+            block = observation_block(self.hass, subentry.data, now)
+            for row, signal in zip(
+                appliance_rows,
+                (CONF_APPLIANCE_POWER_ENTITY, CONF_APPLIANCE_ENERGY_ENTITY),
+                strict=True,
+            ):
+                apply_appliance_source_health(
+                    row, self.hass, subentry.data, signal, block
+                )
+            rows.extend(appliance_rows)
         if market and market.get("source"):
             rows.append(dict(market["source"]))
         return rows
@@ -3000,13 +3018,19 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         for load_plan in result.load_plans:
             prev = self._load_plan_active.get(load_plan.load_id, False)
-            if load_plan.active_now and not prev:
+            sub = self.entry.subentries.get(load_plan.load_id)
+            active = (
+                load_plan.active_now
+                and sub is not None
+                and load_sources_available(self, sub.data)
+            )
+            if active and not prev:
                 self._load_learn_ok[load_plan.load_id] = not self._draw_above_standby(
                     load_plan.load_id
                 )
-            elif not load_plan.active_now:
+            elif not active:
                 self._load_learn_ok.pop(load_plan.load_id, None)
-            self._load_plan_active[load_plan.load_id] = load_plan.active_now
+            self._load_plan_active[load_plan.load_id] = active
 
     def _load_standby_bar(self, data: Mapping[str, Any]) -> float:
         """The single standby threshold, reused by the median learner, the G2
@@ -3100,17 +3124,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._load_learn_ok.get(subentry_id, False)
         )
 
-    def _load_soc_cache_stale(self, cached: dict[str, Any]) -> bool:
-        """A cached load SOC older than LOAD_SOC_CACHE_MAX_AGE_HOURS is no longer
-        trustworthy. A legacy entry without a timestamp is trusted once (it is
-        re-stamped on the next real reading)."""
-        ts = cached.get("ts")
-        if ts is None:
+    @staticmethod
+    def _load_soc_within_window(stamp: datetime | None, now: datetime) -> bool:
+        if stamp is None or stamp.tzinfo is None:
             return False
-        parsed = dt_util.parse_datetime(ts)
-        if parsed is None:
-            return False
-        return dt_util.now() - parsed > timedelta(hours=LOAD_SOC_CACHE_MAX_AGE_HOURS)
+        age = dt_util.as_utc(now) - dt_util.as_utc(stamp)
+        return timedelta(0) <= age <= timedelta(hours=LOAD_SOC_CACHE_MAX_AGE_HOURS)
 
     @staticmethod
     def _soc_observation(
@@ -4072,18 +4091,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.entry.subentries,
             )
         )
+        available_sources = {
+            load_id: load_sources_available(self, subentry.data)
+            for load_id, subentry in self.entry.subentries.items()
+            if subentry.subentry_type == SUBENTRY_TYPE_LOAD
+        }
+        for subentry in self.entry.subentries.values():
+            if subentry.subentry_type != SUBENTRY_TYPE_CASCADE:
+                continue
+            # A downstream charge or terminal run requires every upstream
+            # member. A terminal outage still permits independent charging.
+            path = [
+                *subentry.data.get(CONF_CASCADE_MEMBER_IDS, ()),
+                subentry.data.get(CONF_CASCADE_TERMINAL_LOAD_ID),
+            ]
+            for index, load_id in enumerate(path):
+                if not available_sources.get(load_id, False):
+                    cascade_blocked.update(path[index:])
+                    break
+
         for subentry_id, subentry in self.entry.subentries.items():
             if subentry.subentry_type != SUBENTRY_TYPE_LOAD:
                 continue
             data = subentry.data
-            available = True
-            if data.get(CONF_LOAD_AVAILABILITY_ENTITY):
-                avail_state = self.hass.states.get(data[CONF_LOAD_AVAILABILITY_ENTITY])
-                available = avail_state is not None and avail_state.state not in (
-                    "unavailable",
-                    "unknown",
-                    "off",
-                )
+            available = available_sources[subentry_id]
             if not self._load_bm_enabled.get(subentry_id, True):
                 available = False  # per-load "BM control" switch off (v0.7.17)
             if subentry_id in cascade_blocked:
@@ -4092,52 +4123,63 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             live_soc = None  # validated LIVE reading only (stale guard input)
             observation_source = "unknown"
             observation_stamp = None
-            if data.get(CONF_LOAD_SOC_ENTITY):
-                soc_entity = data[CONF_LOAD_SOC_ENTITY]
+            soc_stamp = None
+            if soc_entity := data.get(CONF_LOAD_SOC_ENTITY):
+                source = self.hass.states.get(soc_entity)
                 raw_soc = self._read_float(soc_entity)
-                if raw_soc is not None and 0.0 <= raw_soc <= 100.0:
-                    source_state = self.hass.states.get(soc_entity)
+                cached = self._load_soc_cache.get(subentry_id)
+                if (
+                    source is not None
+                    and not source.attributes.get("restored")
+                    and not source.attributes.get("assumed_state")
+                    and raw_soc is not None
+                    and 0.0 <= raw_soc <= 100.0
+                    and self._load_soc_within_window(source.last_reported, now)
+                ):
+                    soc = live_soc = raw_soc
+                    soc_stamp = source.last_reported
                     observation_source = "live-source"
-                    observation_stamp = (
-                        source_state.last_reported.isoformat() if source_state else None
-                    )
-                    cached = self._load_soc_cache.get(subentry_id)
+                    observation_stamp = soc_stamp.isoformat()
+                    # Persist a stable value on its first report each UTC day.
+                    # Replanning cannot renew the lifetime of a sleeping device.
                     changed = (
                         cached is None
                         or cached.get("soc") != raw_soc
                         or cached.get("entity_id") != soc_entity
+                        or str(cached.get("observed_at"))[:10] != observation_stamp[:10]
                     )
-                    # Always refresh the freshness timestamp on a real reading
-                    # (an awake device reporting a stable SOC must not age out);
-                    # only persist when the value/entity actually changes.
                     self._load_soc_cache[subentry_id] = {
                         "entity_id": soc_entity,
                         "soc": raw_soc,
-                        "ts": dt_util.now().isoformat(),
+                        "ts": observation_stamp,
                         "observed_at": observation_stamp,
                     }
                     if changed:
                         self._save_persistent_state()
-                    soc = raw_soc
-                    live_soc = raw_soc
-                else:
-                    # Sleeping device (e.g. powerstation with its input off):
-                    # keep planning with the last known SOC — but only if it
-                    # came from the SAME entity (reconfigured loads must not
-                    # reuse another device's SOC) and it is not too old (a
-                    # device asleep for LOAD_SOC_CACHE_MAX_AGE_HOURS reverts to
-                    # "empty"). If none is usable, soc stays None and the core
-                    # assumes an empty storage — self-healing once the device
-                    # wakes while charging (docs/LOAD_CONTROL.md §4).
-                    cached = self._load_soc_cache.get(subentry_id)
+                elif cached is not None and cached.get("entity_id") == soc_entity:
+                    # Older stores have only ts. If a publication time exists
+                    # it always governs expiry, even when a reread saved a newer ts.
+                    observation_stamp = cached.get("observed_at")
+                    stored = (
+                        cached.get("ts")
+                        if observation_stamp is None
+                        else observation_stamp
+                    )
+                    parsed = (
+                        dt_util.parse_datetime(stored)
+                        if isinstance(stored, str)
+                        else None
+                    )
+                    value = cached.get("soc")
                     if (
-                        cached is not None
-                        and cached.get("entity_id") == soc_entity
-                        and not self._load_soc_cache_stale(cached)
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and 0.0 <= value <= 100.0
+                        and self._load_soc_within_window(parsed, now)
                     ):
-                        soc = cached["soc"]
+                        soc = value
+                        soc_stamp = parsed
                         observation_source = "cached"
-                        observation_stamp = cached.get("observed_at")
             self._load_soc_observations[subentry_id] = self._soc_observation(
                 soc, observation_source, observation_stamp, now
             )
@@ -4286,22 +4328,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     learned_power_w=self._load_learned_power_w.get(subentry_id),
                     saturated_power_w=saturated_power_w,
                     soc_observed_at=(
-                        # Fixed local offsets preserve real elapsed cache age,
-                        # even inside the repeated autumn hour, and share the
-                        # same unambiguous clock as PlanInputs.now.
-                        fixed_local_time(dt_util.as_local(now))
-                        if live_soc is not None
-                        else (
-                            fixed_local_time(dt_util.as_local(cached_at))
-                            if (
-                                cached_at := dt_util.parse_datetime(
-                                    cached.get("ts") or ""
-                                )
-                            )
-                            is not None
-                            else None
-                        )
-                        if soc is not None and cached is not None
+                        fixed_local_time(dt_util.as_local(soc_stamp))
+                        if soc_stamp is not None
                         else None
                     ),
                     soc_source=(
@@ -4329,7 +4357,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         entity_id = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
         if not entity_id:
             return False
-        state = self.hass.states.get(entity_id)
+        state = appliance_source(self.hass, data, CONF_APPLIANCE_DETECTION_ENTITY)
         if state is None or state.state in ("unknown", "unavailable"):
             return latched  # hold last state during a dropout, do not reset
         # F-APPLIANCE-TELEMETRY: a ready dishwasher still reports 4.5 h.
@@ -4358,17 +4386,16 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _appliance_program(self, key: str, data: Mapping[str, Any]) -> str | None:
         """Selected program is a preview only; a running cycle uses active program."""
         running = self._appliance_is_running(data, key in self._appliance_started)
-        entity = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
-        detection = self.hass.states.get(entity) if entity else None
+        detection = appliance_source(self.hass, data, CONF_APPLIANCE_DETECTION_ENTITY)
         uncertain = detection is None or detection.state in {"unknown", "unavailable"}
         if key in self._appliance_learning.programs and (running or uncertain):
             return self._appliance_learning.programs[key]
-        entity = data.get(
+        signal = (
             CONF_APPLIANCE_PROGRAM_ENTITY
             if running
             else CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY
         )
-        return program_name(self.hass.states.get(entity)) if entity else None
+        return program_name(appliance_source(self.hass, data, signal))
 
     def _appliance_duration(
         self, data: Mapping[str, Any], now: datetime, key: str = ""
@@ -4403,12 +4430,12 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if subentry.subentry_type != SUBENTRY_TYPE_APPLIANCE:
                 continue
             data = subentry.data
-            entity_id = data.get(CONF_APPLIANCE_DETECTION_ENTITY)
-            state = self.hass.states.get(entity_id) if entity_id else None
+            block = observation_block(self.hass, data, now)
 
             def sensor(key, data=data):
-                entity = data.get(key)
-                return self.hass.states.get(entity) if entity else None
+                return appliance_source(self.hass, data, key)
+
+            state = sensor(CONF_APPLIANCE_DETECTION_ENTITY)
 
             remaining = duration_hours(
                 sensor(CONF_APPLIANCE_REMAINING_TIME_ENTITY), now, remaining=True
@@ -4417,7 +4444,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "unknown",
                 "unavailable",
             )
-            if not detection_valid:
+            if not detection_valid or block:
                 # Detection dropout (operator rule, incident 2026-08-08 — see
                 # APPLIANCE_DETECTION_MAX_DROPOUT_MIN): hold the latch across
                 # short gaps (a soak phase looks identical), but once the
@@ -4426,11 +4453,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # for hours and must not stay "running" (and must not hide a
                 # fresh run once it comes back).
                 since = self._appliance_dropout_since.setdefault(subentry_id, now)
-                if now - since >= timedelta(
+                if block or now - since >= timedelta(
                     minutes=APPLIANCE_DETECTION_MAX_DROPOUT_MIN
                 ):
                     self._appliance_learning.discard(
-                        subentry_id, now, "detection_unknown"
+                        subentry_id, now, block or "detection_unknown"
                     )
                     self._appliance_learning.programs.pop(subentry_id, None)
                     self._appliance_observed_idle.discard(subentry_id)
@@ -5526,7 +5553,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if load_plan.storage is not None
                 else None,
                 **input_diagnostics(self, load_plan.load_id),
-                "available": load_state.available,
+                "available": load_state.available
+                and load_sources_available(
+                    self, self.entry.subentries[load_plan.load_id].data
+                ),
                 "soc_percent": load_state.soc_percent,
                 "soc_observation": soc_observations.get(load_plan.load_id),
                 "target_soc_percent": load.target_soc_percent
@@ -7894,9 +7924,21 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         power_entity = data.get(CONF_LOAD_POWER_ENTITY)
         if not soc_entity or not power_entity:
             return False
+        now = dt_util.utcnow()
+        for entity in (soc_entity, power_entity):
+            source = self.hass.states.get(entity)
+            if (
+                source is None
+                or not availability_reported(source)
+                or not timedelta(0)
+                <= now - source.last_reported
+                <= timedelta(seconds=UPDATE_INTERVAL_SECONDS)
+            ):
+                return False
+        soc = self._read_float(soc_entity)
+        power = self._read_power_w(power_entity)
         return (
-            self._read_float(soc_entity) is not None
-            and self._read_power_w(power_entity) is not None
+            soc is not None and 0.0 <= soc <= 100.0 and power is not None and power >= 0
         )
 
     def _maintain_recommendation_deadline(
@@ -8100,7 +8142,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         forced off entirely while the G4 floor guard is active — the
         operator's own automations follow this flag, and they must stop
         with the executor (a grid-fed run is forbidden either way)."""
-        if start_blocked(self):
+        sub = self.entry.subentries.get(load_plan.load_id)
+        if start_blocked(self) or (
+            sub is not None and not load_sources_available(self, sub.data)
+        ):
             return False
         deadline = self._load_run_deadline.get(load_plan.load_id)
         return bool(load_plan.active_now) and (deadline is None or now < deadline)
@@ -8359,7 +8404,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # still needs a sub-hour cap so the published `active` (which the
                 # operator's own automation follows) flips off at the deadline.
                 self._maintain_recommendation_deadline(
-                    subentry_id, data, plan, now, slot_durations
+                    subentry_id,
+                    data,
+                    plan if load_sources_available(self, data) else None,
+                    now,
+                    slot_durations,
                 )
                 continue
             if end_interrupted_load_run(self, subentry_id, data):
@@ -8375,6 +8424,9 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Every other load continues through the normal executor.
                 self._load_run_deadline.pop(subentry_id, None)
                 self._cancel_off_timer(subentry_id)
+                continue
+            if not force_off and not load_sources_available(self, data):
+                queue_unavailable_load_stop(self, subentry_id, data)
                 continue
             calibration_release = subentry_id in self._load_power_calibration_release
             active_now = bool(plan and plan.active_now)
@@ -9273,6 +9325,39 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "Failed to set up entity listeners: %s. Relying on polling.", err
             )
 
+    def _observe_load_availability(self, event) -> None:
+        entity = event.data["entity_id"]
+        changed = False
+        for load_id, sub in self.entry.subentries.items():
+            if sub.subentry_type != SUBENTRY_TYPE_LOAD:
+                continue
+            data = sub.data
+            witness = data.get(CONF_LOAD_AVAILABILITY_ENTITY)
+            required_power = data.get(CONF_LOAD_REQUIRE_POWER_FEEDBACK) and data.get(
+                CONF_LOAD_POWER_ENTITY
+            )
+            if entity not in (witness, required_power):
+                continue
+            if not load_sources_available(self, data):
+                self._load_plan_active[load_id] = False
+                published = (self.data or {}).get("load_plans", {}).get(load_id)
+                if published and (
+                    published.get("active") or published.get("available")
+                ):
+                    published.update(active=False, available=False)
+                    changed = True
+                queue_unavailable_load_stop(self, load_id, data)
+            # A dual-purpose actor may skip the normal replanning path below.
+            # Watt changes on a reachability-only meter need no economic plan.
+            before = event.data.get("old_state")
+            after = event.data.get("new_state")
+            if entity == required_power or availability_reported(
+                before
+            ) != availability_reported(after):
+                self._schedule_replan()
+        if changed:
+            self.async_update_listeners()
+
     @callback
     def _handle_entity_change(self, event) -> None:
         if not self._listeners_setup:
@@ -9281,6 +9366,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.cascade_manager.observe_actor_feedback(event)
         reconcile_feedback(self, event)
         if event is not None:
+            self._observe_load_availability(event)
             # Normal-load relay feedback only needs ownership/diagnostics.
             # Scheduling another runtime/planning pass for our own confirmed
             # writes adds no observation and races counter resets. Output

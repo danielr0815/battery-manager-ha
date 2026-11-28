@@ -2210,7 +2210,7 @@ async def test_recent_soc_cache_bridges_a_short_sensor_dropout(hass):
     assert coordinator._get_soc(now + timedelta(minutes=1)) == 61.5
 
 
-def test_missing_optional_load_inputs_fail_closed_but_legacy_cache_is_kept():
+def test_missing_optional_load_inputs_fail_closed():
     """Missing power/appliance inputs cannot prove activity, while a legacy SOC
     cache without a timestamp remains trusted once for migration compatibility."""
     from custom_components.battery_manager.const import (
@@ -2238,13 +2238,6 @@ def test_missing_optional_load_inputs_fail_closed_but_legacy_cache_is_kept():
         BatteryManagerCoordinator._draw_above_standby(coordinator, "missing") is False
     )
     assert BatteryManagerCoordinator._draw_above_standby(coordinator, "load") is False
-    assert BatteryManagerCoordinator._load_soc_cache_stale(coordinator, {}) is False
-    assert (
-        BatteryManagerCoordinator._load_soc_cache_stale(
-            coordinator, {"ts": "not-a-timestamp"}
-        )
-        is False
-    )
     assert (
         BatteryManagerCoordinator._appliance_is_running(coordinator, {}, True) is False
     )

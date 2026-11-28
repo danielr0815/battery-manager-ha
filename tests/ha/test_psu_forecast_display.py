@@ -191,9 +191,23 @@ async def test_battery_net_expectation_is_limited_to_observed_night(
     # inverter discharge-limit feedback still confirms the supply mode.
     c.raw_config.pop("inverter_block_switch_entity", None)
     c.raw_config.pop("support_dc48_power_entity", None)
+    live_sources = {
+        "live_ac_grid_power_entity": "sensor.site_grid",
+        "live_ac_input_power_entity": "sensor.converter_input",
+        "live_ac_output_power_entity": "sensor.converter_output",
+    }
+    c.raw_config.update(live_sources)
     c.voltage_gate.start_observing()
-    for _ in range(241):
-        freezer.tick(timedelta(seconds=30))
+    for i in range(241):
+        freezer.tick(timedelta(seconds=20))
+        hass.states.async_set(
+            "sensor.converter_input", str(130 + i % 2), {"unit_of_measurement": "W"}
+        )
+        freezer.tick(timedelta(seconds=10))
+        hass.states.async_set(
+            "sensor.converter_output", str(60 + i % 2), {"unit_of_measurement": "W"}
+        )
+        hass.states.async_set("sensor.site_grid", "130", {"unit_of_measurement": "W"})
         hass.states.async_set("binary_sensor.synthetic_grid", "on")
         fresh(hass, voltage=49.49, soc=69, power=0)
         await hass.async_block_till_done()
@@ -225,6 +239,18 @@ async def test_battery_net_expectation_is_limited_to_observed_night(
         *(round(f.soc_end_percent, 1) for f in result.trajectory.flows),
     ]
     assert float(state.state) == forecast[1]["soc"]
+    assert c.live_ac.measured_demand() == 60
+
+    # Replan at the same instant with the same battery, PV and actor evidence.
+    # Removing all three direct Live-AC bindings leaves both SOC curves intact.
+    for key in live_sources:
+        c.raw_config.pop(key)
+    c.data = await c._async_update_data_serial()
+    c.async_update_listeners()
+    without_ports = hass.states.get(sensor.entity_id)
+    assert without_ports.state == state.state
+    assert without_ports.attributes["forecast"] == forecast
+    assert without_ports.attributes["soc_expectation"] == diagnostic
 
     # A later qualified episode cannot retrospectively explain an older
     # plan, even if the BMS coordinate and all current readings still agree.

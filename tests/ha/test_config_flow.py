@@ -1452,6 +1452,8 @@ async def test_appliance_subentry_user_step_creates_entry(hass):
     assert result["type"] == "form"
     assert result["step_id"] == "user"
     assert {str(k) for k in result["data_schema"].schema} == set(APPLIANCE_PAYLOAD) | {
+        "supply_switch",
+        "suspend_on_missing",
         "power_entity",
         "energy_entity",
         "total_time_entity",
@@ -1534,8 +1536,13 @@ async def test_appliance_subentry_reconfigure_updates_title_and_data(hass):
     )
     assert energy_marker.default() == 500.0
 
+    payload = {
+        **APPLIANCE_PAYLOAD,
+        "supply_switch": "switch.supply",
+        "suspend_on_missing": True,
+    }
     result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], {**APPLIANCE_PAYLOAD, "name": "DW 2026"}
+        result["flow_id"], {**payload, "name": "DW 2026"}
     )
     assert result["type"] == "abort"
     assert result["reason"] == "reconfigure_successful"
@@ -1544,7 +1551,7 @@ async def test_appliance_subentry_reconfigure_updates_title_and_data(hass):
     sub = entry.subentries[subentry_id]
     assert sub.title == "DW 2026"
     assert "name" not in sub.data
-    assert sub.data == {k: v for k, v in APPLIANCE_PAYLOAD.items() if k != "name"}
+    assert sub.data == {k: v for k, v in payload.items() if k != "name"}
 
 
 async def test_appliance_subentry_reconfigure_rejects_blank_name(hass):
@@ -2638,3 +2645,30 @@ def test_auto_output_requires_independent_charge_gate():
         )
         is None
     )
+
+
+async def test_load_requires_mapped_power_sensor_when_outage_blocks_load(hass):
+    from custom_components.battery_manager.const import (
+        CONF_LOAD_POWER_ENTITY,
+        CONF_LOAD_REQUIRE_POWER_FEEDBACK,
+        SUBENTRY_TYPE_LOAD,
+    )
+
+    entry = await _setup_entry(hass)
+    flow = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": "user"}
+    )
+    fields = {str(key): key for key in flow["data_schema"].schema}
+    assert fields[CONF_LOAD_REQUIRE_POWER_FEEDBACK].default() is False
+    data = {**BASIC_CONTINUOUS, CONF_LOAD_REQUIRE_POWER_FEEDBACK: True}
+    result = await hass.config_entries.subentries.async_configure(flow["flow_id"], data)
+    assert result["errors"] == {
+        CONF_LOAD_POWER_ENTITY: "required_power_feedback_missing"
+    }
+    result = await hass.config_entries.subentries.async_configure(
+        flow["flow_id"], {**data, CONF_LOAD_POWER_ENTITY: "sensor.meter"}
+    )
+    sub = next(iter(entry.subentries.values()))
+    assert result["type"] == "create_entry"
+    assert sub.data[CONF_LOAD_REQUIRE_POWER_FEEDBACK] is True
+    assert sub.data[CONF_LOAD_POWER_ENTITY] == "sensor.meter"

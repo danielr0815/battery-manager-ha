@@ -720,3 +720,183 @@ async def test_registered_start_window_updates_on_program_change_and_floor_guard
     assert hass.states.get(entity_id).state == "off"
     assert hass.states.get(entity_id).attributes["reasons"] == ["safety_block"]
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_switched_supply_interrupts_cycle_and_requires_new_observation(
+    hass, freezer
+):
+    freezer.move_to(NOW)
+    c, key = _coordinator(
+        hass, supply_switch="switch.upstream", opportunistic_start=True
+    )
+    c.cleanup()
+    try:
+        hass.states.async_set("switch.upstream", "on")
+        _observe(hass, freezer, c, 0, "ready", energy=0)
+        assert _observe(hass, freezer, c, 1, "running", energy=20)
+        freezer.move_to(NOW + timedelta(minutes=2))
+        hass.states.async_set("switch.upstream", "off")
+        assert c.appliances.update(dt_util.utcnow()) == ()
+        view = c.appliances.snapshot(key)
+        assert view["status"] == "supply_off"
+        assert view["learning"]["history"][-1]["accepted"] is False
+        assert "supply_off" in view["learning"]["history"][-1]["reasons"]
+        assert view["observation"]["power_w"] is None
+        # A fresh, contradictory meter report survives in diagnostics.
+        freezer.move_to(NOW + timedelta(minutes=3))
+        hass.states.async_set("sensor.power", "30", {"unit_of_measurement": "W"})
+        c.appliances.update(dt_util.utcnow())
+        view = c.appliances.snapshot(key)
+        assert view["status"] == "unknown"
+        assert view["recommendation"]["reasons"] == ["supply_conflict"]
+        assert view["observation"]["power_w"] == 30
+        forecast = {
+            row["role"]: row for row in c.source_health_snapshot(dt_util.utcnow())
+        }
+        assert forecast[f"{key}_power"]["status"] == "supply_conflict"
+        assert forecast[f"{key}_power"]["value"] == 30
+        hass.states.async_set("sensor.power", "unavailable")
+        c.appliances.update(dt_util.utcnow())
+        sources = {v["kind"]: v for v in c.appliances.snapshot(key)["sources"]}
+        assert sources["power"]["status"] == "expected_offline"
+        assert sources["power"]["error"] is None
+        assert sources["supply_switch"]["value"] == "off"
+        forecast = {
+            row["role"]: row for row in c.source_health_snapshot(dt_util.utcnow())
+        }
+        assert forecast[f"{key}_power"]["status"] == "expected_offline"
+        assert forecast[f"{key}_power"]["value"] is None
+        freezer.move_to(NOW + timedelta(minutes=4))
+        hass.states.async_set("switch.upstream", "on")
+        assert c.appliances.update(dt_util.utcnow()) == ()
+        assert c.appliances.snapshot(key)["status"] == "unknown"
+        # Returning mid-program cannot supply its missing start.
+        assert _observe(hass, freezer, c, 5, "running", energy=80)
+        _observe(hass, freezer, c, 6, "finished", energy=100)
+        assert c.appliances.snapshot(key)["learning"]["sample_count"] == 0
+    finally:
+        c.cleanup()
+
+
+async def test_switched_program_and_duration_require_an_actual_new_report(
+    hass, freezer
+):
+    freezer.move_to(NOW)
+    c, key = _coordinator(
+        hass,
+        supply_switch="switch.upstream",
+        selected_program_entity="select.program",
+        total_time_entity="sensor.total",
+    )
+    c.cleanup()
+    try:
+        hass.states.async_set("switch.upstream", "on")
+        hass.states.async_set("sensor.total", "300", {"unit_of_measurement": "min"})
+        c.appliances.start()
+        assert c.appliances.snapshot(key)["planning"]["duration_source"] == "reported"
+
+        hass.states.async_set("select.program", "Intensive")
+        freezer.move_to(NOW + timedelta(minutes=1))
+        hass.states.async_set("switch.upstream", "off")
+        await hass.async_block_till_done(wait_background_tasks=False)
+        view = c.appliances.snapshot(key)
+        assert view["program"] is None
+        assert view["planning"]["duration_minutes"] == 270
+        assert view["planning"]["duration_source"] == "configured"
+        sources = {row["kind"]: row for row in view["sources"]}
+        assert sources["selected_program"]["state"] == "Intensive"
+        assert sources["selected_program"]["status"] == "expected_offline"
+
+        freezer.move_to(NOW + timedelta(minutes=2))
+        hass.states.async_set("switch.upstream", "on")
+        await hass.async_block_till_done(wait_background_tasks=False)
+        view = c.appliances.snapshot(key)
+        assert view["program"] is None
+        assert view["planning"]["duration_minutes"] == 270
+        sources = {row["kind"]: row for row in view["sources"]}
+        assert sources["total_time"]["status"] == "awaiting_report"
+
+        freezer.move_to(NOW + timedelta(minutes=3))
+        old_updated = hass.states.get("sensor.total").last_updated
+        hass.states.async_set("sensor.total", "300", {"unit_of_measurement": "min"})
+        await hass.async_block_till_done(wait_background_tasks=False)
+        assert hass.states.get("sensor.total").last_updated == old_updated
+        view = c.appliances.snapshot(key)
+        assert view["planning"]["duration_minutes"] == 300
+        assert view["planning"]["duration_source"] == "reported"
+
+        hass.states.async_set("select.program", "Intensive")
+        await hass.async_block_till_done(wait_background_tasks=False)
+        assert c.appliances.snapshot(key)["program"] == "Intensive"
+    finally:
+        c.cleanup()
+
+
+@pytest.mark.parametrize("suspend", [False, True])
+async def test_configured_sensor_dropout_can_suspend_one_appliance(
+    hass, freezer, suspend
+):
+    freezer.move_to(NOW)
+    c, key = _coordinator(
+        hass,
+        supply_switch="switch.upstream",
+        suspend_on_missing=suspend,
+        opportunistic_start=True,
+    )
+    c.cleanup()
+    try:
+        hass.states.async_set("switch.upstream", "on")
+        _observe(hass, freezer, c, 0, "ready", energy=0)
+        assert _observe(hass, freezer, c, 1, "running", energy=100)
+        freezer.move_to(NOW + timedelta(minutes=2))
+        hass.states.async_set("sensor.power", "unavailable")
+        runs = c.appliances.update(dt_util.utcnow())
+        view = c.appliances.snapshot(key)
+        assert bool(runs) is (not suspend)
+        assert view["status"] == ("unknown" if suspend else "running")
+        sources = {v["kind"]: v for v in view["sources"]}
+        assert sources["power"]["status"] == "unavailable"
+        if suspend:
+            assert view["recommendation"]["reasons"] == ["observation_suspended"]
+            assert not view["learning"]["history"][-1]["accepted"]
+        _observe(hass, freezer, c, 3, "finished", energy=200)
+        assert c.appliances.snapshot(key)["learning"]["sample_count"] == (
+            0 if suspend else 1
+        )
+    finally:
+        c.cleanup()
+
+
+@pytest.mark.parametrize("suspend", [False, True])
+async def test_start_advice_for_a_manually_powered_appliance(hass, freezer, suspend):
+    freezer.move_to(NOW)
+    c, key = _coordinator(
+        hass,
+        supply_switch="switch.upstream",
+        suspend_on_missing=suspend,
+        opportunistic_start=True,
+    )
+    c.cleanup()
+    try:
+        hass.states.async_set("switch.upstream", "off")
+        assert not c.appliances.update(NOW)
+        config = c.build_system_config()
+        assert config.appliances[0].opportunistic_start is (not suspend)
+        # A valid opportunity persists across the expected offline period. The
+        # same period with the explicit suspension policy suppresses the advice.
+        result = SimpleNamespace(appliance_advisories={key: ApplianceAdvisory(True)})
+        inputs = SimpleNamespace(slots=(HourSlot(0, NOW, 1, NOW.hour, 0, 0, 0),))
+        c.appliances.plan_updated(
+            result, inputs, False, config, c.appliances.planning_signature()
+        )
+        view = c.appliances.snapshot(key)
+        assert view["recommendation"] == (
+            {"allowed": None, "reasons": ["supply_off"]}
+            if suspend
+            else {"allowed": True, "reasons": []}
+        )
+        assert view["status"] == "supply_off"
+        assert not view["learning"]["history"]
+        assert view["observation"]["cycle_energy_wh"] is None
+    finally:
+        c.cleanup()

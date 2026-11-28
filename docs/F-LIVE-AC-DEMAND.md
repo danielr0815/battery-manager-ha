@@ -72,6 +72,12 @@ Batterie-DC-Leistung ist ausdrücklich kein Ersatz für AC-Ein-/Ausgang: Sie wü
 DC-Verbrauch und Umwandlungsverluste als Hauslast zählen. Mehrphasige Anlagen
 benötigen passende Summensensoren für denselben Messkreis.
 
+Ab 0.70.1 können AC-Eingang und AC-Ausgang für diese Bilanz zugeordnet
+werden, ohne dass ihre Messwerte die am Akku beobachtete 48-V-Stützung
+unterbrechen. Der saldierte Netzanschluss lässt sich zusammen mit dem
+wirksamen Netzbezugs-Sollwert auch für die [SOC-Erwartung bei Netzbezug](F-SOC-RECONCILIATION.md#kurzfristige-soc-erwartung-bei-anhaltendem-netzbezug)
+verwenden.
+
 Sobald eine dieser direkten Quellen zugeordnet ist, müssen alle drei gültig
 sein. Eine fehlende Quelle verursacht keinen stillen Wechsel auf eine andere
 Bilanz. Fehlen alle drei Zuordnungen, werden die bestehenden Optionen

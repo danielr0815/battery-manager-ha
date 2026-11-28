@@ -34,7 +34,7 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .appliance_learning import measurement
+from .appliance_learning import confirmed_state, measurement
 from .const import (
     APPLIANCE_RUNNING_STATES,
     CONF_AC_BALANCE_IN,
@@ -43,6 +43,8 @@ from .const import (
     CONF_APPLIANCE_DETECTION_ENTITY,
     CONF_APPLIANCE_POWER_ENTITY,
     CONF_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_APPLIANCE_SUPPLY_SWITCH,
+    CONF_APPLIANCE_SUSPEND_ON_MISSING,
     CONF_BATTERY_VOLTAGE_ENTITY,
     CONF_CASCADE_MEMBER_IDS,
     CONF_CASCADE_TERMINAL_LOAD_ID,
@@ -133,7 +135,7 @@ class HourMap(dict[tuple[str, int], float]):
 #     clamp regime in between (Rev. 4, docs/DC_TOPOLOGY.md §9).
 # v5: cascade pass-through is removed only at its root input (2026-09-09).
 # v6: retain historical attribution; changes open a new configuration epoch.
-_CLEANING_RULES_VERSION = 7
+_CLEANING_RULES_VERSION = 8
 
 # Reaggregate after an algorithm upgrade without changing historical attribution.
 _AGGREGATION_POLICY = "measured_p50_v1"
@@ -1795,15 +1797,6 @@ class ProfileLearner:
             # Inverted: the DC/DC converter is ON in normal operation; its
             # OFF phase means the 24 V rail is fed past the measuring point.
             switch_specs.append((cfg[CONF_DCDC_SWITCH], _is_off))
-        for appliance in appliances:
-            if appliance["detection_entity"] not in hour_maps:
-                threshold = appliance["power_threshold_w"]
-                switch_specs.append(
-                    (
-                        appliance["detection_entity"],
-                        _running_predicate(threshold),
-                    )
-                )
         vacation_entity = self._vacation_entity_id()
         if vacation_entity:
             switch_specs.append((vacation_entity, _is_on))
@@ -1862,11 +1855,21 @@ class ProfileLearner:
         #     power sensor; without that sensor the hour stays unlearnable.
         # Only unresolvable states (unmeasured PSU feed, dead rail,
         # uncovered switch history) still exclude the hour.
-        status_appliances = [
-            appliance["detection_entity"]
-            for appliance in appliances
-            if appliance["detection_entity"] not in hour_maps
-        ]
+        appliance_series = (
+            await self._appliance_subtractions(
+                appliances, days, start_local, end_local, hour_maps, available
+            )
+            if missing["ac"]
+            else {}
+        )
+        support_switches = {
+            cfg.get(key)
+            for key in (
+                CONF_SUPPORT_DC24_SWITCH,
+                CONF_SUPPORT_DC48_SWITCH,
+                CONF_DCDC_SWITCH,
+            )
+        }
 
         negatives = 0
         for day in days:
@@ -1904,16 +1907,18 @@ class ProfileLearner:
             }
             # A required cleaning source that went unavailable after its first
             # row is not evidence of an inactive device. Drop every affected hour.
-            unknown_hours = {
-                hour
+            unknown_by_entity = {
+                entity: {hour for hour in range(24) if values.get((day, hour), 0.0) > 0}
                 for entity, values in unknown_fractions.items()
                 if entity not in (vacation_entity, workday_entity)
-                for hour in range(24)
-                if values.get((day, hour), 0.0) > 0
             }
-            appliance_excluded = _excluded_hours(
-                day, status_appliances, fractions, coverage_start, tz
-            )
+            appliances_today = appliance_series.get(day, [])
+            appliance_excluded = {
+                hour
+                for values in appliances_today
+                for hour, value in enumerate(values)
+                if value is None
+            }
             reasons = self.data["diagnostics"].setdefault("excluded_hours", {})
             day_reasons = reasons.setdefault(day, {})
             for path in _PATHS:
@@ -1933,6 +1938,13 @@ class ProfileLearner:
                     else CONF_SUPPORT_DC48_OUTPUT_POWER_ENTITY
                 )
                 psu48_draw = meters[psu48_key] if cfg.get(psu48_key) else psu48_legacy
+                unknown_hours = set().union(
+                    *(
+                        hours
+                        for entity, hours in unknown_by_entity.items()
+                        if path == "ac" or entity in support_switches
+                    )
+                )
                 support_excluded = (
                     self._unresolvable_support_hours(
                         day, cfg, fractions, coverage_start, tz, p24_series is not None
@@ -1943,8 +1955,9 @@ class ProfileLearner:
                 excluded = support_excluded
                 if path == "ac":
                     subtract = self._subtractions(
-                        day, loads, appliances, hour_maps, fractions, coverage_start, tz
+                        day, loads, hour_maps, fractions, coverage_start, tz
                     )
+                    subtract.extend(appliances_today)
                     if psu48_draw is not None:
                         subtract.append(psu48_draw)
                     if p24_series is not None:
@@ -2153,31 +2166,116 @@ class ProfileLearner:
         ]
         return balance_day(inflows, outflows)
 
+    async def _appliance_subtractions(
+        self,
+        appliances: list[dict[str, Any]],
+        days: list[str],
+        start: datetime,
+        end: datetime,
+        hour_maps: dict[str, HourMap],
+        available: set[str],
+    ) -> dict[str, list[list[float | None]]]:
+        """Subtract measured energy or use an explicitly witnessed full idle/off hour."""
+        result: dict[str, list[list[float | None]]] = {day: [] for day in days}
+        for appliance in appliances:
+            entity = appliance["detection_entity"]
+            switch = appliance.get("supply_switch")
+            guarded = bool(switch or appliance.get("suspend_on_missing"))
+            if not guarded and entity in hour_maps:
+                # Historical opt-in contract for statistics-backed household
+                # devices that go offline when idle (operator rule 2026-07-04).
+                # Existing bindings and earlier epochs retain their cleaning.
+                for day in days:
+                    result[day].append(
+                        [
+                            value
+                            for value in _day_series_zero_filled(hour_maps[entity], day)
+                        ]
+                    )
+                continue
+            metered = guarded and (
+                bool(appliance.get("power_entity")) or entity in available
+            )
+            changes, _ = await self._state_changes(
+                entity,
+                start,
+                end,
+                _positive_power
+                if metered
+                else _running_predicate(appliance["power_threshold_w"]),
+                confirmed=True,
+            )
+            idle = on_fractions(
+                [(at, active is False) for at, active in changes], start, end
+            )
+            # Carrying an old power level across a supply edge does not
+            # constitute another measurement. Keep the actual report hour.
+            positive_reports = {
+                (at.date().isoformat(), at.hour)
+                for at, active in changes
+                if active is True and at >= start
+            }
+            unknown = on_fractions(
+                [(at, active is None) for at, active in changes], start, end
+            )
+            off = {}
+            if switch:
+                switch_changes, _ = await self._state_changes(
+                    switch, start, end, _is_off, confirmed=True
+                )
+                off = on_fractions(
+                    [(at, value is True) for at, value in switch_changes], start, end
+                )
+            for day in days:
+                series = _day_series(hour_maps.get(entity, HourMap()), day)
+                durations = local_hour_durations(
+                    date.fromisoformat(day), dt_util.get_default_time_zone()
+                )
+                for hour, duration in enumerate(durations):
+                    key = (day, hour)
+                    measured = series[hour]
+                    off_hours = off.get(key, 0.0)
+                    if duration > 0 and math.isclose(
+                        off_hours, duration, rel_tol=0, abs_tol=1e-12
+                    ):
+                        # A nonzero reading disagrees with a full supply-off hour.
+                        # Preserve the conflict instead of rewriting it as zero.
+                        series[hour] = (
+                            0.0
+                            if measured in (None, 0.0) and key not in positive_reports
+                            else None
+                        )
+                    elif metered:
+                        # An hourly mean may only cover the powered part. An LTS
+                        # row alone cannot repair known within-hour interruptions.
+                        if (
+                            off_hours > 0
+                            or unknown.get(key, 0.0) > 0
+                            or (measured is not None and measured < 0)
+                        ):
+                            series[hour] = None
+                    else:
+                        series[hour] = (
+                            0.0
+                            if duration > 0
+                            and math.isclose(
+                                idle.get(key, 0.0), duration, rel_tol=0, abs_tol=1e-12
+                            )
+                            else None
+                        )
+                result[day].append(series)
+        return result
+
     def _subtractions(
         self,
         day: str,
         loads: list[dict[str, Any]],
-        appliances: list[dict[str, Any]],
         hour_maps: dict[str, HourMap],
         fractions: dict[str, dict[tuple[str, int], float]],
         coverage_start: dict[str, datetime | None],
         tz: tzinfo,
     ) -> list[list[float | None]]:
-        """Per-source hourly energy to remove from the measured AC load.
-
-        Surplus loads: power-feedback statistics where available, otherwise
-        nominal power x switch on-fraction — but only for hours covered by
-        the switch history (uncovered hours yield None and drop the hour).
-        Appliances with a statistics-backed power sensor are subtracted the
-        same way (D-C2 step 2); status-only appliances are handled via hour
-        exclusion instead.
-
-        Gaps in a power-feedback statistic count as 0 W (operator decision
-        2026-07-04): these devices go unavailable exactly when they are off
-        (sleeping powerstation, idle appliance), so a missing hour means
-        "no consumption", not "unknown" — dropping it would starve the
-        weekend bins for weeks.
-        """
+        """Remove in-house surplus loads using their feedback or nominal power."""
         result: list[list[float | None]] = []
         for load in loads:
             if not load["in_house"]:
@@ -2207,15 +2305,6 @@ class ProfileLearner:
                 )
             # Loads without any signal cannot be cleaned; they are planned
             # separately, so we deliberately do not drop the whole day.
-        for appliance in appliances:
-            entity_id = appliance["detection_entity"]
-            if entity_id in hour_maps:
-                result.append(
-                    [
-                        value
-                        for value in _day_series_zero_filled(hour_maps[entity_id], day)
-                    ]
-                )
         return result
 
     def _subentries(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -2250,6 +2339,11 @@ class ProfileLearner:
             ):
                 appliances.append(
                     {
+                        "supply_switch": data.get(CONF_APPLIANCE_SUPPLY_SWITCH),
+                        "suspend_on_missing": bool(
+                            data.get(CONF_APPLIANCE_SUSPEND_ON_MISSING)
+                        ),
+                        "power_entity": data.get(CONF_APPLIANCE_POWER_ENTITY),
                         "detection_entity": data.get(CONF_APPLIANCE_POWER_ENTITY)
                         or data[CONF_APPLIANCE_DETECTION_ENTITY],
                         "power_threshold_w": float(
@@ -2270,7 +2364,9 @@ class ProfileLearner:
         entity_id: str,
         start_local: datetime,
         end_local: datetime,
-        predicate: Callable[[str], bool],
+        predicate: Callable[[str], bool | None],
+        *,
+        confirmed: bool = False,
     ) -> tuple[list[tuple[datetime, bool | None]], datetime | None]:
         """Predicate changes in weekly chunks, plus the coverage start.
 
@@ -2283,24 +2379,37 @@ class ProfileLearner:
         cursor = start_local
         while cursor < end_local:
             chunk_end = min(cursor + timedelta(days=7), end_local)
+            # HA gives the synthetic start row the query timestamp. Fetch
+            # one microsecond earlier to distinguish a real edge at the hour
+            # boundary. Later chunks already have an initial state.
+            query_start = dt_util.as_utc(cursor)
+            if confirmed:
+                query_start -= timedelta(microseconds=1)
             states = await self._recorder_job(
                 partial(
                     history.state_changes_during_period,
                     self.hass,
-                    dt_util.as_utc(cursor),
+                    query_start,
                     dt_util.as_utc(chunk_end),
                     entity_id=entity_id,
                     no_attributes=False,
                 )
             )
             for state in states.get(entity_id, []):
-                raw = state.state
-                if raw.lower() in ("unknown", "unavailable", ""):
+                if (
+                    confirmed
+                    and cursor != start_local
+                    and state.last_updated <= query_start
+                ):
+                    continue
+                raw = confirmed_state(state) if confirmed else state.state
+                if raw in (None, "unknown", "unavailable", ""):
                     active = None
                 elif state.attributes.get("unit_of_measurement") in ("W", "kW"):
                     watts = measurement(state, "power")
                     active = predicate(str(watts)) if watts is not None else None
                 else:
+                    assert raw is not None
                     active = predicate(raw)
                 changes.append((dt_util.as_local(state.last_updated), active))
             cursor = chunk_end
@@ -2400,12 +2509,39 @@ def _hour_covered(
     return hour_start >= coverage_start
 
 
-def _running_predicate(threshold_w: float) -> Callable[[str], bool]:
-    def _running(state: str) -> bool:
+def _positive_power(state: str) -> bool | None:
+    try:
+        watts = float(state)
+    except ValueError:
+        return None
+    return watts > 0 if math.isfinite(watts) and watts >= 0 else None
+
+
+def _running_predicate(threshold_w: float) -> Callable[[str], bool | None]:
+    def _running(state: str) -> bool | None:
         try:
-            return float(state) >= threshold_w
-        except TypeError, ValueError:
-            return state.lower() in APPLIANCE_RUNNING_STATES
+            watts = float(state)
+        except ValueError:
+            phase = state.lower()
+            if phase in APPLIANCE_RUNNING_STATES:
+                return True
+            if phase in {
+                "off",
+                "end",
+                "finished",
+                "power_off",
+                "sleep",
+                "standby",
+                "ready",
+                "inactive",
+                "initial",
+                "delayedstart",
+                "reserved",
+                "idle",
+            }:
+                return False
+            return None
+        return watts >= threshold_w if math.isfinite(watts) and watts >= 0 else None
 
     return _running
 
@@ -2503,29 +2639,3 @@ def _day_series_zero_filled(hour_map: HourMap, day: str) -> list[float]:
     while switched off — a statistics gap means "not consuming".
     """
     return [hour_map.get((day, hour), 0.0) for hour in range(24)]
-
-
-def _excluded_hours(
-    day: str,
-    entities: list[str],
-    fractions: dict[str, dict[tuple[str, int], float]],
-    coverage_start: dict[str, datetime | None],
-    tz: tzinfo,
-) -> set[int]:
-    """Hours with the exclusion signal active — or without state coverage.
-
-    What cannot be verified as clean must not be learned (conservative:
-    days outside the recorder retention stay unlearned when an exclusion
-    entity is configured).
-    """
-    excluded: set[int] = set()
-    for entity_id in entities:
-        entity_fractions = fractions.get(entity_id, {})
-        covered_from = coverage_start.get(entity_id)
-        for hour in range(24):
-            if (
-                not _hour_covered(covered_from, day, hour, tz)
-                or entity_fractions.get((day, hour), 0.0) > 0.0
-            ):
-                excluded.add(hour)
-    return excluded

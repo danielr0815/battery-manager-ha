@@ -17,6 +17,28 @@ keine Runtime-Dependencies (`requirements: []` im Manifest).
   07 = Entwicklung/Tests/Release). **Vor größeren Änderungen lesen.**
 - `docs/ARCHITECTURE.md` — Code-Map und Glossar der Kommentar-Kürzel.
 
+## Verbindliche Arbeitsreihenfolge
+
+Für jede Änderung im Projekt gilt **Spezifikation → Design → Implementierung**.
+Die Phasen sind in dieser Reihenfolge zu bearbeiten und vor dem Übergang
+nachvollziehbar festzuhalten. Bei kleinen Änderungen genügt ein kurzer
+Eintrag mit Verweisen auf die bereits geltenden Verträge.
+
+1. **Spezifikation.** Vor der Designarbeit Ziele, Geltungsbereich, bestehende
+   Verträge und prüfbare Akzeptanzkriterien festhalten. Relevante Fehler-,
+   Grenz- und Rückfallfälle gehören in die Spezifikation. Eine Untersuchung
+   des Ist-Zustands darf die Spezifikation vorbereiten.
+2. **Design.** Vor der ersten Implementierungsänderung die Umsetzung aus der
+   Spezifikation ableiten. Betroffene Schnittstellen, relevante
+   Entscheidungen und deren Gründe sowie die geplanten Nachweise festhalten.
+3. **Implementierung.** Erst nach dokumentierter Spezifikation und
+   dokumentiertem Design Code und zugehörige Tests ändern. Ändert sich der
+   fachliche Vertrag, zuerst Spezifikation und danach Design aktualisieren.
+
+Ein Auftrag ausschließlich zur Spezifikation endet mit der Spezifikation.
+Die verbindlichen Modell-, Review- und Prüfgates gelten in ihren jeweiligen
+Phasen.
+
 ## Setup (einmalig)
 
 ```bash

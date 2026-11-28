@@ -7052,3 +7052,171 @@ async def test_cascade_confirmed_on_retains_original_edge_ownership(
         assert state["fault"] == "exclusive_actor_changed_externally"
         assert state["fault_safe_off_complete"]
         assert all(not c._entity_is_on(entity) for entity in actors)
+
+
+@pytest.mark.parametrize("witness_owner", ["b1", "leaf"])
+async def test_explicit_load_outage_revokes_accepted_wake_and_recovers(witness_owner):
+    from custom_components.battery_manager.const import CONF_LOAD_AVAILABILITY_ENTITY
+    from custom_components.battery_manager.load_safety import (
+        queue_unavailable_load_stop,
+    )
+
+    now = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    c = _Coordinator(now)
+    manager = CascadeManager(c)
+    c.cascade_manager = manager
+    c._load_power_calibration_id = None
+    c._load_safety_tasks = {}
+    c._actuation_shutdown = False
+    c.entry.async_create_background_task = lambda _hass, coro, **kw: (
+        asyncio.create_task(coro)
+    )
+    witness = "sensor.always_powered_meter"
+    data = c.entry.subentries[witness_owner].data
+    data[CONF_LOAD_AVAILABILITY_ENTITY] = witness
+    c.hass.states.values[witness] = SimpleNamespace(state="0", attributes={})
+    state = manager._state("chain")
+    state["enabled"] = True
+    live = (SurplusLoadState("b1", soc_percent=89), SurplusLoadState("leaf"))
+    await manager._apply_one("chain", _aux_plan(now), live, now)
+    assert state["phase"] == "waking_members"
+    c.calls.clear()
+    c.hass.states.values[witness].state = "unavailable"
+    if witness_owner == "b1":
+        queue_unavailable_load_stop(c, witness_owner, data)
+        await c._load_safety_tasks[witness_owner]
+    else:
+        await manager._apply_one("chain", _aux_plan(now), live, now)
+    assert c.calls == [("switch.input", False)]
+    assert state["safe_off_reason"] == "load unavailable"
+    assert state["enabled"] and not state["fault"]
+    c.calls.clear()
+    await manager._apply_one("chain", _aux_plan(now), live, now)
+    assert not c.calls
+    c.hass.states.values[witness].state = "0"
+    later = now + timedelta(hours=1)
+    await manager._apply_one("chain", _aux_plan(later), live, later)
+    assert c.calls == [("switch.input", True)]
+    assert state["phase"] == "waking_members"
+
+
+async def test_cascade_source_lost_during_root_on_never_opens_next_gate(monkeypatch):
+    from custom_components.battery_manager.const import CONF_LOAD_AVAILABILITY_ENTITY
+
+    now = datetime(2026, 2, 3, 12, tzinfo=UTC)
+    c = _Coordinator(now)
+    meter = "sensor.availability"
+    c.entry.subentries["leaf"].data[CONF_LOAD_AVAILABILITY_ENTITY] = meter
+    c.hass.states.values[meter] = SimpleNamespace(state="0", attributes={})
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state["enabled"] = True
+    switch = c._switch_entity
+
+    async def lose_witness(entity, on, **kwargs):
+        result = await switch(entity, on, **kwargs)
+        if entity == "switch.input" and on:
+            c.hass.states.values[meter].state = "unknown"
+        return result
+
+    c._switch_entity = lose_witness
+    monkeypatch.setattr(manager, "async_reconcile_topologies", AsyncMock())
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    await manager.async_apply(
+        SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),)),
+        SimpleNamespace(cascade_plans=(item,)),
+        (),
+        now,
+    )
+    assert c.calls == [("switch.input", True), ("switch.input", False)]
+    assert state["enabled"] and not state["fault"]
+
+
+@pytest.mark.parametrize("witness_owner", ["b2", "leaf"])
+@pytest.mark.parametrize("outage_at_start", [True, False])
+async def test_root_recovery_ignores_unneeded_load_witness(
+    witness_owner, outage_at_start
+):
+    from custom_components.battery_manager.const import CONF_LOAD_AVAILABILITY_ENTITY
+
+    now = datetime(2026, 11, 27, 12, tzinfo=UTC)
+    c = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state["enabled"] = True
+    meter = SimpleNamespace(
+        state="unavailable" if outage_at_start else "0", attributes={}
+    )
+    c.entry.subentries[witness_owner].data[CONF_LOAD_AVAILABILITY_ENTITY] = (
+        "sensor.witness"
+    )
+    c.hass.states.values["sensor.witness"] = meter
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    item.flows = (replace(item.flows[0], segments=(), root_input_wh=300),)
+    config = SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),))
+    result = SimpleNamespace(cascade_plans=(item,))
+
+    await manager.async_apply(config, result, (), now)
+    assert state["phase"] == "waking_members"
+    assert c.calls == [("switch.bad_waschmaschine", True)]
+    meter.state = "unavailable"
+    await manager.async_stop_if_unavailable("chain")
+    assert c.calls == [("switch.bad_waschmaschine", True)]
+
+    later = now + timedelta(seconds=1)
+    _publish_soc(c, "sensor.b1_soc", "40", later)
+    await manager.async_apply(config, result, (), later)
+    await manager.async_stop_if_unavailable("chain")
+    assert c.calls == [
+        ("switch.bad_waschmaschine", True),
+        ("input_boolean.charge_b1", True),
+    ]
+    assert state["phase"] == "root"
+    assert state["enabled"] and not state["fault"]
+
+
+@pytest.mark.parametrize("witness_owner", ["b1", "b2"])
+async def test_root_supply_for_downstream_charge_requires_both_member_witnesses(
+    witness_owner,
+):
+    from custom_components.battery_manager.const import CONF_LOAD_AVAILABILITY_ENTITY
+
+    now = datetime(2026, 11, 27, 12, tzinfo=UTC)
+    c = _LiveIncidentCoordinator(now)
+    manager = CascadeManager(c)
+    state = manager._state("chain")
+    state["enabled"] = True
+    meter = SimpleNamespace(state="unavailable", attributes={})
+    c.entry.subentries[witness_owner].data[CONF_LOAD_AVAILABILITY_ENTITY] = (
+        "sensor.witness"
+    )
+    c.hass.states.values["sensor.witness"] = meter
+    item = _root_plan(now)
+    item.cascade_id = "chain"
+    item.flows = (
+        replace(
+            item.flows[0],
+            segments=(),
+            root_input_wh=300,
+            member_flows=(replace(item.flows[0].member_flows[0], load_id="b2"),),
+        ),
+    )
+    config = SimpleNamespace(cascades=(SimpleNamespace(cascade_id="chain"),))
+    result = SimpleNamespace(cascade_plans=(item,))
+
+    await manager.async_apply(config, result, (), now)
+    assert not c.calls
+    meter.state = "0"
+    await manager.async_apply(config, result, (), now)
+    assert state["phase"] == "waking_members"
+    assert c.calls == [("switch.bad_waschmaschine", True)]
+    meter.state = "unavailable"
+    await manager.async_stop_if_unavailable("chain")
+    assert c.calls == [
+        ("switch.bad_waschmaschine", True),
+        ("switch.bad_waschmaschine", False),
+    ]
+    assert state["safe_off_reason"] == "load unavailable"
+    assert state["enabled"] and not state["fault"]

@@ -210,12 +210,16 @@ Der Manager prüft die Sonnenhöhe auch zwischen den Meldungen und kürzt die
 Fortschreibung, sobald er durchgehende Dunkelheit nicht mehr belegen kann.
 Die Batterieleistung braucht einen von Lastmessern unterscheidbaren
 Messpunkt. Ein PV-Messer darf zugleich den PV-Zufluss der Verbrauchsbilanz
-liefern. Auch die AC-Anschlussmessungen können in die AC-Verbrauchsbilanz
-eingehen. Sind beide AC-Anschlüsse gemessen, müssen Ein- und Ausgang eine
-gleich große, nichtnegative Durchleitung zeigen. Bei zeitgleichen Änderungen
-wartet die Auswertung auf beide Originalmeldungen. Ist nur ein Anschluss
-gemessen, ist bei einem von null verschiedenen Wert die Durchleitung unklar
-und die Beobachtung endet.
+liefern. Ab 0.70.1 dienen die als Live-AC-Eingang und -Ausgang zugeordneten
+Messwerte der AC-Restlastregelung. Unterschiede, Rückfluss und Meldelücken an
+diesen Anschlüssen unterbrechen die Beobachtung der Batterieentladung nicht.
+Wird derselbe physische Messpunkt ausdrücklich als saldierter Netzanschluss
+für den Netzbezugsnachweis verwendet, gelten für ihn die unten beschriebenen
+Anforderungen an Netzleistung und Aktualität. Ist für Live-AC ein anderer
+Standortzähler zugeordnet, verwirft der Netzbezugsnachweis einen als
+Wechselrichteranschluss konfigurierten Messpunkt. Der Wechselrichter kann
+Leistung beziehen, während die Anlage insgesamt ins Netz einspeist.
+
 Die Schätzung gilt höchstens für die belegte Dauer und maximal 48 Stunden.
 Die belegte Versorgungsart muss bereits beim Start des Plans bestanden haben.
 Die Fortschreibung gilt für Teilschritte mit derselben Versorgung und derselben

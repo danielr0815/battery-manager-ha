@@ -7,13 +7,24 @@ are deliberately not restored: a restart cannot account for missing power.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime
 from statistics import median
-from typing import Literal, NamedTuple, TypedDict, TypeGuard, cast
+from typing import Any, Literal, NamedTuple, TypedDict, TypeGuard, cast
 
+from homeassistant.const import ATTR_ASSUMED_STATE, ATTR_RESTORED
+from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
+from .const import (
+    CONF_APPLIANCE_DETECTION_ENTITY,
+    CONF_APPLIANCE_ENERGY_ENTITY,
+    CONF_APPLIANCE_POWER_ENTITY,
+    CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY,
+    CONF_APPLIANCE_SUPPLY_SWITCH,
+    CONF_APPLIANCE_SUSPEND_ON_MISSING,
+)
 from .source_health import (
     POWER_SOURCE_MAX_AGE_S,
     normalized_measurement,
@@ -28,6 +39,130 @@ def measurement(state, kind: str, *, now: datetime | None = None) -> float | Non
         if age is None or not 0 <= age <= POWER_SOURCE_MAX_AGE_S:
             return None
     return normalized_measurement(state, kind)
+
+
+def confirmed_state(state: State | None) -> str | None:
+    if (
+        state is None
+        or state.attributes.get(ATTR_RESTORED)
+        or state.attributes.get(ATTR_ASSUMED_STATE)
+    ):
+        return None
+    return state.state if state.state not in {"unknown", "unavailable", ""} else None
+
+
+def appliance_source(
+    hass: HomeAssistant, data: Mapping[str, Any], key: str
+) -> State | None:
+    entity = data.get(key)
+    if not entity:
+        return None
+    state = hass.states.get(entity)
+    switch = data.get(CONF_APPLIANCE_SUPPLY_SWITCH)
+    if (
+        state is None
+        or not switch
+        or (
+            key == CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY
+            and entity.startswith("input_select.")
+        )
+    ):
+        return state
+    supply = hass.states.get(switch)
+    # A cached reading from the previous powered interval cannot start or
+    # finish the next cycle, even if HA still displays its last value.
+    supply_state = confirmed_state(supply)
+    if (
+        confirmed_state(state) is None
+        or supply_state == "off"
+        or (
+            supply is not None
+            and supply_state == "on"
+            and state.last_reported < supply.last_changed
+        )
+    ):
+        return None
+    return state
+
+
+def apply_appliance_source_health(
+    row: dict[str, Any],
+    hass: HomeAssistant,
+    data: Mapping[str, Any],
+    key: str,
+    block: str | None,
+) -> None:
+    """Use one supply boundary for the forecast and appliance diagnostics."""
+    entity = row["entity_id"]
+    if (
+        not entity
+        or key == CONF_APPLIANCE_SUPPLY_SWITCH
+        or (
+            key == CONF_APPLIANCE_SELECTED_PROGRAM_ENTITY
+            and entity.startswith("input_select.")
+        )
+    ):
+        return
+    if block in {"supply_off", "supply_conflict"}:
+        power_entity = data.get(CONF_APPLIANCE_POWER_ENTITY) or data.get(
+            CONF_APPLIANCE_DETECTION_ENTITY
+        )
+        if block == "supply_conflict" and entity == power_entity:
+            row.update(status="supply_conflict", error="supply_conflict")
+        else:
+            row.update(status="expected_offline", error=None, value=None)
+    elif row["status"] == "available" and appliance_source(hass, data, key) is None:
+        row.update(status="awaiting_report", error="awaiting_report", value=None)
+
+
+def observation_block(
+    hass: HomeAssistant, data: Mapping[str, Any], now: datetime
+) -> str | None:
+    switch = data.get(CONF_APPLIANCE_SUPPLY_SWITCH)
+    supply = hass.states.get(switch) if switch else None
+    if supply is not None and confirmed_state(supply) == "off":
+        power_entity = data.get(CONF_APPLIANCE_POWER_ENTITY) or data.get(
+            CONF_APPLIANCE_DETECTION_ENTITY
+        )
+        power = hass.states.get(power_entity) if power_entity else None
+        if (
+            power is not None
+            and confirmed_state(power) is not None
+            and power.last_reported >= supply.last_changed
+            and (measurement(power, "power", now=now) or 0) > 0
+        ):
+            return "supply_conflict"
+        return "supply_off"
+    if data.get(CONF_APPLIANCE_SUSPEND_ON_MISSING):
+        detection = appliance_source(hass, data, CONF_APPLIANCE_DETECTION_ENTITY)
+        if confirmed_state(detection) is None or (
+            detection is not None
+            and detection.attributes.get("device_class") == "power"
+            and measurement(detection, "power", now=now) is None
+        ):
+            return "observation_suspended"
+        for key, kind in (
+            (CONF_APPLIANCE_POWER_ENTITY, "power"),
+            (CONF_APPLIANCE_ENERGY_ENTITY, "energy"),
+        ):
+            if data.get(key):
+                state = appliance_source(hass, data, key)
+                if (
+                    confirmed_state(state) is None
+                    or measurement(state, kind, now=now) is None
+                ):
+                    return "observation_suspended"
+    return None
+
+
+def start_advice_block(
+    hass: HomeAssistant, data: Mapping[str, Any], now: datetime
+) -> str | None:
+    """A disconnected appliance may still be prepared at its suggested start."""
+    reason = observation_block(hass, data, now)
+    if reason == "supply_off" and not data.get(CONF_APPLIANCE_SUSPEND_ON_MISSING):
+        return None
+    return reason
 
 
 def duration_hours(state, now: datetime, *, remaining: bool = False) -> float | None:

@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigSubentryData
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.battery_manager.const import (
+    CONF_LOAD_AVAILABILITY_ENTITY,
     CONF_LOAD_CAPACITY_WH,
     CONF_LOAD_CHARGE_ENABLE,
     CONF_LOAD_CHARGING_FEEDBACK_ENTITY,
@@ -28,6 +29,7 @@ from custom_components.battery_manager.const import (
     CONF_LOAD_POWER_W,
     CONF_LOAD_POWER_WARNING_DWELL_MIN,
     CONF_LOAD_POWER_WARNING_PCT,
+    CONF_LOAD_REQUIRE_POWER_FEEDBACK,
     CONF_LOAD_SOC_ENTITY,
     CONF_LOAD_TANK_FULL_RUNTIME_MIN,
     CONF_LOAD_TARGET_SOC,
@@ -91,6 +93,8 @@ async def _setup(
     charging_feedback=None,
     input_power=None,
     additional_load_data=(),
+    availability_entity=None,
+    require_power_feedback=None,
 ):
     hass.states.async_set(
         "sensor.test_soc", "55", {"unit_of_measurement": "%", "device_class": "battery"}
@@ -120,6 +124,10 @@ async def _setup(
         load_data[CONF_LOAD_OUTPUT_POWER_ENTITY] = "sensor.output_w"
     if power_entity is not None:
         load_data[CONF_LOAD_POWER_ENTITY] = power_entity
+    if availability_entity is not None:
+        load_data[CONF_LOAD_AVAILABILITY_ENTITY] = availability_entity
+    if require_power_feedback is not None:
+        load_data[CONF_LOAD_REQUIRE_POWER_FEEDBACK] = require_power_feedback
     if min_runtime_min is not None:
         load_data[CONF_LOAD_MIN_RUNTIME_MIN] = min_runtime_min
     if min_off_min is not None:
@@ -5823,7 +5831,9 @@ async def test_soc_diagnostic_publication_survives_reread_and_sleep(hass):
     coordinator._unsub_state_listener = None
     published = hass.states.get(FOSSI_SOC).last_reported
     now = published + timedelta(hours=41)
-    coordinator._get_load_states(now)
+    [state] = coordinator._get_load_states(now)
+    assert state.soc_observed_at == published
+    assert coordinator._load_soc_cache[sub_id]["ts"] == published.isoformat()
     live = coordinator._load_soc_observations[sub_id]
     assert live == {
         "source": "live-source",
@@ -5846,10 +5856,10 @@ async def test_soc_diagnostic_publication_survives_reread_and_sleep(hass):
     ("entity", "cache_hours", "stamp", "source"),
     [
         (FOSSI_SOC, 1, None, "cached"),  # pre-0.64.1 cache
-        (FOSSI_SOC, 1, "bad", "cached"),
-        (FOSSI_SOC, 1, "2026-10-01T00:00:00", "cached"),  # naive
-        (FOSSI_SOC, 1, "2099-01-01T00:00:00Z", "cached"),
-        (FOSSI_SOC, 1, "2000-01-01T00:00:00Z", "cached"),
+        (FOSSI_SOC, 1, "bad", "unknown"),
+        (FOSSI_SOC, 1, "2026-10-01T00:00:00", "unknown"),  # naive
+        (FOSSI_SOC, 1, "2099-01-01T00:00:00Z", "unknown"),
+        (FOSSI_SOC, 1, "2000-01-01T00:00:00Z", "unknown"),
         ("sensor.other_battery", 1, None, "unknown"),
         (FOSSI_SOC, 169, None, "unknown"),
     ],
@@ -5986,3 +5996,44 @@ def test_learned_recharge_coverage_stops_at_each_fixed_anchor(gap_inside):
             cert.anchor == now + timedelta(hours=3) for cert in summary.certificates
         )
         assert nominal.total_import_wh < legacy.total_import_wh
+
+
+@pytest.mark.parametrize("quality", ["restored", "assumed_state", "expired"])
+async def test_sleeping_storage_does_not_renew_soc_or_disable_charging(hass, quality):
+    """A missing device observation cannot refresh the last known SOC."""
+    coordinator, load_id, _ = await _setup(hass, [])
+    coordinator._unsub_state_listener()
+    coordinator._unsub_state_listener = None
+    coordinator._load_soc_cache.clear()
+    hass.states.async_set(
+        FOSSI_SOC, "84", {quality: True} if quality != "expired" else {}
+    )
+    reported = hass.states.get(FOSSI_SOC).last_reported
+    now = reported + (timedelta(days=8) if quality == "expired" else timedelta(0))
+    [storage] = coordinator._get_load_states(now)
+    assert storage.available and storage.soc_percent is None
+    assert storage.soc_source == "missing"
+    assert load_id not in coordinator._load_soc_cache
+    hass.states.async_set(FOSSI_SOC, "unavailable")
+    [still_sleeping] = coordinator._get_load_states(now + timedelta(minutes=1))
+    assert still_sleeping.available and still_sleeping.soc_percent is None
+    hass.states.async_set(FOSSI_SOC, "83")
+    observed = hass.states.get(FOSSI_SOC).last_reported
+    [awake] = coordinator._get_load_states(observed)
+    assert awake.soc_percent == 83 and awake.soc_observed_at == observed
+
+
+@pytest.mark.parametrize("quality", ["restored", "assumed_state", "old", "future"])
+async def test_expired_storage_deadline_requires_current_soc(hass, freezer, quality):
+    """A value usable for planning cannot substitute for active supervision."""
+    from homeassistant.util import dt as dt_util
+
+    coordinator, load_id, data = await _setup(hass, [])
+    now = dt_util.utcnow()
+    freezer.move_to(now - timedelta(minutes=10))
+    attributes = {quality: True} if quality in {"restored", "assumed_state"} else {}
+    if quality != "old":
+        freezer.move_to(now + timedelta(seconds=1) if quality == "future" else now)
+    hass.states.async_set(FOSSI_SOC, "42", attributes)
+    freezer.move_to(now)
+    assert not coordinator._seamless_extension_ok(load_id, data)
