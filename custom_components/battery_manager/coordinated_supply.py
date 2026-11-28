@@ -45,16 +45,27 @@ def reconcile_supply_feedback(
     for entity, request in self._supply_actor_requests.items():
         # Even a failed service can have reached the relay. Only fresh
         # physical feedback settles a request and permits the next write.
-        awaiting = request.state in ("pending", "service_failed")
+        awaiting = request.state in ("pending", "service_failed", "on_unmet")
         if not awaiting or (entity_id is not None and entity != entity_id):
             continue
+        report = None
         if self.rail_feedback.is_rail_actor(entity):
             report = self.rail_feedback.report(entity)
-            if (
-                report is None
-                or report[1] < request.requested_at
-                or report[0] != request.desired
-            ):
+            if report is None or report[1] < request.requested_at:
+                continue
+            if report[0] != request.desired:
+                if (
+                    request.desired
+                    and request.state != "on_unmet"
+                    and self.rail_feedback.knx_dcdc_on_unmet(
+                        entity, request.requested_at
+                    )
+                ):
+                    # This is evidence of the current OFF, not completion of ON.
+                    # Keep the old intent for a possible late edge or handover.
+                    request.state = "on_unmet"
+                    self._save_persistent_state()
+                    changed = True
                 continue
         else:
             state = self.hass.states.get(entity)
@@ -67,6 +78,16 @@ def reconcile_supply_feedback(
             ):
                 continue
         request.state = "confirmed"
+        if request.knx_on_retried:
+            if (
+                not request.desired
+                and request.sent
+                and self.rail_feedback.is_coordinated_knx_dcdc(entity)
+                and report is not None
+                and report[2] > request.requested_at
+            ):
+                request.knx_on_retried = False
+            self._save_persistent_state()
         self.source_phases.confirmed(entity, request.desired, dt_util.utcnow())
         changed = True
         if entity in (

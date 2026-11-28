@@ -918,3 +918,176 @@ async def test_rail_feedback_requires_qualified_switch(hass, freezer):
     assert feedback.report(qualified.entity_id)[0] is True
     freezer.tick(timedelta(minutes=66))
     assert feedback.report(qualified.entity_id) is None
+
+
+@pytest.mark.parametrize(
+    (
+        "prior_target",
+        "prior_state",
+        "report_age",
+        "qualified",
+        "outcome",
+        "continuity_loss",
+    ),
+    [
+        (True, "pending", 31, True, "on_unmet", None),
+        (True, "pending", 31, True, "on_unmet", "knx_disconnect"),
+        (True, "service_failed", 31, True, "on_unmet", "restart"),
+        (True, "dispatching_on", 31, True, "dispatching_on", None),
+        (True, "pending", 10, True, "pending", None),
+        (True, "pending", 301, True, "pending", None),
+        (True, "pending", 31, False, "pending", None),
+        (False, "pending", 31, True, "pending", None),
+    ],
+)
+async def test_knx_dcdc_reports_off_after_unconfirmed_on(
+    hass,
+    freezer,
+    prior_target,
+    prior_state,
+    report_age,
+    qualified,
+    outcome,
+    continuity_loss,
+):
+    """An unmet ON allows policy recovery and still blocks manual handover."""
+    from homeassistant.exceptions import HomeAssistantError, ServiceNotFound
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    from custom_components.battery_manager.actor_ownership import SUPPLY_OWNER
+    from custom_components.battery_manager.const import CONF_INVERTER_LIMIT_ENTITY
+    from custom_components.battery_manager.coordinator import BatteryManagerCoordinator
+    from custom_components.battery_manager.load_actuation import ActorRequest
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **ENTRY_DATA,
+            CONF_INVERTER_LIMIT_ENTITY: "number.limit",
+            "support_dc24_feedback": "2/1/31@1.1.14",
+            "support_dcdc_feedback": "2/1/32@1.1.14",
+        },
+    )
+    entry.add_to_hass(hass)
+    c = BatteryManagerCoordinator(hass, entry)
+    c._save_persistent_state = Mock()
+    c._schedule_replan = Mock()
+    c.rail_feedback.start()
+    calls = []
+    _register_switch_services(hass, calls, dead_entities=(DCDC,))
+    hass.states.async_set(DCDC, "off")
+    hass.states.async_set(PSU, "on")
+    prior = ActorRequest(prior_target, dt_util.utcnow(), prior_state)
+    c._supply_actor_requests[DCDC] = prior
+
+    def status(on, *, source="1.1.14", group="2/1/32"):
+        async_dispatcher_send(
+            hass,
+            "knx_telegram",
+            None,
+            {
+                "direction": "Incoming",
+                "telegramtype": "GroupValueResponse",
+                "source": source,
+                "destination": group,
+                "payload": int(on),
+            },
+        )
+
+    try:
+        freezer.tick(timedelta(seconds=1))
+        status(not prior_target, source="1.1.14" if qualified else "1.1.99")
+        freezer.tick(timedelta(seconds=report_age))
+        c._rail_feedback_updated(DCDC, False)
+        assert prior.state == outcome
+        if outcome != "on_unmet":
+            assert c._entity_tristate(DCDC) is None
+            return
+        assert c._entity_tristate(DCDC) is False
+        assert (
+            c._persistent_payload()["support_commands_pending"][DCDC]["state"]
+            == "on_unmet"
+        )
+        with pytest.raises(HomeAssistantError):
+            c._ensure_support_commands_settled([DCDC])
+
+        # Current policy needs the grid source. Its overlap finishes without
+        # inventing a fresh OFF at the converter or calling its service.
+        status(True, group="2/1/31")
+        with patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            assert await c._sequence_dc24(True, PSU) is True
+        assert calls == []
+        assert c._supply_actor_requests[DCDC] is prior
+
+        assert c.rail_feedback.invalidate_connection(DCDC)
+        assert not await c._switch_entity(DCDC, True, actor_owner=SUPPLY_OWNER)
+        assert c._supply_actor_requests[DCDC] is prior
+
+        freezer.tick(timedelta(seconds=1))
+        status(False)
+
+        with patch.object(c._store, "async_book_knx_on_retry", return_value=False):
+            assert not await c._switch_entity(DCDC, True, actor_owner=SUPPLY_OWNER)
+        assert calls == []
+        assert c._supply_actor_requests[DCDC] is prior
+
+        async def unavailable(_call):
+            raise ServiceNotFound("homeassistant", "turn_on")
+
+        hass.services.async_register("homeassistant", "turn_on", unavailable)
+        assert not await c._switch_entity(DCDC, True, actor_owner=SUPPLY_OWNER)
+        assert c._supply_actor_requests[DCDC] is prior
+        _register_switch_services(hass, calls, dead_entities=(DCDC,))
+
+        # If policy later needs the converter, an actual new ON can be sent.
+        assert await c._switch_entity(DCDC, True, actor_owner=SUPPLY_OWNER)
+        assert calls == [("turn_on", DCDC)]
+        assert c._supply_actor_requests[DCDC] is not prior
+        assert c._supply_actor_requests[DCDC].state == "pending"
+        assert c._entity_tristate(DCDC) is None
+        freezer.tick(timedelta(seconds=1))
+        status(True)
+        assert c._entity_tristate(DCDC) is True
+        assert c._supply_actor_requests[DCDC].state == "confirmed"
+        assert c._persistent_payload()["support_commands_pending"][DCDC][
+            "knx_on_retried"
+        ]
+        with pytest.raises(HomeAssistantError):
+            c._ensure_support_commands_settled([DCDC])
+        assert not await c._switch_entity(DCDC, False, actor_owner=SUPPLY_OWNER)
+
+        # Only the usual automatic rail sequence can resynchronize the
+        # receiver after a repeated ON, and waits for a fresh KNX OFF.
+        freezer.tick(timedelta(seconds=1))
+        status(True, group="2/1/31")
+        with patch(
+            "custom_components.battery_manager.coordinator.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            assert not await c._sequence_dc24(True, PSU)
+        assert calls[-1] == ("turn_off", DCDC)
+        with pytest.raises(HomeAssistantError):
+            c._ensure_support_commands_settled([DCDC])
+        if continuity_loss is not None:
+            saved = c._persistent_payload()
+            assert c.rail_feedback.invalidate_connection(DCDC)
+            if continuity_loss == "restart":
+                c._supply_actor_requests.clear()
+                with patch.object(c._store, "async_load", return_value=saved):
+                    await c.async_load_persistent_state()
+            freezer.tick(timedelta(seconds=1))
+            status(False)
+            assert c._entity_tristate(DCDC) is False
+            with pytest.raises(HomeAssistantError):
+                c._ensure_support_commands_settled([DCDC])
+            return
+        freezer.tick(timedelta(seconds=1))
+        status(False)
+        c._ensure_support_commands_settled([DCDC])
+        assert DCDC not in c._persistent_payload()["support_commands_pending"]
+        assert hass.states.is_state(PSU, "on")
+    finally:
+        await c.async_cancel_actuation_tasks()

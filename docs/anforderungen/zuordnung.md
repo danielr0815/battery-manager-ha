@@ -1271,6 +1271,7 @@ Die Herkunft jeder Alt-ID ergibt sich aus der jeweiligen Datei. Eine Regel kann 
 | D1 · Gleicher Nachweisvertrag in beiden automatischen Pfaden | [BM-ENER-001](04-energie.md#bm-ener-001), [BM-ENER-002](04-energie.md#bm-ener-002), [BM-ENER-004](04-energie.md#bm-ener-004), [BM-ENER-321](04-energie.md#bm-ener-321), [BM-ENER-301](04-energie.md#bm-ener-301), [BM-ENER-302](04-energie.md#bm-ener-302) |
 | D2 · Belastbarer Kanalzustand je Aktor | [BM-ENER-001](04-energie.md#bm-ener-001), [BM-ENER-002](04-energie.md#bm-ener-002), [BM-ENER-004](04-energie.md#bm-ener-004), [BM-ENER-301](04-energie.md#bm-ener-301), [BM-ENER-305](04-energie.md#bm-ener-305), [BM-ENER-322](04-energie.md#bm-ener-322) |
 | D3 · Geordnete Null vor erneuter Exportfreigabe | [BM-ENER-008](04-energie.md#bm-ener-008), [BM-ENER-009](04-energie.md#bm-ener-009), [BM-ENER-309](04-energie.md#bm-ener-309), [BM-ENER-310](04-energie.md#bm-ener-310), [BM-ENER-311](04-energie.md#bm-ener-311), [BM-ENER-323](04-energie.md#bm-ener-323), [BM-ENER-308](04-energie.md#bm-ener-308) |
+| Wiederaufnahme nach unbestätigtem KNX-EIN | [BM-ENER-324](04-energie.md#bm-ener-324), [BM-ENER-325](04-energie.md#bm-ener-325), [BM-ENER-326](04-energie.md#bm-ener-326) |
 
 <a id="quelle-f-seamless-runs"></a>
 

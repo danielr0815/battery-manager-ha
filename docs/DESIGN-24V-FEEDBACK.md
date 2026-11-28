@@ -17,3 +17,14 @@ Die Tests simulieren Schalteranzeige vor Telegramm, fremden Absender, Wechsel de
 ## Konfiguration
 
 Im Abschnitt zur Versorgungssteuerung sind Statusgruppe und physikalischer Absender als `Gruppenadresse@Absender` einzutragen. Eine durch die ETS-Zuordnung belegte Statusgruppe ist die Grundlage. Die Schaltadresse bleibt in der KNX-Schalterkonfiguration.
+
+
+## Erneute Auswertung eines offenen KNX-EIN
+
+Im koordinierten Betrieb bleibt der offene KNX-EIN-Auftrag des DC/DC-Wandlers bis zum qualifizierten Bericht oder bis zur Feststellung im Auftragsbuch, dass die Quelle weiterhin AUS ist. Diese Feststellung ist für abgeschlossene Dienstaufrufe und wiederhergestellte Aufträge möglich, sobald eine AUS-Meldung vom zugeordneten KNX-Aktor zeitlich nach dem Auftrag liegt. Der Auftrag muss mindestens 30 Sekunden alt sein. Die Meldung darf höchstens fünf Minuten alt sein. Damit kann die reguläre Planung auch einen kurz nach dem Auftrag eintreffenden AUS-Bericht nach Fristablauf berücksichtigen. Ein unverändert gemeldetes AUS kann die normale Auswertung wecken.
+
+Der Manager markiert den EIN-Auftrag als unerfüllt und hält ihn für die Übergabe der Schalthoheit weiterhin offen. Bei weiterhin gewünschtem EIN sendet die nächste zulässige Auswertung einen neuen EIN-Auftrag mit neuer Frist. Bei gewünschtem AUS bleibt es beim bestätigten physischen AUS. Falls der alte EIN-Auftrag doch noch wirksam wird, führt die nächste Auswertung den dann erforderlichen Wechsel nach den bestehenden Regeln aus. Insbesondere schützt ein spät wirksames EIN keine Abschaltentscheidung ohne Zielnachweis und volle Überlappung. Die Wiederaufnahme betrifft ausschließlich offene EIN-Aufträge. Die KNX-Verriegelung wirkt unabhängig als anlagenseitige Sicherung gegen das Abschalten der letzten Quelle.
+
+Ein wiederholtes EIN kann wegen fehlender Einzelquittungen mit einer einzigen EIN-Meldung den Zustand der Schiene belegen. Der offene Herkunftsnachweis bleibt im Laufzeitspeicher für eine manuelle Übergabe erhalten. Erst der qualifizierte Wechsel von EIN nach AUS nach einem Auftrag des gemeinsamen automatischen Übergangs beendet diese Sperre. Dafür gilt die Reihenfolge der Schalttelegramme desselben KNX-Kanals über dieselbe Verbindung. Ein vor dem Versand abgebrochener Auftrag belässt den bisherigen Nachweis im Auftragsbuch.
+
+Der Marker wird vor dem erneuten EIN dauerhaft und überprüfbar geschrieben. Für seine Freigabe muss der laufende Prozess unmittelbar vor dem bewachten AUS noch EIN beobachtet haben. Ein neuer AUS-Zustand muss nach Versand beginnen. Nach einem Neustart oder nach einem erkannten KNX-Verbindungsverlust kann frisches AUS die physische Lage klären. Ohne den beobachteten Wechsel bleibt der Nachweis für die manuelle Übergabe offen.

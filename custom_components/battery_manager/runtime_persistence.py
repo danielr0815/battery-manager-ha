@@ -86,9 +86,10 @@ def persistent_payload(self: BatteryManagerCoordinator) -> dict[str, Any]:
                 "at": request.requested_at.isoformat(),
                 "state": request.state,
                 "context_id": request.context_id,
+                **({"knx_on_retried": True} if request.knx_on_retried else {}),
             }
             for entity, request in self._supply_actor_requests.items()
-            if request.state != "confirmed"
+            if request.state != "confirmed" or request.knx_on_retried
         },
         "unconfirmed_dcdc_off": {
             "entity": self.raw_config.get(CONF_DCDC_SWITCH),

@@ -405,6 +405,21 @@ class _RuntimeStore(Store):
 
         return await self._async_book(context_id, data, contains_command)
 
+    async def async_book_knx_on_retry(
+        self, entity_id: str, context_id: str, data: dict[str, Any]
+    ) -> bool:
+        """Persist the ambiguous older ON before another ON can be sent."""
+
+        def contains_command(payload: dict[str, Any]) -> bool:
+            command = payload.get("support_commands_pending", {}).get(entity_id, {})
+            return (
+                command.get("context_id") == context_id
+                and command.get("on") is True
+                and command.get("knx_on_retried") is True
+            )
+
+        return await self._async_book(context_id, data, contains_command)
+
     async def _async_book(
         self,
         context_id: str,
@@ -1241,13 +1256,23 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and command
                     and (requested := dt_util.parse_datetime(command["at"]))
                 ):
+                    restored_state = command.get("state")
+                    retried = command.get("knx_on_retried") is True
+                    if restored_state != "service_failed" and not (
+                        command["on"] is True
+                        and self.rail_feedback.is_coordinated_knx_dcdc(entity)
+                        and (
+                            restored_state == "on_unmet"
+                            or (retried and restored_state == "confirmed")
+                        )
+                    ):
+                        restored_state = "pending"
                     self._supply_actor_requests[entity] = ActorRequest(
                         command["on"],
                         requested,
-                        "service_failed"
-                        if command.get("state") == "service_failed"
-                        else "pending",
+                        restored_state,
                         context_id=command.get("context_id"),
+                        knx_on_retried=retried,
                     )
             retry = data.get("unconfirmed_dcdc_off", {})
             if retry.get("entity") == self.raw_config.get(CONF_DCDC_SWITCH):
@@ -6914,7 +6939,11 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "dc48_controller": dict(self._dc48_ctrl_diag),
                 "dc24_confirmation": {
                     role: (
-                        f"awaiting_{'on' if request.desired else 'off'}"
+                        (
+                            "on_unmet"
+                            if request.state == "on_unmet"
+                            else f"awaiting_{'on' if request.desired else 'off'}"
+                        )
                         if (request := self._supply_actor_requests.get(entity))
                         and request.state != "confirmed"
                         else (
@@ -6970,7 +6999,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         reconcile_supply_feedback(self)
         for entity in actors:
             command = self._supply_actor_requests.get(entity) if entity else None
-            if (command is not None and command.state != "confirmed") or (
+            if (
+                command is not None
+                and (command.state != "confirmed" or command.knx_on_retried)
+            ) or (
                 entity
                 and entity == self.raw_config.get(CONF_DCDC_SWITCH)
                 and self._unconfirmed_dcdc_off
@@ -7238,6 +7270,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return False
         service = "turn_on" if turn_on else "turn_off"
         supply_request = None
+        previous = None
+        retry_unmet = None
         rail_actor = actor_owner == SUPPLY_OWNER and self.rail_feedback.is_rail_actor(
             entity_id
         )
@@ -7272,8 +7306,29 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 return False
             previous = self._supply_actor_requests.get(entity_id)
+            if (
+                previous is not None
+                and previous.knx_on_retried
+                and not turn_on
+                and may_dispatch is None
+            ):
+                return False
+            retry_unmet = (
+                previous
+                if previous is not None and previous.state == "on_unmet"
+                else None
+            )
+            if retry_unmet is not None:
+                if not turn_on:
+                    # Current policy can use an observed OFF without a new
+                    # command that could later interrupt a handback.
+                    return self._entity_tristate(entity_id) is False
+                if not self.rail_feedback.knx_dcdc_on_unmet(
+                    entity_id, retry_unmet.requested_at
+                ):
+                    return False
             retry_dcdc_off = False
-            if previous is not None and previous.state != "confirmed":
+            if previous is not None and previous.state not in ("confirmed", "on_unmet"):
                 # An accepted request can reach a relay after HA returns.
                 # Never let one confirmation discharge two issued commands.
                 if not (
@@ -7301,10 +7356,34 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             context = context or Context()
             if retry_dcdc_off:
                 self._unconfirmed_dcdc_off.add(context.id)
-            supply_request = ActorRequest(turn_on, dt_util.now(), context_id=context.id)
+            supply_request = ActorRequest(
+                turn_on,
+                dt_util.now(),
+                context_id=context.id,
+                knx_on_retried=retry_unmet is not None
+                or bool(previous and previous.knx_on_retried),
+            )
+            if turn_on and self.rail_feedback.is_coordinated_knx_dcdc(entity_id):
+                supply_request.state = "dispatching_on"
             self._supply_actor_requests[entity_id] = supply_request
             self._save_persistent_state()
             self.source_phases.requested(entity_id, turn_on)
+            if retry_unmet is not None:
+                try:
+                    durable = await self._store.async_book_knx_on_retry(
+                        entity_id, context.id, self._persistent_payload()
+                    )
+                except Exception:
+                    _LOGGER.exception("Could not persist the repeated KNX ON")
+                    durable = False
+                if not durable or not self.rail_feedback.knx_dcdc_on_unmet(
+                    entity_id, retry_unmet.requested_at
+                ):
+                    self._supply_actor_requests[entity_id] = retry_unmet
+                    self.source_phases.cancel_request(entity_id)
+                    self._save_persistent_state()
+                    return False
+                supply_request.requested_at = dt_util.now()
             if not turn_on and rail_actor and self.rail_feedback.binding(entity_id):
                 supply_request.state = "booked"
                 # Book OFF durably before dispatch. Otherwise a hard restart
@@ -7318,13 +7397,30 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception:
                     _LOGGER.exception("Could not persist the pending 24 V OFF")
                     durable = False
-                if not durable or (may_dispatch is not None and not may_dispatch()):
-                    self._supply_actor_requests.pop(entity_id, None)
+                report = (
+                    self.rail_feedback.report(entity_id)
+                    if supply_request.knx_on_retried
+                    else None
+                )
+                can_send = not supply_request.knx_on_retried or (
+                    report is not None and report[0]
+                )
+                if (
+                    not durable
+                    or not can_send
+                    or (may_dispatch is not None and not may_dispatch())
+                ):
+                    if previous is not None and previous.knx_on_retried:
+                        self._supply_actor_requests[entity_id] = previous
+                    else:
+                        self._supply_actor_requests.pop(entity_id, None)
                     self.source_phases.cancel_request(entity_id)
                     self._save_persistent_state()
                     return False
                 supply_request.state = "pending"
                 supply_request.requested_at = dt_util.now()
+                # A restored request never has this same-process ON witness.
+                supply_request.sent = supply_request.knx_on_retried
         recorder = getattr(self, "operation_recorder", None)
         request = (
             recorder.event(
@@ -7357,11 +7453,20 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:
             _LOGGER.error("%s failed for %s: %s", service, entity_id, err)
-            if supply_request is not None and supply_request.state == "pending":
+            if supply_request is not None and supply_request.state in (
+                "pending",
+                "dispatching_on",
+            ):
                 if isinstance(err, ServiceNotFound):
                     # The service registry rejected the dispatch before a
                     # relay could receive it. A later cycle may try again.
-                    self._supply_actor_requests.pop(entity_id, None)
+                    if previous is not None and (
+                        retry_unmet is not None or previous.knx_on_retried
+                    ):
+                        self._supply_actor_requests[entity_id] = previous
+                        self._save_persistent_state()
+                    else:
+                        self._supply_actor_requests.pop(entity_id, None)
                     if supply_request.context_id:
                         self._unconfirmed_dcdc_off.discard(supply_request.context_id)
                     self.source_phases.cancel_request(entity_id)
@@ -7379,7 +7484,10 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return False
         except asyncio.CancelledError:
-            if supply_request is not None and supply_request.state == "pending":
+            if supply_request is not None and supply_request.state in (
+                "pending",
+                "dispatching_on",
+            ):
                 supply_request.state = "service_failed"
             if recorder:
                 recorder.event(
@@ -7392,6 +7500,8 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 {"request": request, "entity_id": entity_id, "success": True},
             )
         if supply_request is not None:
+            if supply_request.state == "dispatching_on":
+                supply_request.state = "pending"
             reconcile_supply_feedback(self)
         return True
 
@@ -7611,7 +7721,7 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return (
             self._entity_tristate(first_on) is True
             and self._entity_tristate(then_off) is False
-            and (pending_off is None or pending_off.state == "confirmed")
+            and (pending_off is None or pending_off.state in ("confirmed", "on_unmet"))
             and (may_remove is None or may_remove())
         )
 
@@ -8127,13 +8237,17 @@ class BatteryManagerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         feedback = getattr(self, "rail_feedback", None)
         if feedback is not None and feedback.is_rail_actor(entity_id):
             pending = self._supply_actor_requests.get(entity_id)
-            if (
-                pending
-                and pending.state != "confirmed"
-                and self.rail_feedback.binding(entity_id)
-            ):
+            report = feedback.report(entity_id)
+            if pending and pending.state != "confirmed" and feedback.binding(entity_id):
+                if (
+                    pending.state == "on_unmet"
+                    and feedback.is_coordinated_knx_dcdc(entity_id)
+                    and report is not None
+                    and report[0] is False
+                    and report[1] > pending.requested_at
+                ):
+                    return False
                 return None
-            report = self.rail_feedback.report(entity_id)
             return report[0] if report else None
         state = self.hass.states.get(entity_id)
         if state is None or state.state not in ("on", "off"):

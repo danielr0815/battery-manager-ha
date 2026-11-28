@@ -88,6 +88,7 @@ class ActorRequest:
     booked_edge: datetime | None = None
     requires_pv_revalidation: bool = False
     context_id: str | None = None
+    knx_on_retried: bool = False
 
 
 @dataclass(frozen=True)

@@ -67,6 +67,12 @@ Messdaten.
   Wert oder eine zyklische Meldung braucht eine Prüfung auf Herkunft,
   Frische und Gültigkeit für den aktuellen Vorgang.
 
+### Wiederaufnahme nach unbestätigtem KNX-EIN
+
+Im koordinierten Betrieb muss die Automatik bei qualifizierter KNX-Rückmeldung einen offenen EIN-Auftrag für den DC/DC-Wandler erneut bearbeiten können, wenn eine aktuelle, nach dem Auftrag empfangene Rückmeldung weiterhin AUS meldet und die Bestätigungsfrist abgelaufen ist. Benötigt der aktuelle Versorgungspfad EIN, darf ein neuer EIN-Auftrag erst nach Ablauf der nächsten Bestätigungsfrist nochmals wiederholt werden. Benötigt der aktuelle Versorgungspfad AUS, gilt der tatsächlich gemeldete Zustand bei der nächsten Auswertung. Das Auftragsbuch führt das unbeantwortete EIN als unerfüllt. Ein Wechsel zur manuellen Schalthoheit wartet weiterhin auf Klärung dieses Auftrags. Wirkt er später doch, wird das neu gemeldete EIN nach den normalen Freigaberegeln behandelt. Nach einem wiederholten EIN bleibt die manuelle Übergabe bis zur qualifizierten AUS-Bestätigung eines anschließenden freigegebenen Quellenwechsels gesperrt. Ein ausstehendes oder ungeklärtes AUS behält Vorrang bei der Auftragsklärung. Die eigenständige Verriegelung der Anlage bleibt wirksam. Die Automatik verlangt zusätzlich den Zielnachweis und die volle Überlappung.
+
+Die Abnahme prüft beide Zielrichtungen mit einem gespeicherten offenen EIN, gültiger AUS-Meldung und ausbleibender vorheriger Bestätigung. Sie prüft die Sperre bei alter, fehlender oder unqualifizierter Rückmeldung, bei ungeklärtem AUS und bei aufgehobener Umschaltfreigabe.
+
 ### Abnahmeszenarien
 
 | Szenario | Erwartetes Ergebnis |

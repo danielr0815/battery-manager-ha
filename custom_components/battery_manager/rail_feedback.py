@@ -13,7 +13,11 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_DCDC_SWITCH, CONF_SUPPORT_DC24_SWITCH
+from .const import (
+    CONF_DCDC_SWITCH,
+    CONF_INVERTER_LIMIT_ENTITY,
+    CONF_SUPPORT_DC24_SWITCH,
+)
 
 if TYPE_CHECKING:
     from .coordinator import BatteryManagerCoordinator
@@ -26,6 +30,8 @@ RAIL_FEEDBACK_KEYS = {
 # KNX state polling can be hourly. A new command still requires subsequent
 # evidence, regardless of how recently the previous status was received.
 _KNX_MAX_AGE = timedelta(minutes=65)
+_KNX_ON_CONFIRMATION_GRACE = timedelta(seconds=30)
+_KNX_NEGATIVE_MAX_AGE = timedelta(minutes=5)
 _KNX_PAIR = re.compile(r"(\d{1,2})/(\d)/(\d{1,3})@(\d{1,2})\.(\d{1,2})\.(\d{1,3})")
 
 
@@ -63,6 +69,31 @@ class RailFeedback:
     def is_rail_actor(self, entity: str) -> bool:
         config = self.coordinator.raw_config
         return any(config.get(key) == entity for key in RAIL_FEEDBACK_KEYS)
+
+    def uses_knx(self, entity: str) -> bool:
+        return "@" in (self.binding(entity) or "")
+
+    def is_coordinated_knx_dcdc(self, entity: str) -> bool:
+        config = self.coordinator.raw_config
+        return (
+            entity == config.get(CONF_DCDC_SWITCH)
+            and bool(config.get(CONF_INVERTER_LIMIT_ENTITY))
+            and self.uses_knx(entity)
+        )
+
+    def knx_dcdc_on_unmet(self, entity: str, requested_at: datetime) -> bool:
+        """Fresh contrary status permits ON recovery after its grace period."""
+        if not self.is_coordinated_knx_dcdc(entity):
+            return False
+        report = self.report(entity)
+        now = dt_util.utcnow()
+        return (
+            report is not None
+            and report[0] is False
+            and report[1] > requested_at
+            and now - requested_at >= _KNX_ON_CONFIRMATION_GRACE
+            and timedelta(0) <= now - report[1] <= _KNX_NEGATIVE_MAX_AGE
+        )
 
     def report(self, entity: str) -> tuple[bool, datetime, datetime] | None:
         """Return value, report time and start of the continuous value."""
@@ -110,6 +141,11 @@ class RailFeedback:
         if not binding or "@" not in binding or not self._reports:
             return False
         self._reports.clear()
+        # A fresh OFF after reconnect can establish present state. It cannot
+        # complete the same-connection edge needed for manual handover.
+        for request in self.coordinator._supply_actor_requests.values():
+            if request.knx_on_retried and not request.desired:
+                request.sent = False
         return True
 
     def start(self) -> None:
